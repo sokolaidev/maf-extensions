@@ -31,7 +31,14 @@ from dataclasses import dataclass, replace
 from math import ceil
 from typing import TYPE_CHECKING, Any, Final
 
-from agent_framework import ChatContext, ChatMiddleware, ChatResponse, Message
+from agent_framework import (
+    ChatContext,
+    ChatMiddleware,
+    ChatResponse,
+    ChatResponseUpdate,
+    Message,
+    ResponseStream,
+)
 from agent_framework._compaction import (
     EXCLUDED_KEY,
     annotate_message_groups,
@@ -860,6 +867,20 @@ class _Reforce:
     passes: int = 0
     taken: bool = False
 
+    def to_dict(self) -> dict[str, Any]:
+        """Return the outstanding ask as JSON-safe values."""
+        return {
+            "targets": sorted(self.targets),
+            "records": self.records,
+            "passes": self.passes,
+            "taken": self.taken,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> _Reforce:
+        """Restore an ask serialized by :meth:`to_dict`."""
+        return cls(frozenset(data["targets"]), data["records"], data["passes"], data["taken"])
+
 
 @dataclass(frozen=True, slots=True)
 class RecordDecisions:
@@ -879,6 +900,25 @@ class RecordDecisions:
     settled: frozenset[str]
     preserved: frozenset[str]
     reforce: _Reforce | None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return independent JSON-safe decisions, including any outstanding ask."""
+        return {
+            "uncovered": sorted(self.uncovered),
+            "settled": sorted(self.settled),
+            "preserved": sorted(self.preserved),
+            "reforce": None if self.reforce is None else self.reforce.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RecordDecisions:
+        """Restore decisions serialized by :meth:`to_dict`."""
+        return cls(
+            frozenset(data["uncovered"]),
+            frozenset(data["settled"]),
+            frozenset(data["preserved"]),
+            None if data["reforce"] is None else _Reforce.from_dict(data["reforce"]),
+        )
 
 
 def _droppable_groups_after(messages: list[Message], record_index: int | None) -> int:
@@ -922,6 +962,14 @@ class RecallGate:
     def __init__(self) -> None:
         """Start disarmed, so nothing is recorded until something asks for it."""
         self._armed = False
+
+    def session_state(self) -> dict[str, Any]:
+        """Return JSON-safe behavioral state for session persistence."""
+        return {"armed": self._armed}
+
+    def restore_session_state(self, data: dict[str, Any]) -> None:
+        """Replace behavioral state with a snapshot from :meth:`session_state`."""
+        self._armed = data["armed"]
 
     def arm(self) -> None:
         """Permit the next call to record."""
@@ -1836,6 +1884,36 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         )
 
 
+def retry_failed_stream(
+    source: ResponseStream[ChatResponseUpdate, ChatResponse[Any]],
+    retry: Callable[[], None],
+) -> ResponseStream[ChatResponseUpdate, ChatResponse[Any]]:
+    """Retry an unfinished response, including explicit close before the first update."""
+    completed = False
+    response: ChatResponse[Any] | None = None
+
+    async def updates():
+        nonlocal completed, response
+        async for update in source:
+            yield update
+        response = await source.get_final_response()
+        completed = True
+
+    async def cleanup() -> None:
+        try:
+            if not completed:
+                retry()
+        finally:
+            await source.close()
+
+    def finalize(_: Any) -> ChatResponse[Any]:
+        if response is None:
+            raise RuntimeError("The recall response stream did not complete.")
+        return response
+
+    return ResponseStream(updates(), finalizer=finalize).with_cleanup_hook(cleanup)
+
+
 class ToolResultRecallMiddleware(ChatMiddleware):
     """Force recall calls when phase 2 needs written records to anchor on.
 
@@ -1969,6 +2047,22 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self._awaiting_record = False
         self._session_id: str | None = None
 
+    def session_state(self) -> dict[str, Any]:
+        """Return JSON-safe behavioral state for session persistence."""
+        return {
+            "force_next": self._force_next,
+            "reforce_next": self._reforce_next,
+            "awaiting_record": self._awaiting_record,
+            "last_record": self._last_record,
+        }
+
+    def restore_session_state(self, data: dict[str, Any]) -> None:
+        """Replace behavioral state with a snapshot from :meth:`session_state`."""
+        self._force_next = data["force_next"]
+        self._reforce_next = data["reforce_next"]
+        self._awaiting_record = data["awaiting_record"]
+        self._last_record = data["last_record"]
+
     def forget_pending(self) -> None:
         """Drop the decision to force a record on the next call.
 
@@ -2095,6 +2189,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 is bound to.
         """
         self._bind_session(context)
+        awaiting_record = self._awaiting_record
         forced_this_call = self._force_next
         reforced_this_call = forced_this_call and self._reforce_next
         if not forced_this_call and self.disarm is not None:
@@ -2128,6 +2223,14 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             if forced_this_call:
                 self._requeue_forced(reforced=reforced_this_call)
             raise
+
+        if forced_this_call and isinstance(context.result, ResponseStream):
+
+            def retry() -> None:
+                self._awaiting_record = awaiting_record
+                self._requeue_forced(reforced=reforced_this_call)
+
+            context.result = retry_failed_stream(context.result, retry)
 
         if (
             forced_this_call

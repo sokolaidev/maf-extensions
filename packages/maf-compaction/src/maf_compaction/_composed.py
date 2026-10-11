@@ -315,6 +315,27 @@ class ChainDecisions:
     declined_behind: str | None
     records: RecordDecisions
 
+    def to_dict(self) -> dict[str, Any]:
+        """Return the wait and record decisions as independent JSON-safe values."""
+        return {
+            "wait_since": self.wait_since,
+            "anchor": self.anchor,
+            "quiet_through": self.quiet_through,
+            "declined_behind": self.declined_behind,
+            "records": self.records.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ChainDecisions:
+        """Restore decisions serialized by :meth:`to_dict`."""
+        return cls(
+            data["wait_since"],
+            data["anchor"],
+            data["quiet_through"],
+            data["declined_behind"],
+            RecordDecisions.from_dict(data["records"]),
+        )
+
 
 class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     """Run the record strategy, then the user-turn strategy, then a last-resort chain.
@@ -585,6 +606,26 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._quiet_through = decisions.quiet_through
         self._declined_behind = decisions.declined_behind
         self.tool_results.restore_decisions(decisions.records)
+
+    def session_state(self) -> dict[str, Any]:
+        """Return JSON-safe behavioral state for session persistence."""
+        return {
+            "decisions": self.decision_state().to_dict(),
+            "user_turns": self.user_turns.session_state(),
+            "kept_records": dict(self._kept_records),
+            "shed_ids": sorted(self._shed_ids),
+            "refused_merges": sorted(self._refused_merges),
+            "refused_rewrites": dict(self._refused_rewrites),
+        }
+
+    def restore_session_state(self, data: dict[str, Any]) -> None:
+        """Replace behavioral state with a snapshot from :meth:`session_state`."""
+        self.restore_decisions(ChainDecisions.from_dict(data["decisions"]))
+        self.user_turns.restore_session_state(data["user_turns"])
+        self._kept_records = dict(data["kept_records"])
+        self._shed_ids = set(data["shed_ids"])
+        self._refused_merges = set(data["refused_merges"])
+        self._refused_rewrites = dict(data["refused_rewrites"])
 
     @property
     def user_passes_waited(self) -> int:

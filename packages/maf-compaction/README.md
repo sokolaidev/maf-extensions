@@ -125,9 +125,81 @@ agent = create_harness_agent(
 )
 ```
 
-The summarising strategies, `RecallGate` and `ToolResultRecallMiddleware` keep one conversation's decisions on the instance, so build this stack, and the agent that holds it, once per session. The middleware raises if a second session reaches it.
+The summarising strategies, `RecallGate` and `ToolResultRecallMiddleware` keep one conversation's decisions on the instance. This direct wiring builds the stack and agent once per session; the middleware raises if a second session reaches it. For a shared agent, use the session wiring below.
 
 The composed strategy takes a record half and a user-turn half built the same way, the user half with `remembered_requests=2` unless it runs in the recompacting mode; `find_nested_strategy` finds the record half inside it for the middleware's `reforce`, and `record_text` reads the record the model wrote.
+
+## Serving many sessions
+
+`SessionCompactionRegistry` builds a fresh `CompactionStack` for each session and stores its JSON-safe behavioral state in `AgentSession.state["maf_compaction"]`. The stack contains either the record strategy or the composition, its gate, and its recall middleware. One agent registers one dispatching middleware and one recall tool. Clients, tools and other expensive agent configuration can be shared; the builder must create fresh strategy, gate and middleware instances with identical configuration on every replica.
+
+```python
+from maf_compaction import (
+    CompactionStack,
+    RecallGate,
+    SessionCompactionProvider,
+    SessionCompactionRegistry,
+    SessionToolResultRecallMiddleware,
+    ToolResultAnchoredSummarizationCompactionStrategy,
+    ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+    ToolResultRecallMiddleware,
+    UserTurnAnchoredSummarizationCompactionStrategy,
+    make_session_recall_tool,
+)
+
+
+def build_compaction() -> CompactionStack:
+    records = ToolResultAnchoredSummarizationCompactionStrategy(
+        max_input_tokens=BUDGET, tokenizer=tokenizer,
+    )
+    users = UserTurnAnchoredSummarizationCompactionStrategy(
+        max_input_tokens=BUDGET,
+        tokenizer=tokenizer,
+        client=summarizer_client,
+        summary_mode="boundary",
+        remembered_requests=2,
+    )
+    strategy = ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
+        tokenizer=tokenizer, tool_results=records, user_turns=users,
+    )
+    gate = RecallGate()
+    recall = ToolResultRecallMiddleware(
+        max_input_tokens=BUDGET,
+        tokenizer=tokenizer,
+        arm=gate.arm,
+        disarm=gate.disarm,
+        trigger_fraction=records.trigger_fraction,
+        reforce=records.take_reforce,
+    )
+    return CompactionStack(strategy, gate, recall)
+
+
+registry = SessionCompactionRegistry(build_compaction, max_cached_sessions=128)
+compaction = SessionCompactionProvider(registry, tokenizer=tokenizer, before=False)
+agent = create_harness_agent(
+    client,
+    name="shared-assistant",
+    tools=[lookup_deployment, make_session_recall_tool(registry)],
+    middleware=[SessionToolResultRecallMiddleware(registry, compact_before=True)],
+    disable_compaction=True,
+    context_providers=[compaction],
+    max_output_tokens=MAX_OUTPUT,
+    tokenizer=tokenizer,
+)
+# Match the harness's built-in placement immediately after its history provider.
+agent.context_providers.remove(compaction)
+agent.context_providers.insert(1, compaction)
+```
+
+The harness in framework 1.20 loads and persists history per model call. Its provider `before_run` hook therefore has no history to compact. `compact_before=True` supplies the session's strategy to the chat client after history loads, including when a stream is consumed later. `before=False` avoids a second provider pass. The provider's `after_run` compacts stored history. Additional providers are appended by `create_harness_agent`, so the final two lines put compaction where the harness puts its own: after history, before the remaining providers; after hooks run in reverse order. A plain `Agent` using per-service-call history persistence uses the same middleware and provider. For a host that supplies loaded context to provider hooks itself, leave `compact_before=False` and enable the provider's `before` phase.
+
+Provider hooks resolve from their `session` argument, chat middleware from `context.session`, and the registered tool from the framework-injected `FunctionInvocationContext.session`. Each phase sets a scoped context variable and clears it on exit. No session identifier is a model-supplied tool argument, and missing sessions are refused. The inner middleware retains its single-session guard.
+
+Persist the whole `AgentSession` using the framework's session serialization and restore it before the next request. The registry reads session state even on cache hits and writes it after provider, middleware and tool phases, including exceptional exits. Cache eviction and `max_cached_sessions=0` discard only cached stacks; the session retains its decisions. Removing the registry's state entry resets its stack. Use a distinct `state_key` for each independently configured registry and keep the builder configuration stable across restores; version or stack-kind mismatches raise instead of silently dropping decisions.
+
+The snapshot carries record decisions and outstanding re-force asks; the chain's wait, kept replacements, shed IDs and refusals; remembered user-summary requests and kept folds; pending recall and awaiting-record flags; and the one-shot gate permission. User compaction and fold counts also travel because they allocate summary IDs. Other counters remain local diagnostics and restart after cache eviction or a replica switch. `ChainDecisions.to_dict()` and `RecordDecisions.to_dict()` serialize the existing narrower replay snapshots; `CompactionStack.to_dict()` includes the content-keyed state as well. Content-keyed entries contain conversation text and can grow with the conversation, so retain them under the same storage and retention policy as history.
+
+Serialize requests for the same session in the host, including across replicas. The registry supports concurrent distinct sessions and rejects overlapping independent phases for the same session in one process; it does not supply a distributed lock or persist to an external store. Model quality, multi-process storage coordination and recovery from a crash between a model response and the host's session save are outside this adapter's guarantees.
 
 ## When to use it
 
