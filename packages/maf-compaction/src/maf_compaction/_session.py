@@ -16,6 +16,7 @@ from agent_framework import (
     CompactionProvider,
     FunctionInvocationContext,
     Message,
+    ResponseStream,
     TokenizerProtocol,
 )
 
@@ -27,6 +28,7 @@ from ._toolsummary import (
     ToolResultAnchoredSummarizationCompactionStrategy,
     ToolResultRecallMiddleware,
     make_recall_tool,
+    retry_failed_stream,
 )
 
 _Strategy = (
@@ -217,7 +219,20 @@ class SessionToolResultRecallMiddleware(ChatMiddleware):
 
             context.kwargs = {**context.kwargs, "compaction_strategy": compact}
         with self.registry.activate(session) as stack:
+            pending = stack.middleware.session_state()
             await stack.middleware.process(context, call_next)
+        if pending["force_next"] and isinstance(context.result, ResponseStream):
+
+            def retry() -> None:
+                # Re-enter from persisted state: deferred consumption can outlive cache eviction.
+                with self.registry.activate(session) as current:
+                    state = current.middleware.session_state()
+                    for key in ("force_next", "reforce_next", "awaiting_record"):
+                        state[key] = pending[key]
+                    current.middleware.restore_session_state(state)
+                    current.gate.disarm()
+
+            context.result = retry_failed_stream(context.result, retry)
 
 
 def make_session_recall_tool(

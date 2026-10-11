@@ -161,6 +161,64 @@ async def test_failure_persists_pending_force_and_clears_context(error):
         registry.current_stack()
 
 
+@pytest.mark.parametrize(
+    "failure", ["error", "cancel", "close", "unstarted", "finalizer", "success"]
+)
+@pytest.mark.parametrize("cached", [0, 1])
+@pytest.mark.parametrize("session_scoped", [False, True])
+async def test_forced_stream_completion_persists_retry_state(failure, cached, session_scoped):
+    registry = SessionCompactionRegistry(build_stack, max_cached_sessions=cached)
+    session = AgentSession()
+    with registry.activate(session) as stack:
+        stack.middleware._force_next = True
+        stack.middleware._reforce_next = True
+
+    async def updates():
+        yield ChatResponseUpdate(role="assistant", contents=[Content.from_text("partial")])
+        if failure == "error":
+            raise RuntimeError("stream failed")
+        if failure == "cancel":
+            raise asyncio.CancelledError()
+
+    def finalize(_):
+        if failure == "finalizer":
+            raise RuntimeError("finalizer failed")
+        return ChatResponse(messages=Message("assistant", ["done"]))
+
+    source = ResponseStream(updates(), finalizer=finalize)
+    context = ChatContext(None, [], {}, session=session, stream=True)
+
+    async def install():
+        context.result = source
+
+    middleware = SessionToolResultRecallMiddleware(registry) if session_scoped else stack.middleware
+    await middleware.process(context, install)
+    result = context.result
+    assert isinstance(result, ResponseStream)
+    if failure == "unstarted":
+        await result.close()
+    elif failure == "close":
+        _ = await anext(result.__aiter__())
+        await result.close()
+    elif failure == "success":
+        await result.get_final_response()
+    else:
+        error = asyncio.CancelledError if failure == "cancel" else RuntimeError
+        with pytest.raises(error):
+            await result.get_final_response()
+    if not session_scoped:
+        session.state[registry.state_key] = stack.to_dict()
+        assert stack.middleware.forced_calls == (failure == "success")
+        assert stack.middleware.reforced_calls == (failure == "success")
+    session.state = round_trip(session.state)
+    cold = SessionCompactionRegistry(build_stack)
+    with cold.activate(session) as restored:
+        assert restored.middleware._force_next == (failure != "success")
+        assert restored.middleware._reforce_next == (failure != "success")
+        assert restored.middleware._awaiting_record == (failure == "success")
+        assert restored.gate.take() == (failure == "success")
+
+
 async def test_gate_is_persisted_and_tool_uses_its_injected_session():
     a, b = AgentSession(session_id="a"), AgentSession(session_id="b")
     registry = SessionCompactionRegistry(build_stack)

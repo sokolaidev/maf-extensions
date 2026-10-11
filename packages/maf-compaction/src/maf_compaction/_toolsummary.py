@@ -31,7 +31,14 @@ from dataclasses import dataclass, replace
 from math import ceil
 from typing import TYPE_CHECKING, Any, Final
 
-from agent_framework import ChatContext, ChatMiddleware, ChatResponse, Message
+from agent_framework import (
+    ChatContext,
+    ChatMiddleware,
+    ChatResponse,
+    ChatResponseUpdate,
+    Message,
+    ResponseStream,
+)
 from agent_framework._compaction import (
     EXCLUDED_KEY,
     annotate_message_groups,
@@ -1877,6 +1884,36 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         )
 
 
+def retry_failed_stream(
+    source: ResponseStream[ChatResponseUpdate, ChatResponse[Any]],
+    retry: Callable[[], None],
+) -> ResponseStream[ChatResponseUpdate, ChatResponse[Any]]:
+    """Retry an unfinished response, including explicit close before the first update."""
+    completed = False
+    response: ChatResponse[Any] | None = None
+
+    async def updates():
+        nonlocal completed, response
+        async for update in source:
+            yield update
+        response = await source.get_final_response()
+        completed = True
+
+    async def cleanup() -> None:
+        try:
+            if not completed:
+                retry()
+        finally:
+            await source.close()
+
+    def finalize(_: Any) -> ChatResponse[Any]:
+        if response is None:
+            raise RuntimeError("The recall response stream did not complete.")
+        return response
+
+    return ResponseStream(updates(), finalizer=finalize).with_cleanup_hook(cleanup)
+
+
 class ToolResultRecallMiddleware(ChatMiddleware):
     """Force recall calls when phase 2 needs written records to anchor on.
 
@@ -2152,6 +2189,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 is bound to.
         """
         self._bind_session(context)
+        awaiting_record = self._awaiting_record
         forced_this_call = self._force_next
         reforced_this_call = forced_this_call and self._reforce_next
         if not forced_this_call and self.disarm is not None:
@@ -2185,6 +2223,14 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             if forced_this_call:
                 self._requeue_forced(reforced=reforced_this_call)
             raise
+
+        if forced_this_call and isinstance(context.result, ResponseStream):
+
+            def retry() -> None:
+                self._awaiting_record = awaiting_record
+                self._requeue_forced(reforced=reforced_this_call)
+
+            context.result = retry_failed_stream(context.result, retry)
 
         if (
             forced_this_call
