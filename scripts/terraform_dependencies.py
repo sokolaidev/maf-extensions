@@ -312,6 +312,97 @@ def checked_exclusions(excluded: Any) -> None:
         )
 
 
+def provider_build_policy(value: Any) -> None:
+    """Require a reviewed source, toolchain, dependency set and resulting package hash."""
+    exact_keys(
+        value,
+        {"repository", "revision", "artifact", "go_version", "modules", "module_files", "sha256"},
+    )
+    require(
+        isinstance(value["repository"], str)
+        and re.fullmatch(
+            r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value["repository"]
+        ),
+        "provider-source",
+    )
+    require(
+        isinstance(value["revision"], str) and re.fullmatch(r"[0-9a-f]{40}", value["revision"]),
+        "module-revision",
+    )
+    artifact_policy(value["artifact"])
+    require(
+        value["artifact"]["url"]
+        == value["repository"].replace("https://github.com/", "https://codeload.github.com/")
+        + "/zip/"
+        + value["revision"],
+        "artifact-mismatch",
+    )
+    require(
+        isinstance(value["go_version"], str)
+        and re.fullmatch(r"go[0-9]+\.[0-9]+\.[0-9]+", value["go_version"]),
+        "provider-version",
+    )
+    require(isinstance(value["modules"], dict) and len(value["modules"]) <= 32, "manifest-fields")
+    for name, version in value["modules"].items():
+        require(
+            isinstance(name, str)
+            and re.fullmatch(r"[A-Za-z0-9._/-]+", name)
+            and not name.startswith("-"),
+            "provider-source",
+        )
+        require(
+            isinstance(version, str) and re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", version),
+            "provider-version",
+        )
+    exact_keys(value["module_files"], {"go.mod", "go.sum"})
+    for digest in [value["sha256"], *value["module_files"].values()]:
+        require(isinstance(digest, str) and re.fullmatch(_DIGEST, digest), "artifact-digest")
+
+
+def provider_digest(provider: dict[str, Any]) -> str:
+    """Return the approved installed package digest, including explicit source rebuilds."""
+    return provider.get("source_build", provider["artifact"])["sha256"]
+
+
+def built_provider(provider: dict[str, Any], directory: Path | None) -> bytes:
+    """Read only the approved local build; source-built providers never fall back upstream."""
+    require(directory is not None, "artifact-mismatch")
+    assert directory is not None
+    target = directory / provider["source"] / provider["version"] / (provider["platform"] + ".zip")
+    require(target.resolve().is_relative_to(directory.resolve()), "file-path")
+    data = target.read_bytes()
+    require(len(data) <= MAX_ARCHIVE, "archive-size")
+    require(hashlib.sha256(data).hexdigest() == provider_digest(provider), "artifact-digest")
+    zip_files(data, limit=MAX_PROVIDER_EXPANDED, retain=False)
+    files = zip_entry_digests(data)
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        require(
+            "build.json" in files and archive.getinfo("build.json").file_size <= MAX_MANIFEST,
+            "artifact-mismatch",
+        )
+        record = unique_json(archive.read("build.json").decode("utf-8"), "manifest-duplicate")
+    plan = provider["source_build"]
+    require(
+        record
+        == {
+            "builder": "SOKOLAI",
+            "source": provider["source"],
+            "version": provider["version"],
+            "upstream_artifact": provider["artifact"],
+            "inputs": {
+                key: value for key, value in plan.items() if key not in {"sha256", "module_files"}
+            },
+            "files": {name: value for name, value in files.items() if name != "build.json"},
+        },
+        "artifact-mismatch",
+    )
+    require(
+        all(files.get(name) == value for name, value in plan["module_files"].items()),
+        "artifact-mismatch",
+    )
+    return data
+
+
 def checked_manifest(value: Any) -> dict[str, Any]:
     """Bind provider identities and module graphs to a single engine policy."""
     exact_keys(
@@ -326,7 +417,7 @@ def checked_manifest(value: Any) -> dict[str, Any]:
     require(isinstance(value["modules"], list) and len(value["modules"]) <= 16, "modules")
     identities: set[str] = set()
     for provider in value["providers"]:
-        exact_keys(provider, {"source", "version", "platform", "artifact"})
+        exact_keys(provider, {"source", "version", "platform", "artifact"}, {"source_build"})
         source = provider["source"]
         require(re.fullmatch(r"[a-z0-9.-]+/" + _NAME + "/" + _NAME, source), "provider-source")
         canonical_url("https://" + source)
@@ -339,6 +430,8 @@ def checked_manifest(value: Any) -> dict[str, Any]:
         require(identity not in identities, "provider-conflict")
         identities.add(identity)
         artifact_policy(provider["artifact"])
+        if "source_build" in provider:
+            provider_build_policy(provider["source_build"])
     identities.clear()
     for module in value["modules"]:
         exact_keys(module, {"name", "revision", "subdir", "graph", "artifact"})
@@ -452,10 +545,16 @@ class PinnedHTTPS(http.client.HTTPSConnection):
                     raw.close()
 
 
-def fetch(artifact: dict[str, Any], deadline: float, *, max_bytes: int = MAX_ARCHIVE) -> bytes:
+def fetch(
+    artifact: dict[str, Any],
+    deadline: float,
+    *,
+    max_bytes: int = MAX_ARCHIVE,
+    archive_limit: int | None = None,
+) -> bytes:
     """Download one approved artifact without exposing redirects or error content."""
     artifact_policy(artifact)
-    limit = min(MAX_ARCHIVE, max_bytes)
+    limit = min(MAX_ARCHIVE if archive_limit is None else archive_limit, max_bytes)
     require(limit > 0, "total-size")
     url = artifact["url"]
     chain = artifact.get("redirects", [])
@@ -1034,7 +1133,13 @@ def artifact_sequence(manifest: dict[str, Any]) -> list[tuple[str, dict[str, Any
     ]
 
 
-def prepare(manifest: dict[str, Any], output: Path, *, progress: Path | None = None) -> str:
+def prepare(
+    manifest: dict[str, Any],
+    output: Path,
+    *,
+    progress: Path | None = None,
+    provider_builds: Path | None = None,
+) -> str:
     """Write a fresh preparation directory; the CLI publishes it only on complete success.
 
     `progress` receives the position in `artifact_sequence` of the artifact being fetched,
@@ -1080,7 +1185,11 @@ def prepare(manifest: dict[str, Any], output: Path, *, progress: Path | None = N
     total = 0
     for position, (kind, item) in enumerate(sequence):
         mark(position)
-        data = fetch(item["artifact"], deadline, max_bytes=MAX_TOTAL - total)
+        data = (
+            built_provider(item, provider_builds)
+            if kind == "providers" and "source_build" in item
+            else fetch(item["artifact"], deadline, max_bytes=MAX_TOTAL - total)
+        )
         total += len(data)
         require(total <= MAX_TOTAL, "total-size")
         if kind == "providers":
@@ -1116,8 +1225,12 @@ def prepare(manifest: dict[str, Any], output: Path, *, progress: Path | None = N
             record["files"] = {
                 name: hashlib.sha256(text.encode()).hexdigest() for name, text in files.items()
             }
-        record["sha256"] = item["artifact"]["sha256"]
+        record["sha256"] = provider_digest(item)
         record["provenance"] = item["artifact"]["provenance"]
+        if "source_build" in item:
+            record["source_build"] = item["source_build"]
+            record["upstream_artifact"] = item["artifact"]
+            record["provenance"] = "SOKOLAI source build; package checksum differs from upstream"
         record["decision"] = "verified"
         receipt[kind].append(record)
     inventoried = (index for index, (kind, _) in enumerate(sequence) if kind == "registry_modules")
@@ -1139,11 +1252,16 @@ def load_manifest(data: bytes) -> dict[str, Any]:
     return checked_manifest(unique_json(data, "manifest-duplicate"))
 
 
-def _worker(output: str, progress: str) -> None:
+def _worker(output: str, progress: str, provider_builds: str = "") -> None:
     """Run only as the child of the CLI's deadline and temporary-output supervisor."""
     try:
         manifest = load_manifest(sys.stdin.buffer.read(MAX_MANIFEST + 1))
-        prepare(manifest, Path(output), progress=Path(progress))
+        prepare(
+            manifest,
+            Path(output),
+            progress=Path(progress),
+            **({"provider_builds": Path(provider_builds)} if provider_builds else {}),
+        )
     except Exception as exc:
         decision = str(exc) if isinstance(exc, Refused) else "preparation-failed"
         status = exc.status if isinstance(exc, Refused) else 0
@@ -1191,6 +1309,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--provider-builds", type=Path)
     args = parser.parse_args()
     context = ""
     try:
@@ -1215,6 +1334,7 @@ def main() -> None:
                         str(Path(__file__).resolve()),
                         str(prepared),
                         str(progress),
+                        *([str(args.provider_builds.absolute())] if args.provider_builds else []),
                     ],
                     input=data,
                     stdout=subprocess.DEVNULL,

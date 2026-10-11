@@ -26,14 +26,20 @@ def report():
                 "version": version,
                 "error": None,
                 "sourceUnchanged": True,
-                "initExitCode": 1 if name in {"uncached-version", "wrong-lock"} else 0,
-                "validateExitCode": None if name in {"uncached-version", "wrong-lock"} else 0,
-                "validationValid": None if name in {"uncached-version", "wrong-lock"} else True,
+                "initExitCode": 1
+                if name in {"uncached-version", "wrong-lock", "upstream-lock"}
+                else 0,
+                "validateExitCode": None
+                if name in {"uncached-version", "wrong-lock", "upstream-lock"}
+                else 0,
+                "validationValid": None
+                if name in {"uncached-version", "wrong-lock", "upstream-lock"}
+                else True,
                 "providerLinks": 3,
                 "providerCopies": 0,
                 "providersInMirror": True,
                 "nestedModuleLoaded": True,
-                "expectedRefusal": name in {"uncached-version", "wrong-lock"},
+                "expectedRefusal": name in {"uncached-version", "wrong-lock", "upstream-lock"},
             }
             for name in avm.CASES
         ],
@@ -85,6 +91,8 @@ def test_artifact_inventory_drift_is_refused(kind):
         (3, "expectedRefusal", False),
         (4, "expectedRefusal", False),
         (4, "sourceUnchanged", False),
+        (5, "initExitCode", 0),
+        (5, "expectedRefusal", False),
     ],
 )
 def test_false_success_is_refused(index, field, value):
@@ -125,7 +133,7 @@ def test_runtime_checks_identity_and_observes_cleanup(monkeypatch, tmp_path, fai
             runtime.check("terraform-avm", "sha256:" + "a" * 64, tmp_path)
     else:
         result = runtime.check("terraform-avm", "sha256:" + "a" * 64, tmp_path)
-        assert len(result["terraformAvm"]["checks"]) == 5
+        assert len(result["terraformAvm"]["checks"]) == 6
         assert result["containersRemaining"] == []
         assert result["liveDeploymentVerified"] is False
     name = commands[0][commands[0].index("--name") + 1]

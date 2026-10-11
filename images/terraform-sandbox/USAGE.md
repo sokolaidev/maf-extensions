@@ -110,16 +110,20 @@ Terraform only. [dependencies.terraform-avm.policy.json](dependencies.terraform-
 
 ### 2. Generate the manifest
 
-Set `GITHUB_TOKEN` first to avoid GitHub's rate limit. The catalog takes about 3 minutes.
+Set `GITHUB_TOKEN` first to avoid GitHub's rate limit. The full catalogue uses [SOKOLAI source-built providers](AVM.md#provider-build-identity); export the locked packages first so the generator can verify their bytes. Compilation can take substantially longer than catalogue resolution. The small network fixture still uses upstream packages and does not need this export or `--provider-builds`.
 
 ```sh
-uv run python scripts/terraform_manifest.py --policy images/terraform-sandbox/dependencies.terraform-avm.policy.json --output images/terraform-sandbox/dependencies.terraform-avm.json
+docker build --platform linux/amd64 --build-context scripts=scripts --build-arg MANIFEST=dependencies.terraform-avm.json -f images/terraform-sandbox/prepared.Dockerfile --target provider-packages --output type=local,dest=dist/provider-builds images/terraform-sandbox
+```
+
+```sh
+uv run python scripts/terraform_manifest.py --policy images/terraform-sandbox/dependencies.terraform-avm.policy.json --output images/terraform-sandbox/dependencies.terraform-avm.json --provider-builds dist/provider-builds
 ```
 
 Check that the committed manifest still matches the policy:
 
 ```sh
-uv run python scripts/terraform_manifest.py --policy images/terraform-sandbox/dependencies.terraform-avm.policy.json --output images/terraform-sandbox/dependencies.terraform-avm.json --check
+uv run python scripts/terraform_manifest.py --policy images/terraform-sandbox/dependencies.terraform-avm.policy.json --output images/terraform-sandbox/dependencies.terraform-avm.json --provider-builds dist/provider-builds --check
 ```
 
 ### 3. Review the change
@@ -132,7 +136,17 @@ To check a module pin by hand:
 2. Download `https://codeload.github.com/<owner>/<repository>/zip/<commit>`, review it, and compare its SHA-256 with the pin.
 3. Read every module directory the root loads, and compare its calls with `graph`.
 
-To check a provider pin by hand, compare its digest with the release `SHA256SUMS` and with the registry's download metadata.
+For an upstream provider artifact, compare its digest with the release `SHA256SUMS` and the registry's download metadata. For a source build, also review the pinned source, dependency overrides, retained notices and generated module/package hashes; the installed package intentionally has a different digest. A refresh that changes a provider identity refuses to reuse the old build lock. Resolve it into a separate proposed manifest and add a reviewed source-build recipe before replacing the catalogue.
+
+To prepare replacement hashes after changing a source-build recipe, build the toolchain and write to a separate output manifest:
+
+```sh
+mkdir -p dist/provider-builds
+docker build --platform linux/amd64 -f images/terraform-sandbox/prepared.Dockerfile --target provider-toolchain -t maf-provider-toolchain images/terraform-sandbox
+docker run --rm --platform linux/amd64 --mount type=bind,src="$PWD",dst=/src,readonly --mount type=bind,src="$PWD/dist/provider-builds",dst=/out maf-provider-toolchain python3 /src/images/terraform-sandbox/build_providers.py --manifest /src/images/terraform-sandbox/dependencies.terraform-avm.json --output /out/builds --update-lock /out/proposed.json
+```
+
+Review `dist/provider-builds/proposed.json` before copying it to the catalogue. The normal build below runs with lock updates disabled and refuses non-reproducible packages. Retain the source notices and complete the image security and offline qualification gates before publication.
 
 ### 4. Build
 
