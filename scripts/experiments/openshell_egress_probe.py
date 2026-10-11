@@ -27,7 +27,7 @@ from openshell_owned_probe import snapshot
 from openshell_replay_probe import wait_gateway
 
 
-def serve_origin():
+def serve_origin(*, tls_events=None):
     """Expose only fixture responses and a bounded request journal on the private Docker network."""
     events = []
     lock = threading.Lock()
@@ -40,7 +40,10 @@ def serve_origin():
             self.handle_request()
 
         def handle_request(self):
-            if self.path == "/__events":
+            if self.path == "/__tls_events" and tls_events is not None:
+                body = json.dumps(tls_events).encode()
+                status = 200
+            elif self.path == "/__events":
                 with lock:
                     body = json.dumps(events).encode()
                 status = 200
@@ -143,8 +146,8 @@ def matches_observation(observed, hits, expected_status, expected_hits, expected
     return expected_status == 200 and body == expected_request
 
 
-def measure(image, issuer, ip):
-    """Compare enforced, audit-default and closed-policy requests with origin observations."""
+def measure(image, issuer, ip, *, profile=None):
+    """Compare policy modes in owned sandboxes, optionally using another protocol profile."""
     workspace = "s1797-" + uuid.uuid4().hex[:12]
     client = Client(
         workspace, issuer.token("admin", role="spike-admin", scopes="openshell:all"), image
@@ -201,6 +204,8 @@ def measure(image, issuer, ip):
         ):
             if {x[4][0] for x in socket.getaddrinfo(host, 8000, family=socket.AF_INET)} != {ip}:
                 raise RuntimeError("fixture DNS did not resolve to the owned origin")
+        if profile is not None:
+            profile.preflight(ip)
         for method in ("GET", "POST"):
             origin_get(ip, "/blocked", method=method, host=denied)
         origin_get(ip, "/allowed", port=8001)
@@ -211,7 +216,10 @@ def measure(image, issuer, ip):
             request = client.pb.CreateSandboxRequest.FromString(
                 client.request(name, str(uuid.uuid4()))
             )
-            configure(request, ip, mode)
+            if profile is None:
+                configure(request, ip, mode)
+            else:
+                profile.configure(request, ip, mode)
             request.spec.template.labels["spike.probe"] = "egress"
             response = client.rpc("CreateSandbox", request)
             owner = {
@@ -244,7 +252,9 @@ def measure(image, issuer, ip):
             ):
                 raise RuntimeError("independent process observer unavailable")
             print(json.dumps({"physical_identity": owner}), flush=True)
-            if mode == "enforce":
+            if profile is not None:
+                results.extend(profile.run_cases(client, name, owner, ip, mode))
+            elif mode == "enforce":
                 check(name, "allowed_get", allowed, "/allowed", "GET", 200, 1)
                 check(name, "denied_post", allowed, "/allowed", "POST", 403, 0)
                 check(name, "denied_path", allowed, "/blocked", "GET", 403, 0)
@@ -342,9 +352,12 @@ def measure(image, issuer, ip):
         finally:
             client.close()
     return {
-        "passed": len(results) == 19 and all(x["passed"] for x in results),
+        "passed": len(results) == (19 if profile is None else profile.CASES)
+        and all(x["passed"] for x in results),
         "cases": len(results),
-        "scope": "plaintext HTTP, provider-free fixed private origin; not complete egress conformance",
+        "scope": "plaintext HTTP, provider-free fixed private origin; not complete egress conformance"
+        if profile is None
+        else profile.SCOPE,
     }
 
 

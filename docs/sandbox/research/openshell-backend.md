@@ -1,6 +1,6 @@
 # OpenShell backend spike
 
-> Research: OpenShell v0.1.2 contract characterization for [#1797](https://github.com/sokolaidev/maf-extensions/issues/1797), under [#1796](https://github.com/sokolaidev/maf-extensions/issues/1796). Installed-SDK fixture probes and gateway startup were measured on 2026-10-08; live Docker workload/lifecycle cases were measured on 2026-10-09 and OIDC authorization on 2026-10-10; guest file access, filesystem policy, native SFTP and a plaintext HTTP egress matrix were characterized on 2026-10-11. No suite adapter or runtime is qualified.
+> Research: OpenShell v0.1.2 contract characterization for [#1797](https://github.com/sokolaidev/maf-extensions/issues/1797), under [#1796](https://github.com/sokolaidev/maf-extensions/issues/1796). Installed-SDK fixture probes and gateway startup were measured on 2026-10-08; live Docker workload/lifecycle cases were measured on 2026-10-09 and OIDC authorization on 2026-10-10; guest file access, filesystem policy, native SFTP and bounded HTTP/HTTPS egress matrices were characterized on 2026-10-11. No suite adapter or runtime is qualified.
 
 ## Target and evidence boundary
 
@@ -41,7 +41,7 @@ The smoke used an isolated temporary configuration and SQLite state, an explicit
 
 An initial request to `/readyz` on the main API listener returned 404. Configuring `--health-port` and querying that dedicated listener corrected the smoke harness; the 404 was not a failed sandbox readiness result.
 
-## Live Docker workload — 2026-10-09
+## Live Docker workload â€” 2026-10-09
 
 The [live probe](../../../scripts/experiments/openshell_live_probe.py) created a disposable workload through SDK and gateway v0.1.2 on Docker Desktop Linux Engine 29.8.2, kernel `7.0.14-linuxkit`. The gateway and SDK ran inside a temporary Linux control container using Python 3.13.16. This exercised the actual supervisor and guest runtime; it remains a Docker Desktop observation, not qualification of native Linux, MicroVMs or Kubernetes.
 
@@ -81,7 +81,7 @@ The timeout response therefore did not establish termination of either the comma
 
 Deletion removed the observed processes and resources; it does not prove stale-name race safety, cleanup under control-plane loss or bounded cleanup time in failure cases. The temporary gateway was subsequently removed, destroying its signing keys and database; no experiment-labelled containers or volumes remained. Local images were retained. One denied direct connection with network mode `none` does not qualify the suite's complete `CLOSED` contract or any allowlist behavior.
 
-## Owned execution experiment — 2026-10-09
+## Owned execution experiment â€” 2026-10-09
 
 The [execution core](../../../scripts/experiments/openshell_owned_exec.py) and [live driver](../../../scripts/experiments/openshell_owned_probe.py) now exercise an owned asynchronous gRPC stream with a caller deadline and separately budgeted disposal. They remain experiment code outside shipped packages. The channel is owned directly; the driver does not read the convenience client's private stub or channel. Generated bindings still come from the pinned SDK's private `_proto` namespace, which is an explicit experimental dependency rather than an accepted production API.
 
@@ -115,7 +115,7 @@ Other case names are `bytes`, `natural_124`, `cancel_child`, `disconnect_child`,
 
 Fourteen offline regression cases cover byte fidelity, natural exit 124, exact/over-limit capture, fractional deadlines, repeated cancellation while cleanup is pending, incomplete/failed/cancelled cleanup, missing or out-of-order terminal events, dispatch failure and transport failures. The live cases additionally exercised actual protobuf streaming and gRPC message rejection. Ruff, focused Pyright, documentation structure and path checks passed. The original SDK/runtime limitation remains; the experiment works around it by retiring the entire sandbox, which sacrifices reuse and guest state after each execution.
 
-## Stale deletion and persisted recovery — 2026-10-09
+## Stale deletion and persisted recovery â€” 2026-10-09
 
 The [lifecycle probe](../../../scripts/experiments/openshell_lifecycle_probe.py) now reproduces replacement at an explicit barrier between lookup and deletion. It also kills a client process after confirmed ownership has been saved by the [recovery journal](../../../scripts/experiments/openshell_recovery.py). The same pinned fixture images, Docker host PID observer and loopback authentication limits apply. The workload policy builder is shared with the preceding execution experiment; its fractional-deadline/cleanup case passed again after that extraction.
 
@@ -141,7 +141,7 @@ Other cases are `stale_precheck`, `delete_replay` and `client_crash`. `crash_hol
 
 Fourteen new offline regression cases cover replacement refusal, stable request IDs after a lost response, unavailable gateway, mismatched deletion responses, malformed ownership, independently observed absence, interrupted atomic replacement and historical completed receipts. Combined with the preceding execution and documentation tests, 260 tests passed; focused Ruff, Pyright, documentation path and diff checks also passed. All test-owned replacements and recovered workloads were independently observed absent, and the temporary gateway was removed after journals and receipts were saved locally. No package or hosted CI gate ran.
 
-## Lifecycle authorization boundary — source assessment, 2026-10-09
+## Lifecycle authorization boundary â€” source assessment, 2026-10-09
 
 The pinned [workspace documentation](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/docs/how-it-works/workspaces.mdx), [authentication documentation](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/docs/how-it-works/gateways/authentication.mdx), [workspace authorization implementation](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/crates/openshell-server/src/auth/workspace_authz.rs) and public RPC descriptors establish the following source-level boundary. Current documentation search was used for discovery; these claims are checked against the pinned release rather than inferred from an unversioned RFC.
 
@@ -168,7 +168,7 @@ python /opt/openshell_authority_probe.py --execute --image sha256:9c108fb76d00a3
 
 The script owns a fresh gateway database and a temporary OIDC issuer for that execution, checks each observed status against its expected status, verifies physical-resource and workspace cleanup, and removes its temporary issuer credentials. Its numeric-loopback HTTP allowance and plaintext gRPC are explicit development-fixture settings. The control container still requires Docker socket and host PID observation access.
 
-## Lifecycle authorization — live Docker fixture, 2026-10-10
+## Lifecycle authorization â€” live Docker fixture, 2026-10-10
 
 The authorization probe ran against the same pinned OpenShell v0.1.2 gateway and immutable control/guest images identified above, with Python 3.13.16, grpcio 1.84.0, Docker Engine 29.8.2 and Linux kernel `7.0.14-linuxkit`. The temporary gateway required OIDC, used explicit role/scope claims and an isolated database, and accepted credentials only from the controlled loopback issuer. Adapter and reader subjects were workspace Users; the platform administrator was not a workspace member. The ordinary adapter token carried `sandbox:read sandbox:write workspace:read`; the reader carried only `sandbox:read`.
 
@@ -414,6 +414,36 @@ Fifteen [egress evidence tests](../../../tests/test_openshell_egress_probe.py) r
 
 Next qualify HTTPS inspection with verified upstream certificates, then provider-composed policy and policy updates. IPv6, DNS changes/rebinding, alternate protocols and ports, encoded/canonicalized paths, case normalization, header/authority confusion, multi-hop redirects, unrestricted-mode fidelity and shared conformance remain untested. Egress declarations and method/path capabilities remain withheld. The lifecycle dependencies #1817/#1818 and native-file contract gaps remain independent of these HTTP observations.
 
+## HTTPS policy and origin trust - 2026-10-11
+
+The opt-in [HTTPS probe](../../../scripts/experiments/openshell_https_probe.py) reuses the HTTP probe's owned-workspace lifecycle and independent Docker cleanup checks. All **9 HTTPS cases passed** with the same v0.1.2 gateway, SDK, unchanged official supervisor/runtime digests and sentinel workload image recorded above. The original **19 HTTP cases also passed** after adding the profile. These remain provider-free characterization fixtures rather than suite capability qualification.
+
+The HTTPS matrix deliberately has two evidence boundaries. A public `httpbingo.org` echo endpoint supplies successful HTTPS responses containing the exact method and unique request URL; unrestricted certificate-verifying controls establish that it accepts the tested GET, POST and otherwise denied path. Public denials require structured OpenShell `policy_denied` responses or explicit `EACCES`, but there is no independent access to that public origin's request journal. A separate private origin supplies the untrusted-certificate case and an independent HTTP/TLS event journal. No certificate verification was disabled and no official image was rebuilt or patched.
+
+| Case | Observation | Boundary |
+|---|---|---|
+| Allowed HTTPS GET | `/anything` returned 200 with the exact correlated URL and GET method, both before and after the certificate-refusal case | Exercises default Python trust of the injected inspection CA and successful upstream HTTPS for this public service. |
+| Explicit enforced method/path denial | POST `/anything` and GET `/anything/blocked` returned structured L7 policy 403s | Public origin controls accept both; absence of public-origin side effects was not independently observed. |
+| Denied host and empty network policy | `example.com` under the allowlist and the public echo host under empty policy both returned `EACCES` | Selected HTTPS requests only; not complete CLOSED or alternate-route conformance. |
+| Untrusted private origin | Guest saw `RemoteDisconnected`; the independent origin recorded exactly one `SSLV3_ALERT_CERTIFICATE_UNKNOWN` and no HTTP request during that attempt | The same origin failed ordinary Python verification with self-signed certificate code 18 and succeeded with that certificate explicitly trusted by the independent control. This establishes rejection of this untrusted origin certificate, not a complete TLS validation matrix. |
+| Omitted L7 enforcement | POST and the otherwise denied path reached the public echo service successfully | Audit-default behavior applies to these HTTPS requests too; translation must select explicit `ENFORCE`. |
+
+The private origin used a fresh one-day self-signed RSA certificate with the exact `allowed.<private-ip>.nip.io` DNS SAN. Its private key stayed inside the owned origin container. Only the public certificate was copied to the independent control, which used it as an explicit trust anchor for its positive control; it was never installed in the supervisor or guest. Each measured request ran serially. The origin journal had to preserve its earlier prefix and contribute exactly the certificate-specific alert for the failing TLS attempt; a disconnect alone, timeout, DNS failure, arbitrary alert, duplicate alert or HTTP request does not satisfy the oracle. Initial attempts intentionally failed the assertion when no independent TLS alert was recorded or when its expected alert name differed from the measured one; those attempts also verified cleanup. The final matrix used the observed certificate-specific alert, with regression tests against weaker evidence.
+
+Pinned [TLS root loading](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/crates/openshell-supervisor-network/src/l7/tls.rs) combines bundled roots with the supervisor's system bundle. [Network setup](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/crates/openshell-supervisor-network/src/run.rs) can overlay an operator proxy CA bundle, but the inspected [Docker driver argument builder](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/crates/openshell-driver-docker/src/lib.rs) does not forward that bundle option. Consequently this fixture uses public trusted HTTPS for success and a private untrusted origin for rejection. This is a pinned-source observation, not a claim that every deployment mode lacks private CA support.
+
+### Reproduction and validation
+
+Use the HTTP section's labelled internal origin network and host-network control container. Copy the experiment directory to `/probe` in both containers and the signed gateway fixture configuration to the control. Generate the origin certificate inside the disposable origin with `openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 1 -keyout /tmp/https-origin-key.pem -out /tmp/https-origin-cert.pem -subj /CN=spike-1797-https -addext "subjectAltName=DNS:allowed.$ORIGIN_IP.nip.io"`; copy only its public certificate to `/tmp/https-origin-cert.pem` in the control. Start the origin with `python /probe/openshell_https_probe.py --serve-origin --cert /tmp/https-origin-cert.pem --key /tmp/https-origin-key.pem`, then execute:
+
+```sh
+python /probe/openshell_https_probe.py --execute --image sha256:203544c2e3a55c0d66ee26752d572ba9c7b8f83f926f8bf08e234aeb8ca2afbd --origin-ip "$ORIGIN_IP" --config /opt/files-gateway.toml
+```
+
+The fixture requires public DNS, outbound HTTPS to the public echo service, and reachability of the owned private origin from the host-network control/supervisor. The public control supplies a User-Agent because the echo service refused the control without one. It is not an offline or deterministic external-service test. The three fresh policy sandboxes each used a distinct physical identity. Every created sandbox, supervisor, labelled volume and recorded workload PID/start-time was independently absent after deletion; workspace removal was also verified. The origin/control containers and dedicated network were removed by exact identity afterward, and temporary signing/gateway directories were absent. Image digests remained unchanged.
+
+Validation: **362 focused tests passed**, including 13 HTTPS evidence-oracle tests, the existing spike tests and 232 documentation structure checks. Focused Ruff, formatting, Pyright, document paths and this document's issue trackers passed. The full repository gate, wheel smoke tests and hosted CI were not run. HTTPS redirects, hostname mismatch, certificate expiry/revocation, TLS skip mode, private-root provisioning, provider-composed policy, policy revisions, IPv6, DNS rebinding and shared egress conformance remain unqualified. Lifecycle adoption prerequisites remain open under #1817 and #1818.
+
 ## Official upstream dependencies and draft request - 2026-10-11
 
 Use official NVIDIA/OpenShell source and releases for this integration. Do not use contributor forks, fork patches, or fork builds as dependency candidates. This supersedes the proposed next step of preparing a competing server implementation. The existing local reference model remains a test specification, not a supported implementation.
@@ -480,7 +510,7 @@ Evaluation of OpenShell v0.1.2 at `6648bd0c290efbc41ba131ee9831ee45cd431f94` exe
 | Work | Status | Tracking |
 |---|---|---|
 | OpenShell backend adoption | Open; general adoption blocked on lifecycle prerequisites and remaining conformance | [#1796](https://github.com/sokolaidev/maf-extensions/issues/1796) (open) |
-| Pinned SDK/runtime spike | Open; bounded execution, lifecycle, authorization, allocation, replay and guest filesystem evidence recorded; native SFTP and plaintext HTTP egress characterized; full qualification incomplete | [#1797](https://github.com/sokolaidev/maf-extensions/issues/1797) (open) |
+| Pinned SDK/runtime spike | Open; bounded execution, lifecycle, authorization, allocation, replay and guest filesystem evidence recorded; native SFTP and bounded HTTP/HTTPS egress characterized; full qualification incomplete | [#1797](https://github.com/sokolaidev/maf-extensions/issues/1797) (open) |
 | Non-mutating original-create receipts | Blocked on official upstream recovery contract; local FR draft and offline model prepared | [#1817](https://github.com/sokolaidev/maf-extensions/issues/1817) (open) |
 | Conditional physical-instance deletion | Blocked on official upstream conditional deletion; offline barrier harness prepared | [#1818](https://github.com/sokolaidev/maf-extensions/issues/1818) (open) |
 
@@ -490,6 +520,6 @@ Continue the spike, but do not ship a thin convenience-SDK wrapper. The disposab
 
 Resolve the lifecycle authority boundary before promoting this execution strategy to an adapter. The restricted OIDC profile now has bounded authorization and local allocation/crash evidence, but still needs automatic reconciliation of uncertain creates and a qualified operational authority. Pinned replay now has immediate/restart evidence and an exercised expiry counterexample. It is not a general automatic-reconciliation solution. The proposed receipt contract is tracked in #1817 and conditional deletion in #1818; implement and qualify them, or explicitly qualify the separate bounded recovery policy, before adopting uncertain creates. Until then, uncertain entries remain pending without name reuse or name-only deletion. Persisted recovery covers a confirmed owner after client SIGKILL and temporary gateway loss with preserved state; automatic uncertain-create reconciliation, distributed authority and permanent control-plane loss remain unresolved. Then qualify storage-base preparation, files, exec, deadlines, process cleanup and call-scope disposal through the shared probes. Withhold snapshot/reset, native runtime execution, host tools and attached identity until their contracts are independently established.
 
-Egress translation now has the bounded plaintext HTTP matrix above; HTTPS and complete policy composition remain unqualified. OpenShell's [policy schema](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/proto/sandbox.proto) distinguishes single-label and recursive host globs and defaults unspecified L7 enforcement to audit. The suite's [host/path semantics](../network.md) require deliberate translation and blocking enforcement. Test allowed success alongside denied hosts, methods, paths and direct routes; include provider-composed policy and later revisions. Policy containment checks do not replace runtime observations.
+Egress translation now has the bounded HTTP/HTTPS matrices above, including one untrusted-origin certificate refusal; complete TLS validation and policy composition remain unqualified. OpenShell's [policy schema](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/proto/sandbox.proto) distinguishes single-label and recursive host globs and defaults unspecified L7 enforcement to audit. The suite's [host/path semantics](../network.md) require deliberate translation and blocking enforcement. Test allowed success alongside denied hosts, methods, paths and direct routes; include provider-composed policy and later revisions. Policy containment checks do not replace runtime observations.
 
-Docker Desktop startup is no longer blocking the authorization matrix; its 17 observations and cleanup passed on 2026-10-10. The initial SDK probe passed its characterization assertions; completed live experiments cover the timeout gap, owned execution/disposal, controlled replacement, immediate deletion replay, the recorded recovery cases, bounded OIDC authorization matrix, local allocation crash/refusal cases, and the bounded replay/restart/injected-retention matrix. The full repository gate, wheel smoke tests, network partitions, permanent control-plane loss, complete native file-transfer/storage-base conformance, full egress policy tests and shared conformance have not run for this spike; selected guest filesystem-policy, native SFTP and plaintext HTTP egress checks are recorded above. Neither issue is ready to close.
+Docker Desktop startup is no longer blocking the authorization matrix; its 17 observations and cleanup passed on 2026-10-10. The initial SDK probe passed its characterization assertions; completed live experiments cover the timeout gap, owned execution/disposal, controlled replacement, immediate deletion replay, the recorded recovery cases, bounded OIDC authorization matrix, local allocation crash/refusal cases, and the bounded replay/restart/injected-retention matrix. The full repository gate, wheel smoke tests, network partitions, permanent control-plane loss, complete native file-transfer/storage-base conformance, full egress policy tests and shared conformance have not run for this spike; selected guest filesystem-policy, native SFTP and bounded HTTP/HTTPS egress checks are recorded above. Neither issue is ready to close.
