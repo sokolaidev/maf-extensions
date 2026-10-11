@@ -60,11 +60,17 @@ def test_both_filesystems_require_independent_cleanup_and_retain_only_reports():
     path = Path(__file__).parents[1] / ".github/workflows/mxc-volume.yml"
     job = yaml.safe_load(path.read_text())["jobs"]["volume"]
     assert job["strategy"]["matrix"]["os"] == ["ubuntu-24.04", "windows-latest"]
-    cleanup = [step for step in job["steps"] if step.get("name", "").startswith("Detach")]
-    assert len(cleanup) == 2
-    assert all("always()" in step["if"] for step in cleanup)
-    assert 'losetup -j "$image"' in cleanup[0]["run"]
-    assert "(Get-DiskImage -ImagePath $image).Attached" in cleanup[1]["run"]
+    cleanup = next(step for step in job["steps"] if step.get("name", "").startswith("Detach"))
+    assert cleanup["if"] == "always()"
+    assert cleanup["with"]["phase"] == "cleanup"
+    action = yaml.safe_load(
+        (path.parents[1] / "actions/mxc-volume/action.yml").read_text(encoding="utf-8")
+    )
+    removals = [step for step in action["runs"]["steps"] if "cleanup" in step.get("if", "")]
+    assert len(removals) == 2
+    assert all("always()" in step["if"] for step in removals)
+    assert 'losetup -j "$image"' in removals[0]["run"]
+    assert "(Get-DiskImage -ImagePath $image).Attached" in removals[1]["run"]
     upload = job["steps"][-1]
     assert upload["if"] == "always()"
     assert all(path.endswith(("*.json", "*.log")) for path in upload["with"]["path"].splitlines())
@@ -86,3 +92,11 @@ def test_filler_does_not_treat_other_io_errors_as_exhaustion(tmp_path, monkeypat
     with pytest.raises(OSError) as failed:
         probe.fill(tmp_path)
     assert failed.value.errno == error_number
+
+
+@pytest.mark.parametrize("maximum", [256 * probe.MIB, 8 * 1024**3])
+def test_each_volume_caller_retains_its_capacity_bound(tmp_path, monkeypatch, maximum):
+    (tmp_path / ".mxc-volume-probe").write_text("owner")
+    monkeypatch.setattr(probe.shutil, "disk_usage", lambda _: SimpleNamespace(total=maximum + 1))
+    with pytest.raises(ValueError, match="capacity"):
+        probe.validate_volume(tmp_path, tmp_path, "owner", maximum_bytes=maximum)

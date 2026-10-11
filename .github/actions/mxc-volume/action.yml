@@ -1,0 +1,112 @@
+name: Disposable MXC qualification volume
+description: Create or detach an owned, bounded ext4 or NTFS image for storage probes.
+inputs:
+  phase:
+    description: create or cleanup
+    required: true
+  volume-mib:
+    description: Supported image size, 128 or 8192 MiB
+    default: '128'
+runs:
+  using: composite
+  steps:
+  - name: Create disposable ext4 volume
+    if: inputs.phase == 'create' && runner.os == 'Linux'
+    shell: bash
+    env:
+      MXC_VOLUME_MIB: ${{ inputs.volume-mib }}
+    run: |
+      set -euo pipefail
+      case "$MXC_VOLUME_MIB" in 128|8192) ;; *) exit 1 ;; esac
+      image="$RUNNER_TEMP/mxc-volume.img"
+      mount="$RUNNER_TEMP/mxc-volume"
+      test ! -e "$image"
+      mkdir "$mount"
+      (set -o noclobber; printf '%s' "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" > "$RUNNER_TEMP/mxc-volume-owned")
+      available=$(df -PB1 "$RUNNER_TEMP" | awk 'NR==2 {print $4}')
+      test "$available" -gt "$((MXC_VOLUME_MIB * 1024 * 1024 + 2 * 1024 * 1024 * 1024))"
+      truncate -s "${MXC_VOLUME_MIB}M" "$image"
+      mkfs.ext4 -q -m 0 "$image"
+      sudo mount -o loop "$image" "$mount"
+      sudo chown "$(id -u):$(id -g)" "$mount"
+      token=$(cat /proc/sys/kernel/random/uuid)
+      printf '%s' "$token" > "$mount/.mxc-volume-probe"
+      echo "MXC_VOLUME=$mount" >> "$GITHUB_ENV"
+      echo "MXC_VOLUME_TOKEN=$token" >> "$GITHUB_ENV"
+  - name: Create disposable NTFS volume
+    if: inputs.phase == 'create' && runner.os == 'Windows'
+    shell: pwsh
+    env:
+      MXC_VOLUME_MIB: ${{ inputs.volume-mib }}
+    run: |
+      if ($env:MXC_VOLUME_MIB -notin @('128', '8192')) { throw 'Unsupported volume size' }
+      $ErrorActionPreference = 'Stop'
+      $image = Join-Path $env:RUNNER_TEMP 'mxc-volume.vhd'
+      if ((Test-Path -LiteralPath $image) -or (Get-PSDrive R -ErrorAction SilentlyContinue)) { throw 'Probe destination already exists' }
+      $owned = Join-Path $env:RUNNER_TEMP 'mxc-volume-owned'
+      New-Item -ItemType File -Path $owned -Value "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" | Out-Null
+      $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($image))
+      if ($drive.AvailableFreeSpace -le ([long]$env:MXC_VOLUME_MIB * 1MB + 2GB)) { throw 'Insufficient backing volume headroom' }
+      $commands = @(
+        "create vdisk file=`"$image`" maximum=$env:MXC_VOLUME_MIB type=fixed",
+        "select vdisk file=`"$image`"",
+        'attach vdisk', 'create partition primary',
+        'format fs=ntfs label=MXC_PROBE quick', 'assign letter=R'
+      )
+      $script = Join-Path $env:RUNNER_TEMP 'mxc-volume-create.txt'
+      $commands | Set-Content -LiteralPath $script
+      diskpart /s $script
+      if ($LASTEXITCODE -ne 0) { throw 'VHD creation failed' }
+      $disk = Get-DiskImage -ImagePath $image | Get-Disk
+      $partition = $disk | Get-Partition | Where-Object DriveLetter -eq 'R'
+      if (-not $partition -or (Get-Volume -DriveLetter R).FileSystemLabel -ne 'MXC_PROBE') { throw 'VHD mount identity differs' }
+      $token = [guid]::NewGuid().ToString()
+      Set-Content -LiteralPath 'R:\.mxc-volume-probe' -Value $token -NoNewline
+      New-Item -ItemType Directory -Path 'R:\store' | Out-Null
+      $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+      $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+      $acl.SetSecurityDescriptorSddlForm("O:${sid}D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+      Set-Acl -LiteralPath 'R:\store' -AclObject $acl
+      uv run --no-project --python 3.12 python -c "from pathlib import Path; from scripts.experiments.mxc_session_patch.private_root import prepare; prepare(Path('R:/store'))"
+      if ($LASTEXITCODE -ne 0) { throw 'Private store preflight failed' }
+      'MXC_VOLUME=R:\' >> $env:GITHUB_ENV
+      "MXC_VOLUME_TOKEN=$token" >> $env:GITHUB_ENV
+  - name: Detach and independently verify ext4 cleanup
+    if: always() && inputs.phase == 'cleanup' && runner.os == 'Linux'
+    shell: bash
+    run: |
+      set -euo pipefail
+      image="$RUNNER_TEMP/mxc-volume.img"
+      mount="$RUNNER_TEMP/mxc-volume"
+      mkdir -p "$RUNNER_TEMP/mxc-volume-results"
+      test -f "$RUNNER_TEMP/mxc-volume-owned" || exit 0
+      test "$(cat "$RUNNER_TEMP/mxc-volume-owned")" = "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+      if mountpoint -q "$mount"; then
+        device=$(findmnt -n -o SOURCE --target "$mount")
+        sudo losetup -j "$image" | cut -d: -f1 | grep -Fx "$device"
+        sudo umount "$mount"
+      fi
+      test -z "$(sudo losetup -j "$image")"
+      ! mountpoint -q "$mount"
+      rm -f -- "$image"
+      printf '{"detached":true,"image_removed":true}\n' > "$RUNNER_TEMP/mxc-volume-results/cleanup.json"
+  - name: Detach and independently verify NTFS cleanup
+    if: always() && inputs.phase == 'cleanup' && runner.os == 'Windows'
+    shell: pwsh
+    run: |
+      $ErrorActionPreference = 'Stop'
+      $image = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'mxc-volume.vhd'))
+      $parent = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\')
+      if ([IO.Path]::GetDirectoryName($image) -ne $parent) { throw 'Cleanup target escaped runner temp' }
+      $owned = Join-Path $env:RUNNER_TEMP 'mxc-volume-owned'
+      if (-not (Test-Path -LiteralPath $owned)) { exit 0 }
+      if ((Get-Content -LiteralPath $owned -Raw) -ne "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT") { throw 'Cleanup ownership differs' }
+      if (Test-Path -LiteralPath $image) {
+        $disk = Get-DiskImage -ImagePath $image
+        if ($disk.Attached) { Dismount-DiskImage -ImagePath $image }
+        if ((Get-DiskImage -ImagePath $image).Attached) { throw 'VHD still attached' }
+        Remove-Item -LiteralPath $image
+      }
+      $output = Join-Path $env:RUNNER_TEMP 'mxc-volume-results'
+      New-Item -ItemType Directory -Force -Path $output | Out-Null
+      '{"detached":true,"image_removed":true}' | Set-Content -LiteralPath (Join-Path $output 'cleanup.json')
