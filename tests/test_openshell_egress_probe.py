@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib
+import io
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -70,3 +72,50 @@ def test_positive_success_and_refusal_controls(oracle):
     assert oracle({"status": 403, "body": '{"error":"policy_denied"}'}, [], 403, 0, REQUEST)
     assert oracle({"errno": 13}, [], "EACCES", 0, REQUEST)
     assert oracle({"errno": 13}, [REQUEST], "EACCES", 1, REQUEST)
+
+
+@pytest.mark.parametrize(
+    ("host", "expected_host"),
+    [
+        ("allowed.example:8000", "denied.example:8000"),
+        (
+            "allowed.example:8000\r\n X-Injected: yes",
+            "denied.example:8000%0D%0A%20X-Injected:%20yes",
+        ),
+        ("allowed.example:8000\n X-Injected: yes", "denied.example:8000%0A%20X-Injected:%20yes"),
+    ],
+)
+def test_origin_redirect_cannot_inject_response_header_lines(monkeypatch, host, expected_host):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts/experiments"))
+    probe = importlib.import_module("openshell_egress_probe")
+    handlers = []
+
+    def server(address, handler):
+        handlers.append(handler)
+        return SimpleNamespace(serve_forever=lambda: None)
+
+    monkeypatch.setattr(probe, "ThreadingHTTPServer", server)
+    probe.serve_origin()
+    response = io.BytesIO()
+    request = (
+        "GET /allowed/redirect?case=fixture&value=%2F HTTP/1.0\r\nHost: " + host + "\r\n\r\n"
+    ).encode("ascii")
+
+    class Connection:
+        def makefile(self, *args):
+            return io.BytesIO(request)
+
+        def sendall(self, data):
+            response.write(data)
+
+        def getsockname(self):
+            return ("127.0.0.1", 8000)
+
+    handlers[0](Connection(), ("127.0.0.1", 12345), None)
+    headers, body = response.getvalue().split(b"\r\n\r\n", 1)
+    lines = headers.decode("ascii").split("\r\n")
+    assert lines[0] == "HTTP/1.0 302 Found"
+    assert lines[3] == "Location: http://" + expected_host + "/allowed?case=fixture&value=%2F"
+    assert lines[4] == "Content-Length: " + str(len(body))
+    assert len(lines) == 5
+    assert json.loads(body)["host"] == host

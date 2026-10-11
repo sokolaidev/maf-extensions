@@ -19,7 +19,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import import_module
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from openshell_allocation_probe import Client
 from openshell_authority_probe import verify_absent
@@ -74,10 +74,13 @@ def serve_origin(*, tls_events=None, record_authorization=False):
             if status == 302:
                 self.send_header(
                     "Location",
-                    "http://"
-                    + self.headers["Host"].replace("allowed.", "denied.", 1)
-                    + "/allowed"
-                    + ("?" + urlsplit(self.path).query if urlsplit(self.path).query else ""),
+                    quote(
+                        "http://"
+                        + self.headers["Host"].replace("allowed.", "denied.", 1)
+                        + "/allowed"
+                        + ("?" + urlsplit(self.path).query if urlsplit(self.path).query else ""),
+                        safe=":/?=&%",
+                    ),
                 )
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
