@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import ipaddress
 import json
@@ -27,7 +28,7 @@ from openshell_owned_probe import snapshot
 from openshell_replay_probe import wait_gateway
 
 
-def serve_origin(*, tls_events=None):
+def serve_origin(*, tls_events=None, record_authorization=False):
     """Expose only fixture responses and a bounded request journal on the private Docker network."""
     events = []
     lock = threading.Lock()
@@ -56,6 +57,13 @@ def serve_origin(*, tls_events=None):
                     "host": self.headers.get("Host"),
                     "port": self.connection.getsockname()[1],
                 }
+                if record_authorization:
+                    authorization = self.headers.get("Authorization")
+                    item["authorization_sha256"] = (
+                        hashlib.sha256(authorization.encode()).hexdigest()
+                        if authorization is not None
+                        else None
+                    )
                 with lock:
                     if len(events) >= 1024:
                         raise RuntimeError("fixture journal capacity exceeded")
@@ -369,13 +377,14 @@ def main():
     """Run the owned-origin observer or an explicitly selected live gateway experiment."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serve-origin", action="store_true")
+    parser.add_argument("--record-authorization", action="store_true")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--image")
     parser.add_argument("--origin-ip")
     parser.add_argument("--config", type=Path)
     args = parser.parse_args()
     if args.serve_origin:
-        serve_origin()
+        serve_origin(record_authorization=args.record_authorization)
         return 0
     if (
         not args.execute

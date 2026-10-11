@@ -79,7 +79,7 @@ class CompositionProfile:
         endpoint.enforcement = self.pb.NETWORK_ENFORCEMENT_MODE_ENFORCE
         endpoint.rules.add().allow.CopyFrom(self.pb.L7Allow(method="GET", path=path))
 
-    def prepare_workspace(self, client):
+    def build_profile(self, client):
         profile = client.pb.ProviderProfile(
             id=self.profile_id,
             display_name="Anonymous spike origin",
@@ -87,6 +87,16 @@ class CompositionProfile:
         )
         profile.binaries.add(path="/usr/local/bin/python*")
         self.endpoint(profile, self.provider_host, "/provider")
+        return profile
+
+    def build_provider(self, client):
+        dm = import_module("openshell._proto.datamodel_pb2")
+        provider = dm.Provider(type=self.profile_id, profile_workspace=client.scope.workspace)
+        provider.metadata.name = self.provider
+        return provider
+
+    def prepare_workspace(self, client):
+        profile = self.build_profile(client)
         response = client.rpc(
             "ImportProviderProfiles",
             client.pb.ImportProviderProfilesRequest(
@@ -102,9 +112,7 @@ class CompositionProfile:
             or response.profiles[0].id != self.profile_id
         ):
             raise RuntimeError("profile import failed: " + str(response.diagnostics))
-        dm = import_module("openshell._proto.datamodel_pb2")
-        provider = dm.Provider(type=self.profile_id, profile_workspace=client.scope.workspace)
-        provider.metadata.name = self.provider
+        provider = self.build_provider(client)
         created = client.rpc(
             "CreateProvider",
             client.pb.CreateProviderRequest(
@@ -120,7 +128,7 @@ class CompositionProfile:
                     "provider_created": self.provider,
                     "provider_id": self.provider_id,
                     "profile": self.profile_id,
-                    "credentials": "none",
+                    "credential_declarations": len(profile.credentials),
                 }
             ),
             flush=True,
