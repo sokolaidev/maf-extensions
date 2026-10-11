@@ -28,6 +28,7 @@ import secrets
 import socket
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -124,6 +125,84 @@ def compiler_running(processes: str) -> bool:
     return False
 
 
+def verify_controls(events, sid: str, *, cancels: int = 0, deleted: bool = False) -> None:
+    identity = digest(sid.encode().hex())
+    requests = [
+        e
+        for e in events
+        if e.get("event") == "request"
+        and e.get("method") == "notifications/cancelled"
+        and e.get("session") == identity
+        and e.get("target") == digest(42)
+    ]
+    require(len(requests) == cancels, "Wrong matching cancellation count")
+    for request in requests:
+        require(
+            any(
+                e.get("event") == "response"
+                and e.get("exchange") == request["exchange"]
+                and type(e.get("status")) is int
+                and e["status"] == 202
+                and e["time_ns"] >= request["time_ns"]
+                for e in events
+            ),
+            "Cancellation lacks its accepted response",
+        )
+    if deleted:
+        retired = [
+            e for e in events if e.get("event") == "retired" and e.get("session") == identity
+        ]
+        require(len(retired) == 1, "Missing or duplicate MAF retirement")
+        r = retired[0]
+        require(
+            all(r.get(k) is True for k in ("completed", "sdk_finished", "sdk_terminated"))
+            and all(
+                type(r.get(k)) is int and r[k] == 0
+                for k in ("sdk_streams", "request_ids", "requests")
+            )
+            and r.get("session_registered") is False
+            and r.get("poisoned") is False,
+            "MAF retirement did not settle SDK and adapter state",
+        )
+        require(
+            any(
+                e.get("event") == "delete_requested"
+                and e.get("exchange") == r["exchange"]
+                and e.get("session") == identity
+                for e in events
+            ),
+            "Retirement lacks MAF DELETE",
+        )
+
+
+def observe_binding(observer: ObserveHTTP) -> None:
+    binding = observer.app.service.bindings["bicep_validate"]
+
+    async def execute(arguments, context):
+        fields = {
+            "session": digest(context.session_id.encode().hex()),
+            "request": digest(context.request_id),
+        }
+        observer.record(event="binding_started", **fields)
+        try:
+            result = await binding.execute(arguments, context)
+        except asyncio.CancelledError:
+            observer.record(event="binding_cancelled", **fields)
+            raise
+        structured = result.structuredContent or {}
+        observer.record(
+            event="binding_result",
+            completed=structured.get("completed"),
+            cleanup=structured.get("cleanup"),
+            status=structured.get("status"),
+            source_sha256=structured.get("source_sha256"),
+            **fields,
+        )
+        return result
+
+    observer.app.service.bindings[binding.tool.name] = replace(binding, execute=execute)
+
+
 class RemovalGate:
     """Hold one real owned-container removal before delegating to the unmodified backend."""
 
@@ -199,7 +278,7 @@ class Check:
         self.tasks.append(task)
         return task
 
-    async def owned(self) -> list[str]:
+    async def owned(self, *, running: bool = False) -> list[str]:
         return (
             await docker(
                 "ps", "-aq", "--no-trunc", "--filter", f"label=maf-sandbox.scope={self.scope}"
@@ -277,7 +356,7 @@ class Check:
     async def compiler(self) -> str:
         async with asyncio.timeout(45):
             while True:
-                owned = await self.owned()
+                owned = await self.owned(running=True)
                 require(len(owned) <= 1, "More than one owned container")
                 if owned and compiler_running(await docker("top", owned[0], "-eo", "args")):
                     container = owned[0]
@@ -337,6 +416,7 @@ class Check:
 
     async def raw_cancel(self) -> None:
         a, b = await self.initialize(), await self.initialize()
+        start = len(self.events())
         active = self.task(self.call(a, LARGE))
         container = await self.compiler()
         self.gate.arm(container)
@@ -365,6 +445,8 @@ class Check:
             "survivor": value,
         }
         await self.retire_raw(a, b)
+        verify_controls(self.events()[start:], a, cancels=4, deleted=True)
+        verify_controls(self.events()[start:], b, cancels=1, deleted=True)
 
     async def response_loss(self) -> None:
         a, b = await self.initialize(), await self.initialize()
@@ -399,6 +481,27 @@ class Check:
             )
             await docker("unpause", container)
             await self.settled(container)
+            results = [
+                e
+                for e in self.events()[before:]
+                if e.get("event") == "binding_result"
+                and e.get("session") == digest(a.encode().hex())
+            ]
+            require(
+                len(results) == 1
+                and results[0].get("completed") is True
+                and results[0].get("cleanup") == "confirmed"
+                and results[0].get("source_sha256") == self.prototype.snapshot(LARGE).digest,
+                "Lost response call did not complete normally",
+            )
+            require(
+                not any(
+                    e.get("event") == "binding_cancelled"
+                    or e.get("method") == "notifications/cancelled"
+                    for e in self.events()[before:]
+                ),
+                "Lost response work was cancelled",
+            )
             self.observations["response_loss"] = {
                 "container": digest(container),
                 "socket_closed": writer.is_closing(),
@@ -472,6 +575,7 @@ class Check:
             b_sid in self.app.sessions and not self.app.sessions[b_sid].closing,
             "Surviving MAF session was closed",
         )
+        verify_controls(self.events()[before:], a_sid, deleted=True)
         self.observations["maf_active_close" if active_close else "maf_idle_close"] = {
             "container": digest(container),
             "delete_observed": True,
@@ -529,6 +633,7 @@ async def check(args: argparse.Namespace) -> dict[str, Any]:
     with prototype.ownership(args.root / "owner") as scope:
         app = await prototype.http_application(image, config, scope, token, port)
         observer = ObserveHTTP(app, args.root / "transport.jsonl", owned_scope=scope)
+        observe_binding(observer)
         gate = RemovalGate(prototype.DockerSandboxBackend, scope)
         gate.install()
         host = transport.server(app)
@@ -567,6 +672,9 @@ async def check(args: argparse.Namespace) -> dict[str, Any]:
                         probe.ordinary_close,
                     ):
                         await scenario()
+                        print(
+                            json.dumps({"completed_case": list(probe.observations)[-1]}), flush=True
+                        )
                         require(
                             (await docker("inspect", "--format", "{{.State.Running}}", sentinel))
                             == "true",
