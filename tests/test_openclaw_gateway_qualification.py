@@ -3768,3 +3768,73 @@ def test_ownership_gate_preserves_absent_companion_cleanup(monkeypatch):
             gate.restore()
 
     asyncio.run(scenario())
+
+
+def test_ownership_reused_evidence_removes_stale_success(tmp_path, monkeypatch):
+    report = tmp_path / "ownership-report.json"
+    report.write_text('{"passed": true}')
+    journal = tmp_path / "transport.jsonl"
+    journal.write_text("old evidence\n")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "checker",
+            "--prototype",
+            "unused.py",
+            "--config",
+            "unused.json",
+            "--root",
+            str(tmp_path),
+            "--image",
+            "unused",
+        ],
+    )
+    with pytest.raises(RuntimeError, match="fresh private evidence"):
+        ownership.main()
+    assert not report.exists()
+    assert journal.read_text() == "old evidence\n"
+
+
+def test_ownership_gate_refuses_another_owner(monkeypatch):
+    async def scenario():
+        class Backend:
+            async def _invoke(self, *args, **kwargs):
+                raise AssertionError("Must not mutate another owner's container")
+
+        async def inspect(*args):
+            return json.dumps(
+                [
+                    {
+                        "Id": "container-id",
+                        "Name": "/container-name",
+                        "Config": {"Labels": {"maf-sandbox.scope": "other"}},
+                    }
+                ]
+            )
+
+        monkeypatch.setattr(ownership, "docker", inspect)
+        gate = ownership.RemovalGate(Backend, "owner")
+        with pytest.raises(RuntimeError, match="crossed ownership"):
+            await gate.arm("container-id")
+        assert not gate.names and gate.target is None
+
+    asyncio.run(scenario())
+
+
+def test_ownership_environment_refuses_local_package_fallback(monkeypatch):
+    dist = SimpleNamespace(
+        metadata={"Name": "mcp"},
+        version="1.28.1",
+        read_text=lambda _: '{"url": "file:///local", "dir_info": {"editable": true}}',
+    )
+    monkeypatch.setattr(ownership.importlib.metadata, "distributions", lambda: [dist])
+    with pytest.raises(RuntimeError, match="published distributions"):
+        ownership.environment()
+
+
+def test_ownership_environment_refuses_baseline_drift(monkeypatch):
+    monkeypatch.setattr(ownership.importlib.metadata, "distributions", lambda: [])
+    monkeypatch.setattr(ownership.importlib.metadata, "version", lambda _: "0.0.0")
+    with pytest.raises(RuntimeError, match="published baseline"):
+        ownership.environment()

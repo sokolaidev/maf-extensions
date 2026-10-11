@@ -63,6 +63,8 @@ The [accelerated idle-expiry execution](research/openclaw-gateway-qualification.
 
 The [Docker connection-loss cleanup case](research/openclaw-gateway-qualification.md#docker-connection-loss-and-retained-resource-recovery-live-result-2026-10-10) requires real CLI connection refusal, independent evidence of retained resources, refused admission in both sessions, and removal before replacement readiness. Recovery preserves ownership and does not replay aborted work.
 
+The [Bicep HTTP/MAF ownership execution](research/openclaw-gateway-qualification.md#bicep-http-ownership-and-independent-maf-closure-live-result-2026-10-11) qualifies equal-ID/repeated cancellation, active response-only connection loss and independent active/idle MAF closure. In the pinned MAF client, an outstanding call can remain pending until its request timeout after service cleanup and transport retirement; hosts must manage their awaiting client tasks separately from guest ownership.
+
 ## Acceptance before enabling multiple Gateway sessions
 
 The real workload cases below qualify the Bicep binding. The service-boundary case uses test bindings and does not qualify additional production kinds.
@@ -85,13 +87,13 @@ Acceptance uses a deterministic provider and host-observed results, transport me
 
 ## Status
 
-The [2026-10-11 closure audit](research/openclaw-qualification-closure-audit.md) maps the original acceptance to accumulated evidence and identifies two finite follow-ups. Historical unmeasured scenarios are not all blockers for #1676.
+The [2026-10-11 closure audit](research/openclaw-qualification-closure-audit.md) maps the original acceptance to accumulated evidence and identifies two finite follow-ups. The Bicep/MAF ownership execution now supplies #1850; the published transport/SDK retirement evidence in #1851 remains. Historical unmeasured scenarios are not all blockers for #1676.
 
 | Decision | State | Tracking |
 |---|---|---|
 | First Bicep operation | Supervised stdio and shared HTTP prototypes merged; one-session stdio and bounded two-session HTTP Gateway evidence | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open); [#1651](https://github.com/sokolaidev/maf-extensions/pull/1651) (merged) |
 | Shared service lifecycle | Design delivered; stdio default and opt-in HTTP | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged) |
 | Shared HTTP implementation | Reusable service and Bicep binding implemented; Docker/MAF and bounded Gateway checks passed on the recorded 2026-10-05 candidate; full lifecycle/recovery acceptance remains open | [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (closed) by [#1680](https://github.com/sokolaidev/maf-extensions/pull/1680) (merged) |
-| Two-session Gateway qualification | Original acceptance reconciled in the closure audit after #1847. Selected Gateway outcomes, lifecycle, expiry and failure/recovery cases are covered on recorded candidates. Remaining closure work is Bicep cancellation/response-loss/MAF-close composition (#1850) and published-stack transport/SDK retirement evidence (#1851). Broader stress, crash and platform scenarios are outside this finite acceptance | [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open) |
+| Two-session Gateway qualification | Selected Gateway lifecycle evidence is retained. Real Bicep equal-ID/repeated cancellation, response-only loss and active/idle/ordinary MAF closure now have recorded published-stack Docker evidence. Active MAF callers can outlast service retirement until their request timeout. Remaining closure work is the finite published transport/100-session SDK retirement subset in #1851 | [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open); [#1850](https://github.com/sokolaidev/maf-extensions/issues/1850) (open) |
 | Additional artifact-producing and persistent kinds | Outside the first deliverable; binding, storage and lifecycle qualification required | [#1637](https://github.com/sokolaidev/maf-extensions/issues/1637) (open) |
 | Independent crash recovery and other host platforms | Deferred; no hard maximum lifetime or host-crash guarantee | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open) |

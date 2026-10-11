@@ -57,9 +57,11 @@ The later discovery cases in [#1789](https://github.com/sokolaidev/maf-extension
 
 ## Status
 
+The matrix above is the original audit snapshot. Subsequent [Bicep HTTP/MAF ownership evidence](openclaw-gateway-qualification.md#bicep-http-ownership-and-independent-maf-closure-live-result-2026-10-11) supplies #1850's five composition cases; #1851 remains required before reconciling #1676 for closure.
+
 | Work | State | Tracking |
 |---|---|---|
-| Selected-baseline two-session qualification | Open; two finite evidence follow-ups remain after this audit | [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open) |
-| Bicep cancellation, response loss and MAF closure | Open; composition observations required | [#1850](https://github.com/sokolaidev/maf-extensions/issues/1850) (open) |
+| Selected-baseline two-session qualification | Open; Bicep/MAF evidence is recorded, with the published transport/SDK retirement evidence in #1851 remaining | [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open) |
+| Bicep cancellation, response loss and MAF closure | Five real Bicep/MAF cases passed on recorded candidates; delivery pending | [#1850](https://github.com/sokolaidev/maf-extensions/issues/1850) (open) |
 | Published transport bounds and SDK retirement | Open; explicit environment and retirement evidence required | [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851) (open) |
 | First-tool design and broader opportunities | Open; qualification does not dispose of design workstreams | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open); [#1637](https://github.com/sokolaidev/maf-extensions/issues/1637) (open) |
