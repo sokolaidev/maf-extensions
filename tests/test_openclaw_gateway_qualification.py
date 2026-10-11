@@ -3369,3 +3369,43 @@ def test_daemon_cleanup_refuses_unowned_container(tmp_path, monkeypatch, mismatc
     with pytest.raises(RuntimeError, match="Unexpected container"):
         daemon_check.cleanup_daemon(tmp_path, "unix:///fixture.sock", name, client)
     assert [args[0] for args in commands] == ["ps", "inspect"]
+
+
+@pytest.mark.parametrize(
+    "message,denied",
+    [
+        (
+            "Error response from daemon: authorization denied by plugin qualification: qualification removal denied\n",
+            True,
+        ),
+        (
+            "Error response from daemon: authorization denied by plugin other: qualification removal denied\n",
+            False,
+        ),
+        (
+            "Error response from daemon: authorization denied by plugin qualification: another operation denied\n",
+            False,
+        ),
+        (
+            "Error response from daemon: Authorization denied by plugin qualification: qualification removal denied\n",
+            False,
+        ),
+        ("qualification removal denied", False),
+        ("connection refused", False),
+        ("", False),
+    ],
+)
+def test_removal_observer_matches_the_daemon_authorization_diagnostic(tmp_path, message, denied):
+    result = SimpleNamespace(returncode=1, stderr=message)
+
+    class Backend:
+        async def _invoke(self, *args, **kwargs):
+            return result
+
+    evidence = tmp_path / "evidence.jsonl"
+    observer.observe_docker_removal(observer.ObserveHTTP(None, evidence), Backend)
+    assert asyncio.run(Backend()._invoke("rm", "-f", "compiler")) is result
+    rows = checker.records(evidence)
+    assert len(rows) == 1
+    assert rows[0]["authorization_denied"] is denied
+    assert rows[0]["stderr_sha256"] == hashlib.sha256(message.encode()).hexdigest()
