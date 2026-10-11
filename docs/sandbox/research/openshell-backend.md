@@ -1,6 +1,6 @@
 # OpenShell backend spike
 
-> Research: OpenShell v0.1.2 contract characterization for [#1797](https://github.com/sokolaidev/maf-extensions/issues/1797), under [#1796](https://github.com/sokolaidev/maf-extensions/issues/1796). Installed-SDK fixture probes and gateway startup were measured on 2026-10-08; live Docker workload/lifecycle cases were measured on 2026-10-09 and OIDC authorization on 2026-10-10. No suite adapter or runtime is qualified.
+> Research: OpenShell v0.1.2 contract characterization for [#1797](https://github.com/sokolaidev/maf-extensions/issues/1797), under [#1796](https://github.com/sokolaidev/maf-extensions/issues/1796). Installed-SDK fixture probes and gateway startup were measured on 2026-10-08; live Docker workload/lifecycle cases were measured on 2026-10-09 and OIDC authorization on 2026-10-10; guest file access and filesystem policy were characterized on 2026-10-11. No suite adapter or runtime is qualified.
 
 ## Target and evidence boundary
 
@@ -315,6 +315,39 @@ The measured stale-first-request gap is earlier: public `DeleteSandbox` supplies
 
 The receipt candidate separately requires server-side non-recycled admission identity and a read-only historical result, replacing neither current authorization checks nor independent cleanup observation. The work order below now tracks official upstream delivery and downstream qualification before integrating either proposal. The current Python allocator continues to retain uncertain creation without automatic replay or name-based adoption.
 
+## Guest file access and filesystem policy - 2026-10-11
+
+The [filesystem probe](../../../scripts/experiments/openshell_files_probe.py) ran 14 characterization cases against official OpenShell v0.1.2 with the previously pinned runtime, supervisor and control images. Python was 3.13.16; Docker Desktop Linux Engine was 29.8.2 with kernel `7.0.14-linuxkit`. No fork code or server patch was used. The new sentinel workload image was `sha256:203544c2e3a55c0d66ee26752d572ba9c7b8f83f926f8bf08e234aeb8ca2afbd`, derived from the retained workload image `sha256:9c108fb76d00a3ba1465ef4ff33e8630b2a65941efbc3e6d809e948bbbfda24f` with the [fixture recipe](../../../scripts/experiments/openshell-files.Dockerfile). This is an identified local build, not a reproducible-build claim.
+
+The fixture adds a world-writable directory and sentinel under `/opt/spike1797`, and a world-writable sentinel under `/etc`. A separate ordinary container running the same image as UID 1000 could read/write the `/opt` sentinel and overwrite the `/etc` sentinel without OpenShell. Those positive controls distinguish the observed policy denials from ordinary Unix ownership restrictions. The OpenShell workload retained the existing required-Landlock policy: `/sandbox` and `/tmp` writable, `/etc` readable but not writable, and `/opt` unlisted. It ran with a fresh workspace and short-lived fixture administrator token; this does not extend the earlier authorization matrix.
+
+| Case | Observed result | Boundary |
+|---|---|---|
+| Binary input and output | All 256 byte values repeated 16 times round-tripped exactly: 4,096 bytes, SHA-256 `c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193` | Input was base64 in a small exec argument; output was raw gRPC bytes. This is not a native upload/download or large-file qualification. |
+| Guest ownership and working directory | The guest overwrote the input, and exec honored `/sandbox/nested` | The probe itself created the parent as the guest; no adapter storage-base preparation contract was exercised. |
+| Read-only policy | The `/etc` sentinel was readable; overwrite returned `EACCES`; its contents remained unchanged | The unrestricted same-UID control could overwrite it. |
+| Unlisted path | Direct read, direct new-file write and a symlinked read into `/opt/spike1797` returned `EACCES` | These selected accesses were denied; this is not exhaustive filesystem containment proof. |
+| Allowed path outside `/sandbox` | Direct `/tmp` access, `../tmp` from `/sandbox`, a linked parent into `/tmp`, and a linked final file into `/tmp` succeeded | Expected under the configured policy. Landlock is not a per-call file-API path resolver and does not by itself satisfy the suite's link/escape refusal contract. |
+| Disposal | Independent Docker observation found captured container IDs and sandbox-labelled containers/volumes absent, and known workload PID/start-time identities gone; workspace lookup returned not found | A unique isolated fixture under one lifecycle authority; no stale-name or uncertain-create recovery claim. |
+
+All 14 characterization assertions passed, including the expected accesses outside the candidate storage base. A passing result therefore does not qualify `FILES_IN`, `FILES_OUT`, storage-base confinement, or a new backend. The raw exec collector caps accumulated stdout plus stderr at 16 KiB for these small commands and uses a 10-second transport deadline; the transport can allocate a message before that cap is checked. It is not the suite's bounded file-read implementation, and cancellation is not asserted to terminate the guest command. Whole-sandbox disposal remains the separately observed cleanup boundary.
+
+The pinned Python sandbox client exposes no file-transfer method. The separate official [SFTP implementation](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/crates/openshell-sandbox/src/sftp.rs) was inspected: it uses a directory descriptor and `openat2` resolution flags. Native SFTP transport, its root selection and link semantics have not been exercised here. Next qualify that official transfer surface, including metadata, link refusal, byte limits and any path-replacement window; then test the remaining egress allow/deny matrix. Do not promote exec-mediated file operations to a backend on the strength of this characterization.
+
+### Reproduction and validation
+
+Prepare the existing immutable control image and a copy of the gateway configuration described in the live fixture section, including its gateway-JWT path placeholders and explicit local authentication setting. The control image's original embedded config predates those additions: using it unchanged made the first attempt refuse request-ID admission before creation. The corrected probe generates its own temporary gateway signing keys, OIDC keys and database, then removes them on exit. It requires the control container's Docker socket, host network and host PID namespace for the same independent observation as earlier probes. No credentials should be copied from the user's environment.
+
+Tag the verified retained workload image as `maf-openshell-1797-files-base`, then build `scripts/experiments/openshell-files.Dockerfile` with `--pull=false`. The build output must resolve that alias to the pinned workload digest above. An initial `FROM sha256:<local-id>` attempt was rejected by Docker as an image name; the verified local alias fixes build resolution without changing the base. Inside the prepared disposable control container, run the following with the copied probe directory and corrected configuration paths:
+
+```sh
+python /probe/openshell_files_probe.py --execute --config /opt/files-gateway.toml --image sha256:203544c2e3a55c0d66ee26752d572ba9c7b8f83f926f8bf08e234aeb8ca2afbd
+```
+
+Use the observed immutable image ID if rebuilding; never substitute an unverified tag at probe time. The final run verified temporary key/database directories absent and no fixture-namespace containers or volumes remaining. The temporary control container was removed after observation; local fixture images remain for reproducibility. Unrelated Docker containers were not changed.
+
+Eleven [oracle tests](../../../tests/test_openshell_files_probe.py) reject missing-path errors masquerading as policy refusal, unsuccessful commands, corrupted/truncated binary data, and malformed or oversized exec streams. The full focused execution/recovery/replay/model/files/documentation selection passed 330 tests. Ruff lint/format, focused Pyright and documentation paths passed. Full repository/package gates, hosted CI, native SFTP, concurrent filesystem mutation, large/bounded file transfers and the full egress matrix remain unrun.
+
 ## Official upstream dependencies and draft request - 2026-10-11
 
 Use official NVIDIA/OpenShell source and releases for this integration. Do not use contributor forks, fork patches, or fork builds as dependency candidates. This supersedes the proposed next step of preparing a competing server implementation. The existing local reference model remains a test specification, not a supported implementation.
@@ -381,7 +414,7 @@ Evaluation of OpenShell v0.1.2 at `6648bd0c290efbc41ba131ee9831ee45cd431f94` exe
 | Work | Status | Tracking |
 |---|---|---|
 | OpenShell backend adoption | Open; general adoption blocked on lifecycle prerequisites and remaining conformance | [#1796](https://github.com/sokolaidev/maf-extensions/issues/1796) (open) |
-| Pinned SDK/runtime spike | Open; bounded execution, lifecycle, authorization, allocation and replay evidence recorded; full qualification incomplete | [#1797](https://github.com/sokolaidev/maf-extensions/issues/1797) (open) |
+| Pinned SDK/runtime spike | Open; bounded execution, lifecycle, authorization, allocation, replay and guest filesystem evidence recorded; native files and full qualification incomplete | [#1797](https://github.com/sokolaidev/maf-extensions/issues/1797) (open) |
 | Non-mutating original-create receipts | Blocked on official upstream recovery contract; local FR draft and offline model prepared | [#1817](https://github.com/sokolaidev/maf-extensions/issues/1817) (open) |
 | Conditional physical-instance deletion | Blocked on official upstream conditional deletion; offline barrier harness prepared | [#1818](https://github.com/sokolaidev/maf-extensions/issues/1818) (open) |
 
@@ -393,4 +426,4 @@ Resolve the lifecycle authority boundary before promoting this execution strateg
 
 Egress translation remains source-only work beyond the single denied direct connection. OpenShell's [policy schema](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/proto/sandbox.proto) distinguishes single-label and recursive host globs and defaults unspecified L7 enforcement to audit. The suite's [host/path semantics](../network.md) require deliberate translation and blocking enforcement. Test allowed success alongside denied hosts, methods, paths and direct routes; include provider-composed policy and later revisions. Policy containment checks do not replace runtime observations.
 
-Docker Desktop startup is no longer blocking the authorization matrix; its 17 observations and cleanup passed on 2026-10-10. The initial SDK probe passed its characterization assertions; completed live experiments cover the timeout gap, owned execution/disposal, controlled replacement, immediate deletion replay, the recorded recovery cases, bounded OIDC authorization matrix, local allocation crash/refusal cases, and the bounded replay/restart/injected-retention matrix. The full repository gate, wheel smoke tests, network partitions, permanent control-plane loss, filesystem confinement, full egress policy tests and shared conformance have not run for this spike. Neither issue is ready to close.
+Docker Desktop startup is no longer blocking the authorization matrix; its 17 observations and cleanup passed on 2026-10-10. The initial SDK probe passed its characterization assertions; completed live experiments cover the timeout gap, owned execution/disposal, controlled replacement, immediate deletion replay, the recorded recovery cases, bounded OIDC authorization matrix, local allocation crash/refusal cases, and the bounded replay/restart/injected-retention matrix. The full repository gate, wheel smoke tests, network partitions, permanent control-plane loss, native file-transfer/storage-base confinement, full egress policy tests and shared conformance have not run for this spike; selected guest filesystem-policy checks are recorded above. Neither issue is ready to close.
