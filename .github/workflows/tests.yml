@@ -726,6 +726,9 @@ jobs:
             ${{ runner.temp }}/mxc-files/physical/*.log
             ${{ runner.temp }}/mxc-files/volume/*.json
             ${{ runner.temp }}/mxc-files/volume/*.log
+            ${{ runner.temp }}/mxc-files/checkpoint-volume/result.json
+            ${{ runner.temp }}/mxc-files/checkpoint-volume/*/*.json
+            ${{ runner.temp }}/mxc-files/checkpoint-volume/*/*.log
             ${{ runner.temp }}/mxc-volume-results/cleanup.json
             ${{ runner.temp }}/mxc-files/idle/result.json
             ${{ runner.temp }}/mxc-files/deletion/result.json

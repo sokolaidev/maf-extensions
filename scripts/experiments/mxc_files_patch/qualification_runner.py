@@ -110,24 +110,30 @@ def qualify(root: Path, kernel_dir: Path, report: dict) -> None:
         str(root / "native"),
     )
     report["native_state"] = json.loads((root / "native/result.json").read_text(encoding="utf-8"))
-    run(
-        root,
-        "volume_probe",
-        sys.executable,
-        "-m",
-        "scripts.experiments.mxc_files_patch.volume_probe",
-        "--helper",
-        str(helper(root)),
-        "--startup",
-        str(root / "images/agent/snapshot"),
-        "--state-dir",
-        str(root / "volume"),
-        "--volume",
-        os.environ["MXC_VOLUME"],
-        "--token",
-        os.environ["MXC_VOLUME_TOKEN"],
-    )
-    report["volume"] = json.loads((root / "volume/result.json").read_text(encoding="utf-8"))
+    for module, directory in (
+        ("volume_probe", "volume"),
+        ("checkpoint_volume_probe", "checkpoint-volume"),
+    ):
+        run(
+            root,
+            module,
+            sys.executable,
+            "-m",
+            f"scripts.experiments.mxc_files_patch.{module}",
+            "--helper",
+            str(helper(root)),
+            "--startup",
+            str(root / "images/agent/snapshot"),
+            "--state-dir",
+            str(root / directory),
+            "--volume",
+            os.environ["MXC_VOLUME"],
+            "--token",
+            os.environ["MXC_VOLUME_TOKEN"],
+        )
+        report[directory] = json.loads(
+            (root / directory / "result.json").read_text(encoding="utf-8")
+        )
     for module, flag, directory in (
         ("physical_probe", "--state-dir", "physical"),
         ("native_probe", "--root", "files"),
