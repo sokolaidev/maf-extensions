@@ -14,6 +14,7 @@ import re
 import subprocess
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -229,15 +230,9 @@ def measure(image, issuer, *, native_probe=None):
     }
 
 
-def main(*, native_probe=None):
-    """Require an immutable sentinel fixture image and the isolated local gateway configuration."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--execute", action="store_true", required=True)
-    parser.add_argument("--image", required=True)
-    parser.add_argument("--config", type=Path, required=True)
-    args = parser.parse_args()
-    if not re.fullmatch(r"(?:[^\s]+@)?sha256:[0-9a-f]{64}", args.image):
-        parser.error("requires immutable sentinel fixture image")
+@contextmanager
+def signed_gateway(config_path):
+    """Own the disposable fixture signing material, issuer and gateway state."""
     with TemporaryDirectory(prefix="files-gateway-") as temporary:
         root = Path(temporary)
         private, public, kid = (root / x for x in ("private.pem", "public.pem", "kid"))
@@ -252,7 +247,7 @@ def main(*, native_probe=None):
             capture_output=True,
         )
         kid.write_text(str(uuid.uuid4()))
-        config = args.config.read_text(encoding="utf-8")
+        config = config_path.read_text(encoding="utf-8")
         for old, new in (
             ("/tmp/spike-signing.pem", private),
             ("/tmp/spike-public.pem", public),
@@ -264,8 +259,21 @@ def main(*, native_probe=None):
         configured = root / "gateway.toml"
         configured.write_text(config)
         with gateway_fixture(configured) as issuer:
-            report = measure(args.image, issuer, native_probe=native_probe)
-            print(json.dumps(report), flush=True)
+            yield issuer
+
+
+def main(*, native_probe=None):
+    """Require an immutable sentinel fixture image and the isolated local gateway configuration."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--execute", action="store_true", required=True)
+    parser.add_argument("--image", required=True)
+    parser.add_argument("--config", type=Path, required=True)
+    args = parser.parse_args()
+    if not re.fullmatch(r"(?:[^\s]+@)?sha256:[0-9a-f]{64}", args.image):
+        parser.error("requires immutable sentinel fixture image")
+    with signed_gateway(args.config) as issuer:
+        report = measure(args.image, issuer, native_probe=native_probe)
+        print(json.dumps(report), flush=True)
     return int(not report["passed"])
 
 
