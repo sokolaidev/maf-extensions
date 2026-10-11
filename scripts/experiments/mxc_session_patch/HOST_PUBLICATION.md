@@ -2,6 +2,8 @@
 
 This continuation of [spike #1649](https://github.com/sokolaidev/maf-extensions/issues/1649) exercises the host side of the [removable native patch](README.md). It remains repository tooling, not a shipped adapter or a replacement for the selected first-version requirements in [the owning design](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/backends/mxc.md).
 
+The [storage and retention acceptance record](../../../docs/sandbox/research/mxc-backend.md#storage-and-retention-acceptance) maps the current shared-store scope and remaining limits. The sections below retain the earlier experiments and their version-specific evidence.
+
 ## Publication and recovery
 
 [host_store.py](host_store.py) stores compressed, hashed snapshot chunks and a bounded result in one local SQLite database. SQLite uses rollback journaling and `synchronous=FULL`; committing the transaction publishes both the current checkpoint reference and the saved result. Snapshot bytes are inside that transaction, so there is no separately renamed directory whose durability the database assumes. Each referenced chunk is stored from the freshly captured bytes; a differing stored payload under the same hash is replaced inside that transaction. Result JSON includes the fixed experiment's chart artifact bytes.
