@@ -11,6 +11,7 @@
     "drawio-export",
     "terraform-random",
     "opentofu-random",
+    "terraform-avm",
     "terraform-prepared",
     "opentofu-prepared",
     "hyperlight",

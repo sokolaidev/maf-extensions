@@ -84,7 +84,7 @@ def test_full_success_comments_then_closes_only_its_tracker(actions, monkeypatch
     )
     assert calls[-2][0] == ("repos/example/project/issues/4/comments",)
     assert "https://github.com/example/project/actions/runs/123/attempts/2" in calls[-2][1]["body"]
-    assert "All 12 profiles" in calls[-2][1]["body"]
+    assert "All 13 profiles" in calls[-2][1]["body"]
     assert calls[-1] == (
         ("repos/example/project/issues/4", "--method", "PATCH"),
         {"state": "closed", "state_reason": "completed"},

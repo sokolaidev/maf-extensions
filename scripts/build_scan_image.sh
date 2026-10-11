@@ -43,6 +43,10 @@ PY
   opentofu-random)
     uv run --locked python images/terraform-sandbox/build_image.py --engine opentofu --profile random --tag maf-image-scan:target
     ;;
+  terraform-avm)
+    uv run --locked python images/terraform-sandbox/build_image.py --engine terraform --profile builtin --tag maf-image-scan:base
+    docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-image-scan:base --build-arg MANIFEST=dependencies.terraform-avm.json --label org.opencontainers.image.documentation=https://github.com/sokolaidev/maf-extensions/blob/main/images/terraform-sandbox/AVM.md -f images/terraform-sandbox/prepared.Dockerfile -t maf-image-scan:target images/terraform-sandbox
+    ;;
   terraform-prepared)
     uv run --locked python images/terraform-sandbox/build_image.py --engine terraform --profile builtin --tag maf-image-scan:base
     docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-image-scan:base --build-arg MANIFEST=dependencies.terraform.json -f images/terraform-sandbox/prepared.Dockerfile -t maf-image-scan:target images/terraform-sandbox

@@ -177,7 +177,7 @@ def build_and_verify(destination: Path, tag: str) -> dict[str, object]:
     return record
 
 
-async def _smoke_output(command: list[str]) -> bytes:
+async def _smoke_output(command: list[str], *, timeout: float | None = None) -> bytes:
     """Capture bounded diagnostics while enforcing the host's smoke deadline."""
     process = await asyncio.create_subprocess_exec(
         *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -203,7 +203,9 @@ async def _smoke_output(command: list[str]) -> bytes:
     ]
     completion = asyncio.gather(*tasks)
     try:
-        await asyncio.wait_for(asyncio.shield(completion), SMOKE_TIMEOUT)
+        await asyncio.wait_for(
+            asyncio.shield(completion), SMOKE_TIMEOUT if timeout is None else timeout
+        )
         if exceeded:
             raise ValueError("image smoke output limit exceeded")
         if process.returncode:

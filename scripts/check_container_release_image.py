@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 import bicep_avm_qualification
+import terraform_avm_qualification
 from build_hyperlight_aks_image import _smoke_output, verify_image
 from container_release import ROOT, now, profiles, read, require_digest, write
 
@@ -52,6 +53,8 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             "-c",
             "import json,runpy,time; from pathlib import Path; export=runpy.run_path('/opt/maf-drawio/export.py')['export_document']; xml='<mxfile><diagram><mxGraphModel><root><mxCell id=\"0\"/><mxCell id=\"1\" parent=\"0\"/><mxCell id=\"2\" parent=\"1\" vertex=\"1\" value=\"Smoke\"><mxGeometry x=\"10\" y=\"10\" width=\"120\" height=\"60\" as=\"geometry\"/></mxCell></root></mxGraphModel></diagram></mxfile>'; export(xml, {'pages': [], 'formats': ['png', 'svg', 'jpg'], 'scale': 1, 'jpeg_quality': 90, 'transparent': False}, time.monotonic()+45); assert json.loads(Path('exports.json').read_text())['files']==['diagram-1.png','diagram-1.svg','diagram-1.jpg']; assert Path('diagram-1.png').read_bytes().startswith(bytes.fromhex('89504e470d0a1a0a'))",
         ]
+    elif profile == "terraform-avm":
+        command = terraform_avm_qualification.command()
     elif profile.startswith(("terraform-", "opentofu-")):
         command = [
             "/usr/local/bin/python3",
@@ -102,13 +105,23 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             create[2:2] = ["--cap-add", capability]
     subprocess.run(create, check=True, capture_output=True, timeout=30)
     try:
-        output = asyncio.run(_smoke_output(["docker", "start", "--attach", name]))
-        result = bicep_avm_qualification.evidence(output) if profile == "bicep-avm" else None
+        start = ["docker", "start", "--attach", name]
+        output = asyncio.run(
+            _smoke_output(start, timeout=360)
+            if profile == "terraform-avm"
+            else _smoke_output(start)
+        )
+        result = None
+        evidence_key = "bicepAvm" if profile == "bicep-avm" else "terraformAvm"
+        if profile == "bicep-avm":
+            result = bicep_avm_qualification.evidence(output)
+        elif profile == "terraform-avm":
+            result = terraform_avm_qualification.evidence(output)
     finally:
         subprocess.run(
             ["docker", "rm", "--force", name], check=True, capture_output=True, timeout=30
         )
-    if profile == "bicep-avm":
+    if profile in {"bicep-avm", "terraform-avm"}:
         remaining = subprocess.run(
             ["docker", "ps", "--all", "--quiet", "--filter", f"name=^/{name}$"],
             check=True,
@@ -117,12 +130,12 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             timeout=30,
         ).stdout.strip()
         if remaining:
-            raise ValueError("Bicep AVM qualification left its container behind")
+            raise ValueError(f"{profile} qualification left its container behind")
     return {
         "imageId": image_id,
         "profile": profile,
         "checkedAt": now(),
-        **({"bicepAvm": result, "containersRemaining": []} if result is not None else {}),
+        **({evidence_key: result, "containersRemaining": []} if result is not None else {}),
         "kind": "offline-packaging",
         "passed": True,
         "liveDeploymentVerified": False,

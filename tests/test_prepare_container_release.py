@@ -54,6 +54,7 @@ def test_source_cannot_be_selected_independently_of_dispatch(monkeypatch, change
         "drawio-export",
         "terraform-random",
         "opentofu-random",
+        "terraform-avm",
         "terraform-prepared",
         "opentofu-prepared",
         "egress-proxy",
@@ -67,7 +68,7 @@ def test_runtime_probe_is_offline_bounded_and_removed_on_failure(monkeypatch, tm
         assert kwargs["check"]
         return subprocess.CompletedProcess(command, 0)
 
-    async def fail(command):
+    async def fail(command, **kwargs):
         raise TimeoutError("probe did not exit")
 
     monkeypatch.setattr("check_container_release_image.subprocess.run", run)
