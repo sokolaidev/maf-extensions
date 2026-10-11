@@ -115,6 +115,8 @@ def verify_result(value: Any, prototype: Any, image: str, config: str) -> dict[s
 def compiler_running(processes: str) -> bool:
     for line in processes.splitlines():
         words = line.split()
+        if words and words[0].isdigit():
+            words = words[1:]
         if (
             len(words) > 1
             and words[0].rsplit("/", 1)[-1] == "bicep"
@@ -281,7 +283,11 @@ class Check:
     async def owned(self, *, running: bool = False) -> list[str]:
         return (
             await docker(
-                "ps", "-aq", "--no-trunc", "--filter", f"label=maf-sandbox.scope={self.scope}"
+                "ps",
+                "-q" if running else "-aq",
+                "--no-trunc",
+                "--filter",
+                f"label=maf-sandbox.scope={self.scope}",
             )
         ).split()
 
@@ -358,7 +364,7 @@ class Check:
             while True:
                 owned = await self.owned(running=True)
                 require(len(owned) <= 1, "More than one owned container")
-                if owned and compiler_running(await docker("top", owned[0], "-eo", "args")):
+                if owned and compiler_running(await docker("top", owned[0], "-eo", "pid,args")):
                     container = owned[0]
                     await docker("pause", container)
                     info = json.loads(await docker("inspect", container))[0]
@@ -369,7 +375,7 @@ class Check:
                         "Compiler identity or confinement mismatch",
                     )
                     require(
-                        compiler_running(await docker("top", container, "-eo", "args")),
+                        compiler_running(await docker("top", container, "-eo", "pid,args")),
                         "Compiler vanished before pause",
                     )
                     self.containers.append(container)
