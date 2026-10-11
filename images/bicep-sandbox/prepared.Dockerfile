@@ -9,7 +9,9 @@ RUN --network=none python3 /src/scripts/bicep_dependencies.py verify-offline
 
 FROM ${BASE_IMAGE}
 ARG MANIFEST_SHA256
-LABEL org.maf-sandbox.bicep.manifest-sha256=${MANIFEST_SHA256}
+LABEL org.maf-sandbox.bicep.manifest-sha256=${MANIFEST_SHA256} \
+      org.opencontainers.image.description="Bicep with selected offline AVM modules for Linux/amd64. Usage, verification and support: https://github.com/sokolaidev/maf-extensions/blob/main/images/bicep-sandbox/AVM.md"
+COPY images/bicep-sandbox/BICEP-LICENSE /licenses/bicep/LICENSE
 COPY --from=prepare /prepared/cache/ /opt/maf-bicep/cache/
 COPY --from=prepare /prepared/receipt.json /opt/maf-bicep/dependencies.json
 COPY images/bicep-sandbox/prepared.bicepconfig.json /maf-sandbox/work/bicepconfig.json

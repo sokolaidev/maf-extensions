@@ -117,7 +117,7 @@ def test_release_with_image_change_selects_that_image(repository):
 @pytest.mark.parametrize(
     "path,expected",
     [
-        ("images/bicep-sandbox/Dockerfile", ["bicep", "bicep-prepared", "sbx-bicep"]),
+        ("images/bicep-sandbox/Dockerfile", ["bicep", "bicep-avm", "sbx-bicep"]),
         ("images/sbx-template/Dockerfile", ["sbx-bicep"]),
         ("images/graphviz-sandbox/Dockerfile", ["graphviz"]),
         ("images/drawio-sandbox/render.py", ["drawio-sandbox"]),
@@ -129,7 +129,8 @@ def test_release_with_image_change_selects_that_image(repository):
         ("packages/maf-sandbox-codeact/src/maf_sandbox_codeact/tool.py", ["hyperlight"]),
         ("packages/maf-sandbox-hyperlight/src/maf_sandbox_hyperlight/worker.py", ["hyperlight"]),
         ("packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/Dockerfile", ["egress-proxy"]),
-        ("scripts/build_bicep_prepared_image.py", ["bicep-prepared"]),
+        ("scripts/build_bicep_prepared_image.py", ["bicep-avm"]),
+        ("scripts/bicep_avm_qualification.py", ["bicep-avm"]),
         ("scripts/build_scan_image.sh", list(PROFILES)),
         ("scripts/image_security_evidence.py", list(PROFILES)),
         ("scripts/select_image_security.py", list(PROFILES)),
@@ -155,6 +156,7 @@ def test_build_input_mapping(path, expected):
     "path",
     [
         "images/bicep-sandbox/README.md",
+        "images/bicep-sandbox/AVM.md",
         "images/sbx-template/README.md",
         "images/graphviz-sandbox/README.md",
         "images/drawio-export/README.md",

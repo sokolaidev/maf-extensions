@@ -43,7 +43,7 @@ The first publishing workflow covers all twelve currently scanned profiles on Li
 | Image suffix | Payload |
 |---|---|
 | `bicep` | Base Bicep sandbox |
-| `bicep-prepared` | Bicep with the reviewed prepared AVM cache |
+| `bicep-avm` | [Bicep with selected virtual-network and storage-account AVM modules](../../images/bicep-sandbox/AVM.md) |
 | `sbx-bicep` | The `sbx` template applied to the base Bicep image |
 | `diagram` | Graphviz diagram sandbox |
 | `drawio-sandbox` | Python/Graphviz Draw.io sandbox |

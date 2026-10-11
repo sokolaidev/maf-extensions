@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import bicep_avm_qualification
 from build_hyperlight_aks_image import _smoke_output, verify_image
 from container_release import ROOT, now, profiles, read, require_digest, write
 
@@ -31,16 +32,14 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             "kind": "packaging",
             "result": result,
         }
-    if profile in {"bicep", "bicep-prepared", "sbx-bicep"}:
+    if profile in {"bicep", "bicep-avm", "sbx-bicep"}:
         command = [
             "sh",
             "-ec",
             "bicep --version; printf \"param name string = 'release-probe'\\noutput result string = name\\n\" > /tmp/main.bicep; bicep build /tmp/main.bicep --outfile /tmp/main.json; test -s /tmp/main.json",
         ]
-        if profile == "bicep-prepared":
-            command[-1] += (
-                "; test -s /opt/maf-bicep/dependencies.json; test -d /opt/maf-bicep/cache"
-            )
+        if profile == "bicep-avm":
+            command = bicep_avm_qualification.command()
     elif profile in {"graphviz", "drawio-sandbox"}:
         command = [
             "sh",
@@ -96,22 +95,34 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
         image_id,
         *command[1:],
     ]
-    if profile in {"bicep", "bicep-prepared", "sbx-bicep"}:
+    if profile in {"bicep", "bicep-avm", "sbx-bicep"}:
         create[2:2] = ["--env", "DOTNET_BUNDLE_EXTRACT_BASE_DIR=/tmp/dotnet-bundle"]
     if profile == "drawio-export":
         for capability in ("CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "KILL"):
             create[2:2] = ["--cap-add", capability]
     subprocess.run(create, check=True, capture_output=True, timeout=30)
     try:
-        asyncio.run(_smoke_output(["docker", "start", "--attach", name]))
+        output = asyncio.run(_smoke_output(["docker", "start", "--attach", name]))
+        result = bicep_avm_qualification.evidence(output) if profile == "bicep-avm" else None
     finally:
         subprocess.run(
             ["docker", "rm", "--force", name], check=True, capture_output=True, timeout=30
         )
+    if profile == "bicep-avm":
+        remaining = subprocess.run(
+            ["docker", "ps", "--all", "--quiet", "--filter", f"name=^/{name}$"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout.strip()
+        if remaining:
+            raise ValueError("Bicep AVM qualification left its container behind")
     return {
         "imageId": image_id,
         "profile": profile,
         "checkedAt": now(),
+        **({"bicepAvm": result, "containersRemaining": []} if result is not None else {}),
         "kind": "offline-packaging",
         "passed": True,
         "liveDeploymentVerified": False,

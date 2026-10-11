@@ -5,7 +5,7 @@ case "$1" in
   bicep)
     docker build --pull --platform linux/amd64 -t maf-image-scan:target images/bicep-sandbox
     ;;
-  bicep-prepared)
+  bicep-avm)
     docker build --pull --platform linux/amd64 -t maf-image-scan:base images/bicep-sandbox
     uv run --locked python scripts/build_bicep_prepared_image.py --base-image maf-image-scan:base --tag maf-image-scan:target
     ;;
