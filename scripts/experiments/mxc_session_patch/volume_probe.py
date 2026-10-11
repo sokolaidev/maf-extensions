@@ -25,19 +25,21 @@ PROFILE = {"runtime": "host-storage-probe", "policy": "closed"}
 RESULT = b"retained result"
 
 
-def validate_volume(volume: Path, output: Path, token: str) -> None:
+def validate_volume(
+    volume: Path, output: Path, token: str, *, maximum_bytes: int = 256 * MIB
+) -> None:
     """Require a marked, bounded filesystem separate from the checkout and reports."""
     if not token or (volume / ".mxc-volume-probe").read_text().strip() != token:
         raise ValueError("disposable volume ownership differs")
     if volume.is_symlink() or volume.is_junction():
         raise ValueError("volume path must not redirect")
-    if not 64 * MIB <= shutil.disk_usage(volume).total <= 256 * MIB:
+    if not 64 * MIB <= shutil.disk_usage(volume).total <= maximum_bytes:
         raise ValueError("volume capacity outside disposable probe bounds")
     if any(volume.stat().st_dev == path.stat().st_dev for path in (output, Path.cwd())):
         raise ValueError("volume must be separate from reports and checkout")
 
 
-def fill(volume: Path) -> dict[str, int]:
+def fill(volume: Path, *, maximum_bytes: int = 256 * MIB) -> dict[str, int]:
     """Allocate real bytes until the marked disposable volume rejects a write."""
     before = shutil.disk_usage(volume).free
     written = 0
@@ -45,7 +47,7 @@ def fill(volume: Path) -> dict[str, int]:
     with (volume / "filler.bin").open("xb", buffering=0) as stream:
         block = os.urandom(MIB)
         for size in (MIB, 4096):
-            while written <= 256 * MIB:
+            while written <= maximum_bytes:
                 try:
                     count = stream.write(block[:size])
                     if not count:

@@ -686,10 +686,21 @@ jobs:
         with:
           name: mxc-file-kernel-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/mxc-file-kernel
+      - name: Create native publication exhaustion volume
+        if: github.event_name == 'workflow_dispatch' && inputs.mxc_files
+        uses: ./.github/actions/mxc-volume
+        with:
+          phase: create
+          volume-mib: '8192'
       - name: Qualify files, quota and durable replay
         if: github.event_name == 'workflow_dispatch' && inputs.mxc_files
         shell: bash
         run: uv run --no-project --python 3.12 python -m scripts.experiments.mxc_files_patch.qualification_runner --root "$RUNNER_TEMP/mxc-files" --kernel-dir "$RUNNER_TEMP/mxc-file-kernel"
+      - name: Detach native publication exhaustion volume
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.mxc_files
+        uses: ./.github/actions/mxc-volume
+        with:
+          phase: cleanup
       - name: Retain bounded-file qualification evidence
         if: always() && github.event_name == 'workflow_dispatch' && inputs.mxc_files
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -713,6 +724,9 @@ jobs:
             ${{ runner.temp }}/mxc-files/durability/quota-*/*.log
             ${{ runner.temp }}/mxc-files/physical/*.json
             ${{ runner.temp }}/mxc-files/physical/*.log
+            ${{ runner.temp }}/mxc-files/volume/*.json
+            ${{ runner.temp }}/mxc-files/volume/*.log
+            ${{ runner.temp }}/mxc-volume-results/cleanup.json
             ${{ runner.temp }}/mxc-files/idle/result.json
             ${{ runner.temp }}/mxc-files/deletion/result.json
             ${{ runner.temp }}/mxc-files/deletion/*/*.json

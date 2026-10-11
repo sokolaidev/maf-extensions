@@ -94,12 +94,24 @@ def candidate_files(candidate: Path) -> dict[str, bytes]:
     }
 
 
-def worker(helper: Path, startup: Path, state: Path, stage: str) -> None:
+def worker(
+    helper: Path,
+    startup: Path,
+    state: Path,
+    stage: str,
+    *,
+    root: Path | None = None,
+    store_type: type[SharedStore] = SharedStore,
+) -> None:
     """Run one supervisor with the immutable policy selected before root creation."""
     policy = Policy(**json.loads((state / "policy.json").read_bytes()))
     request = overflow((state / "payload.bin").read_bytes())
-    with SharedStore(
-        state / "store", "one", _profile_for(helper, startup), LIMITS, physical_policy=policy
+    with store_type(
+        root if root is not None else state / "store",
+        "one",
+        _profile_for(helper, startup),
+        LIMITS,
+        physical_policy=policy,
     ) as store:
         before = audit(store, policy)
         if stage == "seed":
