@@ -1,4 +1,4 @@
-"""Publish separate byte streams through the existing format-4 transaction and journal."""
+"""Publish separate byte streams through the shared-store transaction and journal."""
 
 from __future__ import annotations
 
@@ -56,7 +56,8 @@ def call(
             base,
             work,
             code,
-            before_start=lambda child: journal.arm(call_id, child),
+            before_spawn=lambda: journal.start(call_id, boundary),
+            before_start=lambda child: journal.arm(call_id, child, boundary),
             check_active=check,
             checkpoint_limits=(store.limits.checkpoint_bytes, store.limits.files),
         )

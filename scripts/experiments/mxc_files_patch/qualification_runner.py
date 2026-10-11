@@ -18,7 +18,7 @@ from scripts.experiments.mxc_v1_patch.patch import metadata
 from scripts.experiments.mxc_v1_patch.qualification_runner import build, helper, run, sources
 
 
-def qualify(root: Path, kernel_dir: Path, report: dict) -> None:
+def qualify(root: Path, kernel_dir: Path, report: dict, prelaunch_recovery: bool = False) -> None:
     """Build a fresh profile and preserve the original experiment's native-state controls."""
     kernel_report = json.loads((kernel_dir / "kernel-result.json").read_text(encoding="utf-8"))
     kernel = kernel_dir / "elfloader_hyperlight-x86_64"
@@ -110,10 +110,10 @@ def qualify(root: Path, kernel_dir: Path, report: dict) -> None:
         str(root / "native"),
     )
     report["native_state"] = json.loads((root / "native/result.json").read_text(encoding="utf-8"))
-    for module, directory in (
-        ("volume_probe", "volume"),
-        ("checkpoint_volume_probe", "checkpoint-volume"),
-    ):
+    volume_probes = [("checkpoint_volume_probe", "checkpoint-volume")]
+    if not prelaunch_recovery:
+        volume_probes.insert(0, ("volume_probe", "volume"))
+    for module, directory in volume_probes:
         run(
             root,
             module,
@@ -130,6 +130,7 @@ def qualify(root: Path, kernel_dir: Path, report: dict) -> None:
             os.environ["MXC_VOLUME"],
             "--token",
             os.environ["MXC_VOLUME_TOKEN"],
+            *(["--prelaunch-recovery"] if prelaunch_recovery else []),
         )
         report[directory] = json.loads(
             (root / directory / "result.json").read_text(encoding="utf-8")
@@ -179,6 +180,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--kernel-dir", type=Path, required=True)
+    parser.add_argument("--prelaunch-recovery", action="store_true")
     args = parser.parse_args()
     root = args.root.resolve()
     root.mkdir(parents=True, exist_ok=False)
@@ -191,7 +193,7 @@ def main() -> int:
     }
     try:
         report["hypervisor"] = hypervisor()
-        qualify(root, args.kernel_dir.resolve(), report)
+        qualify(root, args.kernel_dir.resolve(), report, args.prelaunch_recovery)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         report["reason"] = str(error)
         print(str(error), file=sys.stderr)

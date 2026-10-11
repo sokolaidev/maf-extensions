@@ -300,8 +300,8 @@ work = pathlib.Path.cwd()
     monkeypatch.setattr(host.subprocess, "Popen", spawn)
     original_arm = native.NativeJournal.arm
 
-    def arm(journal, call, child):
-        original_arm(journal, call, child)
+    def arm(journal, call, child, boundary):
+        original_arm(journal, call, child, boundary)
         row = journal._row(call)
         assert row["state"] == "armed"
         assert row["identity"] is not None

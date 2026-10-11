@@ -25,7 +25,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path.cwd()))
 from scripts.experiments.mxc_session_patch import durability_probe as probe, shared_call
 probe.LIMITS = probe.Limits(20*1024**2, 40*1024**2, checkpoint_bytes=1024, files=2)
-def execute(helper, startup, work, code, limit, before_start, checkpoint_limits, check_active):
+def execute(helper, startup, work, code, limit, before_start, checkpoint_limits, check_active, before_spawn):
+    before_spawn()
     with subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.buffer.read()'], stdin=subprocess.PIPE) as child:
         try:
             before_start(child)

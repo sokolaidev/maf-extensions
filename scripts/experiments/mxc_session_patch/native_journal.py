@@ -77,14 +77,10 @@ class NativeJournal:
             path.mkdir()
             return path
 
-    def arm(
-        self,
-        call: str,
-        child: subprocess.Popen[bytes],
-        boundary: Callable[[str], None] = lambda _: None,
-    ) -> None:
-        """Persist the blocked helper's identity before its supervisor sends the header."""
-        identity = capture(child.pid)
+    def start(self, call: str, boundary: Callable[[str], None] = lambda _: None) -> None:
+        """Commit launch intent before spawning; legacy roots retain their existing protocol."""
+        if not self.store.prelaunch_recovery:
+            return
         with self.store._transaction():
             row = self._row(call)
             if (
@@ -92,6 +88,34 @@ class NativeJournal:
                 or row["status"] != "pending"
                 or row["generation"] != self.store.generation
                 or row["state"] != "prepared"
+                or row["identity"] is not None
+            ):
+                raise Refused("launch intent is not prepared for this owner")
+            if not (audit_root(self.store) / row["token"]).is_dir():
+                raise Refused("reserved scratch is unavailable")
+            self.store.db.execute(
+                "UPDATE launches SET state='starting' WHERE session=? AND call=?",
+                (self.store.session, call),
+            )
+            boundary("before_spawn_intent")
+        boundary("after_spawn_intent")
+
+    def arm(
+        self,
+        call: str,
+        child: subprocess.Popen[bytes],
+        boundary: Callable[[str], None] = lambda _: None,
+    ) -> None:
+        """Persist identity before sending the header; format-7 callers must start before spawning."""
+        boundary("after_spawn")
+        identity = capture(child.pid)
+        with self.store._transaction():
+            row = self._row(call)
+            if (
+                self.store._owner()["state"] != "active"
+                or row["status"] != "pending"
+                or row["generation"] != self.store.generation
+                or row["state"] != ("starting" if self.store.prelaunch_recovery else "prepared")
                 or row["identity"] is not None
             ):
                 raise Refused("launch is not prepared for this owner")
@@ -110,9 +134,17 @@ class NativeJournal:
         with self.store._transaction():
             row = self._row(call)
             root = audit_root(self.store)
-            if row["identity"] is None or row["state"] not in ("armed", "cleaning"):
+            if row["identity"] is None:
+                if not self.store.prelaunch_recovery or row["state"] not in (
+                    "prepared",
+                    "cleaning",
+                ):
+                    raise Refused("unidentified launch requires explicit reconciliation")
+                if row["status"] != "interrupted" or row["generation"] >= self.store.generation:
+                    raise Refused("pre-launch cleanup requires a new owner")
+            elif row["state"] not in ("armed", "cleaning"):
                 raise Refused("unidentified launch requires explicit reconciliation")
-            if not stopped(Identity.decode(row["identity"])):
+            elif not stopped(Identity.decode(row["identity"])):
                 raise Refused("helper is still alive")
             path = root / row["token"]
             self._inventory(path, row["charge"], row["entries"])
@@ -165,10 +197,9 @@ class NativeJournal:
             (self.store.session,),
         ).fetchall()
         for row in calls:
-            if row["identity"] is None:
-                raise Refused("unidentified launch requires explicit reconciliation")
-            terminate(Identity.decode(row["identity"]))
-            boundary("after_helper_termination")
+            if row["identity"] is not None:
+                terminate(Identity.decode(row["identity"]))
+                boundary("after_helper_termination")
             self.reclaim(row["call"], boundary)
         if self.store.db.execute(
             "SELECT 1 FROM reservations WHERE session=?", (self.store.session,)

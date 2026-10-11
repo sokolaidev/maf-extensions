@@ -56,7 +56,8 @@ def call(
             work,
             code,
             output_limit,
-            before_start=lambda child: journal.arm(call_id, child),
+            before_spawn=lambda: journal.start(call_id, boundary),
+            before_start=lambda child: journal.arm(call_id, child, boundary),
             check_active=check,
             checkpoint_limits=(store.limits.checkpoint_bytes, store.limits.files),
         )

@@ -129,6 +129,7 @@ def execute(
     before_start: Callable[[subprocess.Popen[bytes]], None] = lambda _: None,
     checkpoint_limits: tuple[int, int] | None = None,
     check_active: Callable[[], None] = lambda: None,
+    before_spawn: Callable[[], None] = lambda: None,
 ) -> bytes:
     """Supervise one helper; opt-in capture keeps payload separate from native control."""
     if checkpoint_limits is not None and (
@@ -142,6 +143,7 @@ def execute(
     report = work / "native.json"
     env = {key: os.environ[key] for key in ("SystemRoot", "WINDIR") if key in os.environ}
     env.update({key: str(work) for key in ("HOME", "USERPROFILE", "TMP", "TEMP", "TMPDIR")})
+    before_spawn()
     with subprocess.Popen(
         [
             str(helper),

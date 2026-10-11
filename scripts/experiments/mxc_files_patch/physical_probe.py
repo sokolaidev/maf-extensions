@@ -26,7 +26,7 @@ from scripts.experiments.mxc_session_patch.host_store import Refused
 from scripts.experiments.mxc_session_patch.native_journal import NativeJournal
 from scripts.experiments.mxc_session_patch.physical import VERSION, Policy
 from scripts.experiments.mxc_session_patch.process_identity import Identity, stopped
-from scripts.experiments.mxc_session_patch.shared_store import SharedStore
+from scripts.experiments.mxc_session_patch.shared_store import PRELAUNCH_VERSION, SharedStore
 
 MARGIN = 8 * 1024**2
 PAYLOAD_BYTES = 64 * 1024**2
@@ -74,7 +74,8 @@ def overflow(payload: bytes) -> Request:
 
 def audit(store: SharedStore, policy: Policy) -> dict[str, int]:
     """Check physical limits and independent consistency after every publication boundary."""
-    assert store.db.execute("SELECT version FROM settings").fetchone()[0] == VERSION
+    version = PRELAUNCH_VERSION if store.prelaunch_recovery else VERSION
+    assert store.db.execute("SELECT version FROM settings").fetchone()[0] == version
     page_size = store.db.execute("PRAGMA page_size").fetchone()[0]
     ceiling = store.db.execute("PRAGMA max_page_count").fetchone()[0] * page_size
     size = (store.root / "shared.sqlite").stat().st_size

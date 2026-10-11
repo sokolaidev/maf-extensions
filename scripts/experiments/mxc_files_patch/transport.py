@@ -200,6 +200,7 @@ def execute(
     cancel: threading.Event | None = None,
     timeout: float = 90,
     check_active: Callable[[], None] = lambda: None,
+    before_spawn: Callable[[], None] = lambda: None,
 ) -> bytes:
     """Supervise the native owner, bounding diagnostics independently from payloads."""
     code = file_request.code
@@ -220,6 +221,7 @@ def execute(
         raise Refused("native destinations must be fresh")
     env = {key: os.environ[key] for key in ("SystemRoot", "WINDIR") if key in os.environ}
     env.update({key: str(work) for key in ("HOME", "USERPROFILE", "TMP", "TEMP", "TMPDIR")})
+    before_spawn()
     with subprocess.Popen(
         [
             str(helper),

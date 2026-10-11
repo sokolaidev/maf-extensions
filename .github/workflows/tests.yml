@@ -32,6 +32,10 @@ on:
         description: "Qualify bounded MXC files and durable artifacts on Linux and Windows"
         type: boolean
         default: false
+      mxc_prelaunch:
+        description: "Use format-7 pre-launch recovery for the mxc_files qualification"
+        type: boolean
+        default: false
       mxc_streams:
         description: "Qualify separate MXC byte streams on Linux KVM and Windows WHP"
         type: boolean
@@ -695,7 +699,12 @@ jobs:
       - name: Qualify files, quota and durable replay
         if: github.event_name == 'workflow_dispatch' && inputs.mxc_files
         shell: bash
-        run: uv run --no-project --python 3.12 python -m scripts.experiments.mxc_files_patch.qualification_runner --root "$RUNNER_TEMP/mxc-files" --kernel-dir "$RUNNER_TEMP/mxc-file-kernel"
+        env:
+          MXC_PRELAUNCH: ${{ inputs.mxc_prelaunch }}
+        run: |
+          args=()
+          if [[ "$MXC_PRELAUNCH" == "true" ]]; then args+=(--prelaunch-recovery); fi
+          uv run --no-project --python 3.12 python -m scripts.experiments.mxc_files_patch.qualification_runner --root "$RUNNER_TEMP/mxc-files" --kernel-dir "$RUNNER_TEMP/mxc-file-kernel" "${args[@]}"
       - name: Detach native publication exhaustion volume
         if: always() && github.event_name == 'workflow_dispatch' && inputs.mxc_files
         uses: ./.github/actions/mxc-volume

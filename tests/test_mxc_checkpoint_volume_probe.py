@@ -62,7 +62,8 @@ raise SystemExit(copied.main())
 """
 
 
-def test_export_recovers_but_unidentified_restore_remains_charged(tmp_path, monkeypatch):
+@pytest.mark.parametrize("prelaunch_recovery", [False, True])
+def test_checkpoint_copy_recovery_contract(tmp_path, monkeypatch, prelaunch_recovery):
     helper = tmp_path / "helper"
     helper.write_bytes(b"fixture")
     startup = tmp_path / "startup"
@@ -84,7 +85,7 @@ def test_export_recovers_but_unidentified_restore_remains_charged(tmp_path, monk
 
     monkeypatch.setattr(probe.subprocess, "run", launch)
     monkeypatch.setattr(probe.volume_control, "validate_volume", lambda *a, **kw: None)
-    report = probe.qualify(helper, startup, tmp_path / "state", volume, "owner")
+    report = probe.qualify(helper, startup, tmp_path / "state", volume, "owner", prelaunch_recovery)
     assert report["qualified"]
     export = report["cases"]["export"]
     restore = report["cases"]["restore"]
@@ -92,9 +93,13 @@ def test_export_recovers_but_unidentified_restore_remains_charged(tmp_path, monk
     assert export["recover"]["scratch_reclaimed"]
     assert export["recover"]["python_and_session_files_recovered"]
     assert restore["fail"]["partial_restore_bytes"] > 0
-    assert restore["recover"]["unidentified_reclaim_refused"]
-    assert restore["recover"]["reservation_retained"]
-    assert restore["recover"]["new_call_refused"]
+    if prelaunch_recovery:
+        assert restore["recover"]["scratch_reclaimed"]
+        assert restore["recover"]["python_and_session_files_recovered"]
+    else:
+        assert restore["recover"]["unidentified_reclaim_refused"]
+        assert restore["recover"]["reservation_retained"]
+        assert restore["recover"]["new_call_refused"]
     assert not (volume / "filler.bin").exists()
 
 
@@ -112,7 +117,7 @@ def test_failed_worker_removes_filler_and_never_claims_qualification(tmp_path, m
     helper.write_bytes(b"fixture")
     monkeypatch.setattr(probe.volume_control, "validate_volume", lambda *a, **kw: None)
 
-    def launch(helper, startup, state, volume, token, mode, stage):
+    def launch(helper, startup, state, volume, token, mode, stage, prelaunch_recovery=False):
         if stage == "seed":
             return {}
         (volume / "filler.bin").write_bytes(b"fixture")
