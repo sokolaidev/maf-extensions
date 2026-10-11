@@ -255,10 +255,15 @@ def check_cli_container(
     return {"user": user, "hostConfig": host, "networks": networks, "mounts": value["Mounts"]}
 
 
-def exercise_cli(expected: dict[str, Any], output: Path, result: dict[str, Any]) -> None:
-    """Qualify the hardened CLI render with bounded execution and independently checked cleanup."""
-    report: dict[str, Any] = {"passed": False, "timeoutSeconds": 30}
-    result["hardenedCli"] = report
+def exercise_cli(
+    expected: dict[str, Any], output: Path, result: dict[str, Any], *, timeout_probe: bool = False
+) -> None:
+    """Qualify rendering or an expected input-read timeout under the same CLI controls."""
+    deadline = 2 if timeout_probe else 30
+    report: dict[str, Any] = {"passed": False, "timeoutSeconds": deadline, "timedOut": False}
+    result["hardenedCliTimeout" if timeout_probe else "hardenedCli"] = report
+    if timeout_probe:
+        report.update(expectedFailure="TimeoutExpired", stimulus="empty-fifo")
     require(sys.platform == "linux", "Hardened CLI qualification requires a Linux host")
     uid, gid = getattr(os, "getuid")(), getattr(os, "getgid")()
     require(uid > 0, "Hardened CLI qualification requires a non-root host user")
@@ -272,15 +277,25 @@ def exercise_cli(expected: dict[str, Any], output: Path, result: dict[str, Any])
         selected["Id"] in {expected["imageId"], expected["registryDigest"]},
         "CLI pull has an unexpected identity",
     )
-    source, target = (output / "cli-input").resolve(), (output / "cli-output").resolve()
+    directory = "cli-timeout" if timeout_probe else "cli"
+    source, target = (
+        (output / f"{directory}-input").resolve(),
+        (output / f"{directory}-output").resolve(),
+    )
     source.mkdir()
     target.mkdir()
-    (source / "diagram.dot").write_text(
-        "digraph { consumer -> renderer -> png }\n", encoding="utf-8"
-    )
+    writer: int | None = None
     scope = "graphviz-cli-" + uuid4().hex
     report.update(imageReference=image, engineImageId=selected["Id"], scope=scope)
     try:
+        if timeout_probe:
+            getattr(os, "mkfifo")(source / "diagram.dot", 0o600)
+            # Hold the FIFO open without data or EOF so dot cannot finish the input read.
+            writer = os.open(source / "diagram.dot", os.O_RDWR | getattr(os, "O_NONBLOCK"))
+        else:
+            (source / "diagram.dot").write_text(
+                "digraph { consumer -> renderer -> png }\n", encoding="utf-8"
+            )
         # Create first so the container can be inspected before short-lived dot exits.
         container = engine.command(
             "create",
@@ -329,26 +344,56 @@ def exercise_cli(expected: dict[str, Any], output: Path, result: dict[str, Any])
         )
         started = time.monotonic()
         try:
-            engine.command("start", "--attach", container, timeout=30)
+            engine.command("start", "--attach", container, timeout=deadline)
+        except subprocess.TimeoutExpired:
+            report.update(timedOut=True, failureType="TimeoutExpired")
+            if not timeout_probe:
+                raise
         finally:
             report["seconds"] = time.monotonic() - started
-        remaining = engine.owned(scope)
-        report["containersAfterRender"] = remaining
-        require(not remaining, "CLI render left a container before fallback cleanup")
         png = target / "diagram.png"
-        require(
-            png.is_file() and not png.is_symlink() and png.stat().st_size <= 16 * 1024 * 1024,
-            "CLI PNG is absent, linked or oversized",
-        )
-        report["png"] = png_details(png.read_bytes())
+        if timeout_probe:
+            require(report["timedOut"], "CLI timeout probe completed without a timeout")
+            require(engine.owned(scope) == [container], "CLI timeout container is missing")
+            state = json.loads(engine.command("inspect", container))
+            require(len(state) == 1, "CLI timeout inspection is ambiguous")
+            report["stateAtTimeout"] = state[0]["State"]
+            require(state[0]["State"]["Running"] is True, "CLI renderer was not running at timeout")
+            report["outputAbsent"] = not png.exists() and not png.is_symlink()
+            require(report["outputAbsent"], "CLI timeout probe produced output")
+        else:
+            remaining = engine.owned(scope)
+            report["containersAfterRender"] = remaining
+            require(not remaining, "CLI render left a container before fallback cleanup")
+            require(
+                png.is_file() and not png.is_symlink() and png.stat().st_size <= 16 * 1024 * 1024,
+                "CLI PNG is absent, linked or oversized",
+            )
+            report["png"] = png_details(png.read_bytes())
     finally:
-        remaining = engine.owned(scope)
-        report["fallbackRemoved"] = list(remaining)
-        for container in remaining:
-            engine.command("rm", "--force", container)
-        remaining = engine.owned(scope)
-        report["containersRemaining"] = remaining
-        require(not remaining, "CLI cleanup left owned containers")
+        cleanup_started = time.monotonic()
+        try:
+            remaining = engine.owned(scope)
+            report["fallbackRemoved"] = list(remaining)
+            for container in remaining:
+                engine.command("rm", "--force", container)
+            remaining = engine.owned(scope)
+            report["containersRemaining"] = remaining
+            require(not remaining, "CLI cleanup left owned containers")
+        finally:
+            report["cleanupSeconds"] = time.monotonic() - cleanup_started
+            if writer is not None:
+                os.close(writer)
+            if timeout_probe:
+                (source / "diagram.dot").unlink(missing_ok=True)
+    if timeout_probe:
+        report["outputAbsent"] = not png.exists() and not png.is_symlink()
+        require(report["outputAbsent"], "CLI timeout probe produced output during cleanup")
+        report["totalSeconds"] = time.monotonic() - started
+        require(
+            report["totalSeconds"] < 20,
+            "CLI timeout and cleanup exceeded the qualification budget",
+        )
     report["passed"] = True
 
 
@@ -546,6 +591,7 @@ def main() -> None:
         asyncio.run(exercise(expected, args.output, result))
         if args.hardened_cli:
             exercise_cli(expected, args.output, result)
+            exercise_cli(expected, args.output, result, timeout_probe=True)
         result["passed"] = True
     except Exception as error:
         result["failureType"] = type(error).__name__

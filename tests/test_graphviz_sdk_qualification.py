@@ -490,7 +490,7 @@ def test_cli_cleanup_cannot_turn_failure_into_success(tmp_path, monkeypatch, cli
         assert not any(command[0] == "start" for command in commands)
 
 
-@pytest.mark.parametrize("mode", ["sdk-only", "both", "sdk-fails", "cli-fails"])
+@pytest.mark.parametrize("mode", ["sdk-only", "both", "sdk-fails", "cli-fails", "timeout-fails"])
 def test_cli_is_optional_and_cannot_hide_failed_qualification(tmp_path, monkeypatch, mode):
     output = tmp_path / "output"
     arguments = [
@@ -515,9 +515,9 @@ def test_cli_is_optional_and_cannot_hide_failed_qualification(tmp_path, monkeypa
         if mode == "sdk-fails":
             raise ValueError("SDK failed")
 
-    def cli(*args):
-        calls.append("cli")
-        if mode == "cli-fails":
+    def cli(*args, timeout_probe=False):
+        calls.append("timeout" if timeout_probe else "cli")
+        if mode == "cli-fails" or (mode == "timeout-fails" and timeout_probe):
             raise ValueError("CLI failed")
 
     monkeypatch.setattr(qualification, "exercise", sdk)
@@ -529,7 +529,12 @@ def test_cli_is_optional_and_cannot_hide_failed_qualification(tmp_path, monkeypa
         qualification.main()
     report = json.loads((output / "qualification.json").read_text(encoding="utf-8"))
     assert report["passed"] is (not mode.endswith("fails"))
-    assert calls == (["sdk"] if mode in {"sdk-only", "sdk-fails"} else ["sdk", "cli"])
+    expected_calls = ["sdk"]
+    if mode not in {"sdk-only", "sdk-fails"}:
+        expected_calls.append("cli")
+        if mode != "cli-fails":
+            expected_calls.append("timeout")
+    assert calls == expected_calls
 
 
 @pytest.mark.parametrize(("platform", "uid"), [("win32", 1000), ("linux", 0)])
@@ -542,3 +547,124 @@ def test_cli_refuses_unsupported_host_before_docker(monkeypatch, tmp_path, platf
     with pytest.raises(ValueError):
         qualification.exercise_cli({}, tmp_path, result)
     assert result["hardenedCli"]["passed"] is False
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "no-timeout",
+        "wrong-error",
+        "stopped",
+        "missing",
+        "output",
+        "cleanup-failure",
+        "slow-inspection",
+        "slow-cleanup",
+        "late-output",
+        "inspection-failure",
+        "create-failure",
+    ],
+)
+def test_cli_timeout_requires_live_renderer_failure_and_cleanup(
+    tmp_path, monkeypatch, cli_container, fault
+):
+    policy = json.loads((SAMPLE / "graphviz-policy.json").read_text(encoding="utf-8"))
+    image = f"{qualification.PREFIX}/graphviz@{policy['registryDigest']}"
+    cli_container["Image"] = policy["imageId"]
+    cli_container["Config"]["Image"] = image
+    cli_container["State"] = {"Running": True}
+    for mount in cli_container["Mounts"]:
+        mount["Source"] = str(tmp_path / ("cli-timeout" + mount["Destination"].replace("/", "-")))
+    owned, removed, descriptors = [], [], []
+    clock = [0.0]
+    launched = [False]
+    real_open = qualification.os.open
+
+    def open_fifo(path, flags):
+        descriptor = real_open(path, flags)
+        descriptors.append(descriptor)
+        return descriptor
+
+    class Engine:
+        def command(self, *args, **kwargs):
+            if args[0] == "image":
+                return json.dumps([{"RepoDigests": [image], "Id": policy["imageId"]}])
+            if args[0] == "create":
+                owned.append("ours")
+                assert args[args.index("--entrypoint") + 1] == "dot"
+                assert args[-5:] == (
+                    image,
+                    "-Tpng",
+                    "/input/diagram.dot",
+                    "-o",
+                    "/output/diagram.png",
+                )
+                if fault == "create-failure":
+                    raise RuntimeError("create response lost")
+                return "ours\n"
+            if args[0] == "inspect":
+                if launched[0]:
+                    if fault == "inspection-failure":
+                        raise RuntimeError("state unavailable")
+                    if fault == "slow-inspection":
+                        clock[0] += 21
+                    cli_container["State"]["Running"] = fault != "stopped"
+                return json.dumps([cli_container])
+            if args[0] == "start":
+                assert args == ("start", "--attach", "ours") and kwargs["timeout"] == 2
+                launched[0] = True
+                clock[0] += 2
+                if fault == "no-timeout":
+                    return ""
+                if fault == "wrong-error":
+                    raise qualification.subprocess.CalledProcessError(1, "docker")
+                if fault == "missing":
+                    owned.clear()
+                if fault == "output":
+                    (tmp_path / "cli-timeout-output/diagram.png").write_bytes(png())
+                raise qualification.subprocess.TimeoutExpired("docker", 2)
+            if args[0] == "rm":
+                assert args == ("rm", "--force", "ours")
+                removed.append("ours")
+                if fault == "slow-cleanup":
+                    clock[0] += 21
+                if fault == "late-output":
+                    (tmp_path / "cli-timeout-output/diagram.png").write_bytes(png())
+                if fault != "cleanup-failure":
+                    owned.clear()
+            return ""
+
+        def owned(self, _scope):
+            return list(owned)
+
+    monkeypatch.setattr(qualification.sys, "platform", "linux")
+    monkeypatch.setattr(qualification.os, "getuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(qualification.os, "getgid", lambda: 1000, raising=False)
+    monkeypatch.setattr(
+        qualification.os, "mkfifo", lambda path, mode: path.write_bytes(b""), raising=False
+    )
+    monkeypatch.setattr(qualification.os, "O_NONBLOCK", 0, raising=False)
+    monkeypatch.setattr(qualification.os, "open", open_fifo)
+    monkeypatch.setattr(qualification, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(qualification, "Engine", Engine)
+    result = {}
+    if fault:
+        with pytest.raises((ValueError, RuntimeError, qualification.subprocess.CalledProcessError)):
+            qualification.exercise_cli(policy, tmp_path, result, timeout_probe=True)
+        assert result["hardenedCliTimeout"]["passed"] is False
+    else:
+        qualification.exercise_cli(policy, tmp_path, result, timeout_probe=True)
+        report = result["hardenedCliTimeout"]
+        assert report["passed"] and report["timedOut"] and report["outputAbsent"]
+        assert report["failureType"] == report["expectedFailure"] == "TimeoutExpired"
+        assert report["stateAtTimeout"]["Running"] is True
+        assert report["totalSeconds"] == 2
+    assert result["hardenedCliTimeout"]["containersRemaining"] == (
+        ["ours"] if fault == "cleanup-failure" else []
+    )
+    assert removed == ([] if fault == "missing" else ["ours"])
+    assert not (tmp_path / "cli-timeout-input/diagram.dot").exists()
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        qualification.os.fstat(descriptors[0])
