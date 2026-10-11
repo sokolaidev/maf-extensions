@@ -110,6 +110,41 @@ Network access is closed unless `egress_allow` names hosts. An allowed host can 
 
 See [host-tool controls](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/hosts.md#calling-host-tools) for registration, identities and limits.
 
+### Disable host functions when FIDES is enabled
+
+Pass `host_tools_enabled=False` to `make_codeact_tools` and, if constructing a spec separately, `codeact_sandbox_spec`. CodeAct ignores any supplied registry without reading or sealing it. It requests no `HOST_TOOLS`, advertises no host functions and installs no host-tool channel; Python computation remains available. The default is `True`, preserving registry behavior. The switch is host configuration and never a model tool argument.
+
+Use the same trusted setting that installs FIDES middleware. CodeAct does not infer that setting from tool metadata or the current call's security context:
+
+```python
+from agent_framework import Agent
+from agent_framework.security import (
+    LabelTrackingFunctionMiddleware,
+    PolicyEnforcementFunctionMiddleware,
+)
+from maf_sandbox_codeact import make_codeact_tools
+
+fides_enabled = True
+codeact_tools = make_codeact_tools(
+    router,
+    "data-analyst",
+    context,
+    host_tools=registry,
+    host_tools_enabled=not fides_enabled,
+    image="mcr.microsoft.com/devcontainers/python:3.13-bookworm",
+)
+middleware = (
+    [LabelTrackingFunctionMiddleware(), PolicyEnforcementFunctionMiddleware()]
+    if fides_enabled
+    else []
+)
+agent = Agent(client=client, tools=[sensitive_tool, *codeact_tools], middleware=middleware)
+```
+
+The host supplies `sensitive_tool` as an ordinary agent function tool with its FIDES declarations. Direct calls still pass through that middleware; generated code cannot reach the function through CodeAct's disabled channel. File, artifact and network settings remain independent.
+
+The setting is captured when building tools. To change it, stop admission through the old tool surface, await or cancel its active calls and complete cleanup, dispose its CodeAct sandboxes, then rebuild and replace the tools and middleware together. Changing the configuration variable alone does not revoke an existing tool. The router refuses reuse of a known sandbox with a different host-tool enablement contract; hosts must also retire old surfaces and instances across processes. This option disables nested calls and does not implement per-host-tool FIDES mediation.
+
 ## Runtime backends
 
 Use `CodeactRuntime` to select `run_code` instead of command execution. The host must verify that the backend evaluates Python statements and returns their output. The required instructions describe the modules and facilities available to the model.

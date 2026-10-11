@@ -202,6 +202,7 @@ def codeact_sandbox_spec(
     files_in: TransferLimits = _DEFAULT_FILES_IN,
     files_out: TransferLimits = _DEFAULT_FILES_OUT,
     host_tools: HostToolRegistry | None = None,
+    host_tools_enabled: bool = True,
     egress_allow: Sequence[str | EgressRule] = (),
     runtime: CodeactRuntime | None = None,
     program: ProgramRequirements = ProgramRequirements(),
@@ -254,6 +255,10 @@ def codeact_sandbox_spec(
     one refuses this spec at attach.  Reading a registry **seals** it, so ask for the spec once
     everything is registered.
 
+    ``host_tools_enabled=False`` ignores the registry without reading or sealing it.
+    Pass ``not fides_enabled`` from trusted host configuration to disable nested calls
+    while FIDES is enabled. Rebuild the tools and dispose existing sandboxes when changing it.
+
     Raises:
         ValueError: when an ``egress_allow`` host is blank, scheme-qualified, or holds
             whitespace or a comma.
@@ -265,7 +270,8 @@ def codeact_sandbox_spec(
         outputs=outputs,
         files_in=files_in,
         files_out=files_out,
-        surface=_host_tools(host_tools),
+        surface=_host_tools(_enabled_host_tools(host_tools, host_tools_enabled)),
+        host_tools_enabled=host_tools_enabled,
         egress_allow=egress_allow,
         runtime=runtime,
         program=program,
@@ -285,6 +291,7 @@ def make_codeact_tools(
     withhold_guest_output: bool = False,
     outbound_max_confidentiality: str | None = None,
     host_tools: HostToolRegistry | None = None,
+    host_tools_enabled: bool = True,
     image: str | None = None,
     image_id: str | None = None,
     exec_timeout_seconds: int = 120,
@@ -402,6 +409,10 @@ def make_codeact_tools(
             answered the sink question, the guest may hand it conversation-derived arguments,
             and every other undeclared leg is read as the worst it could be — so this one is
             too, and the cap above applies.
+        host_tools_enabled: Host-only switch, default ``True``. ``False`` ignores the registry
+            without reading or sealing it and installs no host-tool channel. Pass
+            ``not fides_enabled`` from the same configuration that installs FIDES middleware.
+            Rebuild the tools and dispose existing sandboxes when changing this setting.
         image: OCI reference of a sandbox image with a Python interpreter on its path.
         image_id: A backend-native disk-image id, skipping resolution.
         exec_timeout_seconds: Execution bound; for ``run_code`` this includes backend queue
@@ -437,6 +448,7 @@ def make_codeact_tools(
     """
     configured = router is not None and router.enabled
     if configured:
+        host_tools = _enabled_host_tools(host_tools, host_tools_enabled)
         _validate_runtime(runtime, takes_files=file_store is not None, outputs=outputs)
         if runtime is not None and host_tools is not None and len(host_tools):
             raise ValueError("CodeAct runtime host tools require a native channel; not supported")
@@ -516,6 +528,7 @@ def make_codeact_tools(
         files_in=files_in,
         files_out=files_out,
         surface=surface,
+        host_tools_enabled=host_tools_enabled if configured else True,
         egress_allow=egress_allow if configured else (),
         runtime=runtime if configured else None,
         program=program if configured else ProgramRequirements(),
@@ -644,6 +657,14 @@ def _validated_hosts(hosts: Sequence[str | EgressRule]) -> tuple[str | EgressRul
     return tuple(hosts)
 
 
+def _enabled_host_tools(
+    host_tools: HostToolRegistry | None, enabled: bool
+) -> HostToolRegistry | None:
+    if not isinstance(cast(object, enabled), bool):
+        raise TypeError("host_tools_enabled must be a bool from trusted host configuration")
+    return host_tools if enabled else None
+
+
 def _host_tools(host_tools: HostToolRegistry | None) -> HostToolAggregate | None:
     """What a host's registry means for this kind, or ``None`` when nothing is callable.
 
@@ -667,6 +688,7 @@ def _codeact_spec(
     files_in: TransferLimits,
     files_out: TransferLimits,
     surface: HostToolAggregate | None,
+    host_tools_enabled: bool = True,
     egress_allow: Sequence[str | EgressRule] = (),
     runtime: CodeactRuntime | None = None,
     program: ProgramRequirements = ProgramRequirements(),
@@ -703,6 +725,11 @@ def _codeact_spec(
     if authority:
         requires.add(Capability.ATTACHED_IDENTITY)
     egress = Egress.ALLOWLIST if effective_egress else Egress.CLOSED
+    execution_contract = (
+        runtime_contract(runtime) if runtime is not None else f"codeact:{program.profile}"
+    )
+    if not host_tools_enabled:
+        execution_contract += ":host-tools-disabled"
     return SandboxSpec(
         kind=CODEACT_KIND,
         image=image,
@@ -713,9 +740,7 @@ def _codeact_spec(
         max_identity_scope=IdentityScope.PER_SANDBOX if authority else None,
         max_identity_retention_seconds=credential_retention_seconds,
         work_dir=runtime.guest_work_dir if runtime is not None else None,
-        execution_contract=runtime_contract(runtime)
-        if runtime is not None
-        else f"codeact:{program.profile}",
+        execution_contract=execution_contract,
         program=program if runtime is None else None,
         # Model-written code can write outside the call path and leave processes running.
         confined_to_guest_call_path=False,
