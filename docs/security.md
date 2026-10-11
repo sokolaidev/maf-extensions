@@ -8,7 +8,7 @@ Use the release records below to assess the evidence for the package version you
 
 The packages remain experimental. A record covers only the versions, platforms and artifacts it names. It is a historical snapshot, not a continuously refreshed security rating, and does not extend support for an older release.
 
-For ongoing built-image checks, see [container image security](security/container-images.md). Its badge covers twelve named Linux/amd64 profiles and links to retained inventories and vulnerability reports; those results do not alter the historical release records above.
+For ongoing built-image checks, see [container image security](security/container-images.md). Its badge covers thirteen named Linux/amd64 profiles and links to retained inventories and vulnerability reports; those results do not alter the historical release records above.
 
 ## Reporting and updates
 

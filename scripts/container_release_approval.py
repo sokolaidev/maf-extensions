@@ -183,6 +183,14 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
             ("Prepared Bicep version", runtime["bicepAvm"].get("bicepVersion", UNAVAILABLE))
         )
         rows.append(("Prepared Bicep modules", runtime["bicepAvm"].get("modules", UNAVAILABLE)))
+    if candidate["profile"] == "terraform-avm":
+        avm = runtime.get("terraformAvm", {})
+        for check in avm.get("checks", []):
+            rows.append(("Terraform AVM check", check))
+        if not avm.get("checks"):
+            rows.append(("Terraform AVM check", UNAVAILABLE))
+        rows.append(("Prepared Terraform version", avm.get("terraformVersion", UNAVAILABLE)))
+        rows.append(("Prepared Terraform receipt", avm.get("receipt", UNAVAILABLE)))
     if "result" in runtime:
         rows.append(("Runtime packaging evidence", runtime["result"]))
     if database.get("built") and assessment.get("assessedAt"):
