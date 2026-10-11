@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -13,7 +14,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from select_image_security import PROFILES, affected, select  # noqa: E402
+from select_image_security import PROFILES, affected, changed_profiles, select  # noqa: E402
 
 pytestmark = pytest.mark.workflow
 PACKAGE = "packages/maf-sandbox"
@@ -150,6 +151,124 @@ def test_release_with_image_change_selects_that_image(repository):
 )
 def test_build_input_mapping(path, expected):
     assert list(affected(path)) == expected
+
+
+@pytest.fixture
+def shared_inputs(repository):
+    root, _ = repository
+    builder = (ROOT / "scripts/build_scan_image.sh").read_text()
+    catalogue = json.loads((ROOT / "images/release-profiles.json").read_text())
+    before, count = re.subn(r"  terraform-avm\)\n.*?    ;;\n", "", builder, flags=re.DOTALL)
+    assert count == 1
+    old_catalogue = catalogue | {
+        "profiles": [p for p in catalogue["profiles"] if p != "terraform-avm"]
+    }
+    base = commit(
+        root,
+        {
+            "scripts/build_scan_image.sh": before,
+            "images/release-profiles.json": json.dumps(old_catalogue),
+        },
+    )
+    head = commit(
+        root,
+        {
+            "scripts/build_scan_image.sh": builder,
+            "images/release-profiles.json": json.dumps(catalogue),
+        },
+    )
+    return root, base, head, builder, catalogue
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_unrelated_profile_membership_and_build_branch_are_isolated(shared_inputs, reverse):
+    root, base, head, _, _ = shared_inputs
+    if reverse:
+        base, head = head, base
+    assert select(root, "push", base, head)[0] == ["terraform-avm"]
+
+
+def test_changed_command_selects_its_profile(shared_inputs):
+    root, _, base, builder, _ = shared_inputs
+    path = "scripts/build_scan_image.sh"
+    head = commit(
+        root, {path: builder.replace("--base-image maf-image-scan:base", "--base-image new-base")}
+    )
+    assert changed_profiles(root, base, head, path) == ("bicep-avm",)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "prefix",
+        "suffix",
+        "fallthrough",
+        "nested",
+        "quote",
+        "substitution",
+        "duplicate",
+        "missing",
+        "heredoc",
+        "commented-heredoc",
+    ],
+)
+def test_unknown_or_shared_shell_changes_keep_full_coverage(shared_inputs, mutation):
+    root, _, base, builder, _ = shared_inputs
+    path = "scripts/build_scan_image.sh"
+    changed = {
+        "prefix": builder.replace("set -euo pipefail", "set -eu"),
+        "suffix": builder + "echo shared\n",
+        "fallthrough": builder.replace("    ;;", "    ;&", 1),
+        "nested": builder.replace("  bicep)", '  bicep)\n    case "$2" in'),
+        "quote": builder.replace("  bicep)\n", '  bicep)\n    docker "unterminated\n'),
+        "substitution": builder.replace("  bicep)\n", "  bicep)\n    docker $(echo command)\n"),
+        "duplicate": builder.replace("  bicep-avm)", "  bicep)"),
+        "missing": None,
+        "heredoc": builder.replace("\nPY\n", "\nMISSING\n"),
+        "commented-heredoc": builder.replace(" <<'PY'", " # <<'PY'"),
+    }[mutation]
+    head = commit(root, {path: changed})
+    assert changed_profiles(root, base, head, path) == PROFILES
+
+
+def test_heredoc_contents_cannot_be_mistaken_for_dispatcher_branches(shared_inputs):
+    root, _, base, builder, _ = shared_inputs
+    path = "scripts/build_scan_image.sh"
+    fake_branch = "  bicep)\n    docker changed\n    ;;\n"
+    head = commit(
+        root, {path: builder.replace("\nimport json\n", "\n" + fake_branch + "import json\n")}
+    )
+    assert changed_profiles(root, base, head, path) == ("drawio-export",)
+
+
+def test_unchanged_unknown_shared_shell_cannot_narrow_later_changes(shared_inputs):
+    root, _, _, builder, _ = shared_inputs
+    path = "scripts/build_scan_image.sh"
+    source = builder + 'source "$0"\n'
+    base = commit(root, {path: source})
+    head = commit(
+        root, {path: source.replace("--base-image maf-image-scan:base", "--base-image newer")}
+    )
+    assert changed_profiles(root, base, head, path) == PROFILES
+
+
+@pytest.mark.parametrize(
+    "mutation", ["platform", "registry", "schema", "unknown", "duplicate", "invalid", "missing"]
+)
+def test_unknown_or_shared_catalogue_changes_keep_full_coverage(shared_inputs, mutation):
+    root, _, base, _, catalogue = shared_inputs
+    path = "images/release-profiles.json"
+    updates = {
+        "platform": {"platform": "linux/arm64"},
+        "registry": {"registryPrefix": "ghcr.io/other"},
+        "schema": {"schemaVersion": 2},
+        "unknown": {"buildArgs": {}},
+        "duplicate": {"profiles": catalogue["profiles"] * 2},
+        "invalid": {"profiles": "bicep-avm"},
+        "missing": {},
+    }[mutation]
+    head = commit(root, {path: None if mutation == "missing" else json.dumps(catalogue | updates)})
+    assert changed_profiles(root, base, head, path) == PROFILES
 
 
 @pytest.mark.parametrize("event", ["pull_request", "push"])

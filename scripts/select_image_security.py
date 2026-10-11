@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import tomllib
 from pathlib import Path
@@ -149,6 +150,102 @@ def affected(path: str) -> tuple[str, ...]:
     return ()
 
 
+def _build_branches(source: str) -> tuple[str, dict[str, str]]:
+    """Recognize only the literal, non-fallthrough dispatcher; keep all shared text."""
+    prefix, separator, rest = source.partition('case "$1" in\n')
+    if not separator or prefix != "#!/usr/bin/env bash\nset -euo pipefail\n\n":
+        raise ValueError("Unknown build dispatcher")
+    lines = rest.splitlines(keepends=True)
+    branches: dict[str, str] = {}
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line == '  *) echo "Unknown image scan profile: $1" >&2; exit 2 ;;\n':
+            ending = "".join(lines[index:])
+            if ending != (
+                '  *) echo "Unknown image scan profile: $1" >&2; exit 2 ;;\n'
+                'esac\n\ncase "$1" in\n  terraform-*|opentofu-*)\n'
+                "    docker run --rm -i --network none --read-only --tmpfs /tmp:rw,exec,size=256m "
+                "maf-image-scan:target /usr/local/bin/python3 - < images/terraform-sandbox/test_runner.py\n"
+                "    ;;\nesac\n"
+            ):
+                raise ValueError("Unknown dispatcher ending")
+            return prefix + separator + ending, branches
+        match = re.fullmatch(r"  ([a-z][a-z0-9-]*)\)\n", line)
+        if match is None or match[1] in branches:
+            raise ValueError("Unknown or duplicate build branch")
+        profile = match[1]
+        start = index
+        index += 1
+        while index < len(lines) and lines[index] != "    ;;\n":
+            command = lines[index].removesuffix("\n")
+            heredoc = re.fullmatch(r"(    docker .*) <<'([A-Z]+)'", command)
+            parsed = heredoc[1] if heredoc else command
+            if not parsed.startswith(("    docker ", "    uv ")) or any(
+                token in parsed for token in ("`", "$(", "${", "\\", "#")
+            ):
+                raise ValueError("Unsupported shell syntax")
+            tokens = list(shlex.shlex(parsed, posix=True, punctuation_chars=True))
+            if any(token and set(token) <= set("();&|<>") for token in tokens):
+                raise ValueError("Unsupported shell control operator")
+            index += 1
+            if heredoc:
+                while index < len(lines) and lines[index] != heredoc[2] + "\n":
+                    index += 1
+                if index == len(lines):
+                    raise ValueError("Unterminated heredoc")
+                index += 1
+        if index == len(lines) or index == start + 1:
+            raise ValueError("Unterminated or empty build branch")
+        index += 1
+        branches[profile] = "".join(lines[start:index])
+    raise ValueError("Missing dispatcher ending")
+
+
+def changed_profiles(root: Path, base: str, head: str, path: str) -> tuple[str, ...]:
+    """Narrow recognized shared-file changes; uncertainty retains every affected profile."""
+    if path not in {"images/release-profiles.json", "scripts/build_scan_image.sh"}:
+        return affected(path)
+    try:
+        before, after = (_git(root, "show", f"{ref}:{path}") for ref in (base, head))
+        if path == "scripts/build_scan_image.sh":
+            common_before, old = _build_branches(before)
+            common_after, new = _build_branches(after)
+            if common_before != common_after:
+                return PROFILES
+            return tuple(p for p in PROFILES if old.get(p) != new.get(p))
+        documents = [json.loads(text) for text in (before, after)]
+        memberships = []
+        for document in documents:
+            if set(document) != {"schemaVersion", "platform", "registryPrefix", "profiles"}:
+                raise ValueError("Unknown profile catalogue schema")
+            if type(document["schemaVersion"]) is not int or document["schemaVersion"] != 1:
+                raise ValueError("Unknown profile catalogue version")
+            members = document.pop("profiles")
+            if (
+                not isinstance(members, list)
+                or any(
+                    not isinstance(p, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", p)
+                    for p in members
+                )
+                or len(set(members)) != len(members)
+            ):
+                raise ValueError("Invalid profile membership")
+            memberships.append(set(members))
+        if documents[0] != documents[1]:
+            return PROFILES
+        return tuple(p for p in PROFILES if p in memberships[0] ^ memberships[1])
+    except (
+        subprocess.CalledProcessError,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        AttributeError,
+    ):
+        return affected(path)
+
+
 def select(root: Path, event: str, base: str, head: str) -> tuple[list[str], str]:
     """Return ordered profiles and a scope explanation, defaulting to full coverage on uncertainty."""
     if event in {"schedule", "workflow_dispatch"}:
@@ -161,7 +258,12 @@ def select(root: Path, event: str, base: str, head: str) -> tuple[list[str], str
         paths = _git(root, "diff", "--name-only", "--no-renames", "-z", base, head, "--")
         changed = [path for path in paths.split("\0") if path]
         ignored = metadata_only(root, base, head, changed)
-        chosen = {profile for path in changed if path not in ignored for profile in affected(path)}
+        chosen = {
+            profile
+            for path in changed
+            if path not in ignored
+            for profile in changed_profiles(root, base, head, path)
+        }
     except (
         subprocess.CalledProcessError,
         OSError,
