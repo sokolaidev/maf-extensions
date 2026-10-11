@@ -62,6 +62,6 @@ The matrix above is the original audit snapshot. Subsequent [Bicep HTTP/MAF owne
 | Work | State | Tracking |
 |---|---|---|
 | Selected-baseline two-session qualification | Open; Bicep/MAF evidence is recorded, with the published transport/SDK retirement evidence in #1851 remaining | [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open) |
-| Bicep cancellation, response loss and MAF closure | Five real Bicep/MAF cases passed on recorded candidates; delivery pending | [#1850](https://github.com/sokolaidev/maf-extensions/issues/1850) (open) |
+| Bicep cancellation, response loss and MAF closure | Delivered; five real Bicep/MAF cases passed on recorded candidates | [#1850](https://github.com/sokolaidev/maf-extensions/issues/1850) (closed) by [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865) (merged) |
 | Published transport bounds and SDK retirement | Open; explicit environment and retirement evidence required | [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851) (open) |
 | First-tool design and broader opportunities | Open; qualification does not dispose of design workstreams | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open); [#1637](https://github.com/sokolaidev/maf-extensions/issues/1637) (open) |
