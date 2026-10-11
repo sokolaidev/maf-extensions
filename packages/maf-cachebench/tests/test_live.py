@@ -51,6 +51,7 @@ from maf_compaction import (
     RECALL_TOOL_NAME,
     RECORD_MARKER,
     AnchoredCompactionStrategy,
+    CompactionBudgetExceeded,
     MinimumGainAnchoredCompactionStrategy,
     RecallGate,
     ToolResultAnchoredSummarizationCompactionStrategy,
@@ -2374,6 +2375,8 @@ async def _run_wait_fixture(
     strategy_name: str = "tool_and_user_summary_anchored",
     *,
     writes: bool = True,
+    min_groups_before_repeat: int = 4,
+    allow_overflow: bool = False,
     tool_tokens: int = 1_200,
     filler_turns: int = 7,
     lookups: Sequence[str] = ("a", "b", "c"),
@@ -2389,6 +2392,9 @@ async def _run_wait_fixture(
     on_strategy: Callable[[Any], None] | None = None,
 ) -> SimpleNamespace:
     """Drive a strategy through the harness's real session, wired the way ``run_live`` wires it.
+
+    ``min_groups_before_repeat`` controls the recall cadence; ``allow_overflow`` collects
+    local budget refusals so later turns can test refusal replay.
 
     Two filler turns of about 830 tokens, the lookups, then ``filler_turns`` more, then
     ``later_lookups`` and ``later_filler_turns`` -- a second batch of tool work, for a test that
@@ -2438,6 +2444,7 @@ async def _run_wait_fixture(
             trigger_fraction=recording.trigger_fraction,
             repeat_records=bool(getattr(strategy, "repeat_records", False)),
             reforce=recording.take_reforce,
+            min_groups_before_repeat=min_groups_before_repeat,
         )
     log: list[tuple[bool, bool]] = []
     if user is not None:
@@ -2475,13 +2482,20 @@ async def _run_wait_fixture(
     later = 2 + filler_turns
     turns += [f"Turn {index}: " + "u" * 3_200 for index in range(later, later + later_filler_turns)]
     turns += list(final_turns)
+    overflows: list[CompactionBudgetExceeded] = []
     for text in turns:
-        await agent.run(text, session=session)
+        try:
+            await agent.run(text, session=session)
+        except CompactionBudgetExceeded as error:
+            if not allow_overflow:
+                raise
+            overflows.append(error)
     history = next(
         provider for provider in agent.context_providers if isinstance(provider, HistoryProvider)
     )
     return SimpleNamespace(
         strategy=strategy,
+        overflows=overflows,
         recording=recording,
         user=user,
         middleware=middleware,
@@ -2673,7 +2687,10 @@ async def test_a_merge_through_the_live_path_sends_the_model_no_call_it_never_ma
     sent -- an early edit on the next call, bought by the store pass disagreeing with the copies.
     """
     run = await _run_wait_fixture(
-        record_padding=12_000, later_lookups=("d", "e"), later_filler_turns=6
+        min_groups_before_repeat=1,
+        record_padding=12_000,
+        later_lookups=("d", "e"),
+        later_filler_turns=6,
     )
     strategy = run.strategy
 
@@ -2745,7 +2762,10 @@ async def test_a_merge_through_the_live_path_leaves_no_call_without_its_output()
     instead, and the history holds every call and its output in the same state.
     """
     run = await _run_wait_fixture(
-        record_padding=12_000, later_lookups=("d", "e"), later_filler_turns=6
+        min_groups_before_repeat=1,
+        record_padding=12_000,
+        later_lookups=("d", "e"),
+        later_filler_turns=6,
     )
 
     assert run.strategy.records_merged >= 1, "the premise: the chain reached step a"
@@ -2833,6 +2853,7 @@ async def test_a_rewrite_the_chain_made_on_a_calls_copies_is_never_sent_back_und
     """
     summarizer = _LoggingSummarizer()
     run = await _run_wait_fixture(
+        min_groups_before_repeat=1,
         record_padding=12_000,
         later_filler_turns=3,
         final_turns=(f"{_LOOKUP} z", "Turn x: " + "u" * 3_200, "Turn y: " + "u" * 3_200),
@@ -3004,19 +3025,19 @@ class _RefusingRecordSummarizer:
 
 
 async def test_a_refused_rewrite_is_asked_once_through_the_live_paths_two_lists() -> None:
-    """The refusal memory is keyed by content, so the store pass and every later call read it.
+    """Repeated oversized requests reuse refusals without reaching the model again.
 
-    The live path runs the chain over the copies sent on each call and then over the store, which
-    are different objects with the records at different positions. Three records arrive, every
-    merge and rewrite is refused, and the prompt stays over the budget. Each distinct request is
-    paid for once; each refusal is counted once, where the store pass used to replay it and count
-    it again; the later passes skip what was refused; and the chain still reaches its fallback on
-    them. The requests that were paid for are on more than one set of records, because a record
-    arriving changes what a merge or rewrite would read, and makes it eligible again.
+    The records cannot shrink, so later turns meet the same protected record content.
+    Each merge or rewrite request is paid for once, then skipped on subsequent retries.
     """
     summarizer = _RefusingRecordSummarizer()
     run = await _run_wait_fixture(
-        record_padding=12_000, later_lookups=("d", "e"), later_filler_turns=6, summarizer=summarizer
+        min_groups_before_repeat=1,
+        allow_overflow=True,
+        record_padding=12_000,
+        later_lookups=("d", "e"),
+        later_filler_turns=6,
+        summarizer=summarizer,
     )
     strategy = run.strategy
     rewrites = [
@@ -3028,6 +3049,7 @@ async def test_a_refused_rewrite_is_asked_once_through_the_live_paths_two_lists(
         request for request in summarizer.requests if request[0] == DEFAULT_RECORD_MERGE_PROMPT
     ]
 
+    assert len(run.overflows) > 1, "irreducible prompts are refused on later retries too"
     assert rewrites and merges, "the premise: the chain reached steps a and c"
     assert len(set(summarizer.requests)) == len(summarizer.requests), "no request paid for twice"
     assert strategy.record_rewrites == strategy.record_rewrites_rejected == len(rewrites), (
@@ -3035,7 +3057,9 @@ async def test_a_refused_rewrite_is_asked_once_through_the_live_paths_two_lists(
     )
     assert strategy.record_merges_rejected == len(merges)
     assert strategy.record_rewrites_skipped > 0 and strategy.record_merges_skipped > 0
-    assert len({body for _, body in rewrites}) > 1, "asked again once the records changed"
+    assert len({body for _, body in rewrites}) == 1, (
+        "no new record arrives while the model is blocked"
+    )
     assert strategy.last_resort_fallbacks * DEFAULT_HARDER_ATTEMPTS > strategy.record_rewrites, (
         "the chain reached step d on passes whose step c asked nothing"
     )
