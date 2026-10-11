@@ -103,7 +103,7 @@ The original audit snapshot is retained above. The consolidated reconciliation c
 
 | Work | State | Tracking |
 |---|---|---|
-| Selected-baseline two-session qualification | Complete evidence reconciliation; closure pending this delivery | [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open) |
+| Selected-baseline two-session qualification | Complete; every finite acceptance row reconciled | [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (closed) by [#1882](https://github.com/sokolaidev/maf-extensions/pull/1882) (merged) |
 | Bicep cancellation, response loss and MAF closure | Delivered; five real Bicep/MAF cases passed on recorded candidates | [#1850](https://github.com/sokolaidev/maf-extensions/issues/1850) (closed) by [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865) (merged) |
 | Published transport bounds and SDK retirement | Delivered; 43 published-stack cases and 109 SDK retirements passed | [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851) (closed) by [#1870](https://github.com/sokolaidev/maf-extensions/pull/1870) (merged) |
 | First-tool design and broader opportunities | Open; qualification does not dispose of design workstreams | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open); [#1637](https://github.com/sokolaidev/maf-extensions/issues/1637) (open) |
