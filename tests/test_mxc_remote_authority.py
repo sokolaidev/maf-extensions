@@ -396,7 +396,7 @@ def test_competing_processes_grant_exactly_one_owner_or_takeover(tmp_path, opera
             stdout, stderr = child.communicate(timeout=20)
             assert child.returncode == 0, stderr.decode()
             results.append(json.loads(stdout))
-        assert sum(result["ok"] for result in results) == 1
+        assert sum(result["ok"] for result in results) == 1, results
         with authority(root) as db:
             winner = next(result for result in results if result["ok"])
             if operation == "acquire":
@@ -545,3 +545,61 @@ def test_existing_local_store_is_not_silently_promoted(tmp_path, name):
         authority(root)
     assert original.read_bytes() == b"local-state"
     assert not (root / "authority.sqlite").exists()
+
+
+INITIALIZE_CRASH = """
+import os, sys
+from contextlib import contextmanager
+from pathlib import Path
+from scripts.experiments.mxc_session_patch.remote_authority import Authority
+root, boundary = sys.argv[1:]
+original = Authority._transaction
+@contextmanager
+def crash(self):
+    with original(self):
+        if boundary == 'before_schema':
+            os._exit(76)
+        yield
+        if boundary == 'before_commit':
+            os._exit(76)
+    os._exit(76)
+Authority._transaction = crash
+Authority(Path(root), enabled=True, capacity=17)
+"""
+
+
+@pytest.mark.parametrize("boundary", ["before_schema", "before_commit", "after_commit"])
+def test_initialization_crash_can_reopen_and_preserves_configuration(tmp_path, boundary):
+    root = tmp_path / "db"
+    child = subprocess.run(
+        [sys.executable, "-c", INITIALIZE_CRASH, str(root), boundary],
+        cwd=Path(__file__).parents[1],
+        capture_output=True,
+        timeout=20,
+    )
+    assert child.returncode == 76, child.stderr.decode()
+    assert (root / "authority.sqlite").exists()
+    with authority(root, capacity=17) as db:
+        owner = db.acquire("session", PROFILE, A)
+        current(db, owner)
+    with authority(root, capacity=17) as db:
+        assert db.acquire("session", PROFILE, A) == owner
+    with pytest.raises(remote.Refused, match="capacity"):
+        authority(root, capacity=18)
+
+
+def test_nonempty_foreign_schema_is_not_initialized(tmp_path):
+    import sqlite3
+
+    root = tmp_path / "db"
+    remote.prepare(root)
+    with sqlite3.connect(root / "authority.sqlite") as connection:
+        connection.execute("CREATE TABLE foreign_data(value TEXT)")
+        connection.execute("INSERT INTO foreign_data VALUES('preserved')")
+    with pytest.raises(remote.Refused, match="unavailable or corrupt"):
+        authority(root)
+    with sqlite3.connect(root / "authority.sqlite") as connection:
+        assert connection.execute("SELECT * FROM foreign_data").fetchall() == [("preserved",)]
+        assert connection.execute("SELECT name FROM sqlite_schema").fetchall() == [
+            ("foreign_data",)
+        ]

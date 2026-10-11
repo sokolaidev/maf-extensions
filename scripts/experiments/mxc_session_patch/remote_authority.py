@@ -102,7 +102,6 @@ class Authority:
             path = self.root / "authority.sqlite"
             for suffix in ("", "-journal", "-wal", "-shm"):
                 check_file(Path(str(path) + suffix))
-            existed = path.exists()
             self.db = sqlite3.connect(path, timeout=0, isolation_level=None)
             self.db.row_factory = sqlite3.Row
             try:
@@ -116,7 +115,7 @@ class Authority:
                 if self.db.execute(f"PRAGMA max_page_count={pages}").fetchone()[0] != pages:
                     raise Refused("coordinator database ceiling unavailable")
                 with self._transaction():
-                    if not existed:
+                    if self.db.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchone() is None:
                         self.db.execute(
                             "CREATE TABLE settings(version INTEGER NOT NULL, capacity INTEGER NOT NULL)"
                         )
