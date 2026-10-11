@@ -2034,6 +2034,7 @@ def test_idle_registry_checks_tolerate_control_notifications_without_work():
     "case",
     [
         "registry",
+        "discovery-backoff",
         "lifecycle",
         "unavailable",
         "idle",
@@ -2065,6 +2066,7 @@ def test_final_shutdown_requires_zero_process_exit(case, exit_code):
     "case",
     [
         "registry",
+        "discovery-backoff",
         "lifecycle",
         "unavailable",
         "idle",
@@ -3250,6 +3252,7 @@ def test_denial_cli_rejects_incomplete_options_before_creating_root(
     [
         "lifecycle",
         "registry",
+        "discovery-backoff",
         "unavailable",
         "idle",
         "idle-default",
@@ -3415,3 +3418,170 @@ def test_removal_observer_matches_the_daemon_authorization_diagnostic(tmp_path, 
     assert len(rows) == 1
     assert rows[0]["authorization_denied"] is denied
     assert rows[0]["stderr_sha256"] == hashlib.sha256(message.encode()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "short_monotonic",
+        "short_wall",
+        "missing_start",
+        "wrong_boot",
+        "initialize",
+        "tools/list",
+        "tools/call",
+        "binding_started",
+        "retired",
+        "delete_requested",
+    ],
+)
+def test_discovery_quiet_requires_both_elapsed_clocks_and_no_background_work(mutation):
+    observed = {"started_ns": 1_000_000_000, "finished_ns": 36_000_000_000, "elapsed_seconds": 35.0}
+    evidence = [{"boot": "boot", "event": "request", "method": "notifications/cancelled"}]
+    if mutation == "short_monotonic":
+        observed["elapsed_seconds"] = 34.9
+    elif mutation == "short_wall":
+        observed["finished_ns"] -= 1
+    elif mutation == "missing_start":
+        observed.pop("started_ns")
+    elif mutation == "wrong_boot":
+        evidence[0]["boot"] = "other"
+    elif mutation in {"initialize", "tools/list", "tools/call"}:
+        evidence[0]["method"] = mutation
+    elif mutation:
+        evidence[0]["event"] = mutation
+    if mutation is None:
+        lifecycle.verify_discovery_quiet(evidence, "boot", observed, 35)
+    else:
+        with pytest.raises(RuntimeError):
+            lifecycle.verify_discovery_quiet(evidence, "boot", observed, 35)
+
+
+@pytest.mark.parametrize("delay", [30, 60])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "early_monotonic",
+        "late_monotonic",
+        "early_wall",
+        "early_start",
+        "inverted_probe",
+        "late_wall",
+        "missing_failure",
+        "provider",
+        "catalog",
+        "status",
+        "payload",
+        "initialize",
+        "listing",
+        "work",
+        "retired",
+        "wrong_boot",
+    ],
+)
+def test_repeated_backoff_probe_distinguishes_doubled_deadline_without_initialization(
+    delay, mutation
+):
+    status = 500
+    payload = {"error": {"message": "internal error", "type": "api_error"}}
+    observed = {
+        "elapsed_seconds": delay + 5,
+        "failure_settled_ns": 1_000_000_000,
+        "probe_started_ns": (delay + 5) * 1_000_000_000,
+        "probe_finished_ns": (delay + 6) * 1_000_000_000,
+        "boot": "boot",
+        "provider_seen": False,
+        "gateway_catalog_error": True,
+    }
+    evidence = []
+    if mutation == "early_monotonic":
+        observed["elapsed_seconds"] = delay
+    elif mutation == "late_monotonic":
+        observed["elapsed_seconds"] = delay * 2
+    elif mutation == "early_wall":
+        observed["probe_finished_ns"] = (delay + 1) * 1_000_000_000
+    elif mutation == "early_start":
+        observed["probe_started_ns"] = (delay + 1) * 1_000_000_000
+    elif mutation == "inverted_probe":
+        observed["probe_started_ns"] = observed["probe_finished_ns"] + 1
+    elif mutation == "late_wall":
+        observed["probe_finished_ns"] = (delay * 2 + 1) * 1_000_000_000
+    elif mutation == "missing_failure":
+        observed.pop("failure_settled_ns")
+    elif mutation == "provider":
+        observed["provider_seen"] = True
+    elif mutation == "catalog":
+        observed["gateway_catalog_error"] = False
+    elif mutation == "status":
+        status = 200
+    elif mutation == "payload":
+        payload = {}
+    elif mutation in {"initialize", "listing", "work"}:
+        evidence.append(
+            {
+                "boot": "boot",
+                "event": "request",
+                "method": {
+                    "initialize": "initialize",
+                    "listing": "tools/list",
+                    "work": "tools/call",
+                }[mutation],
+            }
+        )
+    elif mutation == "retired":
+        evidence.append({"boot": "boot", "event": "retired"})
+    elif mutation == "wrong_boot":
+        evidence.append({"boot": "other", "event": "response"})
+    if mutation is None:
+        lifecycle.verify_backoff_probe(status, payload, evidence, observed, delay)
+    else:
+        with pytest.raises(RuntimeError):
+            lifecycle.verify_backoff_probe(status, payload, evidence, observed, delay)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "duplicate",
+        "before_turn",
+        "no_turn",
+        "wrong_boot",
+        "success",
+        "missing_response",
+        "missing_settled",
+        "work",
+    ],
+)
+def test_repeated_discovery_requires_one_new_real_capacity_failure(mutation):
+    evidence = capacity_evidence()
+    requested_ns = 1
+    if mutation == "duplicate":
+        duplicate = copy.deepcopy(evidence)
+        for row in duplicate:
+            row["exchange"] = "another"
+        evidence.extend(duplicate)
+    elif mutation == "before_turn":
+        requested_ns = 100
+    elif mutation == "no_turn":
+        requested_ns = 0
+    elif mutation == "wrong_boot":
+        evidence.append({"boot": "other", "event": "response"})
+    elif mutation == "success":
+        evidence[1]["status"] = 200
+    elif mutation == "missing_response":
+        del evidence[1]
+    elif mutation == "missing_settled":
+        del evidence[2]
+    elif mutation == "work":
+        evidence.append({"event": "request", "method": "tools/call", "boot": "boot"})
+    if mutation is None:
+        assert (
+            lifecycle.verify_single_discovery_failure(evidence, "boot", requested_ns)
+            == evidence[2]["time_ns"]
+        )
+    else:
+        with pytest.raises(RuntimeError):
+            lifecycle.verify_single_discovery_failure(evidence, "boot", requested_ns)
