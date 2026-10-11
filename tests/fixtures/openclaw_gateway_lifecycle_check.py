@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from openclaw_docker_denial import DockerRemovalDenial, verify_authorization
 from openclaw_gateway_check import docker
 from openclaw_gateway_http_check import (
     BASELINE_DISPATCHES,
@@ -407,7 +408,12 @@ def verify_poisoned_turns(
 
 
 def verify_docker_disconnect(evidence, call, observed) -> dict[str, Any]:
+    return verify_docker_cleanup_failure(evidence, call, observed, "connection_refused")
+
+
+def verify_docker_cleanup_failure(evidence, call, observed, reason: str) -> dict[str, Any]:
     """Require a real removal refusal, accepted cancellation and independently retained work."""
+    require(reason in {"connection_refused", "authorization_denied"}, "Unknown Docker refusal")
     boot = call.get("boot")
     require(
         bool(boot)
@@ -415,15 +421,15 @@ def verify_docker_disconnect(evidence, call, observed) -> dict[str, Any]:
         and bool(call.get("session"))
         and bool(call.get("request"))
         and bool(call.get("exchange")),
-        "Docker disconnect lacks an identified active call",
+        "Docker cleanup fault lacks an identified active call",
     )
     require(
         call.get("time_ns", 0)
-        < observed.get("disconnected_ns", 0)
+        < observed.get("fault_armed_ns", 0)
         < observed.get("abort_ns", 0)
         < observed.get("observed_ns", 0)
         and matching_cancel(evidence, call, after_ns=observed["abort_ns"]),
-        "Docker disconnect lacks ordered accepted cancellation",
+        "Docker cleanup fault lacks ordered accepted cancellation",
     )
     require(
         isinstance(observed.get("container"), str)
@@ -443,7 +449,7 @@ def verify_docker_disconnect(evidence, call, observed) -> dict[str, Any]:
                 "sentinel_preserved",
             )
         ),
-        "Docker disconnect lacks independent retained-resource or poisoned-readiness evidence",
+        "Docker cleanup fault lacks independent retained-resource or poisoned-readiness evidence",
     )
     removals = [
         r
@@ -461,12 +467,13 @@ def verify_docker_disconnect(evidence, call, observed) -> dict[str, Any]:
             and isinstance(r.get("returncode"), int)
             and not isinstance(r["returncode"], bool)
             and r["returncode"] != 0
-            and r.get("connection_refused") is True
+            and r.get(reason) is True
+            and (reason != "authorization_denied" or r.get("connection_refused") is False)
             and isinstance(r.get("stderr_sha256"), str)
             and len(r["stderr_sha256"]) == 64
             for r in removals
         ),
-        "Docker removal did not fail through the real disconnected command path",
+        "Docker removal did not fail through the selected real command path",
     )
     settled = [
         r for r in evidence if r.get("event") == "settled" and r.get("exchange") == call["exchange"]
@@ -480,7 +487,7 @@ def verify_docker_disconnect(evidence, call, observed) -> dict[str, Any]:
         and max(r["time_ns"] for r in removals)
         <= settled[0].get("time_ns", 0)
         <= observed["observed_ns"],
-        "Disconnected call did not settle with admission poisoned",
+        "Failed cleanup did not settle with admission poisoned",
     )
     return {
         "failed_removal_commands": len(removals),
@@ -1091,7 +1098,7 @@ def verify_final_shutdown(evidence, case: str, exit_code: int | None) -> None:
             [False, True, False]
             if case == "lifecycle"
             else [True, False]
-            if case == "docker-disconnect"
+            if case in {"docker-disconnect", "docker-denial"}
             else [False]
         )
         and all(r.get("sessions") == 0 and r.get("active") is False for r in final),
@@ -1108,6 +1115,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
         "idle": IDLE_DISPATCHES,
         "idle-default": DEFAULT_IDLE_DISPATCHES,
         "docker-disconnect": DOCKER_DISCONNECT_DISPATCHES,
+        "docker-denial": DOCKER_DISCONNECT_DISPATCHES,
     }
     require(case in counts, "Unknown qualification case")
     dispatches = counts[case]
@@ -1169,6 +1177,11 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
     report: dict[str, Any] = {"case": case, "complete_matrix": False, "image": image}
     with ExitStack() as stack:
         docker_fault = DockerConnectionFault(root, stack) if case == "docker-disconnect" else None
+        denial = (
+            DockerRemovalDenial(root, args.authz_outer_host, args.authz_daemon, args.authz_client)
+            if case == "docker-denial"
+            else None
+        )
         retained_container = None
 
         def start(name: str, command: list[str], environment=None):
@@ -1223,7 +1236,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     str(refusal_file),
                     "--refuse-completed-cleanup-file",
                     str(completed_refusal_file),
-                    *(["--observe-docker-removal"] if docker_fault else []),
+                    *(["--observe-docker-removal"] if docker_fault or denial else []),
                     *(["--idle-expiry-file", str(idle_expiry_file)] if case == "idle" else []),
                     *(
                         ["--default-idle-expiry-file", str(idle_expiry_file)]
@@ -1231,7 +1244,11 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                         else []
                     ),
                 ],
-                docker_fault.environment if docker_fault else None,
+                docker_fault.environment
+                if docker_fault
+                else denial.environment
+                if denial
+                else None,
             )
 
         def ready(port, path, token, process):
@@ -1583,8 +1600,8 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     "Both sessions recovered discovery and reused their MCP identities without a Gateway restart or replay",
                     flush=True,
                 )
-            elif case == "docker-disconnect":
-                if service_process is None or docker_fault is None:
+            elif case in {"docker-disconnect", "docker-denial"}:
+                if service_process is None or (docker_fault is None and denial is None):
                     raise RuntimeError(
                         "Docker disconnect requires a started private-context service"
                     )
@@ -1616,7 +1633,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     active_calls = requests(records(transport)[before_active:])
                     require(
                         len(active_calls) == 1 and active_calls[0]["session"] == sessions[0],
-                        "Docker disconnect lacks one selected active call",
+                        "Docker cleanup fault lacks one selected active call",
                     )
                     active_call = active_calls[0]
                     expected_calls += 1
@@ -1626,8 +1643,11 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                         json.loads(docker("inspect", retained_container))[0]["State"]["Paused"],
                         "Compiler was not paused before disconnect",
                     )
-                    docker_fault.disconnect()
-                    disconnected_ns = time.time_ns()
+                    if denial:
+                        denial.arm(target, retained_container)
+                    elif docker_fault:
+                        docker_fault.disconnect()
+                    fault_armed_ns = time.time_ns()
                     require(pending.sock is not None, "Active Gateway turn already ended")
                     abort_ns = time.time_ns()
                     pending.sock.shutdown(socket.SHUT_RDWR)
@@ -1657,7 +1677,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     observed = {
                         "container": retained_container,
                         "target": target,
-                        "disconnected_ns": disconnected_ns,
+                        "fault_armed_ns": fault_armed_ns,
                         "abort_ns": abort_ns,
                         "compiler_before": True,
                         "paused": survivor["State"]["Paused"],
@@ -1672,9 +1692,28 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                         "observed_ns": time.time_ns(),
                     }
                     failure_evidence = records(transport)[before_active:]
-                    failure_report = verify_docker_disconnect(
-                        failure_evidence, active_call, observed
+                    failure_report = verify_docker_cleanup_failure(
+                        failure_evidence,
+                        active_call,
+                        observed,
+                        "authorization_denied" if denial else "connection_refused",
                     )
+                    if denial:
+                        failed_commands = [
+                            r
+                            for r in failure_evidence
+                            if r.get("event") == "docker_removal" and r.get("target") == target
+                        ]
+                        verify_authorization(
+                            denial.evidence(),
+                            failed_commands,
+                            target=target,
+                            container=retained_container,
+                            client=denial.client,
+                            nonce=denial.nonce,
+                            denied=True,
+                        )
+
                     before_poisoned = len(records(transport))
                     poisoned_projections = []
                     for index in range(2):
@@ -1723,7 +1762,25 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                         flush=True,
                     )
                     before_recovery = len(records(transport))
-                    docker_fault.restore()
+                    last_denial_sequence = 0
+                    if denial:
+                        all_failed = [
+                            r
+                            for r in records(transport)[before_active:]
+                            if r.get("event") == "docker_removal" and r.get("target") == target
+                        ]
+                        last_denial_sequence = verify_authorization(
+                            denial.evidence(),
+                            all_failed,
+                            target=target,
+                            container=retained_container,
+                            client=denial.client,
+                            nonce=denial.nonce,
+                            denied=True,
+                        )
+                        denial.restore()
+                    elif docker_fault:
+                        docker_fault.restore()
                     service_process = service()
                     service_ready(service_process)
                     recovery_rows = records(transport)[before_recovery:]
@@ -1734,6 +1791,23 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                         "Restored startup left owned resources",
                     )
                     require(owner_file.read_bytes() == owner_before, "Recovery changed owner bytes")
+                    if denial:
+                        recovered_commands = [
+                            r
+                            for r in recovery_rows
+                            if r.get("event") == "docker_removal" and r.get("target") == target
+                        ]
+                        verify_authorization(
+                            denial.evidence(),
+                            recovered_commands,
+                            target=target,
+                            container=retained_container,
+                            client=denial.client,
+                            nonce=denial.nonce,
+                            denied=False,
+                            after_sequence=last_denial_sequence,
+                        )
+                        failure_report["daemon_authorization_correlated"] = True
                     retained_container = None
                     fresh = [turn(index)[0] for index in range(2)]
                     require(
@@ -1760,20 +1834,33 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                         owner_unchanged=True,
                         replayed=False,
                     )
-                    report["docker_disconnect"] = failure_report
-                    (root / "docker-disconnect.json").write_text(
+                    report["docker_denial" if denial else "docker_disconnect"] = failure_report
+                    (
+                        root / ("docker-denial.json" if denial else "docker-disconnect.json")
+                    ).write_text(
                         json.dumps(
                             {
                                 "transport": records(transport)[before_active:],
                                 "observed": observed,
                                 "call": active_call,
                                 "poisoned_projections": poisoned_projections,
+                                **(
+                                    {
+                                        "authorization": denial.evidence(),
+                                        "authorization_client": denial.client,
+                                        "authorization_nonce": denial.nonce,
+                                        "shutdown_sequence": last_denial_sequence,
+                                    }
+                                    if denial
+                                    else {}
+                                ),
                             }
                         ),
                         encoding="utf-8",
                     )
                     print(
-                        "Restored Docker connection and service restart removed the retained compiler; new work succeeded without replay",
+                        ("Cleared daemon denial" if denial else "Restored Docker connection")
+                        + " and service restart removed the retained compiler; new work succeeded without replay",
                         flush=True,
                     )
                 finally:
@@ -2908,8 +2995,8 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
             report["total_dispatches"] = verify_dispatch_count(records(transport), dispatches)
             report["remaining"] = [
                 "broader idle-expiry timing races, other retirement triggers and prolonged/concurrent churn",
-                "daemon-side removal failures, broader Docker outages and remaining interruption cases"
-                if case == "docker-disconnect"
+                "daemon storage/removal faults, broader Docker outages and remaining interruption cases"
+                if case in {"docker-disconnect", "docker-denial"}
                 else "Docker cleanup/daemon failures and remaining interruption cases",
                 "other discovery failures, repeated backoff and concurrent discovery",
                 "full real-host transport/MAF matrix",
@@ -2925,6 +3012,8 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 if process.poll() is None:
                     process.kill()
                 process.wait(timeout=30)
+            if denial:
+                denial.restore()
             if retained_container and docker("ps", "-aq", "--filter", f"id={retained_container}"):
                 docker("rm", "-f", retained_container)
             if sentinel:
@@ -2956,7 +3045,9 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
     (
         root
         / (
-            "docker-disconnect-report.json"
+            "docker-denial-report.json"
+            if case == "docker-denial"
+            else "docker-disconnect-report.json"
             if case == "docker-disconnect"
             else "default-idle-report.json"
             if case == "idle-default"
@@ -2977,6 +3068,9 @@ def main():
     for name in ("root", "config", "bicep-config", "openclaw"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--image", required=True)
+    for name in ("authz-outer-host", "authz-daemon", "authz-client"):
+        parser.add_argument("--" + name)
+
     parser.add_argument(
         "--case",
         choices=[
@@ -2986,6 +3080,7 @@ def main():
             "idle",
             "idle-default",
             "docker-disconnect",
+            "docker-denial",
         ],
         default="lifecycle",
     )

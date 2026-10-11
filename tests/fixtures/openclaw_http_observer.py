@@ -311,6 +311,8 @@ def observe_docker_removal(observer: ObserveHTTP, backend_type: Any) -> None:
                 returncode=result.returncode,
                 connection_refused="connect" in result.stderr.lower()
                 and "refused" in result.stderr.lower(),
+                authorization_denied="authorization denied by plugin qualification: qualification removal denied"
+                in result.stderr,
                 stderr_sha256=hashlib.sha256(result.stderr.encode()).hexdigest(),
             )
         return result
