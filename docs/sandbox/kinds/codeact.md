@@ -169,6 +169,7 @@ Provider details stay in host logs. A control-plane timeout is not reported as p
 
 | Contract | State | Details |
 |---|---|---|
+| Host-controlled disabling of nested host tools | Implemented; explicit host FIDES configuration wiring | [#1859](https://github.com/sokolaidev/maf-extensions/issues/1859) (closed) by [#1861](https://github.com/sokolaidev/maf-extensions/pull/1861) (merged) |
 | Exec, file channels, output modes and exec host tools | Implemented | [Package README](../../../packages/maf-sandbox-codeact/README.md) |
 | Withheld output locations calculated from the sink | Implemented | [#1682](https://github.com/sokolaidev/maf-extensions/issues/1682) (closed) by [#1683](https://github.com/sokolaidev/maf-extensions/pull/1683) (merged) |
 | Explicit Python runtime | Implemented | [Hyperlight profiles](../backends/hyperlight.md) |
