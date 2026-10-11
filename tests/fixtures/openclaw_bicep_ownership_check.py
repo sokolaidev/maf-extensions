@@ -213,6 +213,7 @@ class RemovalGate:
         self.scope = scope
         self.original = backend_type._invoke
         self.target: str | None = None
+        self.names: set[str] = set()
         self.entered = asyncio.Event()
         self.release = asyncio.Event()
         self.removals: list[dict[str, Any]] = []
@@ -222,16 +223,15 @@ class RemovalGate:
 
         async def invoke(backend, *args, **kwargs):
             gated = False
-            if len(args) == 3 and args[:2] == ("rm", "-f") and self.target:
-                info = json.loads(await docker("inspect", args[2]))[0]
-                if info["Id"] == self.target:
-                    require(
-                        info["Config"]["Labels"].get("maf-sandbox.scope") == self.scope,
-                        "Removal barrier crossed ownership",
-                    )
-                    gated = True
-                    self.entered.set()
-                    await self.release.wait()
+            if (
+                len(args) == 3
+                and args[:2] == ("rm", "-f")
+                and args[2] in self.names
+                and not self.entered.is_set()
+            ):
+                gated = True
+                self.entered.set()
+                await self.release.wait()
             result = await original(backend, *args, **kwargs)
             if gated:
                 self.removals.append(
@@ -241,14 +241,22 @@ class RemovalGate:
 
         self.backend_type._invoke = invoke
 
-    def arm(self, container: str) -> None:
+    async def arm(self, container: str) -> None:
         require(self.target is None, "Removal gate already armed")
+        info = json.loads(await docker("inspect", container))[0]
+        require(
+            info["Id"] == container
+            and info["Config"]["Labels"].get("maf-sandbox.scope") == self.scope,
+            "Removal barrier crossed ownership",
+        )
+        self.names = {container, info["Name"].lstrip("/")}
         self.target = container
         self.entered.clear()
         self.release.clear()
 
     def reset(self) -> None:
         self.target = None
+        self.names.clear()
         self.release.set()
 
     def restore(self) -> None:
@@ -425,7 +433,7 @@ class Check:
         start = len(self.events())
         active = self.task(self.call(a, LARGE))
         container = await self.compiler()
-        self.gate.arm(container)
+        await self.gate.arm(container)
         await self.busy(b, container)
         await self.cancel(b)
         await self.busy(b, container)
@@ -547,7 +555,7 @@ class Check:
         active = self.task(running.call_tool("bicep_validate", **LARGE))
         container = await self.compiler()
         if active_close:
-            self.gate.arm(container)
+            await self.gate.arm(container)
         before = len(self.events())
         closing = self.task(a.close())
         await until(
