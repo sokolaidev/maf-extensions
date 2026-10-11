@@ -16,7 +16,7 @@ This is an independent package. It is not affiliated with or endorsed by Microso
 | `MinimumGainAnchoredCompactionStrategy` | The same, with a floor: a collapse that would save too little to repay the cache it invalidates is declined. |
 | `ToolResultAnchoredSummarizationCompactionStrategy` | Has the model write the facts from its tool results into a *record* through a recall tool, then drops the tool groups the record covers. Ships with `make_recall_tool`, `RecallGate` and `ToolResultRecallMiddleware`, which ask for the record at the right moment. |
 | `UserTurnAnchoredSummarizationCompactionStrategy` | Summarises the user's turns between a fixed head and tail with a summarizer client, in one of three modes. |
-| `ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy` | Runs the two summarising strategies over one conversation, record phase first, with a bounded last-resort chain that merges and rewrites while the prompt is over budget. When nothing safe is left to remove it stops, and the prompt goes out over the limit: a loud failure rather than a quiet loss of facts. |
+| `ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy` | Runs the two summarising strategies over one conversation, record phase first, with a bounded last-resort chain that merges and rewrites while the prompt is over budget. If still over budget, sheds whole unrecorded groups with a warning by default, or raises locally in strict mode. |
 
 All of them implement the framework's `CompactionStrategy` and attach wherever the framework takes one: `create_harness_agent`, or a `CompactionProvider` on a plain `Agent`.
 
@@ -107,7 +107,8 @@ recall = ToolResultRecallMiddleware(
     disarm=gate.disarm,
     trigger_fraction=strategy.trigger_fraction,
     record_max_tokens=4_000,
-    repeat_records=True,  # a record per new batch of tool work
+    repeat_records=True,
+    min_groups_before_repeat=4,  # repeat only after four new groups above the trigger
     reforce=strategy.take_reforce,
 )
 
@@ -128,6 +129,12 @@ agent = create_harness_agent(
 The summarising strategies, `RecallGate` and `ToolResultRecallMiddleware` keep one conversation's decisions on the instance. This direct wiring builds the stack and agent once per session; the middleware raises if a second session reaches it. For a shared agent, use the session wiring below.
 
 The composed strategy takes a record half and a user-turn half built the same way, the user half with `remembered_requests=2` unless it runs in the recompacting mode; `find_nested_strategy` finds the record half inside it for the middleware's `reforce`, and `record_text` reads the record the model wrote.
+
+The size trigger asks for the first record immediately. Later size-triggered records wait for `min_groups_before_repeat` new tool groups (four by default); `max_groups_before_record` remains a separate bound that can force records below the trigger. Re-force chains retry only their original uncovered batch and cannot recruit groups arriving during an ask. Coverage still requires the configured share of exact values; a short record does not establish coverage of a large table.
+
+The composed strategy defaults to `overflow_policy="shed"`. After its existing merge, rewrite and protected fallback steps, it may remove whole unrecorded tool groups to meet `max_input_tokens`. A WARNING names the lost message IDs, and removal markers tell the model that history was shed. These decisions replay on stored history and across session restores. Use `overflow_policy="raise"` to keep uncovered results instead. Both policies raise `CompactionBudgetExceeded` locally if the remaining anchors, records or other protected messages cannot fit. The host must handle that error by reducing protected context or choosing a larger budget; it is not a successful model response. The budget counts messages with your tokenizer: reserve additional room for tool schemas and provider overhead.
+
+Named `tool_choice` support is required for reliable recall. Reports in [#1872](https://github.com/sokolaidev/maf-extensions/issues/1872) describe OpenRouter routes for DeepSeek V4 Flash and GLM 5.3 Flash ignoring the pin with reasoning enabled, while GPT 6 Luna and Tencent Hy3 honoured it. Those are reported observations, not provider qualification by this package; verify the selected route and reasoning settings. A pin does not prove that a record was written.
 
 ## Serving many sessions
 

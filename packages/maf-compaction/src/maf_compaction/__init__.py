@@ -55,6 +55,7 @@ from ._composed import (
     DEFAULT_CHAIN_GAIN_FRACTION,
     DEFAULT_HARDER_ATTEMPTS,
     ChainDecisions,
+    CompactionBudgetExceeded,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
 )
 from ._nested import find_nested_strategy
@@ -144,6 +145,7 @@ __all__ = [
     "AnchoredCompactionStrategy",
     "ChainDecisions",
     "CompactionStack",
+    "CompactionBudgetExceeded",
     "MafCompactionExperimentalWarning",
     "MinimumGainAnchoredCompactionStrategy",
     "RecallGate",

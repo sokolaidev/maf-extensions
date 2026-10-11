@@ -328,6 +328,17 @@ class AnchoredCompactionStrategy:
             # exists. Without this the ceiling check below reads the original sizes and sheds
             # groups that were already small enough.
             annotate_token_counts(messages, tokenizer=self.tokenizer, force_retokenize=True)
+        return self.shed_to(messages, ceiling=ceiling) or changed
+
+    def shed_to(self, messages: list[Message], *, ceiling: int) -> bool:
+        """Remove whole band groups to fit ``ceiling``, preserving anchors and marked messages.
+
+        Unlike :meth:`compact_to`, this never rewrites a tool result in place.
+        The prompt may still exceed the ceiling when nothing removable remains.
+        """
+        annotate_message_groups(messages)
+        annotate_token_counts(messages, tokenizer=self.tokenizer)
+        changed = False
         # Shedding is repeated because each pass adds notes of its own, which can leave the
         # prompt over the ceiling it just tried to meet. It ends: a pass that sheds excludes at
         # least one more group, excluded groups and notes are never shed, and the loop stops at

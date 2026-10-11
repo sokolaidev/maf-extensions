@@ -1800,27 +1800,10 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         asked for again; if none did, or no record came at all, the targets still uncovered are
         settled.
 
-        **The bound is progress, and it is a bound because groups are finite.** Every ask that
-        continues the chain has removed at least one group from it for good -- a covered group
-        is dropped, not re-examined -- and every ask that does not ends it, settling every
-        target it had. So each ask retires at least one group from ever being a target again,
-        the asks made over a run number at most the tool groups ever found uncovered, and a
-        shortfall a later record opens on new material gets its own chain on the same terms. A
-        fixed count of asks is wrong in both directions. One further ask is measured to be
-        enough on a model whose record covers two of six groups and whose second covers the
-        rest, and a chain that stops on the first ask that helps nothing costs that model
-        nothing. Any larger constant is a constant number of pinned calls spent on a model that
-        has already shown it will not cover them: three records, and five to six groups still
-        uncovered.
-
-        **Layer two settles, and settled means preserved for good.** A settled group keeps the
-        hold layer one put on it for as long as it stays uncovered, and nothing here lifts it:
-        not the fallback, which honours the mark, and not a further ask, because the chain has
-        ended. The one thing that lifts it is a later record quoting its values, which is a
-        deletion the record licenses and not an escape. The prompt may then sit over the
-        ceiling with nothing left the fallback may take; the fallback stops there rather than
-        looping, the caller sends the prompt as it stands, and the row reads ``DQ``. That is the
-        accepted consequence, and it is not softened here.
+        A chain retries only its original targets while each answer covers at least one.
+        Groups arriving during that chain are settled without another ask; a later batch
+        record can still cover and release them. Settled groups remain protected from the
+        record fallback. The composition's overflow policy governs last-resort shedding.
 
         Args:
             records: How many records the conversation holds on this pass, from
@@ -1829,6 +1812,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         uncovered = self._uncovered
         request = self._reforce
         if request is not None:
+            # A re-force chain only retries the batch its first ask targeted.
+            self._settled |= uncovered - request.targets
             if records > request.records:
                 # The record came. Progress is a target that is no longer uncovered; a record
                 # that covered none of them is the model declining, and the chain ends there.
@@ -1938,7 +1923,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             below the strategy's fallback threshold, because the decision is made one call
             late -- see :meth:`process`. Defaults to :data:`DEFAULT_TRIGGER_FRACTION`, the
             same default as the strategy. Keep both values aligned when overriding it.
-        repeat_records: Let the size trigger ask again once there is new tool work to record.
+        repeat_records: Let the size trigger ask again after ``min_groups_before_repeat`` groups.
             **On by default.** Off, the size trigger asks only for the first record.
             ``max_groups_before_record`` and ``reforce`` can still ask for later records.
             Without those triggers, new tool results remain unrecorded and protected from
@@ -1957,6 +1942,10 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             trigger reading size alone would therefore pin every remaining call in the run.
             What re-arms it is new *material* -- see :meth:`_record_due` for the rule, which is
             stated there once and nowhere else.
+        min_groups_before_repeat: New tool groups required for a repeat above the size
+            trigger, four by default. Must be positive. One restores per-group repeats.
+            Unlike ``max_groups_before_record``, this never forces below the trigger and
+            does not override ``repeat_records=False`` or a pending re-force request.
         record_max_tokens: Cap put on the forced call's response, and on no other call.
             ``None`` leaves whatever cap the run already sets, so the record inherits the cap
             sized for an ordinary answer and a record asked to summarise everything has no
@@ -2006,6 +1995,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         trigger_fraction: float = DEFAULT_TRIGGER_FRACTION,
         record_max_tokens: int | None = DEFAULT_RECORD_MAX_TOKENS,
         max_groups_before_record: int | None = None,
+        min_groups_before_repeat: int = 4,
         repeat_records: bool = True,
         reforce: Callable[[], bool] | None = None,
     ) -> None:
@@ -2027,6 +2017,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 "max_groups_before_record must be positive, or None to leave the bound off. "
                 "Zero groups per record is a record forced on every call, which is not a bound."
             )
+        if min_groups_before_repeat <= 0:
+            raise ValueError("min_groups_before_repeat must be positive.")
         self.max_input_tokens = max_input_tokens
         self.tokenizer = tokenizer
         self.arm = arm
@@ -2034,6 +2026,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self.trigger_fraction = trigger_fraction
         self.record_max_tokens = record_max_tokens
         self.max_groups_before_record = max_groups_before_record
+        self.min_groups_before_repeat = min_groups_before_repeat
         self.repeat_records = repeat_records
         self.reforce = reforce
         self._force_next = False
@@ -2298,7 +2291,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
           whatever else is true, because setting that bound is asking for repeats outright;
         - the size trigger asks for the *first* record as soon as the prompt passes
           ``trigger_fraction`` of the ceiling;
-        - it asks again only when ``pending`` is at least one -- and not at all when
+        - it asks again only when ``pending`` reaches ``min_groups_before_repeat``; never when
           ``repeat_records`` is off.
 
         **Why the second record needs ``pending`` and the first does not.** The size that fires
@@ -2322,6 +2315,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         pending = _droppable_groups_after(messages, record_index)
         if self.max_groups_before_record is not None and pending >= self.max_groups_before_record:
             return True
-        if record_index is not None and (not self.repeat_records or pending < 1):
+        if record_index is not None and (
+            not self.repeat_records or pending < self.min_groups_before_repeat
+        ):
             return False
         return included_token_count(messages) > int(self.max_input_tokens * self.trigger_fraction)
