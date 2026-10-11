@@ -28,6 +28,7 @@ import secrets
 import socket
 import subprocess
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -559,6 +560,7 @@ class Check:
         a, a_sid = await self.maf()
         b, b_sid = await self.maf()
         running = a if active_close else b
+        started = time.monotonic_ns()
         active = self.task(running.call_tool("bicep_validate", **LARGE))
         container = await self.compiler()
         if active_close:
@@ -587,7 +589,6 @@ class Check:
             await self.busy(b_sid, container)
             require(self.app.service.active[0].session_id == b_sid, "Idle MAF close affected B")
             await docker("unpause", container)
-        outcome = (await asyncio.gather(active, return_exceptions=True))[0]
         await closing
         await self.settled(container)
         self.gate.reset()
@@ -597,11 +598,36 @@ class Check:
             "Surviving MAF session was closed",
         )
         verify_controls(self.events()[before:], a_sid, deleted=True)
+        service_settled_seconds = (time.monotonic_ns() - started) / 1e9
+        client_pending_after_retirement = not active.done()
+        survivor = await self.valid(b)
+        outcome = (await asyncio.wait_for(asyncio.gather(active, return_exceptions=True), 250))[0]
+        error_code = None
+        if isinstance(outcome, BaseException):
+            error = outcome
+            for _ in range(4):
+                error_code = getattr(getattr(error, "error", None), "code", None)
+                if error_code is not None or error.__cause__ is None:
+                    break
+                error = error.__cause__
+        if not active_close:
+            require(
+                not isinstance(outcome, BaseException),
+                "Idle close interrupted the surviving MAF call",
+            )
         self.observations["maf_active_close" if active_close else "maf_idle_close"] = {
             "container": digest(container),
             "delete_observed": True,
             "call_raised": isinstance(outcome, BaseException),
-            "survivor": await self.valid(b),
+            "call_error_type": type(outcome).__name__
+            if isinstance(outcome, BaseException)
+            else None,
+            "call_error_code": error_code if type(error_code) is int else None,
+            "client_pending_after_retirement": client_pending_after_retirement,
+            "service_settled_seconds": service_settled_seconds,
+            "client_settled_seconds": (time.monotonic_ns() - started) / 1e9,
+            "client_request_timeout_seconds": 240,
+            "survivor": survivor,
         }
         await b.close()
         await until(lambda: not self.app.sessions, "MAF sessions did not drain")
