@@ -157,6 +157,17 @@ Use `@sandbox_tool(source=..., sink=..., identity=...)` to declare each function
 
 Application authority is allowed by default. User authority requires explicit `allowed_identities`, a host `mint_user_identity` callback and approval of the enclosing tool. Identity labels describe authority; they do not reduce the function's permissions.
 
+Set `require_fides=True` when nested calls must have FIDES mediation. No current host-tool dispatch path provides it: a nonempty registry raises `HostToolFidesNotSupported` when its surface is built, and direct `HostToolRun.call` requests receive a refusal before any registered function or identity minter runs. Registration is allowed so CodeAct can ignore that registry with `host_tools_enabled=False`; an empty surface is allowed and sealed against later registration.
+
+```python
+from maf_sandbox import HostToolRegistry
+
+strict = HostToolRegistry(require_declared=True, require_fides=True)
+existing = HostToolRegistry(require_declared=True)  # require_fides=False by default
+```
+
+Declaration completeness, sandbox isolation, outer tool approval and observation hooks do not establish per-call FIDES coverage. The requirement is fixed by trusted host configuration; generated arguments cannot relax it. To retain callable functions under FIDES, expose them as direct agent tools through the host's FIDES middleware and disable nested host tools. This option refuses unsupported execution; it does not add FIDES mediation or detect middleware automatically.
+
 Call-count and response-size limits apply per run. The router can forbid the entire channel with `denied_capabilities={Capability.HOST_TOOLS}`. Docker, ACAS and Docker Sandboxes explicitly declare the exec host-tool channel; WSLC and Hyperlight do not.
 
 See [host-tool controls](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/hosts.md#calling-host-tools) and [CodeAct](https://github.com/sokolaidev/maf-extensions/blob/main/packages/maf-sandbox-codeact/README.md) for wiring.

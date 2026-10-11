@@ -31,6 +31,7 @@ from maf_sandbox import (
     INTEGRITY_RANK,
     HostToolCallResult,
     HostToolDeclaration,
+    HostToolFidesNotSupported,
     HostToolIdentityNotAllowed,
     HostToolNotDeclared,
     HostToolRegistry,
@@ -765,6 +766,100 @@ def _nesting_json_refuses_to_encode() -> list[object]:
         except RecursionError:
             return deep
     raise AssertionError("json.dumps encoded 60k levels of nesting without a RecursionError")
+
+
+class TestRequiredFidesCoverage:
+    @pytest.mark.parametrize("invalid", [None, 0, 1, "true", "false", []])
+    def test_configuration_requires_a_host_boolean(self, invalid):
+        with pytest.raises(TypeError, match="require_fides must be a bool"):
+            HostToolRegistry(require_fides=invalid)
+
+    @pytest.mark.parametrize("options", [{}, {"require_fides": False}])
+    def test_existing_execution_is_unchanged(self, options):
+        registry = HostToolRegistry(**options)
+        registry.register(_stamped_pure())
+        assert registry.require_fides is False
+        assert _call_host_tool(HostToolRun(registry), "doubled", {"x": 3}).value_json == "6"
+
+    def test_nonempty_surface_refuses_and_seals_captured_declarations(self):
+        registry = HostToolRegistry(require_fides=True, require_declared=True)
+        function = _stamped_pure()
+        registry.register(function)
+        sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=None)(function)
+        run = HostToolRun(registry)
+        for read in (registry.aggregate, lambda: run.surface):
+            with pytest.raises(HostToolFidesNotSupported, match="Disable nested host tools"):
+                read()
+        with pytest.raises(ValueError, match="sealed"):
+            registry.register(_pure)
+        with pytest.raises(AttributeError):
+            setattr(registry, "require_fides", False)
+        assert _call_host_tool(run, "doubled", {"x": 3}).refusal is not None
+
+    def test_empty_surface_seals_against_late_registration(self):
+        registry = HostToolRegistry(require_fides=True)
+        registry.aggregate()
+        with pytest.raises(ValueError, match="sealed"):
+            registry.register(_pure)
+
+    @pytest.mark.parametrize("failing_observer", [False, True])
+    def test_concurrent_calls_and_late_registration_never_execute_or_mint(self, failing_observer):
+        effects = []
+
+        async def mint(run_id):
+            effects.append("mint")
+            return "private-credential"
+
+        def observer(run, name):
+            if failing_observer:
+                raise RuntimeError("observer unavailable")
+            return contextlib.nullcontext()
+
+        @sandbox_tool(source=None, sink="private", identity=Identity.USER)
+        def sensitive(secret: str, *, user_identity: str):
+            effects.append(secret)
+            return user_identity
+
+        registry = HostToolRegistry(
+            require_fides=True,
+            require_declared=True,
+            allowed_identities=frozenset({Identity.USER}),
+            mint_user_identity=mint,
+            host_tool_calls_observer=observer,
+        )
+        early_run = HostToolRun(registry)
+        registry.register(sensitive)
+        published = []
+
+        async def publish(result):
+            await asyncio.sleep(0)
+            published.append(result)
+
+        async def call_all():
+            return await asyncio.gather(
+                *(
+                    run.call("sensitive", {"secret": "private-argument"}, publish=publish)
+                    for run in (early_run, early_run, HostToolRun(registry))
+                )
+            )
+
+        results = asyncio.run(call_all())
+        assert effects == []
+        assert len(published) == 3
+        for result in results:
+            assert result.refusal is not None and "FIDES" in result.refusal
+            assert result.value_json is None
+            for secret in ("sensitive", "private-argument", "private-credential"):
+                assert secret not in result.refusal
+
+    def test_refusal_precedes_callable_lookup(self, monkeypatch):
+        registry = HostToolRegistry(require_fides=True)
+
+        def forbidden_lookup(name):
+            pytest.fail("required FIDES coverage must be checked before resolving a callable")
+
+        monkeypatch.setattr(registry, "resolve", forbidden_lookup)
+        assert "FIDES" in (_call_host_tool(HostToolRun(registry), "unknown").refusal or "")
 
 
 class TestHostToolCall:

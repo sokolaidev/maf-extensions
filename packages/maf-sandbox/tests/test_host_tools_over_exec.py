@@ -41,6 +41,7 @@ from maf_sandbox import (
     EntryKind,
     ExecResult,
     GuestRunLayout,
+    HostToolFidesNotSupported,
     HostToolRegistry,
     HostToolRun,
     Identity,
@@ -328,6 +329,25 @@ def _run(
             guest, run, _LAYOUT, timeout=timeout, poll_interval=poll, output_limit=output_limit
         )
     )
+
+
+@pytest.mark.parametrize("guest_type", [_ScriptedGuest, _ConcurrentGuest])
+def test_required_fides_refuses_direct_transport_requests_without_effects(guest_type):
+    effects = []
+
+    @sandbox_tool(source=None, sink=None, identity=None)
+    def sensitive(secret: str) -> str:
+        effects.append(secret)
+        return "private-result"
+
+    registry = HostToolRegistry(require_fides=True)
+    registry.register(sensitive)
+    guest = guest_type([("sensitive", {"secret": "private-argument"})] * 2)
+    with pytest.raises(HostToolFidesNotSupported, match="FIDES enforcement is required"):
+        _run(guest, HostToolRun(registry))
+    assert effects == []
+    assert guest.answers == []
+    assert guest.reclaimed
 
 
 class _ActiveGuest(_ConcurrentGuest):
