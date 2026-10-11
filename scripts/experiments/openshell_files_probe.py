@@ -104,7 +104,7 @@ def evaluate(case, result):
     return output == b"True\n"
 
 
-def measure(image, issuer):
+def measure(image, issuer, *, native_probe=None):
     """Own one unique workspace/sandbox and independently verify its physical disposal."""
     workspace, name = ("s1797-" + uuid.uuid4().hex[:12] for _ in range(2))
     client = Client(
@@ -114,6 +114,7 @@ def measure(image, issuer):
     workspace_created = False
     results = []
     cleanup = False
+    native_result = None
     workspace_absent = False
     try:
         wait_gateway(client)
@@ -183,6 +184,10 @@ def measure(image, issuer):
             print(json.dumps(item), flush=True)
             if not passed:
                 raise RuntimeError("unexpected characterization: " + case)
+        if native_probe is not None:
+            native_result = native_probe(client, name, record["id"])
+            if not native_result["passed"]:
+                raise RuntimeError("native file characterization failed")
     finally:
         try:
             if record:
@@ -217,13 +222,14 @@ def measure(image, issuer):
     return {
         "passed": len(results) == 14 and all(x["passed"] for x in results),
         "cases": len(results),
-        "file_transport": "small base64 input in argv and raw exec output; no native SFTP qualification",
+        "native_sftp": native_result,
+        "file_transport": "exec baseline uses small base64 input and raw output; native SFTP observations are separate",
         "storage_base_confined": False,
         "image": image,
     }
 
 
-def main():
+def main(*, native_probe=None):
     """Require an immutable sentinel fixture image and the isolated local gateway configuration."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--execute", action="store_true", required=True)
@@ -258,7 +264,7 @@ def main():
         configured = root / "gateway.toml"
         configured.write_text(config)
         with gateway_fixture(configured) as issuer:
-            report = measure(args.image, issuer)
+            report = measure(args.image, issuer, native_probe=native_probe)
             print(json.dumps(report), flush=True)
     return int(not report["passed"])
 
