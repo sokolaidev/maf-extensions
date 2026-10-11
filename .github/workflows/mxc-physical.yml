@@ -40,7 +40,7 @@ jobs:
       - name: Record SQLite and Python versions
         run: >-
           uv run python -c "import json, os, platform, sqlite3; from pathlib import Path;
-          report = dict(platform=platform.system(), python=platform.python_version(), sqlite=sqlite3.sqlite_version(),
+          report = dict(platform=platform.system(), python=platform.python_version(), sqlite=sqlite3.sqlite_version,
           source_commit=os.environ['GITHUB_SHA'], run_id=os.environ['GITHUB_RUN_ID'], run_attempt=os.environ['GITHUB_RUN_ATTEMPT']);
           print(json.dumps(report));
           (Path(os.environ['RUNNER_TEMP']) / 'mxc-storage-runtime.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')"
