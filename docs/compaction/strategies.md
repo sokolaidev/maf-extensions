@@ -100,7 +100,7 @@ Inside the context window nothing here beats not compacting: the best strategy c
 | User-turn summaries in three modes, bounded by the band share | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
 | Composition judged after the record phase, with the chain working to a target | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
 | Chain decisions kept across both lists and restorable by a harness | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
-| One agent serves many sessions with JSON-safe compaction state and a bounded stack cache | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
+| One agent serves many sessions with JSON-safe compaction state and a bounded stack cache | Implemented | [#1827](https://github.com/sokolaidev/maf-extensions/issues/1827) (closed) by [#1830](https://github.com/sokolaidev/maf-extensions/pull/1830) (merged) |
 | The benchmark that produced the measurements | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
 | Separating the three user-summary modes by measurement | Not started | untracked |
 | Summarising each tool result individually rather than all in one record | Not started | untracked |
