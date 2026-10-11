@@ -42,7 +42,7 @@ The registry and import steps below apply to either profile.
 
 ## Prepared AVM profile
 
-The public release profile is **`bicep-avm`**. Its [consumer guide](AVM.md) covers the selected module versions, signed release verification, cache configuration, qualification and support. First publication remains tracked in [#1838](https://github.com/sokolaidev/maf-extensions/issues/1838); local preparation alone is not a completed release.
+The public release profile is **`bicep-avm`**. Its [consumer guide](AVM.md) covers the selected module versions, signed release verification, cache configuration, qualification and support. [Release 0.1.0](https://github.com/sokolaidev/maf-extensions/releases/tag/image-bicep-avm-v0.1.0) is publicly available; use the consumer guide's verified digest and [release evidence](AVM.md#release-010-evidence). Local preparation remains separate from the published identity.
 
 [`prepared.Dockerfile`](prepared.Dockerfile) restores the explicit selection in [`dependencies.bicep-avm.policy.json`](dependencies.bicep-avm.policy.json) at build time. The initial profile contains `br/public:avm/res/network/virtual-network:0.7.2` and `br/public:avm/res/storage/storage-account:0.31.0`. Other resource modules and versions, plus pattern and utility modules, are excluded with reasons in the policy and manifest. This is a small selected profile, not the complete AVM catalog.
 
