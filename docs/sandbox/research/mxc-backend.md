@@ -468,4 +468,25 @@ The [Linux cleanup](../../../scripts/experiments/mxc_files_patch/linux-volume-cl
 
 ## Checkpoint-copy exhaustion follow-up
 
-The next candidate extends #1824's publication boundary to checkpoint restore and native export, using the same owned ext4/NTFS fixtures. The [probe contract](../../../scripts/experiments/mxc_session_patch/HOST_PUBLICATION.md#checkpoint-copy-filesystem-exhaustion-candidate) separates export recovery after recorded-helper termination from conservative refusal after restore fails before helper registration. Export must preserve the previous Python state, session files and saved result while reclaiming failed scratch. Restore must preserve and validate the committed checkpoint and retry result, while retaining unidentified scratch and refusing new work after restart. This records the existing pre-launch cleanup gap; it does not silently authorize reclamation. Hosted evidence is pending, and #1672 remains open.
+The next candidate extends #1824's publication boundary to checkpoint restore and native export, using the same owned ext4/NTFS fixtures. The [probe contract](../../../scripts/experiments/mxc_session_patch/HOST_PUBLICATION.md#checkpoint-copy-filesystem-exhaustion-candidate) separates export recovery after recorded-helper termination from conservative refusal after restore fails before helper registration. Export must preserve the previous Python state, session files and saved result while reclaiming failed scratch. Restore must preserve and validate the committed checkpoint and retry result, while retaining unidentified scratch and refusing new work after restart. This records the existing pre-launch cleanup gap; it does not silently authorize reclamation. Hosted qualification is recorded below; #1672 remains open.
+
+
+## Qualified checkpoint-copy exhaustion boundaries
+
+The checkpoint-copy candidate passed independently on Linux/KVM and Windows/WHP in [run 38139649785, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/38139649785/attempts/1) at implementation source `0fa619ea6c560b11d15b44e21fde0f67e5b268f6`. The complete [Linux report](../../../scripts/experiments/mxc_files_patch/linux-checkpoint-volume-result.json) and [Windows report](../../../scripts/experiments/mxc_files_patch/windows-checkpoint-volume-result.json) retain three distinct supervisors per case, real filesystem exhaustion, integrity/accounting audits and matching seed/retry results.
+
+| Observation | Linux/KVM, ext4 | Windows/WHP, NTFS |
+| --- | --- | --- |
+| Free bytes after filling, both cases | 0 | 0 |
+| Free bytes released before native export | 33,554,432 | 33,554,432 |
+| Native export OS error | 28 (`ENOSPC`) | 112 (`ERROR_DISK_FULL`) |
+| Candidate bytes remaining after failed export | 0 | 0 |
+| Restore bytes copied before filling | 11,101 | 568 |
+| Restore copy errno | 28 (`ENOSPC`) | 28 (`ENOSPC`) |
+| Python / SQLite | 3.12.3 / 3.45.1 | 3.12.10 / 3.49.1 |
+
+Export reached native execution and refused completion without an index or successful control report. After confirmed helper termination, a fresh supervisor reclaimed its scratch, executed from the preceding Python state and session files, verified the failed upload was absent, collected the old checkpoint and replayed its saved result exactly. Restore failed before helper registration. Its fresh supervisor verified the committed checkpoint bytes and session files and replayed the saved result, while refusing both unidentified scratch reclamation and new calls. The partial scratch and reservation remained charged. This qualifies conservative refusal after restore failure, not automatic session recovery or safe reclamation of an unidentified launch.
+
+The [Linux cleanup](../../../scripts/experiments/mxc_files_patch/linux-checkpoint-volume-cleanup.json) and [Windows cleanup](../../../scripts/experiments/mxc_files_patch/windows-checkpoint-volume-cleanup.json) independently confirm image detachment and removal. Removing the restore fixture does not resolve its journal reservation. Both cases retained result SHA-256 `bf95a4b161547f5221a8580170cacaafddd6472c3c1a41689bc8ca7bba74a54d`; the common kernel digest is `ad89328122b2b7fb92a503d25b97ee328bd960dad2f307f082d839c489977ba2`. The Linux helper digest is `0179d286a11314f8e006a8fedf9b2a0d4efc93ca4c3d49113fab2a4a577ff3fc`, and Windows is `c9c491c9a27c68819f7494751e970563ec213507f6f3367d0ba95eb01b984d72`. These matching results do not establish cross-host checkpoint portability.
+
+[#1828](https://github.com/sokolaidev/maf-extensions/pull/1828) retains the probe and evidence. Each host also repeated the existing file, publication/cleanup, deletion, idle-expiry and physical-storage matrices and removed the source overlays. Local validation passed 17,799 tests with 910 skips, plus lint, formatting, types and documentation checks. The pre-launch cleanup gap, targeted active-journal I/O faults, power loss, OS quotas, migration, distributed fencing and production integration remain outside this qualification; #1672 remains open.
