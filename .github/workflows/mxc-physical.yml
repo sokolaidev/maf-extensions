@@ -1,10 +1,15 @@
-name: MXC physical storage safeguards
+name: MXC storage and retention acceptance
 
 on:
   pull_request:
     paths:
       - '.github/workflows/mxc-physical.yml'
       - 'scripts/experiments/mxc_session_patch/**'
+      - 'tests/test_mxc_shared_store.py'
+      - 'tests/test_mxc_accounting.py'
+      - 'tests/test_mxc_private_root.py'
+      - 'tests/test_mxc_native_journal.py'
+      - 'tests/test_mxc_idle.py'
       - 'tests/test_mxc_physical.py'
       - 'tests/test_mxc_prelaunch.py'
       - 'scripts/experiments/mxc_streams_patch/**'
@@ -18,7 +23,7 @@ permissions:
 
 jobs:
   qualify:
-    name: SQLite capacity and recovery (${{ matrix.os }})
+    name: Storage and retention controls (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -33,14 +38,26 @@ jobs:
       - name: Sync locked dependencies
         run: uv sync --locked
       - name: Record SQLite and Python versions
-        run: uv run python -c "import platform, sqlite3; print(platform.platform()); print(platform.python_version()); print(sqlite3.sqlite_version)"
-      - name: Exercise capacity refusal and retained recovery
+        run: >-
+          uv run python -c "import json, os, platform, sqlite3; from pathlib import Path;
+          report = dict(platform=platform.system(), python=platform.python_version(), sqlite=sqlite3.sqlite_version,
+          source_commit=os.environ['GITHUB_SHA'], run_id=os.environ['GITHUB_RUN_ID'], run_attempt=os.environ['GITHUB_RUN_ATTEMPT']);
+          print(json.dumps(report));
+          (Path(os.environ['RUNNER_TEMP']) / 'mxc-storage-runtime.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')"
+      - name: Exercise storage, retention, collection and recovery
         shell: bash
-        run: uv run pytest -q tests/test_mxc_physical.py tests/test_mxc_prelaunch.py --junitxml="$RUNNER_TEMP/mxc-physical.xml"
+        run: >-
+          uv run pytest -q
+          tests/test_mxc_shared_store.py tests/test_mxc_accounting.py
+          tests/test_mxc_private_root.py tests/test_mxc_native_journal.py
+          tests/test_mxc_idle.py tests/test_mxc_physical.py tests/test_mxc_prelaunch.py
+          --junitxml="$RUNNER_TEMP/mxc-physical.xml"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: mxc-physical-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/mxc-physical.xml
+          path: |
+            ${{ runner.temp }}/mxc-physical.xml
+            ${{ runner.temp }}/mxc-storage-runtime.json
           if-no-files-found: error
           retention-days: 14

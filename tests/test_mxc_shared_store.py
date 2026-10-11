@@ -14,6 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[1]))
 try:
     store = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
+    physical = importlib.import_module("scripts.experiments.mxc_session_patch.physical")
 finally:
     sys.path.remove(str(Path(__file__).parents[1]))
 
@@ -27,6 +28,16 @@ LIMITS = store.Limits(
     retention_seconds=10,
     grace_seconds=3,
 )
+
+
+@pytest.fixture(params=[4, 7], ids=["format4", "format7"])
+def store_options(request):
+    if request.param == 4:
+        return {}
+    return {
+        "physical_policy": physical.Policy(8 * 1024**2, 1024**2, 1024**2),
+        "prelaunch_recovery": True,
+    }
 
 
 class Clock:
@@ -77,10 +88,10 @@ def test_sessions_share_quota_but_isolate_calls_and_profiles(tmp_path):
             assert one.begin("a", b"code") == b"one"
 
 
-def test_exact_quota_and_full_store_replay(tmp_path):
+def test_exact_quota_and_full_store_replay(tmp_path, store_options):
     exact = store.SESSION_METADATA + store.CALL_METADATA + LIMITS.reservation
     limits = replace(LIMITS, session_quota=exact, store_quota=exact + store.STORE_METADATA)
-    with store.SharedStore(tmp_path / "db", "one", PROFILE, limits, Clock()) as db:
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, limits, Clock(), **store_options) as db:
         db.begin("a", b"code")
         assert db.usage() == exact + store.STORE_METADATA
         db.commit("a", checkpoint(tmp_path / "a"), b"result")
@@ -91,12 +102,12 @@ def test_exact_quota_and_full_store_replay(tmp_path):
 
 
 @pytest.mark.parametrize("quota", ["session_quota", "store_quota"])
-def test_either_quota_refuses_before_persisting_intent(tmp_path, quota):
+def test_either_quota_refuses_before_persisting_intent(tmp_path, quota, store_options):
     exact = store.SESSION_METADATA + store.CALL_METADATA + LIMITS.reservation
     limits = replace(
         LIMITS, **{quota: exact - 1 + (store.STORE_METADATA if quota == "store_quota" else 0)}
     )
-    with store.SharedStore(tmp_path / "db", "one", PROFILE, limits, Clock()) as db:
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, limits, Clock(), **store_options) as db:
         with pytest.raises(store.Refused, match="quota"):
             db.begin("a", b"code")
         assert db.db.execute("SELECT count(*) FROM calls").fetchone()[0] == 0
@@ -128,9 +139,9 @@ def test_failed_capture_keeps_reservation_and_previous_checkpoint(tmp_path):
             db.commit("b", tmp_path / "a", b"new")
 
 
-def test_result_expiry_retains_identity_and_current_checkpoint(tmp_path):
+def test_result_expiry_retains_identity_and_current_checkpoint(tmp_path, store_options):
     clock = Clock()
-    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS, clock) as db:
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS, clock, **store_options) as db:
         publish(db, tmp_path / "a")
         before = db.usage()
         clock.advance(10)
@@ -146,9 +157,9 @@ def test_result_expiry_retains_identity_and_current_checkpoint(tmp_path):
             db.begin("a", b"different")
 
 
-def test_retry_does_not_move_deadline_or_need_a_new_reservation(tmp_path):
+def test_retry_does_not_move_deadline_or_need_a_new_reservation(tmp_path, store_options):
     clock = Clock()
-    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS, clock) as db:
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS, clock, **store_options) as db:
         publish(db, tmp_path / "a")
         expires = row(db)["expires"]
         clock.advance(9)
@@ -166,10 +177,10 @@ def test_forward_jump_cannot_start_late_grace(tmp_path):
             db.begin("a", b"code")
 
 
-def test_prepaid_grant_shared_and_budget_survives_owner_changes(tmp_path):
+def test_prepaid_grant_shared_and_budget_survives_owner_changes(tmp_path, store_options):
     clock = Clock()
     root = tmp_path / "db"
-    with store.SharedStore(root, "one", PROFILE, LIMITS, clock) as db:
+    with store.SharedStore(root, "one", PROFILE, LIMITS, clock, **store_options) as db:
         publish(db, tmp_path / "a")
         clock.utc += 10 * store.SECOND
         assert db.begin("a", b"code") == b"result"
@@ -177,10 +188,10 @@ def test_prepaid_grant_shared_and_budget_survives_owner_changes(tmp_path):
         assert db.begin("a", b"code") == b"result"
         assert row(db)["remaining"] == 2 * store.SECOND
     for remaining in (store.SECOND, 0):
-        with store.SharedStore(root, "one", PROFILE, LIMITS, clock) as db:
+        with store.SharedStore(root, "one", PROFILE, LIMITS, clock, **store_options) as db:
             assert db.begin("a", b"code") == b"result"
             assert row(db)["remaining"] == remaining
-    with store.SharedStore(root, "one", PROFILE, LIMITS, clock) as db:
+    with store.SharedStore(root, "one", PROFILE, LIMITS, clock, **store_options) as db:
         with pytest.raises(store.Refused, match="result_expired"):
             db.begin("a", b"code")
 
@@ -197,13 +208,18 @@ def test_monotonic_grant_expires_with_frozen_utc(tmp_path):
         assert db.expire() == 0
 
 
-def test_old_policy_survives_configuration_change_and_later_checkpoint(tmp_path):
+def test_old_policy_survives_configuration_change_and_later_checkpoint(tmp_path, store_options):
     root = tmp_path / "db"
     clock = Clock()
-    with store.SharedStore(root, "one", PROFILE, LIMITS, clock) as db:
+    with store.SharedStore(root, "one", PROFILE, LIMITS, clock, **store_options) as db:
         publish(db, tmp_path / "a")
     with store.SharedStore(
-        root, "one", PROFILE, replace(LIMITS, retention_seconds=1, grace_seconds=0), clock
+        root,
+        "one",
+        PROFILE,
+        replace(LIMITS, retention_seconds=1, grace_seconds=0),
+        clock,
+        **store_options,
     ) as db:
         publish(db, tmp_path / "b", call="b")
         clock.advance(2)
@@ -214,14 +230,15 @@ def test_old_policy_survives_configuration_change_and_later_checkpoint(tmp_path)
         assert db.restore(tmp_path / "restored") == "b"
 
 
-def test_stale_generation_cannot_reserve_publish_or_expire(tmp_path):
-    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS, Clock()) as db:
+def test_stale_generation_cannot_mutate_or_collect(tmp_path, store_options):
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS, Clock(), **store_options) as db:
         publish(db, tmp_path / "a")
         db.db.execute("UPDATE sessions SET generation=generation+1")
         for operation in (
             lambda: db.begin("b", b"x"),
             lambda: db.commit("b", tmp_path / "a", b"x"),
             db.expire,
+            db.collect_checkpoints,
         ):
             with pytest.raises(store.Refused, match="generation"):
                 operation()
@@ -502,9 +519,9 @@ def test_metadata_quota_refusal_creates_no_store(tmp_path):
     assert not root.exists()
 
 
-def test_collection_preserves_old_results_and_latest_state(tmp_path):
+def test_collection_preserves_old_results_and_latest_state(tmp_path, store_options):
     clock = Clock()
-    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS, clock) as db:
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS, clock, **store_options) as db:
         publish(db, tmp_path / "a", result=b"saved chart bytes")
         db.begin("b", b"next")
         db.commit("b", checkpoint(tmp_path / "b", b"new state"), b"new result")
@@ -524,10 +541,10 @@ def test_collection_preserves_old_results_and_latest_state(tmp_path):
         assert db.restore(tmp_path / "still-current") == "b"
 
 
-def test_shared_chunks_remain_until_last_checkpoint_reference_is_removed(tmp_path):
+def test_shared_chunks_remain_until_last_checkpoint_reference_is_removed(tmp_path, store_options):
     root = tmp_path / "db"
-    with store.SharedStore(root, "one", PROFILE, LIMITS, Clock()) as one:
-        with store.SharedStore(root, "two", PROFILE, LIMITS, Clock()) as two:
+    with store.SharedStore(root, "one", PROFILE, LIMITS, Clock(), **store_options) as one:
+        with store.SharedStore(root, "two", PROFILE, LIMITS, Clock(), **store_options) as two:
             publish(one, tmp_path / "one-a")
             publish(two, tmp_path / "two-a")
             one.begin("b", b"next")
@@ -542,10 +559,10 @@ def test_shared_chunks_remain_until_last_checkpoint_reference_is_removed(tmp_pat
             assert two.begin("a", b"code") == b"result"
 
 
-def test_retired_session_cannot_be_recreated_and_retains_delivery(tmp_path):
+def test_retired_session_cannot_be_recreated_and_retains_delivery(tmp_path, store_options):
     root = tmp_path / "db"
     clock = Clock()
-    with store.SharedStore(root, "one", PROFILE, LIMITS, clock) as db:
+    with store.SharedStore(root, "one", PROFILE, LIMITS, clock, **store_options) as db:
         publish(db, tmp_path / "a")
         db.retire()
         db.retire()
@@ -559,7 +576,7 @@ def test_retired_session_cannot_be_recreated_and_retains_delivery(tmp_path):
             == store.STORE_METADATA + store.SESSION_METADATA + store.CALL_METADATA + len(b"result")
         )
         assert db.begin("a", b"code") == b"result"
-    with store.SharedStore(root, "one", PROFILE, LIMITS, clock) as db:
+    with store.SharedStore(root, "one", PROFILE, LIMITS, clock, **store_options) as db:
         with pytest.raises(store.Refused, match="retired"):
             db.begin("b", b"new")
         assert db.begin("a", b"code") == b"result"
@@ -571,9 +588,11 @@ def test_retired_session_cannot_be_recreated_and_retains_delivery(tmp_path):
         assert db.collect_checkpoints() == 0
 
 
-def test_retirement_blocks_pending_publication_but_does_not_release_reservations(tmp_path):
+def test_retirement_blocks_pending_publication_but_does_not_release_reservations(
+    tmp_path, store_options
+):
     root = tmp_path / "db"
-    with store.SharedStore(root, "one", PROFILE, LIMITS, Clock()) as db:
+    with store.SharedStore(root, "one", PROFILE, LIMITS, Clock(), **store_options) as db:
         publish(db, tmp_path / "a")
         db.begin("b", b"new")
         usage = db.usage()
@@ -585,7 +604,7 @@ def test_retirement_blocks_pending_publication_but_does_not_release_reservations
         assert db.usage() == usage
         assert db.begin("a", b"code") == b"result"
         assert row(db)["checkpoint_charge"] > 0
-    with store.SharedStore(root, "one", PROFILE, LIMITS, Clock()) as db:
+    with store.SharedStore(root, "one", PROFILE, LIMITS, Clock(), **store_options) as db:
         assert db.usage() == usage
         with pytest.raises(store.Refused, match="recovery"):
             db.collect_checkpoints()
@@ -593,7 +612,9 @@ def test_retirement_blocks_pending_publication_but_does_not_release_reservations
             db.begin("c", b"new")
 
 
-def test_collection_releases_logical_capacity_even_for_deduplicated_content(tmp_path):
+def test_collection_releases_logical_capacity_even_for_deduplicated_content(
+    tmp_path, store_options
+):
     checkpoint_charge = len(b"checkpoint") + store.FILE_METADATA + store.REFERENCE_METADATA
     retained = 2 * (store.CALL_METADATA + checkpoint_charge + len(b"result"))
     quota = (
@@ -604,7 +625,7 @@ def test_collection_releases_logical_capacity_even_for_deduplicated_content(tmp_
         - checkpoint_charge
     )
     limits = replace(LIMITS, session_quota=quota, store_quota=quota + store.STORE_METADATA)
-    with store.SharedStore(tmp_path / "db", "one", PROFILE, limits, Clock()) as db:
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, limits, Clock(), **store_options) as db:
         publish(db, tmp_path / "a")
         publish(db, tmp_path / "b", call="b")
         with pytest.raises(store.Refused, match="quota"):
@@ -618,8 +639,8 @@ def test_collection_releases_logical_capacity_even_for_deduplicated_content(tmp_
 @pytest.mark.parametrize(
     "corruption", ["current", "manifest", "chunk", "missing_file", "charge", "orphan_chunk"]
 )
-def test_corrupt_store_refuses_destructive_collection(tmp_path, corruption):
-    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS, Clock()) as db:
+def test_corrupt_store_refuses_destructive_collection(tmp_path, corruption, store_options):
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS, Clock(), **store_options) as db:
         publish(db, tmp_path / "a")
         publish(db, tmp_path / "b", call="b")
         if corruption == "current":
@@ -642,9 +663,13 @@ def test_corrupt_store_refuses_destructive_collection(tmp_path, corruption):
         assert row(db)["checkpoint_charge"] > 0
 
 
-def test_corrupt_root_in_another_session_blocks_collection(tmp_path):
-    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS, Clock()) as one:
-        with store.SharedStore(tmp_path / "db", "two", PROFILE, LIMITS, Clock()) as two:
+def test_corrupt_root_in_another_session_blocks_collection(tmp_path, store_options):
+    with store.SharedStore(
+        tmp_path / "db", "one", PROFILE, LIMITS, Clock(), **store_options
+    ) as one:
+        with store.SharedStore(
+            tmp_path / "db", "two", PROFILE, LIMITS, Clock(), **store_options
+        ) as two:
             publish(one, tmp_path / "a")
             publish(one, tmp_path / "b", call="b")
             publish(two, tmp_path / "two")
@@ -655,8 +680,8 @@ def test_corrupt_root_in_another_session_blocks_collection(tmp_path):
             assert one.usage() == usage
 
 
-def test_collection_batch_and_rollback(tmp_path):
-    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS, Clock()) as db:
+def test_collection_batch_and_rollback(tmp_path, store_options):
+    with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS, Clock(), **store_options) as db:
         for call in ("a", "b", "c"):
             publish(db, tmp_path / call, call=call)
         before = list(db.db.iterdump())
@@ -677,10 +702,10 @@ def test_collection_batch_and_rollback(tmp_path):
 @pytest.mark.parametrize(
     "point", ["before_collection", "before_collection_commit", "after_collection_commit"]
 )
-def test_process_death_keeps_collection_and_accounting_atomic(tmp_path, point):
+def test_process_death_keeps_collection_and_accounting_atomic(tmp_path, point, store_options):
     root = tmp_path / "db"
     limits = replace(LIMITS, retention_seconds=3600)
-    with store.SharedStore(root, "one", PROFILE, limits) as db:
+    with store.SharedStore(root, "one", PROFILE, limits, **store_options) as db:
         publish(db, tmp_path / "a")
         db.begin("b", b"new")
         db.commit("b", checkpoint(tmp_path / "b", b"different"), b"new")
@@ -690,17 +715,21 @@ def test_process_death_keeps_collection_and_accounting_atomic(tmp_path, point):
 import os, sys
 from pathlib import Path
 from scripts.experiments.mxc_session_patch.shared_store import Limits, SharedStore
+from scripts.experiments.mxc_session_patch.physical import Policy
+options = {"physical_policy": Policy(8*1024**2,1024**2,1024**2), "prelaunch_recovery": True} if sys.argv[3] == "7" else {}
 limits = Limits(200000, 500000, checkpoint_bytes=1024, result_bytes=128, files=2, retention_seconds=3600, grace_seconds=3)
-with SharedStore(Path(sys.argv[1]), 'one', {'runtime':'pinned','policy':'closed','machine':'local'}, limits) as db:
+with SharedStore(Path(sys.argv[1]), 'one', {'runtime':'pinned','policy':'closed','machine':'local'}, limits, **options) as db:
     def crash(point):
         if point == sys.argv[2]: os._exit(76)
     db.collect_checkpoints(boundary=crash)
 """
     child = subprocess.run(
-        [sys.executable, "-c", program, str(root), point], timeout=20, check=False
+        [sys.executable, "-c", program, str(root), point, "7" if store_options else "4"],
+        timeout=20,
+        check=False,
     )
     assert child.returncode == 76
-    with store.SharedStore(root, "one", PROFILE, limits) as db:
+    with store.SharedStore(root, "one", PROFILE, limits, **store_options) as db:
         committed = point == "after_collection_commit"
         assert db.usage() == usage - (old_charge if committed else 0)
         assert db.restore(tmp_path / "restored") == "b"
@@ -823,3 +852,48 @@ def test_uncertainty_marks_only_unexpired_unmarked_rows_and_retries_rollback(tmp
         assert "uncertain=?" in plan
     with store.SharedStore(tmp_path / "db", "one", PROFILE, LIMITS, clock) as db:
         assert row(db, "a")["uncertain"] == 0
+
+
+@pytest.mark.parametrize("quota", ["session", "store"])
+def test_expired_identities_eventually_refuse_admission(tmp_path, store_options, quota):
+    root = tmp_path / "db"
+    clock = Clock()
+    limits = replace(
+        LIMITS,
+        session_quota=36_000 if quota == "session" else LIMITS.session_quota,
+        store_quota=36_000 + store.STORE_METADATA if quota == "store" else LIMITS.store_quota,
+    )
+    with store.SharedStore(root, "one", PROFILE, limits, clock, **store_options) as db:
+        for count in range(32):
+            call = f"call-{count:02}"
+            try:
+                db.begin(call, b"code")
+            except store.Refused as error:
+                assert "quota" in str(error)
+                break
+            db.commit(call, checkpoint(tmp_path / call), b"result")
+            clock.advance(10)
+            assert db.expire() == 1
+            assert db.collect_checkpoints() == (0 if count == 0 else 1)
+            assert db.usage("one") <= limits.session_quota
+            assert db.usage() <= limits.store_quota
+        else:
+            pytest.fail("expired call history bypassed admission quotas")
+        assert count > 1
+        assert db.db.execute("SELECT count(*) FROM calls").fetchone()[0] == count
+        assert db.db.execute("SELECT count(*) FROM reservations").fetchone()[0] == 0
+        current = f"call-{count - 1:02}"
+        charge = db.db.execute(
+            "SELECT checkpoint_charge FROM calls WHERE id=?", (current,)
+        ).fetchone()[0]
+        assert db.usage("one") == store.SESSION_METADATA + count * store.CALL_METADATA + charge
+        usage = db.usage()
+    with store.SharedStore(root, "one", PROFILE, limits, clock, **store_options) as db:
+        assert db.usage() == usage
+        with pytest.raises(store.Refused, match="quota"):
+            db.begin("new", b"code")
+        with pytest.raises(store.Refused, match="result_expired"):
+            db.begin("call-00", b"code")
+        assert db.restore(tmp_path / "restored-history") == current
+        assert db.collect_checkpoints() == 0
+        assert db.usage() == usage
