@@ -11,7 +11,7 @@ FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local
 RUN apk add --no-cache git python3
 COPY image.json build_terraform.py /recipe/
-RUN python3 /recipe/build_terraform.py
+RUN python3 /recipe/build_terraform.py && go clean -cache -modcache
 
 FROM ${BASE_IMAGE} AS runtime
 RUN apk upgrade --no-cache && apk add --no-cache python-3.13 ca-certificates-bundle \

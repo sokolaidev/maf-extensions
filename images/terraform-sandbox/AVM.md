@@ -32,7 +32,7 @@ After a public release exists, select it from the [release catalogue](https://so
 
 ## Provider build identity
 
-Each provider entry retains the official upstream archive metadata for comparison and has a `source_build` record with the source repository, exact commit and archive hash, Go version, dependency overrides, resolved `go.mod`/`go.sum` hashes and resulting ZIP hash. The release recipe rebuilds those packages and refuses a different hash; it never falls back to the official binary. Package timestamps and permissions are normalized for reproducibility.
+Each provider entry retains the official upstream archive metadata for comparison and has a `source_build` record with the source repository, exact commit and archive hash, Go version, dependency overrides, resolved `go.mod`/`go.sum` hashes and resulting ZIP hash. The release recipe rebuilds those packages and refuses a different hash; it never falls back to the official binary. Package timestamps and permissions are normalized for reproducibility. Build stages discard Go compilation and download caches after producing the verified artifacts to leave room for image preparation and scanning.
 
 The installed provider directory contains `build.json`, `go.mod`, `go.sum` and upstream license notices alongside the executable. `dependencies.json` records the actual package SHA-256 and Terraform `h1:` checksum, labels it as a SOKOLAI source build, and retains the original upstream artifact metadata. The provider address and upstream version continue to select the module-compatible API; the image digest and package checksums identify the rebuilt implementation.
 

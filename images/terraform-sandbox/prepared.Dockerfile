@@ -13,7 +13,7 @@ ARG MANIFEST
 COPY --from=scripts terraform_dependencies.py terraform_manifest.py /src/scripts/
 COPY runner.py build_providers.py /src/images/terraform-sandbox/
 COPY ${MANIFEST} /src/manifest.json
-RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build python3 /src/images/terraform-sandbox/build_providers.py --manifest /src/manifest.json --output /builds
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build python3 /src/images/terraform-sandbox/build_providers.py --manifest /src/manifest.json --output /builds && go clean -cache -modcache
 
 FROM scratch AS provider-packages
 COPY --from=provider-build /builds/ /
