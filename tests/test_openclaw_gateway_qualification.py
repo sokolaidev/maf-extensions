@@ -383,6 +383,7 @@ def test_observer_correlates_interleaved_cancellation_responses(tmp_path):
 
 denial = load("openclaw_docker_denial")
 lifecycle = load("openclaw_gateway_lifecycle_check")
+daemon_check = load("openclaw_docker_denial_check")
 
 
 def loss_evidence():
@@ -3275,3 +3276,96 @@ def test_lifecycle_cli_preserves_complete_denial_and_other_modes(tmp_path, monke
     assert len(calls) == 1 and calls[0].case == case
     for name, value in authz.items():
         assert getattr(calls[0], name) == (value if case == "docker-denial" else None)
+
+
+@pytest.mark.parametrize("diagnostic", ["ok", "timeout", "write"])
+@pytest.mark.parametrize("survivor", [None, "volume", "container"])
+def test_daemon_cleanup_survives_diagnostic_failure(tmp_path, monkeypatch, diagnostic, survivor):
+    owned, client, volume = "a" * 64, "b" * 32, "fixture-volume"
+    name = "qualification-authz-" + client
+    state = {"removed": False, "volume_checked": False, "container_checked": False}
+
+    def outer(host, *args, **kwargs):
+        assert host == "unix:///fixture.sock"
+        if args[:2] == ("ps", "-aq"):
+            if args[-1] == "id=" + owned:
+                state["container_checked"] = True
+                return owned if survivor == "container" else ""
+            return "" if state["removed"] else owned
+        if args == ("inspect", owned):
+            return json.dumps(
+                [
+                    {
+                        "Name": "/" + name,
+                        "Config": {"Labels": {"maf-qualification.authz": client}},
+                        "Mounts": [{"Type": "volume", "Name": volume}],
+                    }
+                ]
+            )
+        if args == ("rm", "-fv", owned):
+            state["removed"] = True
+            return owned
+        if args[:2] == ("volume", "ls"):
+            state["volume_checked"] = True
+            return volume if survivor == "volume" else ""
+        raise AssertionError(args)
+
+    def logs(command, **kwargs):
+        assert command == ["docker", "--host", "unix:///fixture.sock", "logs", owned]
+        if diagnostic == "timeout":
+            raise daemon_check.subprocess.TimeoutExpired(command, 15)
+        return SimpleNamespace(stdout=b"daemon stdout", stderr=b"daemon stderr")
+
+    if diagnostic == "write":
+        (tmp_path / "daemon.log").mkdir()
+    monkeypatch.setattr(daemon_check, "outer_docker", outer)
+    monkeypatch.setattr(daemon_check.subprocess, "run", logs)
+    error = (
+        RuntimeError
+        if survivor
+        else daemon_check.subprocess.TimeoutExpired
+        if diagnostic == "timeout"
+        else OSError
+        if diagnostic == "write"
+        else None
+    )
+    if error:
+        with pytest.raises(error):
+            daemon_check.cleanup_daemon(tmp_path, "unix:///fixture.sock", name, client)
+    else:
+        daemon_check.cleanup_daemon(tmp_path, "unix:///fixture.sock", name, client)
+        assert (tmp_path / "daemon.log").read_bytes() == b"daemon stdoutdaemon stderr"
+    assert state["removed"] and state["volume_checked"]
+    assert state["container_checked"] is (survivor != "volume")
+
+
+@pytest.mark.parametrize("mismatch", ["name", "label"])
+def test_daemon_cleanup_refuses_unowned_container(tmp_path, monkeypatch, mismatch):
+    name, client, owned = "qualification-authz-fixture", "b" * 32, "a" * 64
+    commands = []
+
+    def outer(host, *args, **kwargs):
+        commands.append(args)
+        if args[0] == "ps":
+            return owned
+        if args == ("inspect", owned):
+            return json.dumps(
+                [
+                    {
+                        "Name": "/other" if mismatch == "name" else "/" + name,
+                        "Config": {
+                            "Labels": {
+                                "maf-qualification.authz": "other"
+                                if mismatch == "label"
+                                else client
+                            }
+                        },
+                    }
+                ]
+            )
+        raise AssertionError(args)
+
+    monkeypatch.setattr(daemon_check, "outer_docker", outer)
+    with pytest.raises(RuntimeError, match="Unexpected container"):
+        daemon_check.cleanup_daemon(tmp_path, "unix:///fixture.sock", name, client)
+    assert [args[0] for args in commands] == ["ps", "inspect"]

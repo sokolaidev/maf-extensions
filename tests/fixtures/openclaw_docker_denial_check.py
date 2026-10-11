@@ -16,6 +16,37 @@ from openclaw_gateway_lifecycle_check import qualify
 from openclaw_http_observer import resolve_image
 
 
+def cleanup_daemon(root: Path, host: str, name: str, client: str) -> None:
+    """Remove the owned daemon even if collecting its diagnostics fails."""
+    # A timed-out create can still have registered the exact named fixture.
+    discovered = outer_docker(
+        host, "ps", "-aq", "--filter", "label=maf-qualification.authz=" + client
+    ).split()
+    for owned in discovered:
+        item = json.loads(outer_docker(host, "inspect", owned))[0]
+        if (
+            item["Name"] != "/" + name
+            or item["Config"]["Labels"].get("maf-qualification.authz") != client
+        ):
+            raise RuntimeError("Unexpected container in dedicated daemon scope")
+        volumes = {m["Name"] for m in item["Mounts"] if m["Type"] == "volume"}
+        try:
+            logs = subprocess.run(
+                ["docker", "--host", host, "logs", owned], capture_output=True, timeout=15
+            )
+            (root / "daemon.log").write_bytes(logs.stdout + logs.stderr)
+        finally:
+            outer_docker(host, "rm", "-fv", owned, timeout=45)
+            if volumes & set(
+                outer_docker(host, "volume", "ls", "--format", "{{.Name}}").splitlines()
+            ):
+                raise RuntimeError("Dedicated daemon volume survived cleanup")
+            if outer_docker(host, "ps", "-aq", "--filter", "id=" + owned):
+                raise RuntimeError("Dedicated daemon survived cleanup")
+    if outer_docker(host, "ps", "-aq", "--filter", "label=maf-qualification.authz=" + client):
+        raise RuntimeError("Dedicated daemon survived cleanup")
+
+
 def run(args: argparse.Namespace) -> None:
     root = args.root.resolve()
     root.mkdir(parents=True, exist_ok=False)
@@ -175,29 +206,7 @@ def run(args: argparse.Namespace) -> None:
             if key.startswith("DOCKER_"):
                 del os.environ[key]
         os.environ.update(saved_env)
-        # A timed-out create can still have registered the exact named fixture.
-        discovered = outer_docker(
-            host, "ps", "-aq", "--filter", "label=maf-qualification.authz=" + client
-        ).split()
-        for owned in discovered:
-            item = json.loads(outer_docker(host, "inspect", owned))[0]
-            if (
-                item["Name"] != "/" + name
-                or item["Config"]["Labels"].get("maf-qualification.authz") != client
-            ):
-                raise RuntimeError("Unexpected container in dedicated daemon scope")
-            volumes = {m["Name"] for m in item["Mounts"] if m["Type"] == "volume"}
-            logs = subprocess.run(
-                ["docker", "--host", host, "logs", owned], capture_output=True, timeout=15
-            )
-            (root / "daemon.log").write_bytes(logs.stdout + logs.stderr)
-            outer_docker(host, "rm", "-fv", owned, timeout=45)
-            if volumes & set(
-                outer_docker(host, "volume", "ls", "--format", "{{.Name}}").splitlines()
-            ):
-                raise RuntimeError("Dedicated daemon volume survived cleanup")
-        if outer_docker(host, "ps", "-aq", "--filter", "label=maf-qualification.authz=" + client):
-            raise RuntimeError("Dedicated daemon survived cleanup")
+        cleanup_daemon(root, host, name, client)
     if outer_docker(host, "info", "--format", "{{.ID}}") != parent_id:
         raise RuntimeError("Parent daemon identity changed")
     report["dedicated_daemon_removed"] = True
