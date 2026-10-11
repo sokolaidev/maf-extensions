@@ -27,7 +27,7 @@ The inventory must contain components and identify the exact built image. Lower-
 | Profile | Built target |
 |---|---|
 | `bicep` | Base Bicep sandbox |
-| `bicep-prepared` | Bicep with the repository's prepared AVM cache |
+| `bicep-avm` | [Bicep with selected virtual-network and storage-account AVM modules](../../images/bicep-sandbox/AVM.md) |
 | `sbx-bicep` | The `sbx` template applied to the base Bicep image |
 | `graphviz` | Graphviz DOT rendering sandbox |
 | `drawio-sandbox` | Python/Graphviz Draw.io sandbox |

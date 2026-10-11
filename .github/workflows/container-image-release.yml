@@ -14,7 +14,7 @@ on:
         type: choice
         options:
           - bicep
-          - bicep-prepared
+          - bicep-avm
           - sbx-bicep
           - graphviz
           - drawio-sandbox

@@ -13,7 +13,7 @@ from typing import Any
 
 PROFILES = (
     "bicep",
-    "bicep-prepared",
+    "bicep-avm",
     "sbx-bicep",
     "graphviz",
     "drawio-sandbox",
@@ -26,7 +26,7 @@ PROFILES = (
     "egress-proxy",
 )
 IMAGE_INPUTS = {
-    "images/bicep-sandbox/": ("bicep", "bicep-prepared", "sbx-bicep"),
+    "images/bicep-sandbox/": ("bicep", "bicep-avm", "sbx-bicep"),
     "images/sbx-template/": ("sbx-bicep",),
     "images/graphviz-sandbox/": ("graphviz",),
     "images/drawio-sandbox/": ("drawio-sandbox",),
@@ -43,6 +43,7 @@ IMAGE_INPUTS = {
 # These exact consumer guides are not consumed by the image recipes or build helpers.
 CONSUMER_GUIDES = {
     "images/bicep-sandbox/README.md",
+    "images/bicep-sandbox/AVM.md",
     "images/sbx-template/README.md",
     "images/graphviz-sandbox/README.md",
     "images/drawio-export/README.md",
@@ -51,8 +52,9 @@ CONSUMER_GUIDES = {
 }
 SCRIPT_INPUTS = {
     "scripts/terraform_dependencies.py": ("terraform-prepared", "opentofu-prepared"),
-    "scripts/build_bicep_prepared_image.py": ("bicep-prepared",),
-    "scripts/bicep_dependencies.py": ("bicep-prepared",),
+    "scripts/build_bicep_prepared_image.py": ("bicep-avm",),
+    "scripts/bicep_dependencies.py": ("bicep-avm",),
+    "scripts/bicep_avm_qualification.py": ("bicep-avm",),
     "scripts/build_hyperlight_aks_image.py": ("hyperlight",),
     "scripts/hyperlight_image_smoke.py": ("hyperlight",),
     "scripts/check_hyperlight_image_compatibility.py": ("hyperlight",),

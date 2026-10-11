@@ -47,7 +47,7 @@ def test_source_cannot_be_selected_independently_of_dispatch(monkeypatch, change
     "profile",
     [
         "bicep",
-        "bicep-prepared",
+        "bicep-avm",
         "sbx-bicep",
         "graphviz",
         "drawio-sandbox",
