@@ -80,9 +80,9 @@ def test_positive_success_and_refusal_controls(oracle):
         ("allowed.example:8000", "denied.example:8000"),
         (
             "allowed.example:8000\r\n X-Injected: yes",
-            "denied.example:8000%0D%0A%20X-Injected:%20yes",
+            "denied.example:8000%0D%0A X-Injected: yes",
         ),
-        ("allowed.example:8000\n X-Injected: yes", "denied.example:8000%0A%20X-Injected:%20yes"),
+        ("allowed.example:8000\n X-Injected: yes", "denied.example:8000%0A X-Injected: yes"),
     ],
 )
 def test_origin_redirect_cannot_inject_response_header_lines(monkeypatch, host, expected_host):
