@@ -17,6 +17,12 @@ from .private_root import check_file, prepare
 
 MAX_GENERATION = 2**63 - 1
 MAX_DATABASE_BYTES = 32 * 1024**2
+_SCHEMA = {
+    "settings": "CREATE TABLE settings(version INTEGER NOT NULL, capacity INTEGER NOT NULL)",
+    "sessions": "CREATE TABLE sessions(id TEXT PRIMARY KEY, profile TEXT NOT NULL, generation INTEGER NOT NULL CHECK(generation>0), state TEXT NOT NULL CHECK(state IN ('active','fencing','stopped')), owner TEXT NOT NULL, fence TEXT)",
+    "resources": "CREATE TABLE resources(host TEXT NOT NULL, boot TEXT NOT NULL, guest TEXT NOT NULL, PRIMARY KEY(host,boot,guest))",
+    "fences": "CREATE TABLE fences(id TEXT PRIMARY KEY, request TEXT NOT NULL, owner TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('pending','confirmed')))",
+}
 
 
 @dataclass(frozen=True)
@@ -89,6 +95,12 @@ class Authority:
             raise Refused("invalid coordinator metadata capacity")
         self.policy = policy
         self.capacity = capacity
+        try:
+            self._initialize(root)
+        except (OSError, sqlite3.Error) as error:
+            raise Refused("coordinator storage unavailable or corrupt") from error
+
+    def _initialize(self, root: Path) -> None:
         prepare(root)
         self.root = root.resolve()
         if any((self.root / name).exists() for name in ("shared.sqlite", "state.sqlite")):
@@ -116,21 +128,19 @@ class Authority:
                     raise Refused("coordinator database ceiling unavailable")
                 with self._transaction():
                     if self.db.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchone() is None:
-                        self.db.execute(
-                            "CREATE TABLE settings(version INTEGER NOT NULL, capacity INTEGER NOT NULL)"
+                        for statement in _SCHEMA.values():
+                            self.db.execute(statement)
+                        self.db.execute("INSERT INTO settings VALUES(1,?)", (self.capacity,))
+                    schema = {
+                        row["name"]: row["sql"]
+                        for row in self.db.execute(
+                            "SELECT name,sql FROM sqlite_schema WHERE type='table'"
                         )
-                        self.db.execute("INSERT INTO settings VALUES(1,?)", (capacity,))
-                        self.db.execute(
-                            "CREATE TABLE sessions(id TEXT PRIMARY KEY, profile TEXT NOT NULL, generation INTEGER NOT NULL CHECK(generation>0), state TEXT NOT NULL CHECK(state IN ('active','fencing','stopped')), owner TEXT NOT NULL, fence TEXT)"
-                        )
-                        self.db.execute(
-                            "CREATE TABLE resources(host TEXT NOT NULL, boot TEXT NOT NULL, guest TEXT NOT NULL, PRIMARY KEY(host,boot,guest))"
-                        )
-                        self.db.execute(
-                            "CREATE TABLE fences(id TEXT PRIMARY KEY, request TEXT NOT NULL, owner TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('pending','confirmed')))"
-                        )
+                    }
+                    if any(schema.get(name) != statement for name, statement in _SCHEMA.items()):
+                        raise Refused("unsupported coordinator schema")
                     settings = self.db.execute("SELECT version,capacity FROM settings").fetchall()
-                    if [tuple(row) for row in settings] != [(1, capacity)]:
+                    if [tuple(row) for row in settings] != [(1, self.capacity)]:
                         raise Refused("coordinator format or capacity differs")
                     if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                         raise Refused("coordinator integrity check failed")

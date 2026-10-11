@@ -596,10 +596,90 @@ def test_nonempty_foreign_schema_is_not_initialized(tmp_path):
     with sqlite3.connect(root / "authority.sqlite") as connection:
         connection.execute("CREATE TABLE foreign_data(value TEXT)")
         connection.execute("INSERT INTO foreign_data VALUES('preserved')")
-    with pytest.raises(remote.Refused, match="unavailable or corrupt"):
+    with pytest.raises(remote.Refused, match="schema"):
         authority(root)
     with sqlite3.connect(root / "authority.sqlite") as connection:
         assert connection.execute("SELECT * FROM foreign_data").fetchall() == [("preserved",)]
         assert connection.execute("SELECT name FROM sqlite_schema").fetchall() == [
             ("foreign_data",)
         ]
+
+
+@pytest.mark.parametrize(
+    "damage", ["settings_only", "missing_resources", "changed_sessions", "resource_constraints"]
+)
+def test_partial_or_altered_coordinator_schema_is_refused(tmp_path, damage):
+    import sqlite3
+
+    root = tmp_path / "db"
+    with authority(root) as db:
+        if damage == "settings_only":
+            for table in ("sessions", "resources", "fences"):
+                db.db.execute(f"DROP TABLE {table}")
+        elif damage == "missing_resources":
+            db.db.execute("DROP TABLE resources")
+        elif damage == "changed_sessions":
+            db.db.execute("ALTER TABLE sessions ADD COLUMN foreign_column TEXT")
+        else:
+            db.db.execute("DROP TABLE resources")
+            db.db.execute("CREATE TABLE resources(host TEXT, boot TEXT, guest TEXT)")
+        before = [tuple(row) for row in db.db.execute("SELECT * FROM sqlite_schema")]
+    with pytest.raises(remote.Refused, match="schema"):
+        authority(root)
+    with sqlite3.connect(root / "authority.sqlite") as connection:
+        assert connection.execute("SELECT * FROM sqlite_schema").fetchall() == before
+        assert connection.execute("SELECT * FROM settings").fetchall() == [(1, 4096)]
+
+
+LOCK_CONTENDER = """
+import sys
+from pathlib import Path
+from scripts.experiments.mxc_session_patch.remote_authority import Authority, Refused
+try:
+    Authority(Path(sys.argv[1]), enabled=True)
+except Refused as error:
+    assert isinstance(error.__cause__, OSError)
+    print('refused')
+else:
+    raise AssertionError('contender acquired the initializer lock')
+"""
+
+
+def test_initialization_lock_contention_is_domain_refusal(tmp_path):
+    root = tmp_path / "db"
+    remote.prepare(root)
+    with (root / "initialize.lock").open("w+b") as initializer:
+        initializer.write(b"0")
+        initializer.flush()
+        remote._lock(initializer, True)
+        child = subprocess.run(
+            [sys.executable, "-c", LOCK_CONTENDER, str(root)],
+            cwd=Path(__file__).parents[1],
+            capture_output=True,
+            timeout=20,
+        )
+        assert child.returncode == 0, child.stderr.decode()
+        assert child.stdout.strip() == b"refused"
+        assert not (root / "authority.sqlite").exists()
+    with authority(root) as db:
+        current(db, db.acquire("session", PROFILE, A))
+
+
+def test_corrupt_sqlite_header_is_domain_refusal(tmp_path):
+    root = tmp_path / "db"
+    remote.prepare(root)
+    path = root / "authority.sqlite"
+    path.write_bytes(b"not a SQLite database" * 50)
+    before = path.read_bytes()
+    with pytest.raises(remote.Refused, match="unavailable or corrupt"):
+        authority(root)
+    assert path.read_bytes() == before
+
+
+def test_unavailable_root_is_domain_refusal(tmp_path, monkeypatch):
+    def unavailable(_):
+        raise PermissionError("root is unavailable")
+
+    monkeypatch.setattr(remote, "prepare", unavailable)
+    with pytest.raises(remote.Refused, match="unavailable or corrupt"):
+        authority(tmp_path / "db")
