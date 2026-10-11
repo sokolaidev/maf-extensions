@@ -82,9 +82,18 @@ def main() -> None:
                     for item in chunks
                     if isinstance(item, sdk.ExecChunk) and item.stream == "stderr"
                 )
-                assert stdout == raw_stdout and stderr == raw_stderr
-                assert result.stdout.encode() != raw_stdout
-                assert result.stderr.encode() != raw_stderr
+                if not (stdout == raw_stdout and stderr == raw_stderr):
+                    raise RuntimeError(
+                        "probe expectation failed: stdout == raw_stdout and stderr == raw_stderr"
+                    )
+                if not (result.stdout.encode() != raw_stdout):
+                    raise RuntimeError(
+                        "probe expectation failed: result.stdout.encode() != raw_stdout"
+                    )
+                if not (result.stderr.encode() != raw_stderr):
+                    raise RuntimeError(
+                        "probe expectation failed: result.stderr.encode() != raw_stderr"
+                    )
                 before_fractional = len(requests)
                 try:
                     client.exec("fixture", ["bytes"], workspace="default", timeout_seconds=0.25)
@@ -92,7 +101,10 @@ def main() -> None:
                     fractional_error = type(exc).__name__
                 else:
                     raise AssertionError("fractional timeout unexpectedly accepted")
-                assert len(requests) == before_fractional
+                if not (len(requests) == before_fractional):
+                    raise RuntimeError(
+                        "probe expectation failed: len(requests) == before_fractional"
+                    )
 
                 tracemalloc.start()
                 total = 0
@@ -103,9 +115,13 @@ def main() -> None:
                         retained_after_last_chunk = tracemalloc.get_traced_memory()[0]
                 _, peak = tracemalloc.get_traced_memory()
                 tracemalloc.stop()
-                assert total == 8388608
+                if not (total == 8388608):
+                    raise RuntimeError("probe expectation failed: total == 8388608")
                 deletion = client.delete("fixture", workspace="default")
-                assert deletion.sandbox_id == "fixture-instance-b"
+                if not (deletion.sandbox_id == "fixture-instance-b"):
+                    raise RuntimeError(
+                        'probe expectation failed: deletion.sandbox_id == "fixture-instance-b"'
+                    )
         finally:
             server.stop(0).wait()
 

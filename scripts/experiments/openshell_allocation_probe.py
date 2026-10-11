@@ -21,7 +21,7 @@ from tempfile import TemporaryDirectory
 
 from openshell_authority_probe import gateway_fixture, verify_absent, verify_present
 from openshell_owned_probe import fixture_spec, snapshot
-from openshell_recovery import AllocationAuthority, AuthorityBusyError, validate
+from openshell_recovery import AllocationAuthority, AuthorityBusyError, _write, validate
 
 
 class Client:
@@ -50,7 +50,8 @@ class Client:
             spec=fixture_spec(self.image),
         ).SerializeToString()
 
-    def send(self, payload):
+    def send(self, payload, *, on_created):
+        """Hand off admitted identity before readiness; enrich the same record on success."""
         request = self.pb.CreateSandboxRequest.FromString(payload)
         response = self.rpc("CreateSandbox", request)
         owner = {
@@ -59,7 +60,10 @@ class Client:
             "name": request.name,
             "sandbox_id": response.sandbox.metadata.id,
             "delete_request_id": str(uuid.uuid4()),
+            "containers": [],
+            "processes": {},
         }
+        on_created(owner)
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             current = self.rpc(
@@ -123,6 +127,17 @@ def dispose_fixture(client, owner):
         raise RuntimeError("fixture cleanup incomplete; retain identities")
 
 
+def verify_workspace_absent(client, workspace):
+    """Require an explicit NOT_FOUND before recording workspace cleanup success."""
+    try:
+        client.rpc("GetWorkspace", client.pb.GetWorkspaceRequest(name=workspace))
+    except client.grpc.RpcError as exc:
+        if exc.code() == client.grpc.StatusCode.NOT_FOUND:
+            return True
+        raise
+    raise RuntimeError("workspace cleanup incomplete")
+
+
 def checkpoint(name, phase):
     """Signal a persisted barrier and wait for the coordinator to kill this process."""
     print(json.dumps({"ready": True, "name": name, "phase": phase}), flush=True)
@@ -150,9 +165,9 @@ def worker(args):
                 checkpoint(name, "reserved")
 
             def send(payload):
-                owner = client.send(payload)
                 # The coordinator's oracle is deliberately outside the recovery ledger.
-                args.oracle.write_text(json.dumps(owner), encoding="utf-8")
+                owner = client.send(payload, on_created=lambda value: _write(args.oracle, value))
+                _write(args.oracle, owner)
                 if args.worker == "uncertain":
                     checkpoint(name, "uncertain")
                 return owner
@@ -181,7 +196,8 @@ def run_case(args, case, context_path, client, binding):
         str(args.evidence / f"{case}-oracle.json"),
     ]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    assert process.stdout is not None
+    if not (process.stdout is not None):
+        raise RuntimeError("probe expectation failed: process.stdout is not None")
     event = None
     contender = None
     try:
@@ -204,16 +220,20 @@ def run_case(args, case, context_path, client, binding):
             print(error, file=sys.stderr)
     if event is None or contender is None:
         raise RuntimeError("missing crash/contender evidence")
-    assert event["ready"] and process.returncode == -9
-    assert json.loads(contender.stdout)["lock_refused"]
+    if not (event["ready"] and process.returncode == -9):
+        raise RuntimeError('probe expectation failed: event["ready"] and process.returncode == -9')
+    if not (json.loads(contender.stdout)["lock_refused"]):
+        raise RuntimeError('probe expectation failed: json.loads(contender.stdout)["lock_refused"]')
     oracle_path = args.evidence / f"{case}-oracle.json"
     owner = json.loads(oracle_path.read_text(encoding="utf-8")) if oracle_path.exists() else None
     calls = []
     with AllocationAuthority(args.ledger, binding) as authority:
         entry = authority.allocations()[event["name"]]
-        assert entry["phase"] == event["phase"]
+        if not (entry["phase"] == event["phase"]):
+            raise RuntimeError('probe expectation failed: entry["phase"] == event["phase"]')
         if owner:
-            assert verify_present(observed(owner))
+            if not (verify_present(observed(owner))):
+                raise RuntimeError("probe expectation failed: verify_present(observed(owner))")
 
         def current(name):
             calls.append("lookup")
@@ -227,16 +247,30 @@ def run_case(args, case, context_path, client, binding):
             event["name"], current, delete, lambda value: verify_absent(observed(value))
         )
         if case == "confirmed":
-            assert result["cleanup_verified"] and calls == ["lookup", "delete"]
+            if not (result["cleanup_verified"] and calls == ["lookup", "delete"]):
+                raise RuntimeError(
+                    'probe expectation failed: result["cleanup_verified"] and calls == ["lookup", "delete"]'
+                )
         else:
-            assert result["ownership_retained"] and not calls
+            if not (result["ownership_retained"] and not calls):
+                raise RuntimeError(
+                    'probe expectation failed: result["ownership_retained"] and not calls'
+                )
         if case == "reserved":
-            assert client.current_id(event["name"]) is None
+            if client.current_id(event["name"]) is not None:
+                raise RuntimeError(
+                    'probe expectation failed: client.current_id(event["name"]) is None'
+                )
         if case == "uncertain":
-            assert owner and client.current_id(event["name"]) == owner["sandbox_id"]
-            assert verify_present(observed(owner))
+            if not (owner and client.current_id(event["name"]) == owner["sandbox_id"]):
+                raise RuntimeError(
+                    'probe expectation failed: owner and client.current_id(event["name"]) == owner["sandbox_id"]'
+                )
+            if not (verify_present(observed(owner))):
+                raise RuntimeError("probe expectation failed: verify_present(observed(owner))")
         following = authority.reserve(client.request)
-        assert following != event["name"]
+        if not (following != event["name"]):
+            raise RuntimeError('probe expectation failed: following != event["name"]')
         saved_phase = authority.allocations()[event["name"]]["phase"]
     if owner and case == "uncertain":
         dispose_fixture(client, owner)
@@ -267,7 +301,10 @@ def measure(args, issuer):
         deadline = time.monotonic() + 15
         while True:
             try:
-                assert admin.rpc("Health", admin.pb.HealthRequest()).version == "0.1.2"
+                if not (admin.rpc("Health", admin.pb.HealthRequest()).version == "0.1.2"):
+                    raise RuntimeError(
+                        'probe expectation failed: admin.rpc("Health", admin.pb.HealthRequest()).version == "0.1.2"'
+                    )
                 break
             except admin.grpc.RpcError:
                 if time.monotonic() >= deadline:
@@ -305,14 +342,11 @@ def measure(args, issuer):
         admin.rpc(
             "DeleteWorkspace", admin.pb.DeleteWorkspaceRequest(name=workspace, allow_missing=True)
         )
-        workspace_absent = False
         try:
-            admin.rpc("GetWorkspace", admin.pb.GetWorkspaceRequest(name=workspace))
-        except admin.grpc.RpcError as exc:
-            workspace_absent = exc.code() == admin.grpc.StatusCode.NOT_FOUND
-        adapter.close()
-        admin.close()
-    assert workspace_absent
+            workspace_absent = verify_workspace_absent(admin, workspace)
+        finally:
+            adapter.close()
+            admin.close()
     return {
         "cases": len(results),
         "workspace_cleanup_verified": workspace_absent,

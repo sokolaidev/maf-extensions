@@ -43,6 +43,8 @@ def event(kind, value):
     "events,reason",
     [
         ([event("stdout", b"x")], "missing execution exit"),
+        ([event("exit", 0), event("stdout", b"late")], "data after terminal exit"),
+        ([event("exit", 0), event("stderr", b"late")], "data after terminal exit"),
         ([event("exit", 0), event("exit", 0)], "duplicate exit"),
         ([event("stdout", b"x" * 10000), event("stderr", b"x" * 6385)], "output cap"),
         ([event("unexpected", b"")], "unknown stream event"),

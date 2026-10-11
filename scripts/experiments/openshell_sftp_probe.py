@@ -12,7 +12,7 @@ import json
 import socket
 import stat
 import threading
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, suppress
 from importlib import import_module
 
 from openshell_files_probe import execute, main
@@ -28,77 +28,80 @@ def native_sftp(client, name, sandbox_id):
     )
     if session.sandbox_id != sandbox_id:
         raise RuntimeError("SSH session targets another physical sandbox")
-    local, bridge = socket.socketpair()
-    bridge.settimeout(10)
     stopped = threading.Event()
     errors = []
+    receiver = None
 
-    def requests():
-        yield client.pb.TcpForwardFrame(
-            init=client.pb.TcpForwardInit(
-                sandbox=name,
-                workspace=client.scope.workspace,
-                service_id="spike-sftp",
-                ssh=client.pb.SshRelayTarget(),
-                authorization_token=session.token,
-            )
-        )
-        while not stopped.is_set():
-            try:
-                data = bridge.recv(65536)
-            except OSError:
-                return
-            if not data:
-                return
-            yield client.pb.TcpForwardFrame(data=data)
+    def join_receiver():
+        if receiver is not None and receiver.ident is not None:
+            receiver.join(timeout=5)
+            if receiver.is_alive():
+                raise RuntimeError("relay observer failed to stop")
 
-    call = client.stub.ForwardTcp(
-        requests(), metadata=[("authorization", "Bearer " + client.token)], timeout=60
-    )
-
-    def receive():
+    with ExitStack() as cleanup:
+        cleanup.callback(join_receiver)
+        local, bridge = socket.socketpair()
+        cleanup.callback(local.close)
+        cleanup.callback(bridge.close)
         try:
-            for frame in call:
-                if frame.WhichOneof("payload") != "data":
-                    raise RuntimeError("unexpected relay frame")
-                bridge.sendall(frame.data)
-        except Exception as exc:
-            if not stopped.is_set():
-                errors.append(type(exc).__name__)
-        finally:
-            try:
-                bridge.shutdown(socket.SHUT_WR)
-            except OSError:
-                pass
+            bridge.settimeout(10)
 
-    receiver = threading.Thread(target=receive, daemon=True)
-    receiver.start()
-    transport = paramiko.Transport(local)
-    sftp = None
-    try:
-        transport.start_client(timeout=10)
-        fingerprint = "SHA256:" + base64.b64encode(
-            hashlib.sha256(transport.get_remote_server_key().asbytes()).digest()
-        ).decode().rstrip("=")
-        if session.host_key_fingerprint and session.host_key_fingerprint != fingerprint:
-            raise RuntimeError("SSH host key mismatch")
-        transport.auth_none("sandbox")
-        sftp = transport.open_sftp_client()
-        sftp.get_channel().settimeout(5)
-        yield sftp
-        if errors:
-            raise RuntimeError("relay failed: " + ",".join(errors))
-    finally:
-        stopped.set()
-        if sftp is not None:
-            sftp.close()
-        transport.close()
-        call.cancel()
-        bridge.close()
-        local.close()
-        receiver.join(timeout=5)
-        if receiver.is_alive():
-            raise RuntimeError("relay observer failed to stop")
+            def requests():
+                yield client.pb.TcpForwardFrame(
+                    init=client.pb.TcpForwardInit(
+                        sandbox=name,
+                        workspace=client.scope.workspace,
+                        service_id="spike-sftp",
+                        ssh=client.pb.SshRelayTarget(),
+                        authorization_token=session.token,
+                    )
+                )
+                while not stopped.is_set():
+                    try:
+                        data = bridge.recv(65536)
+                    except OSError:
+                        return
+                    if not data:
+                        return
+                    yield client.pb.TcpForwardFrame(data=data)
+
+            call = client.stub.ForwardTcp(
+                requests(), metadata=[("authorization", "Bearer " + client.token)], timeout=60
+            )
+            cleanup.callback(call.cancel)
+
+            def receive():
+                try:
+                    for frame in call:
+                        if frame.WhichOneof("payload") != "data":
+                            raise RuntimeError("unexpected relay frame")
+                        bridge.sendall(frame.data)
+                except Exception as exc:
+                    if not stopped.is_set():
+                        errors.append(type(exc).__name__)
+                finally:
+                    with suppress(OSError):
+                        bridge.shutdown(socket.SHUT_WR)
+
+            receiver = threading.Thread(target=receive, daemon=True)
+            receiver.start()
+            transport = paramiko.Transport(local)
+            cleanup.callback(transport.close)
+            transport.start_client(timeout=10)
+            fingerprint = "SHA256:" + base64.b64encode(
+                hashlib.sha256(transport.get_remote_server_key().asbytes()).digest()
+            ).decode().rstrip("=")
+            if session.host_key_fingerprint and session.host_key_fingerprint != fingerprint:
+                raise RuntimeError("SSH host key mismatch")
+            transport.auth_none("sandbox")
+            sftp = transport.open_sftp_client()
+            cleanup.callback(sftp.close)
+            sftp.get_channel().settimeout(5)
+            yield sftp
+            if errors:
+                raise RuntimeError("relay failed: " + ",".join(errors))
+        finally:
+            stopped.set()
 
 
 def measure_sftp(client, name, sandbox_id):

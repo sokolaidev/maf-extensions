@@ -69,6 +69,8 @@ def execute(client, name, code, *, workdir="/sandbox"):
                     raise RuntimeError("duplicate exit")
                 exit_code = event.exit.exit_code
             elif kind in ("stdout", "stderr"):
+                if exit_code is not None:
+                    raise RuntimeError("data after terminal exit")
                 data = bytes(getattr(event, kind).data)
                 if len(output) + len(error) + len(data) > 16384:
                     raise RuntimeError("fixture output cap exceeded")

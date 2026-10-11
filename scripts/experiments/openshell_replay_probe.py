@@ -16,7 +16,7 @@ from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from openshell_allocation_probe import Client, dispose_fixture, observed
+from openshell_allocation_probe import Client, dispose_fixture, observed, verify_workspace_absent
 from openshell_authority_probe import gateway_fixture, verify_absent
 from openshell_owned_probe import inventory
 from openshell_recovery import AllocationAuthority
@@ -110,8 +110,7 @@ def measure(image, issuer, control, root):
     def create(name=None):
         name = name or "s1797-" + uuid.uuid4().hex[:12]
         payload = adapter.request(name, str(uuid.uuid4()))
-        owner = adapter.send(payload)
-        records.append(owner)
+        owner = adapter.send(payload, on_created=records.append)
         return payload, owner
 
     try:
@@ -130,8 +129,7 @@ def measure(image, issuer, control, root):
             name = authority.reserve(adapter.request)
 
             def lose_result(payload):
-                owner = adapter.send(payload)
-                records.append(owner)
+                adapter.send(payload, on_created=records.append)
                 raise ConnectionError("fixture withheld confirmed create result")
 
             try:
@@ -140,7 +138,8 @@ def measure(image, issuer, control, root):
                 # Withheld result delivery must leave the allocation uncertain.
                 pass
             row = authority.allocations()[name]
-            assert row["phase"] == "uncertain"
+            if not (row["phase"] == "uncertain"):
+                raise RuntimeError('probe expectation failed: row["phase"] == "uncertain"')
             payload = bytes.fromhex(row["request"])
             original = records[-1]
             first = replay(adapter, payload)
@@ -170,7 +169,10 @@ def measure(image, issuer, control, root):
                 restarted,
                 restarted.get("sandbox_id") == original["sandbox_id"] and restarted["replayed"],
             )
-            assert authority.allocations()[name]["phase"] == "uncertain"
+            if not (authority.allocations()[name]["phase"] == "uncertain"):
+                raise RuntimeError(
+                    'probe expectation failed: authority.allocations()[name]["phase"] == "uncertain"'
+                )
         dispose_fixture(admin, original)
         _, replacement = create(original["name"])
         absent_original = replay(adapter, payload)
@@ -189,10 +191,9 @@ def measure(image, issuer, control, root):
         inject_admission(control, expiring["sandbox_id"], "expired_success")
         wait_gateway(admin)
         expired = replay(adapter, expiring_payload)
-        # Capture any newly created fixture resource before evaluating the assertion.
+        # Capture any newly created fixture resource before evaluating the result.
         if expired["status"] == "OK":
-            new_owner = adapter.send(expiring_payload)
-            records.append(new_owner)
+            adapter.send(expiring_payload, on_created=records.append)
         emit(
             "expired_success_readmits_create",
             expired,
@@ -227,14 +228,11 @@ def measure(image, issuer, control, root):
         admin.rpc(
             "DeleteWorkspace", admin.pb.DeleteWorkspaceRequest(name=workspace, allow_missing=True)
         )
-        workspace_absent = False
         try:
-            admin.rpc("GetWorkspace", admin.pb.GetWorkspaceRequest(name=workspace))
-        except admin.grpc.RpcError as exc:
-            workspace_absent = exc.code() == admin.grpc.StatusCode.NOT_FOUND
-        for client in (adapter, peer, admin):
-            client.close()
-    assert workspace_absent
+            workspace_absent = verify_workspace_absent(admin, workspace)
+        finally:
+            for client in (adapter, peer, admin):
+                client.close()
     return {
         "cases": len(results),
         "passed": len(results) == 8,

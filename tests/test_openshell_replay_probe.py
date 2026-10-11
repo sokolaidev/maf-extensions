@@ -10,7 +10,7 @@ import sys
 import textwrap
 import time
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -182,3 +182,182 @@ def test_fixture_disposal_preserves_guards_under_optimization(optimized, mode):
             "still_present": "fixture cleanup incomplete; retain identities",
         }[mode]
     )
+
+
+@pytest.fixture(params=[0, 2], ids=["normal", "optimized"])
+def load_probe(request, monkeypatch):
+    directory = Path(__file__).resolve().parents[1] / "scripts/experiments"
+    monkeypatch.syspath_prepend(str(directory))
+
+    def load(name):
+        path = directory / (name + ".py")
+        module = ModuleType(name)
+        module.__file__ = str(path)
+        exec(
+            compile(path.read_text(encoding="utf-8"), str(path), "exec", optimize=request.param),
+            module.__dict__,
+        )
+        return module
+
+    return load
+
+
+@pytest.mark.parametrize("stage", ["get", "snapshot", "validate", "deadline", "ready"])
+def test_create_hands_off_identity_before_readiness(load_probe, monkeypatch, tmp_path, stage):
+    probe = load_probe("openshell_allocation_probe")
+    owner_path = tmp_path / "admitted.json"
+    retained = []
+    client = probe.Client.__new__(probe.Client)
+    client.scope = object()
+    client.pb = SimpleNamespace(
+        CreateSandboxRequest=SimpleNamespace(
+            FromString=lambda value: SimpleNamespace(name="fixture")
+        ),
+        GetSandboxRequest=SimpleNamespace,
+        SANDBOX_PHASE_READY=1,
+    )
+
+    def admitted(record):
+        retained.append(record)
+        probe._write(owner_path, record)
+
+    def rpc(method, request):
+        if method == "CreateSandbox":
+            return SimpleNamespace(sandbox=SimpleNamespace(metadata=SimpleNamespace(id="original")))
+        assert retained and json.loads(owner_path.read_text())["sandbox_id"] == "original"
+        if stage == "get":
+            raise RuntimeError("get")
+        return SimpleNamespace(
+            sandbox=SimpleNamespace(
+                metadata=SimpleNamespace(id="original"),
+                status=SimpleNamespace(phase=0 if stage == "deadline" else 1),
+            )
+        )
+
+    def snapshot(identifier):
+        assert retained[0]["sandbox_id"] == identifier
+        if stage == "snapshot":
+            raise RuntimeError("snapshot")
+        return {"containers": [{"Id": "captured"}], "processes": {"1": "2"}}
+
+    def validate(record):
+        if stage == "validate":
+            raise RuntimeError("validate")
+
+    client.rpc = rpc
+    monkeypatch.setattr(probe, "snapshot", snapshot)
+    monkeypatch.setattr(probe, "validate", validate)
+    ticks = iter([0, 0, 31])
+    monkeypatch.setattr(probe.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(probe.time, "sleep", lambda seconds: None)
+    if stage == "ready":
+        result = client.send(b"request", on_created=admitted)
+        assert result is retained[0]
+        assert result["containers"] == ["captured"]
+    else:
+        with pytest.raises(
+            RuntimeError, match="did not become ready" if stage == "deadline" else stage
+        ):
+            client.send(b"request", on_created=admitted)
+    assert retained[0]["sandbox_id"] == "original"
+    assert json.loads(owner_path.read_text())["containers"] == []
+
+
+@pytest.mark.parametrize("state", ["present", "absent", "unavailable"])
+def test_workspace_cleanup_requires_explicit_absence(load_probe, state):
+    probe = load_probe("openshell_allocation_probe")
+
+    class RpcError(Exception):
+        def code(self):
+            return state
+
+    calls = []
+
+    def rpc(method, request):
+        calls.append((method, request.name))
+        if state != "present":
+            raise RpcError(state)
+        return object()
+
+    client = SimpleNamespace(
+        rpc=rpc,
+        pb=SimpleNamespace(GetWorkspaceRequest=SimpleNamespace),
+        grpc=SimpleNamespace(RpcError=RpcError, StatusCode=SimpleNamespace(NOT_FOUND="absent")),
+    )
+    if state == "absent":
+        assert probe.verify_workspace_absent(client, "fixture") is True
+    else:
+        with pytest.raises(RuntimeError if state == "present" else RpcError):
+            probe.verify_workspace_absent(client, "fixture")
+    assert calls == [("GetWorkspace", "fixture")]
+
+
+def test_replacement_waits_for_independent_absence(load_probe, monkeypatch, tmp_path):
+    probe = load_probe("openshell_lifecycle_probe")
+    created = []
+    checks = iter([False, True])
+
+    class Fixture:
+        def __init__(self, *args):
+            self.client = SimpleNamespace(wait_deleted=lambda *args, **kwargs: None)
+
+        def create(self, name, *, on_created):
+            record = {"name": name, "sandbox_id": "original", "delete_request_id": "request"}
+            created.append(record)
+            on_created(record)
+            return record
+
+        def current_id(self, name):
+            return "original"
+
+        def delete(self, name, request_id):
+            return "original"
+
+        def verify_absent(self, record):
+            return next(checks)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(probe, "Fixture", Fixture)
+    monkeypatch.setattr(probe, "save", lambda *args: None)
+    args = SimpleNamespace(
+        endpoint="fixture", image="fixture", ledger=tmp_path / "owner", case="stale_race"
+    )
+    with pytest.raises(RuntimeError, match="original physical resources remain"):
+        probe.replacement_case(args)
+    assert len(created) == 1
+
+
+@pytest.mark.parametrize("stage", ["readiness", "snapshot", "ready"])
+def test_lifecycle_create_hands_off_before_readiness(load_probe, monkeypatch, stage):
+    probe = load_probe("openshell_lifecycle_probe")
+    retained = []
+    fixture = probe.Fixture.__new__(probe.Fixture)
+    fixture.image = "fixture"
+
+    def ready(*args, **kwargs):
+        assert retained[0]["sandbox_id"] == "original"
+        if stage == "readiness":
+            raise RuntimeError("readiness")
+
+    def snapshot(identifier):
+        assert retained[0]["sandbox_id"] == identifier
+        if stage == "snapshot":
+            raise RuntimeError("snapshot")
+        return {"containers": [{"Id": "captured"}], "processes": {"1": "2"}}
+
+    fixture.client = SimpleNamespace(
+        health=lambda: SimpleNamespace(version="0.1.2"),
+        create=lambda **kwargs: SimpleNamespace(id="original"),
+        wait_ready=ready,
+    )
+    monkeypatch.setattr(probe, "fixture_spec", lambda image: None)
+    monkeypatch.setattr(probe, "snapshot", snapshot)
+    if stage == "ready":
+        assert fixture.create("fixture", on_created=retained.append) is retained[0]
+        assert retained[0]["containers"] == ["captured"]
+    else:
+        with pytest.raises(RuntimeError, match=stage):
+            fixture.create("fixture", on_created=retained.append)
+    assert retained[0]["sandbox_id"] == "original"

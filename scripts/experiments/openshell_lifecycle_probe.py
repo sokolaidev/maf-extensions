@@ -19,7 +19,7 @@ from importlib import import_module
 from pathlib import Path
 
 from openshell_owned_probe import docker_get, fixture_spec, inventory, process_identity, snapshot
-from openshell_recovery import load, recover, save
+from openshell_recovery import _write, load, recover, save
 
 
 class Fixture:
@@ -41,23 +41,29 @@ class Fixture:
         self.client.close()
         self.channel.close()
 
-    def create(self, name: str) -> dict:
-        """Capture a ready instance and its independently observed physical resources."""
+    def create(self, name: str, *, on_created) -> dict:
+        """Hand off partial ownership before readiness, then enrich the same record."""
         if self.client.health().version != "0.1.2":
             raise RuntimeError("requires gateway 0.1.2")
         instance = self.client.create(name=name, workspace="default", spec=fixture_spec(self.image))
         print(json.dumps({"created": name, "sandbox_id": instance.id}), flush=True)
-        self.client.wait_ready(name, workspace="default", timeout_seconds=30)
-        observed = snapshot(instance.id)
-        return {
+        record = {
             "format": 1,
             "phase": "owned",
             "name": name,
             "sandbox_id": instance.id,
             "delete_request_id": str(uuid.uuid4()),
-            "containers": [x["Id"] for x in observed["containers"]],
-            "processes": observed["processes"],
+            "containers": [],
+            "processes": {},
         }
+        on_created(record)
+        self.client.wait_ready(name, workspace="default", timeout_seconds=30)
+        observed = snapshot(instance.id)
+        record.update(
+            containers=[x["Id"] for x in observed["containers"]],
+            processes=observed["processes"],
+        )
+        return record
 
     def current_id(self, name: str) -> str | None:
         """Treat only an explicit NOT_FOUND as absent."""
@@ -105,8 +111,7 @@ def replacement_case(args) -> dict:
     records = []
     result = {"case": args.case}
     try:
-        original = fixture.create(name)
-        records.append(original)
+        original = fixture.create(name, on_created=records.append)
         save(args.ledger, original)
         result["precheck_matched"] = fixture.current_id(name) == original["sandbox_id"]
         if fixture.delete(name, original["delete_request_id"]) != original["sandbox_id"]:
@@ -117,9 +122,9 @@ def replacement_case(args) -> dict:
             expected_sandbox_id=original["sandbox_id"],
             timeout_seconds=20,
         )
-        assert fixture.verify_absent(original)
-        replacement = fixture.create(name)
-        records.append(replacement)
+        if not (fixture.verify_absent(original)):
+            raise RuntimeError("original physical resources remain")
+        replacement = fixture.create(name, on_created=records.append)
         result["distinct_ids"] = original["sandbox_id"] != replacement["sandbox_id"]
         if args.case == "stale_precheck":
             result["recovery"] = recover(
@@ -157,7 +162,9 @@ def replacement_case(args) -> dict:
 def crash_worker(args) -> None:
     """Persist confirmed ownership before emitting a kill-ready event; parent owns recovery."""
     fixture = Fixture(args.endpoint, args.image)
-    record = fixture.create("s1797-" + uuid.uuid4().hex[:12])
+    record = fixture.create(
+        "s1797-" + uuid.uuid4().hex[:12], on_created=lambda value: _write(args.ledger, value)
+    )
     save(args.ledger, record)
     code = "import subprocess,os,time; subprocess.Popen(['python','-c','import time; time.sleep(120)']); os.write(1,b'READY'); time.sleep(120)"
     for chunk in fixture.client.exec_stream(
@@ -195,7 +202,8 @@ def client_crash(args) -> dict:
     worker = subprocess.Popen(
         command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1
     )
-    assert worker.stdout is not None
+    if not (worker.stdout is not None):
+        raise RuntimeError("probe expectation failed: worker.stdout is not None")
     ready = False
     try:
         deadline = time.monotonic() + 45

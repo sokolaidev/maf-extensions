@@ -61,7 +61,7 @@ The smoke used an isolated temporary configuration and SQLite state, an explicit
 
 An initial request to `/readyz` on the main API listener returned 404. Configuring `--health-port` and querying that dedicated listener corrected the smoke harness; the 404 was not a failed sandbox readiness result.
 
-## Live Docker workload â€” 2026-10-09
+## Live Docker workload — 2026-10-09
 
 The [live probe](../../../scripts/experiments/openshell_live_probe.py) created a disposable workload through SDK and gateway v0.1.2 on Docker Desktop Linux Engine 29.8.2, kernel `7.0.14-linuxkit`. The gateway and SDK ran inside a temporary Linux control container using Python 3.13.16. This exercised the actual supervisor and guest runtime; it remains a Docker Desktop observation, not qualification of native Linux, MicroVMs or Kubernetes.
 
@@ -101,7 +101,7 @@ The timeout response therefore did not establish termination of either the comma
 
 Deletion removed the observed processes and resources; it does not prove stale-name race safety, cleanup under control-plane loss or bounded cleanup time in failure cases. The temporary gateway was subsequently removed, destroying its signing keys and database; no experiment-labelled containers or volumes remained. Local images were retained. One denied direct connection with network mode `none` does not qualify the suite's complete `CLOSED` contract or any allowlist behavior.
 
-## Owned execution experiment â€” 2026-10-09
+## Owned execution experiment — 2026-10-09
 
 The [execution core](../../../scripts/experiments/openshell_owned_exec.py) and [live driver](../../../scripts/experiments/openshell_owned_probe.py) now exercise an owned asynchronous gRPC stream with a caller deadline and separately budgeted disposal. They remain experiment code outside shipped packages. The channel is owned directly; the driver does not read the convenience client's private stub or channel. Generated bindings still come from the pinned SDK's private `_proto` namespace, which is an explicit experimental dependency rather than an accepted production API.
 
@@ -135,7 +135,7 @@ Other case names are `bytes`, `natural_124`, `cancel_child`, `disconnect_child`,
 
 Fourteen offline regression cases cover byte fidelity, natural exit 124, exact/over-limit capture, fractional deadlines, repeated cancellation while cleanup is pending, incomplete/failed/cancelled cleanup, missing or out-of-order terminal events, dispatch failure and transport failures. The live cases additionally exercised actual protobuf streaming and gRPC message rejection. Ruff, focused Pyright, documentation structure and path checks passed. The original SDK/runtime limitation remains; the experiment works around it by retiring the entire sandbox, which sacrifices reuse and guest state after each execution.
 
-## Stale deletion and persisted recovery â€” 2026-10-09
+## Stale deletion and persisted recovery — 2026-10-09
 
 The [lifecycle probe](../../../scripts/experiments/openshell_lifecycle_probe.py) now reproduces replacement at an explicit barrier between lookup and deletion. It also kills a client process after confirmed ownership has been saved by the [recovery journal](../../../scripts/experiments/openshell_recovery.py). The same pinned fixture images, Docker host PID observer and loopback authentication limits apply. The workload policy builder is shared with the preceding execution experiment; its fractional-deadline/cleanup case passed again after that extraction.
 
@@ -161,7 +161,7 @@ Other cases are `stale_precheck`, `delete_replay` and `client_crash`. `crash_hol
 
 Fourteen new offline regression cases cover replacement refusal, stable request IDs after a lost response, unavailable gateway, mismatched deletion responses, malformed ownership, independently observed absence, interrupted atomic replacement and historical completed receipts. Combined with the preceding execution and documentation tests, 260 tests passed; focused Ruff, Pyright, documentation path and diff checks also passed. All test-owned replacements and recovered workloads were independently observed absent, and the temporary gateway was removed after journals and receipts were saved locally. No package or hosted CI gate ran.
 
-## Lifecycle authorization boundary â€” source assessment, 2026-10-09
+## Lifecycle authorization boundary — source assessment, 2026-10-09
 
 The pinned [workspace documentation](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/docs/how-it-works/workspaces.mdx), [authentication documentation](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/docs/how-it-works/gateways/authentication.mdx), [workspace authorization implementation](https://github.com/NVIDIA/OpenShell/blob/6648bd0c290efbc41ba131ee9831ee45cd431f94/crates/openshell-server/src/auth/workspace_authz.rs) and public RPC descriptors establish the following source-level boundary. Current documentation search was used for discovery; these claims are checked against the pinned release rather than inferred from an unversioned RFC.
 
@@ -188,7 +188,7 @@ python /opt/openshell_authority_probe.py --execute --image sha256:9c108fb76d00a3
 
 The script owns a fresh gateway database and a temporary OIDC issuer for that execution, checks each observed status against its expected status, verifies physical-resource and workspace cleanup, and removes its temporary issuer credentials. Its numeric-loopback HTTP allowance and plaintext gRPC are explicit development-fixture settings. The control container still requires Docker socket and host PID observation access.
 
-## Lifecycle authorization â€” live Docker fixture, 2026-10-10
+## Lifecycle authorization — live Docker fixture, 2026-10-10
 
 The authorization probe ran against the same pinned OpenShell v0.1.2 gateway and immutable control/guest images identified above, with Python 3.13.16, grpcio 1.84.0, Docker Engine 29.8.2 and Linux kernel `7.0.14-linuxkit`. The temporary gateway required OIDC, used explicit role/scope claims and an isolated database, and accepted credentials only from the controlled loopback issuer. Adapter and reader subjects were workspace Users; the platform administrator was not a workspace member. The ordinary adapter token carried `sandbox:read sandbox:write workspace:read`; the reader carried only `sandbox:read`.
 
