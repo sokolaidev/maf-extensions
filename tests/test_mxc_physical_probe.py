@@ -44,6 +44,7 @@ def execute(helper, startup, work, request, before_start, check_active, **kwargs
         return Output()
     namespace['open'] = guest_open
     output = io.StringIO()
+    kwargs.get('before_spawn', lambda: None)()
     with subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.buffer.read()'], stdin=subprocess.PIPE) as child:
         try:
             before_start(child)

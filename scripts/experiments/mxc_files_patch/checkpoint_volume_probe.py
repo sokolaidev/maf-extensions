@@ -62,7 +62,15 @@ def refusal(action, expected: str) -> None:
         raise AssertionError("operation unexpectedly succeeded")
 
 
-def worker(helper: Path, startup: Path, state: Path, volume: Path, mode: str, stage: str) -> None:
+def worker(
+    helper: Path,
+    startup: Path,
+    state: Path,
+    volume: Path,
+    mode: str,
+    stage: str,
+    prelaunch_recovery: bool = False,
+) -> None:
     """Exercise one owner lifetime without weakening publication or recovery checks."""
     evidence: dict = {}
 
@@ -82,6 +90,7 @@ def worker(helper: Path, startup: Path, state: Path, volume: Path, mode: str, st
         native._profile_for(helper, startup),
         native.LIMITS,
         physical_policy=POLICY,
+        prelaunch_recovery=prelaunch_recovery,
     ) as store:
         before = native.audit(store, POLICY)
         journal = NativeJournal(store)
@@ -119,6 +128,7 @@ def worker(helper: Path, startup: Path, state: Path, volume: Path, mode: str, st
                         work,
                         request,
                         restoring=True,
+                        before_spawn=lambda: journal.start("failed"),
                         before_start=before_start,
                         checkpoint_limits=(store.limits.checkpoint_bytes, store.limits.files),
                     ),
@@ -176,7 +186,7 @@ def worker(helper: Path, startup: Path, state: Path, volume: Path, mode: str, st
                 ),
                 "recovery",
             )
-            if mode == "restore":
+            if mode == "restore" and not prelaunch_recovery:
                 row = store.db.execute(
                     "SELECT * FROM launches WHERE session=? AND call='failed'", (store.session,)
                 ).fetchone()
@@ -247,7 +257,14 @@ def worker(helper: Path, startup: Path, state: Path, volume: Path, mode: str, st
 
 
 def launch(
-    helper: Path, startup: Path, state: Path, volume: Path, token: str, mode: str, stage: str
+    helper: Path,
+    startup: Path,
+    state: Path,
+    volume: Path,
+    token: str,
+    mode: str,
+    stage: str,
+    prelaunch_recovery: bool = False,
 ) -> dict:
     """Require an isolated owner process and its completed assertions."""
     with (state / f"{stage}.log").open("wb") as log:
@@ -270,6 +287,7 @@ def launch(
                 mode,
                 "--worker",
                 stage,
+                *(["--prelaunch-recovery"] if prelaunch_recovery else []),
             ],
             stdout=log,
             stderr=subprocess.STDOUT,
@@ -279,8 +297,15 @@ def launch(
     return json.loads((state / f"{stage}.json").read_bytes())
 
 
-def qualify(helper: Path, startup: Path, state: Path, volume: Path, token: str) -> dict:
-    """Run export recovery before the restore case intentionally retains an unidentified launch."""
+def qualify(
+    helper: Path,
+    startup: Path,
+    state: Path,
+    volume: Path,
+    token: str,
+    prelaunch_recovery: bool = False,
+) -> dict:
+    """Qualify export and restore independently under the selected recovery contract."""
     state.mkdir(parents=True, exist_ok=False)
     volume_control.validate_volume(volume, state, token, maximum_bytes=VOLUME_BYTES)
     filler = volume / "filler.bin"
@@ -289,7 +314,10 @@ def qualify(helper: Path, startup: Path, state: Path, volume: Path, token: str) 
     cases: dict = {}
     report = {
         "qualified": False,
-        "scope": "checkpoint copy failure controls; restore cleanup remains blocked",
+        "scope": "checkpoint copy recovery"
+        if prelaunch_recovery
+        else "checkpoint copy failure controls; restore cleanup remains blocked",
+        "format": 7 if prelaunch_recovery else 6,
         "source_commit": os.environ.get("GITHUB_SHA"),
         "run_id": os.environ.get("GITHUB_RUN_ID"),
         "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
@@ -305,13 +333,19 @@ def qualify(helper: Path, startup: Path, state: Path, volume: Path, token: str) 
             case.mkdir()
             (case / "payload.bin").write_bytes(os.urandom(native.PAYLOAD_BYTES))
             records = cases[mode] = {}
-            records["seed"] = launch(helper, startup, case, volume, token, mode, "seed")
+            records["seed"] = launch(
+                helper, startup, case, volume, token, mode, "seed", prelaunch_recovery
+            )
             try:
-                records["fail"] = launch(helper, startup, case, volume, token, mode, "fail")
+                records["fail"] = launch(
+                    helper, startup, case, volume, token, mode, "fail", prelaunch_recovery
+                )
             finally:
                 volume_control.validate_volume(volume, state, token, maximum_bytes=VOLUME_BYTES)
                 filler.unlink(missing_ok=True)
-            records["recover"] = launch(helper, startup, case, volume, token, mode, "recover")
+            records["recover"] = launch(
+                helper, startup, case, volume, token, mode, "recover", prelaunch_recovery
+            )
             assert records["seed"]["seed_sha256"] == records["recover"]["retry_sha256"]
             assert len({r["pid"] for r in records.values()}) == 3
         report["qualified"] = True
@@ -328,6 +362,7 @@ def main() -> int:
     parser.add_argument("--token", required=True)
     parser.add_argument("--mode", choices=("restore", "export"))
     parser.add_argument("--worker", choices=STAGES)
+    parser.add_argument("--prelaunch-recovery", action="store_true")
     args = parser.parse_args()
     if args.worker:
         if args.mode is None:
@@ -335,9 +370,24 @@ def main() -> int:
         volume_control.validate_volume(
             args.volume, args.state_dir, args.token, maximum_bytes=VOLUME_BYTES
         )
-        worker(args.helper, args.startup, args.state_dir, args.volume, args.mode, args.worker)
+        worker(
+            args.helper,
+            args.startup,
+            args.state_dir,
+            args.volume,
+            args.mode,
+            args.worker,
+            args.prelaunch_recovery,
+        )
     else:
-        qualify(args.helper, args.startup, args.state_dir, args.volume, args.token)
+        qualify(
+            args.helper,
+            args.startup,
+            args.state_dir,
+            args.volume,
+            args.token,
+            args.prelaunch_recovery,
+        )
     return 0
 
 

@@ -32,6 +32,9 @@ from .private_root import check_file, prepare
 
 MAX_SHARED_RESULT = 92 * CHUNK
 VERSION = 4
+PRELAUNCH_VERSION = 7
+LAUNCH_SCHEMA = "CREATE TABLE launches(session TEXT NOT NULL, call TEXT NOT NULL, token TEXT NOT NULL UNIQUE, charge INTEGER NOT NULL CHECK(charge>0), entries INTEGER NOT NULL CHECK(entries>0), identity TEXT, state TEXT NOT NULL CHECK(state IN ('prepared','armed','cleaning')), PRIMARY KEY(session,call), FOREIGN KEY(session,call) REFERENCES calls(session,id))"
+PRELAUNCH_SCHEMA = LAUNCH_SCHEMA.replace("'prepared','armed'", "'prepared','starting','armed'")
 PATH_BYTES = 512
 FILE_METADATA = PATH_BYTES + 256
 REFERENCE_METADATA = 80
@@ -134,12 +137,16 @@ class SharedStore:
         upgrade_accounting: bool = False,
         idle_policy: idle.Policy | None = None,
         physical_policy: physical.Policy | None = None,
+        prelaunch_recovery: bool = False,
     ):
         if (
             limits.session_quota < SESSION_METADATA
             or limits.store_quota < STORE_METADATA + SESSION_METADATA
         ):
             raise Refused("quota cannot admit session metadata")
+        if type(prelaunch_recovery) is not bool or (prelaunch_recovery and physical_policy is None):
+            raise Refused("pre-launch recovery requires an explicit physical policy")
+        self.prelaunch_recovery = prelaunch_recovery
         self.session = _name(session)
         self.limits = limits
         self.physical_policy = physical_policy
@@ -200,11 +207,20 @@ class SharedStore:
                     if row is not None and row[0] == 3 and not upgrade_accounting:
                         raise Refused("format 3 requires explicit upgrade")
                     if row is None or (
-                        row[0] not in (VERSION, idle.VERSION, physical.VERSION) and not upgrading
+                        row[0] not in (VERSION, idle.VERSION, physical.VERSION, PRELAUNCH_VERSION)
+                        and not upgrading
                     ):
                         raise Refused("unsupported or corrupt store format")
                     store_version = row[0]
-                    if store_version == physical.VERSION:
+                    if prelaunch_recovery != (store_version == PRELAUNCH_VERSION):
+                        raise Refused("pre-launch recovery requires a matching new store root")
+                    if prelaunch_recovery:
+                        schema = self.db.execute(
+                            "SELECT sql FROM sqlite_master WHERE name='launches'"
+                        ).fetchone()
+                        if schema is None or schema[0] != PRELAUNCH_SCHEMA:
+                            raise Refused("unsupported pre-launch schema")
+                    if store_version in (physical.VERSION, PRELAUNCH_VERSION):
                         physical.validate(self.db, physical_policy)
                     elif physical_policy is not None:
                         raise Refused("physical policy requires a new store root")
@@ -227,8 +243,12 @@ class SharedStore:
                     if not existed and physical_policy is not None:
                         physical.initialize(self)
                         self.db.execute(idle.SCHEMA)
+                        if prelaunch_recovery:
+                            self.db.execute(
+                                "UPDATE settings SET version=? WHERE id=1", (PRELAUNCH_VERSION,)
+                            )
                     accounting.audit(self.db)
-                    if store_version in (idle.VERSION, physical.VERSION):
+                    if store_version in (idle.VERSION, physical.VERSION, PRELAUNCH_VERSION):
                         idle.validate_schema(self.db)
                     self.db.execute(
                         "CREATE INDEX IF NOT EXISTS calls_expiry ON calls(session,status,expired,expires,id)"
@@ -307,7 +327,7 @@ class SharedStore:
             "CREATE TABLE file_chunks(session TEXT NOT NULL, call TEXT NOT NULL, path TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK(ordinal>=0), hash TEXT NOT NULL REFERENCES chunks(hash), PRIMARY KEY(session,call,path,ordinal), FOREIGN KEY(session,call,path) REFERENCES files(session,call,path))",
             "CREATE INDEX file_chunks_hash ON file_chunks(hash)",
             "CREATE TABLE scratch_settings(id INTEGER PRIMARY KEY CHECK(id=1), quota INTEGER NOT NULL CHECK(quota>0))",
-            "CREATE TABLE launches(session TEXT NOT NULL, call TEXT NOT NULL, token TEXT NOT NULL UNIQUE, charge INTEGER NOT NULL CHECK(charge>0), entries INTEGER NOT NULL CHECK(entries>0), identity TEXT, state TEXT NOT NULL CHECK(state IN ('prepared','armed','cleaning')), PRIMARY KEY(session,call), FOREIGN KEY(session,call) REFERENCES calls(session,id))",
+            PRELAUNCH_SCHEMA if self.prelaunch_recovery else LAUNCH_SCHEMA,
         ):
             self.db.execute(statement)
 
