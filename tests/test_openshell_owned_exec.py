@@ -168,3 +168,18 @@ def test_dispatch_failure_still_disposes_owned_sandbox():
         )
     )
     assert result.outcome == "transport_error" and result.cleanup_verified
+
+
+def test_already_completed_cleanup_task_failure_is_observed(monkeypatch):
+    async def scenario():
+        def completed_failure(coroutine):
+            coroutine.close()
+            failed = asyncio.get_running_loop().create_future()
+            failed.set_exception(RuntimeError("cleanup task failed"))
+            return failed
+
+        monkeypatch.setattr(probe.asyncio, "create_task", completed_failure)
+        with pytest.raises(RuntimeError, match="cleanup task failed"):
+            await execute(Stream([probe.Event("exit", exit_code=0)]))
+
+    asyncio.run(scenario())

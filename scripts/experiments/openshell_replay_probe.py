@@ -16,7 +16,7 @@ from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from openshell_allocation_probe import Client, observed
+from openshell_allocation_probe import Client, dispose_fixture, observed
 from openshell_authority_probe import gateway_fixture, verify_absent
 from openshell_owned_probe import inventory
 from openshell_recovery import AllocationAuthority
@@ -114,11 +114,6 @@ def measure(image, issuer, control, root):
         records.append(owner)
         return payload, owner
 
-    def dispose(owner):
-        assert admin.current_id(owner["name"]) == owner["sandbox_id"]
-        assert admin.delete(owner["name"], owner["delete_request_id"]) == owner["sandbox_id"]
-        assert verify_absent(observed(owner))
-
     try:
         wait_gateway(admin)
         admin.rpc("CreateWorkspace", admin.pb.CreateWorkspaceRequest(name=workspace))
@@ -142,6 +137,7 @@ def measure(image, issuer, control, root):
             try:
                 authority.create(name, lose_result)
             except ConnectionError:
+                # Withheld result delivery must leave the allocation uncertain.
                 pass
             row = authority.allocations()[name]
             assert row["phase"] == "uncertain"
@@ -175,7 +171,7 @@ def measure(image, issuer, control, root):
                 restarted.get("sandbox_id") == original["sandbox_id"] and restarted["replayed"],
             )
             assert authority.allocations()[name]["phase"] == "uncertain"
-        dispose(original)
+        dispose_fixture(admin, original)
         _, replacement = create(original["name"])
         absent_original = replay(adapter, payload)
         emit(
@@ -186,10 +182,10 @@ def measure(image, issuer, control, root):
             and adapter.current_id(replacement["name"]) == replacement["sandbox_id"]
             and bool(inventory(replacement["sandbox_id"])["containers"]),
         )
-        dispose(replacement)
+        dispose_fixture(admin, replacement)
 
         expiring_payload, expiring = create()
-        dispose(expiring)
+        dispose_fixture(admin, expiring)
         inject_admission(control, expiring["sandbox_id"], "expired_success")
         wait_gateway(admin)
         expired = replay(adapter, expiring_payload)

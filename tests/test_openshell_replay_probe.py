@@ -5,6 +5,9 @@ from __future__ import annotations
 import importlib
 import json
 import sqlite3
+import subprocess
+import sys
+import textwrap
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -103,3 +106,79 @@ def test_running_gateway_refuses_database_injection(injection):
     with pytest.raises(RuntimeError, match="did not stop"):
         probe.inject_admission(control, "original", "expired_success")
     assert rows(control) == before and not started
+
+
+@pytest.mark.parametrize("optimized", [False, True])
+@pytest.mark.parametrize("mode", ["owned", "replacement", "wrong_delete", "still_present"])
+def test_fixture_disposal_preserves_guards_under_optimization(optimized, mode):
+    code = textwrap.dedent("""
+        import json
+        import sys
+        from types import SimpleNamespace
+
+        sys.path.insert(0, sys.argv[1])
+        import openshell_allocation_probe as probe
+
+        calls = []
+        owner = {"name": "fixture", "sandbox_id": "original", "delete_request_id": "request",
+                 "containers": ["container"], "processes": {"1": "2"}}
+        mode = sys.argv[2]
+
+        def current(name):
+            calls.append("lookup")
+            return "replacement" if mode == "replacement" else "original"
+
+        def delete(name, request_id):
+            calls.append(["delete", name, request_id])
+            return "replacement" if mode == "wrong_delete" else "original"
+
+        def absent(record):
+            calls.append(["observe", record])
+            return mode != "still_present"
+
+        probe.verify_absent = absent
+        error = None
+        try:
+            probe.dispose_fixture(SimpleNamespace(current_id=current, delete=delete), owner)
+        except RuntimeError as exc:
+            error = str(exc)
+        print(json.dumps({"calls": calls, "error": error}))
+    """)
+    result = subprocess.run(
+        [
+            sys.executable,
+            *(["-O"] if optimized else []),
+            "-c",
+            code,
+            str(Path(__file__).resolve().parents[1] / "scripts/experiments"),
+            mode,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=20,
+    )
+    receipt = json.loads(result.stdout)
+    expected = ["lookup"]
+    if mode != "replacement":
+        expected.append(["delete", "fixture", "request"])
+    if mode in ("owned", "still_present"):
+        expected.append(
+            [
+                "observe",
+                {
+                    "id": "original",
+                    "observed": {"containers": [{"Id": "container"}], "processes": {"1": "2"}},
+                },
+            ]
+        )
+    assert receipt["calls"] == expected
+    assert (
+        receipt["error"]
+        == {
+            "owned": None,
+            "replacement": "fixture identity changed before deletion",
+            "wrong_delete": "fixture delete targeted another instance",
+            "still_present": "fixture cleanup incomplete; retain identities",
+        }[mode]
+    )

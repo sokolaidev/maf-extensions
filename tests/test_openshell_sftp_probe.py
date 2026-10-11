@@ -72,9 +72,9 @@ def test_failed_ssh_setup_closes_relay_and_sockets(probe, monkeypatch, stage):
         ),
         pb=SimpleNamespace(
             CreateSshSessionRequest=lambda **kwargs: kwargs,
-            TcpForwardFrame=lambda **kwargs: SimpleNamespace(**kwargs),
-            TcpForwardInit=lambda **kwargs: SimpleNamespace(**kwargs),
-            SshRelayTarget=lambda: object(),
+            TcpForwardFrame=SimpleNamespace,
+            TcpForwardInit=SimpleNamespace,
+            SshRelayTarget=object,
         ),
         stub=SimpleNamespace(ForwardTcp=forward),
     )

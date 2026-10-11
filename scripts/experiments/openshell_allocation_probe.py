@@ -112,6 +112,17 @@ def observed(owner):
     }
 
 
+def dispose_fixture(client, owner):
+    """Delete one exclusively owned fixture and independently verify its physical absence."""
+    if client.current_id(owner["name"]) != owner["sandbox_id"]:
+        raise RuntimeError("fixture identity changed before deletion")
+    deleted_id = client.delete(owner["name"], owner["delete_request_id"])
+    if deleted_id != owner["sandbox_id"]:
+        raise RuntimeError("fixture delete targeted another instance")
+    if not verify_absent(observed(owner)):
+        raise RuntimeError("fixture cleanup incomplete; retain identities")
+
+
 def checkpoint(name, phase):
     """Signal a persisted barrier and wait for the coordinator to kill this process."""
     print(json.dumps({"ready": True, "name": name, "phase": phase}), flush=True)
@@ -228,9 +239,7 @@ def run_case(args, case, context_path, client, binding):
         assert following != event["name"]
         saved_phase = authority.allocations()[event["name"]]["phase"]
     if owner and case == "uncertain":
-        assert client.current_id(owner["name"]) == owner["sandbox_id"]
-        assert client.delete(owner["name"], owner["delete_request_id"]) == owner["sandbox_id"]
-        assert verify_absent(observed(owner))
+        dispose_fixture(client, owner)
     return {
         "case": case,
         "worker_returncode": process.returncode,
