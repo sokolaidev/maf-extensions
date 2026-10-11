@@ -59,15 +59,15 @@ The later discovery cases in [#1789](https://github.com/sokolaidev/maf-extension
 
 The [recorded published-stack execution](openclaw-gateway-qualification.md#published-transport-bounds-and-sdk-retirement-live-result-2026-10-11) supplies #1851: 43 required cases passed without skips, including 38 socket cases and five direct-ASGI cases. The unchanged adapter retired all 109 retained SDK sessions (eight saturation, 100 churn, one idle), with completed SDK/retirement tasks, terminated transports, zero stream/request state and no default retaining SDK manager. The two-client MAF synthetic-binding contract also passed with a successful surviving-client call.
 
-This updates the original matrix's service/client, authentication/framing, resource-bound and MAF environment attribution. The original matrix remains the audit snapshot; #1851's transport obligations are now evidenced. #1850's real Bicep ownership results are delivered by merged [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865). Delivery of #1851 and consolidated reconciliation of both follow-ups remain before #1676 closes. No additional Gateway, Bicep, platform or unattended-runtime claims are added.
+This updates the original matrix's service/client, authentication/framing, resource-bound and MAF environment attribution. The original matrix remains the audit snapshot; #1851's transport obligations are now evidenced. #1850's real Bicep ownership results are delivered by merged [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865). Consolidated reconciliation of both follow-ups remains before #1676 closes. No additional Gateway, Bicep, platform or unattended-runtime claims are added.
 
 ## Status
 
-The matrix above is the original audit snapshot. Subsequent [Bicep HTTP/MAF ownership evidence](openclaw-gateway-qualification.md#bicep-http-ownership-and-independent-maf-closure-live-result-2026-10-11) supplies #1850's five composition cases; the published transport reconciliation above supplies #1851. Delivery of #1851 and consolidated reconciliation remain before #1676 closes.
+The matrix above is the original audit snapshot. Subsequent [Bicep HTTP/MAF ownership evidence](openclaw-gateway-qualification.md#bicep-http-ownership-and-independent-maf-closure-live-result-2026-10-11) supplies #1850's five composition cases; the published transport reconciliation above supplies #1851. Consolidated reconciliation remains before #1676 closes.
 
 | Work | State | Tracking |
 |---|---|---|
-| Selected-baseline two-session qualification | Open; #1850 delivered and #1851 evidence recorded, with #1851 delivery and consolidated reconciliation remaining | [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open) |
+| Selected-baseline two-session qualification | Open; both finite follow-ups delivered, with consolidated reconciliation remaining | [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open) |
 | Bicep cancellation, response loss and MAF closure | Delivered; five real Bicep/MAF cases passed on recorded candidates | [#1850](https://github.com/sokolaidev/maf-extensions/issues/1850) (closed) by [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865) (merged) |
-| Published transport bounds and SDK retirement | 43 published-stack cases and 109 SDK retirements passed; delivery pending | [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851) (open) |
+| Published transport bounds and SDK retirement | Delivered; 43 published-stack cases and 109 SDK retirements passed | [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851) (closed) by [#1870](https://github.com/sokolaidev/maf-extensions/pull/1870) (merged) |
 | First-tool design and broader opportunities | Open; qualification does not dispose of design workstreams | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open); [#1637](https://github.com/sokolaidev/maf-extensions/issues/1637) (open) |
