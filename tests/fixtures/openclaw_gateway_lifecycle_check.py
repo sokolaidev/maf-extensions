@@ -2912,7 +2912,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     before = len(records(transport))
                     started_ns = time.time_ns()
                     started_mono = time.monotonic()
-                    deadline = started_mono + seconds
+                    deadline = started_mono + seconds + 0.25
                     while time.monotonic() < deadline:
                         require(
                             gateway_process.poll() is None
@@ -2926,10 +2926,13 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                         "finished_ns": time.time_ns(),
                         "elapsed_seconds": time.monotonic() - started_mono,
                     }
+                    backoff_windows.append(observed)
+                    (root / "backoff-windows.json").write_text(
+                        json.dumps(backoff_windows), encoding="utf-8"
+                    )
                     verify_discovery_quiet(
                         records(transport)[before:], registry_boot, observed, seconds
                     )
-                    backoff_windows.append(observed)
                     registry_reports.append(inspect_registry(registry_sessions))
 
                 def failed_discovery_turn():
@@ -3049,6 +3052,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 for _ in range(cooldown_seconds):
                     time.sleep(1)
                 if case == "discovery-backoff":
+                    time.sleep(0.25)
                     verify_discovery_quiet(
                         records(transport)[dormant_start:],
                         registry_boot,
