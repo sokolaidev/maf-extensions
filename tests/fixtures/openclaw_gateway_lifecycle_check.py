@@ -735,6 +735,64 @@ def verify_registry_refusal(evidence, boot: str) -> dict[str, int]:
     return {"initialization_attempts": len(attempts), "status": 503}
 
 
+def verify_discovery_quiet(evidence, boot, observed, minimum_seconds: float) -> None:
+    """Require an independently timed interval without discovery, work or retirement."""
+    elapsed = observed.get("elapsed_seconds", 0)
+    started = observed.get("started_ns", 0)
+    finished = observed.get("finished_ns", 0)
+    require(
+        bool(boot)
+        and minimum_seconds > 0
+        and started > 0
+        and finished > started
+        and elapsed >= minimum_seconds
+        and (finished - started) / 1e9 >= minimum_seconds
+        and all(r.get("boot") == boot for r in evidence)
+        and not any(
+            r.get("event") in {"binding_started", "retired", "delete_requested"}
+            or r.get("event") == "request"
+            and r.get("method") != "notifications/cancelled"
+            for r in evidence
+        ),
+        "Discovery cooldown lacks elapsed quiet observation",
+    )
+
+
+def verify_backoff_probe(status, payload, evidence, observed, previous_delay: int) -> None:
+    """Require catalog refusal after the previous delay but before its doubled deadline."""
+    require(
+        previous_delay in {30, 60}
+        and previous_delay < observed.get("elapsed_seconds", 0) < previous_delay * 2
+        and observed.get("failure_settled_ns", 0) > 0
+        and previous_delay
+        < (observed.get("probe_started_ns", 0) - observed["failure_settled_ns"]) / 1e9
+        <= (observed.get("probe_finished_ns", 0) - observed["failure_settled_ns"]) / 1e9
+        < previous_delay * 2,
+        "Probe did not distinguish the doubled startup backoff",
+    )
+    verify_catalog_refusal(status, payload, evidence, observed)
+
+
+def verify_single_discovery_failure(evidence, boot, requested_ns: int) -> int:
+    """Correlate one refused initialization with the turn that triggered its refresh."""
+    result = verify_registry_refusal(evidence, boot)
+    attempts = [
+        r for r in evidence if r.get("event") == "request" and r.get("method") == "initialize"
+    ]
+    require(
+        result["initialization_attempts"] == 1
+        and requested_ns > 0
+        and attempts[0]["time_ns"] >= requested_ns
+        and all(r.get("boot") == boot for r in evidence),
+        "Repeated discovery lacks one new correlated capacity refusal",
+    )
+    return next(
+        r["time_ns"]
+        for r in evidence
+        if r.get("event") == "settled" and r.get("exchange") == attempts[0]["exchange"]
+    )
+
+
 def verify_churn_retirement(evidence, boot: str, target: str, requested_ns: int) -> None:
     """Require one idle deletion to finish draining SDK and adapter state before reuse."""
     deletes = [r for r in evidence if r.get("event") == "delete_requested"]
@@ -1111,6 +1169,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
     counts = {
         "lifecycle": LIFECYCLE_DISPATCHES,
         "registry": REGISTRY_DISPATCHES,
+        "discovery-backoff": REGISTRY_DISPATCHES,
         "unavailable": UNAVAILABLE_DISPATCHES,
         "idle": IDLE_DISPATCHES,
         "idle-default": DEFAULT_IDLE_DISPATCHES,
@@ -2100,7 +2159,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     )
                 finally:
                     pending.close()
-            elif case == "registry":
+            elif case in {"registry", "discovery-backoff"}:
                 report["environment"] = verify_environment(baseline_args)
                 owner_before = owner_file.read_bytes()
                 new_active, replacement = (turn(index)[0] for index in range(2))
@@ -2750,7 +2809,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 finally:
                     pending.close()
                 registry_pair = (new_active, replacement)
-            if case in {"lifecycle", "registry"}:
+            if case in {"lifecycle", "registry", "discovery-backoff"}:
                 if registry_pair is None:
                     raise RuntimeError("Registry qualification has no baseline sessions")
                 registry_start = len(records(transport))
@@ -2817,6 +2876,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     )
                 registry_reports.append(inspect_registry(registry_sessions))
                 before_overflow = len(records(transport))
+                overflow_ns = time.time_ns()
                 names.append("lifecycle-" + uuid.uuid4().hex)
                 overflow_connection, overflow_turn = begin_turn(len(names) - 1, "valid")
                 try:
@@ -2842,6 +2902,117 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 verify_dispatch_count(records(transport), expected_calls)
                 registry_reports.append(inspect_registry(registry_sessions))
+                refused_backoff_turns = [overflow_turn]
+                backoff_windows = []
+                backoff_probes = []
+                backoff_failures = []
+
+                def quiet_wait(seconds):
+                    print(f"Observing {seconds} seconds without discovery or work", flush=True)
+                    before = len(records(transport))
+                    started_ns = time.time_ns()
+                    started_mono = time.monotonic()
+                    deadline = started_mono + seconds + 0.25
+                    while time.monotonic() < deadline:
+                        require(
+                            gateway_process.poll() is None
+                            and service_process is not None
+                            and service_process.poll() is None,
+                            "Process exited during discovery backoff",
+                        )
+                        time.sleep(min(5, max(0, deadline - time.monotonic())))
+                    observed = {
+                        "started_ns": started_ns,
+                        "finished_ns": time.time_ns(),
+                        "elapsed_seconds": time.monotonic() - started_mono,
+                    }
+                    backoff_windows.append(observed)
+                    (root / "backoff-windows.json").write_text(
+                        json.dumps(backoff_windows), encoding="utf-8"
+                    )
+                    verify_discovery_quiet(
+                        records(transport)[before:], registry_boot, observed, seconds
+                    )
+                    registry_reports.append(inspect_registry(registry_sessions))
+
+                def failed_discovery_turn():
+                    before = len(records(transport))
+                    requested_ns = time.time_ns()
+                    log_start = (root / "gateway.log").stat().st_size
+                    connection, turn_id = begin_turn(len(names) - 1, "valid")
+                    try:
+                        reply = connection.getresponse()
+                        value = json.loads(reply.read())
+                    finally:
+                        connection.close()
+                    log = (
+                        (root / "gateway.log")
+                        .read_bytes()[log_start:]
+                        .decode("utf-8", errors="replace")
+                    )
+                    observed = {
+                        "boot": registry_boot,
+                        "provider_seen": any(r.get("turn") == turn_id for r in records(provider)),
+                        "gateway_catalog_error": "No callable tools remain after resolving explicit tool allowlist"
+                        in log
+                        and ("sessionKey=agent:main:openai-user:" + names[-1]) in log
+                        and "[openai-compat] chat completion failed:" in log,
+                    }
+                    require(
+                        reply.status == 500
+                        and value == {"error": {"message": "internal error", "type": "api_error"}}
+                        and observed["provider_seen"] is False
+                        and observed["gateway_catalog_error"] is True,
+                        "Repeated discovery turn did not fail before provider execution",
+                    )
+                    refused_backoff_turns.append(turn_id)
+                    return before, requested_ns, reply.status, value, observed
+
+                if case == "discovery-backoff":
+                    backoff_failures.append(
+                        verify_single_discovery_failure(
+                            records(transport)[before_overflow:], registry_boot, overflow_ns
+                        )
+                    )
+                    quiet_wait(35)
+                    for previous_delay in (30, 60):
+                        before, requested_ns, _, _, _ = failed_discovery_turn()
+
+                        def refusal_settled():
+                            evidence = records(transport)[before:]
+                            attempts = {
+                                r.get("exchange")
+                                for r in evidence
+                                if r.get("event") == "request" and r.get("method") == "initialize"
+                            }
+                            return any(
+                                r.get("event") == "settled" and r.get("exchange") in attempts
+                                for r in evidence
+                            )
+
+                        wait_for(
+                            refusal_settled, "Repeated discovery did not reach the full service", 15
+                        )
+                        backoff_failures.append(
+                            verify_single_discovery_failure(
+                                records(transport)[before:], registry_boot, requested_ns
+                            )
+                        )
+                        failure_mono = time.monotonic()
+                        quiet_wait(previous_delay + 5)
+                        before, probe_ns, status, value, observed = failed_discovery_turn()
+                        observed["elapsed_seconds"] = time.monotonic() - failure_mono
+                        observed["failure_settled_ns"] = backoff_failures[-1]
+                        observed["probe_started_ns"] = probe_ns
+                        observed["probe_finished_ns"] = time.time_ns()
+                        verify_backoff_probe(
+                            status, value, records(transport)[before:], observed, previous_delay
+                        )
+                        backoff_probes.append(observed)
+                        if previous_delay == 30:
+                            quiet_wait(30)
+                    require(len(backoff_failures) == 3, "Expected three real capacity failures")
+                    verify_dispatch_count(records(transport), expected_calls)
                 retire_registry_target()
                 before_probe = len(records(transport))
                 log_start = (root / "gateway.log").stat().st_size
@@ -2875,7 +3046,23 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 verify_dispatch_count(records(transport), expected_calls)
                 print("Waiting through the pinned cross-runtime startup cooldown", flush=True)
                 dormant_start = len(records(transport))
-                time.sleep(DISCOVERY_COOLDOWN_SECONDS)
+                cooldown_seconds = 65 if case == "discovery-backoff" else DISCOVERY_COOLDOWN_SECONDS
+                wait_started_ns = time.time_ns()
+                wait_started_mono = time.monotonic()
+                for _ in range(cooldown_seconds):
+                    time.sleep(1)
+                if case == "discovery-backoff":
+                    time.sleep(0.25)
+                    verify_discovery_quiet(
+                        records(transport)[dormant_start:],
+                        registry_boot,
+                        {
+                            "started_ns": wait_started_ns,
+                            "finished_ns": time.time_ns(),
+                            "elapsed_seconds": time.monotonic() - wait_started_mono,
+                        },
+                        cooldown_seconds,
+                    )
                 dormant_evidence = records(transport)[dormant_start:]
                 require(
                     all(r.get("boot") == registry_boot for r in dormant_evidence)
@@ -2947,14 +3134,14 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     )
                 require(
                     not any(
-                        r.get("turn") in {overflow_turn, probe_turn, refresh_turn}
+                        r.get("turn") in {*refused_backoff_turns, probe_turn, refresh_turn}
                         for r in records(provider)
                     ),
                     "A refused turn was replayed after discovery recovery",
                 )
                 registry_reports.append(inspect_registry(registry_sessions))
                 discovery_recovery = {
-                    "cooldown_wait_seconds": DISCOVERY_COOLDOWN_SECONDS,
+                    "cooldown_wait_seconds": cooldown_seconds,
                     "refresh_trigger_status": 500,
                     "refresh_trigger_provider_seen": False,
                     "initialization_attempts": 1,
@@ -2977,11 +3164,37 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     "owned_scope_empty": True,
                     "other_owner_preserved": True,
                 }
+                if case == "discovery-backoff":
+                    require(
+                        len(
+                            [
+                                r
+                                for r in records(transport)[registry_start:]
+                                if r.get("event") == "response" and r.get("status") == 503
+                            ]
+                        )
+                        == 3,
+                        "Unexpected discovery refusals outside the three measured attempts",
+                    )
+                    report["repeated_discovery_backoff"] = {
+                        "initialization_refusals": len(backoff_failures),
+                        "refusal_settled_ns": backoff_failures,
+                        "quiet_windows": backoff_windows,
+                        "suppressed_probes": backoff_probes,
+                        "refused_turn_count": len(refused_backoff_turns) + 2,
+                        "refused_turns_replayed": False,
+                        "recovery": discovery_recovery,
+                    }
                 (root / "registry-churn.json").write_text(
                     json.dumps(
                         {
                             "transport": records(transport)[registry_start:],
                             "observed": report["registry_churn"],
+                            **(
+                                {"backoff": report["repeated_discovery_backoff"]}
+                                if case == "discovery-backoff"
+                                else {}
+                            ),
                         }
                     ),
                     encoding="utf-8",
@@ -2998,7 +3211,9 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 "daemon storage/removal faults, broader Docker outages and remaining interruption cases"
                 if case in {"docker-disconnect", "docker-denial"}
                 else "Docker cleanup/daemon failures and remaining interruption cases",
-                "other discovery failures, repeated backoff and concurrent discovery",
+                "other discovery failures, longer backoff and concurrent discovery"
+                if case == "discovery-backoff"
+                else "other discovery failures, repeated backoff and concurrent discovery",
                 "full real-host transport/MAF matrix",
             ]
         finally:
@@ -3055,6 +3270,8 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
             if case == "idle"
             else "startup-report.json"
             if case == "unavailable"
+            else "backoff-report.json"
+            if case == "discovery-backoff"
             else "registry-report.json"
             if case == "registry"
             else "lifecycle-report.json"
@@ -3077,6 +3294,7 @@ def main():
         choices=[
             "lifecycle",
             "registry",
+            "discovery-backoff",
             "unavailable",
             "idle",
             "idle-default",
