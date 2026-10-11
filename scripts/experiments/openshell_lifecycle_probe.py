@@ -47,7 +47,6 @@ class Fixture:
         if self.client.health().version != "0.1.2":
             raise RuntimeError("requires gateway 0.1.2")
         instance = self.client.create(name=name, workspace="default", spec=fixture_spec(self.image))
-        print(json.dumps({"created": name, "sandbox_id": instance.id}), flush=True)
         record = {
             "format": 1,
             "phase": "owned",
@@ -58,6 +57,7 @@ class Fixture:
             "processes": {},
         }
         on_created(record)
+        print(json.dumps({"created": name, "sandbox_id": instance.id}), flush=True)
         self.client.wait_ready(name, workspace="default", timeout_seconds=30)
         observed = snapshot(instance.id)
         record.update(

@@ -55,21 +55,17 @@ class Client:
         """Hand off admitted identity before readiness; enrich the same record on success."""
         request = self.pb.CreateSandboxRequest.FromString(payload)
         response = self.rpc("CreateSandbox", request)
-        owner = {
-            "format": 1,
-            "phase": "owned",
-            "name": request.name,
-            "sandbox_id": response.sandbox.metadata.id,
-            "delete_request_id": str(uuid.uuid4()),
-            "containers": [],
-            "processes": {},
-        }
+        owner = created_owner(request.name, response.sandbox.metadata.id)
         on_created(owner)
+        return self.wait_ready(owner)
+
+    def wait_ready(self, owner):
+        """Enrich an already retained owner without another create request."""
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             current = self.rpc(
                 "GetSandbox",
-                self.pb.GetSandboxRequest(name=request.name, workspace_scope=self.scope),
+                self.pb.GetSandboxRequest(name=owner["name"], workspace_scope=self.scope),
             )
             if current.sandbox.metadata.id != owner["sandbox_id"]:
                 raise RuntimeError("created instance was replaced")
@@ -104,6 +100,19 @@ class Client:
 
     def close(self):
         self.channel.close()
+
+
+def created_owner(name, sandbox_id):
+    """Retain physical identity before readiness and independent observations exist."""
+    return {
+        "format": 1,
+        "phase": "owned",
+        "name": name,
+        "sandbox_id": sandbox_id,
+        "delete_request_id": str(uuid.uuid4()),
+        "containers": [],
+        "processes": {},
+    }
 
 
 def observed(owner):

@@ -329,12 +329,19 @@ def test_replacement_waits_for_independent_absence(load_probe, monkeypatch, tmp_
     assert len(created) == 1
 
 
-@pytest.mark.parametrize("stage", ["readiness", "snapshot", "ready"])
+@pytest.mark.parametrize("stage", ["output", "readiness", "snapshot", "ready"])
 def test_lifecycle_create_hands_off_before_readiness(load_probe, monkeypatch, stage):
     probe = load_probe("openshell_lifecycle_probe")
     retained = []
     fixture = probe.Fixture.__new__(probe.Fixture)
     fixture.image = "fixture"
+
+    def output(*args, **kwargs):
+        assert retained[0]["sandbox_id"] == "original"
+        if stage == "output":
+            raise RuntimeError("output")
+
+    monkeypatch.setattr(probe, "print", output, raising=False)
 
     def ready(*args, **kwargs):
         assert retained[0]["sandbox_id"] == "original"
@@ -361,3 +368,70 @@ def test_lifecycle_create_hands_off_before_readiness(load_probe, monkeypatch, st
         with pytest.raises(RuntimeError, match=stage):
             fixture.create("fixture", on_created=retained.append)
     assert retained[0]["sandbox_id"] == "original"
+
+
+@pytest.mark.parametrize("failure", ["metadata", "readiness", "snapshot", "none"])
+def test_raw_replay_retains_admitted_identity_before_followup(load_probe, monkeypatch, failure):
+    probe = load_probe("openshell_replay_probe")
+    allocation = load_probe("openshell_allocation_probe")
+    retained, calls = [], []
+    client = allocation.Client.__new__(allocation.Client)
+    client.scope, client.token = object(), "fixture-token"
+    client.pb = SimpleNamespace(
+        CreateSandboxRequest=SimpleNamespace(
+            FromString=lambda payload: SimpleNamespace(name="fixture")
+        ),
+        GetSandboxRequest=SimpleNamespace,
+        SANDBOX_PHASE_READY=1,
+    )
+    client.grpc = SimpleNamespace(RpcError=type("RpcError", (Exception,), {}))
+
+    def metadata():
+        assert retained[0]["sandbox_id"] == "new-instance"
+        if failure == "metadata":
+            raise RuntimeError("metadata")
+        return []
+
+    def create(request, **kwargs):
+        calls.append("create")
+        return (
+            SimpleNamespace(sandbox=SimpleNamespace(metadata=SimpleNamespace(id="new-instance"))),
+            SimpleNamespace(initial_metadata=metadata),
+        )
+
+    def rpc(method, request):
+        calls.append(method)
+        assert retained[0]["sandbox_id"] == "new-instance"
+        if failure == "readiness":
+            raise RuntimeError("readiness")
+        return SimpleNamespace(
+            sandbox=SimpleNamespace(
+                metadata=SimpleNamespace(id="new-instance"), status=SimpleNamespace(phase=1)
+            )
+        )
+
+    def snapshot(identifier):
+        assert retained[0]["sandbox_id"] == identifier
+        if failure == "snapshot":
+            raise RuntimeError("snapshot")
+        return {"containers": [{"Id": "captured"}], "processes": {"1": "2"}}
+
+    client.stub = SimpleNamespace(CreateSandbox=SimpleNamespace(with_call=create))
+    client.rpc = rpc
+    monkeypatch.setattr(allocation, "snapshot", snapshot)
+    monkeypatch.setattr(allocation, "validate", lambda owner: None)
+
+    def exercise():
+        result = probe.replay(client, b"request", on_created=retained.append)
+        assert result["sandbox_id"] == retained[0]["sandbox_id"]
+        assert client.wait_ready(retained[0]) is retained[0]
+
+    if failure == "none":
+        exercise()
+        assert retained[0]["containers"] == ["captured"]
+    else:
+        with pytest.raises(RuntimeError, match=failure):
+            exercise()
+        assert retained[0]["containers"] == []
+    assert calls.count("create") == 1
+    assert retained[0]["name"] == "fixture"

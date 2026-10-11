@@ -16,7 +16,13 @@ from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from openshell_allocation_probe import Client, dispose_fixture, observed, verify_workspace_absent
+from openshell_allocation_probe import (
+    Client,
+    created_owner,
+    dispose_fixture,
+    observed,
+    verify_workspace_absent,
+)
 from openshell_authority_probe import gateway_fixture, verify_absent
 from openshell_cleanup import Cleanup
 from openshell_owned_probe import inventory
@@ -37,13 +43,14 @@ def wait_gateway(client):
             time.sleep(0.1)
 
 
-def replay(client, payload):
+def replay(client, payload, *, on_created):
     """Capture the explicit replay marker as well as status and physical identity."""
     request = client.pb.CreateSandboxRequest.FromString(payload)
     try:
         response, call = client.stub.CreateSandbox.with_call(
             request, metadata=[("authorization", "Bearer " + client.token)], timeout=10
         )
+        on_created(created_owner(request.name, response.sandbox.metadata.id))
         return {
             "status": "OK",
             "sandbox_id": response.sandbox.metadata.id,
@@ -109,6 +116,10 @@ def measure(image, issuer, control, root):
         if not passed:
             raise RuntimeError(f"unexpected observation: {case}")
 
+    def retain(owner):
+        if not any(record["sandbox_id"] == owner["sandbox_id"] for record in records):
+            records.append(owner)
+
     def create(name=None):
         name = name or "s1797-" + uuid.uuid4().hex[:12]
         payload = adapter.request(name, str(uuid.uuid4()))
@@ -144,7 +155,7 @@ def measure(image, issuer, control, root):
                 raise RuntimeError('probe expectation failed: row["phase"] == "uncertain"')
             payload = bytes.fromhex(row["request"])
             original = records[-1]
-            first = replay(adapter, payload)
+            first = replay(adapter, payload, on_created=retain)
             emit(
                 "uncertain_create_immediate_replay",
                 first,
@@ -152,7 +163,7 @@ def measure(image, issuer, control, root):
             )
             changed = adapter.pb.CreateSandboxRequest.FromString(payload)
             changed.spec.command[:] = ["sleep", "3599"]
-            mismatch = replay(adapter, changed.SerializeToString())
+            mismatch = replay(adapter, changed.SerializeToString(), on_created=retain)
             emit(
                 "same_id_changed_payload",
                 mismatch,
@@ -160,12 +171,12 @@ def measure(image, issuer, control, root):
                 and mismatch.get("detail")
                 == "request_id was already used with a different payload",
             )
-            other = replay(peer, payload)
+            other = replay(peer, payload, on_created=retain)
             emit("same_request_other_subject", other, other["status"] == "ALREADY_EXISTS")
             control["gateway"].stop()
             control["gateway"].start()
             wait_gateway(admin)
-            restarted = replay(adapter, payload)
+            restarted = replay(adapter, payload, on_created=retain)
             emit(
                 "replay_after_gateway_restart",
                 restarted,
@@ -177,7 +188,7 @@ def measure(image, issuer, control, root):
                 )
         dispose_fixture(admin, original)
         _, replacement = create(original["name"])
-        absent_original = replay(adapter, payload)
+        absent_original = replay(adapter, payload, on_created=retain)
         emit(
             "original_deleted_replacement_present",
             absent_original,
@@ -192,10 +203,12 @@ def measure(image, issuer, control, root):
         dispose_fixture(admin, expiring)
         inject_admission(control, expiring["sandbox_id"], "expired_success")
         wait_gateway(admin)
-        expired = replay(adapter, expiring_payload)
-        # Capture any newly created fixture resource before evaluating the result.
+        expired = replay(adapter, expiring_payload, on_created=retain)
         if expired["status"] == "OK":
-            adapter.send(expiring_payload, on_created=records.append)
+            owner = next(
+                record for record in records if record["sandbox_id"] == expired["sandbox_id"]
+            )
+            adapter.wait_ready(owner)
         emit(
             "expired_success_readmits_create",
             expired,
@@ -203,7 +216,7 @@ def measure(image, issuer, control, root):
             and not expired["replayed"]
             and expired.get("sandbox_id") != expiring["sandbox_id"],
         )
-        again = replay(adapter, expiring_payload)
+        again = replay(adapter, expiring_payload, on_created=retain)
         emit(
             "reused_request_now_replays_new_instance",
             again,
@@ -213,7 +226,7 @@ def measure(image, issuer, control, root):
         unresolved_payload, unresolved = create()
         inject_admission(control, unresolved["sandbox_id"], "unresolved")
         wait_gateway(admin)
-        pending = replay(adapter, unresolved_payload)
+        pending = replay(adapter, unresolved_payload, on_created=retain)
         emit(
             "aged_unresolved_admission_refuses",
             pending,
