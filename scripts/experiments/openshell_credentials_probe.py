@@ -42,16 +42,16 @@ def credential_observation(observed, hits, expected, request):
     return matches_observation(observed, hits, expected, 1, request)
 
 
-def guest_request(url, method, source):
+def guest_request(url, method, source, *, env_key=ENV_KEY, saved_path="/sandbox/saved-placeholder"):
     """Use only guest placeholders; never embed the synthetic provider value in guest code."""
     return (
         "import os,json,urllib.request,urllib.error\n"
         "from pathlib import Path\n"
         + "token="
         + (
-            "os.environ.get('SPIKE1797_TOKEN','')"
+            "os.environ.get(" + repr(env_key) + ",'')"
             if source == "env"
-            else "Path('/sandbox/saved-placeholder').read_text()"
+            else "Path(" + repr(saved_path) + ").read_text()"
             if source == "saved"
             else "''"
         )
@@ -75,6 +75,8 @@ class CredentialProfile(CompositionProfile):
 
     def __init__(self):
         super().__init__()
+        self.env_key = ENV_KEY
+        self.endpoint_path = "/provider/**"
         self.broad_methods = ("GET", "POST")
         self.secret = "spike-only-" + secrets.token_hex(24)
         self.authorization_hash = hashlib.sha256(("Bearer " + self.secret).encode()).hexdigest()
@@ -83,11 +85,11 @@ class CredentialProfile(CompositionProfile):
         profile = super().build_profile(client)
         profile.display_name = "Synthetic credential spike origin"
         endpoint = profile.endpoints[0]
-        endpoint.path = "/provider/**"
-        endpoint.rules[0].allow.path = "/provider/**"
+        endpoint.path = self.endpoint_path
+        endpoint.rules[0].allow.path = self.endpoint_path
         profile.credentials.add(
             name="api_token",
-            env_vars=[ENV_KEY],
+            env_vars=[self.env_key],
             required=True,
             auth_style="bearer",
             header_name="authorization",
@@ -96,7 +98,7 @@ class CredentialProfile(CompositionProfile):
 
     def build_provider(self, client):
         provider = super().build_provider(client)
-        provider.credentials[ENV_KEY] = self.secret
+        provider.credentials[self.env_key] = self.secret
         return provider
 
     def configure(self, request, ip, mode):
