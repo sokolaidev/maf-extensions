@@ -930,7 +930,7 @@ def _droppable_groups_after(messages: list[Message], record_index: int | None) -
             the count runs from the beginning of the conversation.
 
     Returns:
-        How many non-recall tool-call groups sit after the record.
+        How many non-recall tool-call groups still have included messages after the record.
     """
     boundary = -1 if record_index is None else record_index
     count = 0
@@ -940,6 +940,9 @@ def _droppable_groups_after(messages: list[Message], record_index: int | None) -
         # A record is not work that needs recording. Counting one would make every record
         # bring the next one closer, and a bound of one would force a record on every call.
         if _is_recall_group(messages, group):
+            continue
+        members = messages[group["start_index"] : group["end_index"] + 1]
+        if all(message.additional_properties.get(EXCLUDED_KEY, False) for message in members):
             continue
         count += 1
     return count

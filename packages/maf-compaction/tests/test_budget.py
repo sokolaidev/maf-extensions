@@ -6,7 +6,7 @@ import json
 from copy import deepcopy
 
 import pytest
-from agent_framework import CharacterEstimatorTokenizer, ChatResponse, Message
+from agent_framework import CharacterEstimatorTokenizer, ChatContext, ChatResponse, Message
 from agent_framework._compaction import (
     EXCLUDED_KEY,
     annotate_token_counts,
@@ -144,6 +144,46 @@ async def test_strict_overflow_keeps_uncovered_results():
         await stack(policy="raise").strategy(messages)
     assert error.value.tokens == size(messages) > error.value.budget == BUDGET
     assert all(not m.additional_properties.get(EXCLUDED_KEY) for m in messages if m.role == "tool")
+
+
+@pytest.mark.parametrize("group_bound", [None, 2])
+async def test_shed_groups_do_not_rearm_recall(group_bound):
+    current = stack()
+    messages = [
+        Message("user", ["Compare the tables."], message_id="task"),
+        build_record_message("fact123 " * 15_000),
+        *(message for index in range(10) for message in table(index)),
+        Message("assistant", ["Continue."], message_id="tail"),
+    ]
+    await current.strategy(messages)
+    assert BUDGET * 0.8 < size(messages) <= BUDGET
+    assert all(m.additional_properties.get(EXCLUDED_KEY) for m in messages if m.role == "tool")
+    middleware = ToolResultRecallMiddleware(
+        max_input_tokens=BUDGET,
+        tokenizer=TOKENIZER,
+        arm=current.gate.arm,
+        reforce=current.middleware.reforce,
+        repeat_records=group_bound is None,
+        max_groups_before_record=group_bound,
+    )
+
+    async def call():
+        context = ChatContext(None, messages, {})
+
+        async def respond():
+            context.result = ChatResponse(messages=Message("assistant", ["Continue."]))
+
+        await middleware.process(context, respond)
+        return context.options
+
+    for _ in range(5):
+        assert "tool_choice" not in await call()
+    for index in range(group_bound or 4):
+        added = table(10 + index)
+        added[-1].contents[0].result = "new123"
+        messages += added
+    await call()
+    assert "tool_choice" in await call()
 
 
 async def test_cold_replay_removes_shed_groups_even_below_the_trigger(caplog):
