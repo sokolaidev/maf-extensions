@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.22.1...maf-sandbox-codeact-v0.23.0) (2026-10-11)
+
+
+### Features
+
+* **codeact:** allow hosts to disable nested host-tool calls ([#1861](https://github.com/sokolaidev/maf-extensions/issues/1861)) ([85447fc](https://github.com/sokolaidev/maf-extensions/commit/85447fc934320160f2dad46222ca6c8ed75ac0f6))
+
 ## [0.22.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.22.0...maf-sandbox-codeact-v0.22.1) (2026-10-06)
 
 
