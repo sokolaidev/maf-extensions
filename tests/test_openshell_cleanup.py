@@ -69,6 +69,7 @@ def test_cleanup_attempts_every_owner_and_client(monkeypatch, tmp_path, probe_na
             raise RuntimeError("workspace failed")
         if method == "GetWorkspace":
             raise RpcError()
+        return None
 
     def close(label):
         events.append(("close", label))
