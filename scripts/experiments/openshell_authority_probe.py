@@ -20,6 +20,7 @@ from importlib import import_module
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from openshell_cleanup import Cleanup
 from openshell_owned_probe import docker_get, fixture_spec, inventory, process_identity, snapshot
 
 
@@ -293,25 +294,40 @@ def measure(image: str, issuer: Issuer) -> dict:
         check("adapter_reuses_deleted_name", "CreateSandbox", create(primary), "adapter", "OK")
         report["distinct_physical_ids"] = len({r["id"] for r in owned}) == len(owned)
     finally:
-        for record in reversed(owned):
-            try:
-                current = rpc(
-                    "GetSandbox", pb.GetSandboxRequest(name=record["name"], workspace_scope=scope)
+        with Cleanup(channel.close) as cleanup:
+
+            def dispose_record(record):
+                try:
+                    current = rpc(
+                        "GetSandbox",
+                        pb.GetSandboxRequest(name=record["name"], workspace_scope=scope),
+                    )
+                except grpc.RpcError as exc:
+                    if exc.code() != grpc.StatusCode.NOT_FOUND:
+                        raise
+                else:
+                    if current.sandbox.metadata.id != record["id"]:
+                        raise RuntimeError("refuse replacement cleanup")
+                    deleted = rpc("DeleteSandbox", delete(record["name"]))
+                    if deleted.sandbox_id != record["id"]:
+                        raise RuntimeError("fixture delete targeted another instance")
+                if not verify_absent(record):
+                    raise RuntimeError("independent resource cleanup incomplete")
+
+            for record in reversed(owned):
+                cleanup.attempt(record, dispose_record, record)
+            if not cleanup.errors:
+                rpc(
+                    "DeleteWorkspace", pb.DeleteWorkspaceRequest(name=workspace, allow_missing=True)
                 )
-            except grpc.RpcError as exc:
-                if exc.code() != grpc.StatusCode.NOT_FOUND:
-                    raise
-            else:
-                if current.sandbox.metadata.id == record["id"]:
-                    rpc("DeleteSandbox", delete(record["name"]))
-            if not verify_absent(record):
-                raise RuntimeError("independent resource cleanup incomplete")
-        rpc("DeleteWorkspace", pb.DeleteWorkspaceRequest(name=workspace, allow_missing=True))
-        try:
-            rpc("GetWorkspace", pb.GetWorkspaceRequest(name=workspace))
-        except grpc.RpcError as exc:
-            report["workspace_cleanup_verified"] = exc.code() == grpc.StatusCode.NOT_FOUND
-        channel.close()
+                try:
+                    rpc("GetWorkspace", pb.GetWorkspaceRequest(name=workspace))
+                except grpc.RpcError as exc:
+                    if exc.code() != grpc.StatusCode.NOT_FOUND:
+                        raise
+                else:
+                    raise RuntimeError("workspace cleanup incomplete")
+                report["workspace_cleanup_verified"] = True
     report["physical_cleanup_verified"] = True
     report["passed"] = (
         bool(observations)

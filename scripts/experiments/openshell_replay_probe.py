@@ -18,6 +18,7 @@ from tempfile import TemporaryDirectory
 
 from openshell_allocation_probe import Client, dispose_fixture, observed, verify_workspace_absent
 from openshell_authority_probe import gateway_fixture, verify_absent
+from openshell_cleanup import Cleanup
 from openshell_owned_probe import inventory
 from openshell_recovery import AllocationAuthority
 
@@ -92,6 +93,7 @@ def inject_admission(control, sandbox_id, mode):
 def measure(image, issuer, control, root):
     """Compare original instance receipts with replacement and expired/unresolved admissions."""
     workspace = "s1797-" + uuid.uuid4().hex[:12]
+    workspace_absent = False
     admin = Client(
         workspace, issuer.token("admin", role="spike-admin", scopes="openshell:all"), image
     )
@@ -220,19 +222,23 @@ def measure(image, issuer, control, root):
             and adapter.current_id(unresolved["name"]) == unresolved["sandbox_id"],
         )
     finally:
-        for owner in reversed(records):
-            if admin.current_id(owner["name"]) == owner["sandbox_id"]:
-                admin.delete(owner["name"], owner["delete_request_id"])
-            if not verify_absent(observed(owner)):
-                raise RuntimeError("fixture cleanup incomplete; retain identities")
-        admin.rpc(
-            "DeleteWorkspace", admin.pb.DeleteWorkspaceRequest(name=workspace, allow_missing=True)
-        )
-        try:
-            workspace_absent = verify_workspace_absent(admin, workspace)
-        finally:
-            for client in (adapter, peer, admin):
-                client.close()
+        with Cleanup(adapter.close, peer.close, admin.close) as cleanup:
+
+            def dispose_record(owner):
+                current = admin.current_id(owner["name"])
+                if current == owner["sandbox_id"]:
+                    dispose_fixture(admin, owner)
+                elif current is not None or not verify_absent(observed(owner)):
+                    raise RuntimeError("fixture cleanup incomplete; retain identities")
+
+            for owner in reversed(records):
+                cleanup.attempt(owner, dispose_record, owner)
+            if not cleanup.errors:
+                admin.rpc(
+                    "DeleteWorkspace",
+                    admin.pb.DeleteWorkspaceRequest(name=workspace, allow_missing=True),
+                )
+                workspace_absent = verify_workspace_absent(admin, workspace)
     return {
         "cases": len(results),
         "passed": len(results) == 8,

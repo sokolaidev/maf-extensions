@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from openshell_cleanup import Cleanup
 from openshell_composition_probe import receipt_installed
 from openshell_credentials_probe import CredentialProfile, credential_observation, guest_request
 from openshell_egress_probe import measure as run_matrix
@@ -76,8 +77,9 @@ class RotationProfile:
         self.providers[0].configure(request, ip, mode)
 
     def cleanup_workspace(self, client):
-        for item in reversed(self.providers):
-            item.cleanup_workspace(client)
+        with Cleanup() as cleanup:
+            for item in reversed(self.providers):
+                cleanup.attempt(item.provider_id, item.cleanup_workspace, client)
 
     def run_cases(self, client, name, owner, ip, mode):
         a, b, collision = self.providers

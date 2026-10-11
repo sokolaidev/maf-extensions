@@ -18,6 +18,7 @@ import uuid
 from importlib import import_module
 from pathlib import Path
 
+from openshell_cleanup import Cleanup
 from openshell_owned_probe import docker_get, fixture_spec, inventory, process_identity, snapshot
 from openshell_recovery import _write, load, recover, save
 
@@ -38,8 +39,8 @@ class Fixture:
 
     def close(self) -> None:
         """Close local connections without treating them as remote cleanup."""
-        self.client.close()
-        self.channel.close()
+        with Cleanup(self.client.close, self.channel.close):
+            pass
 
     def create(self, name: str, *, on_created) -> dict:
         """Hand off partial ownership before readiness, then enrich the same record."""
@@ -149,12 +150,20 @@ def replacement_case(args) -> dict:
             "sandbox_id"
         ] and bool(inventory(replacement["sandbox_id"])["containers"])
     finally:
-        for record in reversed(records):
-            if fixture.current_id(name) == record["sandbox_id"]:
-                fixture.delete(name, record["delete_request_id"])
-            if not fixture.verify_absent(record):
-                raise RuntimeError("fixture cleanup incomplete; retain recorded identities")
-        fixture.close()
+        with Cleanup(fixture.close) as cleanup:
+
+            def dispose_record(record):
+                if fixture.current_id(record["name"]) == record["sandbox_id"]:
+                    if (
+                        fixture.delete(record["name"], record["delete_request_id"])
+                        != record["sandbox_id"]
+                    ):
+                        raise RuntimeError("fixture delete targeted another instance")
+                if not fixture.verify_absent(record):
+                    raise RuntimeError("fixture cleanup incomplete; retain recorded identities")
+
+            for record in reversed(records):
+                cleanup.attempt(record, dispose_record, record)
     result["fixture_cleanup_verified"] = True
     return result
 

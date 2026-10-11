@@ -20,6 +20,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from openshell_authority_probe import gateway_fixture, verify_absent, verify_present
+from openshell_cleanup import Cleanup
 from openshell_owned_probe import fixture_spec, snapshot
 from openshell_recovery import AllocationAuthority, AuthorityBusyError, _write, validate
 
@@ -291,6 +292,7 @@ def run_case(args, case, context_path, client, binding):
 def measure(args, issuer):
     """Own one disposable workspace and record three independent crash barriers."""
     workspace = "s1797-" + uuid.uuid4().hex[:12]
+    workspace_absent = False
     binding = "spike-1797-live/" + workspace
     admin = Client(
         workspace, issuer.token("admin", role="spike-admin", scopes="openshell:all"), args.image
@@ -333,20 +335,28 @@ def measure(args, issuer):
                 results.append(result)
                 print(json.dumps(result), flush=True)
     finally:
-        for oracle in args.evidence.glob("*-oracle.json"):
-            owner = json.loads(oracle.read_text(encoding="utf-8"))
-            if admin.current_id(owner["name"]) == owner["sandbox_id"]:
-                admin.delete(owner["name"], owner["delete_request_id"])
-            if not verify_absent(observed(owner)):
-                raise RuntimeError("fixture resources remain; preserve oracle")
-        admin.rpc(
-            "DeleteWorkspace", admin.pb.DeleteWorkspaceRequest(name=workspace, allow_missing=True)
-        )
-        try:
-            workspace_absent = verify_workspace_absent(admin, workspace)
-        finally:
-            adapter.close()
-            admin.close()
+        with Cleanup(adapter.close, admin.close) as cleanup:
+
+            def dispose_oracle(oracle):
+                owner = json.loads(oracle.read_text(encoding="utf-8"))
+                try:
+                    current = admin.current_id(owner["name"])
+                    if current == owner["sandbox_id"]:
+                        dispose_fixture(admin, owner)
+                    elif current is not None or not verify_absent(observed(owner)):
+                        raise RuntimeError("fixture resources remain; preserve oracle")
+                except Exception as exc:
+                    exc.add_note(f"Retained owner: {owner!r}")
+                    raise
+
+            for oracle in args.evidence.glob("*-oracle.json"):
+                cleanup.attempt(oracle, dispose_oracle, oracle)
+            if not cleanup.errors:
+                admin.rpc(
+                    "DeleteWorkspace",
+                    admin.pb.DeleteWorkspaceRequest(name=workspace, allow_missing=True),
+                )
+                workspace_absent = verify_workspace_absent(admin, workspace)
     return {
         "cases": len(results),
         "workspace_cleanup_verified": workspace_absent,

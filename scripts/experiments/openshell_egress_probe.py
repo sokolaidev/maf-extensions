@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from openshell_allocation_probe import Client
 from openshell_authority_probe import verify_absent
+from openshell_cleanup import Cleanup
 from openshell_files_probe import execute, signed_gateway
 from openshell_owned_probe import snapshot
 from openshell_replay_probe import wait_gateway
@@ -331,14 +332,19 @@ def measure(image, issuer, ip, *, profile=None):
                     name, "closed_direct_refused", allowed, "/allowed", "GET", None, 0, direct=True
                 )
     finally:
-        try:
-            for owner in reversed(owners):
+        with Cleanup(client.close) as cleanup:
+
+            def dispose_record(owner):
                 if client.current_id(owner["name"]) != owner["id"]:
                     raise RuntimeError("refuse replacement cleanup")
-                client.delete(owner["name"], str(uuid.uuid4()))
+                if client.delete(owner["name"], str(uuid.uuid4())) != owner["id"]:
+                    raise RuntimeError("fixture delete targeted another instance")
                 if not verify_absent(owner):
                     raise RuntimeError("physical cleanup incomplete; retain identities")
-            if created_workspace:
+
+            for owner in reversed(owners):
+                cleanup.attempt(owner, dispose_record, owner)
+            if not cleanup.errors and created_workspace:
                 if profile is not None and hasattr(profile, "cleanup_workspace"):
                     profile.cleanup_workspace(client)
                 client.rpc(
@@ -352,17 +358,15 @@ def measure(image, issuer, ip, *, profile=None):
                         raise
                 else:
                     raise RuntimeError("workspace remains")
-            print(
-                json.dumps(
-                    {
-                        "physical_cleanup_verified": True,
-                        "workspace_cleanup_verified": created_workspace,
-                    }
-                ),
-                flush=True,
-            )
-        finally:
-            client.close()
+        print(
+            json.dumps(
+                {
+                    "physical_cleanup_verified": True,
+                    "workspace_cleanup_verified": created_workspace,
+                }
+            ),
+            flush=True,
+        )
     return {
         "passed": len(results) == (19 if profile is None else profile.CASES)
         and all(x["passed"] for x in results),
