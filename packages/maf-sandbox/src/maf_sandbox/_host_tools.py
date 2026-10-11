@@ -79,6 +79,7 @@ __all__ = [
     "HostToolAggregate",
     "HostToolDeclaration",
     "HostToolNotDeclared",
+    "HostToolFidesNotSupported",
     "HostToolRegistry",
     "HostToolRun",
     "MafSandboxHostToolsWarning",
@@ -121,6 +122,12 @@ _USER_IDENTITY_PARAMETER = "user_identity"
 #: a sentinel a real answer could equal is one that eventually reaches a body as its authority.
 _UNMINTED = object()
 
+_FIDES_NOT_SUPPORTED = (
+    "FIDES enforcement is required for nested host-tool calls, but this dispatch path "
+    "does not support it. Disable nested host tools or expose these functions as direct "
+    "agent tools through FIDES middleware."
+)
+
 
 def _accepts_user_identity(func: Callable[..., Any]) -> bool:
     """Whether ``func`` can be handed the minted identity by keyword.
@@ -158,6 +165,10 @@ class HostToolNotDeclared(ValueError):
     where the fix is one decorator away.  The fix is :func:`sandbox_tool` with every leg
     answered; ``None`` is an answer.
     """
+
+
+class HostToolFidesNotSupported(ValueError):
+    """A nonempty host-tool surface requires FIDES mediation that is not supported."""
 
 
 class HostToolIdentityNotAllowed(ValueError):
@@ -307,6 +318,10 @@ class HostToolRegistry:
             default ``False``, in which case an unstamped tool registers and fails safe —
             an untrusted source, an :data:`~maf_sandbox.Identity.APP` identity, and a raised
             flag in the aggregate.
+        require_fides: Require FIDES mediation for nested calls. Default ``False``.
+            No dispatch path currently provides it: a nonempty :meth:`aggregate` raises
+            :class:`HostToolFidesNotSupported`, and :meth:`HostToolRun.call` refuses before
+            running a function. Registration remains available for a disabled channel.
         allowed_identities: The authorities a registered tool may exercise, refused at
             registration otherwise (:class:`HostToolIdentityNotAllowed`).  Default
             ``frozenset({Identity.APP})`` — secure by default: an
@@ -352,6 +367,7 @@ class HostToolRegistry:
         self,
         *,
         require_declared: bool = False,
+        require_fides: bool = False,
         allowed_identities: frozenset[Identity] = frozenset({Identity.APP}),
         max_host_tool_calls_per_run: int = DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN,
         response_limits: TransferLimits = DEFAULT_TRANSFER_LIMITS,
@@ -361,6 +377,8 @@ class HostToolRegistry:
         mint_user_identity: Callable[[str], Awaitable[str]] | None = None,
         observer: SandboxObserver | None = None,
     ) -> None:
+        if not isinstance(cast(object, require_fides), bool):
+            raise TypeError("require_fides must be a bool from trusted host configuration")
         _refuse_non_integer("max_host_tool_calls_per_run", max_host_tool_calls_per_run)
         if max_host_tool_calls_per_run < 1:
             raise ValueError(
@@ -431,6 +449,7 @@ class HostToolRegistry:
                     f"mint_user_identity must be callable, not {type(mint_user_identity).__name__}"
                 )
         self._require_declared = require_declared
+        self._require_fides = require_fides
         self._observer = (
             None if observer is None else refuse_an_unusable_observer(observer, argument="observer")
         )
@@ -448,6 +467,11 @@ class HostToolRegistry:
     def require_declared(self) -> bool:
         """Whether unstamped functions are refused rather than degraded."""
         return self._require_declared
+
+    @property
+    def require_fides(self) -> bool:
+        """Whether nested host-tool calls require FIDES mediation, fixed at construction."""
+        return self._require_fides
 
     @property
     def mint_user_identity(self) -> Callable[[str], Awaitable[str]] | None:
@@ -639,8 +663,12 @@ class HostToolRegistry:
         rather than called against policy that never saw it. Together with declarations
         being captured at registration (:meth:`declaration_for`), what the router denies and
         what :class:`HostToolRun` calls cannot come apart.
+
+        Raises :class:`HostToolFidesNotSupported` for a nonempty registry requiring FIDES.
         """
         self._sealed = True
+        if self._require_fides and self._tools:
+            raise HostToolFidesNotSupported(_FIDES_NOT_SUPPORTED)
         undeclared = sorted(
             tool_name
             for tool_name, declaration in self._declarations.items()
@@ -1135,6 +1163,8 @@ class HostToolRun:
                 registry records nowhere and there is nothing to fill in.
         """
         self._calls += 1
+        if self._registry.require_fides:
+            return _refused(f"Error: {_FIDES_NOT_SUPPORTED}")
         cap = self._registry.max_host_tool_calls_per_run
         if self._calls > cap:
             return _refused(

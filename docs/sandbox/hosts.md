@@ -83,6 +83,7 @@ An empty registry exposes nothing. Registration emits a suppressible warning abo
 | Registry control | Behavior |
 |---|---|
 | `require_declared=True` | Refuse undeclared tools at registration and call time |
+| `require_fides=True` | Refuse a nonempty surface and every nested call because no current dispatch path provides FIDES mediation |
 | Default `require_declared=False` | Treat an undeclared tool as an untrusted source with app authority; set `has_undeclared` |
 | `allowed_identities` | Default permits `APP`; the host must opt into `USER`; `identity=None` needs no authority |
 | Captured declarations | Read once at registration; later decorator changes do not replace them |
@@ -94,6 +95,23 @@ Only source tools contribute to aggregate source integrity. A registry with no s
 Arguments are bound against the Python signature in the host before the body runs. An unreadable signature is refused. The body remains responsible for value validation and the effects it performs.
 
 The host enforces the per-run call cap and response budgets before invoking the body. Response framing consumes the byte budget too. These checks do not predict the size of an arbitrary result or roll back a body that has already acted.
+
+### Require FIDES coverage
+
+Set the immutable host option `HostToolRegistry(require_fides=True)` when nested calls must have FIDES enforcement. Registration remains available, but `aggregate()` seals a nonempty registry and raises `HostToolFidesNotSupported`. Tool factories therefore refuse the unsupported surface before backend selection. An empty registry aggregates successfully and is sealed against later registration. `HostToolRun.call` independently refuses before resolving a callable, minting identity or executing a body, including runs created before registration. Refusals disclose no arguments, results or credentials.
+
+```python
+from maf_sandbox import HostToolRegistry
+
+strict = HostToolRegistry(require_declared=True, require_fides=True)
+existing = HostToolRegistry(require_declared=True, require_fides=False)
+```
+
+The default remains `require_fides=False`. Complete declarations, captured tool metadata, sandbox isolation, outer approval and observers do not mediate a source-to-sink sequence inside a guest program. This requirement supplies refusal of unsupported execution, not actual FIDES mediation or automatic detection of the agent's middleware. There is no supported coverage override. Observation failures cannot authorize a denied call.
+
+For CodeAct, pass `host_tools_enabled=False` to both `make_codeact_tools` and `codeact_sandbox_spec` to disable the channel; a supplied strict registry is ignored without being read or sealed. Expose sensitive functions as direct agent tools through the host's FIDES middleware instead. Retire existing tool surfaces, active calls and sandboxes before changing configuration, then rebuild them; a new registry cannot revoke an older permissive registry.
+
+All supported exec transports use the same dispatch guard. Future native channels must also use `HostToolRun.call`; this does not qualify native Hyperlight support. Actual mediation needs separate framework qualification of conversation and argument labels, hidden references, returned labels, source-to-sink transitions, cancellation and concurrency.
 
 ### Transport over EXEC
 
@@ -269,6 +287,7 @@ For exec and file workloads, acquisition prepares the base through the backend's
 | File-store output sink and read tools | Implemented | [#902](https://github.com/sokolaidev/maf-extensions/pull/902) (merged); [#1457](https://github.com/sokolaidev/maf-extensions/issues/1457) (closed) by [#1468](https://github.com/sokolaidev/maf-extensions/pull/1468) (merged) |
 | Atomic batch delivery | Unimplemented | untracked |
 | Host-tool registry, declarations and transport | Implemented | [#133](https://github.com/sokolaidev/maf-extensions/issues/133) (closed); [#410](https://github.com/sokolaidev/maf-extensions/pull/410) (merged); [#417](https://github.com/sokolaidev/maf-extensions/issues/417) (closed) |
+| Required FIDES coverage for nested host tools | Fail-closed refusal implemented; actual mediation remains unsupported | [#1858](https://github.com/sokolaidev/maf-extensions/issues/1858) (closed) by [#1867](https://github.com/sokolaidev/maf-extensions/pull/1867) (merged) |
 | Backend-owned host-tool channels, execution profiles, automatic selection and confirmed delivery | Core/exec implemented; native integration, physical framing and acceptance confirmation remain pending | [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open); core/exec by [#1664](https://github.com/sokolaidev/maf-extensions/pull/1664) (merged) |
 | Backend-specific guest host-tool APIs | Deferred to a separate issue; not filed | untracked |
 | Host-tool identity admission and per-run minting | Implemented | [#396](https://github.com/sokolaidev/maf-extensions/issues/396) (closed); [#568](https://github.com/sokolaidev/maf-extensions/issues/568) (closed); [#446](https://github.com/sokolaidev/maf-extensions/issues/446) (closed); [#593](https://github.com/sokolaidev/maf-extensions/pull/593) (merged) |
