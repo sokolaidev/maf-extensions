@@ -211,7 +211,9 @@ def measure(image, issuer, ip, *, profile=None):
         origin_get(ip, "/allowed", port=8001)
         client.rpc("CreateWorkspace", client.pb.CreateWorkspaceRequest(name=workspace))
         created_workspace = True
-        for mode in ("enforce", "audit", "closed"):
+        if profile is not None and hasattr(profile, "prepare_workspace"):
+            profile.prepare_workspace(client)
+        for mode in getattr(profile, "MODES", ("enforce", "audit", "closed")):
             name = "s1797-" + uuid.uuid4().hex[:12]
             request = client.pb.CreateSandboxRequest.FromString(
                 client.request(name, str(uuid.uuid4()))
@@ -329,6 +331,8 @@ def measure(image, issuer, ip, *, profile=None):
                 if not verify_absent(owner):
                     raise RuntimeError("physical cleanup incomplete; retain identities")
             if created_workspace:
+                if profile is not None and hasattr(profile, "cleanup_workspace"):
+                    profile.cleanup_workspace(client)
                 client.rpc(
                     "DeleteWorkspace",
                     client.pb.DeleteWorkspaceRequest(name=workspace, allow_missing=True),
