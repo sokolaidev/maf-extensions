@@ -92,6 +92,10 @@ Backend cleanup and operator retention are separate. The backend supplies discov
 
 For implementation, use [writing a backend](writing-a-backend.md). For ACAS authentication, use [host-selected credentials](acas-credentials.md). Package READMEs own installation and configuration examples.
 
+## OpenShell evaluation
+
+General OpenShell backend adoption is deferred. The [v0.1.2 spike](../research/openshell-backend.md#spike-conclusion---2026-10-11) records bounded execution, lifecycle, file, egress and credential observations, but no suite adapter, supported runtime or capability declaration is qualified. The [adoption work](../research/openshell-backend.md#status) remains open for official creation-recovery and conditional-deletion dependencies plus separately tracked runtime/file, effective-egress and credential-lifecycle qualification. Use the existing backends above while those prerequisites remain unresolved.
+
 ## Status
 
 | Area | State | Reference |
@@ -102,3 +106,4 @@ For implementation, use [writing a backend](writing-a-backend.md). For ACAS auth
 | Packaged Python runtime | Implemented for the supported host family | [Hyperlight](hyperlight.md) |
 | Test backend | Implemented; no security boundary | [In-process](in-process.md) |
 | Credential ownership and retention | Defined per backend and deployment | [ACAS credentials](acas-credentials.md), [operations](../operations.md) |
+| OpenShell adoption | Deferred; no adapter or qualified runtime | [Spike decision and follow-ups](../research/openshell-backend.md) |
