@@ -1189,6 +1189,58 @@ async def test_with_no_tool_work_pending_the_user_half_does_not_wait() -> None:
     assert (strategy.user_passes_waited, strategy.user_compactions) == (0, 1)
 
 
+@pytest.mark.parametrize(
+    ("groups", "minimum", "repeat", "bound", "trigger", "outstanding", "waits"),
+    [
+        (0, 4, True, None, 0.6, None, False),
+        (1, 4, True, None, 0.6, None, False),
+        (2, 4, True, None, 0.6, None, False),
+        (3, 4, True, None, 0.6, None, False),
+        (4, 4, True, None, 0.6, None, True),
+        (1, 1, True, None, 0.6, None, True),
+        (4, 4, False, None, 0.6, None, False),
+        (1, 4, False, 1, 0.87, None, True),
+        (1, 4, True, None, 0.87, "force_next", True),
+        (1, 4, True, None, 0.87, "awaiting_record", True),
+    ],
+)
+@pytest.mark.parametrize("wrapped", [False, True])
+async def test_composed_wait_uses_the_configured_recall_trigger(
+    groups, minimum, repeat, bound, trigger, outstanding, waits, wrapped
+) -> None:
+    strategy = _composed(
+        _NARROW_CEILING,
+        tool_results=_record_phase(_NARROW_CEILING, trigger_fraction=trigger),
+        user_trigger_fraction=0.6,
+    )
+    middleware = ToolResultRecallMiddleware(
+        max_input_tokens=_NARROW_CEILING,
+        tokenizer=TOKENIZER,
+        arm=lambda: None,
+        trigger_fraction=trigger,
+        min_groups_before_repeat=minimum,
+        repeat_records=repeat,
+        max_groups_before_record=bound,
+        reforce=(lambda: strategy.tool_results.take_reforce())
+        if wrapped
+        else strategy.tool_results.take_reforce,
+    )
+    if wrapped:
+        strategy.tool_results.bind_recall(middleware)
+    if outstanding is not None:
+        middleware.restore_session_state(middleware.session_state() | {outstanding: True})
+    before = middleware.session_state()
+    record = build_record_message("Earlier facts.")
+    strategy._holds_for_record([record], entry_tokens=0, prompt_tokens=0)
+    messages = [record, *_conversation(tool_turns=0, record=None)]
+    for index in range(groups):
+        messages += _tool_group(index)
+    await strategy(messages)
+    assert strategy.user_passes_waited == int(waits)
+    assert strategy.user_compactions == int(not waits)
+    assert middleware.session_state() == before
+
+
 async def test_under_the_record_halfs_own_trigger_the_user_half_does_not_wait() -> None:
     """A user line set below the record half's trigger is a prompt the middleware will not ask at.
 

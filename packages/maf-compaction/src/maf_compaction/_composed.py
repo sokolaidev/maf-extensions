@@ -923,11 +923,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         the work.
 
         **The rule.** The user half holds on a pass where the prompt, as the record phase left
-        it, is over the shared line and over the record half's own trigger, and the record half
-        has work pending --
+        it, is over the shared line and the wired recall middleware can request a record or
+        already has one outstanding --
         :meth:`~._toolsummary.ToolResultAnchoredSummarizationCompactionStrategy.record_pending`,
-        which is the middleware's own count of tool work no record covers, or an outstanding
-        re-force ask. It stops holding when either
+        which shares the middleware's size, repeat and group-bound decision without consuming
+        a re-force ask. It stops holding when either
 
         - the record arrives -- the newest record changes, which on the pass that sees it means
           ``_drop_before`` has just applied it -- and the user half is then judged, on that pass,
@@ -937,10 +937,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
           record: the model has had its chance at it, and a model that never records must not
           leave the user half idling one bound in every three responses.
 
-        With nothing pending the record half cannot help, and nothing is held; nor under the
-        record half's own trigger, which a caller's explicit ``user_trigger_fraction`` can put
-        above the user line, because the middleware does not ask there. A wait is one unbroken
-        run of held passes: any pass that does not hold ends it.
+        A group bound or an outstanding request can justify waiting below the recall size
+        trigger. A wait is one unbroken run of held passes: any pass that does not hold ends it.
 
         **Two more guards, each for a way the wait could do harm.** None at or past the record
         half's give-up line, read on the pass-entry size the record half itself judged: that line is
@@ -979,7 +977,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._wait_since = None
         holding = (
             prompt_tokens > int(self.max_input_tokens * self.user_trigger_fraction)
-            and prompt_tokens > int(self.max_input_tokens * self.tool_results.trigger_fraction)
             and entry_tokens < int(self.max_input_tokens * self.tool_results.fallback_fraction)
             and clock > self._quiet_through
             and anchor != self._declined_behind

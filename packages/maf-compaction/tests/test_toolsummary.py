@@ -2462,6 +2462,20 @@ async def test_reforce_does_not_adopt_groups_arriving_during_its_request() -> No
     assert cold.groups_preserved_uncovered == cold.groups_kept_uncovered == 5
 
 
+async def test_previewing_a_record_wait_does_not_consume_the_reforce_request() -> None:
+    strategy = _chained()
+    messages = _conversation(tool_turns=6, record=_covering_record(2))
+    middleware = _repeating(reforce=strategy.take_reforce)
+    await strategy(messages)
+    before = strategy.decision_state()
+    assert strategy.record_pending(messages)
+    assert strategy.record_pending(messages)
+    assert strategy.decision_state() == before
+    await _run(middleware, messages)
+    assert "tool_choice" in await _run(middleware, messages)
+    assert middleware.reforced_calls == 1
+
+
 async def test_twelve_digit_dense_results_do_not_pin_a_record_per_tool_call() -> None:
     strategy = _chained(max_input_tokens=1_000_000, trigger_fraction=0.0001)
     middleware = _repeating(reforce=strategy.take_reforce)
