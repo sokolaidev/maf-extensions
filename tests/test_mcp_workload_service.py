@@ -316,7 +316,7 @@ def test_shared_admission_equal_ids_cancel_and_delete_drain():
     asyncio.run(scenario())
 
 
-def test_registry_saturation_churn_and_idle_expiry():
+def test_registry_saturation_churn_and_idle_expiry(record_property):
     async def scenario():
         h = Harness()
         async with running(h.service()) as (app, client, server):
@@ -335,17 +335,64 @@ def test_registry_saturation_churn_and_idle_expiry():
                 },
             )
             assert response.status_code == 503 and len(app.sessions) == 8
+            retained = [("saturation", app.sessions[sid]) for sid in ids]
             for sid in ids:
-                await client.delete("/mcp", headers={"mcp-session-id": sid})
+                assert (
+                    await client.delete("/mcp", headers={"mcp-session-id": sid})
+                ).status_code == 200
             await until(lambda: not app.sessions)
             for _ in range(100):
                 sid = await initialize(client)
-                await client.delete("/mcp", headers={"mcp-session-id": sid})
+                retained.append(("churn", app.sessions[sid]))
+                assert (
+                    await client.delete("/mcp", headers={"mcp-session-id": sid})
+                ).status_code == 200
                 await until(lambda: not app.sessions)
             assert app.service._session_manager is None
             sid = await initialize(client)
+            retained.append(("idle", app.sessions[sid]))
             app.sessions[sid].touched -= app.idle_seconds
             await until(lambda: not app.sessions)
+            assert len({id(record) for _, record in retained}) == 109
+            observations = []
+            for phase, record in retained:
+                task = record.task
+                retirement = record.retiring
+                observed = {
+                    "phase": phase,
+                    "sdk_finished": task is not None
+                    and task.done()
+                    and not task.cancelled()
+                    and task.exception() is None,
+                    "retirement_finished": retirement is not None
+                    and retirement.done()
+                    and not retirement.cancelled()
+                    and retirement.exception() is None,
+                    "transport_terminated": record.transport.is_terminated,
+                    "sdk_streams": len(record.transport._request_streams),
+                    "request_ids": len(record.ids),
+                    "requests": record.requests,
+                    "get_active": record.get_active,
+                }
+                observations.append(observed)
+                assert observed["sdk_finished"] and observed["retirement_finished"]
+                assert observed["transport_terminated"] and not observed["get_active"]
+                assert (
+                    observed["sdk_streams"] == observed["request_ids"] == observed["requests"] == 0
+                )
+            assert not app.sessions and app.readers == 0 and app.service.active is None
+            assert not app.service.poisoned and app.service._session_manager is None
+            record_property("retirement_observations", observations)
+            record_property(
+                "retirement_final_state",
+                {
+                    "adapter_records": len(app.sessions),
+                    "body_readers": app.readers,
+                    "active_call": app.service.active is not None,
+                    "poisoned": app.service.poisoned,
+                    "default_manager_absent": app.service._session_manager is None,
+                },
+            )
 
     asyncio.run(scenario())
 
@@ -353,7 +400,8 @@ def test_registry_saturation_churn_and_idle_expiry():
 @pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
 def test_authentication_and_host_refusal_precede_allocation(method):
     async def scenario():
-        async with running(Harness().service()) as (app, client, server):
+        h = Harness()
+        async with running(h.service()) as (app, client, server):
             for headers, status in [
                 ({"Authorization": ""}, 401),
                 ({"Authorization": "Bearer wrong"}, 401),
@@ -364,7 +412,7 @@ def test_authentication_and_host_refusal_precede_allocation(method):
                     method, "/mcp", headers=headers, content=b"secret-invalid-json"
                 )
                 assert response.status_code == status and not app.sessions
-                assert "secret" not in response.text
+                assert "secret" not in response.text and not h.calls
 
     asyncio.run(scenario())
 
@@ -373,6 +421,9 @@ def test_bad_initialization_input_and_output_bounds():
     async def scenario():
         h = Harness()
         async with running(h.service()) as (app, client, server):
+            response = await client.post("/mcp", content=b"private-submitted-framing-marker")
+            assert response.status_code == 400 and not app.sessions and not h.calls
+            assert "private-submitted-framing-marker" not in response.text
             for body in (
                 {"jsonrpc": "2.0", "id": 1, "method": "initialize"},
                 {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},

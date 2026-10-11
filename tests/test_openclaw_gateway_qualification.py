@@ -3838,3 +3838,146 @@ def test_ownership_environment_refuses_baseline_drift(monkeypatch):
     monkeypatch.setattr(ownership.importlib.metadata, "version", lambda _: "0.0.0")
     with pytest.raises(RuntimeError, match="published baseline"):
         ownership.environment()
+
+
+published_transport = load("openclaw_published_transport_check")
+
+
+def passing_transport_evidence():
+    evidence = published_transport.Results()
+    evidence.collected = [
+        f"{name}[{i}]" for name, count in published_transport.CASES.items() for i in range(count)
+    ]
+    evidence.reports = [
+        {"case": name, "phase": phase, "outcome": "passed", "xfail": False, "seconds": 0.1}
+        for name in evidence.collected
+        for phase in ("setup", "call", "teardown")
+    ]
+    evidence.retirements = [
+        {
+            "phase": phase,
+            "sdk_finished": True,
+            "retirement_finished": True,
+            "transport_terminated": True,
+            "sdk_streams": 0,
+            "request_ids": 0,
+            "requests": 0,
+            "get_active": False,
+        }
+        for phase, count in (("saturation", 8), ("churn", 100), ("idle", 1))
+        for _ in range(count)
+    ]
+    evidence.final_state = {
+        "adapter_records": 0,
+        "body_readers": 0,
+        "active_call": False,
+        "poisoned": False,
+        "default_manager_absent": True,
+    }
+    return evidence
+
+
+def test_published_transport_accepts_complete_evidence():
+    passing_transport_evidence().verify(0)
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["exit", "collection", "duplicate", "phase", "skip", "xfail", "teardown", "cycles", "missing"],
+)
+def test_published_transport_refuses_incomplete_execution(change):
+    evidence = passing_transport_evidence()
+    if change == "collection":
+        evidence.collected.pop()
+    elif change == "duplicate":
+        evidence.collected[-1] = evidence.collected[0]
+    elif change == "phase":
+        evidence.reports.pop()
+    elif change == "skip":
+        evidence.reports[1]["outcome"] = "skipped"
+    elif change == "xfail":
+        evidence.reports[1]["xfail"] = True
+    elif change == "teardown":
+        evidence.reports[2]["outcome"] = "failed"
+    elif change == "cycles":
+        evidence.retirements.pop()
+    elif change == "missing":
+        evidence.retirements = None
+    with pytest.raises(RuntimeError):
+        evidence.verify(1 if change == "exit" else 0)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("sdk_finished", False),
+        ("sdk_finished", 1),
+        ("retirement_finished", False),
+        ("transport_terminated", False),
+        ("sdk_streams", 1),
+        ("sdk_streams", False),
+        ("request_ids", 1),
+        ("requests", 1),
+        ("requests", 0.0),
+        ("get_active", True),
+    ],
+)
+def test_published_transport_refuses_unsettled_sdk(field, value):
+    evidence = passing_transport_evidence()
+    evidence.retirements[9][field] = value
+    with pytest.raises(RuntimeError):
+        evidence.verify(0)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("adapter_records", 1),
+        ("adapter_records", False),
+        ("body_readers", 1),
+        ("active_call", True),
+        ("poisoned", True),
+        ("default_manager_absent", False),
+    ],
+)
+def test_published_transport_refuses_unsettled_service(field, value):
+    evidence = passing_transport_evidence()
+    evidence.final_state[field] = value
+    with pytest.raises(RuntimeError):
+        evidence.verify(0)
+
+
+@pytest.mark.parametrize("problem", ["editable", "version", "shadow", "duplicate"])
+def test_published_transport_refuses_unqualified_environment(monkeypatch, tmp_path, problem):
+    dists = [
+        SimpleNamespace(
+            metadata={"Name": name},
+            version=version,
+            read_text=lambda _: None,
+            locate_file=lambda _: tmp_path,
+        )
+        for name, version in published_transport.BASELINE.items()
+    ]
+    if problem == "editable":
+        dists[0].read_text = lambda _: '{"dir_info":{"editable":true}}'
+    elif problem == "version":
+        dists[0].version = "0.0.0"
+    elif problem == "duplicate":
+        dists.append(dists[0])
+    monkeypatch.setattr(published_transport, "distributions", lambda: dists)
+    monkeypatch.setattr(
+        published_transport.importlib.util,
+        "find_spec",
+        lambda _: SimpleNamespace(origin=str(tmp_path.parent / "shadow.py")),
+    )
+    with pytest.raises(RuntimeError):
+        published_transport.environment()
+
+
+def test_published_transport_clears_stale_success_before_refusing_reuse(monkeypatch, tmp_path):
+    (tmp_path / "transport-report.json").write_text('{"passed":true}', encoding="utf-8")
+    (tmp_path / "attempt.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["checker", "--root", str(tmp_path)])
+    with pytest.raises(RuntimeError, match="fresh private evidence"):
+        published_transport.main()
+    assert not (tmp_path / "transport-report.json").exists()
