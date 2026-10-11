@@ -242,3 +242,52 @@ def test_retained_approval_must_bind_candidate_and_displayed_assessment(
     write(tmp_path / "approval.json", approval)
     with pytest.raises(ValueError, match="Retained protected approval"):
         recovery.recover(planned, tmp_path)
+
+
+@pytest.mark.parametrize("name", ["approve", "Publish graphviz:0.1.0 to public GHCR"])
+def test_original_approval_accepts_legacy_and_exact_descriptive_name(original, name):
+    original.responses["/jobs?filter=latest&per_page=100"]["jobs"][1]["name"] = name
+    assert recovery.selection("123", "complete")["candidate"] == CANDIDATE
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Publish bicep:0.1.0 to public GHCR",
+        "Publish graphviz:0.2.0 to public GHCR",
+        "Recover graphviz:0.1.0",
+    ],
+)
+def test_original_approval_rejects_other_image_version_or_operation(original, name):
+    original.responses["/jobs?filter=latest&per_page=100"]["jobs"][1]["name"] = name
+    with pytest.raises(ValueError, match="approval job"):
+        recovery.selection("123", "complete")
+
+
+@pytest.mark.parametrize("profile,version", [("bicep", "0.1.0"), ("graphviz", "0.2.0")])
+def test_inspection_refuses_misleading_recovery_title(
+    original, monkeypatch, tmp_path, profile, version
+):
+    monkeypatch.setattr(recovery, "context", lambda *a: ("d" * 40, "789", "1"))
+    output = tmp_path / "selection.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "recovery",
+            "inspect",
+            "--run-id",
+            "123",
+            "--stage",
+            "complete",
+            "--profile",
+            profile,
+            "--version",
+            version,
+            "--selection",
+            str(output),
+        ],
+    )
+    with pytest.raises(ValueError, match="Displayed recovery"):
+        recovery.main()
+    assert not output.exists()

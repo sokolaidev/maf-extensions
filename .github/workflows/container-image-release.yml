@@ -1,4 +1,8 @@
 name: Container image release
+run-name: >-
+  ${{ inputs.operation == 'abandon' && 'Permanently abandon' || 'Publish' }}
+  ${{ inputs.profile }}:${{ inputs.version }}
+  ${{ inputs.operation == 'abandon' && 'in public GHCR release history' || 'to public GHCR' }}
 
 on:
   workflow_dispatch:
@@ -49,8 +53,10 @@ env:
 
 jobs:
   policy:
+    outputs:
+      summary_url: ${{ steps.abandon-summary.outputs.summary_url }}
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -85,12 +91,26 @@ jobs:
               raise ValueError("Abandonment requires a reason")
           PY
 
+      - name: Present permanent abandonment before approval
+        if: inputs.operation == 'abandon'
+        id: abandon-summary
+        env:
+          PROFILE: ${{ inputs.profile }}
+          VERSION: ${{ inputs.version }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          uv run --locked python scripts/container_release_approval.py abandon \
+            --profile "$PROFILE" --version "$VERSION" --reason "$REASON" \
+            --directory "$RUNNER_TEMP/abandon"
+
   prepare:
     needs: policy
     if: inputs.operation == 'release'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
+      approval_name: ${{ steps.approval-summary.outputs.approval_name }}
+      summary_url: ${{ steps.approval-summary.outputs.summary_url }}
       mode: ${{ steps.candidate.outputs.mode }}
       lost: ${{ steps.candidate.outputs.lost }}
       candidate_sha256: ${{ steps.candidate.outputs.candidate_sha256 }}
@@ -140,27 +160,21 @@ jobs:
           retention-days: 30
           overwrite: true
       - name: Present the exact approval and freshness policy
-        env:
-          PROFILE: ${{ inputs.profile }}
-          VERSION: ${{ inputs.version }}
-          DIGEST: ${{ steps.candidate.outputs.digest }}
-          CONFIG: ${{ steps.candidate.outputs.image_id }}
-          CANDIDATE: ${{ steps.candidate.outputs.candidate_sha256 }}
+        if: steps.candidate.outputs.mode != 'delivery'
+        id: approval-summary
         run: |
-          {
-            printf '## Image publication approval\n\n'
-            printf 'Profile: %s; version: %s; source: %s\n\n' "$PROFILE" "$VERSION" "$GITHUB_SHA"
-            printf 'Manifest: %s\n\nConfiguration: %s\n\nCandidate record: %s\n\n' "$DIGEST" "$CONFIG" "$CANDIDATE"
-            printf 'Inspect the retained-image artifact for runtime checks, SPDX/Syft inventories and the strict High/Critical report, including unfixed findings.\n\n'
-            printf 'Approval authorizes a fresh scan of these same bytes if the assessment is at least 24 hours old before a registry write. A failed refresh blocks publication. Changed bytes, source, version or policy require new approval.\n'
-          } >> "$GITHUB_STEP_SUMMARY"
+          uv run --locked python scripts/container_release_approval.py release \
+            --directory "$RUNNER_TEMP/candidate" --candidate "$RUNNER_TEMP/selection/candidate.json"
 
   approve:
+    name: ${{ needs.prepare.outputs.approval_name }}
     needs: prepare
     if: needs.prepare.outputs.mode != 'delivery'
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    environment: container-release
+    environment:
+      name: container-release
+      url: ${{ needs.prepare.outputs.summary_url }}
     steps:
       - run: echo 'Approved publication of the retained candidate under the displayed same-bytes refresh policy.'
 
@@ -451,11 +465,14 @@ jobs:
           printf 'Completed image evidence: https://github.com/sokolaidev/maf-extensions/releases/tag/image-%s-v%s\n' "$PROFILE" "$VERSION" >> "$GITHUB_STEP_SUMMARY"
 
   abandon:
+    name: Permanently abandon ${{ inputs.profile }}:${{ inputs.version }} in public GHCR release history
     needs: policy
     if: inputs.operation == 'abandon'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: container-release
+    environment:
+      name: container-release
+      url: ${{ needs.policy.outputs.summary_url }}
     permissions:
       contents: write
     concurrency:

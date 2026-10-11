@@ -762,7 +762,7 @@ def test_workflow_writer_locks_and_privilege_separation():
                 "queue": "max",
                 "cancel-in-progress": False,
             }
-    assert release["jobs"]["approve"]["environment"] == "container-release"
+    assert release["jobs"]["approve"]["environment"]["name"] == "container-release"
     assert release["jobs"]["qualify"]["permissions"] == {"contents": "read", "attestations": "read"}
     assert "permissions" not in monitor_workflow["jobs"]["scan"]
     assert monitor_workflow["permissions"] == {"contents": "read"}
