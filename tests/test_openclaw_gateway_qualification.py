@@ -381,7 +381,9 @@ def test_observer_correlates_interleaved_cancellation_responses(tmp_path):
     assert checker.matching_cancel(evidence, {**call, "request": observer.digest(8)})
 
 
+denial = load("openclaw_docker_denial")
 lifecycle = load("openclaw_gateway_lifecycle_check")
+daemon_check = load("openclaw_docker_denial_check")
 
 
 def loss_evidence():
@@ -2029,7 +2031,16 @@ def test_idle_registry_checks_tolerate_control_notifications_without_work():
 
 
 @pytest.mark.parametrize(
-    "case", ["registry", "lifecycle", "unavailable", "idle", "idle-default", "docker-disconnect"]
+    "case",
+    [
+        "registry",
+        "lifecycle",
+        "unavailable",
+        "idle",
+        "idle-default",
+        "docker-disconnect",
+        "docker-denial",
+    ],
 )
 @pytest.mark.parametrize("exit_code", [0, 1, 3, -9, None, False, 0.0])
 def test_final_shutdown_requires_zero_process_exit(case, exit_code):
@@ -2039,7 +2050,7 @@ def test_final_shutdown_requires_zero_process_exit(case, exit_code):
             [False, True, False]
             if case == "lifecycle"
             else [True, False]
-            if case == "docker-disconnect"
+            if case in {"docker-disconnect", "docker-denial"}
             else [False]
         )
     ]
@@ -2051,7 +2062,16 @@ def test_final_shutdown_requires_zero_process_exit(case, exit_code):
 
 
 @pytest.mark.parametrize(
-    "case", ["registry", "lifecycle", "unavailable", "idle", "idle-default", "docker-disconnect"]
+    "case",
+    [
+        "registry",
+        "lifecycle",
+        "unavailable",
+        "idle",
+        "idle-default",
+        "docker-disconnect",
+        "docker-denial",
+    ],
 )
 @pytest.mark.parametrize("mutation", ["missing", "duplicate", "poisoned", "sessions", "active"])
 def test_final_shutdown_requires_drained_state_even_with_zero_exit(case, mutation):
@@ -2061,7 +2081,7 @@ def test_final_shutdown_requires_drained_state_even_with_zero_exit(case, mutatio
             [False, True, False]
             if case == "lifecycle"
             else [True, False]
-            if case == "docker-disconnect"
+            if case in {"docker-disconnect", "docker-denial"}
             else [False]
         )
     ]
@@ -2806,7 +2826,7 @@ def docker_disconnect_evidence():
         "container": "a" * 64,
         "target": "compiler",
         "owned": ["a" * 64],
-        "disconnected_ns": 2,
+        "fault_armed_ns": 2,
         "abort_ns": 3,
         "observed_ns": 9,
         "readiness_status": 503,
@@ -2849,7 +2869,7 @@ def test_docker_disconnect_requires_real_removal_and_retained_work():
         ("same_service", False),
         ("owner_unchanged", False),
         ("sentinel_preserved", False),
-        ("disconnected_ns", 4),
+        ("fault_armed_ns", 4),
         ("abort_ns", 5),
         ("observed_ns", 7),
     ],
@@ -3037,3 +3057,361 @@ def test_removal_observer_does_not_label_other_errors_as_connection_refusal(tmp_
     observer.observe_docker_removal(observer.ObserveHTTP(None, path), Backend)
     asyncio.run(Backend()._invoke("rm", "-f", "compiler"))
     assert checker.records(path)[0]["connection_refused"] is False
+
+
+def authz_evidence(denied=True):
+    return [
+        {
+            "event": "docker_authz",
+            "sequence": 1,
+            "method": "DELETE",
+            "client": "c" * 32,
+            "target": "compiler",
+            "allowed": not denied,
+            "denied": denied,
+            "nonce": "d" * 32 if denied else "",
+        }
+    ]
+
+
+def verify_authz(rows, removals=None, denied=True, after_sequence=0):
+    return denial.verify_authorization(
+        rows,
+        [{}] if removals is None else removals,
+        target="compiler",
+        container="a" * 64,
+        client="c" * 32,
+        nonce="d" * 32,
+        denied=denied,
+        after_sequence=after_sequence,
+    )
+
+
+def test_daemon_authorization_requires_each_real_command_and_recovery_order():
+    failed = authz_evidence()
+    assert verify_authz(failed) == 1
+    recovered = authz_evidence(False)
+    recovered[0]["sequence"] = 2
+    assert verify_authz([*failed, *recovered], denied=False, after_sequence=1) == 2
+    with pytest.raises(RuntimeError):
+        verify_authz([*failed, *recovered], denied=False)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("sequence", True),
+        ("sequence", 1.0),
+        ("sequence", "1"),
+        ("sequence", 0),
+        ("event", "other"),
+        ("method", "POST"),
+        ("target", "another"),
+        ("client", "other"),
+        ("nonce", "other"),
+        ("allowed", True),
+        ("allowed", 0),
+        ("denied", False),
+        ("denied", 1),
+    ],
+)
+def test_daemon_authorization_rejects_uncorrelated_or_malformed_decisions(field, value):
+    rows = authz_evidence()
+    rows[0][field] = value
+    with pytest.raises(RuntimeError):
+        verify_authz(rows)
+
+
+@pytest.mark.parametrize(
+    "mutation", ["missing", "duplicate", "extra", "missing-command", "extra-command", "reversed"]
+)
+def test_daemon_authorization_rejects_incomplete_or_restarted_history(mutation):
+    rows, commands = authz_evidence(), [{}]
+    if mutation == "missing":
+        rows.clear()
+    elif mutation == "duplicate":
+        rows *= 2
+    elif mutation == "extra":
+        rows.append({**rows[0], "sequence": 2})
+    elif mutation == "missing-command":
+        commands.clear()
+    elif mutation == "extra-command":
+        commands.append({})
+    else:
+        rows = [{**rows[0], "sequence": 2}, rows[0]]
+        commands.append({})
+    with pytest.raises(RuntimeError):
+        verify_authz(rows, commands)
+
+
+@pytest.mark.parametrize(
+    "connection_refused,authorization_denied,returncode,accepted",
+    [
+        (False, True, 1, True),
+        (True, True, 1, False),
+        (False, False, 1, False),
+        (False, 1, 1, False),
+        (False, True, 0, False),
+        (False, True, True, False),
+        (False, True, 1.0, False),
+    ],
+)
+def test_daemon_denial_requires_real_policy_error(
+    connection_refused, authorization_denied, returncode, accepted
+):
+    evidence, call, observed = docker_disconnect_evidence()
+    evidence[2].update(
+        connection_refused=connection_refused,
+        authorization_denied=authorization_denied,
+        returncode=returncode,
+    )
+    if accepted:
+        assert lifecycle.verify_docker_cleanup_failure(
+            evidence, call, observed, "authorization_denied"
+        )["retained_container"]
+    else:
+        with pytest.raises(RuntimeError):
+            lifecycle.verify_docker_cleanup_failure(
+                evidence, call, observed, "authorization_denied"
+            )
+
+
+def test_denial_control_is_scoped_to_an_owned_parent_container(tmp_path, monkeypatch):
+    commands = []
+
+    def outer(host, *args, **kwargs):
+        commands.append((host, args))
+        if args[0] == "inspect":
+            return json.dumps([{"Config": {"Labels": {"maf-qualification.authz": "c" * 32}}}])
+        return ""
+
+    monkeypatch.setattr(denial, "outer_docker", outer)
+    controller = denial.DockerRemovalDenial(tmp_path, "unix:///test.sock", "a" * 64, "c" * 32)
+    controller.arm("compiler", "b" * 64)
+    assert json.loads((tmp_path / "deny-target.json").read_text())["id"] == "b" * 64
+    assert commands[-1][1] == ("exec", "a" * 64, "mv", "/control/next.json", "/control/deny.json")
+    controller.restore()
+    assert commands[-1][1] == ("exec", "a" * 64, "rm", "-f", "/control/deny.json")
+    with pytest.raises(RuntimeError):
+        denial.DockerRemovalDenial(tmp_path, "unix:///test.sock", "a" * 64, "e" * 32)
+
+
+@pytest.mark.parametrize("host", ["tcp://127.0.0.1:2375", "ssh://remote", "unix://relative"])
+def test_denial_control_refuses_nonlocal_parent_endpoints(host):
+    with pytest.raises(RuntimeError):
+        denial.outer_docker(host, "info")
+
+
+def test_docker_authorization_plugin_policy():
+    import shutil
+    import subprocess
+
+    go = shutil.which("go")
+    if go is None:
+        pytest.skip("Go is needed for the isolated Docker authorization fixture")
+    sources = FIXTURES / "openclaw_docker_authz"
+    result = subprocess.run(
+        [go, "test", str(sources / "main.go"), str(sources / "main_test.go")],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("provided", range(7))
+@pytest.mark.parametrize("missing_value", [None, ""])
+def test_denial_cli_rejects_incomplete_options_before_creating_root(
+    tmp_path, monkeypatch, capsys, provided, missing_value
+):
+    root = tmp_path / "run"
+    argv = ["check", "--case", "docker-denial", "--image", "image"]
+    for name in ("root", "config", "bicep-config", "openclaw"):
+        argv.extend(("--" + name, str(root if name == "root" else tmp_path / name)))
+    options = ("authz-outer-host", "authz-daemon", "authz-client")
+    for index, name in enumerate(options):
+        value = "value" if provided & (1 << index) else missing_value
+        if value is not None:
+            argv.extend(("--" + name, value))
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit) as failure:
+        lifecycle.main()
+    assert failure.value.code == 2
+    assert not root.exists()
+    error = capsys.readouterr().err
+    assert "--case docker-denial requires " in error
+    for index, name in enumerate(options):
+        if not provided & (1 << index):
+            assert "--" + name in error
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "lifecycle",
+        "registry",
+        "unavailable",
+        "idle",
+        "idle-default",
+        "docker-disconnect",
+        "docker-denial",
+    ],
+)
+def test_lifecycle_cli_preserves_complete_denial_and_other_modes(tmp_path, monkeypatch, case):
+    argv = ["check", "--case", case, "--image", "image"]
+    for name in ("root", "config", "bicep-config", "openclaw"):
+        argv.extend(("--" + name, str(tmp_path / name)))
+    authz = {
+        "authz_outer_host": "unix:///test.sock",
+        "authz_daemon": "a" * 64,
+        "authz_client": "b" * 32,
+    }
+    if case == "docker-denial":
+        for name, value in authz.items():
+            argv.extend(("--" + name.replace("_", "-"), value))
+    calls = []
+    monkeypatch.setattr(lifecycle, "qualify", lambda args: calls.append(args) or {})
+    monkeypatch.setattr(sys, "argv", argv)
+    lifecycle.main()
+    assert len(calls) == 1 and calls[0].case == case
+    for name, value in authz.items():
+        assert getattr(calls[0], name) == (value if case == "docker-denial" else None)
+
+
+@pytest.mark.parametrize("diagnostic", ["ok", "timeout", "write", "nonzero"])
+@pytest.mark.parametrize("survivor", [None, "volume", "container"])
+def test_daemon_cleanup_survives_diagnostic_failure(tmp_path, monkeypatch, diagnostic, survivor):
+    owned, client, volume = "a" * 64, "b" * 32, "fixture-volume"
+    name = "qualification-authz-" + client
+    state = {"removed": False, "volume_checked": False, "container_checked": False}
+
+    def outer(host, *args, **kwargs):
+        assert host == "unix:///fixture.sock"
+        if args[:2] == ("ps", "-aq"):
+            if args[-1] == "id=" + owned:
+                state["container_checked"] = True
+                return owned if survivor == "container" else ""
+            return "" if state["removed"] else owned
+        if args == ("inspect", owned):
+            return json.dumps(
+                [
+                    {
+                        "Name": "/" + name,
+                        "Config": {"Labels": {"maf-qualification.authz": client}},
+                        "Mounts": [{"Type": "volume", "Name": volume}],
+                    }
+                ]
+            )
+        if args == ("rm", "-fv", owned):
+            state["removed"] = True
+            return owned
+        if args[:2] == ("volume", "ls"):
+            state["volume_checked"] = True
+            return volume if survivor == "volume" else ""
+        raise AssertionError(args)
+
+    real_run = daemon_check.subprocess.run
+
+    def logs(command, **kwargs):
+        assert command == ["docker", "--host", "unix:///fixture.sock", "logs", owned]
+        if diagnostic == "timeout":
+            raise daemon_check.subprocess.TimeoutExpired(command, 15)
+        if diagnostic == "nonzero":
+            return real_run([sys.executable, "-c", "raise SystemExit(23)"], **kwargs)
+        return SimpleNamespace(stdout=b"daemon stdout", stderr=b"daemon stderr")
+
+    if diagnostic == "write":
+        (tmp_path / "daemon.log").mkdir()
+    monkeypatch.setattr(daemon_check, "outer_docker", outer)
+    monkeypatch.setattr(daemon_check.subprocess, "run", logs)
+    error = (
+        RuntimeError
+        if survivor
+        else daemon_check.subprocess.TimeoutExpired
+        if diagnostic == "timeout"
+        else OSError
+        if diagnostic == "write"
+        else daemon_check.subprocess.CalledProcessError
+        if diagnostic == "nonzero"
+        else None
+    )
+    if error:
+        with pytest.raises(error):
+            daemon_check.cleanup_daemon(tmp_path, "unix:///fixture.sock", name, client)
+    else:
+        daemon_check.cleanup_daemon(tmp_path, "unix:///fixture.sock", name, client)
+        assert (tmp_path / "daemon.log").read_bytes() == b"daemon stdoutdaemon stderr"
+    assert state["removed"] and state["volume_checked"]
+    assert state["container_checked"] is (survivor != "volume")
+
+
+@pytest.mark.parametrize("mismatch", ["name", "label"])
+def test_daemon_cleanup_refuses_unowned_container(tmp_path, monkeypatch, mismatch):
+    name, client, owned = "qualification-authz-fixture", "b" * 32, "a" * 64
+    commands = []
+
+    def outer(host, *args, **kwargs):
+        commands.append(args)
+        if args[0] == "ps":
+            return owned
+        if args == ("inspect", owned):
+            return json.dumps(
+                [
+                    {
+                        "Name": "/other" if mismatch == "name" else "/" + name,
+                        "Config": {
+                            "Labels": {
+                                "maf-qualification.authz": "other"
+                                if mismatch == "label"
+                                else client
+                            }
+                        },
+                    }
+                ]
+            )
+        raise AssertionError(args)
+
+    monkeypatch.setattr(daemon_check, "outer_docker", outer)
+    with pytest.raises(RuntimeError, match="Unexpected container"):
+        daemon_check.cleanup_daemon(tmp_path, "unix:///fixture.sock", name, client)
+    assert [args[0] for args in commands] == ["ps", "inspect"]
+
+
+@pytest.mark.parametrize(
+    "message,denied",
+    [
+        (
+            "Error response from daemon: authorization denied by plugin qualification: qualification removal denied\n",
+            True,
+        ),
+        (
+            "Error response from daemon: authorization denied by plugin other: qualification removal denied\n",
+            False,
+        ),
+        (
+            "Error response from daemon: authorization denied by plugin qualification: another operation denied\n",
+            False,
+        ),
+        (
+            "Error response from daemon: Authorization denied by plugin qualification: qualification removal denied\n",
+            False,
+        ),
+        ("qualification removal denied", False),
+        ("connection refused", False),
+        ("", False),
+    ],
+)
+def test_removal_observer_matches_the_daemon_authorization_diagnostic(tmp_path, message, denied):
+    result = SimpleNamespace(returncode=1, stderr=message)
+
+    class Backend:
+        async def _invoke(self, *args, **kwargs):
+            return result
+
+    evidence = tmp_path / "evidence.jsonl"
+    observer.observe_docker_removal(observer.ObserveHTTP(None, evidence), Backend)
+    assert asyncio.run(Backend()._invoke("rm", "-f", "compiler")) is result
+    rows = checker.records(evidence)
+    assert len(rows) == 1
+    assert rows[0]["authorization_denied"] is denied
+    assert rows[0]["stderr_sha256"] == hashlib.sha256(message.encode()).hexdigest()
