@@ -1,0 +1,83 @@
+{
+  "scope": "Coordinator ownership journal and synthetic publication transactions in ordinary host processes; no authenticated service, infrastructure shutdown or native multi-host recovery.",
+  "candidate_commit": "53237669d0bc508ca0b0b1502b565704879d2035",
+  "tested_merge_commit": "936a75bd702903027fcb68e7f4e2e88111bc1c0e",
+  "run_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/38175084631/attempts/1",
+  "hosts": {
+    "linux": {
+      "job_id": 114575672308,
+      "runtime": {
+        "platform": "Linux",
+        "python": "3.12.3",
+        "sqlite": "3.45.1",
+        "source_commit": "936a75bd702903027fcb68e7f4e2e88111bc1c0e",
+        "run_id": "38175084631",
+        "run_attempt": "1"
+      },
+      "passed": 41,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0,
+      "junit_sha256": "12e4f982dbc1280b5f7630acd0dcc244cfa14f841d33c2aefcd313b6839e7d1a"
+    },
+    "windows": {
+      "job_id": 114575672111,
+      "runtime": {
+        "platform": "Windows",
+        "python": "3.12.10",
+        "sqlite": "3.49.1",
+        "source_commit": "936a75bd702903027fcb68e7f4e2e88111bc1c0e",
+        "run_id": "38175084631",
+        "run_attempt": "1"
+      },
+      "passed": 41,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0,
+      "junit_sha256": "cb221c64d1ac998848f551982461b4fe04cc752f20ce2f5a422f025b650a0404"
+    }
+  },
+  "passed_controls": [
+    "test_acquire_ack_loss_restart_and_immutable_profile",
+    "test_active_profile_change_refuses_publication",
+    "test_automatic_shutdown_is_separate_opt_in",
+    "test_changed_policy_cannot_repeat_automatic_shutdown",
+    "test_competing_processes_grant_exactly_one_owner_or_takeover[acquire]",
+    "test_competing_processes_grant_exactly_one_owner_or_takeover[fence]",
+    "test_confirmation_crash_never_activates_replacement[after_commit]",
+    "test_confirmation_crash_never_activates_replacement[before_commit]",
+    "test_corrupt_owner_metadata_refuses[generation-0]",
+    "test_corrupt_owner_metadata_refuses[resource-value2]",
+    "test_corrupt_owner_metadata_refuses[token-wrong]",
+    "test_corrupt_stopped_binding_refuses_replacement[fence-missing]",
+    "test_corrupt_stopped_binding_refuses_replacement[generation-100]",
+    "test_corrupt_stopped_binding_refuses_replacement[profile-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb]",
+    "test_corrupt_stopped_state_cannot_bypass_pending_termination",
+    "test_default_does_not_create_coordinator",
+    "test_existing_local_store_is_not_silently_promoted[shared.sqlite]",
+    "test_existing_local_store_is_not_silently_promoted[state.sqlite]",
+    "test_fence_retries_and_old_confirmations_do_not_restore_old_authority",
+    "test_guard_rollback_does_not_publish",
+    "test_guard_serializes_publication_and_takeover",
+    "test_guest_fence_revokes_only_its_owner_and_waits_for_confirmation",
+    "test_machine_scope_requires_explicit_authority[False]",
+    "test_machine_scope_requires_explicit_authority[True]",
+    "test_metadata_capacity_refuses_without_losing_existing_authority[fences]",
+    "test_metadata_capacity_refuses_without_losing_existing_authority[resources]",
+    "test_metadata_capacity_refuses_without_losing_existing_authority[sessions]",
+    "test_overlapping_machine_fence_refuses_without_revoking_other_session",
+    "test_process_death_preserves_exact_committed_transition[after_commit-fence]",
+    "test_process_death_preserves_exact_committed_transition[after_commit-publication]",
+    "test_process_death_preserves_exact_committed_transition[before_commit-fence]",
+    "test_process_death_preserves_exact_committed_transition[before_commit-publication]",
+    "test_shared_machine_fence_coordinates_all_affected_sessions",
+    "test_sqlite_full_keeps_prior_authority_and_rolls_back_publication",
+    "test_unverified_termination_never_grants_execution[1]",
+    "test_unverified_termination_never_grants_execution[False]",
+    "test_unverified_termination_never_grants_execution[None]",
+    "test_unverified_termination_never_grants_execution[stopped]",
+    "test_verification_is_outside_transaction_and_request_changes_refuse",
+    "test_verifier_failure_and_metadata_change_leave_takeover_pending",
+    "test_wrong_format_and_storage_failure_refuse"
+  ]
+}
