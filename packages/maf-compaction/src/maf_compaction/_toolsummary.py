@@ -860,6 +860,20 @@ class _Reforce:
     passes: int = 0
     taken: bool = False
 
+    def to_dict(self) -> dict[str, Any]:
+        """Return the outstanding ask as JSON-safe values."""
+        return {
+            "targets": sorted(self.targets),
+            "records": self.records,
+            "passes": self.passes,
+            "taken": self.taken,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> _Reforce:
+        """Restore an ask serialized by :meth:`to_dict`."""
+        return cls(frozenset(data["targets"]), data["records"], data["passes"], data["taken"])
+
 
 @dataclass(frozen=True, slots=True)
 class RecordDecisions:
@@ -879,6 +893,25 @@ class RecordDecisions:
     settled: frozenset[str]
     preserved: frozenset[str]
     reforce: _Reforce | None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return independent JSON-safe decisions, including any outstanding ask."""
+        return {
+            "uncovered": sorted(self.uncovered),
+            "settled": sorted(self.settled),
+            "preserved": sorted(self.preserved),
+            "reforce": None if self.reforce is None else self.reforce.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RecordDecisions:
+        """Restore decisions serialized by :meth:`to_dict`."""
+        return cls(
+            frozenset(data["uncovered"]),
+            frozenset(data["settled"]),
+            frozenset(data["preserved"]),
+            None if data["reforce"] is None else _Reforce.from_dict(data["reforce"]),
+        )
 
 
 def _droppable_groups_after(messages: list[Message], record_index: int | None) -> int:
@@ -922,6 +955,14 @@ class RecallGate:
     def __init__(self) -> None:
         """Start disarmed, so nothing is recorded until something asks for it."""
         self._armed = False
+
+    def session_state(self) -> dict[str, Any]:
+        """Return JSON-safe behavioral state for session persistence."""
+        return {"armed": self._armed}
+
+    def restore_session_state(self, data: dict[str, Any]) -> None:
+        """Replace behavioral state with a snapshot from :meth:`session_state`."""
+        self._armed = data["armed"]
 
     def arm(self) -> None:
         """Permit the next call to record."""
@@ -1968,6 +2009,22 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self._last_record = ""
         self._awaiting_record = False
         self._session_id: str | None = None
+
+    def session_state(self) -> dict[str, Any]:
+        """Return JSON-safe behavioral state for session persistence."""
+        return {
+            "force_next": self._force_next,
+            "reforce_next": self._reforce_next,
+            "awaiting_record": self._awaiting_record,
+            "last_record": self._last_record,
+        }
+
+    def restore_session_state(self, data: dict[str, Any]) -> None:
+        """Replace behavioral state with a snapshot from :meth:`session_state`."""
+        self._force_next = data["force_next"]
+        self._reforce_next = data["reforce_next"]
+        self._awaiting_record = data["awaiting_record"]
+        self._last_record = data["last_record"]
 
     def forget_pending(self) -> None:
         """Drop the decision to force a record on the next call.

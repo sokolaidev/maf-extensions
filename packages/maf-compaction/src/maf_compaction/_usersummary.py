@@ -553,6 +553,23 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         # for the whole run. See :meth:`refold`.
         self._kept_folds: dict[str, _Remembered] = {}
 
+    def session_state(self) -> dict[str, Any]:
+        """Return JSON-safe behavioral state for session persistence."""
+        return {
+            "remembered": [entry._asdict() for entry in self._remembered],
+            "kept_folds": {key: entry._asdict() for key, entry in self._kept_folds.items()},
+            # These counts also set the minimum generated summary IDs.
+            "compactions": self._compactions,
+            "folds": self._folds,
+        }
+
+    def restore_session_state(self, data: dict[str, Any]) -> None:
+        """Replace behavioral state with a snapshot from :meth:`session_state`."""
+        self._remembered = [_Remembered(**entry) for entry in data["remembered"]]
+        self._kept_folds = {key: _Remembered(**entry) for key, entry in data["kept_folds"].items()}
+        self._compactions = data["compactions"]
+        self._folds = data["folds"]
+
     @property
     def recompacts_summaries(self) -> bool:
         """Whether a pass re-reads the previous summary, which is the recompacting mode alone.
