@@ -1602,13 +1602,11 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 )
             elif case in {"docker-disconnect", "docker-denial"}:
                 if service_process is None or (docker_fault is None and denial is None):
-                    raise RuntimeError(
-                        "Docker disconnect requires a started private-context service"
-                    )
+                    raise RuntimeError("Docker cleanup fault requires a started service")
                 report["environment"] = verify_environment(baseline_args)
                 owner_before = owner_file.read_bytes()
                 sessions = [turn(index)[0] for index in range(2)]
-                require(len(set(sessions)) == 2, "Docker disconnect requires distinct sessions")
+                require(len(set(sessions)) == 2, "Docker cleanup fault requires distinct sessions")
                 startup = [r for r in records(transport) if r.get("event") == "startup"][-1]
                 boot = startup["boot"]
                 snapshot_registry(sessions, boot, owner_before)
@@ -1616,7 +1614,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 pending, active_turn = begin_turn(0, "cancel")
                 try:
 
-                    def compiling_for_disconnect():
+                    def compiling_before_cleanup_fault():
                         candidates = owned()
                         if len(candidates) == 1 and "bicep" in docker(
                             "top", candidates[0], "-eo", "pid,comm"
@@ -1625,7 +1623,9 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                         return None
 
                     short_id = wait_for(
-                        compiling_for_disconnect, "No compiler before disconnect", 60
+                        compiling_before_cleanup_fault,
+                        "No compiler before Docker cleanup fault",
+                        60,
                     )
                     info = json.loads(docker("inspect", short_id))[0]
                     retained_container = info["Id"]
@@ -1641,7 +1641,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     docker("pause", retained_container)
                     require(
                         json.loads(docker("inspect", retained_container))[0]["State"]["Paused"],
-                        "Compiler was not paused before disconnect",
+                        "Compiler was not paused before Docker cleanup fault",
                     )
                     if denial:
                         denial.arm(target, retained_container)
@@ -1660,7 +1660,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                             and r.get("active") is False
                             for r in records(transport)[before_active:]
                         ),
-                        "Disconnected cleanup did not poison and settle the active call",
+                        "Docker cleanup fault did not poison and settle the active call",
                         120,
                     )
                     probe = http.client.HTTPConnection("127.0.0.1", service_url.port, timeout=10)
@@ -1748,11 +1748,11 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                         and shutdown[0].get("sessions") == 0
                         and shutdown[0].get("active") is False
                         and shutdown[0].get("poisoned") is True,
-                        "Disconnected service did not drain poisoned state",
+                        "Service with Docker cleanup fault did not drain poisoned state",
                     )
                     require(
                         json.loads(docker("inspect", retained_container))[0]["State"]["Paused"],
-                        "Disconnected shutdown removed the retained compiler",
+                        "Shutdown during Docker cleanup fault removed the retained compiler",
                     )
                     require(
                         owner_file.read_bytes() == owner_before, "Poisoned shutdown changed owner"

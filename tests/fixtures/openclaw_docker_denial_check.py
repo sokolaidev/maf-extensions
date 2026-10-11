@@ -32,7 +32,10 @@ def cleanup_daemon(root: Path, host: str, name: str, client: str) -> None:
         volumes = {m["Name"] for m in item["Mounts"] if m["Type"] == "volume"}
         try:
             logs = subprocess.run(
-                ["docker", "--host", host, "logs", owned], capture_output=True, timeout=15
+                ["docker", "--host", host, "logs", owned],
+                capture_output=True,
+                timeout=15,
+                check=True,
             )
             (root / "daemon.log").write_bytes(logs.stdout + logs.stderr)
         finally:

@@ -3278,7 +3278,7 @@ def test_lifecycle_cli_preserves_complete_denial_and_other_modes(tmp_path, monke
         assert getattr(calls[0], name) == (value if case == "docker-denial" else None)
 
 
-@pytest.mark.parametrize("diagnostic", ["ok", "timeout", "write"])
+@pytest.mark.parametrize("diagnostic", ["ok", "timeout", "write", "nonzero"])
 @pytest.mark.parametrize("survivor", [None, "volume", "container"])
 def test_daemon_cleanup_survives_diagnostic_failure(tmp_path, monkeypatch, diagnostic, survivor):
     owned, client, volume = "a" * 64, "b" * 32, "fixture-volume"
@@ -3310,10 +3310,14 @@ def test_daemon_cleanup_survives_diagnostic_failure(tmp_path, monkeypatch, diagn
             return volume if survivor == "volume" else ""
         raise AssertionError(args)
 
+    real_run = daemon_check.subprocess.run
+
     def logs(command, **kwargs):
         assert command == ["docker", "--host", "unix:///fixture.sock", "logs", owned]
         if diagnostic == "timeout":
             raise daemon_check.subprocess.TimeoutExpired(command, 15)
+        if diagnostic == "nonzero":
+            return real_run([sys.executable, "-c", "raise SystemExit(23)"], **kwargs)
         return SimpleNamespace(stdout=b"daemon stdout", stderr=b"daemon stderr")
 
     if diagnostic == "write":
@@ -3327,6 +3331,8 @@ def test_daemon_cleanup_survives_diagnostic_failure(tmp_path, monkeypatch, diagn
         if diagnostic == "timeout"
         else OSError
         if diagnostic == "write"
+        else daemon_check.subprocess.CalledProcessError
+        if diagnostic == "nonzero"
         else None
     )
     if error:
