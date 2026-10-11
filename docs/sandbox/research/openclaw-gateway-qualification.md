@@ -284,12 +284,12 @@ The executed service, provider, baseline checker and Docker helper retained the 
 
 ## Status
 
-The [2026-10-11 closure audit](openclaw-qualification-closure-audit.md) maps the original acceptance to accumulated evidence and identifies two finite follow-ups. The Bicep/MAF ownership execution now supplies #1850; the published transport/SDK retirement evidence in #1851 remains. Historical unmeasured scenarios are not all blockers for #1676.
+The [2026-10-11 closure audit](openclaw-qualification-closure-audit.md) maps the original acceptance to accumulated evidence and identifies two finite follow-ups. The Bicep/MAF ownership execution now supplies #1850; the published transport/SDK retirement evidence in #1851 is now recorded. Consolidated reconciliation remains before #1676 closes. Historical unmeasured scenarios are not all blockers for #1676.
 
 | Work | State | Tracking |
 |---|---|---|
 | Bicep host qualification | One-session stdio and bounded two-session HTTP Gateway paths qualified with a deterministic provider; actual LLM behavior and full crash recovery remain unqualified | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open) |
-| Multiple Gateway sessions | Selected Gateway lifecycle evidence is retained. Real Bicep equal-ID/repeated cancellation, response-only loss and active/idle/ordinary MAF closure now have recorded published-stack Docker evidence. Active MAF callers can outlast service retirement until their request timeout. Remaining closure work is the finite published transport/100-session SDK retirement subset in #1851 | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged); [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (closed) by [#1680](https://github.com/sokolaidev/maf-extensions/pull/1680) (merged); [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open); [#1850](https://github.com/sokolaidev/maf-extensions/issues/1850) (closed) by [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865) (merged) |
+| Multiple Gateway sessions | Selected Gateway evidence is retained. Bicep ownership evidence was delivered by #1865 (#1850). Active MAF callers can outlast service retirement until their request timeout. The published transport subset passed 43 cases with 109 directly observed SDK retirements (#1851). Consolidated reconciliation remains before closing #1676; broader stress, crash and platform scenarios are outside this finite acceptance | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged); [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (closed) by [#1680](https://github.com/sokolaidev/maf-extensions/pull/1680) (merged); [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open); [#1850](https://github.com/sokolaidev/maf-extensions/issues/1850) (closed) by [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865) (merged); [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851) (closed) by [#1870](https://github.com/sokolaidev/maf-extensions/pull/1870) (merged) |
 
 
 ## Startup cleanup refusal and explicit Gateway recovery (2026-10-06)
@@ -807,3 +807,97 @@ An earlier complete run on `e7dec5ff435739d4316d697a4df6c40cddedd243` passed the
 These observations discharge #1850's composition cases from the [closure audit](openclaw-qualification-closure-audit.md). They do not complete [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851)'s finite published transport/100-session retirement subset. [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) remains open until that evidence is delivered and reconciled. Other host platforms, current-version compatibility, new Gateway executions, actual-model behavior, exhaustive crashes and unattended recovery remain outside this execution.
 
 Offline verification passed 904 focused tests and 384 documentation tests. The full local gate passed 18,153 tests with 910 skips, lint/format, package/repository typing, documentation paths and implicit-concatenation checks; repository typing reported zero errors and 453 warnings. The final timing observation and four additional negative regressions were separately checked with the focused suite and fixture/test typing after the full gate collected its tests. Hosted CI remains separate evidence on the delivering PR.
+
+
+## Published transport bounds and SDK retirement: live result (2026-10-11)
+
+The [published transport checker](../../../tests/fixtures/openclaw_published_transport_check.py) passed all 43 selected cases on clean candidate `80215d91be2df64c139d11dd39544853984ebca2`, using Windows and Python 3.13.12. This supplies [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851)'s finite transport/client evidence. It reuses the existing [HTTP acceptance tests](../../../tests/test_mcp_workload_service.py), unchanged service/adapter code, actual Uvicorn loopback sockets and real MAF clients with synthetic workload bindings. Five parametrized cases directly drive ASGI; the remaining 38 use HTTP sockets. No Docker container, Bicep compiler, OpenClaw Gateway or model ran in this execution.
+
+The runner selects 24 test functions, expanding to 43 cases, and requires all 129 setup/call/teardown reports to pass. No case was skipped or expected-failed. Pytest reported 43 passes in 46.97 seconds; runner elapsed time was 47.78 seconds. One dependency warning reported an unresolved `lifespan` annotation in pydantic-settings; it did not prevent service startup or the passing client cases. These are observed execution times, not latency guarantees.
+
+| Acceptance area | Recorded observation |
+|---|---|
+| Authentication and framing | POST/GET/DELETE authorization, Host/Origin refusal, malformed/uninitialized requests, duplicate live IDs, typed IDs, nonfinite JSON, Content-Length/chunked body limits, header limits and slow-body refusal passed. Rejected authorization and malformed input did not dispatch a synthetic binding or expose the submitted marker. |
+| Capacity and reservations | Eight sessions admitted, ninth refused; initialization and retirement reservations, pending-body settlement, idle/active separation, shutdown startup races, one GET stream and 32-connection limits passed. Event barriers and injected startup/retirement failures are test controls, not additional production behavior. |
+| Direct ASGI subset | `test_body_reader_budget_released_after_rejection` exercises the 16-reader budget directly. Four `test_pending_post_releases_reservation_on_body_failure` cases inject malformed input, timeout, overflow and cancellation through ASGI. They prove handler/accounting settlement, not five additional socket-level failure cases. The separate chunked/slow-body and pending-body reservation cases use real HTTP. |
+| SDK retirement | Read-only references to 109 distinct session records were retained: eight saturation sessions, 100 sequential churn sessions and one expired idle session. Every SDK task and retirement task finished successfully; every transport terminated with zero SDK streams, request IDs and HTTP handlers, and no active GET handler. The checker records every observation and rejects missing cycles, unsettled state and non-integer zero substitutes. |
+| Final transport state | Zero adapter records, zero body readers, no active call, no poisoned service, and FastMCP's default retaining session manager absent. No production registry was added. The 109 observed retirements belong to the churn test, not a claim about the total number of sessions created by all 43 cases. |
+| MAF client contract | Two actual `MCPStreamableHTTPTool` clients used trusted static headers, discovered the two synthetic bindings and returned one projected result item with the expected values. B completed a new call through its existing session after A closed; both sessions retired. This complements #1850's real Bicep/MAF composition evidence. |
+
+### Transport environment and reproduction
+
+The selected published baseline is MAF core 1.19.0, MCP 1.28.1, maf-sandbox 0.46.0, Bicep 0.22.0, Docker backend 0.24.4, HTTPX 0.28.1, jsonschema 4.26.0, Starlette 1.7.0, Uvicorn 0.54.0 and pytest 9.0.3. The installed Bicep/Docker packages preserve the requested environment; their presence is not runtime qualification of those backends. Every installed distribution was recorded, direct-URL/editable installs were refused, and suite/framework import locations had to resolve under their installed distributions. The complete resolved manifest was:
+
+```text
+agent-framework-core==1.19.0
+annotated-types==0.8.0
+anyio==4.15.1
+attrs==26.1.0
+certifi==2026.7.22
+cffi==2.1.1
+click==8.5.0
+colorama==0.4.6
+cryptography==50.0.2
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+httpx-sse==0.4.3
+idna==3.20
+iniconfig==2.3.1
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+maf-sandbox==0.46.0
+maf-sandbox-bicep==0.22.0
+maf-sandbox-docker==0.24.4
+mcp==1.28.1
+msgspec==0.21.1
+opentelemetry-api==1.45.1
+packaging==26.3
+pluggy==1.6.0
+pycparser==3.11
+pydantic==2.14.1
+pydantic-core==2.50.1
+pydantic-settings==2.15.0
+pygments==2.21.0
+pyjwt==2.15.1
+pytest==9.0.3
+python-dotenv==1.2.4
+python-multipart==0.0.32
+pywin32==312
+pyyaml==6.0.3
+referencing==0.37.0
+rpds-py==2026.9.1
+sse-starlette==3.5.0
+starlette==1.7.0
+typing-extensions==4.16.0
+typing-inspection==0.4.4
+uvicorn==0.54.0
+```
+
+The canonical manifest SHA-256 (normalized names, sorted JSON keys and compact separators) is `170aa13121a875f4ac1e8043d19d52708b813e16139a568220fb0c52839c8d4e`. Transitive dependencies are observed versions; a later resolution must produce its own manifest and evidence. The runner disables external pytest plugins, conftest loading and environment addopts, and uses an empty temporary pytest configuration to keep workspace dependencies and test selection out of the published execution.
+
+From a clean checkout, use a fresh private evidence directory outside the repository:
+
+```powershell
+uv run --script tests/fixtures/openclaw_published_transport_check.py `
+  --root ../transport-evidence
+```
+
+The service retains its eight-session, 32-connection, 16-reader, 2 MiB body and 16 KiB header limits. The inherited tests deliberately accelerate selected timing: slow-body timeout to 0.02 seconds, incomplete-header deadline to 0.05 seconds, and the pending-body idle case to 0.02 seconds. The churn and active/idle separation tests age retained timestamps by the configured 900-second idle interval. Other cases use fixture events to hold initialization, retirement and pending bodies. These observations do not claim a fresh 900-second expiry run; that is separately recorded in the earlier Gateway evidence.
+
+The runner removes a stale success report before prerequisite checks, refuses a reused attempt directory or dirty checkout, records source hashes and rechecks the source/checkout after execution. `attempt.json` retains the sanitized test-phase observations even when acceptance fails; `transport-report.json` is written only after every required case and retirement/final-state guard passes. Retain private process output separately. Raw credentials, session identities and host paths are absent from the report.
+
+| Evidence identity | SHA-256 |
+|---|---|
+| `transport-report.json` | `3bb5e3608aba3b21e05a933438feca010888040fc71f6522f3721b0f0b8f09d5` |
+| `tests/fixtures/openclaw_published_transport_check.py` | `e0b628d77011deabfd6f0a022b7aba44a2609e498c406b17564e2f4caba74fbf` |
+| `tests/test_mcp_workload_service.py` | `6e2af3c9289bd4cce75b145563713787189ae089555de7800d07a8fa67665271` |
+| `samples/experimental/openclaw_bicep/server.py` | `6fd855751df41e3f841bda44a26a53841b0aa12c760398153a3ed6a903c281d5` |
+| `samples/experimental/openclaw_bicep/workload_http.py` | `b291f4539b3e1d4a4ef3aa570683585da84cfb5b0911eddb20fda7e0cb366b33` |
+| `samples/experimental/openclaw_bicep/workload_service.py` | `984c722e9fb732c79d7449e74be1ea3c84e06ae79d5df4eeb5be2391b68376ac` |
+
+The successful candidate was the first published-stack attempt for this checker; earlier workspace validation and type-check corrections are not published execution failures. Negative regressions reject omitted/duplicated tests, missing phases, skipped/expected-failed cases, teardown failures, missing retirement observations, retained SDK/service state, changed dependency versions, editable installations and import shadowing.
+
+These observations fill the closure audit's published transport/resource/MAF attribution gap. [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865) separately delivers #1850's Bicep/MAF ownership evidence. [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) remains open for delivery and consolidated reconciliation; this transport run alone does not close the host qualification. Historical `complete_matrix: false` reports remain unchanged. No new Gateway, compiler, other-host-platform, current-version, indefinite churn, actual-model or unattended-operation qualification is implied.
+
+Offline verification passed 939 focused tests (eight separate live cases deselected), 387 documentation tests, and typing for the changed fixture/tests with zero errors or warnings. Markdown examples and 254 live documentation tracker references passed. The full local gate passed 18,498 tests with 910 skips, lint/format, package/repository typing, documentation paths and implicit-concatenation checks. Repository typing reported zero errors and 455 warnings. Hosted CI remains separate evidence on the delivering PR.
