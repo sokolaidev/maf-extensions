@@ -30,7 +30,8 @@ def config_path(tmp_path):
         (tmp_path / name).write_bytes((IMAGE_SOURCE / name).read_bytes())
     config = tmp_path / "image.json"
     document = json.loads(config.read_text())
-    document["engines"]["opentofu"].pop("source_build", None)
+    for engine in document["engines"].values():
+        engine.pop("source_build", None)
     config.write_text(json.dumps(document))
     return tmp_path / "image.json"
 
@@ -191,6 +192,7 @@ def test_live_build_with_custom_provider_manifest(tmp_path, engine):
         "Dockerfile",
         "build_image.py",
         "build_opentofu.py",
+        "build_terraform.py",
         "install.py",
         "runner.py",
         "image.json",
@@ -217,7 +219,7 @@ def test_live_build_with_custom_provider_manifest(tmp_path, engine):
             ],
             capture_output=True,
             text=True,
-            timeout=240,
+            timeout=1800,
         )
         assert built.returncode == 0, built.stdout + built.stderr
         inspection_script = (

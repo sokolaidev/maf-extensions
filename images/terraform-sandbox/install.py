@@ -125,17 +125,24 @@ def main(
     notices.mkdir(exist_ok=True)
     provenance: dict[str, Any]
     if source_build is not None:
-        if engine != "opentofu" or "source_build" not in plan:
+        if "source_build" not in plan:
             raise ValueError("source build is not declared for this engine")
         built = Path(source_build)
         record = json.loads((built / "build.json").read_text())
         if record["source"] != plan["source_build"]:
             raise ValueError("source build does not match image.json")
-        if set(record["files"]) != {"tofu", "go.mod", "go.sum", "LICENSE"}:
+        if set(record["files"]) != {executable, "go.mod", "go.sum", "LICENSE"}:
             raise ValueError("source build inventory is incomplete")
         for name, expected in record["files"].items():
             if hashlib.sha256((built / name).read_bytes()).hexdigest() != expected:
                 raise ValueError("source build file checksum mismatch")
+        if "go_version" in plan["source_build"] and record.get("go_version", "").split() != [
+            "go",
+            "version",
+            plan["source_build"]["go_version"],
+            "linux/amd64",
+        ]:
+            raise ValueError("source build toolchain mismatch")
         binary = (built / executable).read_bytes()
         (notices / "LICENSE").write_bytes((built / "LICENSE").read_bytes())
         provenance = {"source_build": record}

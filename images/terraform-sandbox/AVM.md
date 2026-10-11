@@ -8,6 +8,8 @@ The release profile is implemented; its first public release is tracked in [#185
 
 The reviewed [catalogue manifest](dependencies.terraform-avm.json) contains 217 registry module entries, including nested dependencies and multiple versions, plus 25 provider entries. These counts describe entries, not 217 distinct root modules. The manifest's nine exclusions record unavailable or unapproved catalogue members. The [selection policy](dependencies.terraform-avm.policy.json) and [engine manifest](image.json) define the approved scope and Terraform version. The smaller `dependencies.terraform-avm-network.json` is a development fixture, not this release's catalogue.
 
+The Terraform engine is built from its pinned upstream release commit with recorded security dependency updates; the [image identity guide](README.md#image-identity) describes its source-build evidence. Provider binaries retain their official artifact checksums.
+
 Modules, provider archives and source revisions are pinned and verified during preparation. The image retains `/opt/maf-terraform/dependencies.json`, containing the preparation receipt, and `/opt/maf-terraform/engine.json`, containing the verified engine identity. Providers are unpacked in the baked mirror; the launcher requires initialization to link them instead of copying them into each call. Nested registry modules use the receipt's prepared dependency graph. Missing modules or incompatible versions fail offline; the launcher does not silently fetch replacements.
 
 ## Use and verify

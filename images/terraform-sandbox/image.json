@@ -12,6 +12,14 @@
       "profiles": {
         "builtin": null,
         "random": "dependencies.terraform.json"
+      },
+      "source_build": {
+        "repository": "https://github.com/hashicorp/terraform.git",
+        "revision": "ef47237fd0e03d6e93bdc510b526287f06e94c03",
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0"
+        }
       }
     },
     "opentofu": {
