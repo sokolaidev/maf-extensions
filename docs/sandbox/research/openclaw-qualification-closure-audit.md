@@ -55,13 +55,19 @@ The later discovery cases in [#1789](https://github.com/sokolaidev/maf-extension
 
 [#1637](https://github.com/sokolaidev/maf-extensions/issues/1637) remains the research/design umbrella. After #1676, reconcile the Bicep design decisions and follow-up dispositions in [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638). Then decide implement/defer/decline for additional workload/artifact tools (#1639), enforced egress/credential mediation (#1640), reusable conformance and installed-package qualification (#1641), and a full sandbox backend (#1642). The conformance design can prioritize further stress/platform scenarios; listing them here does not commit to implementing them. Finishing qualification alone does not close those design issues or the umbrella.
 
+## Published transport reconciliation (2026-10-11)
+
+The [recorded published-stack execution](openclaw-gateway-qualification.md#published-transport-bounds-and-sdk-retirement-live-result-2026-10-11) supplies #1851: 43 required cases passed without skips, including 38 socket cases and five direct-ASGI cases. The unchanged adapter retired all 109 retained SDK sessions (eight saturation, 100 churn, one idle), with completed SDK/retirement tasks, terminated transports, zero stream/request state and no default retaining SDK manager. The two-client MAF synthetic-binding contract also passed with a successful surviving-client call.
+
+This updates the original matrix's service/client, authentication/framing, resource-bound and MAF environment attribution. The original matrix remains the audit snapshot; #1851's transport obligations are now evidenced. #1850's real Bicep ownership results are delivered by merged [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865). Delivery of #1851 and consolidated reconciliation of both follow-ups remain before #1676 closes. No additional Gateway, Bicep, platform or unattended-runtime claims are added.
+
 ## Status
 
-The matrix above is the original audit snapshot. Subsequent [Bicep HTTP/MAF ownership evidence](openclaw-gateway-qualification.md#bicep-http-ownership-and-independent-maf-closure-live-result-2026-10-11) supplies #1850's five composition cases; #1851 remains required before reconciling #1676 for closure.
+The matrix above is the original audit snapshot. Subsequent [Bicep HTTP/MAF ownership evidence](openclaw-gateway-qualification.md#bicep-http-ownership-and-independent-maf-closure-live-result-2026-10-11) supplies #1850's five composition cases; the published transport reconciliation above supplies #1851. Delivery of #1851 and consolidated reconciliation remain before #1676 closes.
 
 | Work | State | Tracking |
 |---|---|---|
-| Selected-baseline two-session qualification | Open; Bicep/MAF evidence is recorded, with the published transport/SDK retirement evidence in #1851 remaining | [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open) |
+| Selected-baseline two-session qualification | Open; #1850 delivered and #1851 evidence recorded, with #1851 delivery and consolidated reconciliation remaining | [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (open) |
 | Bicep cancellation, response loss and MAF closure | Delivered; five real Bicep/MAF cases passed on recorded candidates | [#1850](https://github.com/sokolaidev/maf-extensions/issues/1850) (closed) by [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865) (merged) |
-| Published transport bounds and SDK retirement | Open; explicit environment and retirement evidence required | [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851) (open) |
+| Published transport bounds and SDK retirement | 43 published-stack cases and 109 SDK retirements passed; delivery pending | [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851) (open) |
 | First-tool design and broader opportunities | Open; qualification does not dispose of design workstreams | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open); [#1637](https://github.com/sokolaidev/maf-extensions/issues/1637) (open) |
