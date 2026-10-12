@@ -40,7 +40,7 @@ dev = [
     # exist only as pre-releases on the index, so their floors name one.
     "agent-framework-foundry>=1.14.0,<2",
     "agent-framework-mistral>=1.0.0b260918,<2",
-    "agent-framework-ollama>=1.0.0b261002,<2",
+    "agent-framework-ollama>=1.0.0b261008,<2",
     "ollama>=0.5.3,<0.6",
     # Sample 17's Deep Agents wiring, for the same reason as the line above. `langchain-core`
     # arrives with it today and is named anyway: a sample declares what it imports, and a

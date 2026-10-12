@@ -30,7 +30,7 @@ members = [
 dev = [
     { name = "agent-framework-foundry", specifier = ">=1.14.0,<2" },
     { name = "agent-framework-mistral", specifier = ">=1.0.0b260918,<2" },
-    { name = "agent-framework-ollama", specifier = ">=1.0.0b261002,<2" },
+    { name = "agent-framework-ollama", specifier = ">=1.0.0b261008,<2" },
     { name = "agent-framework-openai", specifier = ">=1.13.0,<2" },
     { name = "anyio", specifier = ">=4.5,<5" },
     { name = "autogen-agentchat", specifier = ">=0.7.5,<0.8" },
@@ -107,15 +107,15 @@ wheels = [
 
 [[package]]
 name = "agent-framework-ollama"
-version = "1.0.0b261002"
+version = "1.0.0b261008"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "agent-framework-core" },
     { name = "ollama" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6a/d0/287ec5062e8180f9248a0b9310ad192b874375362921bef8547e20fcf272/agent_framework_ollama-1.0.0b261002.tar.gz", hash = "sha256:ea2e45c58bc3bc2ba64c77af31738979ee9736f6d9cfcd2d21314a699a016f5f", size = 11242, upload-time = "2026-10-02T12:42:24.237Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/77/19/5cd609e1f4fa1eb0de2da34fa0924f7c54a34cc5a57f7bc42699c4ad6e48/agent_framework_ollama-1.0.0b261008.tar.gz", hash = "sha256:ea4036fa53970b3a522210bfdece56a9f1151f4b808ce551bf1aa773daf49a18", size = 11315, upload-time = "2026-10-08T10:42:58.98Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/57/e4/7df81c0768bafa2a31a8c4c963bbbbd9e71358932c642964459c8b5e5bff/agent_framework_ollama-1.0.0b261002-py3-none-any.whl", hash = "sha256:b3ac7ade04da442ee5aaae6e42c4b078f9d9bd745df3dde8f2174dbb294b3bc5", size = 13350, upload-time = "2026-10-02T12:42:23.293Z" },
+    { url = "https://files.pythonhosted.org/packages/07/1b/f04a88740ec166ad9529d0f1b9f9e7e9ac1b6c0f41afdfb038d7b1045e86/agent_framework_ollama-1.0.0b261008-py3-none-any.whl", hash = "sha256:1df5c57319936f102978bff10ad9178637a357a231d4bec24868ddeb1b97462a", size = 13471, upload-time = "2026-10-08T10:42:57.384Z" },
 ]
 
 [[package]]
@@ -1473,7 +1473,7 @@ requires-dist = [
     { name = "agent-framework-core", specifier = ">=1.20.0,<1.21" },
     { name = "agent-framework-foundry", marker = "extra == 'foundry'", specifier = ">=1.14.0,<2" },
     { name = "agent-framework-mistral", marker = "extra == 'mistral'", specifier = ">=1.0.0b260918,<2" },
-    { name = "agent-framework-ollama", marker = "extra == 'ollama'", specifier = ">=1.0.0b261002,<2" },
+    { name = "agent-framework-ollama", marker = "extra == 'ollama'", specifier = ">=1.0.0b261008,<2" },
     { name = "agent-framework-openai", marker = "extra == 'openai'", specifier = ">=1.15.0,<2" },
     { name = "azure-identity", marker = "extra == 'foundry'", specifier = ">=1.17,<2" },
     { name = "azure-identity", marker = "extra == 'openai'", specifier = ">=1.17,<2" },
