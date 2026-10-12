@@ -52,10 +52,45 @@ jobs:
           echo "Catalog proposal: $PROPOSAL_URL" >> "$GITHUB_STEP_SUMMARY"
           echo "Review the catalog diff and any required Approve and run gate. The workflow does not merge or publish." >> "$GITHUB_STEP_SUMMARY"
 
+  propose-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Verify and propose the latest stable image compiler
+        run: python3 scripts/update_bicep_images.py --body-file "$RUNNER_TEMP/bicep-images-pr.md"
+      - name: Validate image update and release selection
+        run: |
+          uv sync --locked
+          uv run pytest -q tests/test_update_bicep_images.py tests/test_bicep_dependencies.py tests/test_select_image_security.py tests/test_image_release_needed.py
+      - name: Propose the image compiler update
+        id: proposal
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: antsok-bicep-image-update
+          title: "build: update the Bicep compiler in sandbox images"
+          commit-message: "build: update the Bicep compiler in sandbox images"
+          body-path: ${{ runner.temp }}/bicep-images-pr.md
+          add-paths: |
+            images/bicep-sandbox/Dockerfile
+            images/bicep-sandbox/dependencies.bicep-avm.policy.json
+            images/bicep-sandbox/dependencies.bicep-avm.json
+      - name: Report the image proposal
+        if: steps.proposal.outputs.pull-request-url != ''
+        env:
+          PROPOSAL_URL: ${{ steps.proposal.outputs.pull-request-url }}
+        run: |
+          echo "Image compiler proposal: $PROPOSAL_URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "After merge, reconcile image release requests and prepare candidates through the protected release gate." >> "$GITHUB_STEP_SUMMARY"
+
   report-failure:
-    name: Report Bicep catalog failure
-    needs: propose
-    if: always() && needs.propose.result == 'failure'
+    name: Report Bicep updater failure
+    needs: [propose, propose-images]
+    if: always() && (needs.propose.result == 'failure' || needs.propose-images.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -72,7 +107,7 @@ jobs:
         run: >-
           python3 scripts/report_workflow_failure.py
           --marker '<!-- bicep-catalog-failure-tracker -->'
-          --title 'Bicep diagnostic catalog update failed'
-          --reproduce 'Re-run the linked attempt or dispatch bicep-catalog.yml against the failing commit. Run scripts/update_bicep_catalog.py locally to inspect extraction failures; then run the catalog and Bicep tool tests.'
-          --expected 'The latest stable Bicep source produces complete catalogs, the focused tests pass, and any catalog changes are proposed in a pull request.'
+          --title 'Bicep weekly catalog or image update failed'
+          --reproduce 'Re-run the linked attempt or dispatch bicep-catalog.yml against the failing commit. Run scripts/update_bicep_catalog.py or scripts/update_bicep_images.py locally for the failed proposal; then run its focused tests.'
+          --expected 'The latest stable Bicep release produces verified catalog and image-pin proposals, focused tests pass, and each changed component has a separate pull request.'
           --packages maf-sandbox-bicep
