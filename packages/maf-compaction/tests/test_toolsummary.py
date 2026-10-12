@@ -2403,7 +2403,7 @@ async def test_a_second_record_is_forced_once_new_groups_have_accumulated_above_
     _armings.clear()
     middleware = _repeating()
     settled = _conversation(tool_turns=8, record=_covering_record(8))
-    grown = [*settled, *_conversation(tool_turns=2, first_turn=8)[3:]]
+    grown = [*settled, *_conversation(tool_turns=4, first_turn=8)[3:]]
 
     quiet = await _run(middleware, settled)
     await _run(middleware, grown)
@@ -2415,16 +2415,10 @@ async def test_a_second_record_is_forced_once_new_groups_have_accumulated_above_
     assert len(_armings) == 1, "the tool is armed exactly when it is pinned"
 
 
-async def test_a_single_group_of_new_work_is_enough_to_ask_again() -> None:
-    """The bar is "something happened", not "enough happened".
-
-    ``max_groups_before_record`` is the knob for how much one record should be asked to cover.
-    Setting the bar higher here would duplicate that knob at a value nobody chose, and this
-    condition exists for one purpose only: keeping the trigger off a conversation in which
-    nothing has changed.
-    """
+async def test_per_group_repeats_can_be_requested_explicitly() -> None:
+    """A host can opt into per-group repeats above the trigger."""
     _armings.clear()
-    middleware = _repeating()
+    middleware = _repeating(min_groups_before_repeat=1)
     settled = _conversation(tool_turns=8, record=_covering_record(8))
     grown = [*settled, *_conversation(tool_turns=1, first_turn=8)[3:]]
 
@@ -2432,6 +2426,86 @@ async def test_a_single_group_of_new_work_is_enough_to_ask_again() -> None:
     again = await _run(middleware, grown)
 
     assert "tool_choice" in again
+
+
+@pytest.mark.parametrize("groups", [1, 2, 3, 4])
+@pytest.mark.parametrize("above", [False, True])
+async def test_repeat_batch_bound_applies_only_above_the_trigger(groups, above) -> None:
+    middleware = _repeating(max_input_tokens=1_000 if above else 1_000_000)
+    messages = _conversation(tool_turns=1, record="CODE-0")
+    messages += _conversation(tool_turns=groups, first_turn=1)[3:]
+    await _run(middleware, messages)
+    options = await _run(middleware, messages)
+    assert ("tool_choice" in options) == (above and groups >= 4)
+
+
+@pytest.mark.parametrize("bound", [0, -1])
+def test_repeat_batch_bound_must_be_positive(bound) -> None:
+    with pytest.raises(ValueError, match="min_groups_before_repeat"):
+        _repeating(min_groups_before_repeat=bound)
+
+
+async def test_reforce_does_not_adopt_groups_arriving_during_its_request() -> None:
+    strategy = _chained()
+    messages = _conversation(tool_turns=6, record=_covering_record(2))
+    await strategy(messages)
+    assert strategy.take_reforce()
+    messages += _conversation(tool_turns=1, first_turn=6)[3:]
+    messages += _record_messages(_covering_record(2), call_id="retry")
+    await strategy(messages)
+    assert not strategy.take_reforce()
+    saved = RecordDecisions.from_dict(json.loads(json.dumps(strategy.decision_state().to_dict())))
+    cold = _chained()
+    cold.restore_decisions(saved)
+    await cold(messages)
+    assert not cold.take_reforce()
+    assert cold.groups_preserved_uncovered == cold.groups_kept_uncovered == 5
+
+
+async def test_previewing_a_record_wait_does_not_consume_the_reforce_request() -> None:
+    strategy = _chained()
+    messages = _conversation(tool_turns=6, record=_covering_record(2))
+    middleware = _repeating(reforce=strategy.take_reforce)
+    await strategy(messages)
+    before = strategy.decision_state()
+    assert strategy.record_pending(messages)
+    assert strategy.record_pending(messages)
+    assert strategy.decision_state() == before
+    await _run(middleware, messages)
+    assert "tool_choice" in await _run(middleware, messages)
+    assert middleware.reforced_calls == 1
+
+
+async def test_twelve_digit_dense_results_do_not_pin_a_record_per_tool_call() -> None:
+    strategy = _chained(max_input_tokens=1_000_000, trigger_fraction=0.0001)
+    middleware = _repeating(reforce=strategy.take_reforce)
+    messages = _conversation(tool_turns=0)
+    tools = records = 0
+    for _ in range(40):
+        await strategy(messages)
+        options = await _run(middleware, messages)
+        if "tool_choice" in options:
+            records += 1
+            values = " ".join(
+                f"SKU-{index}-{row:04d}" for index in range(tools) for row in range(300)
+            )
+            messages += _record_messages(values, call_id=f"batch{records}")
+        elif tools < 12:
+            messages += _conversation(
+                tool_turns=1,
+                first_turn=tools,
+                payload_chars=0,
+                result_values=lambda index: "\n".join(
+                    f"| SKU-{index}-{row:04d} |" for row in range(1000)
+                ),
+            )[3:]
+            tools += 1
+        else:
+            break
+    assert tools == 12
+    assert 1 < records <= 8
+    assert middleware.reforced_calls <= 4
+    assert all(not m.additional_properties.get("_excluded") for m in messages)
 
 
 async def test_turning_repeats_off_reproduces_the_single_record_run_exactly() -> None:

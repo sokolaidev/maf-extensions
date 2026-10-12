@@ -29,6 +29,7 @@ from collections import Counter
 from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass, replace
 from math import ceil
+from types import MethodType
 from typing import TYPE_CHECKING, Any, Final
 
 from agent_framework import (
@@ -930,7 +931,7 @@ def _droppable_groups_after(messages: list[Message], record_index: int | None) -
             the count runs from the beginning of the conversation.
 
     Returns:
-        How many non-recall tool-call groups sit after the record.
+        How many non-recall tool-call groups still have included messages after the record.
     """
     boundary = -1 if record_index is None else record_index
     count = 0
@@ -941,8 +942,28 @@ def _droppable_groups_after(messages: list[Message], record_index: int | None) -
         # bring the next one closer, and a bound of one would force a record on every call.
         if _is_recall_group(messages, group):
             continue
+        members = messages[group["start_index"] : group["end_index"] + 1]
+        if all(message.additional_properties.get(EXCLUDED_KEY, False) for message in members):
+            continue
         count += 1
     return count
+
+
+def _recall_triggered(
+    messages: list[Message],
+    record_index: int | None,
+    *,
+    trigger_tokens: int,
+    min_groups_before_repeat: int = 4,
+    max_groups_before_record: int | None = None,
+    repeat_records: bool = True,
+) -> bool:
+    pending = _droppable_groups_after(messages, record_index)
+    if max_groups_before_record is not None and pending >= max_groups_before_record:
+        return True
+    if record_index is not None and (not repeat_records or pending < min_groups_before_repeat):
+        return False
+    return included_token_count(messages) > trigger_tokens
 
 
 class RecallGate:
@@ -1148,6 +1169,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         self._uncovered: set[str] = set()
         # The ask for another record that is outstanding, if one is. See :meth:`take_reforce`.
         self._reforce: _Reforce | None = None
+        self._recall_due: Callable[[list[Message]], bool] | None = None
         # Group ids whose asking has ended -- uncovered still, after a record that covered none
         # of them or after an ask that produced no record -- and which are preserved for good
         # while they stay uncovered. Accumulated, because an ended chain must not restart.
@@ -1368,32 +1390,28 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         request.taken = True
         return True
 
+    def bind_recall(self, middleware: ToolResultRecallMiddleware) -> None:
+        """Bind this conversation's recall trigger when take_reforce is wrapped."""
+        self._recall_due = middleware.record_due
+
     def record_pending(self, messages: list[Message]) -> bool:
-        """Return whether this conversation has tool work a record is due for or already asked for.
+        """Read the wired middleware's trigger or an outstanding re-force ask without consuming it.
 
-        Read by the composed row, which holds its user half back while this is true; this
-        strategy never calls it, and nothing here changes because it exists. It states no rule
-        of its own. "Due" is what :meth:`ToolResultRecallMiddleware._record_due` counts as
-        *pending* -- the non-recall tool groups after the newest record, or all of them before
-        the first -- and "asked for" is an outstanding :meth:`take_reforce` ask. The middleware
-        also wants the prompt over its trigger before a pending count asks for anything; that
-        half is a size, and the caller holds the reading, so the caller applies it.
-
-        The count errs where the middleware's does: it includes tool groups ``keep_head_groups``
-        or ``keep_tail_groups`` protect, which a record would not free. A caller that waits on
-        this may therefore wait for a record that drops nothing, and that is the direction to
-        err in: the middleware asks for that record anyway, and a caller that bounds its wait
-        loses at most the bound.
-
-        Args:
-            messages: The conversation, already grouped.
-
-        Returns:
-            True when a record is due or already asked for.
+        Messages must be grouped and token-annotated. Without middleware wiring, use the
+        default recall cadence and this strategy's size trigger.
         """
         if self._reforce is not None:
             return True
-        return _droppable_groups_after(messages, find_record_index(messages)) > 0
+        record_index = find_record_index(messages)
+        if _droppable_groups_after(messages, record_index) == 0:
+            return False
+        if self._recall_due is not None:
+            return self._recall_due(messages)
+        return _recall_triggered(
+            messages,
+            record_index,
+            trigger_tokens=int(self.max_input_tokens * self.trigger_fraction),
+        )
 
     async def __call__(self, messages: list[Message]) -> bool:
         """Request a record, or drop what an existing record covers.
@@ -1800,27 +1818,10 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         asked for again; if none did, or no record came at all, the targets still uncovered are
         settled.
 
-        **The bound is progress, and it is a bound because groups are finite.** Every ask that
-        continues the chain has removed at least one group from it for good -- a covered group
-        is dropped, not re-examined -- and every ask that does not ends it, settling every
-        target it had. So each ask retires at least one group from ever being a target again,
-        the asks made over a run number at most the tool groups ever found uncovered, and a
-        shortfall a later record opens on new material gets its own chain on the same terms. A
-        fixed count of asks is wrong in both directions. One further ask is measured to be
-        enough on a model whose record covers two of six groups and whose second covers the
-        rest, and a chain that stops on the first ask that helps nothing costs that model
-        nothing. Any larger constant is a constant number of pinned calls spent on a model that
-        has already shown it will not cover them: three records, and five to six groups still
-        uncovered.
-
-        **Layer two settles, and settled means preserved for good.** A settled group keeps the
-        hold layer one put on it for as long as it stays uncovered, and nothing here lifts it:
-        not the fallback, which honours the mark, and not a further ask, because the chain has
-        ended. The one thing that lifts it is a later record quoting its values, which is a
-        deletion the record licenses and not an escape. The prompt may then sit over the
-        ceiling with nothing left the fallback may take; the fallback stops there rather than
-        looping, the caller sends the prompt as it stands, and the row reads ``DQ``. That is the
-        accepted consequence, and it is not softened here.
+        A chain retries only its original targets while each answer covers at least one.
+        Groups arriving during that chain are settled without another ask; a later batch
+        record can still cover and release them. Settled groups remain protected from the
+        record fallback. The composition's overflow policy governs last-resort shedding.
 
         Args:
             records: How many records the conversation holds on this pass, from
@@ -1829,6 +1830,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         uncovered = self._uncovered
         request = self._reforce
         if request is not None:
+            # A re-force chain only retries the batch its first ask targeted.
+            self._settled |= uncovered - request.targets
             if records > request.records:
                 # The record came. Progress is a target that is no longer uncovered; a record
                 # that covered none of them is the model declining, and the chain ends there.
@@ -1938,7 +1941,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             below the strategy's fallback threshold, because the decision is made one call
             late -- see :meth:`process`. Defaults to :data:`DEFAULT_TRIGGER_FRACTION`, the
             same default as the strategy. Keep both values aligned when overriding it.
-        repeat_records: Let the size trigger ask again once there is new tool work to record.
+        repeat_records: Let the size trigger ask again after ``min_groups_before_repeat`` groups.
             **On by default.** Off, the size trigger asks only for the first record.
             ``max_groups_before_record`` and ``reforce`` can still ask for later records.
             Without those triggers, new tool results remain unrecorded and protected from
@@ -1957,6 +1960,10 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             trigger reading size alone would therefore pin every remaining call in the run.
             What re-arms it is new *material* -- see :meth:`_record_due` for the rule, which is
             stated there once and nowhere else.
+        min_groups_before_repeat: New tool groups required for a repeat above the size
+            trigger, four by default. Must be positive. One restores per-group repeats.
+            Unlike ``max_groups_before_record``, this never forces below the trigger and
+            does not override ``repeat_records=False`` or a pending re-force request.
         record_max_tokens: Cap put on the forced call's response, and on no other call.
             ``None`` leaves whatever cap the run already sets, so the record inherits the cap
             sized for an ordinary answer and a record asked to summarise everything has no
@@ -1994,6 +2001,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             purpose: that flag is switched off where a repeat on a complete record can only
             cost, and this asks only on a measured shortfall, so it cannot fire on the case the
             flag protects. :attr:`reforced_calls` counts the calls it pinned.
+            Passing the strategy's bound ``take_reforce`` method also wires its composed wait
+            to :meth:`record_due`, sharing the configured cadence without consuming requests.
     """
 
     def __init__(
@@ -2006,6 +2015,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         trigger_fraction: float = DEFAULT_TRIGGER_FRACTION,
         record_max_tokens: int | None = DEFAULT_RECORD_MAX_TOKENS,
         max_groups_before_record: int | None = None,
+        min_groups_before_repeat: int = 4,
         repeat_records: bool = True,
         reforce: Callable[[], bool] | None = None,
     ) -> None:
@@ -2027,6 +2037,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 "max_groups_before_record must be positive, or None to leave the bound off. "
                 "Zero groups per record is a record forced on every call, which is not a bound."
             )
+        if min_groups_before_repeat <= 0:
+            raise ValueError("min_groups_before_repeat must be positive.")
         self.max_input_tokens = max_input_tokens
         self.tokenizer = tokenizer
         self.arm = arm
@@ -2034,6 +2046,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self.trigger_fraction = trigger_fraction
         self.record_max_tokens = record_max_tokens
         self.max_groups_before_record = max_groups_before_record
+        self.min_groups_before_repeat = min_groups_before_repeat
         self.repeat_records = repeat_records
         self.reforce = reforce
         self._force_next = False
@@ -2046,6 +2059,10 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self._last_record = ""
         self._awaiting_record = False
         self._session_id: str | None = None
+        if isinstance(reforce, MethodType) and isinstance(
+            reforce.__self__, ToolResultAnchoredSummarizationCompactionStrategy
+        ):
+            reforce.__self__.bind_recall(self)
 
     def session_state(self) -> dict[str, Any]:
         """Return JSON-safe behavioral state for session persistence."""
@@ -2298,7 +2315,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
           whatever else is true, because setting that bound is asking for repeats outright;
         - the size trigger asks for the *first* record as soon as the prompt passes
           ``trigger_fraction`` of the ceiling;
-        - it asks again only when ``pending`` is at least one -- and not at all when
+        - it asks again only when ``pending`` reaches ``min_groups_before_repeat``; never when
           ``repeat_records`` is off.
 
         **Why the second record needs ``pending`` and the first does not.** The size that fires
@@ -2319,9 +2336,26 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         if self.reforce is not None and self.reforce():
             self._reforce_next = True
             return True
-        pending = _droppable_groups_after(messages, record_index)
-        if self.max_groups_before_record is not None and pending >= self.max_groups_before_record:
-            return True
-        if record_index is not None and (not self.repeat_records or pending < 1):
-            return False
-        return included_token_count(messages) > int(self.max_input_tokens * self.trigger_fraction)
+        return self._trigger_due(messages, record_index)
+
+    def _trigger_due(self, messages: list[Message], record_index: int | None) -> bool:
+        return _recall_triggered(
+            messages,
+            record_index,
+            trigger_tokens=int(self.max_input_tokens * self.trigger_fraction),
+            min_groups_before_repeat=self.min_groups_before_repeat,
+            max_groups_before_record=self.max_groups_before_record,
+            repeat_records=self.repeat_records,
+        )
+
+    def record_due(self, messages: list[Message]) -> bool:
+        """Preview a trigger or outstanding request without consuming the re-force callback.
+
+        Messages must be grouped and token-annotated. The strategy checks its own re-force
+        state; this preview also includes a pin queued or already sent by the middleware.
+        """
+        return (
+            self._force_next
+            or self._awaiting_record
+            or self._trigger_due(messages, find_record_index(messages))
+        )

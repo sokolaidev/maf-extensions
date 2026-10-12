@@ -9,8 +9,8 @@ If the prompt still exceeds the budget, the chain merges records, folds user
 summaries, tries harder record rewrites, then runs the anchored fallback with
 unrecorded tool groups held. It aims to remove ``chain_gain_fraction`` of the
 tokens behind its earliest edit, accepting only non-empty, smaller replacements.
-If no step can reduce the prompt enough, it remains over budget. The no-record give-up
-fallback remains part of the record phase.
+If still over budget, the overflow policy sheds unrecorded groups or raises locally.
+The no-record give-up fallback remains part of the record phase.
 
 Each instance belongs to one conversation. It keeps record-wait state,
 accepted record replacements, shed-message ids, refusals and counters; the
@@ -25,6 +25,8 @@ See ``docs/compaction/strategies.md`` for defaults, replay and design rationale.
 from __future__ import annotations
 
 import logging
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from math import ceil
 from typing import TYPE_CHECKING, Any, Final, Literal
@@ -43,7 +45,10 @@ from ._anchored import (
     EXCLUDE_REASON,
     _is_marker,  # pyright: ignore[reportPrivateUsage]
 )
+from ._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
 from ._toolsummary import (
+    PRESERVE_REASON_UNCOVERED,
+    PRESERVE_REASON_UNRECORDED,
     RecordDecisions,
     ToolResultAnchoredSummarizationCompactionStrategy,
     _is_written_record,  # pyright: ignore[reportPrivateUsage]
@@ -59,6 +64,7 @@ if TYPE_CHECKING:
     from agent_framework import TokenizerProtocol
 
 __all__ = [
+    "CompactionBudgetExceeded",
     "DEFAULT_CHAIN_GAIN_FRACTION",
     "DEFAULT_HARDER_ATTEMPTS",
     "DEFAULT_RECORD_MERGE_PROMPT",
@@ -67,6 +73,37 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+class CompactionBudgetExceeded(ValueError):
+    """The composed strategy could not fit the prompt without removing protected material."""
+
+    def __init__(self, tokens: int, budget: int) -> None:
+        self.tokens = tokens
+        self.budget = budget
+        super().__init__(
+            f"Compacted prompt has {tokens} tokens, exceeding max_input_tokens={budget}."
+        )
+
+
+@contextmanager
+def _release_record_holds(messages: list[Message]) -> Generator[None]:
+    """Temporarily release only the record phase's unrecorded-result holds."""
+    held = [
+        message
+        for message in messages
+        if is_preserved(message)
+        and message.additional_properties.get(PRESERVE_REASON_KEY)
+        in {PRESERVE_REASON_UNCOVERED, PRESERVE_REASON_UNRECORDED}
+    ]
+    for message in held:
+        set_preserved(message, preserved=False)
+    try:
+        yield
+    finally:
+        for message in held:
+            set_preserved(message, preserved=True)
+
 
 #: One of the two phases, which is what walking :attr:`.strategies` hands back.
 _Phase = (
@@ -364,6 +401,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             switches the step off.
         merge_prompt: What the summarizer is asked when the records are merged. See
             :data:`DEFAULT_RECORD_MERGE_PROMPT`.
+        overflow_policy: ``"shed"`` (default) releases the record phase's holds as a last
+            resort and removes whole unrecorded groups, logging their message IDs at WARNING.
+            ``"raise"`` retains those groups. Both raise :class:`CompactionBudgetExceeded`
+            if the prompt still exceeds the budget; anchors, records and external holds
+            are never released. The budget measures messages with the supplied tokenizer;
+            hosts must reserve space for tool schemas and other provider overhead.
         chain_gain_fraction: Share of the tokens behind the chain's earliest edit on a pass that
             the chain, once started, goes on removing until it has removed -- past the budget
             if need be. See :data:`DEFAULT_CHAIN_GAIN_FRACTION`; zero stops the chain at the
@@ -393,6 +436,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         harder_attempts: int = DEFAULT_HARDER_ATTEMPTS,
         merge_prompt: str | None = None,
         chain_gain_fraction: float = DEFAULT_CHAIN_GAIN_FRACTION,
+        overflow_policy: Literal["shed", "raise"] = "shed",
     ) -> None:
         """Validate the pair and store it."""
         if tool_results.max_input_tokens != user_turns.max_input_tokens:
@@ -422,6 +466,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # its earliest edit would be asked to empty the prompt from there on.
         if not 0.0 <= chain_gain_fraction < 1.0:
             raise ValueError("chain_gain_fraction must be in [0.0, 1.0).")
+        if overflow_policy not in {"shed", "raise"}:
+            raise ValueError("overflow_policy must be 'shed' or 'raise'.")
+        self.overflow_policy = overflow_policy
         self.tokenizer = tokenizer
         self.tool_results = tool_results
         self.user_turns = user_turns
@@ -802,8 +849,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             messages: The conversation, mutated in place.
 
         Returns:
-            True if anything changed the outgoing messages. False does not imply the prompt now
-            fits: after the last step of the chain nothing more is tried.
+            True if anything changed the outgoing messages. A successful return fits the budget;
+            an irreducible overflow raises CompactionBudgetExceeded.
         """
         if not messages:
             return False
@@ -836,7 +883,30 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 trigger_tokens=int(self.max_input_tokens * self.user_trigger_fraction),
             )
         chained = await self._last_resort(messages)
-        return changed or compacted or chained
+        fitted = self._enforce_budget(messages)
+        return changed or compacted or chained or fitted
+
+    def _enforce_budget(self, messages: list[Message]) -> bool:
+        """Shed unrecorded groups as a last resort, or refuse an oversized prompt."""
+        changed = False
+        if self._over(messages) and self.overflow_policy == "shed":
+            included = [message for message in messages if not _is_excluded(message)]
+            with _release_record_holds(messages):
+                changed = self.tool_results.fallback.shed_to(
+                    messages, ceiling=self.max_input_tokens
+                )
+            lost = [message for message in included if _is_excluded(message)]
+            self._shed_ids.update(message.message_id for message in lost if message.message_id)
+            if lost:
+                logger.warning(
+                    "Compaction shed unrecorded history to fit max_input_tokens=%s; "
+                    "lost message IDs: %s",
+                    self.max_input_tokens,
+                    [message.message_id for message in lost],
+                )
+        if self._over(messages):
+            raise CompactionBudgetExceeded(included_token_count(messages), self.max_input_tokens)
+        return changed
 
     def _holds_for_record(
         self, messages: list[Message], *, entry_tokens: int, prompt_tokens: int
@@ -853,11 +923,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         the work.
 
         **The rule.** The user half holds on a pass where the prompt, as the record phase left
-        it, is over the shared line and over the record half's own trigger, and the record half
-        has work pending --
+        it, is over the shared line and the wired recall middleware can request a record or
+        already has one outstanding --
         :meth:`~._toolsummary.ToolResultAnchoredSummarizationCompactionStrategy.record_pending`,
-        which is the middleware's own count of tool work no record covers, or an outstanding
-        re-force ask. It stops holding when either
+        which shares the middleware's size, repeat and group-bound decision without consuming
+        a re-force ask. It stops holding when either
 
         - the record arrives -- the newest record changes, which on the pass that sees it means
           ``_drop_before`` has just applied it -- and the user half is then judged, on that pass,
@@ -867,10 +937,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
           record: the model has had its chance at it, and a model that never records must not
           leave the user half idling one bound in every three responses.
 
-        With nothing pending the record half cannot help, and nothing is held; nor under the
-        record half's own trigger, which a caller's explicit ``user_trigger_fraction`` can put
-        above the user line, because the middleware does not ask there. A wait is one unbroken
-        run of held passes: any pass that does not hold ends it.
+        A group bound or an outstanding request can justify waiting below the recall size
+        trigger. A wait is one unbroken run of held passes: any pass that does not hold ends it.
 
         **Two more guards, each for a way the wait could do harm.** None at or past the record
         half's give-up line, read on the pass-entry size the record half itself judged: that line is
@@ -909,7 +977,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._wait_since = None
         holding = (
             prompt_tokens > int(self.max_input_tokens * self.user_trigger_fraction)
-            and prompt_tokens > int(self.max_input_tokens * self.tool_results.trigger_fraction)
             and entry_tokens < int(self.max_input_tokens * self.tool_results.fallback_fraction)
             and clock > self._quiet_through
             and anchor != self._declined_behind
@@ -1013,7 +1080,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             annotate_message_groups(messages)
             annotate_token_counts(messages, tokenizer=self.tokenizer)
         changed = self.user_turns.refold(messages) or changed
-        changed = self.tool_results.shed_again_after_record(messages, self._shed_ids) or changed
+        with _release_record_holds(
+            [message for message in messages if message.message_id in self._shed_ids]
+        ):
+            changed = self.tool_results.shed_again_after_record(messages, self._shed_ids) or changed
         if changed:
             self._decisions_kept += 1
         return changed
