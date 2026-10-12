@@ -1350,11 +1350,18 @@ class TestARecordNamesTheCallItCameFrom:
         recorded.observer.sandbox_acquired(an_acquire(call="call-one"))
         recorded.observer.sandbox_acquired(an_acquire(call="call-two"))
         spans = recorded.spans.get_finished_spans()
-        assert len({(span.attributes or {})[f"{NAMESPACE}.sandbox.key"] for span in spans}) == 1
-        assert {(span.attributes or {})[f"{NAMESPACE}.call.id"] for span in spans} == {
-            "call-one",
-            "call-two",
-        }
+        sandbox_keys: set[str] = set()
+        call_ids: set[str] = set()
+        for span in spans:
+            attributes = span.attributes or {}
+            sandbox_key = attributes[f"{NAMESPACE}.sandbox.key"]
+            call_id = attributes[f"{NAMESPACE}.call.id"]
+            assert isinstance(sandbox_key, str)
+            assert isinstance(call_id, str)
+            sandbox_keys.add(sandbox_key)
+            call_ids.add(call_id)
+        assert len(sandbox_keys) == 1
+        assert call_ids == {"call-one", "call-two"}
 
 
 @pytest.mark.parametrize(

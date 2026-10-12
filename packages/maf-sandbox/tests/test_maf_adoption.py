@@ -44,7 +44,20 @@ def attach(body, *, guidance=("Fixed guidance.",), contract=False):
 
 @pytest.mark.parametrize("sync", [False, True])
 @pytest.mark.parametrize("outer", [False, True])
-def test_real_rewrites_are_positional_and_call_scoped(sync, outer):
+def test_real_rewrites_are_positional_and_call_scoped(sync, outer, monkeypatch):
+    from maf_sandbox import maf
+
+    observed = []
+    accessor = security.rewritten_arguments
+
+    def public(context):
+        result = accessor(context)
+        observed.append(result)
+        return result
+
+    monkeypatch.setattr(security, "rewritten_arguments", public)
+    monkeypatch.setattr(maf, "_reachable_middleware", lambda: None)
+
     async def scenario():
         tracker = LabelTrackingFunctionMiddleware()
         observer = argument_provenance_middleware()
@@ -83,6 +96,7 @@ def test_real_rewrites_are_positional_and_call_scoped(sync, outer):
         await (observer if outer else tracker).process(context, inner)
         finished.set()
         assert seen == [frozenset({1})]
+        assert observed and observed[-1]["files"] == {1}
         assert await asyncio.gather(*children) == [frozenset()]
 
     asyncio.run(scenario())
@@ -151,6 +165,7 @@ def test_fixed_guidance_exactly_once_with_and_without_native_tracking(sync, cont
     tool = attach(body if sync else async_body, contract=contract)
     tracker = sandbox_label_tracking_middleware()
     native = "standing_guidance" in inspect.signature(tracker._label_result).parameters
+    assert native, "The admitted MAF minor must exercise native standing guidance"
     # A later declaration edit cannot replace the attachment commitment.
     if native and tracking:
         tool.additional_properties["standing_guidance"] = ["Changed later."]
