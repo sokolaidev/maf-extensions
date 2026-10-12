@@ -128,10 +128,12 @@ jobs:
           sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup
           df -h /
       - name: Install preparation tools on the initial attempt
+        timeout-minutes: 10
         if: github.run_attempt == 1
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes skopeo
+          apt_options=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+          sudo apt-get "${apt_options[@]}" update --error-on=any
+          sudo apt-get "${apt_options[@]}" install --yes skopeo
           python3 scripts/install_container_scanners.py --directory "$RUNNER_TEMP/scan-tools"
       - name: Build once or recover original bytes
         id: candidate
@@ -249,9 +251,11 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: Install pinned scanners and OCI transport
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes skopeo
+          apt_options=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+          sudo apt-get "${apt_options[@]}" update --error-on=any
+          sudo apt-get "${apt_options[@]}" install --yes skopeo
           python3 scripts/install_container_scanners.py --directory "$RUNNER_TEMP/scan-tools"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
