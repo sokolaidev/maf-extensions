@@ -58,6 +58,7 @@ from maf_compaction._composed import (
     DEFAULT_HARDER_ATTEMPTS,
     DEFAULT_RECORD_MERGE_PROMPT,
     ChainDecisions,
+    CompactionBudgetExceeded,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     _responses,
     harder_record_prompt,
@@ -1188,6 +1189,58 @@ async def test_with_no_tool_work_pending_the_user_half_does_not_wait() -> None:
     assert (strategy.user_passes_waited, strategy.user_compactions) == (0, 1)
 
 
+@pytest.mark.parametrize(
+    ("groups", "minimum", "repeat", "bound", "trigger", "outstanding", "waits"),
+    [
+        (0, 4, True, None, 0.6, None, False),
+        (1, 4, True, None, 0.6, None, False),
+        (2, 4, True, None, 0.6, None, False),
+        (3, 4, True, None, 0.6, None, False),
+        (4, 4, True, None, 0.6, None, True),
+        (1, 1, True, None, 0.6, None, True),
+        (4, 4, False, None, 0.6, None, False),
+        (1, 4, False, 1, 0.87, None, True),
+        (1, 4, True, None, 0.87, "force_next", True),
+        (1, 4, True, None, 0.87, "awaiting_record", True),
+    ],
+)
+@pytest.mark.parametrize("wrapped", [False, True])
+async def test_composed_wait_uses_the_configured_recall_trigger(
+    groups, minimum, repeat, bound, trigger, outstanding, waits, wrapped
+) -> None:
+    strategy = _composed(
+        _NARROW_CEILING,
+        tool_results=_record_phase(_NARROW_CEILING, trigger_fraction=trigger),
+        user_trigger_fraction=0.6,
+    )
+    middleware = ToolResultRecallMiddleware(
+        max_input_tokens=_NARROW_CEILING,
+        tokenizer=TOKENIZER,
+        arm=lambda: None,
+        trigger_fraction=trigger,
+        min_groups_before_repeat=minimum,
+        repeat_records=repeat,
+        max_groups_before_record=bound,
+        reforce=(lambda: strategy.tool_results.take_reforce())
+        if wrapped
+        else strategy.tool_results.take_reforce,
+    )
+    if wrapped:
+        strategy.tool_results.bind_recall(middleware)
+    if outstanding is not None:
+        middleware.restore_session_state(middleware.session_state() | {outstanding: True})
+    before = middleware.session_state()
+    record = build_record_message("Earlier facts.")
+    strategy._holds_for_record([record], entry_tokens=0, prompt_tokens=0)
+    messages = [record, *_conversation(tool_turns=0, record=None)]
+    for index in range(groups):
+        messages += _tool_group(index)
+    await strategy(messages)
+    assert strategy.user_passes_waited == int(waits)
+    assert strategy.user_compactions == int(not waits)
+    assert middleware.session_state() == before
+
+
 async def test_under_the_record_halfs_own_trigger_the_user_half_does_not_wait() -> None:
     """A user line set below the record half's trigger is a prompt the middleware will not ask at.
 
@@ -1422,7 +1475,8 @@ async def test_the_composed_row_holds_the_tool_groups_behind_its_record_when_its
     for index in range(5, 8):
         messages += _tool_group(index)
 
-    assert await strategy(messages) is True
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
 
     held = {
         message.message_id
@@ -1701,6 +1755,7 @@ def _chain_composed(
     line is above everything, so no test here is about waiting for a record. The user half runs
     in the boundary mode, as the builder runs it.
     """
+    kwargs.setdefault("overflow_policy", "raise")
     return ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
         tokenizer=TOKENIZER,
         tool_results=ToolResultAnchoredSummarizationCompactionStrategy(
@@ -1864,7 +1919,8 @@ async def test_a_replacement_the_same_size_as_what_it_replaces_is_refused() -> N
     ]
     strategy = _chain_composed(summarizer, harder_attempts=1)
 
-    await strategy(messages)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
 
     assert "harder1" in summarizer.log
     assert (strategy.record_rewrites, strategy.record_rewrites_rejected) == (1, 1)
@@ -1901,7 +1957,8 @@ async def test_a_fold_that_is_no_smaller_is_refused_and_the_summaries_stay() -> 
     strategy = _chain_composed(summarizer, harder_attempts=0)
     messages = _chain_conversation()
 
-    await strategy(messages)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
 
     assert (strategy.user_summaries_merged, strategy.user_merges_rejected) == (0, 1)
     assert strategy.user_folds == 0, "a refused fold is not a fold"
@@ -1953,7 +2010,8 @@ async def test_the_number_of_harder_attempts_bounds_the_rewrites(attempts: int) 
     summarizer = _RoutingSummarizer()
     strategy = _chain_composed(summarizer, harder_attempts=attempts)
 
-    await strategy(_chain_conversation())
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(_chain_conversation())
 
     assert [kind for kind in summarizer.log if kind.startswith("harder")] == [
         f"harder{attempt}" for attempt in range(1, attempts + 1)
@@ -1962,7 +2020,7 @@ async def test_the_number_of_harder_attempts_bounds_the_rewrites(attempts: int) 
 
 
 async def test_an_exhausted_chain_ends_in_the_fallback_over_the_budget() -> None:
-    """Steps a to d in order, and then nothing: the prompt goes out over the limit, which is ``DQ``.
+    """Steps a to d run in order, then strict overflow raises locally.
 
     Every replacement is refused, so each step runs and fails; the fallback runs last, holds the
     tool group no record covers, and sheds narration only; and what is left is still over the
@@ -1972,7 +2030,8 @@ async def test_an_exhausted_chain_ends_in_the_fallback_over_the_budget() -> None
     strategy = _chain_composed(summarizer)
     messages = _chain_conversation(trailing=True)
 
-    await strategy(messages)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
 
     assert summarizer.log == ["merge", "fold", "harder1", "harder2", "fallback"], (
         "in order, the fallback last"
@@ -2026,7 +2085,8 @@ async def test_the_fallback_runs_only_at_the_end_on_the_composed_row_and_straigh
             remembered_requests=2,
         ),
     )
-    await composed(_chain_conversation())
+    with pytest.raises(CompactionBudgetExceeded):
+        await composed(_chain_conversation())
     assert log == ["user", "merge", "fold", "harder1", "harder2", "fallback"]
 
     alone_log: list[str] = []
@@ -2104,6 +2164,7 @@ async def test_a_merged_record_is_a_record_to_everything_that_reads_records() ->
         arm=lambda: None,
         trigger_fraction=0.01,
         repeat_records=True,
+        min_groups_before_repeat=1,
     )
     assert middleware._record_due(messages, find_record_index(messages)) is True, (
         "and the middleware asks again"
@@ -2184,9 +2245,11 @@ async def test_a_refused_merge_is_not_asked_again_on_the_same_records_until_they
     summarizer = _RoutingSummarizer()
     strategy = _chain_composed(summarizer, harder_attempts=0)
 
-    await strategy(_chain_conversation())
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(_chain_conversation())
     await _idle_passes(strategy)
-    await strategy(_chain_conversation())
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(_chain_conversation())
 
     assert summarizer.log.count("merge") == 1, "not paid for again on the same records"
     assert (strategy.record_merges_rejected, strategy.record_merges_skipped) == (1, 1)
@@ -2196,7 +2259,8 @@ async def test_a_refused_merge_is_not_asked_again_on_the_same_records_until_they
 
     changed = _chain_conversation()
     _change_record(changed, "rec2", [2, 7])
-    await strategy(changed)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(changed)
 
     assert summarizer.log.count("merge") == 2, "asked again once a record changed"
     assert (strategy.record_merges_rejected, strategy.record_merges_skipped) == (2, 1)
@@ -2214,11 +2278,13 @@ async def test_a_refused_rewrite_is_not_asked_again_until_the_record_changes_and
     summarizer = _RoutingSummarizer()
     strategy = _chain_composed(summarizer)
 
-    await strategy(_chain_conversation(trailing=True))
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(_chain_conversation(trailing=True))
     assert summarizer.log == ["merge", "fold", "harder1", "harder2", "fallback"]
     await _idle_passes(strategy)
     del summarizer.log[:]
-    await strategy(_chain_conversation(trailing=True))
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(_chain_conversation(trailing=True))
 
     assert [kind for kind in summarizer.log if kind.startswith("harder")] == [], (
         "no attempt asked again"
@@ -2231,7 +2297,8 @@ async def test_a_refused_rewrite_is_not_asked_again_until_the_record_changes_and
     changed = _chain_conversation(trailing=True)
     _change_record(changed, "rec1", [1, 8])
     del summarizer.log[:]
-    await strategy(changed)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(changed)
 
     assert [kind for kind in summarizer.log if kind.startswith("harder")] == [
         "harder1",
@@ -2261,11 +2328,13 @@ async def test_a_refusal_forecloses_its_own_attempt_and_milder_ones_but_not_hars
 
     summarizer = _FailsOnHarder2()
     strategy = _chain_composed(summarizer, harder_attempts=2)
-    await strategy(_chain_conversation())
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(_chain_conversation())
     failing["harder2"] = False
     await _idle_passes(strategy)
     del summarizer.log[:]
-    await strategy(_chain_conversation())
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(_chain_conversation())
 
     assert [kind for kind in summarizer.log if kind.startswith("harder")] == ["harder2"], (
         "one skipped, two asked"
@@ -2279,14 +2348,16 @@ async def test_a_refusal_forecloses_its_own_attempt_and_milder_ones_but_not_hars
     )
     strategy = _chain_composed(kept)
     messages = _chain_conversation()
-    await strategy(messages)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
     assert [kind for kind in kept.log if kind.startswith("harder")] == ["harder1", "harder2"]
     assert (strategy.record_rewrites, strategy.record_rewrites_rejected) == (2, 1), (
         "one kept, two refused"
     )
     await _idle_passes(strategy)
     del kept.log[:]
-    await strategy(messages)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
 
     assert [kind for kind in kept.log if kind.startswith("harder")] == [], (
         "the milder attempt foreclosed too"
@@ -2311,7 +2382,8 @@ async def test_a_summarizer_that_fails_a_merge_leaves_the_records_and_moves_on()
     strategy = _chain_composed(summarizer, harder_attempts=0)
     messages = _chain_conversation()
 
-    await strategy(messages)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
 
     assert log[:2] == ["merge", "fold"]
     assert (strategy.record_summary_failures, strategy.record_merges_rejected) == (1, 0)
@@ -2335,7 +2407,8 @@ async def test_an_empty_merge_answer_is_a_failure_and_never_replaces_the_records
     strategy = _chain_composed(summarizer, harder_attempts=0)
     messages = _chain_conversation()
 
-    await strategy(messages)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
 
     assert log[0] == "merge"
     assert (strategy.record_summary_failures, strategy.record_merges_rejected) == (1, 0)
@@ -2364,7 +2437,8 @@ async def test_an_ask_for_another_record_survives_a_merge_that_lowers_the_record
     strategy = _chain_composed(summarizer, harder_attempts=0)
     messages = _chain_conversation(uncovered=True)
 
-    await strategy(messages)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
     assert strategy.records_merged == 1
     assert strategy.groups_kept_uncovered == 1, "the group no record quotes"
     assert strategy.tool_results.take_reforce() is True, (
@@ -2372,7 +2446,8 @@ async def test_an_ask_for_another_record_survives_a_merge_that_lowers_the_record
     )
 
     messages += _record_messages("nothing to add.", call_id="rec9")
-    await strategy(messages)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
 
     assert strategy.groups_preserved_uncovered == 1, (
         "the ask's record arrived, covered nothing, and settled it"
@@ -2403,7 +2478,8 @@ async def test_a_single_record_is_never_merged_only_rewritten() -> None:
         if message.message_id not in ("rec1_call", "rec1_res")
     ]
 
-    await strategy(messages)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
 
     assert "merge" not in summarizer.log
     assert "harder1" in summarizer.log
@@ -2440,8 +2516,10 @@ async def test_the_other_list_replays_both_the_band_and_the_fold_of_one_pass() -
     )
     store = copy.deepcopy(messages)
 
-    await strategy(messages)
-    await strategy(store)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(store)
 
     assert summarizer.log.count("band") == 1 and summarizer.log.count("fold") == 1, summarizer.log
     assert strategy.user_summaries_replayed == 1, (
@@ -2461,13 +2539,15 @@ async def test_a_written_record_is_merged_again_and_rewritten_harder() -> None:
     summarizer = _RoutingSummarizer(merge=_short_record)
     strategy = _chain_composed(summarizer, harder_attempts=0)
     messages = _chain_conversation()
-    await strategy(messages)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
     assert _active_record_ids(messages) == [f"written:{_SHORT_RECORD}"]
 
     messages += _record_messages("lookup_9: CODE-9.", call_id="rec9")
     again = "lookup_1: CODE-1. lookup_9: CODE-9."
     summarizer.merge = lambda body: again
-    await strategy(messages)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
 
     assert summarizer.log.count("merge") == 2
     assert strategy.records_merged == 2
@@ -2485,7 +2565,8 @@ async def test_a_written_record_is_merged_again_and_rewritten_harder() -> None:
     summarizer.harder = lambda attempt, body: harder
     strategy.harder_attempts = 1
     messages.append(Message(role="user", contents=["Turn 5: more."], message_id="u5"))
-    await strategy(messages)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
 
     assert "harder1" in summarizer.log
     assert (strategy.record_rewrites, strategy.record_rewrites_rejected) == (1, 0)
@@ -2547,7 +2628,8 @@ async def test_a_rewrite_is_measured_like_for_like_against_a_record_the_model_ma
         "the premise: the written form is well under the model's record it would replace"
     )
 
-    await strategy(messages)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
 
     assert "harder1" in summarizer.log
     assert (strategy.record_rewrites, strategy.record_rewrites_rejected) == (1, 1), (
@@ -2685,7 +2767,8 @@ async def test_a_record_is_not_merged_on_the_call_that_carries_its_result_in() -
     strategy = _chain_composed(summarizer, ceiling=await _post_record_size(at_arrival=True) - 500)
     messages = _as_the_harness_hands_them(stored)
 
-    await strategy(messages)
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
 
     assert strategy.last_resort_fallbacks == 1, (
         "the premise: the chain ran to its end, over the budget throughout"
@@ -2852,7 +2935,11 @@ async def test_what_the_chain_changes_on_a_calls_copies_is_what_the_store_ends_u
     store = _chain_conversation()
     copies = copy.deepcopy(store) + _tail(1_600)
 
-    await strategy(copies)
+    if step == "shed":
+        with pytest.raises(CompactionBudgetExceeded):
+            await strategy(copies)
+    else:
+        await strategy(copies)
     asked = list(summarizer.log)
     kept = {
         "merge": strategy.records_merged,

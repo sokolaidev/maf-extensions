@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import nullcontext
 from copy import deepcopy
 from typing import Any
 
@@ -28,6 +29,7 @@ from agent_framework import (
 
 from maf_compaction import (
     ChainDecisions,
+    CompactionBudgetExceeded,
     CompactionStack,
     RecallGate,
     RecordDecisions,
@@ -261,14 +263,16 @@ async def test_cold_chain_replays_content_decisions_without_summarizer_requests(
         message.message_id = f"m{index}"
     original = deepcopy(messages)
     with registry.activate(session) as stack:
-        await stack.strategy(messages)
+        with nullcontext() if accepted else pytest.raises(CompactionBudgetExceeded):
+            await stack.strategy(messages)
     assert summarizer.requests
     requests = deepcopy(summarizer.requests)
     expected = [message.to_dict() for message in messages]
     session.state = round_trip(session.state)
     cold = SessionCompactionRegistry(build)
     with cold.activate(session) as stack:
-        await stack.strategy(original)
+        with nullcontext() if accepted else pytest.raises(CompactionBudgetExceeded):
+            await stack.strategy(original)
     assert summarizer.requests == requests
     assert [message.to_dict() for message in original] == expected
 
@@ -296,13 +300,15 @@ async def test_cold_user_summary_replays_same_text_and_id():
             stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
         )
         stack.strategy._declined_behind = ""
-        await stack.strategy(messages)
+        with pytest.raises(CompactionBudgetExceeded):
+            await stack.strategy(messages)
     assert summarizer.requests
     count = len(summarizer.requests)
     session.state = round_trip(session.state)
     cold = SessionCompactionRegistry(build)
     with cold.activate(session) as stack:
-        await stack.strategy(original)
+        with pytest.raises(CompactionBudgetExceeded):
+            await stack.strategy(original)
     assert len(summarizer.requests) == count
     assert [m.to_dict() for m in original] == [m.to_dict() for m in messages]
 
@@ -393,6 +399,23 @@ def harness(registry, model):
     agent.context_providers.insert(1, provider)
     assert agent.context_providers[1] is provider
     return agent
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_harness_refuses_irreducible_overflow_before_contacting_model(stream):
+    registry = SessionCompactionRegistry(lambda: build_stack(Summarizer("x" * 50_000), budget=1000))
+    model = Model()
+    agent = harness(registry, model)
+    session = AgentSession()
+    session.state["in_memory"] = {"messages": [build_record_message("fact123 " * 3000)]}
+    with pytest.raises(CompactionBudgetExceeded):
+        result = agent.run("continue", session=session, stream=stream)
+        if stream:
+            assert isinstance(result, ResponseStream)
+            await result.get_final_response()
+        else:
+            await result
+    assert model.prompts == []
 
 
 @pytest.mark.parametrize("stream", [False, True])
