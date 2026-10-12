@@ -64,6 +64,28 @@ def test_pin_reader_uses_the_selected_recipe(tmp_path, version):
     assert read_pin(path) == (version, digest)
 
 
+@pytest.mark.parametrize("prefix", ["arg ", "  ARG ", "\taRg\t", "ARG   "])
+def test_pin_reader_accepts_instruction_spelling_and_indentation(tmp_path, prefix):
+    path = tmp_path / "Dockerfile"
+    digest = "a" * 64
+    path.write_text(f"{prefix}BICEP_VERSION=v1.2.3\n{prefix}BICEP_SHA256={digest}\n")
+    assert read_pin(path) == ("v1.2.3", digest)
+
+
+@pytest.mark.parametrize("prefix", ["arg ", "  ARG ", "\taRg\t", "ARG   "])
+@pytest.mark.parametrize("name", ["BICEP_VERSION", "BICEP_SHA256"])
+@pytest.mark.parametrize("has_default", [True, False])
+def test_pin_reader_refuses_variant_redeclarations(tmp_path, prefix, name, has_default):
+    path = tmp_path / "Dockerfile"
+    value = "v1.2.4" if name == "BICEP_VERSION" else "b" * 64
+    default = f"={value}" if has_default else ""
+    path.write_text(
+        "ARG BICEP_VERSION=v1.2.3\nARG BICEP_SHA256=" + "a" * 64 + f"\n{prefix}{name}{default}\n"
+    )
+    with pytest.raises(ValueError, match="pin"):
+        read_pin(path)
+
+
 @pytest.mark.parametrize(
     "text",
     [

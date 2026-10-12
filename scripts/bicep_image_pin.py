@@ -8,12 +8,17 @@ from pathlib import Path
 
 VERSION = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 
+PIN_PATTERNS = {
+    name: re.compile(r"^[ \t]*(?i:ARG)[ \t]+" + name + r"(?:=(.*))?$", re.MULTILINE)
+    for name in ("BICEP_VERSION", "BICEP_SHA256")
+}
+
 
 def read_pin(path: Path) -> tuple[str, str]:
     """Require one stable version and SHA-256 without evaluating Dockerfile content."""
     text = path.read_text(encoding="utf-8")
-    versions = re.findall(r"^ARG BICEP_VERSION=(.*)$", text, re.MULTILINE)
-    digests = re.findall(r"^ARG BICEP_SHA256=(.*)$", text, re.MULTILINE)
+    versions = PIN_PATTERNS["BICEP_VERSION"].findall(text)
+    digests = PIN_PATTERNS["BICEP_SHA256"].findall(text)
     if (
         len(versions) != 1
         or len(digests) != 1

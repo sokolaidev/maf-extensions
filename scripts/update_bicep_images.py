@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from bicep_dependencies import load_policy, sha256
-from bicep_image_pin import VERSION, read_pin
+from bicep_image_pin import PIN_PATTERNS, VERSION, read_pin
 from update_bicep_catalog import fetch
 
 ROOT = Path(__file__).resolve().parents[1] / "images/bicep-sandbox"
@@ -93,12 +93,8 @@ def updates(root: Path, release: str) -> tuple[dict[str, bytes], str]:
             raise ValueError("published checksum changed for the pinned Bicep release")
         return {}, "The Bicep image compiler pin is current.\n"
     verify_binary(asset)
-    dockerfile = dockerfile.replace(
-        f"ARG BICEP_VERSION=v{current}", f"ARG BICEP_VERSION=v{version}"
-    )
-    dockerfile = dockerfile.replace(
-        f"ARG BICEP_SHA256={previous_checksum}", f"ARG BICEP_SHA256={checksum}"
-    )
+    for name, value in (("BICEP_VERSION", f"v{version}"), ("BICEP_SHA256", checksum)):
+        dockerfile = PIN_PATTERNS[name].sub(f"ARG {name}={value}", dockerfile)
     policy["bicep_version"] = version
     policy_bytes = (json.dumps(policy, indent=2) + "\n").encode()
     manifest["bicep_version"] = version
