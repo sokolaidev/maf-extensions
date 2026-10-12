@@ -1,5 +1,6 @@
 """Whole-unit request budgets, partial replacement, and replay."""
 
+import json
 from copy import deepcopy
 
 import pytest
@@ -174,13 +175,18 @@ async def test_partial_fold_preserves_newer_summaries_and_replays(ordinary):
     assert visible(stored) == visible(messages)
 
 
-async def test_a_fold_needs_two_whole_summaries_to_fit():
+@pytest.mark.parametrize("ordinary", [False, True])
+async def test_a_fold_needs_two_whole_summaries_to_fit(ordinary):
     client = BoundedClient(500)
-    strategy = users(client, max_summary_input_tokens=500)
+    strategy = users(client, max_summary_input_tokens=500, summary_mode="fold", min_band_share=0)
     messages = summaries()
     before = visible(messages)
     size(messages)
-    assert await strategy.fold_if_smaller(messages) == "skipped"
+    if ordinary:
+        assert not await strategy(messages)
+        assert strategy.user_passes_declined == 1
+    else:
+        assert await strategy.fold_if_smaller(messages) == "skipped"
     assert not client.requests
     assert visible(messages) == before
 
@@ -271,3 +277,59 @@ def test_large_prefix_selection_avoids_quadratic_tokenization():
     assert 3_900 < len(selected) < 4_000
     assert tokenizer.calls < 100
     assert len("instructions") + len("\n".join(selected)) <= 400_000
+
+
+async def test_refold_never_uses_its_own_output_as_a_source(monkeypatch):
+    body = "same summary " * 100
+    client = BoundedClient(2_000, body)
+    strategy = users(client, max_summary_input_tokens=2_000, summary_mode="fold")
+
+    def summary(index):
+        return strategy._summary_message(
+            [Message("user", ["source"], message_id=f"source{index}")],
+            [{"group_id": f"source_group{index}"}],
+            body,
+            summary_id=f"user_summary_{index}",
+        )
+
+    messages = [summary(0), summary(1)]
+    size(messages)
+    assert await strategy.fold_if_smaller(messages) == "folded"
+    messages.append(summary(2))
+    size(messages)
+    before = visible(messages)
+
+    def reject_self_reference(*args):
+        pytest.fail("a standing fold output must not be replayed over itself")
+
+    monkeypatch.setattr(strategy, "_apply_fold", reject_self_reference)
+    assert not strategy.refold(messages)
+    assert visible(messages) == before
+    assert len(client.requests) == 1
+
+
+async def test_repeated_partial_folds_with_identical_bodies_replay_in_order():
+    body = "same summary " * 100
+    client = BoundedClient(1_000, body)
+    strategy = users(client, max_summary_input_tokens=1_000, summary_mode="fold")
+    messages = [
+        strategy._summary_message(
+            [Message("user", ["source"], message_id=f"source{i}")],
+            [{"group_id": f"source_group{i}"}],
+            body,
+            summary_id=f"user_summary_{i}",
+        )
+        for i in range(15)
+    ]
+    size(messages)
+    stored = deepcopy(messages)
+    for _ in range(12):
+        assert await strategy.fold_if_smaller(messages) == "folded"
+    assert len(visible(messages)) == 3
+    restored = users(client, max_summary_input_tokens=1_000, summary_mode="fold")
+    restored.restore_session_state(json.loads(json.dumps(strategy.session_state(), sort_keys=True)))
+    assert restored.refold(stored)
+    assert visible(stored) == visible(messages)
+    assert not restored.refold(stored)
+    assert not restored.refold(project_included_messages(stored))
+    assert len(client.requests) == 1
