@@ -1141,7 +1141,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             behaviour this check replaced and is there so the two can be run side by side.
         record_target_tokens: Expected record size, matching make_recall_tool(target_tokens=...).
             Larger results can release exactly quoted table rows while retaining the remainder.
-            Also used to estimate whether whole-group value coverage can fit.
+            Also used to estimate whether whole-group value coverage can fit. None disables
+            partial removal and the target-based diagnostic.
         fallback: What runs when no record arrives in time, or one does not free enough. It
             must be an :class:`~._anchored.AnchoredCompactionStrategy`, or a subclass: those
             honour :mod:`._preserve`, which is what keeps the record and the groups it did not
@@ -1158,7 +1159,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         trigger_fraction: float = DEFAULT_TRIGGER_FRACTION,
         fallback_fraction: float = DEFAULT_FALLBACK_FRACTION,
         coverage_share: float = DEFAULT_COVERAGE_SHARE,
-        record_target_tokens: int = DEFAULT_RECORD_TARGET_TOKENS,
+        record_target_tokens: int | None = DEFAULT_RECORD_TARGET_TOKENS,
         fallback: AnchoredCompactionStrategy | None = None,
     ) -> None:
         """Validate and store the configuration.
@@ -1192,8 +1193,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         self.trigger_fraction = trigger_fraction
         self.fallback_fraction = fallback_fraction
         self.coverage_share = coverage_share
-        if record_target_tokens <= 0:
-            raise ValueError("record_target_tokens must be positive.")
+        if record_target_tokens is not None and record_target_tokens <= 0:
+            raise ValueError("record_target_tokens must be positive or None.")
         self.record_target_tokens = record_target_tokens
         self._unreachable: set[str] = set()
         # Typing does not stop an untyped caller passing one of the framework's strategies.
@@ -1794,7 +1795,16 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         # Tokenised once, and kept in both shapes the two rules need: a set for "is this value
         # in the record", a count for "is this name mentioned as often as it was called".
         quoted = set(_tokens(record, fold_case=False))
-        quoted_rows = set(_table_rows(record).values())
+        source_rows = Counter(
+            row
+            for message in messages
+            for content in message.contents
+            if content.type == "function_result"
+            and isinstance(content.result, str)
+            and RECORD_MARKER not in content.result
+            for row in _table_rows(content.result).values()
+        )
+        quoted_rows = {row for row in _table_rows(record).values() if source_rows[row] == 1}
         mentions = Counter(_tokens(record))
 
         candidates: list[tuple[dict[str, Any], set[str], set[str]]] = []
@@ -1848,15 +1858,16 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             if not self._is_covered(quoted, names=names, values=values, named=named):
                 group_id = str(group["group_id"])
                 uncovered.add(group_id)
-                costs = sorted(self.tokenizer.count_tokens(value) for value in values)
-                required = ceil(len(values) * self.coverage_share)
-                if sum(costs[:required]) > self.record_target_tokens:
-                    unreachable.add(group_id)
-                if (
-                    self.tokenizer.count_tokens(_group_result_text(messages, group))
-                    > self.record_target_tokens
-                ):
-                    changed = self._release_recorded_rows(members, quoted_rows) or changed
+                if self.record_target_tokens is not None:
+                    costs = sorted(self.tokenizer.count_tokens(value) for value in values)
+                    required = ceil(len(values) * self.coverage_share)
+                    if sum(costs[:required]) > self.record_target_tokens:
+                        unreachable.add(group_id)
+                    if (
+                        self.tokenizer.count_tokens(_group_result_text(messages, group))
+                        > self.record_target_tokens
+                    ):
+                        changed = self._release_recorded_rows(members, quoted_rows) or changed
                 # Held from the pass that finds it uncovered, not from the pass that gives up
                 # on it: the ask for another record is made now and answered two passes later,
                 # and the fallback can run in between. A group shortened while its record is
@@ -1939,8 +1950,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             # A re-force chain only retries the batch its first ask targeted.
             self._settled |= uncovered - request.targets
             if records > request.records:
-                # The record came. Progress is a target that is no longer uncovered; a record
-                # that covered none of them is the model declining, and the chain ends there.
+                # Only retiring a target group earns another ask, keeping the chain finite.
                 if not request.targets - uncovered:
                     self._settled |= request.targets & uncovered
                 self._reforce = None

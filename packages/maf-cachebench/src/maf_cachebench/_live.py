@@ -31,7 +31,7 @@ import asyncio
 import random
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from agent_framework import (
@@ -1773,6 +1773,7 @@ async def run_live(
     runtime_options = dict(runtime.options)
     if wants_client_side_history(runtime.client, allow_server_history=allow_server_history):
         runtime_options["store"] = False
+    options = replace(options, record_target_tokens=record_target_tokens)
     strategy = build_strategy(strategy_name, options)
     recorder = UsageRecorder()
     summarizer = options.summarizer if isinstance(options.summarizer, MeteredClient) else None

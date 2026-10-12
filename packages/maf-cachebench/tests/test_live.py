@@ -10547,3 +10547,41 @@ async def test_live_removes_all_rejected_nested_options_without_mutating_runtime
     assert outcome.dropped_options == rejected
     assert outcome.turns_completed == outcome.turns_total
     assert options == original
+
+
+@pytest.mark.parametrize("target", [450, None])
+@pytest.mark.parametrize("name", ["tool_summary_anchored", "tool_and_user_summary_anchored"])
+async def test_record_target_reaches_live_strategy_and_tool(
+    monkeypatch: pytest.MonkeyPatch,
+    target: int | None,
+    name: str,
+) -> None:
+    _stub_provider(monkeypatch)
+    seen: list[int | None] = []
+    factory = build_strategy
+
+    def capture(strategy_name: str, options: StrategyOptions):
+        strategy = factory(strategy_name, options)
+        recording = find_nested_strategy(
+            strategy, ToolResultAnchoredSummarizationCompactionStrategy
+        )
+        if recording is not None:
+            seen.append(recording.record_target_tokens)
+        return strategy
+
+    monkeypatch.setattr("maf_cachebench._live.build_strategy", capture)
+    await run_live_comparison(
+        build_parser().parse_args(
+            _live_argv(
+                "--strategies",
+                f"none,{name}",
+                "--repeats",
+                "1",
+                "--summarizer-provider",
+                "azure",
+                "--record-target-tokens",
+                str(target or 0),
+            )
+        )
+    )
+    assert seen == [target]

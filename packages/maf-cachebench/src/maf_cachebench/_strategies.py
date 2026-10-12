@@ -69,6 +69,7 @@ from maf_compaction import (
     DEFAULT_KEEP_TAIL_USER_TURNS,
     DEFAULT_MIN_BAND_SHARE,
     DEFAULT_MIN_GAIN_FRACTION,
+    DEFAULT_RECORD_TARGET_TOKENS,
     DEFAULT_SUMMARY_MODE,
     DEFAULT_TRIGGER_FRACTION,
     DEFAULT_USER_TRIGGER_FRACTION,
@@ -143,6 +144,8 @@ class StrategyOptions:
     The dial on the coverage check, whose default is a threshold rather than a derivation and
     whose right value depends on how many values a workload's results carry.
     """
+    record_target_tokens: int | None = DEFAULT_RECORD_TARGET_TOKENS
+    """Record target shared with the recall tool; None disables target-based partial removal."""
     keep_head_user_turns: int = DEFAULT_KEEP_HEAD_USER_TURNS
     """User turns ``user_summary_anchored`` never summarises at the start of the conversation.
 
@@ -359,6 +362,7 @@ def _build_tool_summary_anchored(
         trigger_fraction=options.trigger_fraction,
         fallback_fraction=options.fallback_fraction,
         coverage_share=options.coverage_share,
+        record_target_tokens=options.record_target_tokens,
         fallback=_build_anchored(options),
     )
 

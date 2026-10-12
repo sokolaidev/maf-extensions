@@ -2824,3 +2824,85 @@ async def test_partial_rows_are_kept_when_the_marker_would_cost_more() -> None:
     strategy = _strategy(max_input_tokens=100_000, trigger_fraction=0.001)
     assert not await strategy(messages)
     assert messages[5].contents[0].result == original
+
+
+@pytest.mark.parametrize(
+    "location", ["same_table", "second_table", "other_result", "after_record", "beside_record"]
+)
+async def test_partial_coverage_keeps_ambiguous_duplicate_rows(location: str) -> None:
+    rows = _quota_rows()
+    result = _TABLE_HEADER + "".join(rows)
+    duplicate = rows[0]
+    if location == "same_table":
+        result += duplicate
+    elif location == "second_table":
+        result += "\nOther region\n" + _TABLE_HEADER + duplicate
+    messages = _conversation(1, payload_chars=0, result_values=lambda _: result)
+    other = _conversation(
+        1,
+        payload_chars=0,
+        first_turn=1,
+        result_values=lambda _: _TABLE_HEADER + duplicate + "".join(_quota_rows(batch=1)),
+    )[3:]
+    if location == "other_result":
+        messages.extend(other)
+    messages.extend(_record_messages("\n" + _TABLE_HEADER + "".join(rows[:90])))
+    if location == "after_record":
+        messages.extend(other)
+    elif location == "beside_record":
+        messages[-1].contents.extend(other[-1].contents)
+    strategy = _strategy(max_input_tokens=100_000, trigger_fraction=0.001)
+
+    assert await strategy(messages)
+    remainder = messages[5].contents[0].result
+    assert remainder.count(duplicate) == (2 if location in {"same_table", "second_table"} else 1)
+    assert rows[1] not in remainder, "unambiguous covered rows can still leave"
+    for message in other if location in {"other_result", "after_record"} else []:
+        if message.role == "tool":
+            assert duplicate in message.contents[0].result
+    await strategy(messages)
+    assert duplicate in messages[5].contents[0].result
+
+
+async def test_unset_record_target_disables_partial_coverage_and_diagnostic() -> None:
+    rows = _quota_rows()
+    result = _TABLE_HEADER + "".join(rows)
+    messages = _conversation(
+        1,
+        payload_chars=0,
+        result_values=lambda _: result,
+        record="\n" + _TABLE_HEADER + "".join(rows[:90]),
+    )
+    strategy = _strategy(
+        max_input_tokens=100_000, trigger_fraction=0.001, record_target_tokens=None
+    )
+    original = messages[5].contents[0].result
+    assert not await strategy(messages)
+    assert messages[5].contents[0].result == original
+    assert strategy.groups_held_unreachable_coverage == 0
+    messages.extend(_record_messages("\n" + result, call_id="complete"))
+    assert await strategy(messages), "whole-group coverage is independent of the target"
+
+
+async def test_partial_row_progress_preserves_the_group_bound_on_reforcing() -> None:
+    rows = _quota_rows()
+    messages = _conversation(
+        1,
+        payload_chars=0,
+        result_values=lambda _: _TABLE_HEADER + "".join(rows),
+        record="\n" + _TABLE_HEADER + "".join(rows[:30]),
+    )
+    strategy = _strategy(max_input_tokens=100_000, trigger_fraction=0.001)
+    assert await strategy(messages)
+    assert strategy.take_reforce()
+    await strategy(messages)
+    messages.extend(_record_messages("\n" + _TABLE_HEADER + "".join(rows[30:60]), call_id="rec2"))
+    assert await strategy(messages)
+    assert rows[30] not in messages[5].contents[0].result
+    assert not strategy.take_reforce()
+    assert strategy.groups_preserved_uncovered == 1
+    messages.extend(_record_messages("\n" + _TABLE_HEADER + "".join(rows[60:90]), call_id="rec3"))
+    assert await strategy(messages)
+    assert rows[60] not in messages[5].contents[0].result
+    assert not strategy.take_reforce()
+    assert all(row in _rendered(messages) for row in rows)
