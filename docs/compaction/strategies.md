@@ -105,7 +105,7 @@ Inside the context window nothing here beats not compacting: the best strategy c
 | Record-then-drop with value coverage, re-force, preservation and repeated records | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
 | Partial coverage of large table results and a record-budget diagnostic | Implemented | [#1875](https://github.com/sokolaidev/maf-extensions/issues/1875) (closed) by [#1893](https://github.com/sokolaidev/maf-extensions/pull/1893) (merged) |
 | User-turn summaries in three modes, bounded by the band share | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
-| Bounded summarizer requests for user turns, folds, record merges and rewrites | In progress | [#1877](https://github.com/sokolaidev/maf-extensions/issues/1877) (open) |
+| Bounded summarizer requests for user turns, folds, record merges and rewrites | Implemented | [#1877](https://github.com/sokolaidev/maf-extensions/issues/1877) (closed) by [#1903](https://github.com/sokolaidev/maf-extensions/pull/1903) (merged) |
 | Composition judged after the record phase, with the chain working to a target | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
 | Chain decisions kept across both lists and restorable by a harness | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
 | One agent serves many sessions with JSON-safe compaction state and a bounded stack cache | Implemented | [#1827](https://github.com/sokolaidev/maf-extensions/issues/1827) (closed) by [#1830](https://github.com/sokolaidev/maf-extensions/pull/1830) (merged) |
