@@ -4,7 +4,10 @@ import copy
 import hashlib
 import io
 import json
+import os
+import subprocess
 import sys
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -271,3 +274,49 @@ def test_release_catalogue_requires_source_builds_with_distinct_reviewed_package
         plan = item["source_build"]
         assert plan["sha256"] not in {"0" * 64, item["artifact"]["sha256"]}
         assert all(value != "0" * 64 for value in plan["module_files"].values())
+
+
+@pytest.mark.skipif(
+    os.environ.get("MAF_TEST_PROVIDER_CACHE") != "1", reason="needs MAF_TEST_PROVIDER_CACHE=1"
+)
+def test_provider_cache_cleanup_preserves_mounts_and_built_artifacts(tmp_path):
+    recipe = (ROOT / "images/terraform-sandbox/prepared.Dockerfile").read_text()
+    base = next(line for line in recipe.splitlines() if line.startswith("FROM golang:"))
+    build = next(line for line in recipe.splitlines() if line.startswith("RUN --mount="))
+    mounts, cleanup = build.split(" python3 ", 1)
+    cleanup = cleanup.split(" && ", 1)[1]
+    cache_id = uuid.uuid4().hex
+    mounts = " ".join(
+        part.replace("type=cache,", f"type=cache,id=provider-cache-test-{cache_id}-{i},")
+        for i, part in enumerate(mounts.split())
+    )
+    seed = (
+        "mkdir -p /go/pkg/mod/example /root/.cache/go-build/00 /builds && "
+        "echo module > /go/pkg/mod/example/go.mod && "
+        "chmod -R a-w /go/pkg/mod/example && "
+        "echo cached > /root/.cache/go-build/00/cached-d && "
+        "echo approved > /builds/provider.zip"
+    )
+    checks = (
+        "test ! -e /go/pkg/mod/example && "
+        "test ! -e /root/.cache/go-build/00/cached-d && "
+        'test "$(cat /builds/provider.zip)" = approved'
+    )
+    dockerfile = f"{base}\n{mounts} {seed} && {cleanup} && {checks}\n"
+    result = subprocess.run(
+        [
+            "docker",
+            "buildx",
+            "build",
+            "--no-cache",
+            "--network=none",
+            "--output=type=cacheonly",
+            "--file=-",
+            str(tmp_path),
+        ],
+        input=dockerfile,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
