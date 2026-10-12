@@ -95,6 +95,6 @@ With the prepared image selected by immutable ID, the opt-in HTTP Docker test ch
 
 | Work | State | Tracking |
 |---|---|---|
-| Bounded Bicep integration | Design complete; supervised source prototype and finite qualification delivered; installed worker remains #1898 | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open) |
+| Bounded Bicep integration | Design complete; supervised source prototype and finite qualification delivered; installed worker remains #1898 | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (closed) by [#1901](https://github.com/sokolaidev/maf-extensions/pull/1901) (merged) |
 | OpenClaw session ownership | HTTP service and finite two-session Gateway/MAF qualification complete on recorded candidates | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged); [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (closed) by [#1680](https://github.com/sokolaidev/maf-extensions/pull/1680) (merged); [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (closed) by [#1882](https://github.com/sokolaidev/maf-extensions/pull/1882) (merged) |
 | Installed worker | Planned; clean wheel installation and supported-baseline qualification required | [#1898](https://github.com/sokolaidev/maf-extensions/issues/1898) (open) |
