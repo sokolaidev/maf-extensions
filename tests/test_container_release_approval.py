@@ -349,7 +349,14 @@ def test_terraform_avm_summary_renders_cases_receipt_and_version(prepared, actio
     runtime = prepared.reports["runtime.json"]
     runtime["profile"] = "terraform-avm"
     del runtime["bicepAvm"]
-    names = ["pinned", "constraint", "correct-lock", "uncached-version", "wrong-lock"]
+    names = [
+        "pinned",
+        "constraint",
+        "correct-lock",
+        "uncached-version",
+        "wrong-lock",
+        "upstream-lock",
+    ]
     receipt = {
         "manifest_sha256": "d" * 64,
         "policy_sha256": "e" * 64,
@@ -368,7 +375,7 @@ def test_terraform_avm_summary_renders_cases_receipt_and_version(prepared, actio
     result = approval.render(
         prepared.candidate, prepared.directory, action, "evidence", stage="complete"
     )
-    assert result.count("| Terraform AVM check |") == 5
+    assert result.count("| Terraform AVM check |") == 6
     retained = approval.read(prepared.directory / "runtime.json")["terraformAvm"]
     for check in retained["checks"]:
         assert approval.literal(check) in result

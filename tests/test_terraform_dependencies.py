@@ -556,6 +556,9 @@ def test_download_integrity_size_deadline_and_diagnostic_redaction(receiver, mon
     monkeypatch.setattr(prep, "MAX_ARCHIVE", 3)
     with pytest.raises(prep.Refused, match="download-size"):
         prep.fetch(artifact(), time.monotonic() + 5)
+    assert prep.fetch(artifact(), time.monotonic() + 5, archive_limit=8) == b"artifact"
+    with pytest.raises(prep.Refused, match="download-size"):
+        prep.fetch(artifact(), time.monotonic() + 5, archive_limit=8, max_bytes=3)
     routes["/repository/1.0/artifact.zip"] = (403, {}, b"secret signed-query contents")
     with pytest.raises(prep.Refused) as failure:
         prep.fetch(artifact(), time.monotonic() + 5)

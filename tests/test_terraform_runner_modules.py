@@ -368,3 +368,40 @@ def test_a_lock_beside_a_copied_package_is_refused(tmp_path):
     package.with_name(package.name + ".lock").touch()
     with pytest.raises(ValueError, match="copied"):
         runner.refuse_copied_providers(data)
+
+
+@pytest.mark.parametrize(
+    "hashes,accepted",
+    [
+        ('["h1:ours"]', True),
+        ('["zh:upstream", "h1:ours"]', True),
+        ('["zh:upstream"]', False),
+        ('["h1:other"]', False),
+        ("[]", False),
+        ('concat(["h1:ours"], [])', False),
+    ],
+)
+def test_source_build_lock_requires_the_selected_package_hash(hashes, accepted):
+    provider = {"source": "registry.terraform.io/azure/azapi", "version": "2.13.0", "h1": "h1:ours"}
+    lock = f'provider "{provider["source"]}" {{\n version = "2.13.0"\n hashes = {hashes}\n}}'
+    if accepted:
+        runner.verify_source_build_locks(lock, [provider])
+    else:
+        with pytest.raises(ValueError, match="checksum mismatch"):
+            runner.verify_source_build_locks(lock, [provider])
+
+
+@pytest.mark.parametrize("change", ["missing", "version", "duplicate", "duplicate-hashes"])
+def test_source_build_lock_refuses_missing_or_ambiguous_selection(change):
+    provider = {"source": "registry.terraform.io/azure/azapi", "version": "2.13.0", "h1": "h1:ours"}
+    lock = f'provider "{provider["source"]}" {{\n version = "2.13.0"\n hashes = ["h1:ours"]\n}}'
+    if change == "missing":
+        lock = ""
+    elif change == "version":
+        lock = lock.replace("2.13.0", "2.12.0")
+    elif change == "duplicate":
+        lock += "\n" + lock
+    else:
+        lock = lock.replace(" hashes =", ' hashes = ["h1:ours"]\n hashes =')
+    with pytest.raises(ValueError):
+        runner.verify_source_build_locks(lock, [provider])

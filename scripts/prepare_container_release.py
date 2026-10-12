@@ -32,7 +32,13 @@ from image_security_evidence import record, verify_inventory
 def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
     """Run a bounded local build tool with errors propagated to the publication gate."""
     return subprocess.run(
-        command, check=True, text=True, encoding="utf-8", errors="strict", timeout=2400, **kwargs
+        command,
+        check=True,
+        text=True,
+        encoding="utf-8",
+        errors="strict",
+        timeout=kwargs.pop("timeout", 2400),
+        **kwargs,
     )
 
 
@@ -177,7 +183,11 @@ def prepare(
     if output.exists():
         raise ValueError("Use a fresh candidate directory")
     output.mkdir(parents=True)
-    run(["bash", "scripts/build_scan_image.sh", profile], cwd=ROOT)
+    run(
+        ["bash", "scripts/build_scan_image.sh", profile],
+        cwd=ROOT,
+        timeout=7200 if profile == "terraform-avm" else 2400,
+    )
     target = "maf-image-release:candidate"
     command = ["docker", "build", "--network", "none", "--platform", "linux/amd64", "--tag", target]
     for name, value in labels(profile, release_version, revision).items():

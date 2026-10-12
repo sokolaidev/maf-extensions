@@ -43,7 +43,7 @@ jobs:
     needs: select
     if: needs.select.outputs.scan == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: ${{ matrix.profile == 'terraform-avm' && 150 || 45 }}
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -54,6 +54,12 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Make room for the AVM provider toolchain and build cache
+        if: matrix.profile == 'terraform-avm'
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup
+          df -h /
       - name: Check Hyperlight image dependency compatibility
         id: hyperlight-image
         if: matrix.profile == 'hyperlight'

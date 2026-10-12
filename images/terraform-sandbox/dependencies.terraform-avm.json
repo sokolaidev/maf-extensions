@@ -11,6 +11,28 @@
         "sha256": "91e88646e140a728de20c8f66c5fb9e56c240e7c0eab3c1e0f127932c2418fba",
         "provenance": "Azure alz v0.22.0 release SHA256SUMS matching registry download metadata",
         "github_repository_id": "673391582"
+      },
+      "source_build": {
+        "repository": "https://github.com/Azure/terraform-provider-alz",
+        "revision": "28701c72f66fa4779a25e70120df75877b0ffa3d",
+        "artifact": {
+          "url": "https://codeload.github.com/Azure/terraform-provider-alz/zip/28701c72f66fa4779a25e70120df75877b0ffa3d",
+          "sha256": "8c7ac8fb6a421bde8b949f130f138d74c9496083866b9dd5e98f0ef169d1a442",
+          "provenance": "Upstream v0.22.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/mod": "v0.41.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "18dd2e89978bd8c8779a99a4d7d8749600dac3c71434ee6747a40a3e52ef3d7a",
+          "go.sum": "a89f534c4b2fdc6a9fcbe27a4410a09587103fe4250e56f908eecf37aa763246"
+        },
+        "sha256": "b0177ff82d313e53efeeb36b60441ccdafe3cc723c1f865891a00040f200b751"
       }
     },
     {
@@ -22,6 +44,29 @@
         "sha256": "e252ee062513904836fcc5e6548243429819e68aa7cfaeac7da8d816c4c4d1e8",
         "provenance": "Azure azapi v1.14.0 release SHA256SUMS matching registry download metadata",
         "github_repository_id": "409095307"
+      },
+      "source_build": {
+        "repository": "https://github.com/Azure/terraform-provider-azapi",
+        "revision": "f9d495827549c73613d8e2c00408ffeb924b2f99",
+        "artifact": {
+          "url": "https://codeload.github.com/Azure/terraform-provider-azapi/zip/f9d495827549c73613d8e2c00408ffeb924b2f99",
+          "sha256": "03589f06b42dfc924953145083ab278974e39b611090a4c9686941956cca171e",
+          "provenance": "Upstream v1.14.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/mod": "v0.41.0",
+          "google.golang.org/grpc": "v1.83.2",
+          "github.com/golang-jwt/jwt/v5": "v5.2.2"
+        },
+        "module_files": {
+          "go.mod": "6b449ea3c811ef2506061c9fc14ee8f6ba59b61f8443555c800376a393f64e9f",
+          "go.sum": "a4417a2f51f1b7cd9d25a241932ff1f7d826c928b16891a12e20f099359f674b"
+        },
+        "sha256": "e1def1250f4f491e49064238408f1d531b85049e351b2910030d3100737b7f71"
       }
     },
     {
@@ -33,17 +78,61 @@
         "sha256": "7ec49c0a8799d469eb6e2a1f856693f9862f1b73f5ed70adc1b346e5a4c6458d",
         "provenance": "Azure azapi v1.15.0 release SHA256SUMS matching registry download metadata",
         "github_repository_id": "409095307"
+      },
+      "source_build": {
+        "repository": "https://github.com/Azure/terraform-provider-azapi",
+        "revision": "6398642a7882f25eb8ecb94da18f302a95f06880",
+        "artifact": {
+          "url": "https://codeload.github.com/Azure/terraform-provider-azapi/zip/6398642a7882f25eb8ecb94da18f302a95f06880",
+          "sha256": "61ed512e27217823c21ca0dfd0bb427e99955fd470e8f5bd5a500bbcda9fec27",
+          "provenance": "Upstream v1.15.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/mod": "v0.41.0",
+          "google.golang.org/grpc": "v1.83.2",
+          "github.com/golang-jwt/jwt/v5": "v5.2.2"
+        },
+        "module_files": {
+          "go.mod": "6b449ea3c811ef2506061c9fc14ee8f6ba59b61f8443555c800376a393f64e9f",
+          "go.sum": "a4417a2f51f1b7cd9d25a241932ff1f7d826c928b16891a12e20f099359f674b"
+        },
+        "sha256": "89fdd74131beaa28823a597f5e5f380b7b21a9c452817e84dc37f8d08dcabd21"
       }
     },
     {
       "source": "registry.terraform.io/azure/azapi",
-      "version": "2.12.0",
+      "version": "2.13.0",
       "platform": "linux_amd64",
       "artifact": {
-        "url": "https://github.com/Azure/terraform-provider-azapi/releases/download/v2.12.0/terraform-provider-azapi_2.12.0_linux_amd64.zip",
-        "sha256": "71402acfa1ad35788a5d1669bdd59040434a45aea990d062dcc41f17163c8e1b",
-        "provenance": "Azure azapi v2.12.0 release SHA256SUMS matching registry download metadata",
+        "url": "https://github.com/Azure/terraform-provider-azapi/releases/download/v2.13.0/terraform-provider-azapi_2.13.0_linux_amd64.zip",
+        "sha256": "bbe4a39522cff59977e1bf623e7d95267d819ef3cf9ba0f597eb066ce1b11b70",
+        "provenance": "Azure azapi v2.13.0 release SHA256SUMS matching registry download metadata",
         "github_repository_id": "409095307"
+      },
+      "source_build": {
+        "repository": "https://github.com/Azure/terraform-provider-azapi",
+        "revision": "cf3ecee858fa48c0aca95d0b995a8bfd4950c8ec",
+        "artifact": {
+          "url": "https://codeload.github.com/Azure/terraform-provider-azapi/zip/cf3ecee858fa48c0aca95d0b995a8bfd4950c8ec",
+          "sha256": "85a74151a8c0f5908e2131f30a067760e529a732f880c159268af8d2a30802fc",
+          "provenance": "Upstream v2.13.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/mod": "v0.41.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "624e001f058da34ab6f282c255045dcdf95176e6a65eb38cb46d08cb03b57fed",
+          "go.sum": "3c6422ce7b2a83c8de39257a2ef1b5b840eee2b133ae4c29df2e28cc30cf3927"
+        },
+        "sha256": "5b69ec2d4abc937f2e7b947bec86d6fcac12bad871d5f6f56d85058c108bf7d9"
       }
     },
     {
@@ -55,6 +144,28 @@
         "sha256": "d3ab2db04750d7403c9bd67806b46ed8076c2255e229ff462c646ad1d19bb574",
         "provenance": "Azure modtm v0.3.2 release SHA256SUMS matching registry download metadata",
         "github_repository_id": "680040111"
+      },
+      "source_build": {
+        "repository": "https://github.com/Azure/terraform-provider-modtm",
+        "revision": "229bf016a48ae077841c853ae0f12b38c910705b",
+        "artifact": {
+          "url": "https://codeload.github.com/Azure/terraform-provider-modtm/zip/229bf016a48ae077841c853ae0f12b38c910705b",
+          "sha256": "9b4756f570c104305579601751ba4495b92f2b16502ad1ff51fbad0a986c5c6c",
+          "provenance": "Upstream v0.3.2 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/mod": "v0.41.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "a9caf693784aec00a7e10e4f5b2c7bc27df611da9fa4126e1c7b244d4af1fce3",
+          "go.sum": "3d39fa70a0e14129280e5429dab657b7349e13e010f3bed1b0eb1036279729e8"
+        },
+        "sha256": "0c751b5d73a4c6d0891b31d2864e3d05e7d00c15dc3b717eb5139cc6282d1b53"
       }
     },
     {
@@ -66,6 +177,29 @@
         "sha256": "ae16303a74c83e0d8f4413d568eaf04c3c0d2b07250dbd7ae07bffae01197f36",
         "provenance": "Azure modtm v0.3.5 release SHA256SUMS matching registry download metadata",
         "github_repository_id": "680040111"
+      },
+      "source_build": {
+        "repository": "https://github.com/Azure/terraform-provider-modtm",
+        "revision": "592605782eddc4fc35f2f4c13792b2bc1ab3cc7d",
+        "artifact": {
+          "url": "https://codeload.github.com/Azure/terraform-provider-modtm/zip/592605782eddc4fc35f2f4c13792b2bc1ab3cc7d",
+          "sha256": "0adc7b8bb71695501e433501b3222e929f652f491e903ccdc3b5fc9bf6342816",
+          "provenance": "Upstream v0.3.5 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/mod": "v0.41.0",
+          "google.golang.org/grpc": "v1.83.2",
+          "github.com/go-git/go-git/v5": "v5.19.2"
+        },
+        "module_files": {
+          "go.mod": "db689e0f0728b91960339f62fb4450d7225f33cd5708129f1102c7c0da771e7a",
+          "go.sum": "0ad2221ef99addc305fa1af2c6162a6691de63af99b1d5851a3752c1a13c68e1"
+        },
+        "sha256": "97c3c17f1ad8effa9238cd9dc67795cb2a0127efdf887ed975fdf230e34a9280"
       }
     },
     {
@@ -77,6 +211,28 @@
         "sha256": "6968bbd28ccdeefa33a77393e1695a896b02e6eeab6ca3384a371675e86587f4",
         "provenance": "Azure modtm v0.4.0 release SHA256SUMS matching registry download metadata",
         "github_repository_id": "680040111"
+      },
+      "source_build": {
+        "repository": "https://github.com/Azure/terraform-provider-modtm",
+        "revision": "1fe2fcd0f69d697b6d3e3530835416ef2c7114e7",
+        "artifact": {
+          "url": "https://codeload.github.com/Azure/terraform-provider-modtm/zip/1fe2fcd0f69d697b6d3e3530835416ef2c7114e7",
+          "sha256": "11736444c131b584e06bd7c189b724d78f4715975c6f007f4a292b8358e13024",
+          "provenance": "Upstream v0.4.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/mod": "v0.41.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "6ad2f00a218d30369af088ef8e452fbb8ddc6ed477b48fc28380461e15e116e8",
+          "go.sum": "b4d9f50ff06b3e79ecf8e60024ac0556e70ea7bb1f86911461658b657e8d8a09"
+        },
+        "sha256": "1c8e8159d705fb05cf84bb9e3b66439f65558c90b9b404863f510774f5543a80"
       }
     },
     {
@@ -87,6 +243,28 @@
         "url": "https://releases.hashicorp.com/terraform-provider-assert/0.15.0/terraform-provider-assert_0.15.0_linux_amd64.zip",
         "sha256": "9dd2a93ecb471dd80b5abdb18fd5bf4f07c679969887571d6bde41e3cce74b71",
         "provenance": "HashiCorp assert 0.15.0 release SHA256SUMS matching registry download metadata"
+      },
+      "source_build": {
+        "repository": "https://github.com/hashicorp/terraform-provider-assert",
+        "revision": "e68d3ac3f7d7ae235ddd1a1820dca2275bd67299",
+        "artifact": {
+          "url": "https://codeload.github.com/hashicorp/terraform-provider-assert/zip/e68d3ac3f7d7ae235ddd1a1820dca2275bd67299",
+          "sha256": "8465c6b4ec4e75b188bb7a5b3e985c63c8ee9180ba143bb2849c9b500b80fe08",
+          "provenance": "Upstream v0.15.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/mod": "v0.41.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "4ed93f63153c3d73e2b3eb9a592877165c0b687e6e33c218d8d711939c599bf9",
+          "go.sum": "ed964bc802692b78c2c41eac22822bce9787523d612aeff8ceda924bc4ac3027"
+        },
+        "sha256": "c88c4f59c288e0ec5f9e23a80169a75fd760c8df4b4c13d0fbff7e40f4de95f9"
       }
     },
     {
@@ -97,6 +275,28 @@
         "url": "https://releases.hashicorp.com/terraform-provider-assert/0.16.0/terraform-provider-assert_0.16.0_linux_amd64.zip",
         "sha256": "5d8538cb8c369d7ac4677e3d85cdb7f4fb29c544834b8c946c68cfb342697dd1",
         "provenance": "HashiCorp assert 0.16.0 release SHA256SUMS matching registry download metadata"
+      },
+      "source_build": {
+        "repository": "https://github.com/hashicorp/terraform-provider-assert",
+        "revision": "72adcd74ea48cfb8d33cd0647b12b4af957b31cf",
+        "artifact": {
+          "url": "https://codeload.github.com/hashicorp/terraform-provider-assert/zip/72adcd74ea48cfb8d33cd0647b12b4af957b31cf",
+          "sha256": "253c5485fe4078b274114e19450957cb3bce5d90281f9a16bd48c76581e77b17",
+          "provenance": "Upstream v0.16.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/mod": "v0.41.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "ab8a8d1f201a10166cf8c3baf60be1b4bf541435499431210cf770d9508d0c01",
+          "go.sum": "dc8a585e9ace8470e0587f001c19c79f689c709acc7c3206c0cda597519420ae"
+        },
+        "sha256": "e811c5e2ffbfeb83bf02093823c3648eddd3b3ecd3fa74352b83e25280cf9fbe"
       }
     },
     {
@@ -107,6 +307,29 @@
         "url": "https://releases.hashicorp.com/terraform-provider-azuread/2.50.0/terraform-provider-azuread_2.50.0_linux_amd64.zip",
         "sha256": "4fdd139514253128f389ac00b7942c4a4da10135b120ff4c0dc0fd8382c3b003",
         "provenance": "HashiCorp azuread 2.50.0 release SHA256SUMS matching registry download metadata"
+      },
+      "source_build": {
+        "repository": "https://github.com/hashicorp/terraform-provider-azuread",
+        "revision": "8a724fef33b3259594ea360413626b141d87b4d4",
+        "artifact": {
+          "url": "https://codeload.github.com/hashicorp/terraform-provider-azuread/zip/8a724fef33b3259594ea360413626b141d87b4d4",
+          "sha256": "951e12179573d273d23e190e5f244f96747498fba5f55e3032569f53684671a3",
+          "provenance": "Upstream v2.50.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/mod": "v0.41.0",
+          "google.golang.org/grpc": "v1.83.2",
+          "golang.org/x/oauth2": "v0.36.0"
+        },
+        "module_files": {
+          "go.mod": "dcd5f289077a3eba36f0fdd5ad258cb88c656b04ea6093b4fead2c96f2b9764c",
+          "go.sum": "15e2a22f1e83349dd34b7c65d405c68c23a0f0beb3ef2795f9b9f19c77a1b534"
+        },
+        "sha256": "e6d094764a333e2abd6e56b4453f35cfdb76df9ddf19a41eb8a8f938af95d1e0"
       }
     },
     {
@@ -117,16 +340,56 @@
         "url": "https://releases.hashicorp.com/terraform-provider-azuread/3.4.0/terraform-provider-azuread_3.4.0_linux_amd64.zip",
         "sha256": "e30e9fe8e04271431cb730a1a888b6da5afeae385e2e53ff7b4114066c1250db",
         "provenance": "HashiCorp azuread 3.4.0 release SHA256SUMS matching registry download metadata"
+      },
+      "source_build": {
+        "repository": "https://github.com/hashicorp/terraform-provider-azuread",
+        "revision": "6ff88de626ee56a5809c36aec6f10ffc0cfdf56f",
+        "artifact": {
+          "url": "https://codeload.github.com/hashicorp/terraform-provider-azuread/zip/6ff88de626ee56a5809c36aec6f10ffc0cfdf56f",
+          "sha256": "928c0a57fc9fca7c191cf207ea64a94fa13e5798e89a644069fbc70ffbcf5128",
+          "provenance": "Upstream v3.4.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/mod": "v0.41.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "de93a611b7ab432db4ccffeb679d35360819a387256725d8445a2a91d3275335",
+          "go.sum": "c3fd29bc9543d6a3dba0c6e7f316c0c8ae24648c368273cb57cd338ee870b4aa"
+        },
+        "sha256": "aedea26c23d60558e8036a41ec1baa0f04d680b8bfb6f5489b9ab975f4c6ff76"
       }
     },
     {
       "source": "registry.terraform.io/hashicorp/azuread",
-      "version": "3.9.0",
+      "version": "3.10.0",
       "platform": "linux_amd64",
       "artifact": {
-        "url": "https://releases.hashicorp.com/terraform-provider-azuread/3.9.0/terraform-provider-azuread_3.9.0_linux_amd64.zip",
-        "sha256": "65326a9f3ac0783c16e05c16422d191f0a926b8d021fd5303c1fdf8dc42f16e9",
-        "provenance": "HashiCorp azuread 3.9.0 release SHA256SUMS matching registry download metadata"
+        "url": "https://releases.hashicorp.com/terraform-provider-azuread/3.10.0/terraform-provider-azuread_3.10.0_linux_amd64.zip",
+        "sha256": "f3a02ba7b5c6a300a0bffd19cb73932c6ef33bdcc9fb78d8ff289353c9646941",
+        "provenance": "HashiCorp azuread 3.10.0 release SHA256SUMS matching registry download metadata"
+      },
+      "source_build": {
+        "repository": "https://github.com/hashicorp/terraform-provider-azuread",
+        "revision": "e2a2ab1964df42b8fcbeaeb3ac76892e844866e1",
+        "artifact": {
+          "url": "https://codeload.github.com/hashicorp/terraform-provider-azuread/zip/e2a2ab1964df42b8fcbeaeb3ac76892e844866e1",
+          "sha256": "25ed0ce7c721b3a09c15defd00ffa3256c1c98f214fe788cdb2184990d6430d6",
+          "provenance": "Upstream v3.10.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0"
+        },
+        "module_files": {
+          "go.mod": "5105344451c6aac926a771f616bb32ee30fe99c0035f242aedea79a6ffd6caef",
+          "go.sum": "ab9cf40a0dbd804c2fd790e67fa27e3d63e65effd35c725537f5de0291b248cc"
+        },
+        "sha256": "8424b950de3c6a642868ba9e3b0f2d14965bcb93d8052c7244c1e1c379033cd7"
       }
     },
     {
@@ -137,6 +400,30 @@
         "url": "https://releases.hashicorp.com/terraform-provider-azurerm/3.116.0/terraform-provider-azurerm_3.116.0_linux_amd64.zip",
         "sha256": "5f1f5c7d09efa2ee8ddf21bd9efbbf8286f6e90047556bef305c062fa0ac5880",
         "provenance": "HashiCorp azurerm 3.116.0 release SHA256SUMS matching registry download metadata"
+      },
+      "source_build": {
+        "repository": "https://github.com/hashicorp/terraform-provider-azurerm",
+        "revision": "c3672e930519159ee00ff50bf844f47a09272f66",
+        "artifact": {
+          "url": "https://codeload.github.com/hashicorp/terraform-provider-azurerm/zip/c3672e930519159ee00ff50bf844f47a09272f66",
+          "sha256": "845d8acb5ef994a4d039e0e70d51dea5b32b21e57a1f66a0017675758181b3da",
+          "provenance": "Upstream v3.116.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/mod": "v0.41.0",
+          "google.golang.org/grpc": "v1.83.2",
+          "golang.org/x/oauth2": "v0.36.0",
+          "github.com/golang-jwt/jwt/v4": "v4.5.2"
+        },
+        "module_files": {
+          "go.mod": "cb8e5998d32838de31e9b39773774dac04ff25d2dcc08183128a00b717be8427",
+          "go.sum": "564201119773f35079515f0cfb5644cf17c7bc00a1b2b85b599377ee473cc8bb"
+        },
+        "sha256": "9ec3ef4587bbdf0ac895adf88630c4b378143440558b26b6e25ece7f26f78782"
       }
     },
     {
@@ -147,6 +434,30 @@
         "url": "https://releases.hashicorp.com/terraform-provider-azurerm/3.117.1/terraform-provider-azurerm_3.117.1_linux_amd64.zip",
         "sha256": "d340db7973109761cfc27d52aa02560363337c908b2c99b3628adc5a70a99d5b",
         "provenance": "HashiCorp azurerm 3.117.1 release SHA256SUMS matching registry download metadata"
+      },
+      "source_build": {
+        "repository": "https://github.com/hashicorp/terraform-provider-azurerm",
+        "revision": "42a67742eb980e14eeab4ca0ed98d5c38c0fe414",
+        "artifact": {
+          "url": "https://codeload.github.com/hashicorp/terraform-provider-azurerm/zip/42a67742eb980e14eeab4ca0ed98d5c38c0fe414",
+          "sha256": "4003444363fa1380f3f25421a9c534a1103b99bda99b1f67c117e9483f8df1c2",
+          "provenance": "Upstream v3.117.1 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/mod": "v0.41.0",
+          "google.golang.org/grpc": "v1.83.2",
+          "golang.org/x/oauth2": "v0.36.0",
+          "github.com/golang-jwt/jwt/v4": "v4.5.2"
+        },
+        "module_files": {
+          "go.mod": "1b916b2f2439758082dfeed5416f2d952528603dd3cb8dc639ebdbcb576b4a6c",
+          "go.sum": "46313deee044baa8ae96e6b2f5d73957352caff4af90c9300c6b2558787c23bd"
+        },
+        "sha256": "e3ac6b5fd279f2568e76036d8d75a4acdd58d9173e636bbb4eb29e15af044672"
       }
     },
     {
@@ -157,6 +468,28 @@
         "url": "https://releases.hashicorp.com/terraform-provider-azurerm/4.81.0/terraform-provider-azurerm_4.81.0_linux_amd64.zip",
         "sha256": "79a8d17fefe647040fcb9ee8821a4f09f395427c4fd49493489b9a93a9a1038e",
         "provenance": "HashiCorp azurerm 4.81.0 release SHA256SUMS matching registry download metadata"
+      },
+      "source_build": {
+        "repository": "https://github.com/hashicorp/terraform-provider-azurerm",
+        "revision": "5782a75422c68a0d0804ac16d97dcaf3df5ee2fa",
+        "artifact": {
+          "url": "https://codeload.github.com/hashicorp/terraform-provider-azurerm/zip/5782a75422c68a0d0804ac16d97dcaf3df5ee2fa",
+          "sha256": "0add085dff37898e77b654c378defbcd289569e09f83ab970c4da7adc97ab0a2",
+          "provenance": "Upstream v4.81.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/mod": "v0.41.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "f7a4f8cb5bc8f32dead121e79dd6914b41532ebd3220b7176302ca5fc5dc6464",
+          "go.sum": "46186985f4905fcae59df906fb720fe81c5562307050153c114f608444201a3f"
+        },
+        "sha256": "30a695f304c1d171733d54447631345f4b347bb1d6bd324e04afa137a3b5101d"
       }
     },
     {
@@ -167,16 +500,56 @@
         "url": "https://releases.hashicorp.com/terraform-provider-azurerm/5.0.1/terraform-provider-azurerm_5.0.1_linux_amd64.zip",
         "sha256": "95e572793efef127b773c35e1581e462e97fb38cf696bc6caf53c1231e21a36c",
         "provenance": "HashiCorp azurerm 5.0.1 release SHA256SUMS matching registry download metadata"
+      },
+      "source_build": {
+        "repository": "https://github.com/hashicorp/terraform-provider-azurerm",
+        "revision": "1b1c7a4028a5f4f01a71eeda808cc839938fe01e",
+        "artifact": {
+          "url": "https://codeload.github.com/hashicorp/terraform-provider-azurerm/zip/1b1c7a4028a5f4f01a71eeda808cc839938fe01e",
+          "sha256": "418132fe95b267d096fdb0dc447876f3ed1284ab910f4356f6ac69fbee352f5f",
+          "provenance": "Upstream v5.0.1 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/mod": "v0.41.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "f7a4f8cb5bc8f32dead121e79dd6914b41532ebd3220b7176302ca5fc5dc6464",
+          "go.sum": "c5be14fa877adc2b15122a408d0b49f3b25eff477d5f9679aef044017ddf9041"
+        },
+        "sha256": "8d97f1f94c8769cdd2d1999bb707d32abec05b0cd91b1f2a76580f68f7a02d5d"
       }
     },
     {
       "source": "registry.terraform.io/hashicorp/azurerm",
-      "version": "5.5.0",
+      "version": "5.9.0",
       "platform": "linux_amd64",
       "artifact": {
-        "url": "https://releases.hashicorp.com/terraform-provider-azurerm/5.5.0/terraform-provider-azurerm_5.5.0_linux_amd64.zip",
-        "sha256": "c830476015379b6c6ee61e129e187c4a043086cb6db576f36c4b03c37bd74bcf",
-        "provenance": "HashiCorp azurerm 5.5.0 release SHA256SUMS matching registry download metadata"
+        "url": "https://releases.hashicorp.com/terraform-provider-azurerm/5.9.0/terraform-provider-azurerm_5.9.0_linux_amd64.zip",
+        "sha256": "44a755607e385f5811e6eb2f73016f9bab73340d138528da73bb0cf994f7524f",
+        "provenance": "HashiCorp azurerm 5.9.0 release SHA256SUMS matching registry download metadata"
+      },
+      "source_build": {
+        "repository": "https://github.com/hashicorp/terraform-provider-azurerm",
+        "revision": "031479c566359f8f675155474d39d49e1a9d3554",
+        "artifact": {
+          "url": "https://codeload.github.com/hashicorp/terraform-provider-azurerm/zip/031479c566359f8f675155474d39d49e1a9d3554",
+          "sha256": "7c5a3a6837b2384748b1da26ab537909762b686e6da5d465a32315bb8e3a66a4",
+          "provenance": "Upstream v5.9.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0"
+        },
+        "module_files": {
+          "go.mod": "d6b268b3315f9511dd57a20310adf3aedf2deffa62797974ec58e7e860ce4fcd",
+          "go.sum": "07b4084f628e7676f3828acf2ebd7defb45402a14b0e7341e995b17402331ade"
+        },
+        "sha256": "9ce088236387cdc41d39e35ee5f83753eae19fe1226264ef4a2a5d3f93fefb0a"
       }
     },
     {
@@ -187,6 +560,24 @@
         "url": "https://releases.hashicorp.com/terraform-provider-local/2.9.1/terraform-provider-local_2.9.1_linux_amd64.zip",
         "sha256": "a8ea1c155bd5e0d695a28d3c0e2f542de8844e1791ea021f015a3f08e1c059e1",
         "provenance": "HashiCorp local 2.9.1 release SHA256SUMS matching registry download metadata"
+      },
+      "source_build": {
+        "repository": "https://github.com/hashicorp/terraform-provider-local",
+        "revision": "95ad8e4b1c13f74be02143846e13cc8f588bc096",
+        "artifact": {
+          "url": "https://codeload.github.com/hashicorp/terraform-provider-local/zip/95ad8e4b1c13f74be02143846e13cc8f588bc096",
+          "sha256": "158e4f621d4c7ce75c1c62cf2a6fb824be13ee93ac5924be363048dd4f680cd4",
+          "provenance": "Upstream v2.9.1 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0"
+        },
+        "module_files": {
+          "go.mod": "675819efbe03fc599468ab8eb500482a18be0906a0fb38f6dc0a5d56068d853a",
+          "go.sum": "c8db4ddc2b6597b78b59418f5310465b1edd3326e04bdcf3dafc930be7b85372"
+        },
+        "sha256": "a7d63a3dc448b2687d798093223e983485e8c91d537de5d062966d5a92793f49"
       }
     },
     {
@@ -197,6 +588,24 @@
         "url": "https://releases.hashicorp.com/terraform-provider-null/3.3.2/terraform-provider-null_3.3.2_linux_amd64.zip",
         "sha256": "d2855b922ea345dbd89ea287e4c6c4757e38bc0aaffeb2b79aa0b8004f9c53ff",
         "provenance": "HashiCorp null 3.3.2 release SHA256SUMS matching registry download metadata"
+      },
+      "source_build": {
+        "repository": "https://github.com/hashicorp/terraform-provider-null",
+        "revision": "a7fd5e4c96c97a2f4b0c8f9b27ec6471cf90d11e",
+        "artifact": {
+          "url": "https://codeload.github.com/hashicorp/terraform-provider-null/zip/a7fd5e4c96c97a2f4b0c8f9b27ec6471cf90d11e",
+          "sha256": "a621b7e0a304e55ac68ac17429293f825486a9086cc5977f485fde6a8d85bd8a",
+          "provenance": "Upstream v3.3.2 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0"
+        },
+        "module_files": {
+          "go.mod": "9df353a0990333e8f0fd123b4d8fd893b8c04a31fe917d76347c3654603d3d2b",
+          "go.sum": "d11f5b04f23474ffa92fee7a64245fd7e29ba63ee645b4832ec89e1762f1325e"
+        },
+        "sha256": "35f9324f6a3c9a630abc2575a3659eabf15827d74401319c1613df88e8c3bf91"
       }
     },
     {
@@ -207,6 +616,24 @@
         "url": "https://releases.hashicorp.com/terraform-provider-random/3.9.1/terraform-provider-random_3.9.1_linux_amd64.zip",
         "sha256": "60b4f8a8ef18f52bf8e19215229dae408bee732825964092db7c989fd2de4097",
         "provenance": "HashiCorp random 3.9.1 release SHA256SUMS matching registry download metadata"
+      },
+      "source_build": {
+        "repository": "https://github.com/hashicorp/terraform-provider-random",
+        "revision": "b59b1791a688fe2737b5b70ab05fdd0a4190190e",
+        "artifact": {
+          "url": "https://codeload.github.com/hashicorp/terraform-provider-random/zip/b59b1791a688fe2737b5b70ab05fdd0a4190190e",
+          "sha256": "fa98baac39c33bec2999ee02de8693fa1e36b2fe10c57e378ba22ee44351c6f1",
+          "provenance": "Upstream v3.9.1 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0"
+        },
+        "module_files": {
+          "go.mod": "7d301455b35ec877fad536605cc70736ce870e08022b2248cbf4f9666c3ae3f5",
+          "go.sum": "b43a372a0504fcb3a49fad3cf4f428510dc7c9959c2638fcfc627afba3899935"
+        },
+        "sha256": "50dfd0933a5ef517d35de6fcb240caf43d3df536a4230edabfd714448c7a6dd2"
       }
     },
     {
@@ -217,6 +644,28 @@
         "url": "https://releases.hashicorp.com/terraform-provider-time/0.13.1/terraform-provider-time_0.13.1_linux_amd64.zip",
         "sha256": "26f8e51bb7c275c404ba6028c1b530312066009194db721a8427a7bc5cdbc83a",
         "provenance": "HashiCorp time 0.13.1 release SHA256SUMS matching registry download metadata"
+      },
+      "source_build": {
+        "repository": "https://github.com/hashicorp/terraform-provider-time",
+        "revision": "aeccb44b5627498df071790595c925cff35469d1",
+        "artifact": {
+          "url": "https://codeload.github.com/hashicorp/terraform-provider-time/zip/aeccb44b5627498df071790595c925cff35469d1",
+          "sha256": "5483532759d818b82a75a601f743bc597943b9e0d0d1ad9c709218967a7e1719",
+          "provenance": "Upstream v0.13.1 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/mod": "v0.41.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "03f089fd9908161959e1951706872c96d253bd39ebcbe0eaa76452d439420148",
+          "go.sum": "3603c72b541d3a11087d8f38e7edaa8c571395647656eb3a0140322497c55877"
+        },
+        "sha256": "1df9ed7816bfb9ac8c4701dfdd30bfcb4077db2745c758142d3cca44423230a0"
       }
     },
     {
@@ -227,6 +676,24 @@
         "url": "https://releases.hashicorp.com/terraform-provider-time/0.14.2/terraform-provider-time_0.14.2_linux_amd64.zip",
         "sha256": "0aa1028d91041f4dceba193e3707dac57358d0063d97e20700e554758b67baca",
         "provenance": "HashiCorp time 0.14.2 release SHA256SUMS matching registry download metadata"
+      },
+      "source_build": {
+        "repository": "https://github.com/hashicorp/terraform-provider-time",
+        "revision": "c6ce8a254a3ad0811ad5622772b0dbf5ff98b514",
+        "artifact": {
+          "url": "https://codeload.github.com/hashicorp/terraform-provider-time/zip/c6ce8a254a3ad0811ad5622772b0dbf5ff98b514",
+          "sha256": "e3a369517f5ba6d0b2da49b39daf0476c2093c3b245d941e204887f1429d0332",
+          "provenance": "Upstream v0.14.2 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0"
+        },
+        "module_files": {
+          "go.mod": "c8c188dfee0c0c876012627d69061be3a99c99b3601112a70f01cc34ba1dbaae",
+          "go.sum": "b370c577ca92913db914f5f2dba79ade3fc9c4702fb45d0df27c3d1fc0a7ba61"
+        },
+        "sha256": "8ec5711be1b14443cc588f45a58795ca7b7a74c2fdcf9999d54a6e6534bc9735"
       }
     },
     {
@@ -237,6 +704,24 @@
         "url": "https://releases.hashicorp.com/terraform-provider-tls/4.4.1/terraform-provider-tls_4.4.1_linux_amd64.zip",
         "sha256": "debc830ec123f27944c6170d76cb4ea3542845896960bb9fc530702774df328e",
         "provenance": "HashiCorp tls 4.4.1 release SHA256SUMS matching registry download metadata"
+      },
+      "source_build": {
+        "repository": "https://github.com/hashicorp/terraform-provider-tls",
+        "revision": "623d9ccc2d963372cfcaa54b252a1c507ca69900",
+        "artifact": {
+          "url": "https://codeload.github.com/hashicorp/terraform-provider-tls/zip/623d9ccc2d963372cfcaa54b252a1c507ca69900",
+          "sha256": "4469500e686b1634dbf7007f0b4efab88ebaf313538737c8fe79190cb9cdaf76",
+          "provenance": "Upstream v4.4.1 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0"
+        },
+        "module_files": {
+          "go.mod": "f0edf348379f7cdaa5588d1c8f6e79ca860219bccacff9aa6a2189c3d0dd138d",
+          "go.sum": "70ef921582883d5606105ea7a2584fde8b2e72bb8900f6e639120ac0ac81d1a9"
+        },
+        "sha256": "21eecdcf4d37b3fc50e7d58dd538276c10d9f1aae80fa07edf141713b128b8e8"
       }
     },
     {
@@ -248,6 +733,28 @@
         "sha256": "5dd05dee677f6ebdbed00cbb1b9be444ab2d1062d345cbc9ec50a47cb41b8622",
         "provenance": "integrations github v6.13.0 release SHA256SUMS matching registry download metadata",
         "github_repository_id": "93446099"
+      },
+      "source_build": {
+        "repository": "https://github.com/integrations/terraform-provider-github",
+        "revision": "20728bb30c112287ac3e8243cdb0307a45c6a0a0",
+        "artifact": {
+          "url": "https://codeload.github.com/integrations/terraform-provider-github/zip/20728bb30c112287ac3e8243cdb0307a45c6a0a0",
+          "sha256": "93fa389add86cd02e1e0c4a86ac0fa612ef50971d6302ff2386450961a2649e4",
+          "provenance": "Upstream v6.13.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/mod": "v0.41.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "9551238c5462289a26b08eeeca1ac3af3244b2a938595d6e2b9d27704875213b",
+          "go.sum": "7152d73c8cb2ae288054feb2b86fe421a7b226fb8f8402ebb0d607f9eaebc92c"
+        },
+        "sha256": "1fdd888bb2f2b45b70b7b1c8de00209b43886d4f991cdaf7bb9ed9b47a98ea2b"
       }
     },
     {
@@ -259,6 +766,28 @@
         "sha256": "a1561528f3bc53957a9fb9dd726fa46bea08b8a25a346c12a67e6d0e7bbedcc3",
         "provenance": "microsoft azuredevops v1.16.0 release SHA256SUMS matching registry download metadata",
         "github_repository_id": "273244625"
+      },
+      "source_build": {
+        "repository": "https://github.com/microsoft/terraform-provider-azuredevops",
+        "revision": "49268e97b8c0454a16495df5d39060957557e117",
+        "artifact": {
+          "url": "https://codeload.github.com/microsoft/terraform-provider-azuredevops/zip/49268e97b8c0454a16495df5d39060957557e117",
+          "sha256": "5421c1fdf1bf4393bed788d439708a1f88e712cb7e45b332aff6ae6e1a8dcecf",
+          "provenance": "Upstream v1.16.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/mod": "v0.41.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "49d0f455a794a014054a5f2603a7c7ab836ad7dc0e698379980e738704122929",
+          "go.sum": "879eda199aceee43045a78934899c5871629dcca34345a82c9719a1116b7c7fe"
+        },
+        "sha256": "e09e39cad1e3e52ab381f68ae54a151276a62f57542325a4d1814312fe73ddf5"
       }
     }
   ],

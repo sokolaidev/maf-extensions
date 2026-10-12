@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import ast
 import itertools
 import json
 import re
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -18,7 +20,7 @@ import terraform_dependencies as prep  # noqa: E402
 
 PREPARE = (
     "RUN python3 -I /src/scripts/terraform_dependencies.py"
-    " --manifest /src/manifest.json --output /prepared"
+    " --manifest /src/manifest.json --output /prepared --provider-builds /provider-builds"
 )
 
 
@@ -57,10 +59,20 @@ def flags(instruction: list[str]) -> list[str]:
     return list(itertools.takewhile(lambda token: token.startswith("--"), instruction[1:]))
 
 
-def test_only_the_preparation_stage_reaches_the_network():
+def test_only_source_build_and_preparation_reach_the_network():
     found = stages()
-    assert list(found) == ["prepare", "prepared", "unpack", "image"]
+    assert list(found) == [
+        "provider-toolchain",
+        "provider-build",
+        "provider-packages",
+        "prepare",
+        "prepared",
+        "unpack",
+        "image",
+    ]
     assert [" ".join(tokens) for tokens in found["prepare"] if tokens[0] == "RUN"] == [PREPARE]
+    build = " ".join(" ".join(tokens) for tokens in found["provider-build"])
+    assert "build_providers.py" in build and "--update-lock" not in build
     later = [tokens for name in ("unpack", "image") for tokens in found[name] if tokens[0] == "RUN"]
     # Any second flag, such as --mount, could bind the build context into a network-less step.
     assert later and all(flags(tokens) == ["--network=none"] for tokens in later)
@@ -69,6 +81,7 @@ def test_only_the_preparation_stage_reaches_the_network():
 def test_later_stages_take_the_preparation_only_from_the_prepared_stage():
     found = stages()
     assert not [tokens for stage in found.values() for tokens in stage if tokens[0] == "ADD"]
+    assert found["provider-packages"] == [["COPY", "--from=provider-build", "/builds/", "/"]]
     assert found["prepared"] == [["COPY", "--from=prepare", "/prepared/", "/"]]
     copies = [
         tokens for name in ("unpack", "image") for tokens in found[name] if tokens[0] == "COPY"
@@ -136,3 +149,27 @@ def test_a_receipt_without_the_reader_digest_is_refused(install: Path):
     (install / "dependencies.json").write_text(json.dumps(receipt))
     with pytest.raises(AssertionError, match="rebuild the base from this checkout"):
         run_install_check(install)
+
+
+def test_provider_probes_require_valid_schemas_but_module_probes_allow_missing_inputs():
+    source = ast.parse(heredoc_step("def probe_succeeded"))
+    function = next(
+        node
+        for node in source.body
+        if isinstance(node, ast.FunctionDef) and node.name == "probe_succeeded"
+    )
+    namespace: dict[str, Any] = {"json": json}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(DOCKERFILE), "exec"), namespace)
+    result = {
+        "error": None,
+        "phases": {
+            "init": {"exit_code": 0},
+            "validate": {"exit_code": 1, "stdout": '{"valid":false}'},
+        },
+    }
+    assert namespace["probe_succeeded"]("providers rank 0", result) is False
+    assert namespace["probe_succeeded"]("avm-module", result) is True
+    result["phases"]["validate"] = {"exit_code": 0, "stdout": '{"valid":true}'}
+    assert namespace["probe_succeeded"]("providers rank 0", result) is False
+    result["schemasValid"] = True
+    assert namespace["probe_succeeded"]("providers rank 0", result) is True

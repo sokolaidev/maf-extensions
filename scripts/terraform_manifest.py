@@ -629,10 +629,14 @@ def generate(policy: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"preparation refuses packages no root owns: {sorted(refused)}")
 
 
-def dry_run(document: dict[str, Any]) -> None:
+def dry_run(document: dict[str, Any], provider_builds: Path | None = None) -> None:
     """Prove every pin against real bytes before the manifest may change."""
     with tempfile.TemporaryDirectory() as temporary:
-        prep.prepare(copy.deepcopy(document), Path(temporary) / "prepared")
+        prep.prepare(
+            copy.deepcopy(document),
+            Path(temporary) / "prepared",
+            **({"provider_builds": provider_builds} if provider_builds else {}),
+        )
 
 
 def graph_text(graph: dict[str, dict[str, Any]], pad: int) -> str:
@@ -701,24 +705,46 @@ def pin_changes(previous: dict[str, Any] | None, document: dict[str, Any]) -> li
     return lines or ["no pins changed"]
 
 
+def retain_source_builds(document: dict[str, Any], previous: dict[str, Any] | None) -> None:
+    """A catalogue refresh must not silently substitute upstream provider binaries."""
+    if previous is None or not any("source_build" in item for item in previous["providers"]):
+        return
+    builds = {
+        (item["source"], item["version"], item["platform"]): item for item in previous["providers"]
+    }
+    for provider in document["providers"]:
+        prior = builds.get((provider["source"], provider["version"], provider["platform"]))
+        if (
+            prior is None
+            or "source_build" not in prior
+            or prior["artifact"] != provider["artifact"]
+        ):
+            raise ValueError(
+                "Provider update needs a reviewed source-build lock; generate a separate proposed manifest"
+            )
+        provider["source_build"] = copy.deepcopy(prior["source_build"])
+
+
 def main() -> None:
     """Resolve, prove, and write; `--check` compares instead of writing."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--policy", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--provider-builds", type=Path)
     parser.add_argument(
         "--check", action="store_true", help="fail instead of writing when the manifest differs"
     )
     args = parser.parse_args()
+    previous = (
+        json.loads(args.output.read_text(encoding="utf-8")) if args.output.is_file() else None
+    )
     document = generate(json.loads(args.policy.read_text(encoding="utf-8")))
-    dry_run(document)
+    retain_source_builds(document, previous)
+    dry_run(document, **({"provider_builds": args.provider_builds} if args.provider_builds else {}))
     text = render(document) + "\n"
     if args.check:
         current = args.output.read_text(encoding="utf-8") if args.output.is_file() else ""
         raise SystemExit(0 if current == text else "manifest differs from the policy resolution")
-    previous = (
-        json.loads(args.output.read_text(encoding="utf-8")) if args.output.is_file() else None
-    )
     args.output.write_text(text, encoding="utf-8", newline="\n")
     print("manifest written:", args.output)
     for line in pin_changes(previous, document):

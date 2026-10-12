@@ -8,10 +8,10 @@ import json
 from typing import Any
 
 from container_release import ROOT, read
-from terraform_dependencies import policy_contract
+from terraform_dependencies import policy_contract, provider_digest
 
 CONTEXT = ROOT / "images/terraform-sandbox"
-CASES = ("pinned", "constraint", "correct-lock", "uncached-version", "wrong-lock")
+CASES = ("pinned", "constraint", "correct-lock", "uncached-version", "wrong-lock", "upstream-lock")
 FIELDS = {
     "providers": ("source", "version", "platform"),
     "modules": ("name", "revision", "graph"),
@@ -41,7 +41,7 @@ def expected_receipt() -> dict[str, Any]:
             kind: fingerprint(
                 [
                     {key: item[key] for key in fields}
-                    | {"sha256": item["artifact"]["sha256"], "decision": "verified"}
+                    | {"sha256": provider_digest(item), "decision": "verified"}
                     for item in manifest.get(kind, [])
                 ]
             )
@@ -99,7 +99,7 @@ for case in CASES:
         project.mkdir()
         version = "~> 0.22" if case == "constraint" else "0.0.0" if case == "uncached-version" else "0.22.2"
         (project / "main.tf").write_text(source.replace("VERSION", version))
-        if case in ("correct-lock", "wrong-lock"):
+        if case in ("correct-lock", "wrong-lock", "upstream-lock"):
             blocks = []
             for name, constraint in constraints.items():
                 provider = max(
@@ -107,7 +107,7 @@ for case in CASES:
                      and runner.satisfies(item["version"], constraint)),
                     key=lambda item: tuple(int(part) for part in item["version"].split(".")),
                 )
-                digest = "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" if case == "wrong-lock" else provider["h1"]
+                digest = "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" if case == "wrong-lock" else "zh:" + provider["upstream_artifact"]["sha256"] if case == "upstream-lock" else provider["h1"]
                 blocks.append(
                     f'provider "{provider["source"]}" {{\n'
                     f'  version = "{provider["version"]}"\n'
@@ -153,6 +153,8 @@ def expected_refusal(name: str, diagnostics: str) -> bool:
     text = " ".join(diagnostics.split())
     if name == "uncached-version":
         return "does not provide a modules service" in text
+    if name == "upstream-lock":
+        return "SOKOLAI provider lock verification failed: expected baked h1 checksum." in text
     if name == "wrong-lock":
         return "Failed to install provider" in text and "doesn't match any of the checksums" in text
     return False
@@ -177,7 +179,7 @@ def evidence(output: bytes) -> dict[str, Any]:
     if not isinstance(checks, list) or len(checks) != len(CASES):
         raise ValueError("Terraform AVM qualification cases are incomplete")
     for actual, name in zip(checks, CASES, strict=True):
-        success = name not in {"uncached-version", "wrong-lock"}
+        success = name not in {"uncached-version", "wrong-lock", "upstream-lock"}
         if (
             actual["name"] != name
             or actual["version"] != version

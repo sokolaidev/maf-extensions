@@ -4,12 +4,27 @@
 # The mirror leaves this build holding unpacked providers, which Terraform links into
 # every call instead of copying; the ZIPs never reach a published layer.
 ARG BASE_IMAGE=scratch
+FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS provider-toolchain
+ENV CGO_ENABLED=0 GOTOOLCHAIN=local
+RUN apk add --no-cache python3 git
+
+FROM provider-toolchain AS provider-build
+ARG MANIFEST
+COPY --from=scripts terraform_dependencies.py terraform_manifest.py /src/scripts/
+COPY runner.py build_providers.py /src/images/terraform-sandbox/
+COPY ${MANIFEST} /src/manifest.json
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build python3 /src/images/terraform-sandbox/build_providers.py --manifest /src/manifest.json --output /builds && go clean -cache -modcache
+
+FROM scratch AS provider-packages
+COPY --from=provider-build /builds/ /
+
 FROM ${BASE_IMAGE} AS prepare
 ARG MANIFEST
 COPY --from=scripts terraform_dependencies.py /src/scripts/terraform_dependencies.py
 COPY runner.py /src/images/terraform-sandbox/runner.py
 COPY ${MANIFEST} /src/manifest.json
-RUN python3 -I /src/scripts/terraform_dependencies.py --manifest /src/manifest.json --output /prepared
+COPY --from=provider-build /builds/ /provider-builds/
+RUN python3 -I /src/scripts/terraform_dependencies.py --manifest /src/manifest.json --output /prepared --provider-builds /provider-builds
 
 # The preparation alone; export it with `--target prepared --output type=local,dest=<dir>`.
 # Adding `--build-context prepared=<dir>` builds from a stored one without preparing again.
@@ -132,6 +147,7 @@ import multiprocessing
 import os
 import shutil
 import stat
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -164,6 +180,16 @@ for package in packages:
         )
 
 
+def probe_succeeded(label, result):
+    phases = result["phases"]
+    if result["error"] is not None or phases.get("init", {}).get("exit_code") != 0:
+        return False
+    if label.startswith("providers rank "):
+        validation = phases.get("validate", {})
+        return validation.get("exit_code") == 0 and json.loads(validation["stdout"]).get("valid") is True and result.get("schemasValid") is True
+    return True
+
+
 def probe(item):
     label, configuration = item
     spec = importlib.util.spec_from_file_location("runner", "/opt/maf-terraform/runner.py")
@@ -175,16 +201,31 @@ def probe(item):
     os.chdir(call)
     try:
         result = runner.execute(receipt["engine"], ".", 300)
+        if label.startswith("providers rank ") and result["phases"].get("init", {}).get("exit_code") == 0:
+            rank = int(label.rsplit(" ", 1)[1])
+            expected = {source for source, items in ranks.items() if rank < len(items)}
+            executable = "terraform" if receipt["engine"] == "terraform" else "tofu"
+            with (call / "schemas.json").open("w") as output:
+                schema = subprocess.run(
+                    ["/usr/local/bin/" + executable, "providers", "schema", "-json"],
+                    cwd=call / "project", env=runner.clean_environment(call / ".runner"),
+                    stdout=output, stderr=subprocess.PIPE, timeout=300, check=False,
+                )
+            result["schemasValid"] = schema.returncode == 0 and set(json.loads((call / "schemas.json").read_text()).get("provider_schemas", {})) == expected
     finally:
         os.chdir("/")
         shutil.rmtree(call)
     init = result["phases"].get("init", {})
-    ok = result["error"] is None and init.get("exit_code") == 0
-    return label, ok, init.get("stderr", "")[-2000:]
+    ok = probe_succeeded(label, result)
+    diagnostic = init.get("stderr", "") + result["phases"].get("validate", {}).get("stdout", "")
+    return label, ok, diagnostic[-2000:]
 
 
+provider_probes = [item for item in probes if item[0].startswith("providers rank ")]
+module_probes = [item for item in probes if not item[0].startswith("providers rank ")]
+failures = [(label, stderr) for label, ok, stderr in map(probe, provider_probes) if not ok]
 with multiprocessing.get_context("fork").Pool(min(4, os.cpu_count() or 1)) as pool:
-    failures = [(label, stderr) for label, ok, stderr in pool.imap_unordered(probe, probes) if not ok]
+    failures.extend((label, stderr) for label, ok, stderr in pool.imap_unordered(probe, module_probes) if not ok)
 for label, stderr in sorted(failures):
     print(f"offline init failed for {label}:\n{stderr}")
 assert not failures, f"{len(failures)} of {len(probes)} offline probes failed"

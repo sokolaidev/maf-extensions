@@ -192,8 +192,8 @@ def _hcl_tokens(text: str) -> list[tuple[str, str | None]]:
     return tokens
 
 
-# An attribute's value is its literal string, an object of such values, or None.
-HclValue = str | dict[str, Any] | None
+# Keep literal strings, string lists and objects; other expressions remain opaque.
+HclValue = str | list[str] | dict[str, Any] | None
 # A block item carries its labels and body; an attribute item has no labels.
 HclItem = tuple[str, list[str | None] | None, Any]
 
@@ -217,6 +217,12 @@ def _hcl_expression(
         raise ValueError("incomplete expression")
     if len(span) == 1 and span[0][0] == "string":
         return span[0][1], index
+    if span[0][0] == "[" and span[-1][0] == "]":
+        values = [value for kind, value in span[1:-1] if kind == "string"]
+        if all(kind in {"string", ",", "newline"} for kind, _ in span[1:-1]) and all(
+            isinstance(value, str) for value in values
+        ):
+            return [value for value in values if isinstance(value, str)], index
     if span[0][0] == "{":
         depth = 0
         for position, (kind, _) in enumerate(span):
@@ -493,6 +499,32 @@ def module_records(
     return records
 
 
+def verify_source_build_locks(text: str, providers: list[dict[str, Any]]) -> None:
+    """Unpacked mirrors require an exact h1 lock for each selected SOKOLAI package."""
+    if not providers:
+        return
+    locks: dict[str, dict[str, Any]] = {}
+    for kind, labels, body in parse_hcl(text):
+        if kind != "provider" or labels is None or len(labels) != 1:
+            raise ValueError("invalid provider lock")
+        source = labels[0]
+        if not isinstance(source, str) or source in locks:
+            raise ValueError("ambiguous provider lock")
+        values = {key: value for key, labels, value in body if labels is None}
+        if len(values) != len(body):
+            raise ValueError("ambiguous provider lock attributes")
+        locks[source] = values
+    for provider in providers:
+        locked = locks.get(provider["source"], {})
+        hashes = locked.get("hashes")
+        if (
+            locked.get("version") != provider["version"]
+            or not isinstance(hashes, list)
+            or provider["h1"] not in hashes
+        ):
+            raise ValueError("source-build lock checksum mismatch")
+
+
 def refuse_copied_providers(data_dir: Path) -> None:
     """A prepared mirror serves providers by symlink; an engine copies when it cannot.
 
@@ -605,9 +637,8 @@ def execute(
                 raise RuntimeError("output limit")
             return result
         receipt = INSTALL / "dependencies.json"
-        packages = (
-            json.loads(receipt.read_text()).get("registry_modules", []) if receipt.is_file() else []
-        )
+        dependencies = json.loads(receipt.read_text()) if receipt.is_file() else {}
+        packages = dependencies.get("registry_modules", [])
         if packages:
             modules = private / "data" / "modules"
             modules.mkdir()
@@ -626,6 +657,28 @@ def execute(
             if metadata["profile"] == "prepared":
                 # Only the prepared mirror serves providers unpacked; the ZIP profiles copy.
                 refuse_copied_providers(private / "data")
+                if original_lock is not None:
+                    selected = [
+                        item
+                        for item in dependencies.get("providers", [])
+                        if "source_build" in item
+                        and (
+                            private
+                            / "data/providers"
+                            / item["source"]
+                            / item["version"]
+                            / item["platform"]
+                        ).is_dir()
+                    ]
+                    try:
+                        verify_source_build_locks(original_lock.decode("utf-8"), selected)
+                    except ValueError:
+                        phases["init"]["exit_code"] = 1
+                        phases["init"]["stderr"] += (
+                            "\nSOKOLAI provider lock verification failed: "
+                            "expected baked h1 checksum.\n"
+                        )
+                        return result
             phases["validate"] = supervisor.execute_phase([str(binary), "validate", "-json"], root)
             phases["fmt"] = supervisor.execute_phase(
                 [str(binary), "fmt", "-check", "-recursive", "-no-color"], project

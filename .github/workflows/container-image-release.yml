@@ -108,7 +108,7 @@ jobs:
     needs: policy
     if: inputs.operation == 'release'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: ${{ inputs.profile == 'terraform-avm' && 150 || 60 }}
     outputs:
       approval_name: ${{ steps.approval-summary.outputs.approval_name }}
       summary_url: ${{ steps.approval-summary.outputs.summary_url }}
@@ -121,6 +121,12 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Make room for the AVM provider toolchain and build cache
+        if: inputs.profile == 'terraform-avm' && github.run_attempt == 1
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup
+          df -h /
       - name: Install preparation tools on the initial attempt
         if: github.run_attempt == 1
         run: |
