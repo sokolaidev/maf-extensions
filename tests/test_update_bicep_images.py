@@ -187,6 +187,7 @@ def test_weekly_image_proposal_is_independent_and_scoped():
     }
     scripts = "\n".join(step.get("run", "") for step in job["steps"])
     assert "update_bicep_images.py" in scripts and "test_update_bicep_images.py" in scripts
+    assert "test_bicep_cli_download.py" in scripts
     assert "docker build" not in scripts and "gh workflow run" not in scripts
     assert set(jobs["report-failure"]["needs"]) == {"propose", "propose-images"}
     assert (
