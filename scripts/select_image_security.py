@@ -47,6 +47,7 @@ IMAGE_INPUTS = {
 CONSUMER_GUIDES = {
     "images/bicep-sandbox/README.md",
     "images/bicep-sandbox/AVM.md",
+    "images/bicep-sandbox/BICEP.md",
     "images/sbx-template/README.md",
     "images/graphviz-sandbox/README.md",
     "images/drawio-export/README.md",
@@ -64,6 +65,7 @@ SCRIPT_INPUTS = {
     "scripts/build_bicep_prepared_image.py": ("bicep-avm",),
     "scripts/bicep_dependencies.py": ("bicep-avm",),
     "scripts/bicep_avm_qualification.py": ("bicep-avm",),
+    "scripts/bicep_qualification.py": ("bicep",),
     "scripts/build_hyperlight_aks_image.py": ("hyperlight",),
     "scripts/hyperlight_image_smoke.py": ("hyperlight",),
     "scripts/check_hyperlight_image_compatibility.py": ("hyperlight",),

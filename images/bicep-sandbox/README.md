@@ -1,5 +1,7 @@
 # `bicep-sandbox` — the image `bicep_validate` runs in
 
+For the public `bicep` image, start with the [consumer guide](BICEP.md): contents, digest verification, offline usage and qualification limits. This page covers building the source image and backend integration.
+
 The base image has two layers on Azure Linux: a pinned Bicep CLI, and a [`bicepconfig.json`](bicepconfig.json) at `/maf-sandbox/work`. The optional [prepared profile](#prepared-avm-profile) adds a verified module cache for closed-network validation. Neither runtime image carries agent code or Python; files to compile arrive at run time.
 
 Both samples run this one image. [`samples/01_acas_bicep`](../../samples/01_acas_bicep/) boots it as a disk image in an Azure Container Apps sandbox group; [`samples/02_wslc_bicep`](../../samples/02_wslc_bicep/) runs it as a local container under `wslc`. Sharing it is deliberate: the two samples exist to show that only the backend changes, and they would not be comparable if each validated against a compiler of its own.
