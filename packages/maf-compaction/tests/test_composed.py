@@ -3188,3 +3188,40 @@ def test_the_chains_wait_is_taken_and_put_back_with_the_record_halfs_decisions()
         None,
     )
     assert chain.tool_results._settled == {"g1"}
+
+
+async def test_partial_table_coverage_fits_without_shedding_and_replays_after_restore() -> None:
+    header = "| Quota | Limit | Usage |\n| --- | --- | --- |\n"
+    rows = [
+        f"| quota-{index:04d} | limit-{index:04d}-1000 | usage-{index:04d}-2000 |\n"
+        for index in range(400)
+    ]
+    messages = _tool_group(1)
+    messages[1].contents[0].result = header + "".join(rows)
+    messages.extend(_record_messages("\n" + header + "".join(rows[:120])))
+    untouched = copy.deepcopy(messages)
+    ceiling = _size(messages) - 1_000
+    summarizer = _FailingSummarizer()
+
+    def build() -> ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
+        return _composed(
+            ceiling,
+            tool_results=_record_phase(ceiling, keep_head_groups=0),
+            user_turns=_user_phase(ceiling, summarizer=summarizer, summary_mode="boundary"),
+            user_trigger_fraction=1.0,
+        )
+
+    strategy = build()
+    assert await strategy(messages)
+    assert included_token_count(messages) <= ceiling
+    assert not any(message.additional_properties.get(EXCLUDED_KEY) for message in messages)
+    assert all(row in _rendered(messages) for row in rows)
+    assert strategy.groups_held_unreachable_coverage == 1
+    assert summarizer.calls == 0
+
+    restored = build()
+    restored.restore_session_state(strategy.session_state())
+    assert await restored(untouched)
+    assert _rendered(untouched) == _rendered(messages)
+    assert included_token_count(untouched) == included_token_count(messages)
+    assert summarizer.calls == 0

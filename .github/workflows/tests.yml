@@ -969,23 +969,25 @@ jobs:
 
       # `--find-links dist/` resolves intra-family deps against the wheels just built, not
       # PyPI â€” deliberately opposite of publish-packages.yml's copy of this gate.
-      # The core this checkout built, named once. A dependent floored on the release this
-      # branch cuts resolves against neither the index nor `dist/`, where the core still
-      # carries its pre-bump version, so the steps below are handed it directly. The loop
+      # Built cores are named once. A dependent floored on the release this branch cuts
+      # resolves against neither the index nor `dist/`, where the cores still carry their
+      # pre-bump versions, so the steps below are handed them directly. The loop
       # bodies may not name a package (#450), which is why this is its own step.
-      - name: Pin the core this checkout built
+      - name: Pin the cores this checkout built
         if: needs.changes.outputs.code == 'true'
         run: |
           set -euo pipefail
           wheel="$(ls dist/maf_sandbox-*.whl)"
           override="$RUNNER_TEMP/core-override.txt"
           echo "maf-sandbox @ file://$(readlink -f "$wheel")" > "$override"
+          compaction_wheel="$(ls dist/maf_compaction-*.whl)"
+          echo "maf-compaction @ file://$(readlink -f "$compaction_wheel")" >> "$override"
           echo "CORE_WHEEL=$wheel" >> "$GITHUB_ENV"
           echo "CORE_OVERRIDE=$override" >> "$GITHUB_ENV"
 
       - name: Install + use each wheel in a clean environment
         if: needs.changes.outputs.code == 'true'
-        # The core is overridden to the one this checkout built. A dependent whose floor waits
+        # Cores are overridden to those this checkout built. A dependent whose floor waits
         # on the release this branch cuts cannot resolve against the index or against `dist/`,
         # where the core still carries its pre-bump version â€” and what this step asks is
         # whether the wheel installs and works, not whether that number exists yet. Pairing
