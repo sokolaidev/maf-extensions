@@ -24,6 +24,7 @@ See ``docs/compaction/strategies.md`` for defaults, wiring and design rationale.
 
 from __future__ import annotations
 
+import re
 import string
 from collections import Counter
 from collections.abc import Awaitable, Callable, Collection, Sequence
@@ -303,7 +304,8 @@ RECALL_VALUES_DESCRIPTION: Final[str] = (
     "those long enough to need it. Carry over any summary a tool already produced as it "
     "stands, rather than rewriting it. Summarise the remaining content briefly, so its "
     "substance is still represented. Record only what the results actually contained, and "
-    "where you must choose, keep exactness over brevity."
+    "where you must choose, keep exactness over brevity. For large Markdown tables, quote "
+    "complete rows verbatim with their column headings; uncovered rows remain in the result."
 )
 
 
@@ -477,6 +479,45 @@ def _group_result_text(messages: Sequence[Message], group: dict[str, Any]) -> st
                     content.result if isinstance(content.result, str) else str(content.result)
                 )
     return "\n".join(parts)
+
+
+def _table_rows(text: str) -> dict[int, tuple[str, str]]:
+    """Index Markdown table data rows outside code fences by their exact header and row text."""
+    lines = text.splitlines()
+    rows: dict[int, tuple[str, str]] = {}
+    header: str | None = None
+    columns = 0
+    fence: str | None = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if match := re.match(r"(`{3,}|~{3,})(.*)$", stripped):
+            delimiter, trailing = match.groups()
+            if fence is None:
+                fence = delimiter
+            elif delimiter[0] == fence[0] and len(delimiter) >= len(fence) and not trailing.strip():
+                fence = None
+            header = None
+            continue
+        if fence is not None:
+            continue
+        cells = stripped[1:-1].split("|")
+        if not (stripped.startswith("|") and stripped.endswith("|")) or "\\" in stripped:
+            header = None
+            continue
+        if index and all(re.fullmatch(r"\s*:?-{3,}:?\s*", cell) for cell in cells):
+            previous = lines[index - 1].strip()
+            if (
+                previous.startswith("|")
+                and previous.endswith("|")
+                and "\\" not in previous
+                and len(previous[1:-1].split("|")) == len(cells)
+            ):
+                rows.pop(index - 1, None)
+                header, columns = previous, len(cells)
+            continue
+        if header is not None and len(cells) == columns:
+            rows[index] = (header, stripped)
+    return rows
 
 
 def _tokens(text: str, *, fold_case: bool = True) -> list[str]:
@@ -1098,6 +1139,9 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             :data:`DEFAULT_COVERAGE_SHARE` for where the default sits and why. Zero means any
             group holding a distinctive value at all counts as covered, which restores the
             behaviour this check replaced and is there so the two can be run side by side.
+        record_target_tokens: Expected record size, matching make_recall_tool(target_tokens=...).
+            Larger results can release exactly quoted table rows while retaining the remainder.
+            Also used to estimate whether whole-group value coverage can fit.
         fallback: What runs when no record arrives in time, or one does not free enough. It
             must be an :class:`~._anchored.AnchoredCompactionStrategy`, or a subclass: those
             honour :mod:`._preserve`, which is what keeps the record and the groups it did not
@@ -1114,6 +1158,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         trigger_fraction: float = DEFAULT_TRIGGER_FRACTION,
         fallback_fraction: float = DEFAULT_FALLBACK_FRACTION,
         coverage_share: float = DEFAULT_COVERAGE_SHARE,
+        record_target_tokens: int = DEFAULT_RECORD_TARGET_TOKENS,
         fallback: AnchoredCompactionStrategy | None = None,
     ) -> None:
         """Validate and store the configuration.
@@ -1147,6 +1192,10 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         self.trigger_fraction = trigger_fraction
         self.fallback_fraction = fallback_fraction
         self.coverage_share = coverage_share
+        if record_target_tokens <= 0:
+            raise ValueError("record_target_tokens must be positive.")
+        self.record_target_tokens = record_target_tokens
+        self._unreachable: set[str] = set()
         # Typing does not stop an untyped caller passing one of the framework's strategies.
         if fallback is not None and not isinstance(fallback, AnchoredCompactionStrategy):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError(
@@ -1348,6 +1397,15 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         :attr:`groups_preserved_uncovered`.
         """
         return len(self._uncovered)
+
+    @property
+    def groups_held_unreachable_coverage(self) -> int:
+        """Groups held on the last record pass whose estimated value coverage exceeds the target.
+
+        The estimate sums standalone token counts for the cheapest required distinct values.
+        It excludes labels, formatting and other groups, and is not a tokenizer-independent proof.
+        """
+        return len(self._unreachable)
 
     @property
     def groups_preserved_uncovered(self) -> int:
@@ -1666,6 +1724,10 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         ambiguity the count rule below was built for: two calls to one tool return two different
         sets of values, and a record quoting both has demonstrably accounted for both.
 
+        Large uncovered string results can also release exact Markdown table rows with matching
+        column headings in a record. The remainder stays held; this does not relax the share
+        required to delete a whole group.
+
         **Both sides are tokenised, and the comparison is membership rather than substring.**
         Asking whether a value occurs anywhere in the record's text is not a test of whether the
         record carries it: a group holding ``2026`` and ``1234`` was "covered" by a record
@@ -1732,6 +1794,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         # Tokenised once, and kept in both shapes the two rules need: a set for "is this value
         # in the record", a count for "is this name mentioned as often as it was called".
         quoted = set(_tokens(record, fold_case=False))
+        quoted_rows = set(_table_rows(record).values())
         mentions = Counter(_tokens(record))
 
         candidates: list[tuple[dict[str, Any], set[str], set[str]]] = []
@@ -1779,10 +1842,21 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         # record still failing to carry" rather than "how much has it ever failed to carry".
         # See ``groups_kept_uncovered``.
         uncovered: set[str] = set()
+        unreachable: set[str] = set()
         for group, names, values in candidates:
             members = messages[group["start_index"] : group["end_index"] + 1]
             if not self._is_covered(quoted, names=names, values=values, named=named):
-                uncovered.add(str(group["group_id"]))
+                group_id = str(group["group_id"])
+                uncovered.add(group_id)
+                costs = sorted(self.tokenizer.count_tokens(value) for value in values)
+                required = ceil(len(values) * self.coverage_share)
+                if sum(costs[:required]) > self.record_target_tokens:
+                    unreachable.add(group_id)
+                if (
+                    self.tokenizer.count_tokens(_group_result_text(messages, group))
+                    > self.record_target_tokens
+                ):
+                    changed = self._release_recorded_rows(members, quoted_rows) or changed
                 # Held from the pass that finds it uncovered, not from the pass that gives up
                 # on it: the ask for another record is made now and answered two passes later,
                 # and the fallback can run in between. A group shortened while its record is
@@ -1802,6 +1876,38 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                     set_excluded(message, excluded=True, reason="tool_summary_anchored") or changed
                 )
         self._uncovered = uncovered
+        self._unreachable = unreachable
+        if changed:
+            annotate_token_counts(messages, tokenizer=self.tokenizer, force_retokenize=True)
+        return changed
+
+    def _release_recorded_rows(
+        self, members: list[Message], quoted_rows: set[tuple[str, str]]
+    ) -> bool:
+        """Remove exact quoted Markdown rows, retaining headings and every uncovered byte."""
+        changed = False
+        for message in members:
+            for content in message.contents:
+                if content.type != "function_result" or not isinstance(content.result, str):
+                    continue
+                original = content.result
+                lines = original.splitlines(keepends=True)
+                rows = _table_rows(original)
+                retained = [
+                    line
+                    for index, line in enumerate(lines)
+                    if not (_distinctive_tokens(line) and rows.get(index) in quoted_rows)
+                ]
+                if len(retained) == len(lines):
+                    continue
+                marker = "[Rows quoted verbatim in compaction records are omitted below.]\n"
+                shortened = "".join(retained)
+                if not shortened.startswith(marker):
+                    shortened = marker + shortened
+                if self.tokenizer.count_tokens(shortened) >= self.tokenizer.count_tokens(original):
+                    continue
+                content.result = shortened
+                changed = True
         return changed
 
     def _reforce_or_settle(self, records: int) -> None:

@@ -572,6 +572,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return self.tool_results.fallbacks_held_after_record
 
     @property
+    def groups_held_unreachable_coverage(self) -> int:
+        """Groups whose estimated value coverage exceeds the record target on the last pass."""
+        return self.tool_results.groups_held_unreachable_coverage
+
+    @property
     def groups_kept_uncovered(self) -> int:
         """:attr:`~._toolsummary.ToolResultAnchoredSummarizationCompactionStrategy.groups_kept_uncovered`."""
         return self.tool_results.groups_kept_uncovered
