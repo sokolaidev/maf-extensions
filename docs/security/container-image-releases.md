@@ -258,11 +258,11 @@ These workflow changes apply to future dispatches. Do not restart, rebuild or re
 
 #### Web and GitHub Mobile acceptance
 
-The issue's original observation records Mobile displaying only “Container image release #9” and “approve” for [Bicep AVM run 38160334716](https://github.com/sokolaidev/maf-extensions/actions/runs/38160334716). The revised presentation still needs observation on an actual pending approval after the workflow is merged. Automated summary and metadata checks establish neither web rendering nor Mobile behavior.
+The issue's original observation records Mobile displaying only “Container image release #9” and “approve” for [Bicep AVM run 38160334716](https://github.com/sokolaidev/maf-extensions/actions/runs/38160334716). The maintainer subsequently confirmed that an actual GitHub Mobile approval screen showed the expected information and requested closure, as recorded in the [2026-10-12 closure comment](https://github.com/sokolaidev/maf-extensions/issues/1854#issuecomment-6134366485). Separate web-screen observation was not recorded. Automated summary and metadata checks establish neither web rendering nor Mobile behavior.
 
 The summary renderer was exercised locally against the published `bicep-avm:0.1.0` candidate and its hash-bound preparation index: five passing Bicep checks, an empty remaining-container list, 192 Syft packages, zero matches in every reported severity, assessment time `2026-10-11T17:39:20.856845+00:00` and database age 11.14 hours at assessment. The raw report omits `ignoredMatches`, so the summary marks that count unavailable. This checks retained-data extraction, not a new image execution or approval UI.
 
-For the next maintainer-dispatched pending approval, record the run URL and attempt, source revision, operation/profile/version, browser and Mobile version, exact run/job text visible directly, whether the environment evidence link is visible and reachable before approval, and which details require opening Summary. Exercise the browser fallback from Mobile and record its result. Do not approve, reject or dispatch a publication solely to test presentation. Keep [#1854](https://github.com/sokolaidev/maf-extensions/issues/1854) open until both web and Mobile observations are recorded; publication, recovery and abandonment presentation require their own observations as those protected flows are next used.
+For the next maintainer-dispatched pending approval, record the run URL and attempt, source revision, operation/profile/version, browser and Mobile version, exact run/job text visible directly, whether the environment evidence link is visible and reachable before approval, and which details require opening Summary. Exercise the browser fallback from Mobile and record its result. Do not approve, reject or dispatch a publication solely to test presentation. Further web, recovery and abandonment observations remain separate from the confirmed Mobile experience and can be recorded as those protected flows are next used.
 
 ## References
 
@@ -314,7 +314,7 @@ Builds use profile `graphviz`, source path `images/graphviz-sandbox`, and regist
 
 | Decision | State | Tracking |
 |---|---|---|
-| Approval context and Mobile usability | Presentation implemented; actual pending web/Mobile verification pending | [#1854](https://github.com/sokolaidev/maf-extensions/issues/1854) (open) |
+| Approval context and Mobile usability | Presentation implemented; maintainer confirmed actual Mobile approval and requested closure; separate web observation not recorded | [#1854](https://github.com/sokolaidev/maf-extensions/issues/1854) (closed) by [#1856](https://github.com/sokolaidev/maf-extensions/pull/1856) (merged) |
 | Public GHCR destination and repository linkage | Graphviz 0.1.2 and Bicep AVM 0.1.0 public pull and immutable evidence delivery passed | untracked |
 | Strict High/Critical gate for publication | Graphviz and Bicep AVM publication and first monitoring assessment passed; remaining profiles pending | untracked |
 | 1: Independent per-profile versions and immutable release identities | Graphviz 0.1.2 and Bicep AVM 0.1.0 identities published and verified; remaining profiles pending | untracked |
