@@ -233,6 +233,7 @@ def test_missing_committed_session_preserves_checkpoint_and_result_rows(tmp_path
 
 def test_empty_shared_database_cannot_bypass_legacy_migration(tmp_path):
     root = tmp_path / "db"
+    shared.prepare(root)
     with open_store(root, "legacy"):
         pass
     before = (root / "state.sqlite").read_bytes()
