@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 import bicep_avm_qualification
+import bicep_qualification
 import terraform_avm_qualification
 from build_hyperlight_aks_image import _smoke_output, verify_image
 from container_release import ROOT, now, profiles, read, require_digest, write
@@ -39,7 +40,9 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             "-ec",
             "bicep --version; printf \"param name string = 'release-probe'\\noutput result string = name\\n\" > /tmp/main.bicep; bicep build /tmp/main.bicep --outfile /tmp/main.json; test -s /tmp/main.json",
         ]
-        if profile == "bicep-avm":
+        if profile == "bicep":
+            command = bicep_qualification.command()
+        elif profile == "bicep-avm":
             command = bicep_avm_qualification.command()
     elif profile in {"graphviz", "drawio-sandbox"}:
         command = [
@@ -100,6 +103,8 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
     ]
     if profile in {"bicep", "bicep-avm", "sbx-bicep"}:
         create[2:2] = ["--env", "DOTNET_BUNDLE_EXTRACT_BASE_DIR=/tmp/dotnet-bundle"]
+    if profile == "bicep":
+        create[2:2] = ["--tmpfs", f"{bicep_qualification.WORK}:rw,noexec,size=16m"]
     if profile == "drawio-export":
         for capability in ("CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "KILL"):
             create[2:2] = ["--cap-add", capability]
@@ -113,7 +118,10 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
         )
         result = None
         evidence_key = "bicepAvm" if profile == "bicep-avm" else "terraformAvm"
-        if profile == "bicep-avm":
+        if profile == "bicep":
+            evidence_key = "bicep"
+            result = bicep_qualification.evidence(output)
+        elif profile == "bicep-avm":
             result = bicep_avm_qualification.evidence(output)
         elif profile == "terraform-avm":
             result = terraform_avm_qualification.evidence(output)
@@ -121,7 +129,7 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
         subprocess.run(
             ["docker", "rm", "--force", name], check=True, capture_output=True, timeout=30
         )
-    if profile in {"bicep-avm", "terraform-avm"}:
+    if profile in {"bicep", "bicep-avm", "terraform-avm"}:
         remaining = subprocess.run(
             ["docker", "ps", "--all", "--quiet", "--filter", f"name=^/{name}$"],
             check=True,

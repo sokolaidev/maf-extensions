@@ -14,3 +14,4 @@ RUN tdnf install -y ca-certificates curl icu \
 
 # Fallback policy for clients that do not stage a configuration.
 COPY bicepconfig.json /maf-sandbox/work/bicepconfig.json
+COPY BICEP-LICENSE /usr/share/licenses/bicep/LICENSE
