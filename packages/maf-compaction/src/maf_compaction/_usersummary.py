@@ -37,6 +37,7 @@ from agent_framework._compaction import (
 )
 
 from ._preserve import any_preserved, set_preserved
+from ._summary_input import bounded_prefix, fits_summary_input, summary_request
 from ._summary_links import has_summary_links
 
 if TYPE_CHECKING:
@@ -466,6 +467,11 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             run. This is the hysteresis: without it the strategy fires once per turn for the
             rest of a run that stays above the trigger. ``0.0`` disables it. See
             :data:`DEFAULT_MIN_BAND_SHARE`.
+        max_summary_input_tokens: Maximum estimated tokens in a summarizer request, including
+            its instructions and numbered transcript. Defaults to half ``max_input_tokens``
+            (at least one). Only the oldest whole turns or summaries that fit are replaced;
+            an oldest item that cannot fit is left untouched. The composition shares this
+            limit for record merges and rewrites. Reserve provider overhead separately.
         summary_mode: What a pass does with the summary the previous pass left behind: one of
             :data:`SUMMARY_MODES`. The recompacting default re-reads and replaces it; the
             boundary mode leaves it standing and compacts only what is newer; the fold mode does
@@ -496,6 +502,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         keep_tail_user_turns: int = DEFAULT_KEEP_TAIL_USER_TURNS,
         trigger_fraction: float = DEFAULT_USER_TRIGGER_FRACTION,
         min_band_share: float = DEFAULT_MIN_BAND_SHARE,
+        max_summary_input_tokens: int | None = None,
         summary_mode: str = DEFAULT_SUMMARY_MODE,
         prompt: str | None = None,
         fold_prompt: str | None = None,
@@ -528,6 +535,11 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             raise ValueError("min_band_share must be in [0.0, 1.0).")
         if summary_mode not in SUMMARY_MODES:
             raise ValueError(f"summary_mode must be one of {SUMMARY_MODES}, not {summary_mode!r}.")
+        if max_summary_input_tokens is None:
+            max_summary_input_tokens = max(1, max_input_tokens // 2)
+        if type(max_summary_input_tokens) is not int or max_summary_input_tokens <= 0:
+            raise ValueError("max_summary_input_tokens must be a positive integer.")
+        self.max_summary_input_tokens = max_summary_input_tokens
         self.max_input_tokens = max_input_tokens
         self.tokenizer = tokenizer
         self.client = client
@@ -868,6 +880,18 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             self._declined += 1
             return False
 
+        band = bounded_prefix(
+            band,
+            render=lambda spans: _format_turns([messages[span["start_index"]] for span in spans]),
+            prompt=self.prompt,
+            tokenizer=self.tokenizer,
+            limit=self.max_summary_input_tokens,
+        )
+        # The share gates the eligible band; a bounded pass must still contain new material.
+        if not self._worth_compacting(messages, band, 0):
+            self._declined += 1
+            return False
+
         transcript = _format_turns([messages[span["start_index"]] for span in band])
         remembered = self._recall(self.prompt, transcript)
         if remembered is None:
@@ -1140,7 +1164,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         return removable >= behind * self.min_band_share
 
     async def _fold(self, messages: list[Message], standing: list[dict[str, Any]]) -> bool:
-        """Collapse every standing summary into one, which becomes the new boundary.
+        """Collapse the oldest standing summaries that fit into one boundary.
 
         The mechanics are :meth:`_replace`'s, applied to summaries instead of turns: the fold's
         output is inserted where the oldest summary stood, carries the ids of every summary and
@@ -1171,6 +1195,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             True if the outgoing messages changed.
         """
+        standing = self._bounded_summaries(messages, standing)
+        if len(standing) < 2:
+            return False
         answer = await self._fold_answer(messages, standing)
         if answer is None:
             return False
@@ -1185,7 +1212,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         return True
 
     async def fold_if_smaller(self, messages: list[Message]) -> FoldOutcome:
-        """Collapse every standing summary into one, but only into one smaller than they are.
+        """Collapse the oldest summaries that fit, only if their replacement is smaller.
 
         The composed row's seam, and not a pass of this strategy's own: nothing here reads the
         trigger, the band or :meth:`_fold_due`, because the caller has already decided that the
@@ -1208,9 +1235,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             ``"folded"`` when the summaries were collapsed, ``"rejected"`` when the answer was no
             smaller than them, ``"failed"`` when the summarizer gave none -- counted under
             :attr:`user_summary_failures` like any other -- and ``"skipped"`` when fewer than
-            two summaries stand, which is the rewrite-of-one the fold mode refuses as well.
+            two summaries fit, which avoids rewriting one summary on its own.
         """
-        standing = self._observe_summaries(messages)
+        standing = self._bounded_summaries(messages, self._observe_summaries(messages))
         if len(standing) < 2:
             return "skipped"
         answer = await self._fold_answer(messages, standing)
@@ -1248,17 +1275,34 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         """
         if not self._kept_folds:
             return False
-        standing = self._observe_summaries(messages)
-        if len(standing) < 2:
-            return False
-        transcript = _format_turns(
-            [messages[span["start_index"]] for span in standing], text=_summary_body
+        changed = False
+        while True:
+            standing = self._observe_summaries(messages)
+            for count in range(len(standing), 1, -1):
+                prefix = standing[:count]
+                transcript = _format_turns(
+                    [messages[span["start_index"]] for span in prefix], text=_summary_body
+                )
+                kept = self._kept_folds.get(transcript)
+                if kept is not None:
+                    self._apply_fold(messages, prefix, kept, True)
+                    changed = True
+                    break
+            else:
+                return changed
+
+    def _bounded_summaries(
+        self, messages: list[Message], standing: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        return bounded_prefix(
+            standing,
+            render=lambda spans: _format_turns(
+                [messages[span["start_index"]] for span in spans], text=_summary_body
+            ),
+            prompt=self.fold_prompt,
+            tokenizer=self.tokenizer,
+            limit=self.max_summary_input_tokens,
         )
-        kept = self._kept_folds.get(transcript)
-        if kept is None:
-            return False
-        self._apply_fold(messages, standing, kept, True)
-        return True
 
     async def _fold_answer(
         self, messages: list[Message], standing: list[dict[str, Any]]
@@ -1381,12 +1425,15 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             The summary text, stripped, or None on either failure.
         """
+        if not fits_summary_input(
+            prompt, transcript, tokenizer=self.tokenizer, limit=self.max_summary_input_tokens
+        ):
+            logger.warning("Skipping user-turn compaction: summary input exceeds its token limit.")
+            self._failures += 1
+            return None
         try:
             response = await self.client.get_response(
-                [
-                    Message(role="system", contents=[prompt]),
-                    Message(role="user", contents=[transcript]),
-                ],
+                summary_request(prompt, transcript),
                 stream=False,
             )
         except Exception as error:

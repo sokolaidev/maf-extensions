@@ -46,6 +46,7 @@ from ._anchored import (
     _is_marker,  # pyright: ignore[reportPrivateUsage]
 )
 from ._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
+from ._summary_input import bounded_prefix, fits_summary_input, summary_request
 from ._toolsummary import (
     PRESERVE_REASON_UNCOVERED,
     PRESERVE_REASON_UNRECORDED,
@@ -1161,7 +1162,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return changed
 
     async def _merge_records(self, messages: list[Message]) -> bool:
-        """Step a: merge the active records into one, when there are at least two.
+        """Step a: merge the oldest records that fit, when at least two fit.
 
         Only records :func:`~._toolsummary.consolidatable_record_groups` offers: a record whose
         result this model call carried in waits for the next pass, and is not counted towards the
@@ -1173,7 +1174,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         records give the same transcript, and a merge refused on it is skipped. A new
         record, or a kept rewrite, changes the transcript and the merge is asked for again.
         """
-        groups = consolidatable_record_groups(messages)
+        groups = self._bounded_records(messages, self.merge_prompt)
         if len(groups) < 2:
             return False
         transcript = _transcript(messages, groups)
@@ -1192,7 +1193,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return False
 
     async def _merge_user_summaries(self, messages: list[Message]) -> bool:
-        """Step b: fold the standing user summaries into one, when there are at least two."""
+        """Step b: fold the oldest user summaries that fit, when at least two fit."""
         outcome = await self.user_turns.fold_if_smaller(messages)
         if outcome == "folded":
             self._user_summaries_merged += 1
@@ -1204,11 +1205,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     async def _rewrite_records(self, messages: list[Message], start: _ChainStart) -> bool:
         """Step c: rewrite the record harder, up to :attr:`harder_attempts` times on this pass.
 
-        Every active record is handed over, which is one record whenever step a succeeded or
-        there was only one, and several when a merge was refused -- in which case a rewrite is a
-        harder merge, and the prompt says so. Each attempt is judged against the records as they
-        stand when it is made, so a kept attempt raises the bar for the next. A record whose
-        result this model call carried in is not handed over, as step a does not merge it.
+        The oldest whole records that fit the request budget are handed over. With several,
+        a rewrite is a harder merge, and the prompt says so. Each attempt is judged against the
+        records as they stand when it is made, so a kept attempt raises the bar for the next.
+        A record whose result this model call carried in is not handed over, as step a does
+        not merge it.
 
         **A refusal forecloses its own attempt and every milder one, on that record, for the
         run.** Remembered by transcript -- the records' content -- as the harshest attempt refused
@@ -1235,16 +1236,17 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         for attempt in range(1, self.harder_attempts + 1):
             if attempt > 1 and not self._short_of_target(messages, start):
                 break
-            groups = consolidatable_record_groups(messages)
+            prompt = harder_record_prompt(attempt)
+            groups = self._bounded_records(messages, prompt)
             if not groups:
-                break
+                continue
             transcript = _transcript(messages, groups)
             if self._refused_rewrites.get(transcript, 0) >= attempt:
                 self._record_rewrites_skipped += 1
                 continue
             self._record_rewrites += 1
             outcome = await self._consolidate(
-                messages, groups, prompt=harder_record_prompt(attempt), transcript=transcript
+                messages, groups, prompt=prompt, transcript=transcript
             )
             if outcome == "accepted":
                 changed = True
@@ -1254,6 +1256,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     self._refused_rewrites.get(transcript, 0), attempt
                 )
         return changed
+
+    def _bounded_records(self, messages: list[Message], prompt: str) -> list[dict[str, Any]]:
+        return bounded_prefix(
+            consolidatable_record_groups(messages),
+            render=lambda groups: _transcript(messages, groups),
+            prompt=prompt,
+            tokenizer=self.tokenizer,
+            limit=self.user_turns.max_summary_input_tokens,
+        )
 
     async def _consolidate(
         self, messages: list[Message], groups: list[dict[str, Any]], *, prompt: str, transcript: str
@@ -1315,12 +1326,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             The text, or None when the summarizer raised or said nothing.
         """
+        if not fits_summary_input(
+            prompt,
+            transcript,
+            tokenizer=self.tokenizer,
+            limit=self.user_turns.max_summary_input_tokens,
+        ):
+            logger.warning("Skipping record consolidation: summary input exceeds its token limit.")
+            self._record_summary_failures += 1
+            return None
         try:
             response = await self.user_turns.client.get_response(
-                [
-                    Message(role="system", contents=[prompt]),
-                    Message(role="user", contents=[transcript]),
-                ],
+                summary_request(prompt, transcript),
                 stream=False,
             )
         except Exception as error:

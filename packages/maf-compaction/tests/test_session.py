@@ -68,6 +68,7 @@ def build_stack(summarizer=None, *, budget=2000, composed=True):
             max_input_tokens=budget,
             tokenizer=TOKENIZER,
             client=summarizer or Summarizer(),
+            max_summary_input_tokens=100_000,
             summary_mode="boundary",
             remembered_requests=2,
         )

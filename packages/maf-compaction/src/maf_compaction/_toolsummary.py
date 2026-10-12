@@ -379,8 +379,8 @@ def _newest_record_identity(messages: list[Message]) -> str:
     :func:`build_record_message` -- so it is named by its text. The two lists agree on that text
     because the chain puts the answer the copies pass was given on the store
     (:meth:`~._composed.ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy._ask`).
-    And a change of text is always a new record: the chain writes one only in place of every
-    standing record, and only when it is smaller than them, so a written record never repeats
+    And a change of text is always a new record: the chain writes one only in place of a prefix of
+    standing records, and only when it is smaller than them, so a written record never repeats
     the one straight before it. The two forms are prefixed apart so neither can read as the other.
     """
     index = find_record_index(messages)
@@ -1648,15 +1648,10 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         strategy never calls it itself. The replaced records are released from their
         preservation and excluded with :data:`CONSOLIDATE_EXCLUDE_REASON`, call and result
         together so no call is left without its answer, and the replacement is inserted
-        directly behind the newest of them. That position is what makes it a record to
-        everything downstream without a second rule anywhere: it is the newest record, so
-        :func:`find_record_index` and the recall middleware anchor on it and count pending tool
-        work from it exactly as they did from the newest record it replaced; every group the
-        replaced records stood in front of is in front of it, so ``_drop_before`` reads the same
-        conversation against its text alone; it is not a tool group, so :func:`_hold_unrecorded`
-        and :func:`_droppable_groups_after` never count it; and it is a record group
-        (:func:`_is_recall_group`), so :func:`_preserve_records` protects and counts it on the
-        spot and a later merge or rewrite can replace it in turn.
+        directly behind the newest of them. A bounded prefix replacement leaves newer records
+        and the recall anchor in place; replacing every record moves that anchor to the
+        replacement. The replacement is a record group, so :func:`_preserve_records` protects
+        and counts it immediately, and a later merge or rewrite can replace it in turn.
 
         **The replacement is an ordinary assistant message, not a recall call.** A call the model
         never made is one a provider may refuse, and Foundry does; see
