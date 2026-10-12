@@ -59,7 +59,7 @@ dev = [
 
 [[package]]
 name = "agent-framework-core"
-version = "1.20.0"
+version = "1.21.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "msgspec" },
@@ -70,9 +70,9 @@ dependencies = [
     { name = "regex" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ea/e6/afcf9b4c8cdee8642deb1d836f560b49835ddb9af30d07ab6301bbc470fc/agent_framework_core-1.20.0.tar.gz", hash = "sha256:2cc3bb1fc30e8f8c4cdcd74c6996b58c7cd92246c018f904982ee41762538f0d", size = 741992, upload-time = "2026-10-02T12:41:05.438Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/28/4e/ccbbb762eb222881e0fb9b63d3c03ed298d26fea9725ef8beb3d40633523/agent_framework_core-1.21.0.tar.gz", hash = "sha256:3ddd6e46373875cceac857b671480c528b57d387b2d2177f52d32568d842017f", size = 750586, upload-time = "2026-10-08T10:42:40.918Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/48/66/1273c98faf8d3f11e6f3a882e3658c9311292c726c56e2228720169c4260/agent_framework_core-1.20.0-py3-none-any.whl", hash = "sha256:baa2e90a83c4aef9bf6ee11d2600a78e46439aa06a3fc372f2d50ccbd87584fc", size = 803359, upload-time = "2026-10-02T12:41:03.763Z" },
+    { url = "https://files.pythonhosted.org/packages/be/97/e99f86ebd1910d200b5c889d87b8a205e339ac87e372b8ba8cf374f9519a/agent_framework_core-1.21.0-py3-none-any.whl", hash = "sha256:ef333ff8348375b7d0757e690b1bd2ac3a1da67afc5cfacf6ce8db7da93bc423", size = 812842, upload-time = "2026-10-08T10:40:38.176Z" },
 ]
 
 [[package]]
@@ -1470,7 +1470,7 @@ tiktoken = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-core", specifier = ">=1.20.0,<1.21" },
+    { name = "agent-framework-core", specifier = ">=1.21.0,<1.22" },
     { name = "agent-framework-foundry", marker = "extra == 'foundry'", specifier = ">=1.14.0,<2" },
     { name = "agent-framework-mistral", marker = "extra == 'mistral'", specifier = ">=1.0.0b260918,<2" },
     { name = "agent-framework-ollama", marker = "extra == 'ollama'", specifier = ">=1.0.0b261002,<2" },
@@ -1493,7 +1493,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "agent-framework-core", specifier = ">=1.20.0,<1.21" }]
+requires-dist = [{ name = "agent-framework-core", specifier = ">=1.21.0,<1.22" }]
 
 [[package]]
 name = "maf-sandbox"
@@ -1504,7 +1504,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "agent-framework-core", specifier = ">=1.20.0,<1.21" }]
+requires-dist = [{ name = "agent-framework-core", specifier = ">=1.21.0,<1.22" }]
 
 [[package]]
 name = "maf-sandbox-acas"
@@ -1536,7 +1536,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-core", specifier = ">=1.20.0,<1.21" },
+    { name = "agent-framework-core", specifier = ">=1.21.0,<1.22" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
 
@@ -1562,7 +1562,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-core", specifier = ">=1.20.0,<1.21" },
+    { name = "agent-framework-core", specifier = ">=1.21.0,<1.22" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
 
@@ -1614,7 +1614,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-core", specifier = ">=1.20.0,<1.21" },
+    { name = "agent-framework-core", specifier = ">=1.21.0,<1.22" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
 
@@ -1663,7 +1663,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-core", specifier = ">=1.20.0,<1.21" },
+    { name = "agent-framework-core", specifier = ">=1.21.0,<1.22" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
 

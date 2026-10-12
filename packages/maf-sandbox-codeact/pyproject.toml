@@ -38,7 +38,7 @@ dependencies = [
     "maf-sandbox>=0.48.0,<0.49",
     # MAF 1.20 binds approvals to the issuing session; older minors are excluded.
     # The ceiling admits only the minor covered by the framework-contract tests.
-    "agent-framework-core>=1.20.0,<1.21",
+    "agent-framework-core>=1.21.0,<1.22",
 ]
 
 [project.urls]
