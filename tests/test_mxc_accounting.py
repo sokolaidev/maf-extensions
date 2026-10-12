@@ -285,9 +285,11 @@ def test_malformed_accounting_schema_is_refused_without_repair(tmp_path, corrupt
             db.audit_usage()
         assert isinstance(error.value.__cause__, sqlite3.DatabaseError)
         assert (root / "shared.sqlite").read_bytes() == before
-    with pytest.raises(store.Refused, match="cannot audit logical accounting") as error:
+    message = "store schema" if corruption == "source_quota" else "cannot audit logical accounting"
+    with pytest.raises(store.Refused, match=message) as error:
         store.SharedStore(root, "one", PROFILE, LIMITS)
-    assert isinstance(error.value.__cause__, sqlite3.DatabaseError)
+    if corruption != "source_quota":
+        assert isinstance(error.value.__cause__, sqlite3.DatabaseError)
     assert (root / "shared.sqlite").read_bytes() == before
 
 

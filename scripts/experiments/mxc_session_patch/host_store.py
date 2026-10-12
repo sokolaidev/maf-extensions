@@ -18,6 +18,13 @@ MAX_CHECKPOINT = 2 * 1024**3
 MAX_FILES = 128
 MAX_RESULT = 2 * CHUNK
 
+_SCHEMA = (
+    "CREATE TABLE meta ( id INTEGER PRIMARY KEY CHECK(id=1), profile TEXT NOT NULL, generation INTEGER NOT NULL, current_call TEXT)",
+    "CREATE TABLE calls ( id TEXT PRIMARY KEY, request TEXT NOT NULL, status TEXT NOT NULL, generation INTEGER NOT NULL, result BLOB, result_hash TEXT)",
+    "CREATE TABLE chunks (hash TEXT PRIMARY KEY, data BLOB NOT NULL)",
+    "CREATE TABLE files ( call_id TEXT NOT NULL REFERENCES calls(id), path TEXT NOT NULL, size INTEGER NOT NULL, hash TEXT NOT NULL, chunks TEXT NOT NULL, PRIMARY KEY(call_id, path))",
+)
+
 
 class Refused(RuntimeError):
     """An operation cannot preserve session identity or committed state."""
@@ -76,29 +83,26 @@ class Store:
             self.lock.close()
             raise Refused("session already has an owner") from error
         try:
-            existed = (self.root / "state.sqlite").exists()
             self.db = sqlite3.connect(self.root / "state.sqlite", timeout=0)
             self.db.execute("PRAGMA journal_mode=DELETE")
             self.db.execute("PRAGMA synchronous=FULL")
             self.db.execute("PRAGMA foreign_keys=ON")
-            self.db.executescript("""
-                CREATE TABLE IF NOT EXISTS meta (
-                    id INTEGER PRIMARY KEY CHECK(id=1), profile TEXT NOT NULL,
-                    generation INTEGER NOT NULL, current_call TEXT);
-                CREATE TABLE IF NOT EXISTS calls (
-                    id TEXT PRIMARY KEY, request TEXT NOT NULL, status TEXT NOT NULL,
-                    generation INTEGER NOT NULL, result BLOB, result_hash TEXT);
-                CREATE TABLE IF NOT EXISTS chunks (hash TEXT PRIMARY KEY, data BLOB NOT NULL);
-                CREATE TABLE IF NOT EXISTS files (
-                    call_id TEXT NOT NULL REFERENCES calls(id), path TEXT NOT NULL,
-                    size INTEGER NOT NULL, hash TEXT NOT NULL, chunks TEXT NOT NULL,
-                    PRIMARY KEY(call_id, path));
-            """)
             encoded = json.dumps(profile, sort_keys=True, separators=(",", ":"))
             with self.db:
+                self.db.execute("BEGIN IMMEDIATE")
+                empty = self.db.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchone() is None
+                if empty:
+                    for statement in _SCHEMA:
+                        self.db.execute(statement)
+                schema = {
+                    " ".join(row[0].split())
+                    for row in self.db.execute("SELECT sql FROM sqlite_schema WHERE type='table'")
+                }
+                if schema != set(_SCHEMA):
+                    raise Refused("unsupported or corrupt store schema")
                 row = self.db.execute("SELECT profile FROM meta WHERE id=1").fetchone()
                 if row is None:
-                    if existed:
+                    if not empty:
                         raise Refused("existing store has no session metadata")
                     self.db.execute("INSERT INTO meta VALUES(1, ?, 0, NULL)", (encoded,))
                 elif row[0] != encoded:
@@ -108,10 +112,12 @@ class Store:
             self.generation = self.db.execute("SELECT generation FROM meta WHERE id=1").fetchone()[
                 0
             ]
-        except BaseException:
+        except BaseException as error:
             if hasattr(self, "db"):
                 self.db.close()
             self.lock.close()
+            if isinstance(error, sqlite3.DatabaseError):
+                raise Refused("unsupported or corrupt store format") from error
             raise
 
     def __enter__(self) -> Store:

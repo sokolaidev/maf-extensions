@@ -35,6 +35,17 @@ VERSION = 4
 PRELAUNCH_VERSION = 7
 LAUNCH_SCHEMA = "CREATE TABLE launches(session TEXT NOT NULL, call TEXT NOT NULL, token TEXT NOT NULL UNIQUE, charge INTEGER NOT NULL CHECK(charge>0), entries INTEGER NOT NULL CHECK(entries>0), identity TEXT, state TEXT NOT NULL CHECK(state IN ('prepared','armed','cleaning')), PRIMARY KEY(session,call), FOREIGN KEY(session,call) REFERENCES calls(session,id))"
 PRELAUNCH_SCHEMA = LAUNCH_SCHEMA.replace("'prepared','armed'", "'prepared','starting','armed'")
+_SCHEMA = (
+    "CREATE TABLE settings(id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, quota INTEGER NOT NULL CHECK(quota>0))",
+    "CREATE TABLE sessions(id TEXT PRIMARY KEY, profile TEXT NOT NULL, generation INTEGER NOT NULL CHECK(generation>=0), state TEXT NOT NULL CHECK(state IN ('active','retired')), current_call TEXT, quota INTEGER NOT NULL CHECK(quota>0))",
+    "CREATE TABLE calls(session TEXT NOT NULL REFERENCES sessions(id), id TEXT NOT NULL, request TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','interrupted','committed')), generation INTEGER NOT NULL CHECK(generation>=0), result BLOB, result_hash TEXT, result_charge INTEGER NOT NULL DEFAULT 0 CHECK(result_charge>=0), checkpoint_charge INTEGER NOT NULL DEFAULT 0 CHECK(checkpoint_charge>=0), checkpoint_hash TEXT, expires INTEGER CHECK(expires>=0), grace INTEGER CHECK(grace>=0), remaining INTEGER CHECK(remaining>=0 AND remaining<=grace), uncertain INTEGER NOT NULL DEFAULT 0 CHECK(uncertain IN (0,1)), expired INTEGER NOT NULL DEFAULT 0 CHECK(expired IN (0,1)), PRIMARY KEY(session,id))",
+    "CREATE TABLE reservations(session TEXT NOT NULL, call TEXT NOT NULL, generation INTEGER NOT NULL, charge INTEGER NOT NULL CHECK(charge>=0), PRIMARY KEY(session,call), FOREIGN KEY(session,call) REFERENCES calls(session,id))",
+    "CREATE TABLE files(session TEXT NOT NULL, call TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL CHECK(size>=0), hash TEXT NOT NULL, PRIMARY KEY(session,call,path), FOREIGN KEY(session,call) REFERENCES calls(session,id))",
+    "CREATE TABLE chunks(hash TEXT PRIMARY KEY, data BLOB NOT NULL)",
+    "CREATE TABLE file_chunks(session TEXT NOT NULL, call TEXT NOT NULL, path TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK(ordinal>=0), hash TEXT NOT NULL REFERENCES chunks(hash), PRIMARY KEY(session,call,path,ordinal), FOREIGN KEY(session,call,path) REFERENCES files(session,call,path))",
+    "CREATE INDEX file_chunks_hash ON file_chunks(hash)",
+    "CREATE TABLE scratch_settings(id INTEGER PRIMARY KEY CHECK(id=1), quota INTEGER NOT NULL CHECK(quota>0))",
+)
 PATH_BYTES = 512
 FILE_METADATA = PATH_BYTES + 256
 REFERENCE_METADATA = 80
@@ -196,51 +207,55 @@ class SharedStore:
             self.db = sqlite3.connect(path, timeout=0, isolation_level=None)
             self.db.row_factory = sqlite3.Row
             try:
-                upgrading = False
-                store_version = VERSION
-                if existed:
-                    try:
-                        row = self.db.execute("SELECT version FROM settings WHERE id=1").fetchone()
-                    except sqlite3.DatabaseError as error:
-                        raise Refused("unsupported or corrupt store format") from error
-                    upgrading = row is not None and row[0] == 3 and upgrade_accounting
-                    if row is not None and row[0] == 3 and not upgrade_accounting:
-                        raise Refused("format 3 requires explicit upgrade")
-                    if row is None or (
-                        row[0] not in (VERSION, idle.VERSION, physical.VERSION, PRELAUNCH_VERSION)
-                        and not upgrading
-                    ):
-                        raise Refused("unsupported or corrupt store format")
-                    store_version = row[0]
-                    if prelaunch_recovery != (store_version == PRELAUNCH_VERSION):
-                        raise Refused("pre-launch recovery requires a matching new store root")
-                    if prelaunch_recovery:
-                        schema = self.db.execute(
-                            "SELECT sql FROM sqlite_master WHERE name='launches'"
-                        ).fetchone()
-                        if schema is None or schema[0] != PRELAUNCH_SCHEMA:
-                            raise Refused("unsupported pre-launch schema")
-                    if store_version in (physical.VERSION, PRELAUNCH_VERSION):
-                        physical.validate(self.db, physical_policy)
-                    elif physical_policy is not None:
-                        raise Refused("physical policy requires a new store root")
                 self.db.execute("PRAGMA journal_mode=DELETE")
                 self.db.execute("PRAGMA synchronous=FULL")
                 self.db.execute("PRAGMA foreign_keys=ON")
-                physical.configure_connection(self)
                 with self._transaction():
-                    if not existed:
+                    empty = (
+                        self.db.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchone() is None
+                    )
+                    if empty and (self.root / "state.sqlite").exists():
+                        raise Refused("legacy store requires explicit migration")
+                    upgrading = False
+                    store_version = VERSION
+                    if not empty:
+                        row = self.db.execute("SELECT version FROM settings WHERE id=1").fetchone()
+                        upgrading = row is not None and row[0] == 3 and upgrade_accounting
+                        if row is not None and row[0] == 3 and not upgrade_accounting:
+                            raise Refused("format 3 requires explicit upgrade")
+                        if row is None or (
+                            row[0]
+                            not in (VERSION, idle.VERSION, physical.VERSION, PRELAUNCH_VERSION)
+                            and not upgrading
+                        ):
+                            raise Refused("unsupported or corrupt store format")
+                        store_version = row[0]
+                        if prelaunch_recovery != (store_version == PRELAUNCH_VERSION):
+                            raise Refused("pre-launch recovery requires a matching new store root")
+                        if prelaunch_recovery:
+                            schema = self.db.execute(
+                                "SELECT sql FROM sqlite_master WHERE name='launches'"
+                            ).fetchone()
+                            if schema is None or schema[0] != PRELAUNCH_SCHEMA:
+                                raise Refused("unsupported pre-launch schema")
+                        self._validate_schema()
+                        if store_version in (physical.VERSION, PRELAUNCH_VERSION):
+                            physical.validate(self.db, physical_policy)
+                        elif physical_policy is not None:
+                            raise Refused("physical policy requires a new store root")
+                    physical.configure_connection(self)
+                    if empty:
                         physical.check_headroom(self, initializing=True)
                         self._schema()
                         self.db.execute(
                             "INSERT INTO settings VALUES(1, ?, ?)", (VERSION, limits.store_quota)
                         )
-                    if not existed or upgrading:
+                    if empty or upgrading:
                         if upgrading:
                             self._audit_checkpoints()
                         accounting.initialize(self.db)
                         self.db.execute("UPDATE settings SET version=? WHERE id=1", (VERSION,))
-                    if not existed and physical_policy is not None:
+                    if empty and physical_policy is not None:
                         physical.initialize(self)
                         self.db.execute(idle.SCHEMA)
                         if prelaunch_recovery:
@@ -277,10 +292,12 @@ class SharedStore:
                         )
                     elif row["profile"] != encoded or row["quota"] != limits.session_quota:
                         raise Refused("session profile or quota configuration differs")
-            except BaseException:
+            except BaseException as error:
                 self.db.close()
                 if not existed and path.stat().st_size == 0:
                     path.unlink()
+                if isinstance(error, sqlite3.DatabaseError):
+                    raise Refused("unsupported or corrupt store format") from error
                 raise
         try:
             lock_path = self.root / (hashlib.sha256(session.encode()).hexdigest() + ".lock")
@@ -317,19 +334,19 @@ class SharedStore:
             raise
 
     def _schema(self) -> None:
-        for statement in (
-            "CREATE TABLE settings(id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, quota INTEGER NOT NULL CHECK(quota>0))",
-            "CREATE TABLE sessions(id TEXT PRIMARY KEY, profile TEXT NOT NULL, generation INTEGER NOT NULL CHECK(generation>=0), state TEXT NOT NULL CHECK(state IN ('active','retired')), current_call TEXT, quota INTEGER NOT NULL CHECK(quota>0))",
-            "CREATE TABLE calls(session TEXT NOT NULL REFERENCES sessions(id), id TEXT NOT NULL, request TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','interrupted','committed')), generation INTEGER NOT NULL CHECK(generation>=0), result BLOB, result_hash TEXT, result_charge INTEGER NOT NULL DEFAULT 0 CHECK(result_charge>=0), checkpoint_charge INTEGER NOT NULL DEFAULT 0 CHECK(checkpoint_charge>=0), checkpoint_hash TEXT, expires INTEGER CHECK(expires>=0), grace INTEGER CHECK(grace>=0), remaining INTEGER CHECK(remaining>=0 AND remaining<=grace), uncertain INTEGER NOT NULL DEFAULT 0 CHECK(uncertain IN (0,1)), expired INTEGER NOT NULL DEFAULT 0 CHECK(expired IN (0,1)), PRIMARY KEY(session,id))",
-            "CREATE TABLE reservations(session TEXT NOT NULL, call TEXT NOT NULL, generation INTEGER NOT NULL, charge INTEGER NOT NULL CHECK(charge>=0), PRIMARY KEY(session,call), FOREIGN KEY(session,call) REFERENCES calls(session,id))",
-            "CREATE TABLE files(session TEXT NOT NULL, call TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL CHECK(size>=0), hash TEXT NOT NULL, PRIMARY KEY(session,call,path), FOREIGN KEY(session,call) REFERENCES calls(session,id))",
-            "CREATE TABLE chunks(hash TEXT PRIMARY KEY, data BLOB NOT NULL)",
-            "CREATE TABLE file_chunks(session TEXT NOT NULL, call TEXT NOT NULL, path TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK(ordinal>=0), hash TEXT NOT NULL REFERENCES chunks(hash), PRIMARY KEY(session,call,path,ordinal), FOREIGN KEY(session,call,path) REFERENCES files(session,call,path))",
-            "CREATE INDEX file_chunks_hash ON file_chunks(hash)",
-            "CREATE TABLE scratch_settings(id INTEGER PRIMARY KEY CHECK(id=1), quota INTEGER NOT NULL CHECK(quota>0))",
-            PRELAUNCH_SCHEMA if self.prelaunch_recovery else LAUNCH_SCHEMA,
-        ):
+        for statement in (*_SCHEMA, PRELAUNCH_SCHEMA if self.prelaunch_recovery else LAUNCH_SCHEMA):
             self.db.execute(statement)
+
+    def _validate_schema(self) -> None:
+        expected = {
+            statement.split("(")[0].split()[-1]: statement
+            for statement in _SCHEMA
+            if statement.startswith("CREATE TABLE")
+        }
+        expected["launches"] = PRELAUNCH_SCHEMA if self.prelaunch_recovery else LAUNCH_SCHEMA
+        actual = dict(self.db.execute("SELECT name,sql FROM sqlite_schema WHERE type='table'"))
+        if any(actual.get(name) != statement for name, statement in expected.items()):
+            raise Refused("unsupported or corrupt store schema")
 
     @contextmanager
     def _transaction(self) -> Iterator[None]:
