@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from bicep_dependencies import load_policy, sha256
+from bicep_image_pin import PIN_PATTERNS, VERSION, read_pin
 from update_bicep_catalog import fetch
 
 ROOT = Path(__file__).resolve().parents[1] / "images/bicep-sandbox"
 FILES = ("Dockerfile", "dependencies.bicep-avm.policy.json", "dependencies.bicep-avm.json")
 LIMIT = 256 * 1024 * 1024
-VERSION = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 
 
 def release_asset(release: str) -> tuple[str, dict[str, Any]]:
@@ -70,11 +70,8 @@ def verify_binary(asset: dict[str, Any]) -> None:
 def updates(root: Path, release: str) -> tuple[dict[str, bytes], str]:
     """Validate the existing pins and return a complete proposal before writing any file."""
     dockerfile = (root / FILES[0]).read_text(encoding="utf-8")
-    versions = re.findall(r"^ARG BICEP_VERSION=v(" + VERSION + r")$", dockerfile, re.MULTILINE)
-    hashes = re.findall(r"^ARG BICEP_SHA256=([0-9a-f]{64})$", dockerfile, re.MULTILINE)
-    if len(versions) != 1 or len(hashes) != 1:
-        raise ValueError("expected one pinned Bicep version and checksum")
-    current = versions[0][0]
+    tag, previous_checksum = read_pin(root / FILES[0])
+    current = tag.removeprefix("v")
     policy_path = root / FILES[1]
     policy = load_policy(policy_path)
     manifest = json.loads((root / FILES[2]).read_bytes())
@@ -92,14 +89,12 @@ def updates(root: Path, release: str) -> tuple[dict[str, bytes], str]:
     if tuple(map(int, version.split("."))) < tuple(map(int, current.split("."))):
         raise ValueError("refusing to downgrade the Bicep compiler")
     if version == current:
-        if checksum != hashes[0]:
+        if checksum != previous_checksum:
             raise ValueError("published checksum changed for the pinned Bicep release")
         return {}, "The Bicep image compiler pin is current.\n"
     verify_binary(asset)
-    dockerfile = dockerfile.replace(
-        f"ARG BICEP_VERSION=v{current}", f"ARG BICEP_VERSION=v{version}"
-    )
-    dockerfile = dockerfile.replace(f"ARG BICEP_SHA256={hashes[0]}", f"ARG BICEP_SHA256={checksum}")
+    for name, value in (("BICEP_VERSION", f"v{version}"), ("BICEP_SHA256", checksum)):
+        dockerfile = PIN_PATTERNS[name].sub(f"ARG {name}={value}", dockerfile)
     policy["bicep_version"] = version
     policy_bytes = (json.dumps(policy, indent=2) + "\n").encode()
     manifest["bicep_version"] = version

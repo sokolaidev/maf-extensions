@@ -71,6 +71,17 @@ def test_upgrade_keeps_modules_and_binds_updated_policy(image_root, upstream):
     }
 
 
+@pytest.mark.parametrize("prefix", ["arg ", "  ARG ", "\taRg\t", "ARG   "])
+def test_upgrade_updates_variant_arg_declarations(image_root, upstream, prefix):
+    recipe = image_root / "Dockerfile"
+    recipe.write_text(recipe.read_text().replace("ARG BICEP_", prefix + "BICEP_"))
+    changes, _ = updater.updates(image_root, "latest")
+    for name, data in changes.items():
+        (image_root / name).write_bytes(data)
+    assert updater.read_pin(recipe) == ("v1.2.3", DIGEST.removeprefix("sha256:"))
+    assert updater.updates(image_root, "latest")[0] == {}
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -187,6 +198,7 @@ def test_weekly_image_proposal_is_independent_and_scoped():
     }
     scripts = "\n".join(step.get("run", "") for step in job["steps"])
     assert "update_bicep_images.py" in scripts and "test_update_bicep_images.py" in scripts
+    assert "test_bicep_cli_download.py" in scripts
     assert "docker build" not in scripts and "gh workflow run" not in scripts
     assert set(jobs["report-failure"]["needs"]) == {"propose", "propose-images"}
     assert (

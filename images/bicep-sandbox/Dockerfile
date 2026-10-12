@@ -1,8 +1,8 @@
 FROM mcr.microsoft.com/azurelinux/base/core:3.0
 
-ARG BICEP_VERSION=v0.46.1
+ARG BICEP_VERSION=v0.48.1
 # SHA-256 of that version's bicep-linux-x64; bump it with BICEP_VERSION.
-ARG BICEP_SHA256=3e011d629ea4311b7a7dd8f0040ab2b1a072ea4ff5d02cb75e0e55a9a6703fb9
+ARG BICEP_SHA256=b09ec25a9d376c1f8e33ede6ed22b587f915ad68488d5db77a6f9541748c7f6e
 
 # Without `icu` the Bicep CLI aborts at startup: "Couldn't find a valid ICU package".
 RUN tdnf install -y ca-certificates curl icu \

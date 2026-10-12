@@ -66,7 +66,7 @@ jobs:
       - name: Validate image update and release selection
         run: |
           uv sync --locked
-          uv run pytest -q tests/test_update_bicep_images.py tests/test_bicep_dependencies.py tests/test_select_image_security.py tests/test_image_release_needed.py
+          uv run pytest -q tests/test_update_bicep_images.py tests/test_bicep_cli_download.py tests/test_bicep_dependencies.py tests/test_select_image_security.py tests/test_image_release_needed.py
       - name: Propose the image compiler update
         id: proposal
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1

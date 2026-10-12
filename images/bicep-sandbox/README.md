@@ -11,7 +11,7 @@ Both samples run this one image. [`samples/01_acas_bicep`](../../samples/01_acas
 | `mcr.microsoft.com/azurelinux/base/core:3.0` | A small Microsoft-maintained base with `tdnf`. Nothing in the tool depends on the distribution — it runs `bicep` and reads SARIF back |
 | `icu` | Without it the CLI aborts at startup: `Couldn't find a valid ICU package`. It is not optional for a .NET single-file binary unless you set the invariant-globalization switch |
 | `ca-certificates` | Module restore is HTTPS to MCR. Without them every `br/public:` reference fails to restore |
-| Bicep CLI, pinned to `v0.46.1` | The pin is the point. Diagnostic wording, built-in rule levels and the API-version cut-off all follow the compiler, so an unpinned image would let a sample's documented output drift underneath it |
+| Bicep CLI, version and checksum pinned in the [Dockerfile](Dockerfile) | The pin is the point. Diagnostic wording, built-in rule levels and the API-version cut-off all follow the compiler, so an unpinned image would let a sample's documented output drift underneath it |
 | `bicepconfig.json` at `/maf-sandbox/work` | Fallback policy for clients that do not stage a configuration |
 
 ## Configuration discovery

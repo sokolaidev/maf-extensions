@@ -1178,20 +1178,18 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
-      # The backend shells out to the real bicep CLI on this runner, so the binary must be on
-      # PATH — the container images bake it in (`images/bicep-sandbox/Dockerfile` pins v0.46.1);
-      # this job installs the same version onto the runner. `bicep --version` fails fast if the
-      # runner is missing an ICU the binary needs, rather than failing later inside the workload.
-      # The digest is the Dockerfile's too: this job holds the OIDC token and secrets, so the
-      # binary is checked before it runs, as every action here is pinned by SHA.
+      # The host sample must use the compiler identity in the selected checkout's image recipe.
       - name: Install the bicep CLI
         run: |
           set -euo pipefail
-          curl -fsSL -o /tmp/bicep \
-            "https://github.com/Azure/bicep/releases/download/v0.46.1/bicep-linux-x64"
-          echo "3e011d629ea4311b7a7dd8f0040ab2b1a072ea4ff5d02cb75e0e55a9a6703fb9  /tmp/bicep" \
-            | sha256sum -c -
-          sudo install -m 0755 /tmp/bicep /usr/local/bin/bicep
+          BICEP_PIN="$(python3 "$HARNESS"/scripts/bicep_image_pin.py images/bicep-sandbox/Dockerfile)"
+          read -r BICEP_VERSION BICEP_SHA256 <<< "$BICEP_PIN"
+          BICEP_BINARY="$(mktemp)"
+          trap 'rm -f "$BICEP_BINARY"' EXIT
+          curl -fsSL -o "$BICEP_BINARY" \
+            "https://github.com/Azure/bicep/releases/download/$BICEP_VERSION/bicep-linux-x64"
+          echo "$BICEP_SHA256  $BICEP_BINARY" | sha256sum -c -
+          sudo install -m 0755 "$BICEP_BINARY" /usr/local/bin/bicep
           bicep --version
 
       - name: Check the live configuration is present
