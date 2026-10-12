@@ -13,7 +13,11 @@ _WORKFLOWS = sorted((_ROOT / ".github" / "workflows").glob("*.y*ml"))
 _DEPENDABOT = _ROOT / ".github" / "dependabot.yml"
 
 #: The jobs that push with the token `actions/checkout` leaves in `.git/config`.
-_PUSHING = {("release-please.yml", "prepare"), ("bicep-catalog.yml", "propose")}
+_PUSHING = {
+    ("release-please.yml", "prepare"),
+    ("bicep-catalog.yml", "propose"),
+    ("bicep-catalog.yml", "propose-images"),
+}
 
 _USES = re.compile(r"^\s*(?:-\s+)?uses:\s*(\S+)(.*)$")
 _PINNED = re.compile(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}")
