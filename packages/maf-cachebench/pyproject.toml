@@ -38,7 +38,7 @@ dependencies = [
 # One extra per provider route; a run needs only the client it points at. The floors are the
 # client versions the published measurements were made with; the Mistral and Ollama clients
 # have only pre-release versions on the index, so their floors name one.
-openai = ["agent-framework-openai>=1.15.0,<2", "azure-identity>=1.17,<2"]
+openai = ["agent-framework-openai>=1.16.0,<2", "azure-identity>=1.17,<2"]
 foundry = ["agent-framework-foundry>=1.14.0,<2", "azure-identity>=1.17,<2"]
 mistral = ["agent-framework-mistral>=1.0.0b260918,<2"]
 # The Ollama route builds the client's own async HTTP client, so that package is named too.

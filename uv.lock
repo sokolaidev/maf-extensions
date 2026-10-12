@@ -31,7 +31,7 @@ dev = [
     { name = "agent-framework-foundry", specifier = ">=1.14.0,<2" },
     { name = "agent-framework-mistral", specifier = ">=1.0.0b260918,<2" },
     { name = "agent-framework-ollama", specifier = ">=1.0.0b261002,<2" },
-    { name = "agent-framework-openai", specifier = ">=1.13.0,<2" },
+    { name = "agent-framework-openai", specifier = ">=1.16.0,<2" },
     { name = "anyio", specifier = ">=4.5,<5" },
     { name = "autogen-agentchat", specifier = ">=0.7.5,<0.8" },
     { name = "autogen-core", specifier = ">=0.7.5,<0.8" },
@@ -120,15 +120,15 @@ wheels = [
 
 [[package]]
 name = "agent-framework-openai"
-version = "1.15.0"
+version = "1.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "agent-framework-core" },
     { name = "openai" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ad/97/e17fface9bf2d53a29c50074b8918c07b11f5efab4889303f9b4f90d05ad/agent_framework_openai-1.15.0.tar.gz", hash = "sha256:2b08d68538f82233a040f3fb9672d449b2d2832992b47c6046be6b193fced26f", size = 74408, upload-time = "2026-10-02T12:41:08.109Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f6/e0/40400b67cb4eefd6f74b52dffc3805f413fe296a882dfae3980f6b2cadf2/agent_framework_openai-1.16.0.tar.gz", hash = "sha256:f78877ff6e9a7fd207187d667db0d5eb5a22058ff39bad5cc6b6eb24016859b4", size = 74323, upload-time = "2026-10-08T10:43:01.97Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b2/55/a7520c76d267e128134f8ff4ce17a94dcc748a7ca9516e289c6551712181/agent_framework_openai-1.15.0-py3-none-any.whl", hash = "sha256:e66afa8be1e85344a0f1d446684bd67bd099ff0ed8e5ea96f415fc013b18c4fb", size = 79077, upload-time = "2026-10-02T12:41:06.933Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/9a/6796e96cf2490cd49111fde36ceb7ef9fd3ce8a329198f33b414273e06f3/agent_framework_openai-1.16.0-py3-none-any.whl", hash = "sha256:93790e61f8ee0104db56d2998bd03924c844600046b16efc26ed5df7fe1bee7f", size = 79126, upload-time = "2026-10-08T10:43:00.276Z" },
 ]
 
 [[package]]
@@ -1474,7 +1474,7 @@ requires-dist = [
     { name = "agent-framework-foundry", marker = "extra == 'foundry'", specifier = ">=1.14.0,<2" },
     { name = "agent-framework-mistral", marker = "extra == 'mistral'", specifier = ">=1.0.0b260918,<2" },
     { name = "agent-framework-ollama", marker = "extra == 'ollama'", specifier = ">=1.0.0b261002,<2" },
-    { name = "agent-framework-openai", marker = "extra == 'openai'", specifier = ">=1.15.0,<2" },
+    { name = "agent-framework-openai", marker = "extra == 'openai'", specifier = ">=1.16.0,<2" },
     { name = "azure-identity", marker = "extra == 'foundry'", specifier = ">=1.17,<2" },
     { name = "azure-identity", marker = "extra == 'openai'", specifier = ">=1.17,<2" },
     { name = "httpx", specifier = ">=0.27,<1" },

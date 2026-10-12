@@ -34,7 +34,7 @@ dev = [
     # Every sample that talks to a model imports this, and nothing else here pulls it in.
     # Wide where the tooling bands are narrow, and deliberately: a sample declares it unpinned,
     # so a check held to an older minor would pass against a version no live run uses.
-    "agent-framework-openai>=1.13.0,<2",
+    "agent-framework-openai>=1.16.0,<2",
     # maf-cachebench imports the other provider clients lazily, one per provider route, and
     # its strict pyright pass has to resolve every one of them. The Mistral and Ollama clients
     # exist only as pre-releases on the index, so their floors name one.
