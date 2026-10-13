@@ -46,6 +46,10 @@ _SCHEMA = (
     "CREATE INDEX file_chunks_hash ON file_chunks(hash)",
     "CREATE TABLE scratch_settings(id INTEGER PRIMARY KEY CHECK(id=1), quota INTEGER NOT NULL CHECK(quota>0))",
 )
+_LOOKUP_INDEXES = (
+    "CREATE INDEX calls_expiry ON calls(session,status,expired,expires,id)",
+    "CREATE INDEX calls_uncertain ON calls(session,status,expired,uncertain)",
+)
 PATH_BYTES = 512
 FILE_METADATA = PATH_BYTES + 256
 REFERENCE_METADATA = 80
@@ -238,7 +242,7 @@ class SharedStore:
                             ).fetchone()
                             if schema is None or schema[0] != PRELAUNCH_SCHEMA:
                                 raise Refused("unsupported pre-launch schema")
-                        self._validate_schema()
+                        self._validate_schema(store_version)
                         if store_version in (physical.VERSION, PRELAUNCH_VERSION):
                             physical.validate(self.db, physical_policy)
                         elif physical_policy is not None:
@@ -265,12 +269,10 @@ class SharedStore:
                     accounting.audit(self.db)
                     if store_version in (idle.VERSION, physical.VERSION, PRELAUNCH_VERSION):
                         idle.validate_schema(self.db)
-                    self.db.execute(
-                        "CREATE INDEX IF NOT EXISTS calls_expiry ON calls(session,status,expired,expires,id)"
-                    )
-                    self.db.execute(
-                        "CREATE INDEX IF NOT EXISTS calls_uncertain ON calls(session,status,expired,uncertain)"
-                    )
+                    for statement in _LOOKUP_INDEXES:
+                        self.db.execute(
+                            statement.replace("CREATE INDEX", "CREATE INDEX IF NOT EXISTS", 1)
+                        )
                     if (
                         self.db.execute("SELECT quota FROM settings").fetchone()[0]
                         != limits.store_quota
@@ -337,15 +339,23 @@ class SharedStore:
         for statement in (*_SCHEMA, PRELAUNCH_SCHEMA if self.prelaunch_recovery else LAUNCH_SCHEMA):
             self.db.execute(statement)
 
-    def _validate_schema(self) -> None:
-        expected = {
-            statement.split("(")[0].split()[-1]: statement
-            for statement in _SCHEMA
-            if statement.startswith("CREATE TABLE")
+    def _validate_schema(self, version: int) -> None:
+        expected: set[str] = set(_SCHEMA)
+        expected.add(PRELAUNCH_SCHEMA if version == PRELAUNCH_VERSION else LAUNCH_SCHEMA)
+        if version >= VERSION:
+            expected.update(accounting.schema())
+        if version >= idle.VERSION:
+            expected.add(idle.SCHEMA)
+        if version >= physical.VERSION:
+            expected.add(physical.SCHEMA)
+        actual = {
+            row[0]
+            for row in self.db.execute(
+                "SELECT sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'"
+            )
         }
-        expected["launches"] = PRELAUNCH_SCHEMA if self.prelaunch_recovery else LAUNCH_SCHEMA
-        actual = dict(self.db.execute("SELECT name,sql FROM sqlite_schema WHERE type='table'"))
-        if any(actual.get(name) != statement for name, statement in expected.items()):
+        # Older stores install these lookup indexes lazily; existing definitions must match.
+        if actual - set(_LOOKUP_INDEXES) != expected:
             raise Refused("unsupported or corrupt store schema")
 
     @contextmanager

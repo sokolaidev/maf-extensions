@@ -250,7 +250,9 @@ def test_audit_and_reopen_refuse_corrupt_accounting_without_repair(tmp_path, cor
         with pytest.raises(store.Refused, match="accounting"):
             db.audit_usage()
         assert list(db.db.execute("SELECT * FROM logical_usage")) == before
-    with pytest.raises(store.Refused, match="accounting"):
+    with pytest.raises(
+        store.Refused, match="store schema" if corruption.endswith("trigger") else "accounting"
+    ):
         store.SharedStore(root, "one", PROFILE, LIMITS)
 
 
@@ -264,7 +266,7 @@ def test_missing_ledger_refuses_audit_and_reopen_without_repair(tmp_path, upgrad
         with pytest.raises(store.Refused, match="missing logical accounting table"):
             db.audit_usage()
         assert (root / "shared.sqlite").read_bytes() == before
-    with pytest.raises(store.Refused, match="missing logical accounting table"):
+    with pytest.raises(store.Refused, match="store schema"):
         store.SharedStore(root, "one", PROFILE, LIMITS, upgrade_accounting=upgrade)
     assert (root / "shared.sqlite").read_bytes() == before
 
@@ -285,11 +287,8 @@ def test_malformed_accounting_schema_is_refused_without_repair(tmp_path, corrupt
             db.audit_usage()
         assert isinstance(error.value.__cause__, sqlite3.DatabaseError)
         assert (root / "shared.sqlite").read_bytes() == before
-    message = "store schema" if corruption == "source_quota" else "cannot audit logical accounting"
-    with pytest.raises(store.Refused, match=message) as error:
+    with pytest.raises(store.Refused, match="store schema"):
         store.SharedStore(root, "one", PROFILE, LIMITS)
-    if corruption != "source_quota":
-        assert isinstance(error.value.__cause__, sqlite3.DatabaseError)
     assert (root / "shared.sqlite").read_bytes() == before
 
 
@@ -440,3 +439,22 @@ def test_benchmark_preserves_identity_charges_and_separates_measurements(tmp_pat
         assert result["admission_median_seconds"] >= result["write_lock_median_seconds"] > 0
         assert result["accounting_audit_seconds"] > 0
         assert result["collection_zero_payload_seconds"] > 0
+
+
+@pytest.mark.parametrize("addition", ["table", "trigger", "idle", "physical"])
+def test_format3_upgrade_refuses_extra_schema_before_writes(tmp_path, addition):
+    root = tmp_path / "db"
+    legacy(root, tmp_path)
+    path = root / "shared.sqlite"
+    with sqlite3.connect(path) as connection:
+        statement = {
+            "table": "CREATE TABLE extra(value TEXT)",
+            "trigger": "CREATE TRIGGER extra AFTER UPDATE ON settings BEGIN UPDATE calls SET result=X'00'; END",
+            "idle": store.idle.SCHEMA,
+            "physical": store.physical.SCHEMA,
+        }[addition]
+        connection.execute(statement)
+    before = path.read_bytes()
+    with pytest.raises(store.Refused, match="store schema"):
+        store.SharedStore(root, "one", PROFILE, LIMITS, Clock(), upgrade_accounting=True)
+    assert path.read_bytes() == before

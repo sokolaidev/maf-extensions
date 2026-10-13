@@ -264,7 +264,7 @@ def test_missing_idle_metadata_is_not_recreated_on_reopen(tmp_path, damage):
             "DELETE FROM session_idle" if damage == "record" else "DROP TABLE session_idle"
         )
     before = (root / "shared.sqlite").read_bytes()
-    with pytest.raises(store.Refused, match="idle|store format"):
+    with pytest.raises(store.Refused, match="idle|store schema"):
         open_store(root, Clock())
     assert (root / "shared.sqlite").read_bytes() == before
 

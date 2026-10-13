@@ -780,7 +780,12 @@ def test_unsupported_format_is_refused_without_upgrade_instruction(tmp_path, ver
         else:
             db.db.execute("UPDATE settings SET version=?", (version,))
     before = (root / "shared.sqlite").read_bytes()
-    with pytest.raises(store.Refused, match="^unsupported or corrupt store format$"):
+    message = (
+        "unsupported or corrupt store schema"
+        if version == 5
+        else "unsupported or corrupt store format"
+    )
+    with pytest.raises(store.Refused, match=f"^{message}$"):
         store.SharedStore(root, "one", PROFILE, LIMITS, Clock(), upgrade_accounting=upgrade)
     assert (root / "shared.sqlite").read_bytes() == before
 

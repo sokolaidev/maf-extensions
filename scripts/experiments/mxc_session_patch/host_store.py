@@ -96,7 +96,9 @@ class Store:
                         self.db.execute(statement)
                 schema = {
                     " ".join(row[0].split())
-                    for row in self.db.execute("SELECT sql FROM sqlite_schema WHERE type='table'")
+                    for row in self.db.execute(
+                        "SELECT sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'"
+                    )
                 }
                 if schema != set(_SCHEMA):
                     raise Refused("unsupported or corrupt store schema")

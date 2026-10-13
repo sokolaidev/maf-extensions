@@ -325,3 +325,76 @@ def test_initializer_lock_excludes_competing_process(tmp_path, kind):
                 child.communicate()
     with open_store(root, kind) as db:
         assert db.generation == 2
+
+
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("object_kind", ["table", "index", "view", "trigger"])
+def test_foreign_object_in_retained_store_is_refused_before_startup_writes(
+    tmp_path, kind, object_kind
+):
+    root = tmp_path / "db"
+    with open_store(root, kind) as db:
+        checkpoint = tmp_path / "candidate"
+        checkpoint.mkdir()
+        (checkpoint / "index.json").write_bytes(b"checkpoint")
+        db.begin("a", b"code")
+        db.commit("a", checkpoint, b"result")
+    path = database(root, kind)
+    with sqlite3.connect(path) as connection:
+        target = "meta" if kind == "legacy" else "sessions"
+        statement = {
+            "table": "CREATE TABLE extra(value TEXT)",
+            "index": "CREATE INDEX extra ON calls(id)",
+            "view": "CREATE VIEW extra AS SELECT * FROM calls",
+            "trigger": f"CREATE TRIGGER extra AFTER UPDATE ON {target} BEGIN UPDATE calls SET result=X'00'; END",
+        }[object_kind]
+        connection.execute(statement)
+    before = path.read_bytes()
+    with pytest.raises(host.Refused, match="store schema"):
+        open_store(root, kind)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("kind", KINDS[1:])
+@pytest.mark.parametrize("index", ["file_chunks_hash", "calls_expiry", "calls_uncertain"])
+def test_altered_shared_index_is_refused_without_changes(tmp_path, kind, index):
+    root = tmp_path / "db"
+    with open_store(root, kind):
+        pass
+    path = database(root, kind)
+    with sqlite3.connect(path) as connection:
+        connection.execute(f"DROP INDEX {index}")
+        connection.execute(f"CREATE INDEX {index} ON calls(id)")
+    before = path.read_bytes()
+    with pytest.raises(host.Refused, match="store schema"):
+        open_store(root, kind)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("kind", KINDS[1:])
+def test_missing_required_shared_index_is_refused_without_repair(tmp_path, kind):
+    root = tmp_path / "db"
+    with open_store(root, kind):
+        pass
+    path = database(root, kind)
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP INDEX file_chunks_hash")
+    before = path.read_bytes()
+    with pytest.raises(host.Refused, match="store schema"):
+        open_store(root, kind)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("kind", KINDS[1:])
+def test_older_shared_store_can_install_missing_lookup_indexes(tmp_path, kind):
+    root = tmp_path / "db"
+    with open_store(root, kind):
+        pass
+    with sqlite3.connect(database(root, kind)) as connection:
+        connection.execute("DROP INDEX calls_expiry")
+        connection.execute("DROP INDEX calls_uncertain")
+    with open_store(root, kind) as db:
+        indexes = {
+            row[0] for row in db.db.execute("SELECT name FROM sqlite_schema WHERE type='index'")
+        }
+        assert {"calls_expiry", "calls_uncertain"} <= indexes
