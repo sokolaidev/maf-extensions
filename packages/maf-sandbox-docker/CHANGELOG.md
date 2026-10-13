@@ -2,6 +2,12 @@
 
 ## [0.28.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.27.0...maf-sandbox-docker-v0.28.0) (2026-10-13)
 
+> **Correction, added after the release.** This version was tagged and a GitHub Release was created for it, but **it never reached PyPI** — so there is no `maf-sandbox-docker` 0.28.0 to install. The publish run failed before the upload, at *The release's own packages install together*: in the tagged tree the unreleased `maf-sandbox-mcp` still capped the core below 0.49 while every other dependent required 0.50, so no set of those wheels resolves.
+>
+> The run cannot simply be repeated: a re-run builds the same tagged tree, and release tags here cannot be moved. This version number is spent rather than reused. **The code these entries describe ships in 0.28.1.**
+>
+> The entries below are left in place: they are accurate about the commit, and deleting them would hide why this version exists at all.
+
 
 ### Features
 
