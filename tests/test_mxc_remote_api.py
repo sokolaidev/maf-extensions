@@ -403,9 +403,9 @@ def test_real_tls_rejects_unpermitted_certificates(tmp_path, certificates, name)
 
 def test_tls_requires_client_cert_and_coordinator_hostname(tmp_path, certificates):
     with running(tmp_path / "runner", certificates) as (_, address):
-        anonymous = api.Client(
-            address, ssl.create_default_context(cafile=str(certificates / "ca.pem")), "localhost"
-        )
+        context = ssl.create_default_context(cafile=str(certificates / "ca.pem"))
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        anonymous = api.Client(address, context, "localhost")
         with pytest.raises(api.Refused):
             anonymous.call("acquire", "session", guest="guest")
         with pytest.raises(api.Refused):
@@ -592,3 +592,22 @@ def test_competing_tls_clients_cannot_both_acquire(tmp_path, certificates):
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(acquire, ["a", "b"]))
         assert sum(result is not None for result in results) == 1
+
+
+def test_restore_destination_stays_below_private_transfer_root(tmp_path, monkeypatch):
+    original = api.SharedStore.restore
+    observed = []
+
+    def restore(store, destination):
+        assert destination.name == "checkpoint"
+        api.prepare(destination.parent)
+        observed.append(destination)
+        return original(store, destination)
+
+    monkeypatch.setattr(api.SharedStore, "restore", restore)
+    with coordinator(tmp_path / "db") as db:
+        owner = start(db)
+        direct(db, "publish", **publication(owner))
+        assert direct(db, "restore", owner=owner)["call"] == "call"
+        assert not (db.root / "transfer").exists()
+        assert len(observed) == 1

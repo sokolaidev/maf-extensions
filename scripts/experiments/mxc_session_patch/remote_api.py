@@ -186,17 +186,29 @@ class Coordinator:
             return
         prepare(path)
         entries = []
+        directories = []
+        pending = [path]
         total = 0
-        for entry in path.iterdir():
-            if len(_relative(entry.name).parts) != 1:
-                raise Refused("invalid transfer path")
-            check_file(entry)
-            total += entry.stat().st_size
-            entries.append(entry)
-            if total > MAX_PAYLOAD or len(entries) > 128:
-                raise Refused("transfer cleanup exceeds bounds")
+        while pending:
+            directory = pending.pop()
+            for entry in directory.iterdir():
+                if entry.is_symlink() or entry.is_junction():
+                    raise Refused("transfer contains links")
+                if directory == path and entry.name == "checkpoint" and entry.is_dir():
+                    directories.append(entry)
+                    pending.append(entry)
+                    continue
+                if len(_relative(entry.name).parts) != 1:
+                    raise Refused("invalid transfer path")
+                check_file(entry)
+                total += entry.stat().st_size
+                entries.append(entry)
+                if total > MAX_PAYLOAD or len(entries) > 128:
+                    raise Refused("transfer cleanup exceeds bounds")
         for entry in entries:
             entry.unlink()
+        for directory in directories:
+            directory.rmdir()
         path.rmdir()
 
     @contextmanager
@@ -309,11 +321,12 @@ class Coordinator:
                 return {"committed": True}
             if operation == "restore":
                 with self._transfer() as path:
-                    # SharedStore creates its destination; the exclusive service owns this root.
-                    path.rmdir()
-                    call = store.restore(path)
+                    destination = path / "checkpoint"
+                    call = store.restore(destination)
                     files = (
-                        {p.name: _encoded(p.read_bytes()) for p in path.iterdir()} if call else {}
+                        {p.name: _encoded(p.read_bytes()) for p in destination.iterdir()}
+                        if call
+                        else {}
                     )
                     with authority.guard(owner):
                         return {"call": call, "files": files}
