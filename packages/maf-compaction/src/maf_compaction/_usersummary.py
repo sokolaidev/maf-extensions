@@ -470,8 +470,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         max_summary_input_tokens: Maximum estimated tokens in a summarizer request, including
             its instructions and numbered transcript. Defaults to half ``max_input_tokens``
             (at least one). Only the oldest whole turns or summaries that fit are replaced;
-            an oldest item that cannot fit is left untouched. The composition shares this
-            limit for record merges and rewrites. Reserve provider overhead separately.
+            when no eligible prefix fits, the oldest item is left untouched. The composition
+            shares this limit for record merges and rewrites. Reserve provider overhead separately.
         summary_mode: What a pass does with the summary the previous pass left behind: one of
             :data:`SUMMARY_MODES`. The recompacting default re-reads and replaces it; the
             boundary mode leaves it standing and compacts only what is newer; the fold mode does
@@ -605,9 +605,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         cache: every pass re-bills the prompt from its own edit to the end, so the number of
         passes is the number of times that was paid.
 
-        A pass that replaced the band with a summary already in hand is not counted here but
-        under :attr:`user_summaries_replayed`: it produced no summary and paid no new break.
-        Live, every crossing is one of each.
+        Replaying the same replacement on stored history is counted under
+        :attr:`user_summaries_replayed`. Reusing summary text for new sources still counts here:
+        it writes a fresh summary id and pays another cache break.
         """
         return self._compactions
 
@@ -678,7 +678,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
 
     @property
     def user_folds(self) -> int:
-        """Passes that collapsed every standing summary into one, which became the new boundary.
+        """Passes that collapsed an oldest prefix of standing summaries into a new boundary.
 
         The fold mode's whole cost, in the unit it is paid in: each fold rewrites the prompt at
         the oldest summary's position, which is just behind the head turn, so it re-bills very
@@ -700,7 +700,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
 
     @property
     def user_summaries_replayed(self) -> int:
-        """Passes that replaced a band with a summary already in hand, asking for nothing new.
+        """Passes that replayed the same replacement and id on another view of the history.
 
         The live path runs one strategy at two sites on one conversation -- inside the model
         call on loaded copies, and after the turn on the store; see the module docstring -- so
@@ -869,6 +869,11 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             prompt=self.prompt,
             tokenizer=self.tokenizer,
             limit=self.max_summary_input_tokens,
+            min_items=next(
+                index + 1
+                for index, span in enumerate(band)
+                if not _is_summary(messages[int(span["start_index"])])
+            ),
         )
         # The share gates the eligible band; a bounded pass must still contain new material.
         if not self._worth_compacting(messages, band, 0):
@@ -877,6 +882,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
 
         transcript = _format_turns([messages[span["start_index"]] for span in band])
         remembered = self._recall(self.prompt, transcript)
+        replayed = remembered is not None
         if remembered is None:
             summary = await self._summarize(transcript, prompt=self.prompt)
             if summary is None:
@@ -894,8 +900,14 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             )
             self._remember(_Remembered(self.prompt, transcript, summary_id, summary))
         else:
-            # The same band, seen again on the other list the live path runs this on. The answer
-            # and the id are the ones the model has already been sent.
+            if any(message.message_id == remembered.summary_id for message in messages):
+                remembered = remembered._replace(
+                    summary_id=_next_summary_id(
+                        messages, prefix=SUMMARY_ID_PREFIX, minimum=self._compactions
+                    )
+                )
+                self._remember(remembered)
+                replayed = False
             summary_id, summary = remembered.summary_id, remembered.text
         replaced = [
             message
@@ -906,10 +918,10 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             # Remembered all the same, so the other list replays the refusal instead of asking.
             self._failures += remembered is None
             return False
-        if remembered is None:
-            self._compactions += 1
-        else:
+        if replayed:
             self._replayed += 1
+        else:
+            self._compactions += 1
         self._replace(messages, band, summary, summary_id=summary_id)
         self._replaced = len(band)
         return True
@@ -1293,6 +1305,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             prompt=self.fold_prompt,
             tokenizer=self.tokenizer,
             limit=self.max_summary_input_tokens,
+            min_items=2,
         )
 
     async def _fold_answer(
@@ -1310,8 +1323,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             standing: The standing summaries' spans, oldest first.
 
         Returns:
-            The remembered request with its answer, and True when it was replayed rather than
-            asked; None when the summarizer gave nothing.
+            The remembered answer, and True only for a replay of the same replacement id;
+            None when the summarizer gave nothing.
         """
         transcript = _format_turns(
             [messages[span["start_index"]] for span in standing], text=_summary_body
@@ -1326,6 +1339,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                     )
                 )
                 self._remember(remembered)
+                return remembered, False
             return remembered, True
         summary = await self._summarize(transcript, prompt=self.fold_prompt)
         if summary is None:
@@ -1368,7 +1382,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             messages: The conversation, mutated in place.
             standing: The standing summaries' spans, oldest first.
             answer: The remembered request and its answer, from :meth:`_fold_answer`.
-            replayed: Whether the answer was replayed rather than asked for.
+            replayed: Whether this is the same replacement on another view of the history.
         """
         if replayed:
             self._replayed += 1
@@ -1399,7 +1413,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             The remembered request when it matches, else None.
         """
-        for remembered in self._remembered:
+        for remembered in reversed(self._remembered):
             if remembered.prompt == prompt and remembered.transcript == transcript:
                 return remembered
         return None

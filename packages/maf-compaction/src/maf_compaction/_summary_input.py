@@ -31,13 +31,21 @@ def bounded_prefix[T](
     prompt: str,
     tokenizer: TokenizerProtocol,
     limit: int,
+    min_items: int = 1,
 ) -> list[T]:
-    """Find a fitting prefix of whole oldest items without retokenizing every prefix."""
+    """Find a fitting prefix, checking unprobed sizes if fast probes cannot make progress."""
+    if len(items) < min_items:
+        return []
+    checked: dict[int, bool] = {}
 
     def fits(count: int) -> bool:
-        return fits_summary_input(prompt, render(items[:count]), tokenizer=tokenizer, limit=limit)
+        if count not in checked:
+            checked[count] = fits_summary_input(
+                prompt, render(items[:count]), tokenizer=tokenizer, limit=limit
+            )
+        return checked[count]
 
-    lower, upper = 0, min(1, len(items))
+    lower, upper = min_items - 1, min_items
     while upper < len(items) and fits(upper):
         lower, upper = upper, min(upper * 2, len(items))
     while lower < upper:
@@ -46,4 +54,10 @@ def bounded_prefix[T](
             lower = middle
         else:
             upper = middle - 1
-    return items[:lower]
+    if lower >= min_items:
+        return items[:lower]
+    # Token counts need not grow with text, so failed probes cannot rule out other sizes.
+    for count in range(min_items, len(items) + 1):
+        if fits(count):
+            return items[:count]
+    return []

@@ -1174,7 +1174,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         records give the same transcript, and a merge refused on it is skipped. A new
         record, or a kept rewrite, changes the transcript and the merge is asked for again.
         """
-        groups = self._bounded_records(messages, self.merge_prompt)
+        groups = self._bounded_records(messages, self.merge_prompt, min_items=2)
         if len(groups) < 2:
             return False
         transcript = _transcript(messages, groups)
@@ -1257,13 +1257,16 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 )
         return changed
 
-    def _bounded_records(self, messages: list[Message], prompt: str) -> list[dict[str, Any]]:
+    def _bounded_records(
+        self, messages: list[Message], prompt: str, *, min_items: int = 1
+    ) -> list[dict[str, Any]]:
         return bounded_prefix(
             consolidatable_record_groups(messages),
             render=lambda groups: _transcript(messages, groups),
             prompt=prompt,
             tokenizer=self.tokenizer,
             limit=self.user_turns.max_summary_input_tokens,
+            min_items=min_items,
         )
 
     async def _consolidate(

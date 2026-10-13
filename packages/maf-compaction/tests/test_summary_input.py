@@ -141,15 +141,15 @@ async def test_failed_or_nonshrinking_partial_band_preserves_every_turn(answer):
     assert visible(messages) == before
 
 
-def summaries():
+def summaries(count=5, body=None):
     return [
         UserTurnAnchoredSummarizationCompactionStrategy._summary_message(
             [Message("user", ["source"], message_id=f"source{i}")],
             [{"group_id": f"group{i}"}],
-            f"Summary {i}: " + "s" * 1_500,
+            body if body is not None else f"Summary {i}: " + "s" * 1_500,
             summary_id=f"user_summary_{i}",
         )
-        for i in range(5)
+        for i in range(count)
     ]
 
 
@@ -279,6 +279,82 @@ def test_large_prefix_selection_avoids_quadratic_tokenization():
     assert len("instructions") + len("\n".join(selected)) <= 400_000
 
 
+def test_nonmonotonic_tokenizer_finds_a_prefix_after_an_oversized_first_item():
+    class NonmonotonicTokenizer:
+        def count_tokens(self, text):
+            body = json.loads(text)["contents"][0]["text"]
+            return 1 if body in {"instructions", "abc"} else 100
+
+    assert bounded_prefix(
+        list("abcd"),
+        render="".join,
+        prompt="instructions",
+        tokenizer=NonmonotonicTokenizer(),
+        limit=10,
+    ) == list("abc")
+
+
+@pytest.mark.parametrize("kind", ["fold", "merge", "rewrite", "recompact"])
+async def test_nonmonotonic_counts_respect_each_operations_minimum_prefix(kind):
+    class NonmonotonicTokenizer:
+        def count_tokens(self, text):
+            payload = json.loads(text)
+            body = payload["contents"][0]["text"]
+            if payload["role"] == "system":
+                return 1
+            if body.startswith("1. "):
+                fitting = {3} if kind == "rewrite" else {1, 3}
+                return 10 if len(body.splitlines()) in fitting else 10_000
+            return TOKENIZER.count_tokens(text)
+
+    client = BoundedClient(10_000)
+    strategy = users(client, max_summary_input_tokens=1_000, min_band_share=0)
+    strategy.tokenizer = NonmonotonicTokenizer()
+    if kind == "fold":
+        messages = summaries()
+        size(messages)
+        assert await strategy.fold_if_smaller(messages) == "folded"
+    elif kind == "recompact":
+        messages = conversation()
+        messages[1] = summaries()[0]
+        assert await strategy(messages)
+    else:
+        chain = composed(client)
+        chain.user_turns = strategy
+        chain.tokenizer = strategy.tokenizer
+        messages = records()
+        if kind == "merge":
+            assert await chain._merge_records(messages)
+        else:
+            assert await chain._rewrite_records(messages, _ChainStart.take(messages))
+    assert len(client.requests) == 1
+    assert len(client.requests[0][-1].text.splitlines()) == 3
+    annotate_token_counts(client.requests[0], tokenizer=strategy.tokenizer, force_retokenize=True)
+    assert included_token_count(client.requests[0]) <= 1_000
+
+
+@pytest.mark.parametrize("mode", ["boundary", "fold"])
+@pytest.mark.parametrize("remembered_requests", [1, 8])
+async def test_identical_user_chunks_get_distinct_ids_and_replay_the_latest(
+    mode, remembered_requests
+):
+    client = BoundedClient(1_000)
+    strategy = users(
+        client, summary_mode=mode, min_band_share=0, remembered_requests=remembered_requests
+    )
+    messages = [Message("user", ["u" * 1_500], message_id=f"u{i}") for i in range(8)]
+    stored = deepcopy(messages)
+    for index in range(3):
+        assert await strategy(messages)
+        ids = [message.message_id for message in messages]
+        assert len(ids) == len(set(ids))
+        assert (strategy.user_compactions, strategy.user_summaries_replayed) == (index + 1, index)
+        assert await strategy(stored)
+        assert visible(stored) == visible(messages)
+    assert strategy.user_summaries_replayed == 3
+    assert len(client.requests) == 1
+
+
 async def test_refold_never_uses_its_own_output_as_a_source(monkeypatch):
     body = "same summary " * 100
     client = BoundedClient(2_000, body)
@@ -308,28 +384,44 @@ async def test_refold_never_uses_its_own_output_as_a_source(monkeypatch):
     assert len(client.requests) == 1
 
 
-async def test_repeated_partial_folds_with_identical_bodies_replay_in_order():
+@pytest.mark.parametrize("remembered_requests", [1, 32])
+async def test_repeated_partial_folds_with_identical_bodies_replay_in_order(remembered_requests):
     body = "same summary " * 100
     client = BoundedClient(1_000, body)
-    strategy = users(client, max_summary_input_tokens=1_000, summary_mode="fold")
-    messages = [
-        strategy._summary_message(
-            [Message("user", ["source"], message_id=f"source{i}")],
-            [{"group_id": f"source_group{i}"}],
-            body,
-            summary_id=f"user_summary_{i}",
-        )
-        for i in range(15)
-    ]
+    strategy = users(
+        client,
+        max_summary_input_tokens=1_000,
+        summary_mode="fold",
+        remembered_requests=remembered_requests,
+    )
+    messages = summaries(count=15, body=body)
     size(messages)
     stored = deepcopy(messages)
     for _ in range(12):
         assert await strategy.fold_if_smaller(messages) == "folded"
     assert len(visible(messages)) == 3
+    assert (strategy.user_folds, strategy.user_summaries_replayed) == (12, 0)
     restored = users(client, max_summary_input_tokens=1_000, summary_mode="fold")
     restored.restore_session_state(json.loads(json.dumps(strategy.session_state(), sort_keys=True)))
     assert restored.refold(stored)
     assert visible(stored) == visible(messages)
     assert not restored.refold(stored)
     assert not restored.refold(project_included_messages(stored))
+    assert len(client.requests) == 1
+
+
+async def test_identical_fold_requests_replay_the_latest_id_with_a_larger_memory():
+    body = "same summary " * 100
+    client = BoundedClient(1_000, body)
+    strategy = users(
+        client, max_summary_input_tokens=1_000, summary_mode="fold", remembered_requests=8
+    )
+    messages = summaries(body=body)
+    size(messages)
+    stored = deepcopy(messages)
+    for _ in range(3):
+        assert await strategy.fold_if_smaller(messages) == "folded"
+        assert await strategy.fold_if_smaller(stored) == "folded"
+        assert visible(stored) == visible(messages)
+    assert (strategy.user_folds, strategy.user_summaries_replayed) == (3, 3)
     assert len(client.requests) == 1
