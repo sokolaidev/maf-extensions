@@ -517,11 +517,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # its fallback shed. See ``_keep_decisions``. The user half keeps its fold decisions.
         self._kept_records: dict[tuple[str, int | None], str] = {}
         self._shed_ids: set[str] = set()
-        # Refusals, kept for the whole run and keyed by the request's transcript, which is the
-        # records' content: the transcripts a merge was refused on, and the harshest rewrite
-        # attempt refused on each. See ``_merge_records`` and ``_rewrite_records``.
-        self._refused_merges: set[str] = set()
-        self._refused_rewrites: dict[str, int] = {}
+        # Shrink acceptance depends on the source count as well as the request's transcript.
+        self._refused_merges: set[tuple[str, int]] = set()
+        self._refused_rewrites: dict[tuple[str, int], int] = {}
 
     @property
     def strategies(self) -> tuple[_Phase, ...]:
@@ -670,8 +668,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 for (transcript, count), text in self._kept_records.items()
             ],
             "shed_ids": sorted(self._shed_ids),
-            "refused_merges": sorted(self._refused_merges),
-            "refused_rewrites": dict(self._refused_rewrites),
+            "refused_merges": [
+                {"transcript": transcript, "source_count": count}
+                for transcript, count in sorted(self._refused_merges)
+            ],
+            "refused_rewrites": [
+                {"transcript": transcript, "source_count": count, "attempt": attempt}
+                for (transcript, count), attempt in self._refused_rewrites.items()
+            ],
         }
 
     def restore_session_state(self, data: dict[str, Any]) -> None:
@@ -691,8 +695,21 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 for entry in kept_records
             }
         self._shed_ids = set(data["shed_ids"])
-        self._refused_merges = set(data["refused_merges"])
-        self._refused_rewrites = dict(data["refused_rewrites"])
+        # A legacy refusal without a count cannot safely suppress another request.
+        merges: list[dict[str, Any] | str] = data["refused_merges"]
+        self._refused_merges = {
+            (entry["transcript"], entry["source_count"])
+            for entry in merges
+            if not isinstance(entry, str)
+        }
+        rewrites: dict[str, int] | list[dict[str, Any]] = data["refused_rewrites"]
+        self._refused_rewrites = (
+            {}
+            if isinstance(rewrites, dict)
+            else {
+                (entry["transcript"], entry["source_count"]): entry["attempt"] for entry in rewrites
+            }
+        )
 
     @property
     def user_passes_waited(self) -> int:
@@ -1200,14 +1217,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         **Not asked again on records it was refused on.** A refused merge leaves the records as
         they were, and if step c is refused too they are still as they were when the prompt next
         goes over the budget -- possibly passes later, long after the request was made. The same
-        records give the same transcript, and a merge refused on it is skipped. A new
-        record, or a kept rewrite, changes the transcript and the merge is asked for again.
+        records give the same transcript and source count, and a merge refused on that pair is
+        skipped. Changing either makes the merge eligible again.
         """
         groups = self._bounded_records(messages, self.merge_prompt, min_items=2)
         if len(groups) < 2:
             return False
         transcript = _transcript(messages, groups)
-        if transcript in self._refused_merges:
+        key = (transcript, len(groups))
+        if key in self._refused_merges:
             self._record_merges_skipped += 1
             return False
         outcome = await self._consolidate(
@@ -1218,7 +1236,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return True
         if outcome == "rejected":
             self._record_merges_rejected += 1
-            self._refused_merges.add(transcript)
+            self._refused_merges.add(key)
         return False
 
     async def _merge_user_summaries(self, messages: list[Message]) -> bool:
@@ -1241,7 +1259,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         not merge it.
 
         **A refusal forecloses its own attempt and every milder one, on that record, for the
-        run.** Remembered by transcript -- the records' content -- as the harshest attempt refused
+        run.** Remembered by transcript and source count as the harshest attempt refused
         on it; an attempt at or below that is skipped rather than asked, and the loop goes on to
         the next attempt, and the chain to step d, exactly as after a refusal. The two directions
         are decided apart:
@@ -1270,7 +1288,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if not groups:
                 continue
             transcript = _transcript(messages, groups)
-            if self._refused_rewrites.get(transcript, 0) >= attempt:
+            key = (transcript, len(groups))
+            if self._refused_rewrites.get(key, 0) >= attempt:
                 self._record_rewrites_skipped += 1
                 continue
             self._record_rewrites += 1
@@ -1281,9 +1300,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 changed = True
             elif outcome == "rejected":
                 self._record_rewrites_rejected += 1
-                self._refused_rewrites[transcript] = max(
-                    self._refused_rewrites.get(transcript, 0), attempt
-                )
+                self._refused_rewrites[key] = max(self._refused_rewrites.get(key, 0), attempt)
         return changed
 
     def _bounded_records(

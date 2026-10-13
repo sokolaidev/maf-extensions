@@ -621,3 +621,43 @@ async def test_record_replay_preserves_colliding_transcripts_with_different_coun
         assert visible(stored) == expected
         assert not restored._keep_records(stored)
     assert len(client.requests) == 2
+
+
+@pytest.mark.parametrize("operation", ["merge", "rewrite"])
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_refusal_does_not_cross_colliding_record_counts(operation, legacy):
+    first, second, third = "a" * 100, "b" * 100, "c" * 100
+    fewer = [build_record_message(body) for body in [first, f"{second}\n3. {third}"]]
+    more = [build_record_message(body) for body in [first, second, third]]
+    for messages in (fewer, more):
+        annotate_message_groups(messages)
+        size(messages)
+    transcript = composed_module._transcript(fewer, active_record_groups(fewer))
+    assert transcript == composed_module._transcript(more, active_record_groups(more))
+    lower, upper = size(fewer), size(more)
+    assert lower < upper
+    answer = next(
+        "x" * count
+        for count in range(1, upper * 4)
+        if lower <= size([build_record_message("x" * count)]) < upper
+    )
+    client = BoundedClient(10_000, answer)
+    strategy = composed(client, harder_attempts=1)
+
+    async def attempt(chain, messages):
+        if operation == "merge":
+            return await chain._merge_records(messages)
+        return await chain._rewrite_records(messages, composed_module._ChainStart.take(messages))
+
+    assert not await attempt(strategy, fewer)
+    assert len(client.requests) == 1
+    snapshot = json.loads(json.dumps(strategy.session_state()))
+    if legacy:
+        snapshot["refused_merges"] = [transcript] if operation == "merge" else []
+        snapshot["refused_rewrites"] = {transcript: 1} if operation == "rewrite" else {}
+    restored = composed(client, harder_attempts=1)
+    restored.restore_session_state(snapshot)
+    assert not await attempt(restored, fewer)
+    assert len(client.requests) == 1 + int(legacy)
+    assert await attempt(restored, more)
+    assert len(client.requests) == 2 + int(legacy)
