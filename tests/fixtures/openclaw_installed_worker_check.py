@@ -215,14 +215,141 @@ def networking(image: str) -> dict[str, Any]:
     }
 
 
+def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
+    """Verify two Gateway sessions and prepared-module execution against the installed CLI."""
+    import http.client
+
+    from agent_framework import Content, MCPStreamableHTTPTool
+    from openclaw_gateway_http_check import projected_result, records, verify_outcome
+    from openclaw_http_observer import resolve_image
+
+    installed_environment()
+    config = json.loads(args.config.read_text(encoding="utf-8-sig"))
+    image = resolve_image(args.image)
+    config_digest = sha(args.bicep_config.read_bytes())
+    owner = "openclaw-bicep-" + (args.owner / "owner").read_text().strip()
+
+    def empty() -> bool:
+        return not subprocess.check_output(
+            ["docker", "ps", "-aq", "--filter", f"label=maf-sandbox.scope={owner}"], text=True
+        ).strip()
+
+    report: dict[str, Any] = {
+        "sessions": [],
+        "entry_point": "maf-bicep-mcp",
+        "provider": "deterministic-local-fixture",
+    }
+    for _ in range(2):
+        session = uuid.uuid4().hex
+        results = {}
+        for case in ("valid", "invalid", "incomplete"):
+            turn = uuid.uuid4().hex
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", config["gateway"]["port"], timeout=180
+            )
+            try:
+                connection.request(
+                    "POST",
+                    "/v1/chat/completions",
+                    json.dumps(
+                        {
+                            "model": "openclaw",
+                            "user": session,
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": f"qualification {case} qualification-turn={turn}",
+                                }
+                            ],
+                        }
+                    ),
+                    {
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer " + config["gateway"]["auth"]["token"],
+                    },
+                )
+                response = connection.getresponse()
+                payload = json.loads(response.read())
+                require(
+                    response.status == 200
+                    and payload["choices"][0]["message"]["content"]
+                    == "QUALIFICATION_TOOL_RESULT_RECEIVED",
+                    "Gateway turn did not finish",
+                )
+            finally:
+                connection.close()
+            results[case] = verify_outcome(
+                projected_result(records(args.evidence), turn, case), case, config_digest, image
+            )
+            require(empty(), "Console call left owned resources")
+        report["sessions"].append(results)
+
+    async def prepared():
+        server = config["mcp"]["servers"]["bicep"]
+        source = "module network 'br/public:avm/res/network/virtual-network:0.7.2' = {\n name: 'network'\n params: { name: 'example-network'\n addressPrefixes: ['10.0.0.0/16'] }\n}"
+        async with MCPStreamableHTTPTool(
+            name="prepared",
+            url=server["url"],
+            static_headers=server["headers"],
+            load_prompts=False,
+            request_timeout=240,
+        ) as client:
+            content = await client.call_tool(
+                "bicep_validate", files=[{"path": "main.bicep", "content": source}]
+            )
+            if (
+                not isinstance(content, list)
+                or len(content) != 1
+                or not isinstance(content[0], Content)
+                or not isinstance(content[0].text, str)
+            ):
+                raise RuntimeError("Unexpected MAF result projection")
+            result = json.loads(content[0].text)
+            require(
+                result["completed"] is True
+                and result["verdict"] == "valid"
+                and result["cleanup"] == "confirmed",
+                "Prepared module did not validate",
+            )
+            require(
+                result["image"] == image and result["config_sha256"] == config_digest,
+                "Prepared identity differs",
+            )
+            require(empty(), "Prepared call left owned resources")
+            return {
+                k: result[k]
+                for k in (
+                    "completed",
+                    "verdict",
+                    "status",
+                    "cleanup",
+                    "source_sha256",
+                    "config_sha256",
+                    "image",
+                )
+            }
+
+    report["prepared_module"] = asyncio.run(prepared())
+    report["owned_empty"] = empty()
+    return report
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("wheel", "root", "config"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--image", required=True)
+    parser.add_argument("--gateway-config", type=Path)
+    parser.add_argument("--provider-evidence", type=Path)
+    parser.add_argument("--owner", type=Path)
+    parser.add_argument("--openclaw", type=Path)
     args = parser.parse_args()
     args.wheel = args.wheel.resolve()
     args.config = args.config.resolve()
+    for name in ("gateway_config", "provider_evidence", "owner", "openclaw"):
+        value = getattr(args, name)
+        if value is not None:
+            setattr(args, name, value.resolve())
     repo = Path(__file__).resolve().parents[2]
     root = args.root.resolve()
     require(not root.is_relative_to(repo), "Evidence must be outside checkout")
@@ -254,15 +381,29 @@ def main() -> None:
     try:
         report["environment"] = installed_environment()
         report["artifact"] = verify_wheel(args.wheel.resolve())
-        report["transport"] = transport(root, repo)
-        from openclaw_bicep_ownership_check import check
-        from openclaw_http_observer import resolve_image
+        if args.gateway_config is not None:
+            if args.owner is None or args.provider_evidence is None or args.openclaw is None:
+                raise RuntimeError(
+                    "Gateway mode needs owner, provider evidence and pinned OpenClaw"
+                )
+            require(
+                json.loads((args.openclaw / "package.json").read_text())["version"] == "2026.9.7",
+                "Requalify changed OpenClaw baseline",
+            )
+            args.bicep_config = args.config
+            args.config = args.gateway_config
+            args.evidence = args.provider_evidence
+            report["gateway"] = console_gateway(args)
+        else:
+            report["transport"] = transport(root, repo)
+            from openclaw_bicep_ownership_check import check
+            from openclaw_http_observer import resolve_image
 
-        args.root = root / "ownership"
-        args.root.mkdir()
-        args.installed = True
-        report["ownership"] = asyncio.run(check(args))
-        report["network"] = networking(resolve_image(args.image))
+            args.root = root / "ownership"
+            args.root.mkdir()
+            args.installed = True
+            report["ownership"] = asyncio.run(check(args))
+            report["network"] = networking(resolve_image(args.image))
         require(
             report["artifact"] == verify_wheel(args.wheel.resolve()),
             "Installed artifact changed during execution",
@@ -276,9 +417,7 @@ def main() -> None:
         json.dumps(
             {
                 "passed": True,
-                "transport_cases": len(report["transport"]["cases"]),
-                "retirements": len(report["transport"]["retirements"]),
-                "ownership_cases": list(report["ownership"]["cases"]),
+                "checks": sorted(set(report) & {"transport", "ownership", "network", "gateway"}),
             }
         )
     )

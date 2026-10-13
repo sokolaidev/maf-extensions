@@ -368,10 +368,15 @@ def main() -> None:
     report["dirty"] = bool(
         subprocess.check_output(["git", "status", "--porcelain"], cwd=root, text=True).strip()
     )
+    source_dir = root / "samples/experimental/openclaw_bicep"
+    if args.installed:
+        import maf_sandbox_mcp
+
+        source_dir = Path(maf_sandbox_mcp.__file__).parent
     report["source_hashes"] = {
         path.name: hashlib.sha256(path.read_bytes()).hexdigest()
         for path in [
-            *sorted((root / "samples/experimental/openclaw_bicep").glob("*.py")),
+            *sorted(source_dir.glob("*.py")),
             Path(__file__),
             Path(__file__).with_name("openclaw_gateway_provider.py"),
             Path(__file__).with_name("openclaw_http_observer.py"),
