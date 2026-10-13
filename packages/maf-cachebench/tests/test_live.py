@@ -1607,7 +1607,10 @@ async def test_user_band_compactions_reach_the_seed_record_and_the_flags_column(
     drop one.
     """
     strategy = UserTurnAnchoredSummarizationCompactionStrategy(
-        max_input_tokens=12_000, tokenizer=TOKENIZER, client=_StubSummarizer()
+        max_summary_input_tokens=100_000,
+        max_input_tokens=12_000,
+        tokenizer=TOKENIZER,
+        client=_StubSummarizer(),
     )
 
     assert await strategy(_user_band_conversation(8)) is True
@@ -1697,7 +1700,11 @@ async def test_the_user_band_strategy_compacts_the_stored_conversation_once_per_
     """
     summarizer = _NumberedSummarizer()
     strategy = UserTurnAnchoredSummarizationCompactionStrategy(
-        max_input_tokens=16_000 - 2_048, tokenizer=TOKENIZER, client=summarizer, summary_mode=mode
+        max_summary_input_tokens=100_000,
+        max_input_tokens=16_000 - 2_048,
+        tokenizer=TOKENIZER,
+        client=summarizer,
+        summary_mode=mode,
     )
     recorder = UsageRecorder()
     agent = build_live_agent(
@@ -2216,7 +2223,10 @@ def _composed_over(
             max_input_tokens=ceiling, tokenizer=TOKENIZER
         ),
         user_turns=UserTurnAnchoredSummarizationCompactionStrategy(
-            max_input_tokens=ceiling, tokenizer=TOKENIZER, client=_StubSummarizer()
+            max_summary_input_tokens=100_000,
+            max_input_tokens=ceiling,
+            tokenizer=TOKENIZER,
+            client=_StubSummarizer(),
         ),
     )
 

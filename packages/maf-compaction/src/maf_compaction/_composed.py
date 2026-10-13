@@ -29,7 +29,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from math import ceil
-from typing import TYPE_CHECKING, Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from agent_framework import Message
 from agent_framework._compaction import (
@@ -46,6 +46,7 @@ from ._anchored import (
     _is_marker,  # pyright: ignore[reportPrivateUsage]
 )
 from ._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
+from ._summary_input import bounded_prefix, fits_summary_input, summary_request
 from ._toolsummary import (
     PRESERVE_REASON_UNCOVERED,
     PRESERVE_REASON_UNRECORDED,
@@ -512,15 +513,13 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._declined_behind: str | None = None
         # What the chain decided, kept for the whole run and put back on every list it applies
         # to, whatever that list's size: the records a merge or rewrite replaced, by their
-        # transcript, with the text that replaced them; and the ids of the messages its fallback
-        # shed. See ``_keep_decisions``. The user fold's are kept by the user half.
-        self._kept_records: dict[str, str] = {}
+        # transcript and source count, with their replacement text; and the ids of the messages
+        # its fallback shed. See ``_keep_decisions``. The user half keeps its fold decisions.
+        self._kept_records: dict[tuple[str, int | None], str] = {}
         self._shed_ids: set[str] = set()
-        # Refusals, kept for the whole run and keyed by the request's transcript, which is the
-        # records' content: the transcripts a merge was refused on, and the harshest rewrite
-        # attempt refused on each. See ``_merge_records`` and ``_rewrite_records``.
-        self._refused_merges: set[str] = set()
-        self._refused_rewrites: dict[str, int] = {}
+        # Shrink acceptance depends on the source count as well as the request's transcript.
+        self._refused_merges: set[tuple[str, int]] = set()
+        self._refused_rewrites: dict[tuple[str, int], int] = {}
 
     @property
     def strategies(self) -> tuple[_Phase, ...]:
@@ -664,20 +663,53 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return {
             "decisions": self.decision_state().to_dict(),
             "user_turns": self.user_turns.session_state(),
-            "kept_records": dict(self._kept_records),
+            "kept_records": [
+                {"transcript": transcript, "source_count": count, "text": text}
+                for (transcript, count), text in self._kept_records.items()
+            ],
             "shed_ids": sorted(self._shed_ids),
-            "refused_merges": sorted(self._refused_merges),
-            "refused_rewrites": dict(self._refused_rewrites),
+            "refused_merges": [
+                {"transcript": transcript, "source_count": count}
+                for transcript, count in sorted(self._refused_merges)
+            ],
+            "refused_rewrites": [
+                {"transcript": transcript, "source_count": count, "attempt": attempt}
+                for (transcript, count), attempt in self._refused_rewrites.items()
+            ],
         }
 
     def restore_session_state(self, data: dict[str, Any]) -> None:
         """Replace behavioral state with a snapshot from :meth:`session_state`."""
         self.restore_decisions(ChainDecisions.from_dict(data["decisions"]))
         self.user_turns.restore_session_state(data["user_turns"])
-        self._kept_records = dict(data["kept_records"])
+        kept_records = data["kept_records"]
+        if isinstance(kept_records, dict):
+            counts = data.get("kept_record_counts", {})
+            self._kept_records = {
+                (transcript, counts.get(transcript)): text
+                for transcript, text in cast(dict[str, str], kept_records).items()
+            }
+        else:
+            self._kept_records = {
+                (entry["transcript"], entry["source_count"]): entry["text"]
+                for entry in kept_records
+            }
         self._shed_ids = set(data["shed_ids"])
-        self._refused_merges = set(data["refused_merges"])
-        self._refused_rewrites = dict(data["refused_rewrites"])
+        # A legacy refusal without a count cannot safely suppress another request.
+        merges: list[dict[str, Any] | str] = data["refused_merges"]
+        self._refused_merges = {
+            (entry["transcript"], entry["source_count"])
+            for entry in merges
+            if not isinstance(entry, str)
+        }
+        rewrites: dict[str, int] | list[dict[str, Any]] = data["refused_rewrites"]
+        self._refused_rewrites = (
+            {}
+            if isinstance(rewrites, dict)
+            else {
+                (entry["transcript"], entry["source_count"]): entry["attempt"] for entry in rewrites
+            }
+        )
 
     @property
     def user_passes_waited(self) -> int:
@@ -1098,8 +1130,23 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         changed = False
         while self._kept_records:
             groups = consolidatable_record_groups(messages)
-            for count in range(len(groups), 0, -1):
-                text = self._kept_records.get(_transcript(messages, groups[:count]))
+            # Legacy snapshots need a search until their source counts have been learned.
+            source_counts = {count for _, count in self._kept_records}
+            counts = (
+                range(len(groups), 0, -1)
+                if None in source_counts
+                else sorted((count for count in source_counts if count is not None), reverse=True)
+            )
+            for count in counts:
+                if not 1 <= count <= len(groups):
+                    continue
+                transcript = _transcript(messages, groups[:count])
+                key = (transcript, count)
+                text = self._kept_records.get(key)
+                if text is None:
+                    text = self._kept_records.pop((transcript, None), None)
+                    if text is not None:
+                        self._kept_records[key] = text
                 if text is not None:
                     self.tool_results.consolidate_records(messages, groups[:count], text)
                     changed = True
@@ -1161,7 +1208,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return changed
 
     async def _merge_records(self, messages: list[Message]) -> bool:
-        """Step a: merge the active records into one, when there are at least two.
+        """Step a: merge the oldest records that fit, when at least two fit.
 
         Only records :func:`~._toolsummary.consolidatable_record_groups` offers: a record whose
         result this model call carried in waits for the next pass, and is not counted towards the
@@ -1170,14 +1217,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         **Not asked again on records it was refused on.** A refused merge leaves the records as
         they were, and if step c is refused too they are still as they were when the prompt next
         goes over the budget -- possibly passes later, long after the request was made. The same
-        records give the same transcript, and a merge refused on it is skipped. A new
-        record, or a kept rewrite, changes the transcript and the merge is asked for again.
+        records give the same transcript and source count, and a merge refused on that pair is
+        skipped. Changing either makes the merge eligible again.
         """
-        groups = consolidatable_record_groups(messages)
+        groups = self._bounded_records(messages, self.merge_prompt, min_items=2)
         if len(groups) < 2:
             return False
         transcript = _transcript(messages, groups)
-        if transcript in self._refused_merges:
+        key = (transcript, len(groups))
+        if key in self._refused_merges:
             self._record_merges_skipped += 1
             return False
         outcome = await self._consolidate(
@@ -1188,11 +1236,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return True
         if outcome == "rejected":
             self._record_merges_rejected += 1
-            self._refused_merges.add(transcript)
+            self._refused_merges.add(key)
         return False
 
     async def _merge_user_summaries(self, messages: list[Message]) -> bool:
-        """Step b: fold the standing user summaries into one, when there are at least two."""
+        """Step b: fold the oldest user summaries that fit, when at least two fit."""
         outcome = await self.user_turns.fold_if_smaller(messages)
         if outcome == "folded":
             self._user_summaries_merged += 1
@@ -1204,14 +1252,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     async def _rewrite_records(self, messages: list[Message], start: _ChainStart) -> bool:
         """Step c: rewrite the record harder, up to :attr:`harder_attempts` times on this pass.
 
-        Every active record is handed over, which is one record whenever step a succeeded or
-        there was only one, and several when a merge was refused -- in which case a rewrite is a
-        harder merge, and the prompt says so. Each attempt is judged against the records as they
-        stand when it is made, so a kept attempt raises the bar for the next. A record whose
-        result this model call carried in is not handed over, as step a does not merge it.
+        The oldest whole records that fit the request budget are handed over. With several,
+        a rewrite is a harder merge, and the prompt says so. Each attempt is judged against the
+        records as they stand when it is made, so a kept attempt raises the bar for the next.
+        A record whose result this model call carried in is not handed over, as step a does
+        not merge it.
 
         **A refusal forecloses its own attempt and every milder one, on that record, for the
-        run.** Remembered by transcript -- the records' content -- as the harshest attempt refused
+        run.** Remembered by transcript and source count as the harshest attempt refused
         on it; an attempt at or below that is skipped rather than asked, and the loop goes on to
         the next attempt, and the chain to step d, exactly as after a refusal. The two directions
         are decided apart:
@@ -1235,25 +1283,37 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         for attempt in range(1, self.harder_attempts + 1):
             if attempt > 1 and not self._short_of_target(messages, start):
                 break
-            groups = consolidatable_record_groups(messages)
+            prompt = harder_record_prompt(attempt)
+            groups = self._bounded_records(messages, prompt)
             if not groups:
-                break
+                continue
             transcript = _transcript(messages, groups)
-            if self._refused_rewrites.get(transcript, 0) >= attempt:
+            key = (transcript, len(groups))
+            if self._refused_rewrites.get(key, 0) >= attempt:
                 self._record_rewrites_skipped += 1
                 continue
             self._record_rewrites += 1
             outcome = await self._consolidate(
-                messages, groups, prompt=harder_record_prompt(attempt), transcript=transcript
+                messages, groups, prompt=prompt, transcript=transcript
             )
             if outcome == "accepted":
                 changed = True
             elif outcome == "rejected":
                 self._record_rewrites_rejected += 1
-                self._refused_rewrites[transcript] = max(
-                    self._refused_rewrites.get(transcript, 0), attempt
-                )
+                self._refused_rewrites[key] = max(self._refused_rewrites.get(key, 0), attempt)
         return changed
+
+    def _bounded_records(
+        self, messages: list[Message], prompt: str, *, min_items: int = 1
+    ) -> list[dict[str, Any]]:
+        return bounded_prefix(
+            consolidatable_record_groups(messages),
+            render=lambda groups: _transcript(messages, groups),
+            prompt=prompt,
+            tokenizer=self.tokenizer,
+            limit=self.user_turns.max_summary_input_tokens,
+            min_items=min_items,
+        )
 
     async def _consolidate(
         self, messages: list[Message], groups: list[dict[str, Any]], *, prompt: str, transcript: str
@@ -1290,7 +1350,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if included_token_count(candidate) >= included_token_count(replaced):
             return "rejected"
         self.tool_results.consolidate_records(messages, groups, text)
-        self._kept_records[transcript] = text
+        self._kept_records[(transcript, len(groups))] = text
         # The new record may read exactly as one an earlier pass went on to replace -- a merge of
         # new material can come back as the record an earlier rewrite started from -- and that
         # replacement is already decided, so it is taken here rather than asked for again.
@@ -1315,12 +1375,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             The text, or None when the summarizer raised or said nothing.
         """
+        if not fits_summary_input(
+            prompt,
+            transcript,
+            tokenizer=self.tokenizer,
+            limit=self.user_turns.max_summary_input_tokens,
+        ):
+            logger.warning("Skipping record consolidation: summary input exceeds its token limit.")
+            self._record_summary_failures += 1
+            return None
         try:
             response = await self.user_turns.client.get_response(
-                [
-                    Message(role="system", contents=[prompt]),
-                    Message(role="user", contents=[transcript]),
-                ],
+                summary_request(prompt, transcript),
                 stream=False,
             )
         except Exception as error:
