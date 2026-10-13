@@ -134,7 +134,12 @@ def test_export_qualification_requires_complete_evidence(monkeypatch, fault):
                 SandboxKey("scope", "thread", "agent", call_id=call),
                 SandboxSpec(kind="probe", image=image),
             )
-        names = ["diagram.drawio", "stored/diagram-2.png", "stored/diagram-2.jpg"]
+        names = [
+            "diagram.drawio",
+            "stored/diagram.drawio",
+            "stored/diagram-2.png",
+            "stored/diagram-2.jpg",
+        ]
         names += [f"diagram-{page}.{fmt}" for page in (1, 2) for fmt in ("png", "jpg", "svg")]
         if fault == "artifact":
             names.pop()
@@ -153,7 +158,8 @@ def test_export_qualification_requires_complete_evidence(monkeypatch, fault):
             asyncio.run(export.check(IMAGE))
     else:
         result = asyncio.run(export.check(IMAGE))
-        assert len(result["artifacts"]) == 9
+        assert len(result["artifacts"]) == 10
+        assert "stored/diagram.drawio" in result["artifacts"]
         assert result["containersRemaining"] == []
         assert result["editable"] == editable
     purge.assert_awaited_once_with("scope", "thread")

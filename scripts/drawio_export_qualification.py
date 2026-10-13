@@ -116,11 +116,19 @@ async def check(image_id: str) -> dict[str, Any]:
                 for path in sorted(destination.rglob("*"))
                 if path.is_file()
             }
-            expected = {"diagram.drawio", "stored/diagram-2.png", "stored/diagram-2.jpg"}
+            expected = {
+                "diagram.drawio",
+                "stored/diagram.drawio",
+                "stored/diagram-2.png",
+                "stored/diagram-2.jpg",
+            }
             expected.update(
                 f"diagram-{page}.{fmt}" for page in (1, 2) for fmt in ("png", "jpg", "svg")
             )
-            editable.require(set(artifacts) == expected, "Unexpected export artifacts")
+            editable.require(
+                set(artifacts) == expected,
+                f"Unexpected export artifacts: {sorted(set(artifacts) ^ expected)}",
+            )
             for scope, _ in scopes:
                 editable.require(
                     not await asyncio.to_thread(editable.owned, scope),
