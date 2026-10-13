@@ -1037,3 +1037,22 @@ The merged #1900 adoption moves the workspace core to MAF 1.21.0. The worker's d
 The adjusted wheel is `97585f8326972d1aa275cf7827e2c6b5ff1edcaf023d66c862b5a5d9dbe69c0c`. A third clean external index installation reproduced the complete manifest and all four runtime hashes of the final runtime candidate above, and its installed entry-point smoke passed. The artifact/manifest reconciliation report hashes to `dd7b73dc6dd04556f7d970152312bee34e3c50acf68676454a48fe91b6476653`. The Docker/Gateway observations remain attributed to the unchanged runtime and recorded earlier wheel; they were not independently repeated after this metadata-only adjustment.
 
 Separately, all 15 sandbox wheels installed together with the prepared local core, and the worker's clean-wheel smoke passed with MAF 1.21.0. On that workspace baseline, 1,078 focused service/prototype/qualification/package tests passed, with four opt-in tests skipped. These establish offline and installation compatibility for the prepared pairing; the live Gateway/Bicep qualification remains the MAF 1.20.0 baseline above.
+
+### Review candidate requalification (2026-10-13)
+
+Candidate `c05c84155cff12c360c0fd2d944edb1d02db94bf` changes two runtime paths: stdio shutdown raises on unconfirmed final cleanup, and authenticated non-GET requests to `/ready` return 405. The historical source specimen remains frozen. The earlier artifact hashes still describe their recorded candidates; they do not describe this revised runtime.
+
+Before the fixes, the new shutdown/readiness regressions produced 17 failures and 22 passing controls. The affected workspace suites then passed with 229 tests and 14 skips. A fresh external installation of the revised wheel passed all 39 new regression cases against the recorded MAF 1.20 dependency baseline. Those are synthetic cleanup/readiness checks, separate from the real Docker observations below.
+
+The revised installed wheel repeated all 43 transport cases and 109 SDK retirements, all five real Bicep/MAF ownership scenarios, the reachable/denied network control, instrumented two-session Gateway acceptance and the actual installed-console Gateway/prepared-module pass. All passed on the same Python, Docker, OpenClaw, image/configuration and complete dependency baseline recorded above. Transport and ownership shutdown ended empty and unpoisoned; the unrelated owner survived and the sentinel was removed. Active MAF closure again settled the service before the client: 24.56 seconds versus 240.01 seconds, with client code 408 and a successful survivor call. The instrumented service exited 0. The console was terminated while idle on Windows, exited 1 and released its owner lock; that is still not graceful-console-shutdown evidence. Both Gateway runs confirmed all their test processes stopped. Historical `complete_matrix: false` limits remain in force.
+
+| Revised artifact | SHA-256 |
+|---|---|
+| Built worker wheel | `b024019f7e0987556c792bca27bb0002dac5aa6e7e6a6f4a19385a7df7f7baa5` |
+| `maf_sandbox_mcp/__init__.py` | `6cd4609954365facc1edf656bfffc2366bf5da541f1fc699b88122dd007f2430` |
+| `maf_sandbox_mcp/server.py` | `818dd044894a90881cc46f467c6efd16767f532a382f4d4a1706d2cfd94c3ae2` |
+| `maf_sandbox_mcp/workload_http.py` | `f020d90da0e670cfc4bdbbdd7f131a3b84cde83cb8d876021b4ae4d84180d599` |
+| `maf_sandbox_mcp/workload_service.py` | `8972bc76c8ef9f990f4f0a4cbf3f6704b0e5752bb2b42aaa9f7dfcd0a35a45e0` |
+| Installed transport/ownership/network report | `828cd2119b717e12268ade24782056997e53930fe7b6a6eed363960683361add` |
+| Instrumented Gateway report | `055f92f3ee6ad4d20ad65184f2fdc09a7d8a545b7423555f989d4fef8385f187` |
+| Console Gateway report | `66c033748d11fc79f6be87ab1fc5b18b8e3888584e8b60407b333e452827f454` |
