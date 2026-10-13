@@ -268,8 +268,9 @@ def _user_tokens(messages: list[Message]) -> int:
 def _strategy(
     summarizer: Any = None, **kwargs: Any
 ) -> UserTurnAnchoredSummarizationCompactionStrategy:
-    """Return a strategy over the compacting ceiling unless a test says otherwise."""
+    """Use the compacting ceiling and a generous summary budget to isolate selection rules."""
     kwargs.setdefault("max_input_tokens", _COMPACTING_CEILING)
+    kwargs.setdefault("max_summary_input_tokens", 100_000)
     return UserTurnAnchoredSummarizationCompactionStrategy(
         tokenizer=TOKENIZER, client=summarizer or _Summarizer(), **kwargs
     )
@@ -405,7 +406,7 @@ async def test_it_compacts_user_turns_and_leaves_tool_results_and_assistant_mess
     assert "TOOL-3-VALUE" not in asked
 
 
-async def test_the_first_and_last_user_turns_survive_on_the_defaults() -> None:
+async def test_the_first_and_last_user_turns_survive_with_default_anchors() -> None:
     """The task and the live request, which are the two turns that cannot be paraphrased.
 
     The first carries the requirements every surviving value is interpreted against -- the
