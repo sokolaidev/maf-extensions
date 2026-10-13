@@ -37,6 +37,7 @@ from agent_framework._compaction import (
 )
 
 from ._preserve import any_preserved, set_preserved
+from ._summary_input import bounded_prefix, fits_summary_input, summary_request
 from ._summary_links import has_summary_links
 
 if TYPE_CHECKING:
@@ -466,6 +467,11 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             run. This is the hysteresis: without it the strategy fires once per turn for the
             rest of a run that stays above the trigger. ``0.0`` disables it. See
             :data:`DEFAULT_MIN_BAND_SHARE`.
+        max_summary_input_tokens: Maximum estimated tokens in a summarizer request, including
+            its instructions and numbered transcript. Defaults to half ``max_input_tokens``
+            (at least one). Only the oldest whole turns or summaries that fit are replaced;
+            when no eligible prefix fits, the oldest item is left untouched. The composition
+            shares this limit for record merges and rewrites. Reserve provider overhead separately.
         summary_mode: What a pass does with the summary the previous pass left behind: one of
             :data:`SUMMARY_MODES`. The recompacting default re-reads and replaces it; the
             boundary mode leaves it standing and compacts only what is newer; the fold mode does
@@ -496,6 +502,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         keep_tail_user_turns: int = DEFAULT_KEEP_TAIL_USER_TURNS,
         trigger_fraction: float = DEFAULT_USER_TRIGGER_FRACTION,
         min_band_share: float = DEFAULT_MIN_BAND_SHARE,
+        max_summary_input_tokens: int | None = None,
         summary_mode: str = DEFAULT_SUMMARY_MODE,
         prompt: str | None = None,
         fold_prompt: str | None = None,
@@ -528,6 +535,11 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             raise ValueError("min_band_share must be in [0.0, 1.0).")
         if summary_mode not in SUMMARY_MODES:
             raise ValueError(f"summary_mode must be one of {SUMMARY_MODES}, not {summary_mode!r}.")
+        if max_summary_input_tokens is None:
+            max_summary_input_tokens = max(1, max_input_tokens // 2)
+        if type(max_summary_input_tokens) is not int or max_summary_input_tokens <= 0:
+            raise ValueError("max_summary_input_tokens must be a positive integer.")
+        self.max_summary_input_tokens = max_summary_input_tokens
         self.max_input_tokens = max_input_tokens
         self.tokenizer = tokenizer
         self.client = client
@@ -549,15 +561,16 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self._replayed = 0
         self.remembered_requests = remembered_requests
         self._remembered: list[_Remembered] = []
-        # Folds :meth:`fold_if_smaller` kept, by the transcript of the summaries they replaced,
-        # for the whole run. See :meth:`refold`.
+        # Kept fold outputs identify how far a history has already replayed.
         self._kept_folds: dict[str, _Remembered] = {}
+        self._kept_fold_counts: dict[str, int] = {}
 
     def session_state(self) -> dict[str, Any]:
         """Return JSON-safe behavioral state for session persistence."""
         return {
             "remembered": [entry._asdict() for entry in self._remembered],
             "kept_folds": {key: entry._asdict() for key, entry in self._kept_folds.items()},
+            "kept_fold_counts": dict(self._kept_fold_counts),
             # These counts also set the minimum generated summary IDs.
             "compactions": self._compactions,
             "folds": self._folds,
@@ -566,7 +579,10 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
     def restore_session_state(self, data: dict[str, Any]) -> None:
         """Replace behavioral state with a snapshot from :meth:`session_state`."""
         self._remembered = [_Remembered(**entry) for entry in data["remembered"]]
-        self._kept_folds = {key: _Remembered(**entry) for key, entry in data["kept_folds"].items()}
+        self._kept_folds = {
+            entry["summary_id"]: _Remembered(**entry) for entry in data["kept_folds"].values()
+        }
+        self._kept_fold_counts = dict(data.get("kept_fold_counts", {}))
         self._compactions = data["compactions"]
         self._folds = data["folds"]
 
@@ -594,9 +610,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         cache: every pass re-bills the prompt from its own edit to the end, so the number of
         passes is the number of times that was paid.
 
-        A pass that replaced the band with a summary already in hand is not counted here but
-        under :attr:`user_summaries_replayed`: it produced no summary and paid no new break.
-        Live, every crossing is one of each.
+        Replaying the same replacement on stored history is counted under
+        :attr:`user_summaries_replayed`. Reusing summary text for new sources still counts here:
+        it writes a fresh summary id and pays another cache break.
         """
         return self._compactions
 
@@ -667,7 +683,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
 
     @property
     def user_folds(self) -> int:
-        """Passes that collapsed every standing summary into one, which became the new boundary.
+        """Passes that collapsed an oldest prefix of standing summaries into a new boundary.
 
         The fold mode's whole cost, in the unit it is paid in: each fold rewrites the prompt at
         the oldest summary's position, which is just behind the head turn, so it re-bills very
@@ -689,7 +705,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
 
     @property
     def user_summaries_replayed(self) -> int:
-        """Passes that replaced a band with a summary already in hand, asking for nothing new.
+        """Passes that replayed the same replacement and id on another view of the history.
 
         The live path runs one strategy at two sites on one conversation -- inside the model
         call on loaded copies, and after the turn on the store; see the module docstring -- so
@@ -753,27 +769,11 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
 
     @property
     def user_passes_declined(self) -> int:
-        """Passes over the trigger where the band was not worth what a pass costs.
+        """Passes over the trigger with no worthwhile band or fold that fits the input limit.
 
-        The hysteresis counter, and the price of having one. Every pass counted here is a pass
-        ``min_band_share=0.0`` would have spent: a summarizer call, a rewritten prefix billed
-        from the summary's position to the end of the conversation, and a few hundred tokens
-        freed.
-
-        It is one number for three refusals, because they are one statement -- there was not
-        enough here to be worth a pass. The band was empty (the anchors cover the conversation,
-        or after a boundary nothing but the tail is newer than it), or it held only this
-        strategy's own earlier summary (nothing new has been said), or it was worth less than
-        ``min_band_share`` of the prompt (something new has been said and it is not enough).
-        :meth:`_worth_compacting` is where all three are written down. In the fold mode a pass
-        counted here is one where the standing summaries were not worth a fold either; a pass
-        where they were is a :attr:`user_folds`, not a decline.
-
-        **Read it as a ratio against :attr:`user_compactions`, not alone.** Non-zero beside a
-        non-zero compaction count is the mechanism working. Non-zero beside *zero* compactions
-        is a row whose user half never acted, and the share is then too high for that workload's
-        band -- which is a configuration to change, not a strategy that failed, and it is
-        visible here rather than looking like a conversation that never grew.
+        Includes empty bands, bands containing only earlier summaries, and bands below
+        ``min_band_share``. A bounded band must include a new turn, and a fold must fit at
+        least two summaries. Summary generation failures have their own counter.
         """
         return self._declined
 
@@ -859,10 +859,24 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         # the return value: annotating a message is not a change to what the model sees.
         standing = self._observe_summaries(messages)
         band = self._band(messages, standing)
-        if not self._worth_compacting(messages, band, included_token_count(messages)):
-            # The band has stopped yielding. That is the signal a fold waits for and not, on
-            # its own, a reason to fold: the fold has its own condition, and a pass that fails
-            # both is declined and counted as one.
+        if self._worth_compacting(messages, band, included_token_count(messages)):
+            band = bounded_prefix(
+                band,
+                render=lambda spans: _format_turns(
+                    [messages[span["start_index"]] for span in spans]
+                ),
+                prompt=self.prompt,
+                tokenizer=self.tokenizer,
+                limit=self.max_summary_input_tokens,
+                min_items=next(
+                    index + 1
+                    for index, span in enumerate(band)
+                    if not _is_summary(messages[int(span["start_index"])])
+                ),
+            )
+        else:
+            band = []
+        if not band:
             if self._fold_due(messages, standing):
                 return await self._fold(messages, standing)
             self._declined += 1
@@ -870,6 +884,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
 
         transcript = _format_turns([messages[span["start_index"]] for span in band])
         remembered = self._recall(self.prompt, transcript)
+        replayed = remembered is not None
         if remembered is None:
             summary = await self._summarize(transcript, prompt=self.prompt)
             if summary is None:
@@ -887,8 +902,14 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             )
             self._remember(_Remembered(self.prompt, transcript, summary_id, summary))
         else:
-            # The same band, seen again on the other list the live path runs this on. The answer
-            # and the id are the ones the model has already been sent.
+            if any(message.message_id == remembered.summary_id for message in messages):
+                remembered = remembered._replace(
+                    summary_id=_next_summary_id(
+                        messages, prefix=SUMMARY_ID_PREFIX, minimum=self._compactions
+                    )
+                )
+                self._remember(remembered)
+                replayed = False
             summary_id, summary = remembered.summary_id, remembered.text
         replaced = [
             message
@@ -899,10 +920,10 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             # Remembered all the same, so the other list replays the refusal instead of asking.
             self._failures += remembered is None
             return False
-        if remembered is None:
-            self._compactions += 1
-        else:
+        if replayed:
             self._replayed += 1
+        else:
+            self._compactions += 1
         self._replace(messages, band, summary, summary_id=summary_id)
         self._replaced = len(band)
         return True
@@ -1097,15 +1118,12 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
           floor is the pure cost of never re-reading, against which the fold is measured.
         - **At least two standing summaries.** Folding one summary is a rewrite of one message
           at one position -- the recompacting mode with extra steps -- so the fold path cannot
-          be reached with fewer. This is also the guard against fold thrashing: a fold leaves
-          one standing summary, so the next fold cannot happen until an ordinary boundary pass
-          has left a second one, and that pass needs the prompt to have grown by
-          ``1 / (1 - min_band_share)`` since the last. Folds are therefore at most one per
-          ordinary pass, and each of those is already bounded geometrically.
+          be reached with fewer. A partial fold leaves newer summaries for later passes;
+          each selected prefix must independently repay its cache break.
         - **The fold repays the break.** This is the anchored family's break-even,
           :data:`~._anchored.DEFAULT_MIN_GAIN_FRACTION`'s ``R > B * (p - c) / (p + T * c)``, with
           the fold's own terms and no new constant. ``R`` is what the fold would remove: the
-          standing summaries' tokens less the largest of them, on the stated assumption that a
+          selected summaries' tokens less the largest of them, on the stated assumption that a
           summary of summaries is no larger than the largest piece it folds -- the neutral
           estimate is their mean, and the largest is the one that errs towards keeping, which
           is the direction this package errs in everywhere. ``B`` is what the fold would
@@ -1140,7 +1158,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         return removable >= behind * self.min_band_share
 
     async def _fold(self, messages: list[Message], standing: list[dict[str, Any]]) -> bool:
-        """Collapse every standing summary into one, which becomes the new boundary.
+        """Collapse the oldest standing summaries that fit into one boundary.
 
         The mechanics are :meth:`_replace`'s, applied to summaries instead of turns: the fold's
         output is inserted where the oldest summary stood, carries the ids of every summary and
@@ -1171,6 +1189,10 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             True if the outgoing messages changed.
         """
+        standing = self._bounded_summaries(messages, standing)
+        if not self._fold_due(messages, standing):
+            self._declined += 1
+            return False
         answer = await self._fold_answer(messages, standing)
         if answer is None:
             return False
@@ -1185,7 +1207,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         return True
 
     async def fold_if_smaller(self, messages: list[Message]) -> FoldOutcome:
-        """Collapse every standing summary into one, but only into one smaller than they are.
+        """Collapse the oldest summaries that fit, only if their replacement is smaller.
 
         The composed row's seam, and not a pass of this strategy's own: nothing here reads the
         trigger, the band or :meth:`_fold_due`, because the caller has already decided that the
@@ -1208,9 +1230,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             ``"folded"`` when the summaries were collapsed, ``"rejected"`` when the answer was no
             smaller than them, ``"failed"`` when the summarizer gave none -- counted under
             :attr:`user_summary_failures` like any other -- and ``"skipped"`` when fewer than
-            two summaries stand, which is the rewrite-of-one the fold mode refuses as well.
+            two summaries fit, which avoids rewriting one summary on its own.
         """
-        standing = self._observe_summaries(messages)
+        standing = self._bounded_summaries(messages, self._observe_summaries(messages))
         if len(standing) < 2:
             return "skipped"
         answer = await self._fold_answer(messages, standing)
@@ -1223,7 +1245,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         ):
             return "rejected"
         self._apply_fold(messages, standing, remembered, replayed)
-        self._kept_folds[remembered.transcript] = remembered
+        self._kept_folds[remembered.summary_id] = remembered
+        self._kept_fold_counts[remembered.summary_id] = len(standing)
         return "folded"
 
     def refold(self, messages: list[Message]) -> bool:
@@ -1248,17 +1271,48 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         """
         if not self._kept_folds:
             return False
-        standing = self._observe_summaries(messages)
-        if len(standing) < 2:
-            return False
-        transcript = _format_turns(
-            [messages[span["start_index"]] for span in standing], text=_summary_body
+        kept_folds = sorted(
+            self._kept_folds.values(),
+            key=lambda entry: int(entry.summary_id.removeprefix(FOLD_ID_PREFIX)),
         )
-        kept = self._kept_folds.get(transcript)
-        if kept is None:
-            return False
-        self._apply_fold(messages, standing, kept, True)
-        return True
+        present_ids = {message.message_id for message in messages}
+        applied = max(
+            (index for index, kept in enumerate(kept_folds) if kept.summary_id in present_ids),
+            default=-1,
+        )
+        changed = False
+        for kept in kept_folds[applied + 1 :]:
+            standing = self._observe_summaries(messages)
+            source_count = self._kept_fold_counts.get(kept.summary_id)
+            # Snapshots without source counts learn them when their transcript first matches.
+            counts = [source_count] if source_count is not None else range(len(standing), 1, -1)
+            for count in counts:
+                if not 2 <= count <= len(standing):
+                    continue
+                prefix = standing[:count]
+                transcript = _format_turns(
+                    [messages[span["start_index"]] for span in prefix], text=_summary_body
+                )
+                if transcript == kept.transcript:
+                    self._kept_fold_counts[kept.summary_id] = count
+                    self._apply_fold(messages, prefix, kept, True)
+                    changed = True
+                    break
+        return changed
+
+    def _bounded_summaries(
+        self, messages: list[Message], standing: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        return bounded_prefix(
+            standing,
+            render=lambda spans: _format_turns(
+                [messages[span["start_index"]] for span in spans], text=_summary_body
+            ),
+            prompt=self.fold_prompt,
+            tokenizer=self.tokenizer,
+            limit=self.max_summary_input_tokens,
+            min_items=2,
+        )
 
     async def _fold_answer(
         self, messages: list[Message], standing: list[dict[str, Any]]
@@ -1275,14 +1329,23 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             standing: The standing summaries' spans, oldest first.
 
         Returns:
-            The remembered request with its answer, and True when it was replayed rather than
-            asked; None when the summarizer gave nothing.
+            The remembered answer, and True only for a replay of the same replacement id;
+            None when the summarizer gave nothing.
         """
         transcript = _format_turns(
             [messages[span["start_index"]] for span in standing], text=_summary_body
         )
         remembered = self._recall(self.fold_prompt, transcript)
         if remembered is not None:
+            # Identical text can describe new sources; a summary cannot supersede itself.
+            if any(message.message_id == remembered.summary_id for message in messages):
+                remembered = remembered._replace(
+                    summary_id=_next_summary_id(
+                        messages, prefix=FOLD_ID_PREFIX, minimum=self._folds
+                    )
+                )
+                self._remember(remembered)
+                return remembered, False
             return remembered, True
         summary = await self._summarize(transcript, prompt=self.fold_prompt)
         if summary is None:
@@ -1325,7 +1388,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             messages: The conversation, mutated in place.
             standing: The standing summaries' spans, oldest first.
             answer: The remembered request and its answer, from :meth:`_fold_answer`.
-            replayed: Whether the answer was replayed rather than asked for.
+            replayed: Whether this is the same replacement on another view of the history.
         """
         if replayed:
             self._replayed += 1
@@ -1356,7 +1419,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             The remembered request when it matches, else None.
         """
-        for remembered in self._remembered:
+        for remembered in reversed(self._remembered):
             if remembered.prompt == prompt and remembered.transcript == transcript:
                 return remembered
         return None
@@ -1381,12 +1444,15 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             The summary text, stripped, or None on either failure.
         """
+        if not fits_summary_input(
+            prompt, transcript, tokenizer=self.tokenizer, limit=self.max_summary_input_tokens
+        ):
+            logger.warning("Skipping user-turn compaction: summary input exceeds its token limit.")
+            self._failures += 1
+            return None
         try:
             response = await self.client.get_response(
-                [
-                    Message(role="system", contents=[prompt]),
-                    Message(role="user", contents=[transcript]),
-                ],
+                summary_request(prompt, transcript),
                 stream=False,
             )
         except Exception as error:

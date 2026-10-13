@@ -26,6 +26,7 @@ from agent_framework import (
     create_harness_agent,
     tool,
 )
+from agent_framework._compaction import annotate_token_counts, project_included_messages
 
 from maf_compaction import (
     ChainDecisions,
@@ -68,6 +69,7 @@ def build_stack(summarizer=None, *, budget=2000, composed=True):
             max_input_tokens=budget,
             tokenizer=TOKENIZER,
             client=summarizer or Summarizer(),
+            max_summary_input_tokens=100_000,
             summary_mode="boundary",
             remembered_requests=2,
         )
@@ -104,6 +106,62 @@ def test_decisions_are_independent_json_values():
     assert record.reforce.passes == 1
     empty = RecordDecisions(frozenset(), frozenset(), frozenset(), None)
     assert RecordDecisions.from_dict(round_trip(empty.to_dict())) == empty
+
+
+@pytest.mark.parametrize("composed", [False, True])
+def test_stack_writes_v2_snapshots_and_restores_v1(composed):
+    stack = build_stack(composed=composed)
+    stack.gate.arm()
+    stack.middleware._force_next = True
+    snapshot = round_trip(stack.to_dict())
+    assert snapshot["version"] == 2
+    legacy = snapshot | {"version": 1}
+    restored = build_stack(composed=composed)
+    restored.restore(legacy)
+    assert restored.to_dict() == snapshot
+
+
+@pytest.mark.parametrize("version", [1, 2])
+async def test_stack_restores_fold_keys_and_replays_without_a_request(version):
+    summarizer = Summarizer()
+    stack = build_stack(summarizer)
+    assert isinstance(stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy)
+    users = stack.strategy.user_turns
+    messages = [
+        users._summary_message(
+            [Message("user", ["source"], message_id=f"source{index}")],
+            [{"group_id": f"group{index}"}],
+            f"summary {index} " * 150,
+            summary_id=f"user_summary_{index}",
+        )
+        for index in range(3)
+    ]
+    annotate_token_counts(messages, tokenizer=TOKENIZER)
+    stored = deepcopy(messages)
+    assert await users.fold_if_smaller(messages) == "folded"
+    snapshot = round_trip(stack.to_dict())
+    snapshot["version"] = version
+    folds = snapshot["strategy"]["user_turns"]["kept_folds"]
+    if version == 1:
+        snapshot["strategy"]["user_turns"]["kept_folds"] = {
+            entry["transcript"]: entry for entry in folds.values()
+        }
+    restored = build_stack(summarizer)
+    restored.restore(snapshot)
+    assert isinstance(
+        restored.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+    )
+    restored_users = restored.strategy.user_turns
+    assert set(restored_users.session_state()["kept_folds"]) == {
+        entry["summary_id"] for entry in folds.values()
+    }
+    assert restored_users.refold(stored)
+    assert [(m.message_id, m.text) for m in project_included_messages(stored)] == [
+        (m.message_id, m.text) for m in project_included_messages(messages)
+    ]
+    assert not restored_users.refold(stored)
+    assert len(summarizer.requests) == 1
+    assert restored.to_dict()["version"] == 2
 
 
 def test_cache_is_bounded_and_session_state_wins_on_hits_and_resets():
