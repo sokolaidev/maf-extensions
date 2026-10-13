@@ -4,8 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/mxc-accounting.yml'
-      - 'scripts/experiments/mxc_session_patch/accounting*.py'
-      - 'scripts/experiments/mxc_session_patch/shared_store.py'
+      - 'scripts/experiments/mxc_session_patch/**'
       - 'tests/test_mxc_accounting.py'
   workflow_dispatch:
 

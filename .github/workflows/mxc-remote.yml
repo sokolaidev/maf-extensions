@@ -4,11 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/mxc-remote.yml'
-      - 'scripts/experiments/mxc_session_patch/remote_authority.py'
-      - 'scripts/experiments/mxc_session_patch/remote_api.py'
-      - 'scripts/experiments/mxc_session_patch/shared_store.py'
-      - 'scripts/experiments/mxc_session_patch/host_store.py'
-      - 'scripts/experiments/mxc_session_patch/private_root.py'
+      - 'scripts/experiments/mxc_session_patch/**'
       - 'tests/test_mxc_remote_authority.py'
       - 'tests/test_mxc_remote_api.py'
       - 'uv.lock'
