@@ -46,7 +46,7 @@ The first publishing workflow covers all thirteen currently scanned profiles on 
 | `bicep-avm` | [Bicep with selected virtual-network and storage-account AVM modules](../../images/bicep-sandbox/AVM.md) |
 | `sbx-bicep` | The `sbx` template applied to the base Bicep image |
 | `diagram` | Graphviz diagram sandbox |
-| `drawio-sandbox` | Python/Graphviz Draw.io sandbox |
+| `drawio` | [Editable Draw.io authoring with Python and Graphviz](../../images/drawio-sandbox/README.md) |
 | `drawio-export` | Draw.io Desktop export runtime |
 | `terraform-random` | Terraform with the approved random-provider manifest |
 | `opentofu-random` | OpenTofu with the approved random-provider manifest |

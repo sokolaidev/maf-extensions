@@ -7,7 +7,7 @@
     "bicep-avm",
     "sbx-bicep",
     "graphviz",
-    "drawio-sandbox",
+    "drawio",
     "drawio-export",
     "terraform-random",
     "opentofu-random",

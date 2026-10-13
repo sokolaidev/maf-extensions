@@ -17,7 +17,7 @@ PROFILES = (
     "bicep-avm",
     "sbx-bicep",
     "graphviz",
-    "drawio-sandbox",
+    "drawio",
     "drawio-export",
     "terraform-random",
     "opentofu-random",
@@ -31,7 +31,7 @@ IMAGE_INPUTS = {
     "images/bicep-sandbox/": ("bicep", "bicep-avm", "sbx-bicep"),
     "images/sbx-template/": ("sbx-bicep",),
     "images/graphviz-sandbox/": ("graphviz",),
-    "images/drawio-sandbox/": ("drawio-sandbox",),
+    "images/drawio-sandbox/": ("drawio",),
     "images/drawio-export/": ("drawio-export",),
     "images/terraform-sandbox/": (
         "terraform-random",
@@ -50,12 +50,15 @@ CONSUMER_GUIDES = {
     "images/bicep-sandbox/BICEP.md",
     "images/sbx-template/README.md",
     "images/graphviz-sandbox/README.md",
+    "images/drawio-sandbox/README.md",
     "images/drawio-export/README.md",
     "images/terraform-sandbox/README.md",
     "images/terraform-sandbox/AVM.md",
     "images/hyperlight-sandbox/README.md",
 }
 SCRIPT_INPUTS = {
+    "scripts/drawio_qualification.py": ("drawio",),
+    "scripts/check_drawio_docker.py": ("drawio",),
     "scripts/terraform_dependencies.py": (
         "terraform-avm",
         "terraform-prepared",

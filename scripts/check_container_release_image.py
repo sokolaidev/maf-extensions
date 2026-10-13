@@ -22,6 +22,20 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
     require_digest(image_id)
     if profile not in profiles():
         raise ValueError("Unknown image profile")
+    if profile == "drawio":
+        import drawio_qualification
+
+        result = asyncio.run(drawio_qualification.check(image_id))
+        return {
+            "imageId": image_id,
+            "profile": profile,
+            "checkedAt": now(),
+            "kind": "offline-sdk-consumer",
+            "passed": True,
+            "drawio": result,
+            "containersRemaining": result["containersRemaining"],
+            "liveDeploymentVerified": False,
+        }
     if profile == "hyperlight":
         from container_release import digest
 
@@ -44,7 +58,7 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             command = bicep_qualification.command()
         elif profile == "bicep-avm":
             command = bicep_avm_qualification.command()
-    elif profile in {"graphviz", "drawio-sandbox"}:
+    elif profile == "graphviz":
         command = [
             "sh",
             "-ec",

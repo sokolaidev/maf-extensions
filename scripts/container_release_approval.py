@@ -44,9 +44,9 @@ PROFILE_GUIDES = {
         "Offline graph rendering with Graphviz and fonts.",
         "images/graphviz-sandbox/README.md",
     ),
-    "drawio-sandbox": (
+    "drawio": (
         "Diagram authoring with Python and Graphviz.",
-        "docs/sandbox/kinds/drawio.md",
+        "images/drawio-sandbox/README.md",
     ),
     "drawio-export": (
         "Offline Draw.io export with Chromium, bundled Draw.io assets, fonts and the Python export helper.",
@@ -176,6 +176,19 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
         ("Database built at (UTC)", database.get("built", UNAVAILABLE)),
         ("Database valid", database.get("valid", UNAVAILABLE)),
     ]
+    if candidate["profile"] == "drawio":
+        drawio = runtime.get("drawio", {})
+        for check in drawio.get("checks", []):
+            rows.append(("Draw.io check", check))
+        if not drawio.get("checks"):
+            rows.append(("Draw.io check", UNAVAILABLE))
+        for label, key in (
+            ("Draw.io check backend", "backend"),
+            ("Draw.io SDK packages (checkout)", "packages"),
+            ("Draw.io runtime versions", "versions"),
+            ("Draw.io container observations", "observations"),
+        ):
+            rows.append((label, drawio.get(key, UNAVAILABLE)))
     if candidate["profile"] == "bicep":
         bicep = runtime.get("bicep", {})
         for check in bicep.get("checks", []):
