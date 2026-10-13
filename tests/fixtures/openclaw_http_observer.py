@@ -533,11 +533,21 @@ if __name__ == "__main__":
     parser.add_argument("--drop-result-file", type=Path)
     parser.add_argument("--image", required=True)
     parser.add_argument("--port", type=int, default=19763)
+    parser.add_argument("--installed", action="store_true")
     args = parser.parse_args()
     args.image = resolve_image(args.image)
-    sys.path.insert(0, str(args.prototype.resolve().parent))
-    prototype = importlib.import_module("server")
-    transport = importlib.import_module("workload_http")
+    if args.installed:
+        from openclaw_installed_worker_check import installed_environment
+
+        installed_environment()
+        prototype = importlib.import_module("maf_sandbox_mcp.server")
+        transport = importlib.import_module("maf_sandbox_mcp.workload_http")
+        source_dir = Path(prototype.__file__).parent
+    else:
+        sys.path.insert(0, str(args.prototype.resolve().parent))
+        prototype = importlib.import_module("server")
+        transport = importlib.import_module("workload_http")
+        source_dir = args.prototype.resolve().parent
 
     async def main():
         token = args.token_file.read_text(encoding="ascii").strip()
@@ -550,7 +560,7 @@ if __name__ == "__main__":
                 source_hashes={
                     path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                     for path in [
-                        *sorted(args.prototype.resolve().parent.glob("*.py")),
+                        *sorted(source_dir.glob("*.py")),
                         Path(__file__),
                     ]
                 },

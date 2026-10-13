@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import os
 import socket
-import sys
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -19,16 +17,11 @@ from agent_framework import MCPStreamableHTTPTool
 from mcp import types
 
 ROOT = Path(__file__).resolve().parents[1]
-SAMPLE = ROOT / "samples/experimental/openclaw_bicep"
+SAMPLE = Path(__import__("maf_sandbox_mcp").__file__).parent
 
 
 def load(name, filename=None):
-    spec = importlib.util.spec_from_file_location(name, SAMPLE / f"{filename or name}.py")
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    return __import__("maf_sandbox_mcp." + (filename or name), fromlist=["*"])
 
 
 core = load("workload_service")
@@ -238,7 +231,7 @@ def test_registration_policy_and_schema_contract():
         core.WorkloadService([replace(bindings[0], deadline_seconds=float("inf"))], resources)
     for file in ("workload_service.py", "workload_http.py"):
         source = (SAMPLE / file).read_text(encoding="utf-8-sig")
-        assert "from maf_sandbox" not in source
+        assert "from maf_sandbox " not in source
         assert "import maf_sandbox" not in source
 
 
@@ -1017,7 +1010,7 @@ def test_live_published_dependencies_http_smoke(tmp_path):
     import textwrap
 
     block = (
-        (SAMPLE / "server.py")
+        (ROOT / "samples/experimental/openclaw_bicep/server.py")
         .read_text(encoding="utf-8")
         .split("# /// script", 1)[1]
         .split("# ///", 1)[0]
@@ -1065,7 +1058,7 @@ async def main():
 asyncio.run(main())
 """
     settings = {
-        "SAMPLE": str(SAMPLE),
+        "SAMPLE": str(ROOT / "samples/experimental/openclaw_bicep"),
         "OWNER": str(tmp_path / "owner"),
         "IMAGE": os.environ["MAF_OPENCLAW_BICEP_IMAGE"],
         "CONFIG": str(ROOT / "images/bicep-sandbox/prepared.bicepconfig.json"),

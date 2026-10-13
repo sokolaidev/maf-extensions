@@ -38,6 +38,7 @@ _PACKAGES = {
     "maf-sandbox-drawio": "maf_sandbox_drawio",
     "maf-sandbox-otel": "maf_sandbox_otel",
     "maf-sandbox-terraform": "maf_sandbox_terraform",
+    "maf-sandbox-mcp": "maf_sandbox_mcp",
     "maf-sandbox-tui": "maf_sandbox_tui",
     "maf-sandbox-wslc": "maf_sandbox_wslc",
     "maf-sandbox-bubblewrap": "maf_sandbox_bubblewrap",
@@ -806,6 +807,22 @@ def _smoke_maf_sandbox_drawio() -> str:
     )
 
 
+def _smoke_maf_sandbox_mcp() -> str:
+    from maf_sandbox_mcp.server import OUTPUT_SCHEMA, TOOL, http_application, snapshot
+
+    value = snapshot({"files": [{"path": "main.bicep", "content": "output x int = 1"}]})
+    assert len(value.digest) == 64
+    app = asyncio.run(http_application("sha256:" + "a" * 64, "{}", "smoke", "a" * 64, 8765))
+    assert list(app.service.bindings) == [TOOL]
+    assert app.service.bindings[TOOL].tool.outputSchema == OUTPUT_SCHEMA
+    executable = pathlib.Path(sys.executable).with_name(
+        "maf-bicep-mcp.exe" if sys.platform == "win32" else "maf-bicep-mcp"
+    )
+    result = subprocess.run([str(executable), "--help"], capture_output=True, timeout=15)
+    assert result.returncode == 0 and b"--token-file" in result.stdout
+    return "installed entry point and Bicep binding load without allocating a sandbox"
+
+
 def _smoke_maf_sandbox_tui() -> str:
     from maf_sandbox_tui import MemoryControl, SandboxConsole
 
@@ -898,6 +915,7 @@ _SMOKES = {
     "maf-sandbox-hyperlight": _smoke_maf_sandbox_hyperlight,
     "maf-sandbox-otel": _smoke_maf_sandbox_otel,
     "maf-sandbox-terraform": _smoke_maf_sandbox_terraform,
+    "maf-sandbox-mcp": _smoke_maf_sandbox_mcp,
     "maf-sandbox-tui": _smoke_maf_sandbox_tui,
     "maf-sandbox-wslc": _smoke_maf_sandbox_wslc,
     "maf-sandbox-bubblewrap": _smoke_maf_sandbox_bubblewrap,

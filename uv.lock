@@ -20,6 +20,7 @@ members = [
     "maf-sandbox-docker-sbx",
     "maf-sandbox-drawio",
     "maf-sandbox-hyperlight",
+    "maf-sandbox-mcp",
     "maf-sandbox-otel",
     "maf-sandbox-terraform",
     "maf-sandbox-tui",
@@ -1635,6 +1636,37 @@ requires-dist = [
     { name = "hyperlight-sandbox-backend-wasm", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')", specifier = "==0.7.0" },
     { name = "hyperlight-sandbox-python-guest", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')", specifier = "==0.7.0" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
+]
+
+[[package]]
+name = "maf-sandbox-mcp"
+version = "0.0.0"
+source = { editable = "packages/maf-sandbox-mcp" }
+dependencies = [
+    { name = "agent-framework-core" },
+    { name = "anyio" },
+    { name = "jsonschema" },
+    { name = "maf-sandbox" },
+    { name = "maf-sandbox-bicep" },
+    { name = "maf-sandbox-docker" },
+    { name = "mcp" },
+    { name = "pydantic" },
+    { name = "starlette" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-framework-core", specifier = ">=1.20.0,<1.21" },
+    { name = "anyio", specifier = ">=4.5,<5" },
+    { name = "jsonschema", specifier = ">=4.26,<5" },
+    { name = "maf-sandbox", editable = "packages/maf-sandbox" },
+    { name = "maf-sandbox-bicep", editable = "packages/maf-sandbox-bicep" },
+    { name = "maf-sandbox-docker", editable = "packages/maf-sandbox-docker" },
+    { name = "mcp", specifier = "==1.28.1" },
+    { name = "pydantic", specifier = ">=2.11,<3" },
+    { name = "starlette", specifier = "==1.7.0" },
+    { name = "uvicorn", specifier = "==0.54.0" },
 ]
 
 [[package]]

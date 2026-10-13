@@ -128,12 +128,22 @@ def verify_environment(args: argparse.Namespace) -> dict[str, Any]:
         "agent-framework-core": "1.19.0",
         "uvicorn": "0.54.0",
     }
+    if getattr(args, "installed", False):
+        from openclaw_installed_worker_check import BASELINE, installed_environment
+
+        installed_environment()
+        expected = {name: BASELINE[name] for name in expected}
     require(startup[-1]["versions"] == expected, "Unexpected published service dependencies")
     root = Path(__file__).resolve().parents[2]
+    source_dir = root / "samples/experimental/openclaw_bicep"
+    if getattr(args, "installed", False):
+        import maf_sandbox_mcp
+
+        source_dir = Path(maf_sandbox_mcp.__file__).parent
     expected_sources = {
         path.name: hashlib.sha256(path.read_bytes()).hexdigest()
         for path in [
-            *sorted((root / "samples/experimental/openclaw_bicep").glob("*.py")),
+            *sorted(source_dir.glob("*.py")),
             Path(__file__).with_name("openclaw_http_observer.py"),
         ]
     }
@@ -347,6 +357,7 @@ def main() -> None:
     ):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--image", required=True)
+    parser.add_argument("--installed", action="store_true")
     args = parser.parse_args()
     args.report.unlink(missing_ok=True)
     report = check(args)
