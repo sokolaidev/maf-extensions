@@ -21,6 +21,51 @@ The Bicep binding preserves the [stdio prototype](../../samples/experimental/ope
 
 The Bicep deployment exposes only the Bicep binding. Two small test bindings with distinct schemas and results must exercise the same registration and supervision path to prove the boundary without enabling another workload in that deployment. One global active call remains the limit across all registered tools; adding a second binding does not add a second admission slot. Automatic plugin discovery, remote tenancy, parallel scheduling and a new generic kind API are outside this service contract.
 
+## Bicep operation and result contract
+
+The first binding exposes exactly `bicep_validate(files)`. It validates every supplied `.bicep` and `.bicepparam` file as one source set; there is no entry-point selector, auxiliary JSON/text input, formatting, deployment, shell, arbitrary compiler flag or downloadable output. Local modules and parameter references must be included in that set. Discovery and the typed models in [server.py](../../samples/experimental/openclaw_bicep/server.py) define the wire schemas; the HTTP and stdio bindings share them.
+
+The request object contains only `files`, an array of 1–8 objects containing only string `path` and `content` fields. Names are relative ASCII slash-separated components, at most 200 characters overall and 64 per component. Traversal, absolute/drive paths, device names, duplicate case-folded names and file/directory overlaps are refused. Source must be valid UTF-8 without NUL, at most 64 KiB per file and 256 KiB total. Raw input checks supplement the generated JSON Schema: character counts do not establish UTF-8 byte limits. No rejected source is staged into a sandbox.
+
+The adapter copies accepted strings into an immutable, sorted snapshot and a fresh in-memory file store for that call. `source_sha256` hashes UTF-8 compact JSON of the sorted `[path, content]` pairs, with non-ASCII content preserved. `config_sha256` hashes the exact UTF-8 operator configuration bytes; `image` carries the selected immutable image identity. These fields identify the submitted snapshot and policy, not a workspace's current contents.
+
+| Result field | Contract |
+|---|---|
+| `completed` | Boolean; true only when the kind produced its completed validation result and cleanup is confirmed. |
+| `verdict` | `valid` or `invalid` only for a completed call; otherwise null. Compiler errors can be a completed invalid result. |
+| `status` | `ok`, `incomplete`, `timeout`, `error` or `cleanup_failed`; mappings below apply to admitted calls that return a structured result. |
+| `diagnostics` | Untrusted text, at most 16 KiB UTF-8. Overflow removes completion/verdict and returns a bounded explanation; it does not present a truncated success. |
+| `source_sha256`, `config_sha256`, `image` | Snapshot, compiler-policy and immutable image identities. Digests are attribution metadata, not host-enforced information-flow authority. |
+| `cleanup` | `confirmed` or `failed`; cleanup uncertainty suppresses any verdict and poisons admission. |
+
+| Outcome | Structured result and MCP behavior |
+|---|---|
+| Valid or invalid completed compiler result | `status=ok`, `completed=true`, corresponding verdict and `cleanup=confirmed`; invalid is not a transport failure. |
+| Unprepared registry module, unreadable compiler report, incomplete compiler phase or diagnostic overflow | `status=incomplete`, `completed=false`, null verdict; confirmed cleanup is still required. A missing submitted local module can instead be a completed compiler error with verdict `invalid`. |
+| Service request deadline | Cancellation is requested and work/cleanup are drained; a returned result has `status=timeout`, false completion and null verdict. A compiler-phase timeout can instead be reported by the kind as incomplete. |
+| Unexpected framework result shape or execution failure | `status=error`, false completion, null verdict and bounded generic diagnostics; compiler text cannot manufacture completion or a verdict. |
+| Unconfirmed cleanup | `status=cleanup_failed`, `cleanup=failed`, false completion and null verdict, even if compilation previously completed. New work is refused until explicit recovery. |
+| Busy, unavailable session/service, unknown tool or malformed arguments | Bounded MCP/tool or protocol refusal as appropriate, without claiming a `ValidationResult` or allocating new workload resources. |
+| Explicit cancellation, lost response or session shutdown | A structured result is not guaranteed to reach the caller. Transport acknowledgment and client-task completion are separate from supervised guest cleanup; an unknown result is not silently replayed. |
+
+For structured returns, `error`, `timeout` and `cleanup_failed` set MCP `isError`; an incomplete compiler result is represented by its explicit completion/verdict fields. `structuredContent` is authoritative. The SDK-style JSON text mirror preserves one projected content item through the qualified OpenClaw path; it is not a second result. Both transports use the same Bicep projection.
+
+### Host policy and filesystem boundary
+
+Trusted startup selects an immutable local image ID or repository digest, compiler configuration/cache, backend, state directory, bearer credential and resource budgets. The Bicep composition explicitly admits `Isolation.CONTAINER` and call scope through `SandboxRouter`; it does not lower the router's default policy globally. A host requiring stronger isolation must select and qualify a compatible backend. The configured Docker limits are 1 GiB memory, one CPU, 128 PIDs and all Linux capabilities dropped. Compiler phases have 15-second deadlines; lifecycle commands use 10 seconds, cold image pulls 30 seconds, the owned-scope sweep 30 seconds and request cancellation 120 seconds. Settlement can exceed these cancellation deadlines.
+
+Bicep uses `Egress.CLOSED`, the operator's prepared cache configuration and `--no-restore`. The prepared AVM profile contains selected pinned modules, not the whole registry. The host must keep credentials out of the image because compiler functions can read guest files. The adapter returns diagnostics only and makes no general guest-filesystem secrecy claim.
+
+Inline names never select host paths. There is no host workspace mount or host file bridge, and the in-memory store cannot carry host symlinks, reparse points or hardlinks. Caller mutation after admission does not change the copied snapshot. This removes those host-path races from the admitted source surface; it does not qualify a future filesystem-backed provider. Configuration, token and retained owner files are trusted operator inputs outside agent-writable directories, not hostile file inputs protected by a new no-follow bridge. Any workspace/file/artifact extension must satisfy #1639/#1641's confinement and replacement-race acceptance before admission.
+
+### Framework and installation decision
+
+Use SDK-bundled FastMCP and the existing Bicep kind's MAF-backed tool callable, without a model-running agent or a separate `fastmcp` distribution. The adapter reads the fixed leading framework completion/verdict fields and refuses unknown shapes; it never searches diagnostics for authority. This is an explicit compatibility dependency, not a new public framework-neutral result API. Splitting core's MAF dependency or introducing such an API needs a separately justified consumer requirement and is not required for this first tool.
+
+The supervised source installation uses Python 3.12+, uv, reachable Linux Docker, a prepared immutable image and the trusted compiler/owner/token files described in the [operator guide](../../samples/experimental/openclaw_bicep/README.md). `uv run --script` installs declared dependencies, while the adapter modules themselves still come from the checkout. The qualified historical baseline is OpenClaw 2026.9.7, MAF core 1.19.0, MCP 1.28.1, core/Bicep/Docker 0.46.0/0.22.0/0.24.4 and Uvicorn 0.54.0. Capture the full resolver manifest: the source sample's ranges do not pin every transitive package or force MAF 1.19.0.
+
+[Installed worker delivery](https://github.com/sokolaidev/maf-extensions/issues/1898) is the next adoption increment under #1641: a wheel and fixed Bicep entry point, preserving runtime/binding separation, with clean-environment execution outside the checkout and explicit upgrade qualification. Source tests and installed dependencies do not establish an independently packaged adapter. SDK private session access, Uvicorn protocol hooks, the MAF projection and image changes require renewed evidence for the affected contract. Publication remains a separate maintainer action.
+
 ## Process and transport
 
 One independently supervised Python process serves stateful Streamable HTTP at a fixed operator-selected `http://127.0.0.1:<port>/mcp` endpoint. It uses SDK-bundled `mcp.server.fastmcp.FastMCP` with `mcp==1.28.1`, JSON responses to POST requests, and separate MCP sessions for each connected client. It has no event store or replay of completed results. SDK-managed GET streams remain supported for client compatibility. Stateless HTTP is excluded: a cancellation notification must reach the same MCP session that owns its request.
@@ -87,13 +132,14 @@ Acceptance uses a deterministic provider and host-observed results, transport me
 
 ## Status
 
-The [2026-10-12 consolidated reconciliation](research/openclaw-qualification-closure-audit.md#consolidated-closure-reconciliation-2026-10-12) covers every original #1676 acceptance row using the separately recorded Gateway, Bicep/MAF and published transport evidence. Both finite follow-ups are merged. Qualification is complete for that supervised, selected baseline; adoption and the #1638 design disposition remain open. Historical reports and their `complete_matrix: false` values are unchanged.
+The [2026-10-12 consolidated reconciliation](research/openclaw-qualification-closure-audit.md#consolidated-closure-reconciliation-2026-10-12) covers every original #1676 acceptance row using the separately recorded Gateway, Bicep/MAF and published transport evidence. Both finite follow-ups are merged. Qualification is complete for that supervised, selected baseline; the first-tool design disposition is recorded below and adoption continues through #1898. Historical reports and their `complete_matrix: false` values are unchanged.
 
 | Decision | State | Tracking |
 |---|---|---|
-| First Bicep operation | Supervised stdio and shared HTTP prototypes merged; one-session stdio and bounded two-session HTTP Gateway evidence | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open); [#1651](https://github.com/sokolaidev/maf-extensions/pull/1651) (merged) |
+| First Bicep operation | Design decisions and follow-ups complete; supervised source implementation and finite qualification delivered | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (closed) by [#1901](https://github.com/sokolaidev/maf-extensions/pull/1901) (merged); [#1651](https://github.com/sokolaidev/maf-extensions/pull/1651) (merged) |
 | Shared service lifecycle | Design delivered; stdio default and opt-in HTTP | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged) |
 | Shared HTTP implementation | Reusable service and Bicep binding implemented; Docker/MAF and bounded Gateway checks passed on the recorded 2026-10-05 candidate; finite lifecycle/recovery acceptance is reconciled below | [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (closed) by [#1680](https://github.com/sokolaidev/maf-extensions/pull/1680) (merged) |
 | Two-session Gateway qualification | Finite acceptance reconciled across recorded Gateway evidence, five Bicep/MAF cases and 43 published transport cases with 109 SDK retirements; qualification complete. Active MAF callers can remain pending until their request timeout after service retirement; broader stress, crash and platform scenarios remain unqualified | [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (closed) by [#1882](https://github.com/sokolaidev/maf-extensions/pull/1882) (merged); [#1850](https://github.com/sokolaidev/maf-extensions/issues/1850) (closed) by [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865) (merged); [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851) (closed) by [#1870](https://github.com/sokolaidev/maf-extensions/pull/1870) (merged) |
 | Additional artifact-producing and persistent kinds | Outside the first deliverable; binding, storage and lifecycle qualification required | [#1637](https://github.com/sokolaidev/maf-extensions/issues/1637) (open) |
-| Independent crash recovery and other host platforms | Deferred; no hard maximum lifetime or host-crash guarantee | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (open) |
+| Installed worker and upgrade qualification | Planned next adoption increment; no adapter wheel is published by this design | [#1898](https://github.com/sokolaidev/maf-extensions/issues/1898) (open); [#1641](https://github.com/sokolaidev/maf-extensions/issues/1641) (open) |
+| Independent crash recovery and other host platforms | Deferred from the supervised first increment; qualification priorities remain in conformance design | [#1641](https://github.com/sokolaidev/maf-extensions/issues/1641) (open) |
