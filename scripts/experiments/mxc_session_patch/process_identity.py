@@ -67,7 +67,7 @@ def _linux_boot() -> str:
 def _linux_process(pid: int) -> tuple[str, bool] | None:
     try:
         value = Path(f"/proc/{pid}/stat").read_text()
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
     fields = value[value.rindex(")") + 2 :].split()
     return fields[19], fields[0] in ("Z", "X")
