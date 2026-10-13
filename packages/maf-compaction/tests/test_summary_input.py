@@ -192,6 +192,42 @@ async def test_a_fold_needs_two_whole_summaries_to_fit(ordinary):
 
 
 @pytest.mark.parametrize(
+    ("ordinary", "share", "folded"),
+    [(True, 0.1, False), (True, 0.01, True), (False, 0.1, True)],
+)
+async def test_partial_fold_uses_only_selected_summaries_for_profitability(ordinary, share, folded):
+    client = BoundedClient(1_000)
+    strategy = users(client, summary_mode="fold", min_band_share=share)
+    messages = [*summaries(), Message("user", ["tail " * 2_000], message_id="tail")]
+    size(messages)
+    standing = strategy._observe_summaries(messages)
+    assert strategy._fold_due(messages, standing)
+    selected = strategy._bounded_summaries(messages, standing)
+    assert len(selected) == 2
+    assert strategy._fold_due(messages, selected) is (share < 0.1)
+    before = visible(messages)
+    stored = deepcopy(messages)
+
+    if ordinary:
+        assert await strategy(messages) is folded
+        assert strategy.user_passes_declined == int(not folded)
+    else:
+        assert await strategy.fold_if_smaller(messages) == "folded"
+    assert strategy.user_folds == int(folded)
+    assert len(client.requests) == int(folded)
+    if folded:
+        assert "Summary 2:" not in client.requests[0][-1].text
+        if ordinary:
+            assert await strategy(stored)
+        else:
+            assert strategy.refold(stored)
+        assert visible(stored) == visible(messages)
+        assert len(client.requests) == 1
+    else:
+        assert visible(messages) == before
+
+
+@pytest.mark.parametrize(
     ("mode", "limit", "count", "folded"),
     [
         ("fold", 1_000, 2, True),

@@ -1115,15 +1115,12 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
           floor is the pure cost of never re-reading, against which the fold is measured.
         - **At least two standing summaries.** Folding one summary is a rewrite of one message
           at one position -- the recompacting mode with extra steps -- so the fold path cannot
-          be reached with fewer. This is also the guard against fold thrashing: a fold leaves
-          one standing summary, so the next fold cannot happen until an ordinary boundary pass
-          has left a second one, and that pass needs the prompt to have grown by
-          ``1 / (1 - min_band_share)`` since the last. Folds are therefore at most one per
-          ordinary pass, and each of those is already bounded geometrically.
+          be reached with fewer. A partial fold leaves newer summaries for later passes;
+          each selected prefix must independently repay its cache break.
         - **The fold repays the break.** This is the anchored family's break-even,
           :data:`~._anchored.DEFAULT_MIN_GAIN_FRACTION`'s ``R > B * (p - c) / (p + T * c)``, with
           the fold's own terms and no new constant. ``R`` is what the fold would remove: the
-          standing summaries' tokens less the largest of them, on the stated assumption that a
+          selected summaries' tokens less the largest of them, on the stated assumption that a
           summary of summaries is no larger than the largest piece it folds -- the neutral
           estimate is their mean, and the largest is the one that errs towards keeping, which
           is the direction this package errs in everywhere. ``B`` is what the fold would
@@ -1190,7 +1187,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             True if the outgoing messages changed.
         """
         standing = self._bounded_summaries(messages, standing)
-        if len(standing) < 2:
+        if not self._fold_due(messages, standing):
             self._declined += 1
             return False
         answer = await self._fold_answer(messages, standing)
