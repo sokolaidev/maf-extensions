@@ -401,7 +401,7 @@ def test_stdio_shutdown_reports_final_cleanup_failure(monkeypatch, tmp_path, fai
         return None
 
     monkeypatch.setattr(backend, "dispose_scope", purge)
-    monkeypatch.setattr(prototype.DockerSandboxBackend, "create", create)
+    monkeypatch.setattr(DockerSandboxBackend, "create", create)
     monkeypatch.setattr(
         prototype, "make_server", lambda _: SimpleNamespace(run_stdio_async=run_stdio)
     )
