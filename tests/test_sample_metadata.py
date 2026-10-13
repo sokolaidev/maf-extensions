@@ -107,25 +107,20 @@ def _minor(version: str) -> tuple[int, int]:
     return int(major), int(minor)
 
 
+# Core 0.50 skips the unadopted 0.49 sample baseline; see RELEASING.md.
+_SKIPPED_SAMPLE_RELEASES = {(0, 50): frozenset({(0, 49)})}
+
+
 def _previous_release(changelog: str) -> tuple[int, int]:
-    """The `(major, minor)` of the newest release of an earlier minor, read rather than computed.
+    """The previous sample baseline, using changelog minors and bounded release exceptions.
 
-    Not the second heading. A sample's floor is a minor — `scripts/set_dependents_range.py`
-    drops the patch, so that a patch release is a no-op for the samples — and the window has to
-    be a window over the same thing. Read as the previous *release*, a core patch names the
-    current minor straight back, the window holds one value, and the Release PR fails with the
-    samples sitting correctly at the minor before it.
-
-    Not `(major, minor - 1)` either. At 1.0.0 that is `(1, -1)`, which every 0.x floor sorts
-    below, so the 1.0.0 Release PR would fail with no legal move available. On a history that
-    skipped a minor it names a version that never shipped, and AGENTS.md forbids a floor that
-    does. The changelog records what actually shipped, and release-please writes it in the same
-    commit that bumps the version, so the two cannot disagree.
+    Patch headings share a baseline; major boundaries and absent minors follow recorded history.
     """
     minors = [_minor(version) for version in _headings(changelog)]
     assert minors, "the changelog names no release"
+    skipped = _SKIPPED_SAMPLE_RELEASES.get(minors[0], frozenset())
     for minor in minors[1:]:
-        if minor != minors[0]:
+        if minor != minors[0] and minor not in skipped:
             return minor
     raise AssertionError(f"the changelog names no release before {minors[0]}")
 
@@ -133,12 +128,7 @@ def _previous_release(changelog: str) -> tuple[int, int]:
 def _floors_outside_the_window(
     floors: Iterable[tuple[int, ...]], core: tuple[int, int], previous: tuple[int, int]
 ) -> list[tuple[int, ...]]:
-    """Declared floors this repository does not permit, lowest first.
-
-    Exactly two are permitted — the current release and the one before it — because those are
-    the only two states the release window can be in. Anything else is a floor that stopped
-    moving.
-    """
+    """Floors outside the current core and previous sample baseline, lowest first."""
     return sorted(floor for floor in floors if floor not in (core, previous))
 
 
@@ -186,6 +176,22 @@ class TestTheWindowRule:
     def test_a_changelog_of_one_minor_has_no_predecessor(self):
         with pytest.raises(AssertionError, match="no release before"):
             _previous_release(self._changelog("0.1.1", "0.1.0"))
+
+    @pytest.mark.parametrize("current", ["0.50.0", "0.50.1"])
+    def test_the_skipped_sample_line_keeps_the_installable_predecessor(self, current: str):
+        previous = _previous_release(self._changelog(current, "0.49.0", "0.48.0"))
+        assert previous == (0, 48)
+        assert _floors_outside_the_window({(0, 48)}, _minor(current), previous) == []
+        assert _floors_outside_the_window({(0, 47)}, _minor(current), previous) == [(0, 47)]
+
+    def test_the_skipped_sample_line_does_not_extend_the_next_window(self):
+        previous = _previous_release(self._changelog("0.51.0", "0.50.0", "0.49.0", "0.48.0"))
+        assert previous == (0, 50)
+        assert _floors_outside_the_window({(0, 48), (0, 49)}, (0, 51), previous) == [
+            (0, 48),
+            (0, 49),
+        ]
+        assert _floors_outside_the_window({(0, 50)}, (0, 51), previous) == []
 
     def test_a_floor_at_either_end_of_the_window_is_permitted(self):
         assert _floors_outside_the_window({(0, 16), (0, 15)}, (0, 16), (0, 15)) == []
@@ -275,21 +281,7 @@ class TestTheDeclaredCoreFloor:
         )
 
     def test_it_is_the_current_core_minor(self):
-        """The previous release is tolerated too, and only because of the release window.
-
-        Not slack. The core's version in `pyproject.toml` moves when the Release PR merges;
-        the wheel reaches PyPI later, because the publish run is held at "Approve and run".
-        The samples pull request is opened by that same merge — before the upload, which is
-        why its own body says to check the dependent releases before merging it. So between the
-        Release PR merging and that one merging, the samples still
-        name the release before this one, and they must: AGENTS.md forbids a floor naming a
-        version that does not exist.
-
-        One release is the whole window. RELEASING.md's order will not let a second core minor
-        out until the dependents admitting this one have published, so a sample two releases
-        behind means that pull request was closed or never merged, and the next Release PR
-        going red is how you find out — early, and while it is still cheap to fix.
-        """
+        """Keep the prior sample baseline until the current core and dependents publish."""
         core, previous = self._core_minor(), self._previous_minor()
         floors = {floor[:2] for floor in map(self._floor, _SAMPLE_DIRS) if floor is not None}
         wrong = _floors_outside_the_window(floors, core, previous)
@@ -299,8 +291,8 @@ class TestTheDeclaredCoreFloor:
             "AGENTS.md: a dependency floor may only name a version that exists."
         )
         assert not wrong, (
-            f"a sample declares {wrong[0]}; this repository's core is at {core} and the release "
-            f"before it was {previous}. Move every sample's floor with "
+            f"a sample declares {wrong[0]}; this repository's core is at {core} and the previous "
+            f"sample baseline is {previous}. Move every sample's floor with "
             "`python scripts/set_dependents_range.py --samples <released-version>`, as a "
             "`chore:` of its own once the dependents admitting that core have published."
         )
