@@ -76,11 +76,18 @@ def begin(directory: Path) -> None:
             candidate = record["candidate"]
             validate_identity(candidate)
             current = result["releases"][name]
-            if record["state"] != "completed":
+            if (
+                record["state"] != "completed"
+                or record.get("registryDiscovery", {}).get("outcome") == "unavailable"
+            ):
                 try:
                     raw = manifest(candidate["profile"], candidate["version"])
                     current["registryDiscovery"] = {"checkedAt": at, "outcome": "checked"}
                     if raw is not None and sha256(raw) != candidate["registryDigest"]:
+                        if record["state"] == "completed":
+                            raise ValueError(
+                                "Completed release tag differs from its approved digest"
+                            )
                         found = sha256(raw)
                         entry = current.setdefault("unexpectedDigests", {}).setdefault(
                             found, {"digest": found, "discoveredAt": at}
