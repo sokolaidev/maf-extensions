@@ -1029,3 +1029,11 @@ The final wheel repeated all 43 transport cases and 109 retirements, all five Bi
 | Installed transport/ownership/network report | `234b6a28271fc0b1623ef4f1ab874fc26630f7f1a46e66807e2864da09525665` |
 | Instrumented Gateway report | `da9c7bfd24f35456ba08c94d020751b3ec3b8e36ddaf7ac2d0ca42f23661c531` |
 | Console Gateway report | `3981c1823d3bc846211bcf6b28f02a057efed71e64746fa2127f82ddc84d394f` |
+
+### Prepared-core compatibility reconciliation
+
+The merged #1900 adoption moves the workspace core to MAF 1.21.0. The worker's direct framework requirement therefore permits `>=1.20.0,<1.22`; the core dependency still selects the narrower installable pairing. Its ordinary index installation remains core 0.48.0 and MAF 1.20.0, while CI's prepared-core override can exercise core 0.49.0 and MAF 1.21.0. This does not move either end of the worker's core range or claim published core 0.49 support.
+
+The adjusted wheel is `97585f8326972d1aa275cf7827e2c6b5ff1edcaf023d66c862b5a5d9dbe69c0c`. A third clean external index installation reproduced the complete manifest and all four runtime hashes of the final runtime candidate above, and its installed entry-point smoke passed. The artifact/manifest reconciliation report hashes to `dd7b73dc6dd04556f7d970152312bee34e3c50acf68676454a48fe91b6476653`. The Docker/Gateway observations remain attributed to the unchanged runtime and recorded earlier wheel; they were not independently repeated after this metadata-only adjustment.
+
+Separately, all 15 sandbox wheels installed together with the prepared local core, and the worker's clean-wheel smoke passed with MAF 1.21.0. On that workspace baseline, 1,078 focused service/prototype/qualification/package tests passed, with four opt-in tests skipped. These establish offline and installation compatibility for the prepared pairing; the live Gateway/Bicep qualification remains the MAF 1.20.0 baseline above.
