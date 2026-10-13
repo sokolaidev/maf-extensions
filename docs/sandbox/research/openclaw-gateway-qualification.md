@@ -1016,3 +1016,16 @@ For console acceptance, launch `maf-bicep-mcp --transport http` from the install
 ```
 
 The console checker covers outcomes and prepared resolution; the observer is still required for exact session/dispatch/cancellation attribution. After validation, stop only the test processes and independently verify empty owned-container scope and released owner lock. Do not use forced termination of an idle test process as a claim about graceful shutdown or interruption recovery.
+
+### Final packaged candidate
+
+Candidate `d2068a78` completes the repository package registrations, README conventions and experimental import warning. The warning is confined to stderr, preserves `-W error` imports and leaves MCP stdout empty. Its three execution modules retain the hashes above; `__init__.py` now hashes to `6cd4609954365facc1edf656bfffc2366bf5da541f1fc699b88122dd007f2430`. The wheel was rebuilt and installed into a second empty environment outside the checkout; the complete dependency manifest and its hash are unchanged.
+
+The final wheel repeated all 43 transport cases and 109 retirements, all five Bicep/MAF ownership scenarios, the reachable/denied network control, instrumented two-session Gateway acceptance and the actual installed-console Gateway/prepared-module pass. All passed. Final transport state had zero records/readers/active calls and no poison; ownership shutdown was empty, preserved the unrelated owner and removed the sentinel. Active MAF closure again settled the service before its client: 25.41 seconds versus 240.02 seconds, ending with code 408 while the surviving client completed valid work. The observed service exited 0; the separately idle-terminated Windows console released its owner lock. Both Gateway runs confirmed their test processes stopped. The evidence boundaries and unqualified scenarios above remain unchanged.
+
+| Final artifact | SHA-256 |
+|---|---|
+| Built worker wheel | `ec256f48e82357bd20bdc89095169173daab43bca80544cbeabd871c39ebda8c` |
+| Installed transport/ownership/network report | `234b6a28271fc0b1623ef4f1ab874fc26630f7f1a46e66807e2864da09525665` |
+| Instrumented Gateway report | `da9c7bfd24f35456ba08c94d020751b3ec3b8e36ddaf7ac2d0ca42f23661c531` |
+| Console Gateway report | `3981c1823d3bc846211bcf6b28f02a057efed71e64746fa2127f82ddc84d394f` |
