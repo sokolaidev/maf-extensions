@@ -380,6 +380,41 @@ def test_reported_purge_failure_also_poisons_admission():
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("failure", [None, "raises", "undisposed"])
+def test_stdio_shutdown_reports_final_cleanup_failure(monkeypatch, tmp_path, failure):
+    backend = InProcessSandboxBackend(isolation=Isolation.CONTAINER)
+    purges = []
+
+    async def purge(scope, thread):
+        purges.append((scope, thread))
+        if len(purges) == 2:
+            if failure == "raises":
+                raise RuntimeError("daemon unavailable")
+            if failure == "undisposed":
+                return ScopePurge(undisposed=DisposalFailure("unknown", "daemon unavailable"))
+        return ScopePurge()
+
+    async def create(config):
+        return backend
+
+    async def run_stdio():
+        return None
+
+    monkeypatch.setattr(backend, "dispose_scope", purge)
+    monkeypatch.setattr(prototype.DockerSandboxBackend, "create", create)
+    monkeypatch.setattr(
+        prototype, "make_server", lambda _: SimpleNamespace(run_stdio_async=run_stdio)
+    )
+    if failure:
+        with pytest.raises(RuntimeError, match="Shutdown cleanup failed"):
+            asyncio.run(prototype.serve(IMAGE, CONFIG, tmp_path))
+    else:
+        asyncio.run(prototype.serve(IMAGE, CONFIG, tmp_path))
+    assert len(purges) == 2 and purges[0] == purges[1]
+    with prototype.ownership(tmp_path) as scope:
+        assert purges[0] == (scope, prototype.THREAD)
+
+
 def test_call_scope_policy_and_snapshot_wiring(monkeypatch):
     async def scenario():
         backend = InProcessSandboxBackend(isolation=Isolation.CONTAINER)

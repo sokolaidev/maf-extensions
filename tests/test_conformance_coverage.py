@@ -601,7 +601,8 @@ def test_no_package_builds_on_a_sibling_that_serves_the_pull_surface():
         for package in BACKEND_PACKAGES
     }
     # The MCP host composes Docker but must never inherit its backend surface.
-    assert offenders.pop("maf-sandbox-mcp") == ["maf-sandbox-docker"]
+    composed_backends = offenders.pop("maf-sandbox-mcp")
+    assert composed_backends == ["maf-sandbox-docker"]
     import importlib
 
     for module_name in ("server", "workload_http", "workload_service"):

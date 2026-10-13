@@ -367,7 +367,8 @@ class Validator:
         async def finish() -> None:
             if self.active is not None:
                 await self._settle(self.active)
-            await self.recover()
+            if not await self.recover():
+                raise RuntimeError("Shutdown cleanup failed.")
 
         closing = asyncio.create_task(finish())
         interrupted = await drain(closing)

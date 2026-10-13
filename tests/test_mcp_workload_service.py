@@ -231,8 +231,33 @@ def test_registration_policy_and_schema_contract():
         core.WorkloadService([replace(bindings[0], deadline_seconds=float("inf"))], resources)
     for file in ("workload_service.py", "workload_http.py"):
         source = (SAMPLE / file).read_text(encoding="utf-8-sig")
-        assert "from maf_sandbox " not in source
+        assert "from maf_sandbox" not in source
         assert "import maf_sandbox" not in source
+
+
+@pytest.mark.parametrize("method", ["GET", "POST", "DELETE", "PUT", "HEAD", "OPTIONS"])
+@pytest.mark.parametrize("ready,poisoned", [(True, False), (False, False), (True, True)])
+@pytest.mark.parametrize("authenticated", [False, True])
+def test_readiness_requires_authenticated_get(method, ready, poisoned, authenticated):
+    async def scenario():
+        service = Harness().service()
+        service.ready, service.poisoned = ready, poisoned
+        app = http.WorkloadHTTP(service, TOKEN, 8765)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+        ) as client:
+            response = await client.request(
+                method, "/ready", headers=HEADERS if authenticated else {}
+            )
+        expected = 200 if ready and not poisoned else 503
+        if method != "GET":
+            expected = 405
+        if not authenticated:
+            expected = 401
+        assert response.status_code == expected
+        assert not app.sessions and not app.readers and service.active is None
+
+    asyncio.run(scenario())
 
 
 def test_two_maf_clients_discover_distinct_bindings_and_close_independently():

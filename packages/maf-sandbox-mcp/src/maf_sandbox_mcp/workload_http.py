@@ -204,7 +204,10 @@ class WorkloadHTTP:
         elif grouped.get(b"host") != [self.host] or b"origin" in grouped:
             status = 403
         elif scope["path"] == "/ready":
-            status = 200 if self.service.ready and not self.service.poisoned else 503
+            if scope["method"] != "GET":
+                status = 405
+            else:
+                status = 200 if self.service.ready and not self.service.poisoned else 503
         elif scope["path"] != "/mcp":
             status = 404
         elif not self.service.ready:

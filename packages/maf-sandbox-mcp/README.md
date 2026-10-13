@@ -4,7 +4,7 @@
 
 > **Experimental.** The API may change without notice. Importing the package emits `MafSandboxMcpExperimentalWarning`.
 
-Experimental supervised MCP worker for closed-network Bicep validation. The installable distribution owns the reusable service (`workload_service`, `workload_http`) and the fixed Bicep/Docker composition (`server`). The runtime modules import no concrete kind or backend. The composition uses SDK-bundled FastMCP (`mcp==1.28.1`), the existing MAF Bicep callable and Docker; it does not run a model or install the separate `fastmcp` distribution.
+Experimental supervised MCP worker for closed-network Bicep validation. The installable distribution owns the reusable service (`workload_service`, `workload_http`) and the fixed Bicep/Docker composition (`server`). The reusable service modules import no concrete kind or backend. The composition uses SDK-bundled FastMCP (`mcp==1.28.1`), the existing MAF Bicep callable and Docker; it does not run a model or install the separate `fastmcp` distribution.
 
 ## Install and start
 
