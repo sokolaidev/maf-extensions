@@ -131,12 +131,14 @@ async def check(image_id: str) -> dict[str, Any]:
                     [
                         "python3",
                         "-c",
-                        "import hashlib,json,platform,subprocess; from pathlib import Path; "
-                        "print(json.dumps({'python':platform.python_version(), "
-                        "'graphviz':subprocess.run(['dot','-V'],check=True,capture_output=True,text=True).stderr.strip(), "
-                        "'notices':{p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in "
-                        "['/usr/lib/python3.13/LICENSE.txt','/usr/share/doc/graphviz/COPYING',"
-                        "'/usr/share/licenses/drawio/DEJAVU-LICENSE']}}))",
+                        (
+                            "import hashlib,json,platform,subprocess; from pathlib import Path; "
+                            "print(json.dumps({'python':platform.python_version(), "
+                            "'graphviz':subprocess.run(['dot','-V'],check=True,capture_output=True,text=True).stderr.strip(), "
+                            "'notices':{p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in "
+                            "['/usr/lib/python3.13/LICENSE.txt','/usr/share/doc/graphviz/COPYING',"
+                            "'/usr/share/licenses/drawio/DEJAVU-LICENSE']}}))"
+                        ),
                     ],
                     timeout=30,
                     working_directory="/tmp",
