@@ -284,11 +284,12 @@ The executed service, provider, baseline checker and Docker helper retained the 
 
 ## Status
 
-The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audit.md#consolidated-closure-reconciliation-2026-10-12) covers every original #1676 acceptance row using the separately recorded Gateway, Bicep/MAF and published transport evidence. Both finite follow-ups are merged. Qualification is complete for that supervised, selected baseline; the first-tool design disposition is recorded in the integration audit and adoption continues through #1898. Historical reports and their `complete_matrix: false` values are unchanged.
+The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audit.md#consolidated-closure-reconciliation-2026-10-12) covers every original #1676 acceptance row using the separately recorded Gateway, Bicep/MAF and published transport evidence. Both finite follow-ups are merged. Qualification is complete for that supervised, selected baseline; the first-tool design disposition is recorded in the integration audit and #1898 delivers the separately recorded [installed worker](#installed-worker-qualification-2026-10-13). Historical reports and their `complete_matrix: false` values are unchanged.
 
 | Work | State | Tracking |
 |---|---|---|
-| Bicep host qualification | First-tool design and finite supervised qualification complete; installed worker follows in #1898; actual LLM behavior and full crash recovery remain unqualified | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (closed) by [#1901](https://github.com/sokolaidev/maf-extensions/pull/1901) (merged) |
+| Installed worker | Implemented and locally qualified; not published | [#1898](https://github.com/sokolaidev/maf-extensions/issues/1898) (closed) by [#1920](https://github.com/sokolaidev/maf-extensions/pull/1920) (merged) |
+| Bicep host qualification | First-tool design and finite supervised qualification complete; installed worker delivered separately in #1898; actual LLM behavior and full crash recovery remain unqualified | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (closed) by [#1901](https://github.com/sokolaidev/maf-extensions/pull/1901) (merged) |
 | Multiple Gateway sessions | Finite acceptance reconciled across recorded Gateway evidence, five Bicep/MAF cases and 43 published transport cases with 109 SDK retirements; qualification complete. Active MAF callers can remain pending until their request timeout after service retirement; broader stress, crash and platform scenarios remain unqualified | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged); [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (closed) by [#1680](https://github.com/sokolaidev/maf-extensions/pull/1680) (merged); [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (closed) by [#1882](https://github.com/sokolaidev/maf-extensions/pull/1882) (merged); [#1850](https://github.com/sokolaidev/maf-extensions/issues/1850) (closed) by [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865) (merged); [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851) (closed) by [#1870](https://github.com/sokolaidev/maf-extensions/pull/1870) (merged) |
 
 
@@ -901,3 +902,157 @@ The successful candidate was the first published-stack attempt for this checker;
 These observations fill the closure audit's published transport/resource/MAF attribution gap. [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865) separately delivers #1850's Bicep/MAF ownership evidence. [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) remains open for delivery and consolidated reconciliation; this transport run alone does not close the host qualification. Historical `complete_matrix: false` reports remain unchanged. No new Gateway, compiler, other-host-platform, current-version, indefinite churn, actual-model or unattended-operation qualification is implied.
 
 Offline verification passed 939 focused tests (eight separate live cases deselected), 387 documentation tests, and typing for the changed fixture/tests with zero errors or warnings. Markdown examples and 254 live documentation tracker references passed. The full local gate passed 18,498 tests with 910 skips, lint/format, package/repository typing, documentation paths and implicit-concatenation checks. Repository typing reported zero errors and 455 warnings. Hosted CI remains separate evidence on the delivering PR.
+
+
+## Installed worker qualification (2026-10-13)
+
+Issue #1898 packages the existing service as `maf-sandbox-mcp`, with fixed `maf-bicep-mcp` entry point and explicit Bicep/Docker dependencies. The reusable service still imports no concrete kind or backend. The historical sample remains a source specimen; current runtime development and installed tests use the package. This execution qualifies the wheel built from candidate `991a6c11`, not a published release. Subsequent harness/reporting and documentation changes do not change its four runtime module hashes.
+
+The clean environment was created outside the checkout with Python 3.13.12 on Windows and Linux guests on Docker Engine 29.8.2. The candidate wheel was the only local artifact; every dependency resolved from the package index. No editable, `PYTHONPATH` or sibling-source fallback was admitted. Framework, suite, MCP, Uvicorn and worker imports resolved inside the environment's `site-packages`; the private report retains their locations. Each installed worker module matched its bytes inside the built wheel before and after execution. The console executable loaded and ran from that environment.
+
+The deliberate baseline change is MAF core 1.20.0, sandbox 0.48.0, Bicep 0.22.2 and Docker backend 0.27.0, with MCP 1.28.1, Starlette 1.7.0 and Uvicorn 0.54.0. OpenClaw remained the locally installed npm 2026.9.7 release. The selected image remained released Bicep AVM 0.1.0, `ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e`; the configuration hash remained `d3f160d081dcf48e41f0f0cdf006595b380402ac9730f3ee920738ba616d87e1`. The launchers passed its resolved immutable local identity, and observed compiler results attributed that same identity.
+
+### Results and evidence boundary
+
+| Evidence | Observed result |
+|---|---|
+| Clean-wheel smoke | Installed entry point `--help`, inert fixed binding construction, typing marker and installed module locations passed without allocating a sandbox. |
+| Installed transport/MAF suite | All 43 finite cases passed with setup/call/teardown evidence; 109 SDK retirements (eight saturation, 100 churn, one expiry) settled with zero retained sessions/readers/active work and no poisoned service. Synthetic bindings and the original bounded fault/timing controls remain explicit. |
+| Real Bicep/MAF ownership | Equal request IDs and repeated cancellation, response loss, idle MAF close, active MAF close and ordinary close all passed. Exact-owned containers were removed, unrelated-owner survival held, and the final sentinel was removed. |
+| Active client versus service retirement | Service settlement took 25.91 seconds; the active MAF caller stayed pending until its configured 240-second timeout and raised `ToolExecutionException` with code 408. A surviving client completed validation before that timeout. The host still owns its outstanding client tasks. |
+| Instrumented packaged service through Gateway | Two distinct MCP sessions produced valid/invalid/incomplete outcomes with one projected item, denied unauthorized/helper tools, refused competing work without allocation, observed the matching MCP cancellation, removed the exact container, preserved another owner and completed a later call. Observer service exited 0 with no sessions, active work or cleanup uncertainty. |
+| Actual installed console through Gateway | A second fresh profile launched the installed `maf-bicep-mcp` executable. Two Gateway sessions each completed valid, invalid and uncached-module/incomplete scenarios with one projected item and confirmed cleanup. An additional MAF call validated prepared virtual-network module 0.7.2. |
+| Closed-network behavior | The same image reached a fresh control listener over HTTP/IPv4 TCP with bridge networking and returned the expected nonce. With `network=none`, curl returned connection failure (exit 7), no response body, and Docker inspection confirmed the selected network mode. Both probe containers and the listener were removed. This qualifies one destination/protocol, not all network paths. |
+
+The direct console was stopped only after every call settled and independent Docker inspection showed no owned resources. Its idle Windows process tree was then terminated, its owner lock was reacquired and all launched test processes were confirmed stopped. That console stop is not evidence of graceful Windows signal handling; graceful transport/resource shutdown is the separately observed service pass. No host-crash or power-loss guarantee is added.
+
+The Gateway provider was a deterministic local fixture, not an LLM. The observed Gateway report keeps `complete_matrix: false`; its broader restart/crash/runtime-disposal rows remain credited to their prior candidates, while the finite transport and Bicep ownership rows above were rerun for this wheel. Actual-model behavior, exhaustive interruptions, other host/interpreter versions, remote tenancy, independent watchdogs, unattended operation and package publication remain outside this evidence.
+
+Three preliminary Gateway launcher attempts failed before qualification completed: one waited for the wrong readiness log phrase; one passed a repository digest reference to an assertion expecting the resolved image ID; the first console attempt made the same configured-versus-resolved identity mismatch. Their private attempt records remain failed, and their processes were stopped. The successful runs used fresh isolated state and the matching immutable image identity; no worker behavior was changed to pass those assertions.
+
+### Artifact and report identities
+
+| Artifact | SHA-256 |
+|---|---|
+| Built worker wheel | `570cb6ba88410822adf449ea610f35b2af80532f6dbf06687e1bb9554dff77a7` |
+| Installed transport/ownership/network report | `3288a5fd1c96e6c50b00af41b1e79fe50390189cfde7fafcacaa682d456c8833` |
+| Instrumented Gateway report | `14125de0e4bcd28c99df7e5bb868f9a1cd1ebc17cba8aeb88e27caee73eeecfc` |
+| Console Gateway report | `f3789a8daca658eba19bcce123c00cc1ed605d1968b7e9722877c64e00d0456b` |
+| Canonical resolved manifest | `bf042754f19e5af6646bd7f3d844690eff27e2cae438f03456bf73b3a181db52` |
+
+Runtime modules inside the wheel:
+
+| Module | SHA-256 |
+|---|---|
+| `maf_sandbox_mcp/__init__.py` | `c5f5876773dd0b24687a7c16b95770af37f5143c5b89bade19407cfe3aeb369e` |
+| `maf_sandbox_mcp/server.py` | `f000c5c76c9859ce207d19be008059e875c4c4baf4b307db4a204c0955a9898d` |
+| `maf_sandbox_mcp/workload_http.py` | `04d7e3ac3f48559fa7fd1a3ef95dab30e90ecadc69a8df781c15b0652e4d016b` |
+| `maf_sandbox_mcp/workload_service.py` | `8972bc76c8ef9f990f4f0a4cbf3f6704b0e5752bb2b42aaa9f7dfcd0a35a45e0` |
+
+Raw reports, launch profiles and logs stay private because they can contain host paths, credentials or compiler source. Hashes identify retained evidence; they do not make those private artifacts publicly downloadable. The complete resolved manifest follows. The unreleased worker's `0.0.0` is repository bootstrap metadata, not a published version.
+
+```text
+agent-framework-core==1.20.0
+annotated-types==0.8.0
+anyio==4.15.1
+attrs==26.1.0
+certifi==2026.7.22
+cffi==2.1.1
+click==8.5.0
+colorama==0.4.6
+cryptography==50.0.2
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+httpx-sse==0.4.3
+idna==3.20
+iniconfig==2.3.1
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+maf-sandbox==0.48.0
+maf-sandbox-bicep==0.22.2
+maf-sandbox-docker==0.27.0
+maf-sandbox-mcp==0.0.0
+mcp==1.28.1
+msgspec==0.22.0
+opentelemetry-api==1.45.1
+packaging==26.3
+pluggy==1.6.0
+pycparser==3.11
+pydantic==2.14.1
+pydantic-core==2.50.1
+pydantic-settings==2.15.0
+pygments==2.21.0
+pyjwt==2.15.1
+pytest==9.0.3
+python-dotenv==1.2.4
+python-multipart==0.0.32
+pywin32==312
+pyyaml==6.0.3
+referencing==0.37.0
+regex==2026.9.29
+rpds-py==2026.9.1
+sse-starlette==3.5.0
+starlette==1.7.0
+typing-extensions==4.16.0
+typing-inspection==0.4.4
+uvicorn==0.54.0
+```
+
+### Reproduction
+
+Build using `uv build --package maf-sandbox-mcp`, then create a fresh Python environment outside the checkout and install the wheel plus `pytest==9.0.3` and `httpx==0.28.1`. Do not use workspace editables or `PYTHONPATH`. The [installed checker](../../../tests/fixtures/openclaw_installed_worker_check.py) fails on changed baselines, missing runtime modules, differing installed bytes, local dependency fallbacks and incomplete test/cleanup evidence. Use a clean committed checkout and a fresh private evidence directory for each attempt:
+
+```bash
+"$WORKER_PYTHON" "$REPO/tests/fixtures/openclaw_installed_worker_check.py" --wheel "$WORKER_WHEEL" --root "$NEW_EVIDENCE" --config "$BICEP_CONFIG" --image "$BICEP_IMAGE_ID"
+```
+
+For observed Gateway acceptance, retain the isolated pinned-Gateway setup described earlier, use the fresh environment's Python to launch `openclaw_http_observer.py` with `--installed` and the existing observer arguments, then run `openclaw_gateway_http_check.py --installed` with the existing checker arguments. The prototype argument is retained for compatibility with the historical runner; installed mode imports and hashes the wheel modules, not that source path. Stop the observer through its stop file and verify its zero exit and empty shutdown record.
+
+For console acceptance, launch `maf-bicep-mcp --transport http` from the installed environment as described in the [operator guide](../../../packages/maf-sandbox-mcp/README.md). Start the pinned Gateway and deterministic provider with fresh isolated state and credentials. Resolve the image before launch and pass the identical identity to the checker:
+
+```bash
+"$WORKER_PYTHON" "$REPO/tests/fixtures/openclaw_installed_worker_check.py" --wheel "$WORKER_WHEEL" --root "$NEW_EVIDENCE" --config "$BICEP_CONFIG" --image "$BICEP_IMAGE_ID" --gateway-config "$GATEWAY_CONFIG" --provider-evidence "$PROVIDER_EVIDENCE" --owner "$OWNER_DIRECTORY" --openclaw "$OPENCLAW_PACKAGE"
+```
+
+The console checker covers outcomes and prepared resolution; the observer is still required for exact session/dispatch/cancellation attribution. After validation, stop only the test processes and independently verify empty owned-container scope and released owner lock. Do not use forced termination of an idle test process as a claim about graceful shutdown or interruption recovery.
+
+### Final packaged candidate
+
+Candidate `d2068a78` completes the repository package registrations, README conventions and experimental import warning. The warning is confined to stderr, preserves `-W error` imports and leaves MCP stdout empty. Its three execution modules retain the hashes above; `__init__.py` now hashes to `6cd4609954365facc1edf656bfffc2366bf5da541f1fc699b88122dd007f2430`. The wheel was rebuilt and installed into a second empty environment outside the checkout; the complete dependency manifest and its hash are unchanged.
+
+The final wheel repeated all 43 transport cases and 109 retirements, all five Bicep/MAF ownership scenarios, the reachable/denied network control, instrumented two-session Gateway acceptance and the actual installed-console Gateway/prepared-module pass. All passed. Final transport state had zero records/readers/active calls and no poison; ownership shutdown was empty, preserved the unrelated owner and removed the sentinel. Active MAF closure again settled the service before its client: 25.41 seconds versus 240.02 seconds, ending with code 408 while the surviving client completed valid work. The observed service exited 0; the separately idle-terminated Windows console released its owner lock. Both Gateway runs confirmed their test processes stopped. The evidence boundaries and unqualified scenarios above remain unchanged.
+
+| Final artifact | SHA-256 |
+|---|---|
+| Built worker wheel | `ec256f48e82357bd20bdc89095169173daab43bca80544cbeabd871c39ebda8c` |
+| Installed transport/ownership/network report | `234b6a28271fc0b1623ef4f1ab874fc26630f7f1a46e66807e2864da09525665` |
+| Instrumented Gateway report | `da9c7bfd24f35456ba08c94d020751b3ec3b8e36ddaf7ac2d0ca42f23661c531` |
+| Console Gateway report | `3981c1823d3bc846211bcf6b28f02a057efed71e64746fa2127f82ddc84d394f` |
+
+### Prepared-core compatibility reconciliation
+
+The merged #1900 adoption moves the workspace core to MAF 1.21.0. The worker's direct framework requirement therefore permits `>=1.20.0,<1.22`; the core dependency still selects the narrower installable pairing. Its ordinary index installation remains core 0.48.0 and MAF 1.20.0, while CI's prepared-core override can exercise core 0.49.0 and MAF 1.21.0. This does not move either end of the worker's core range or claim published core 0.49 support.
+
+The adjusted wheel is `97585f8326972d1aa275cf7827e2c6b5ff1edcaf023d66c862b5a5d9dbe69c0c`. A third clean external index installation reproduced the complete manifest and all four runtime hashes of the final runtime candidate above, and its installed entry-point smoke passed. The artifact/manifest reconciliation report hashes to `dd7b73dc6dd04556f7d970152312bee34e3c50acf68676454a48fe91b6476653`. The Docker/Gateway observations remain attributed to the unchanged runtime and recorded earlier wheel; they were not independently repeated after this metadata-only adjustment.
+
+Separately, all 15 sandbox wheels installed together with the prepared local core, and the worker's clean-wheel smoke passed with MAF 1.21.0. On that workspace baseline, 1,078 focused service/prototype/qualification/package tests passed, with four opt-in tests skipped. These establish offline and installation compatibility for the prepared pairing; the live Gateway/Bicep qualification remains the MAF 1.20.0 baseline above.
+
+### Review candidate requalification (2026-10-13)
+
+Candidate `c05c84155cff12c360c0fd2d944edb1d02db94bf` changes two runtime paths: stdio shutdown raises on unconfirmed final cleanup, and authenticated non-GET requests to `/ready` return 405. The historical source specimen remains frozen. The earlier artifact hashes still describe their recorded candidates; they do not describe this revised runtime.
+
+Before the fixes, the new shutdown/readiness regressions produced 17 failures and 22 passing controls. The affected workspace suites then passed with 229 tests and 14 skips. A fresh external installation of the revised wheel passed all 39 new regression cases against the recorded MAF 1.20 dependency baseline. Those are synthetic cleanup/readiness checks, separate from the real Docker observations below.
+
+The revised installed wheel repeated all 43 transport cases and 109 SDK retirements, all five real Bicep/MAF ownership scenarios, the reachable/denied network control, instrumented two-session Gateway acceptance and the actual installed-console Gateway/prepared-module pass. All passed on the same Python, Docker, OpenClaw, image/configuration and complete dependency baseline recorded above. Transport and ownership shutdown ended empty and unpoisoned; the unrelated owner survived and the sentinel was removed. Active MAF closure again settled the service before the client: 24.56 seconds versus 240.01 seconds, with client code 408 and a successful survivor call. The instrumented service exited 0. The console was terminated while idle on Windows, exited 1 and released its owner lock; that is still not graceful-console-shutdown evidence. Both Gateway runs confirmed all their test processes stopped. Historical `complete_matrix: false` limits remain in force.
+
+| Revised artifact | SHA-256 |
+|---|---|
+| Built worker wheel | `b024019f7e0987556c792bca27bb0002dac5aa6e7e6a6f4a19385a7df7f7baa5` |
+| `maf_sandbox_mcp/__init__.py` | `6cd4609954365facc1edf656bfffc2366bf5da541f1fc699b88122dd007f2430` |
+| `maf_sandbox_mcp/server.py` | `818dd044894a90881cc46f467c6efd16767f532a382f4d4a1706d2cfd94c3ae2` |
+| `maf_sandbox_mcp/workload_http.py` | `f020d90da0e670cfc4bdbbdd7f131a3b84cde83cb8d876021b4ae4d84180d599` |
+| `maf_sandbox_mcp/workload_service.py` | `8972bc76c8ef9f990f4f0a4cbf3f6704b0e5752bb2b42aaa9f7dfcd0a35a45e0` |
+| Installed transport/ownership/network report | `828cd2119b717e12268ade24782056997e53930fe7b6a6eed363960683361add` |
+| Instrumented Gateway report | `055f92f3ee6ad4d20ad65184f2fdc09a7d8a545b7423555f989d4fef8385f187` |
+| Console Gateway report | `66c033748d11fc79f6be87ab1fc5b18b8e3888584e8b60407b333e452827f454` |

@@ -58,7 +58,11 @@ LARGE = {
 }
 
 
-def environment() -> dict[str, str]:
+def environment(installed: bool = False) -> dict[str, str]:
+    if installed:
+        from openclaw_installed_worker_check import installed_environment
+
+        return installed_environment()["versions"]
     versions = {}
     for dist in importlib.metadata.distributions():
         direct = json.loads(dist.read_text("direct_url.json") or "{}")
@@ -658,10 +662,14 @@ class Check:
 
 
 async def check(args: argparse.Namespace) -> dict[str, Any]:
-    versions = environment()
-    sys.path.insert(0, str(args.prototype.resolve().parent))
-    prototype = importlib.import_module("server")
-    transport = importlib.import_module("workload_http")
+    versions = environment(getattr(args, "installed", False))
+    if getattr(args, "installed", False):
+        prototype = importlib.import_module("maf_sandbox_mcp.server")
+        transport = importlib.import_module("maf_sandbox_mcp.workload_http")
+    else:
+        sys.path.insert(0, str(args.prototype.resolve().parent))
+        prototype = importlib.import_module("server")
+        transport = importlib.import_module("workload_http")
     image = resolve_image(args.image)
     config = args.config.read_text(encoding="utf-8")
     token = secrets.token_hex(32)

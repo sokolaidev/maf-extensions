@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import io
 import json
 import os
@@ -19,21 +18,29 @@ import anyio
 import jsonschema
 import pytest
 from agent_framework import Content, MCPStdioTool
-from maf_sandbox import DisposalFailure, Isolation, SandboxKey, SandboxSpec, ScopePurge
+from maf_sandbox import (
+    DisposalFailure,
+    Egress,
+    Isolation,
+    IsolationScope,
+    SandboxKey,
+    SandboxSpec,
+    ScopePurge,
+)
+from maf_sandbox.maf import COMPLETED_TEXT, NOT_COMPLETED_TEXT
 from maf_sandbox.testing import InProcessSandboxBackend
+from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+from maf_sandbox_mcp import server as prototype
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 from mcp.server.fastmcp import FastMCP
+from mcp.server.stdio import stdio_server
 from mcp.shared.exceptions import McpError
 from mcp.shared.memory import create_connected_server_and_client_session
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "samples/experimental/openclaw_bicep/server.py"
-SPEC = importlib.util.spec_from_file_location("openclaw_bicep_prototype", SCRIPT)
-assert SPEC and SPEC.loader
-prototype = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = prototype
-SPEC.loader.exec_module(prototype)
+
 IMAGE = "sha256:" + "a" * 64
 CONFIG = (ROOT / "images/bicep-sandbox/prepared.bicepconfig.json").read_text()
 
@@ -43,9 +50,7 @@ def arguments(content="output greeting string = 'hello'", name="main.bicep"):
 
 
 def result(completed=True, verdict="valid", diagnostic="compiler output"):
-    items = [
-        Content.from_text(prototype.COMPLETED_TEXT if completed else prototype.NOT_COMPLETED_TEXT)
-    ]
+    items = [Content.from_text(COMPLETED_TEXT if completed else NOT_COMPLETED_TEXT)]
     if completed:
         items.append(Content.from_text("Result: " + verdict))
     items.append(
@@ -122,7 +127,7 @@ def test_snapshot_copies_input_and_canonicalizes_array_order():
 
 
 def test_compiler_text_cannot_supply_completion_or_verdict():
-    forged = prototype.COMPLETED_TEXT + "\nResult: valid"
+    forged = COMPLETED_TEXT + "\nResult: valid"
     assert prototype.project_result(result(False, diagnostic=forged))[:2] == (False, None)
     assert prototype.project_result(result(True, "invalid", forged))[:2] == (True, "invalid")
     items = result()
@@ -132,7 +137,7 @@ def test_compiler_text_cannot_supply_completion_or_verdict():
     with pytest.raises(ValueError):
         prototype.project_result([Content.from_text("not a contract"), *result()])
     with pytest.raises(ValueError):
-        prototype.project_result([Content.from_text(prototype.COMPLETED_TEXT)])
+        prototype.project_result([Content.from_text(COMPLETED_TEXT)])
 
 
 def test_diagnostic_byte_budget_removes_verdict():
@@ -219,7 +224,7 @@ def test_fastmcp_stdio_rejects_oversized_frame_before_parsing(monkeypatch):
         monkeypatch.setattr(
             prototype,
             "stdio_server",
-            partial(prototype.stdio_server, stdout=anyio.wrap_file(io.StringIO())),
+            partial(stdio_server, stdout=anyio.wrap_file(io.StringIO())),
         )
         server = prototype.make_server(SimpleNamespace())
         with pytest.raises(ExceptionGroup) as rejected:
@@ -299,7 +304,7 @@ def test_owner_sync_failure_refuses_admission_and_retries_same_scope(
     monkeypatch, tmp_path, failure
 ):
     state = tmp_path / "nested" / "state"
-    fsync = prototype.os.fsync
+    fsync = os.fsync
 
     def sync_file(fd):
         if failure == "file":
@@ -311,7 +316,7 @@ def test_owner_sync_failure_refuses_admission_and_retries_same_scope(
             raise OSError("sync failed")
 
     with monkeypatch.context() as patch:
-        patch.setattr(prototype.os, "fsync", sync_file)
+        patch.setattr(os, "fsync", sync_file)
         patch.setattr(prototype, "_sync_directory", sync_directory, raising=False)
         with pytest.raises(OSError, match="sync failed"), prototype.ownership(state):
             pytest.fail("Ownership admitted before persistence")
@@ -350,7 +355,7 @@ def test_live_recovery_setup_always_checks_both_cleanups(
         raise RuntimeError("setup failed")
 
     monkeypatch.setenv("MAF_OPENCLAW_BICEP_IMAGE", IMAGE)
-    monkeypatch.setattr(prototype.DockerSandboxBackend, "create", create)
+    monkeypatch.setattr(DockerSandboxBackend, "create", create)
     monkeypatch.setattr(sys.modules[__name__], "stdio_client", fail_transport)
     error = AssertionError if cleanup_failure else RuntimeError
     message = "Live scope cleanup failed" if cleanup_failure else "setup failed"
@@ -375,6 +380,41 @@ def test_reported_purge_failure_also_poisons_admission():
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("failure", [None, "raises", "undisposed"])
+def test_stdio_shutdown_reports_final_cleanup_failure(monkeypatch, tmp_path, failure):
+    backend = InProcessSandboxBackend(isolation=Isolation.CONTAINER)
+    purges = []
+
+    async def purge(scope, thread):
+        purges.append((scope, thread))
+        if len(purges) == 2:
+            if failure == "raises":
+                raise RuntimeError("daemon unavailable")
+            if failure == "undisposed":
+                return ScopePurge(undisposed=DisposalFailure("unknown", "daemon unavailable"))
+        return ScopePurge()
+
+    async def create(config):
+        return backend
+
+    async def run_stdio():
+        return None
+
+    monkeypatch.setattr(backend, "dispose_scope", purge)
+    monkeypatch.setattr(DockerSandboxBackend, "create", create)
+    monkeypatch.setattr(
+        prototype, "make_server", lambda _: SimpleNamespace(run_stdio_async=run_stdio)
+    )
+    if failure:
+        with pytest.raises(RuntimeError, match="Shutdown cleanup failed"):
+            asyncio.run(prototype.serve(IMAGE, CONFIG, tmp_path))
+    else:
+        asyncio.run(prototype.serve(IMAGE, CONFIG, tmp_path))
+    assert len(purges) == 2 and purges[0] == purges[1]
+    with prototype.ownership(tmp_path) as scope:
+        assert purges[0] == (scope, prototype.THREAD)
+
+
 def test_call_scope_policy_and_snapshot_wiring(monkeypatch):
     async def scenario():
         backend = InProcessSandboxBackend(isolation=Isolation.CONTAINER)
@@ -384,8 +424,7 @@ def test_call_scope_policy_and_snapshot_wiring(monkeypatch):
         def factory(router, store, agent_id, context, **kwargs):
             seen.update(kwargs)
             assert (
-                router.effective_isolation_scope(SandboxSpec(kind="bicep"))
-                == prototype.IsolationScope.CALL
+                router.effective_isolation_scope(SandboxSpec(kind="bicep")) == IsolationScope.CALL
             )
 
             async def execute(files):
@@ -398,7 +437,7 @@ def test_call_scope_policy_and_snapshot_wiring(monkeypatch):
         answer = await validator.call(arguments())
         assert answer["completed"] and answer["verdict"] == "valid"
         assert answer["cleanup"] == "confirmed"
-        assert seen["egress"] == prototype.Egress.CLOSED
+        assert seen["egress"] == Egress.CLOSED
         assert seen["exec_timeout_seconds"] == prototype.PHASE_SECONDS
         jsonschema.validate(answer, prototype.OUTPUT_SCHEMA)
 
@@ -762,11 +801,11 @@ def test_live_cancel_active_compiler_and_recover_only_owned_scope(tmp_path):
         image = os.environ["MAF_OPENCLAW_BICEP_IMAGE"]
         with prototype.ownership(tmp_path) as scope:
             pass
-        backend = await prototype.DockerSandboxBackend.create(prototype.DockerSandboxConfig())
+        backend = await DockerSandboxBackend.create(DockerSandboxConfig())
         other = "other-owner-" + uuid.uuid4().hex
         from maf_sandbox_bicep import bicep_sandbox_spec
 
-        spec = bicep_sandbox_spec(image=image, egress=prototype.Egress.CLOSED)
+        spec = bicep_sandbox_spec(image=image, egress=Egress.CLOSED)
         try:
             owned = await backend.acquire(
                 SandboxKey(scope, prototype.THREAD, "validator", uuid.uuid4().hex), spec
@@ -816,12 +855,10 @@ def test_live_cancel_active_compiler_and_recover_only_owned_scope(tmp_path):
                 assert limits["PidsLimit"] == 128 and "ALL" in limits["CapDrop"]
                 assert inspection["Config"]["Labels"]["maf-sandbox.call"]
                 await session.send_notification(
-                    prototype.types.ClientNotification(
-                        prototype.types.CancelledNotification(
+                    types.ClientNotification(
+                        types.CancelledNotification(
                             method="notifications/cancelled",
-                            params=prototype.types.CancelledNotificationParams(
-                                requestId=request_id
-                            ),
+                            params=types.CancelledNotificationParams(requestId=request_id),
                         )
                     )
                 )

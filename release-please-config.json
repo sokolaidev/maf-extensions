@@ -142,6 +142,11 @@
         }
       ]
     },
+    "packages/maf-sandbox-mcp": {
+      "package-name": "maf-sandbox-mcp",
+      "exclude-paths": ["packages/maf-sandbox-mcp/tests"],
+      "extra-files": [{"type": "toml", "path": "/uv.lock", "jsonpath": "$.package[?(@.name.value=='maf-sandbox-mcp')].version"}]
+    },
     "packages/maf-sandbox-tui": {
       "package-name": "maf-sandbox-tui",
       "exclude-paths": ["packages/maf-sandbox-tui/tests"],

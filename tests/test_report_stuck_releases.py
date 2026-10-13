@@ -45,6 +45,7 @@ _RELEASES = {
     "maf-sandbox-docker-sbx": "0.1.0",
     "maf-sandbox-drawio": "0.1.0",
     "maf-sandbox-hyperlight": "0.1.0",
+    "maf-sandbox-mcp": "0.1.0",
     "maf-sandbox-otel": "0.1.0",
     "maf-sandbox-terraform": "0.1.0",
     "maf-sandbox-tui": "0.1.0",

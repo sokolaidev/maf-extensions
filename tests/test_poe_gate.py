@@ -94,6 +94,7 @@ class TestTheGate:
             "maf-sandbox-docker-sbx",
             "maf-sandbox-drawio",
             "maf-sandbox-hyperlight",
+            "maf-sandbox-mcp",
             "maf-sandbox-otel",
             "maf-sandbox-terraform",
             "maf-sandbox-tui",

@@ -397,6 +397,7 @@ NOT_BACKENDS = frozenset(
         "maf-sandbox-codeact",
         "maf-sandbox-deepagents",
         "maf-sandbox-drawio",
+        "maf-sandbox-mcp",  # Host composition; delegates execution to Docker.
         "maf-sandbox-otel",
         "maf-sandbox-terraform",  # Workload kind using a session; provides no backend.
         "maf-compaction",  # Compaction strategies; touches no sandbox at all.
@@ -579,8 +580,8 @@ def test_no_package_builds_on_a_sibling_that_serves_the_pull_surface():
 
     A subclass whose ``stat_file`` and ``read_file`` live on a base in another distribution
     implements nothing locally, so nothing here sees it. Resolving that means resolving imports
-    across distributions. What is checkable is the dependency such inheritance requires, and no
-    package here has one. **A base from outside this workspace stays uncovered** — not by the
+    across distributions. Sibling dependencies require explicit conformance or a composition
+    check that refuses inherited backend classes. **A base from outside this workspace stays uncovered** — not by the
     probes either, since nothing would ask for them. Review is the backstop, and saying so is
     better than implying otherwise.
     """
@@ -599,6 +600,18 @@ def test_no_package_builds_on_a_sibling_that_serves_the_pull_surface():
         )
         for package in BACKEND_PACKAGES
     }
+    # The MCP host composes Docker but must never inherit its backend surface.
+    composed_backends = offenders.pop("maf-sandbox-mcp")
+    assert composed_backends == ["maf-sandbox-docker"]
+    import importlib
+
+    for module_name in ("server", "workload_http", "workload_service"):
+        module = importlib.import_module("maf_sandbox_mcp." + module_name)
+        for value in vars(module).values():
+            if isinstance(value, type) and value.__module__ == module.__name__:
+                assert not any(
+                    base.__module__.startswith("maf_sandbox_docker") for base in value.__mro__
+                ), value
     building_on = {name: on for name, on in offenders.items() if on}
     assert not building_on, (
         f"{building_on} depends on a sibling that serves the pull surface, so it may inherit "

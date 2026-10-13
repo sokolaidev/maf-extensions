@@ -1,0 +1,74 @@
+[project]
+name = "maf-sandbox-mcp"
+version = "0.0.0"
+description = "Supervised local MCP service with a closed-network Bicep worker."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["mcp", "sandbox", "bicep", "agent-framework"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Typing :: Typed",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Monitoring",
+]
+dependencies = [
+    "maf-sandbox>=0.48.0,<0.49",
+    "maf-sandbox-bicep>=0.22.2,<0.23",
+    "maf-sandbox-docker>=0.27.0,<0.28",
+    "agent-framework-core>=1.20.0,<1.22",
+    "mcp==1.28.1",
+    "uvicorn==0.54.0",
+    "starlette==1.7.0",
+    "anyio>=4.5,<5",
+    "pydantic>=2.11,<3",
+    "jsonschema>=4.26,<5",
+]
+
+[project.scripts]
+maf-bicep-mcp = "maf_sandbox_mcp.server:main"
+
+[project.urls]
+Homepage = "https://www.sokol.ai"
+Source = "https://github.com/sokolaidev/maf-extensions"
+Issues = "https://github.com/sokolaidev/maf-extensions/issues"
+
+[tool.uv.sources]
+maf-sandbox = { workspace = true }
+maf-sandbox-bicep = { workspace = true }
+maf-sandbox-docker = { workspace = true }
+
+[tool.uv.build-backend]
+module-name = "maf_sandbox_mcp"
+module-root = "src"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "D100", "D101", "D103", "D104", "E501", "W505", "TD", "FIX", "ERA001"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D101", "D103", "E501", "W505"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 100
+
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "strict"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["uv_build>=0.11.24,<0.12.0"]
+build-backend = "uv_build"

@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import os
 import socket
-import sys
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -19,16 +17,11 @@ from agent_framework import MCPStreamableHTTPTool
 from mcp import types
 
 ROOT = Path(__file__).resolve().parents[1]
-SAMPLE = ROOT / "samples/experimental/openclaw_bicep"
+SAMPLE = Path(__import__("maf_sandbox_mcp").__file__).parent
 
 
 def load(name, filename=None):
-    spec = importlib.util.spec_from_file_location(name, SAMPLE / f"{filename or name}.py")
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    return __import__("maf_sandbox_mcp." + (filename or name), fromlist=["*"])
 
 
 core = load("workload_service")
@@ -240,6 +233,31 @@ def test_registration_policy_and_schema_contract():
         source = (SAMPLE / file).read_text(encoding="utf-8-sig")
         assert "from maf_sandbox" not in source
         assert "import maf_sandbox" not in source
+
+
+@pytest.mark.parametrize("method", ["GET", "POST", "DELETE", "PUT", "HEAD", "OPTIONS"])
+@pytest.mark.parametrize("ready,poisoned", [(True, False), (False, False), (True, True)])
+@pytest.mark.parametrize("authenticated", [False, True])
+def test_readiness_requires_authenticated_get(method, ready, poisoned, authenticated):
+    async def scenario():
+        service = Harness().service()
+        service.ready, service.poisoned = ready, poisoned
+        app = http.WorkloadHTTP(service, TOKEN, 8765)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+        ) as client:
+            response = await client.request(
+                method, "/ready", headers=HEADERS if authenticated else {}
+            )
+        expected = 200 if ready and not poisoned else 503
+        if method != "GET":
+            expected = 405
+        if not authenticated:
+            expected = 401
+        assert response.status_code == expected
+        assert not app.sessions and not app.readers and service.active is None
+
+    asyncio.run(scenario())
 
 
 def test_two_maf_clients_discover_distinct_bindings_and_close_independently():
@@ -1017,7 +1035,7 @@ def test_live_published_dependencies_http_smoke(tmp_path):
     import textwrap
 
     block = (
-        (SAMPLE / "server.py")
+        (ROOT / "samples/experimental/openclaw_bicep/server.py")
         .read_text(encoding="utf-8")
         .split("# /// script", 1)[1]
         .split("# ///", 1)[0]
@@ -1065,7 +1083,7 @@ async def main():
 asyncio.run(main())
 """
     settings = {
-        "SAMPLE": str(SAMPLE),
+        "SAMPLE": str(ROOT / "samples/experimental/openclaw_bicep"),
         "OWNER": str(tmp_path / "owner"),
         "IMAGE": os.environ["MAF_OPENCLAW_BICEP_IMAGE"],
         "CONFIG": str(ROOT / "images/bicep-sandbox/prepared.bicepconfig.json"),
