@@ -20,7 +20,6 @@ from maf_compaction import (
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     UserTurnAnchoredSummarizationCompactionStrategy,
 )
-from maf_compaction._composed import _ChainStart
 from maf_compaction._summary_input import bounded_prefix
 from maf_compaction._toolsummary import active_record_groups, build_record_message
 
@@ -309,7 +308,7 @@ async def test_harder_rewrite_bounds_the_request_when_merge_cannot_fit_two():
     stored = deepcopy(messages)
     newer = messages[1:]
     assert not await strategy._merge_records(messages)
-    assert await strategy._rewrite_records(messages, _ChainStart.take(messages))
+    assert await strategy._rewrite_records(messages, composed_module._ChainStart.take(messages))
     assert len(client.requests) == 1
     assert "Record 0:" in client.requests[0][-1].text
     assert "Record 1:" not in client.requests[0][-1].text
@@ -328,7 +327,7 @@ async def test_oversized_record_is_retained_without_any_summary_request():
     messages = records()
     before = visible(messages)
     assert not await strategy._merge_records(messages)
-    assert not await strategy._rewrite_records(messages, _ChainStart.take(messages))
+    assert not await strategy._rewrite_records(messages, composed_module._ChainStart.take(messages))
     assert not client.requests
     assert visible(messages) == before
 
@@ -410,7 +409,9 @@ async def test_nonmonotonic_counts_respect_each_operations_minimum_prefix(kind):
         if kind == "merge":
             assert await chain._merge_records(messages)
         else:
-            assert await chain._rewrite_records(messages, _ChainStart.take(messages))
+            assert await chain._rewrite_records(
+                messages, composed_module._ChainStart.take(messages)
+            )
     assert len(client.requests) == 1
     assert len(client.requests[0][-1].text.splitlines()) == 3
     annotate_token_counts(client.requests[0], tokenizer=strategy.tokenizer, force_retokenize=True)
