@@ -2,6 +2,8 @@
 
 import asyncio
 import importlib.metadata
+import subprocess
+import sys
 
 import pytest
 
@@ -36,3 +38,16 @@ def test_composition_is_inert_until_service_start():
 def test_inline_input_refuses_host_paths_and_auxiliary_files(path):
     with pytest.raises(ValueError):
         server.snapshot({"files": [{"path": path, "content": ""}]})
+
+
+@pytest.mark.parametrize("filters", [[], ["-W", "error"]])
+def test_import_notice_preserves_protocol_stdout(filters):
+    result = subprocess.run(
+        [sys.executable, *filters, "-c", "import maf_sandbox_mcp"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout == ""
+    if not filters:
+        assert "MafSandboxMcpExperimentalWarning" in result.stderr

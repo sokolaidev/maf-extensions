@@ -1,5 +1,9 @@
 # maf-sandbox-mcp
 
+[![PyPI](https://img.shields.io/pypi/v/maf-sandbox-mcp)](https://pypi.org/project/maf-sandbox-mcp/) [![Python](https://img.shields.io/pypi/pyversions/maf-sandbox-mcp)](https://pypi.org/project/maf-sandbox-mcp/) [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/sokolaidev/maf-extensions/blob/main/LICENSE)
+
+> **Experimental.** The API may change without notice. Importing the package emits `MafSandboxMcpExperimentalWarning`.
+
 Experimental supervised MCP worker for closed-network Bicep validation. The installable distribution owns the reusable service (`workload_service`, `workload_http`) and the fixed Bicep/Docker composition (`server`). The runtime modules import no concrete kind or backend. The composition uses SDK-bundled FastMCP (`mcp==1.28.1`), the existing MAF Bicep callable and Docker; it does not run a model or install the separate `fastmcp` distribution.
 
 ## Install and start
