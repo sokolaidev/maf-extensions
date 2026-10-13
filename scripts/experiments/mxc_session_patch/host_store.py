@@ -67,6 +67,18 @@ def _lock(stream: BinaryIO, acquire: bool) -> None:
         fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB if acquire else fcntl.LOCK_UN)
 
 
+def _check_rollback_format(path: Path) -> None:
+    """Refuse non-rollback SQLite headers without opening or checkpointing their sidecars."""
+    try:
+        with path.open("rb") as stream:
+            header = stream.read(20)
+    except FileNotFoundError:
+        return
+    # SQLite's persisted read/write format versions are at offsets 18 and 19.
+    if header[:16] == b"SQLite format 3\x00" and header[18:20] != b"\x01\x01":
+        raise Refused("unsupported SQLite journal format")
+
+
 class Store:
     """Own one private local store; network filesystems and remote takeover are unsupported."""
 
@@ -83,6 +95,7 @@ class Store:
             self.lock.close()
             raise Refused("session already has an owner") from error
         try:
+            _check_rollback_format(self.root / "state.sqlite")
             self.db = sqlite3.connect(self.root / "state.sqlite", timeout=0)
             self.db.execute("PRAGMA journal_mode=DELETE")
             self.db.execute("PRAGMA synchronous=FULL")

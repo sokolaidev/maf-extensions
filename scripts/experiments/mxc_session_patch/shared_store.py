@@ -24,6 +24,7 @@ from .host_store import (
     MAX_FILES,
     MAX_RESULT,
     Refused,
+    _check_rollback_format,
     _lock,
     _name,
     _relative,
@@ -208,6 +209,7 @@ class SharedStore:
             existed = path.exists()
             if (self.root / "state.sqlite").exists() and not existed:
                 raise Refused("legacy store requires explicit migration")
+            _check_rollback_format(path)
             self.db = sqlite3.connect(path, timeout=0, isolation_level=None)
             self.db.row_factory = sqlite3.Row
             try:

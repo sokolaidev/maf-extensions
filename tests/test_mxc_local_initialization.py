@@ -398,3 +398,60 @@ def test_older_shared_store_can_install_missing_lookup_indexes(tmp_path, kind):
             row[0] for row in db.db.execute("SELECT name FROM sqlite_schema WHERE type='index'")
         }
         assert {"calls_expiry", "calls_uncertain"} <= indexes
+
+
+@pytest.mark.parametrize("kind", [*KINDS, "coordinator"])
+@pytest.mark.parametrize("state", ["complete", "foreign", "damaged"])
+@pytest.mark.parametrize("crashed", [False, True])
+def test_wal_database_is_refused_without_changing_database_or_sidecars(
+    tmp_path, kind, state, crashed
+):
+    root = tmp_path / "db"
+    shared.prepare(root)
+
+    def factory():
+        if kind == "coordinator":
+            remote = importlib.import_module(
+                "scripts.experiments.mxc_session_patch.remote_authority"
+            )
+            return remote.Authority(root, enabled=True)
+        return open_store(root, kind)
+
+    path = root / "authority.sqlite" if kind == "coordinator" else database(root, kind)
+    with factory():
+        pass
+    program = """
+import os, sqlite3, sys
+connection = sqlite3.connect(sys.argv[1])
+assert connection.execute('PRAGMA journal_mode=WAL').fetchone()[0] == 'wal'
+connection.execute('PRAGMA wal_autocheckpoint=0')
+if sys.argv[2] == 'foreign':
+    connection.execute('CREATE TABLE extra(value TEXT)')
+elif sys.argv[2] == 'damaged':
+    connection.execute('DROP TABLE ' + sys.argv[4])
+else:
+    connection.execute('PRAGMA user_version=1')
+connection.commit()
+if sys.argv[3] == 'True': os._exit(76)
+connection.close()
+"""
+    child = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            program,
+            str(path),
+            state,
+            str(crashed),
+            "resources" if kind == "coordinator" else "chunks",
+        ],
+        capture_output=True,
+        timeout=20,
+    )
+    assert child.returncode == (76 if crashed else 0), child.stderr.decode()
+    paths = [Path(str(path) + suffix) for suffix in ("", "-wal", "-shm", "-journal")]
+    before = {p.name: p.read_bytes() for p in paths if p.exists()}
+    assert (path.name + "-wal" in before) == crashed
+    with pytest.raises(host.Refused):
+        factory()
+    assert {p.name: p.read_bytes() for p in paths if p.exists()} == before
