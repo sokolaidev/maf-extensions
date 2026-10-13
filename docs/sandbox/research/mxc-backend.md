@@ -590,3 +590,18 @@ The startup follow-up in `4cb769e5d95bdf371c1ff2b1c50ca81ec6690a95` changes init
 A further startup-hardening candidate validates every required coordinator table against its creation definition, preserving additional trusted publication tables while refusing missing or altered ownership tables. Initialization OS and SQLite errors, including nonblocking lock contention, become domain-level `Refused` errors. Seven additional controls failed on the preceding implementation: four partial/altered schema cases, a real competing initializer process, a corrupt SQLite header and unavailable root storage. All 52 coordinator controls then passed locally. The 45-control hosted run above predates this hardening and does not qualify these seven cases.
 
 This candidate leaves #1671 open. An authenticated API, checkpoint/result transfer and retention integration, a deployment-specific termination verifier, network-authority revocation and native recovery between distinct compatible machines remain necessary. No infrastructure shutdown, native cross-machine recovery, coordinator-storage-loss recovery or production support is established by these process tests.
+
+### Local-store initialization recovery
+
+The follow-up for [#1866](https://github.com/sokolaidev/maf-extensions/issues/1866) extends interrupted-first-initialization recovery to the experimental `Store` and `SharedStore`. It classifies an empty SQLite schema under the initialization lock and write transaction, commits the legacy schema with its first session metadata, and refuses damaged or foreign nonempty schemas without repair. The [startup contract](../../../scripts/experiments/mxc_session_patch/HOST_PUBLICATION.md#interrupted-first-initialization) retains missing-metadata/profile/format refusal and excludes external replacement or truncation of a committed database. Complete existing legacy stores remain readable; partial schemas from the earlier non-atomic initializer remain refused.
+
+[Run 38320389173, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/38320389173/attempts/1) qualified implementation source `0c78ba883e98a0d18cd297bffba13e74aaf5c3ed` independently on Linux and Windows. Each host passed all 81 [startup controls](../../../tests/test_mxc_local_initialization.py) without skips, including abrupt process death around connection/schema/metadata/commit boundaries, the separate shared-owner transaction, competing initializers, generation continuity, saved-result retry, checkpoint restore and unchanged damaged-store refusal. The complete storage workflow passed 420 controls and skipped one platform-specific permission control on each host: Windows child ACLs on Linux, POSIX ownership on Windows. The initial Linux run exposed a test fixture with broad directory permissions; the successful source creates its private root before testing migration refusal.
+
+| Evidence | Linux | Windows |
+|---|---|---|
+| Python / SQLite | 3.12.3 / 3.45.1 | 3.12.10 / 3.49.1 |
+| Startup controls | 81 passed, no skips | 81 passed, no skips |
+| Full storage controls | 420 passed, 1 platform skip | 420 passed, 1 platform skip |
+| JUnit SHA-256 | `23418933e627a1e54dd13bf71e4a89ff4c690cccd14aa09d32d9797446ead729` | `f1b385b06857bdea08137c4e1d9a83dd6e163fa6d88d2d9e51928bb639fb183f` |
+
+These controls use ordinary host processes and synthetic checkpoint bytes. They do not qualify native Hyperlight startup, power loss, arbitrary store erasure, cross-machine recovery or production support. #1671's remaining integration and native qualification scope is unchanged.

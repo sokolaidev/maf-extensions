@@ -6,6 +6,8 @@ on:
       - '.github/workflows/mxc-physical.yml'
       - 'scripts/experiments/mxc_session_patch/**'
       - 'tests/test_mxc_shared_store.py'
+      - 'tests/test_mxc_host_store.py'
+      - 'tests/test_mxc_local_initialization.py'
       - 'tests/test_mxc_accounting.py'
       - 'tests/test_mxc_private_root.py'
       - 'tests/test_mxc_native_journal.py'
@@ -48,6 +50,7 @@ jobs:
         shell: bash
         run: >-
           uv run pytest -q
+          tests/test_mxc_host_store.py tests/test_mxc_local_initialization.py
           tests/test_mxc_shared_store.py tests/test_mxc_accounting.py
           tests/test_mxc_private_root.py tests/test_mxc_native_journal.py
           tests/test_mxc_idle.py tests/test_mxc_physical.py tests/test_mxc_prelaunch.py
