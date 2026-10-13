@@ -642,7 +642,8 @@ def _reachable_middleware() -> Any | None:
 #: things keep that from being silent: a divergence alarm in the suite, and, for a host whose
 #: upgrade this suite never saw, `_warn_once_about_a_missing_record` beside an answer that names
 #: every position rather than quoting one.
-#: Retiring both needs a provenance API the framework publishes, which is #826.
+#: Retiring both needs a public availability signal: MAF 1.21 returns an empty provenance
+#: map both when tracking is unavailable and when no arguments were rewritten.
 _ORIGINAL_ARGUMENTS_KEY = "original_arguments_for_messages"
 
 #: One warning per process, not one per refusal.
