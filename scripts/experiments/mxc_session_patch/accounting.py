@@ -10,6 +10,7 @@ STORE_METADATA = 4096
 SESSION_METADATA = 20480
 CALL_METADATA = 2048
 MAX_INTEGER = 2**63 - 1
+SCHEMA = "CREATE TABLE logical_usage(session TEXT PRIMARY KEY NOT NULL, charge INTEGER NOT NULL CHECK(typeof(charge)='integer' AND charge>=0))"
 
 
 def _adjust(session: str, delta: str) -> str:
@@ -81,6 +82,11 @@ def _triggers() -> dict[str, str]:
     }
 
 
+def schema() -> tuple[str, ...]:
+    """Return the complete accounting schema required by format 4 and later."""
+    return (SCHEMA, *_triggers().values())
+
+
 def _integer(value: object, minimum: int = 0) -> int:
     if type(value) is not int or not minimum <= value <= MAX_INTEGER:
         raise Refused("invalid logical accounting value")
@@ -118,10 +124,7 @@ def scan(db: sqlite3.Connection) -> dict[str, int]:
 def initialize(db: sqlite3.Connection) -> None:
     """Install totals and their triggers inside the caller's initialization transaction."""
     totals = scan(db)
-    db.execute(
-        "CREATE TABLE logical_usage(session TEXT PRIMARY KEY NOT NULL, charge INTEGER NOT NULL "
-        "CHECK(typeof(charge)='integer' AND charge>=0))"
-    )
+    db.execute(SCHEMA)
     db.executemany("INSERT INTO logical_usage VALUES(?,?)", totals.items())
     for statement in _triggers().values():
         db.execute(statement)
