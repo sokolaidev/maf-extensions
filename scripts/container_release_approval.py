@@ -30,7 +30,7 @@ UNAVAILABLE = "Unavailable (not established by retained evidence)"
 PROFILE_GUIDES = {
     "bicep": (
         "Bicep validation with the Bicep CLI and fallback configuration.",
-        "images/bicep-sandbox/README.md",
+        "images/bicep-sandbox/BICEP.md",
     ),
     "bicep-avm": (
         "Offline Bicep validation with the Bicep CLI, fallback configuration and prepared Azure Verified Modules cache.",
@@ -176,6 +176,21 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
         ("Database built at (UTC)", database.get("built", UNAVAILABLE)),
         ("Database valid", database.get("valid", UNAVAILABLE)),
     ]
+    if candidate["profile"] == "bicep":
+        bicep = runtime.get("bicep", {})
+        for check in bicep.get("checks", []):
+            rows.append(("Bicep check", check))
+        if not bicep.get("checks"):
+            rows.append(("Bicep check", UNAVAILABLE))
+        for label, key in (
+            ("Bicep version", "bicepVersion"),
+            ("Bicep compiler SHA-256", "compilerSha256"),
+            ("Bicep fallback configuration SHA-256", "configSha256"),
+            ("Bicep license SHA-256", "licenseSha256"),
+            ("Bicep check backend", "backend"),
+            ("Bicep check network", "network"),
+        ):
+            rows.append((label, bicep.get(key, UNAVAILABLE)))
     for check in runtime.get("bicepAvm", {}).get("checks", []):
         rows.append(("Bicep AVM check", check))
     if "bicepAvm" in runtime:

@@ -132,6 +132,8 @@ def test_release_with_image_change_selects_that_image(repository):
         ("packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/Dockerfile", ["egress-proxy"]),
         ("scripts/build_bicep_prepared_image.py", ["bicep-avm"]),
         ("scripts/bicep_avm_qualification.py", ["bicep-avm"]),
+        ("scripts/bicep_qualification.py", ["bicep"]),
+        ("images/bicep-sandbox/BICEP.md", []),
         ("scripts/terraform_avm_qualification.py", ["terraform-avm"]),
         ("scripts/build_scan_image.sh", list(PROFILES)),
         ("scripts/image_security_evidence.py", list(PROFILES)),
