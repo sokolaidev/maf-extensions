@@ -2,6 +2,14 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.50.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.49.0...maf-sandbox-v0.50.0) (2026-10-13)
+
+
+### Features
+
+* **sandbox:** refuse nested host tools when FIDES is required ([#1867](https://github.com/sokolaidev/maf-extensions/issues/1867)) ([1a40ab5](https://github.com/sokolaidev/maf-extensions/commit/1a40ab506f1036cc652c4f200002dac18768b946))
+* support MAF 1.21 across sandbox and compaction packages ([#1900](https://github.com/sokolaidev/maf-extensions/issues/1900)) ([ff70c0d](https://github.com/sokolaidev/maf-extensions/commit/ff70c0da983032c8aa6efcdeaa4f586183ffddec))
+
 ## [0.49.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.48.0...maf-sandbox-v0.49.0) (2026-10-07)
 
 
