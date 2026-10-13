@@ -58,7 +58,7 @@ class CompactionStack:
             else self.strategy.decision_state().to_dict()
         )
         return {
-            "version": 1,
+            "version": 2,
             "kind": "composed" if composed else "record",
             "strategy": strategy,
             "gate": self.gate.session_state(),
@@ -66,11 +66,13 @@ class CompactionStack:
         }
 
     def restore(self, data: dict[str, Any]) -> None:
-        """Restore a snapshot made with the same stack configuration and schema version."""
+        """Restore a version 1 or 2 snapshot made with the same stack configuration."""
         composed = isinstance(
             self.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
         )
-        if data.get("version") != 1 or data.get("kind") != ("composed" if composed else "record"):
+        if data.get("version") not in (1, 2) or data.get("kind") != (
+            "composed" if composed else "record"
+        ):
             raise ValueError("Unsupported compaction state version or stack kind.")
         if isinstance(self.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy):
             self.strategy.restore_session_state(data["strategy"])

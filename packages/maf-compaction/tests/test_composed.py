@@ -371,7 +371,8 @@ def _record_phase(
 def _user_phase(
     ceiling: int = _COMPACTING_CEILING, summarizer: Any = None, **kwargs: Any
 ) -> UserTurnAnchoredSummarizationCompactionStrategy:
-    """Return the user-band half, configured as its own row configures it."""
+    """Use a generous summary budget to isolate composition rules."""
+    kwargs.setdefault("max_summary_input_tokens", 100_000)
     if kwargs.get("summary_mode", DEFAULT_SUMMARY_MODE) != SUMMARY_MODE_RECOMPACT:
         kwargs.setdefault("remembered_requests", 2)
     return UserTurnAnchoredSummarizationCompactionStrategy(
@@ -1753,7 +1754,7 @@ def _chain_composed(
 
     The record half's trigger is low enough to fire on any budget a test sets, and its give-up
     line is above everything, so no test here is about waiting for a record. The user half runs
-    in the boundary mode, as the builder runs it.
+    in the boundary mode with a generous summary budget to isolate chain decisions.
     """
     kwargs.setdefault("overflow_policy", "raise")
     return ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
@@ -1769,6 +1770,7 @@ def _chain_composed(
             max_input_tokens=ceiling,
             tokenizer=TOKENIZER,
             client=summarizer,
+            max_summary_input_tokens=100_000,
             trigger_fraction=0.01,
             summary_mode=SUMMARY_MODE_BOUNDARY,
             remembered_requests=2,
@@ -2080,6 +2082,7 @@ async def test_the_fallback_runs_only_at_the_end_on_the_composed_row_and_straigh
             max_input_tokens=_CHAIN_CEILING,
             tokenizer=TOKENIZER,
             client=summarizer,
+            max_summary_input_tokens=100_000,
             trigger_fraction=0.01,
             summary_mode=SUMMARY_MODE_BOUNDARY,
             remembered_requests=2,
@@ -2508,6 +2511,7 @@ async def test_the_other_list_replays_both_the_band_and_the_fold_of_one_pass() -
             max_input_tokens=_CHAIN_CEILING,
             tokenizer=TOKENIZER,
             client=summarizer,
+            max_summary_input_tokens=100_000,
             trigger_fraction=0.01,
             summary_mode=SUMMARY_MODE_BOUNDARY,
             remembered_requests=2,
