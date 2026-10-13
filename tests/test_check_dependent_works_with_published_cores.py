@@ -187,7 +187,7 @@ class TestTheCoreThisCheckoutBuilt:
         wheel, core = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.26.0,<0.28")
         seen: list[object] = []
         monkeypatch.setattr(
-            check, "run_suite", lambda w, c, t: (seen.append(c), (True, "12 passed"))[1]
+            check, "run_suite", lambda w, c, t, **_: (seen.append(c), (True, "12 passed"))[1]
         )
         code = check.main(["prog", "maf-sandbox-bicep", str(wheel), "--local-core", str(core)])
         assert code == 0
@@ -201,7 +201,7 @@ class TestTheCoreThisCheckoutBuilt:
     ):
         """The fallback changes which core is tested, not whether the result counts."""
         wheel, core = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.26.0,<0.28")
-        monkeypatch.setattr(check, "run_suite", lambda *_: (False, "1 failed"))
+        monkeypatch.setattr(check, "run_suite", lambda *_, **__: (False, "1 failed"))
         code = check.main(["prog", "maf-sandbox-bicep", str(wheel), "--local-core", str(core)])
         assert code == 1
         assert "FAIL" in capsys.readouterr().out
@@ -220,7 +220,9 @@ class TestTheCoreThisCheckoutBuilt:
         """The flag adds a fallback, it does not replace the index."""
         wheel, core = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.25.0,<0.28")
         seen: list[object] = []
-        monkeypatch.setattr(check, "run_suite", lambda w, c, t: (seen.append(c), (True, "ok"))[1])
+        monkeypatch.setattr(
+            check, "run_suite", lambda w, c, t, **_: (seen.append(c), (True, "ok"))[1]
+        )
         assert check.main(["prog", "maf-sandbox-bicep", str(wheel), "--local-core", str(core)]) == 0
         assert seen == ["0.25.0"], "resolved from the index, not the local wheel"
 
@@ -230,7 +232,9 @@ class TestTheCoreThisCheckoutBuilt:
         wheel, core = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.26.0,<0.28")
         monkeypatch.chdir(tmp_path)
         seen: list[Path] = []
-        monkeypatch.setattr(check, "run_suite", lambda w, c, t: (seen.append(c), (True, "ok"))[1])
+        monkeypatch.setattr(
+            check, "run_suite", lambda w, c, t, **_: (seen.append(c), (True, "ok"))[1]
+        )
         code = check.main(["prog", "maf-sandbox-bicep", str(wheel), "--local-core", core.name])
         assert code == 0
         assert seen[0].is_absolute() and seen[0].as_uri()
@@ -352,6 +356,70 @@ class TestTheInstallCommands:
         assert "maf-sandbox-acas==0.13.0" in joined and "maf-sandbox-bicep==0.13.0" in joined, (
             "siblings defaulting to an empty metadata admit the core at their newest"
         )
+
+    @staticmethod
+    def _mcp_against_published_core(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, branch_bicep_range: str
+    ) -> tuple[list[list[str]], int, Path]:
+        """A candidate requiring bicep, with the only published bicep capped below the core."""
+        wheel = _wheel(
+            tmp_path,
+            "maf_sandbox_mcp-0.0.0-py3-none-any.whl",
+            ["maf-sandbox>=0.50.0,<0.51", "maf-sandbox-bicep>=0.22.2,<0.24"],
+        )
+        _wheel(tmp_path, "maf_sandbox_bicep-0.22.2-py3-none-any.whl", [branch_bicep_range])
+        _wheel(tmp_path, "maf_sandbox_wslc-0.28.0-py3-none-any.whl", ["maf-sandbox>=0.50.0,<0.51"])
+        core = _wheel(tmp_path, "maf_sandbox-0.50.0-py3-none-any.whl", [])
+        seen = TestTheInstallCommands._capture(monkeypatch, published=["0.50.0"])
+        monkeypatch.setattr(
+            check,
+            "fetch_published_versions",
+            lambda dist: ["0.50.0"] if dist == "maf-sandbox" else ["0.22.2"],
+        )
+        monkeypatch.setattr(
+            check, "fetch_requires_dist_for_version", lambda *_: ["maf-sandbox>=0.48.0,<0.49"]
+        )
+        code = check.main(["prog", "maf-sandbox-mcp", str(wheel), "--local-core", str(core)])
+        return seen, code, core
+
+    def test_a_required_sibling_nothing_published_pairs_with_comes_from_the_branch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Resolving it from the index would pick a release capped below the core under test."""
+        seen, code, _ = self._mcp_against_published_core(
+            tmp_path, monkeypatch, branch_bicep_range="maf-sandbox>=0.50.0,<0.51"
+        )
+        assert code == 0
+        first = next(a for a in seen if a[:2] == ["uv", "pip"] and "--no-deps" not in a)
+        joined = " ".join(first)
+        assert "maf-sandbox==0.50.0" in joined
+        assert "--overrides" in first and "maf_sandbox_bicep-0.22.2-py3-none-any.whl" in joined
+        assert "maf_sandbox_wslc" not in joined, "only siblings the candidate requires are forced"
+
+    def test_a_branch_sibling_that_excludes_the_core_is_not_forced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        seen, _, _ = self._mcp_against_published_core(
+            tmp_path, monkeypatch, branch_bicep_range="maf-sandbox>=0.48.0,<0.49"
+        )
+        first = next(a for a in seen if a[:2] == ["uv", "pip"] and "--no-deps" not in a)
+        assert "--overrides" not in first
+        assert "maf_sandbox_bicep" not in " ".join(first)
+
+    def test_without_the_flag_no_branch_sibling_is_forced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The upload passes no flag, so it still needs every sibling on the index."""
+        wheel = _wheel(
+            tmp_path,
+            "maf_sandbox_mcp-0.0.0-py3-none-any.whl",
+            ["maf-sandbox>=0.50.0,<0.51", "maf-sandbox-bicep>=0.22.2,<0.24"],
+        )
+        _wheel(tmp_path, "maf_sandbox_bicep-0.22.2-py3-none-any.whl", ["maf-sandbox>=0.50.0,<0.51"])
+        seen = self._capture(monkeypatch, published=["0.50.0"])
+        check.main(["prog", "maf-sandbox-mcp", str(wheel)])
+        installs = [a for a in seen if a[:2] == ["uv", "pip"]]
+        assert installs and not any("maf_sandbox_bicep" in " ".join(a) for a in installs)
 
     def test_the_core_is_pinned_by_the_override_and_answered_by_an_operand(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

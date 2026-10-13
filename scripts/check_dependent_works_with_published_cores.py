@@ -29,8 +29,9 @@ new core symbol from a dependent must floor it on a release that does not exist 
 is admitted, the suite runs against the core this checkout built, forced past the range with
 an override. The claim being tested moves from *"this works beside a core somebody published"*
 to *"this works beside the core it ships with"*, which is the only one a pull request can
-settle. `publish-packages.yml` passes no flag, so an upload still requires a published core
-the range admits.
+settle. The same flag covers a sibling the candidate requires that has nothing published
+pairing with a core under test: this branch's wheel of it is forced instead. `publish-packages.yml`
+passes no flag, so an upload still requires a published core the range admits.
 
 An index still unreachable after `pypi_index`'s retries is fatal rather than skipped, the same
 stance as the admit and work checks: passing because PyPI could not be reached is the one outcome
@@ -105,18 +106,21 @@ def _admits_core(requires_dist: list[str] | None, core: str) -> bool:
     return True
 
 
+def _newest_published_admitting(sibling: str, core: str) -> str | None:
+    """The newest published version of ``sibling`` whose own metadata admits ``core``."""
+    for candidate in fetch_published_versions(sibling) or []:  # newest first
+        requires = fetch_requires_dist_for_version(sibling, candidate)
+        if requires is not None and _admits_core(requires, core):
+            return candidate
+    return None
+
+
 def _select_published_siblings(core: str) -> dict[str, str]:
     """Per sibling, the newest published version whose own metadata admits ``core``."""
     selected: dict[str, str] = {}
     for sibling in _SIBLING_DISTRIBUTIONS:
-        published = fetch_published_versions(sibling)
-        if not published:
-            continue
-        for candidate in published:  # newest first
-            requires = fetch_requires_dist_for_version(sibling, candidate)
-            if requires is not None and _admits_core(requires, core):
-                selected[sibling] = candidate
-                break
+        if (found := _newest_published_admitting(sibling, core)) is not None:
+            selected[sibling] = found
     return selected
 
 
@@ -219,6 +223,38 @@ def sibling_wheels(wheel: Path) -> list[Path]:
     return [found[0] for name, found in by_distribution.items() if name != own_distribution]
 
 
+def _required_distributions(wheel: Path) -> set[str]:
+    """Every distribution the wheel's metadata requires, normalised."""
+    names: set[str] = set()
+    for line in _metadata(wheel).splitlines():
+        if match := _REQUIRES_DIST_NAME.match(line):
+            names.add(re.sub(r"[-_.]+", "-", match.group(1)).lower())
+    return names
+
+
+def unpublished_sibling_wheels(wheel: Path, core: str) -> list[Path]:
+    """Branch-built siblings ``wheel`` requires that nothing published can pair with ``core``.
+
+    Only a sibling whose own metadata admits ``core`` qualifies, so the pairing stays one a
+    consumer can install once that sibling publishes; the upload's own smoke install still
+    requires it on the index.
+    """
+    required = _required_distributions(wheel)
+    found: list[Path] = []
+    for sibling in sibling_wheels(wheel):
+        name = _distribution_of(sibling)
+        if name not in required or _newest_published_admitting(name, core) is not None:
+            continue
+        requires = [
+            line.split(":", 1)[1].strip()
+            for line in _metadata(sibling).splitlines()
+            if line.startswith("Requires-Dist:")
+        ]
+        if _admits_core(requires, core):
+            found.append(sibling)
+    return found
+
+
 def throwaway_interpreter(directory: Path) -> Path | str:
     """Build a virtual environment under ``directory``; answer its interpreter.
 
@@ -236,7 +272,9 @@ def throwaway_interpreter(directory: Path) -> Path | str:
     return environment / ("Scripts" if windows else "bin") / ("python.exe" if windows else "python")
 
 
-def run_suite(wheel: Path, core: str | Path, tests: Path) -> tuple[bool, str]:
+def run_suite(
+    wheel: Path, core: str | Path, tests: Path, *, branch_siblings: bool = False
+) -> tuple[bool, str]:
     """Install ``wheel`` beside ``core`` in a throwaway environment and run ``tests`` there.
 
     ``core`` is a published version to resolve, or a wheel this checkout built. The wheel is
@@ -250,7 +288,9 @@ def run_suite(wheel: Path, core: str | Path, tests: Path) -> tuple[bool, str]:
     On the published-core path each sibling rides at the newest published version whose own
     metadata admits the core under test — the pairing a consumer capping elsewhere would
     resolve, not necessarily the newest release; a branch-built sibling is never forced beside
-    an older published core, because that pairing nothing can install.
+    an older published core, because that pairing nothing can install. With ``branch_siblings``
+    a required sibling that has no published version admitting the core is forced from this
+    branch instead; see :func:`unpublished_sibling_wheels`.
     """
     with tempfile.TemporaryDirectory() as directory:
         python = throwaway_interpreter(Path(directory))
@@ -275,6 +315,13 @@ def run_suite(wheel: Path, core: str | Path, tests: Path) -> tuple[bool, str]:
                 for sibling, version in _select_published_siblings(core).items()
                 if sibling != _distribution_of(wheel)
             ]
+            if branch_siblings and (forced := unpublished_sibling_wheels(wheel, core)):
+                override = Path(directory) / "override.txt"
+                override.write_text(
+                    "".join(f"{_distribution_of(path)} @ {path.as_uri()}\n" for path in forced),
+                    encoding="utf-8",
+                )
+                pinned += ["--overrides", str(override), *(str(path) for path in forced)]
         installed = subprocess.run(
             [
                 "uv",
@@ -389,7 +436,7 @@ def main(argv: list[str]) -> int:
 
     failures = 0
     for core in cores:
-        passed, output = run_suite(wheel, core, tests)
+        passed, output = run_suite(wheel, core, tests, branch_siblings=local_core is not None)
         tail = output.splitlines()[-1] if output else ""
         print(f"{'ok  ' if passed else 'FAIL'} {distribution} on {_CORE} {core}: {tail}")
         if not passed:
