@@ -652,7 +652,7 @@ class TestTheStepRunsWhateverElseHappened:
         release-please and the publish dispatch work over the API and want no workspace, so
         nothing is gained by checking out first and a whole release cycle is risked.
         """
-        assert _step_index("Run release-please") < _step_index("Check out")
+        assert _step_index("Create the releases") < _step_index("Check out")
         assert _step_index("Publish each released package") < _step_index("Check out")
 
     def test_the_checkout_comes_before_everything_that_reads_it(self):
@@ -746,3 +746,35 @@ class TestTheRenderedChangelogPathIsReal:
             f"{mismatched} do not sit in a directory named after the package, so the recovery "
             "steps in the tracking issue would name a CHANGELOG.md that is not there"
         )
+
+
+class TestReleasesAndReleasePullRequestsAreSeparateCalls:
+    """A failure refreshing a Release PR must not skip the publish of a Release already cut."""
+
+    def _release_please_steps(self) -> list[dict]:
+        return [s for s in _STEPS if "release-please-action@" in str(s.get("uses", ""))]
+
+    def test_the_first_call_only_creates_releases(self):
+        first, _ = self._release_please_steps()
+        assert first["id"] == "release"
+        assert first["with"].get("skip-github-pull-request") is True
+        assert "skip-github-release" not in first["with"]
+
+    def test_the_second_call_only_refreshes_pull_requests(self):
+        _, second = self._release_please_steps()
+        assert second["with"].get("skip-github-release") is True
+        assert "skip-github-pull-request" not in second["with"]
+
+    def test_both_calls_read_the_same_configuration(self):
+        first, second = self._release_please_steps()
+        for key in ("config-file", "manifest-file"):
+            assert first["with"][key] == second["with"][key]
+
+    def test_the_pull_requests_follow_every_step_that_reads_the_releases(self):
+        refresh = _step_index("Refresh the Release PRs")
+        readers = [i for i, s in enumerate(_STEPS) if "steps.release.outputs" in str(s)]
+        assert readers and max(readers) < refresh
+        assert refresh < _step_index("Name any release this run left stuck")
+
+    def test_the_pull_requests_are_refreshed_after_a_failed_step(self):
+        assert "!cancelled()" in str(_step_named("Refresh the Release PRs").get("if", ""))

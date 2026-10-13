@@ -32,7 +32,9 @@ jobs:
       # still waits on the `pypi` environment's reviewer.
       actions: write
     steps:
-      - name: Run release-please
+      # Releases only. The Release PRs are refreshed by a second call at the end, so a failure
+      # rewriting one of them cannot skip the publish of a Release this call already created.
+      - name: Create the releases
         # Pinned to the commit v4 resolves to: a moving tag is a supply-chain hole, and this
         # job can write to the repository.
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
@@ -40,6 +42,7 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          skip-github-pull-request: true
 
       # A tag created by GITHUB_TOKEN starts no workflow, so `on: push: tags` never fires.
       # Dispatch does fire — it is a documented exception — and needs no stored credential.
@@ -166,6 +169,18 @@ jobs:
             --title "$title" \
             --body-file "${RUNNER_TEMP}/samples-body.md"
           echo "opened ${branch}" >> "$GITHUB_STEP_SUMMARY"
+
+      # Not skipping releases with this: the call above has already created them and flipped
+      # their labels, and release-please refuses to open a Release PR while a merged one is
+      # still `autorelease: pending`. Runs whatever failed above, since a red proposal step is
+      # no reason to leave every Release PR a commit behind.
+      - name: Refresh the Release PRs
+        if: ${{ !cancelled() }}
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-release: true
 
       # Every run ends here, red or green. A merged Release PR still labelled
       # `autorelease: pending` once release-please has run is one it could not finish, and it
