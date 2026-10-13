@@ -191,6 +191,45 @@ async def test_a_fold_needs_two_whole_summaries_to_fit(ordinary):
     assert visible(messages) == before
 
 
+@pytest.mark.parametrize(
+    ("mode", "limit", "count", "folded"),
+    [
+        ("fold", 1_000, 2, True),
+        ("boundary", 1_000, 2, False),
+        ("fold", 500, 2, False),
+        ("fold", 1_000, 1, False),
+    ],
+)
+async def test_oversized_user_band_can_fall_back_to_an_eligible_fold(mode, limit, count, folded):
+    client = BoundedClient(limit)
+    strategy = users(client, summary_mode=mode, max_summary_input_tokens=limit, min_band_share=0.1)
+    oversized = Message("user", ["new turn " * 1_000], message_id="oversized")
+    messages = [
+        Message("user", ["head"], message_id="head"),
+        *summaries(count=count),
+        oversized,
+        Message("user", ["tail"], message_id="tail"),
+    ]
+    stored = deepcopy(messages)
+    before = visible(messages)
+    assert await strategy(messages) is folded
+    assert not oversized.additional_properties.get(EXCLUDED_KEY)
+    assert strategy.user_compactions == 0
+    if folded:
+        assert len(client.requests) == 1
+        assert client.requests[0][0].text == strategy.fold_prompt
+        assert strategy.user_folds == 1
+        assert strategy.user_passes_declined == 0
+        assert await strategy(stored)
+        assert visible(stored) == visible(messages)
+        assert strategy.user_summaries_replayed == 1
+        assert len(client.requests) == 1
+    else:
+        assert not client.requests
+        assert visible(messages) == before
+        assert strategy.user_passes_declined == 1
+
+
 def composed(client, **kwargs):
     return ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
         tokenizer=TOKENIZER,

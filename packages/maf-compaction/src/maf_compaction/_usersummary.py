@@ -854,29 +854,26 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         # the return value: annotating a message is not a change to what the model sees.
         standing = self._observe_summaries(messages)
         band = self._band(messages, standing)
-        if not self._worth_compacting(messages, band, included_token_count(messages)):
-            # The band has stopped yielding. That is the signal a fold waits for and not, on
-            # its own, a reason to fold: the fold has its own condition, and a pass that fails
-            # both is declined and counted as one.
+        if self._worth_compacting(messages, band, included_token_count(messages)):
+            band = bounded_prefix(
+                band,
+                render=lambda spans: _format_turns(
+                    [messages[span["start_index"]] for span in spans]
+                ),
+                prompt=self.prompt,
+                tokenizer=self.tokenizer,
+                limit=self.max_summary_input_tokens,
+                min_items=next(
+                    index + 1
+                    for index, span in enumerate(band)
+                    if not _is_summary(messages[int(span["start_index"])])
+                ),
+            )
+        else:
+            band = []
+        if not band:
             if self._fold_due(messages, standing):
                 return await self._fold(messages, standing)
-            self._declined += 1
-            return False
-
-        band = bounded_prefix(
-            band,
-            render=lambda spans: _format_turns([messages[span["start_index"]] for span in spans]),
-            prompt=self.prompt,
-            tokenizer=self.tokenizer,
-            limit=self.max_summary_input_tokens,
-            min_items=next(
-                index + 1
-                for index, span in enumerate(band)
-                if not _is_summary(messages[int(span["start_index"])])
-            ),
-        )
-        # The share gates the eligible band; a bounded pass must still contain new material.
-        if not self._worth_compacting(messages, band, 0):
             self._declined += 1
             return False
 
