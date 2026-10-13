@@ -29,7 +29,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from math import ceil
-from typing import TYPE_CHECKING, Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from agent_framework import Message
 from agent_framework._compaction import (
@@ -513,10 +513,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._declined_behind: str | None = None
         # What the chain decided, kept for the whole run and put back on every list it applies
         # to, whatever that list's size: the records a merge or rewrite replaced, by their
-        # transcript, with the text that replaced them; and the ids of the messages its fallback
-        # shed. See ``_keep_decisions``. The user fold's are kept by the user half.
-        self._kept_records: dict[str, str] = {}
-        self._kept_record_counts: dict[str, int] = {}
+        # transcript and source count, with their replacement text; and the ids of the messages
+        # its fallback shed. See ``_keep_decisions``. The user half keeps its fold decisions.
+        self._kept_records: dict[tuple[str, int | None], str] = {}
         self._shed_ids: set[str] = set()
         # Refusals, kept for the whole run and keyed by the request's transcript, which is the
         # records' content: the transcripts a merge was refused on, and the harshest rewrite
@@ -666,8 +665,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return {
             "decisions": self.decision_state().to_dict(),
             "user_turns": self.user_turns.session_state(),
-            "kept_records": dict(self._kept_records),
-            "kept_record_counts": dict(self._kept_record_counts),
+            "kept_records": [
+                {"transcript": transcript, "source_count": count, "text": text}
+                for (transcript, count), text in self._kept_records.items()
+            ],
             "shed_ids": sorted(self._shed_ids),
             "refused_merges": sorted(self._refused_merges),
             "refused_rewrites": dict(self._refused_rewrites),
@@ -677,8 +678,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """Replace behavioral state with a snapshot from :meth:`session_state`."""
         self.restore_decisions(ChainDecisions.from_dict(data["decisions"]))
         self.user_turns.restore_session_state(data["user_turns"])
-        self._kept_records = dict(data["kept_records"])
-        self._kept_record_counts = dict(data.get("kept_record_counts", {}))
+        kept_records = data["kept_records"]
+        if isinstance(kept_records, dict):
+            counts = data.get("kept_record_counts", {})
+            self._kept_records = {
+                (transcript, counts.get(transcript)): text
+                for transcript, text in cast(dict[str, str], kept_records).items()
+            }
+        else:
+            self._kept_records = {
+                (entry["transcript"], entry["source_count"]): entry["text"]
+                for entry in kept_records
+            }
         self._shed_ids = set(data["shed_ids"])
         self._refused_merges = set(data["refused_merges"])
         self._refused_rewrites = dict(data["refused_rewrites"])
@@ -1103,18 +1114,23 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         while self._kept_records:
             groups = consolidatable_record_groups(messages)
             # Legacy snapshots need a search until their source counts have been learned.
+            source_counts = {count for _, count in self._kept_records}
             counts = (
                 range(len(groups), 0, -1)
-                if self._kept_records.keys() - self._kept_record_counts.keys()
-                else sorted(set(self._kept_record_counts.values()), reverse=True)
+                if None in source_counts
+                else sorted((count for count in source_counts if count is not None), reverse=True)
             )
             for count in counts:
                 if not 1 <= count <= len(groups):
                     continue
                 transcript = _transcript(messages, groups[:count])
-                text = self._kept_records.get(transcript)
-                if text is not None and self._kept_record_counts.get(transcript, count) == count:
-                    self._kept_record_counts[transcript] = count
+                key = (transcript, count)
+                text = self._kept_records.get(key)
+                if text is None:
+                    text = self._kept_records.pop((transcript, None), None)
+                    if text is not None:
+                        self._kept_records[key] = text
+                if text is not None:
                     self.tool_results.consolidate_records(messages, groups[:count], text)
                     changed = True
                     break
@@ -1317,8 +1333,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if included_token_count(candidate) >= included_token_count(replaced):
             return "rejected"
         self.tool_results.consolidate_records(messages, groups, text)
-        self._kept_records[transcript] = text
-        self._kept_record_counts[transcript] = len(groups)
+        self._kept_records[(transcript, len(groups))] = text
         # The new record may read exactly as one an earlier pass went on to replace -- a merge of
         # new material can come back as the record an earlier rewrite started from -- and that
         # replacement is already decided, so it is taken here rather than asked for again.

@@ -301,7 +301,8 @@ async def test_record_merge_replaces_only_the_bounded_prefix_and_replays():
     assert len(client.requests) == 1
 
 
-async def test_harder_rewrite_bounds_the_request_when_merge_cannot_fit_two():
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_harder_rewrite_bounds_the_request_when_merge_cannot_fit_two(legacy):
     client = BoundedClient(650)
     strategy = composed(client, harder_attempts=1)
     messages = records()
@@ -314,10 +315,17 @@ async def test_harder_rewrite_bounds_the_request_when_merge_cannot_fit_two():
     assert "Record 1:" not in client.requests[0][-1].text
     assert all(not m.additional_properties.get(EXCLUDED_KEY) for m in newer)
     restored = composed(client, harder_attempts=1)
-    restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    snapshot = json.loads(json.dumps(strategy.session_state()))
+    if legacy:
+        entries = snapshot["kept_records"]
+        snapshot["kept_records"] = {entry["transcript"]: entry["text"] for entry in entries}
+        snapshot["kept_record_counts"] = {
+            entry["transcript"]: entry["source_count"] for entry in entries
+        }
+    restored.restore_session_state(snapshot)
     assert restored._keep_records(stored)
     assert visible(stored) == visible(messages)
-    assert set(restored.session_state()["kept_record_counts"].values()) == {1}
+    assert {entry["source_count"] for entry in restored.session_state()["kept_records"]} == {1}
     assert len(client.requests) == 1
 
 
@@ -534,9 +542,13 @@ async def test_partial_replay_renders_only_saved_prefix_sizes(kind, legacy, monk
             assert await strategy._merge_records(messages)
     assert len(visible(messages)) == 16
     snapshot = json.loads(json.dumps(strategy.session_state(), sort_keys=True))
-    count_key = "kept_fold_counts" if kind == "fold" else "kept_record_counts"
     if legacy:
-        snapshot.pop(count_key, None)
+        if kind == "fold":
+            snapshot.pop("kept_fold_counts", None)
+        else:
+            snapshot["kept_records"] = {
+                entry["transcript"]: entry["text"] for entry in snapshot["kept_records"]
+            }
     restored = users(client, summary_mode="fold") if kind == "fold" else composed(client)
     restored.restore_session_state(snapshot)
     rendered = []
@@ -562,9 +574,50 @@ async def test_partial_replay_renders_only_saved_prefix_sizes(kind, legacy, monk
         assert len(rendered) <= 33
     assert not replay(stored)
     assert len(client.requests) == requests
-    assert set(restored.session_state()[count_key].values()) == {2}
+    state = restored.session_state()
+    counts = (
+        set(state["kept_fold_counts"].values())
+        if kind == "fold"
+        else {entry["source_count"] for entry in state["kept_records"]}
+    )
+    assert counts == {2}
     rendered.clear()
     assert replay(original_history)
     assert visible(original_history) == visible(messages)
     assert max(rendered) == 2
     assert len(rendered) <= 33
+
+
+@pytest.mark.parametrize("counts", [(1, 2), (2, 1)])
+async def test_record_replay_preserves_colliding_transcripts_with_different_counts(counts):
+    client = BoundedClient(1_000)
+    strategy = composed(client)
+    first, second = "a" * 400, "b" * 400
+    transcripts = []
+    histories = []
+    for count in counts:
+        bodies = [f"{first}\n2. {second}"] if count == 1 else [first, second]
+        messages = [build_record_message(body) for body in bodies]
+        annotate_message_groups(messages)
+        size(messages)
+        groups = active_record_groups(messages)
+        transcript = composed_module._transcript(messages, groups)
+        transcripts.append(transcript)
+        stored = deepcopy(messages)
+        client.answer = f"Kept {count} source records."
+        assert (
+            await strategy._consolidate(
+                messages, groups, prompt=strategy.merge_prompt, transcript=transcript
+            )
+            == "accepted"
+        )
+        histories.append((stored, visible(messages)))
+    assert transcripts[0] == transcripts[1]
+
+    restored = composed(client)
+    restored.restore_session_state(json.loads(json.dumps(strategy.session_state(), sort_keys=True)))
+    for stored, expected in histories:
+        assert restored._keep_records(stored)
+        assert visible(stored) == expected
+        assert not restored._keep_records(stored)
+    assert len(client.requests) == 2
