@@ -5,9 +5,12 @@ on:
     paths:
       - '.github/workflows/mxc-remote.yml'
       - 'scripts/experiments/mxc_session_patch/remote_authority.py'
+      - 'scripts/experiments/mxc_session_patch/remote_api.py'
+      - 'scripts/experiments/mxc_session_patch/shared_store.py'
       - 'scripts/experiments/mxc_session_patch/host_store.py'
       - 'scripts/experiments/mxc_session_patch/private_root.py'
       - 'tests/test_mxc_remote_authority.py'
+      - 'tests/test_mxc_remote_api.py'
       - 'uv.lock'
       - 'pyproject.toml'
   workflow_dispatch:
@@ -38,10 +41,10 @@ jobs:
           source_commit=os.environ['GITHUB_SHA'], run_id=os.environ['GITHUB_RUN_ID'], run_attempt=os.environ['GITHUB_RUN_ATTEMPT']);
           print(json.dumps(report));
           (Path(os.environ['RUNNER_TEMP']) / 'mxc-remote-runtime.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')"
-      - name: Exercise generations, termination gates and coordinator crashes
+      - name: Exercise mutual TLS, publication fencing and coordinator crashes
         shell: bash
         run: >-
-          uv run pytest -q tests/test_mxc_remote_authority.py
+          uv run pytest -q tests/test_mxc_remote_authority.py tests/test_mxc_remote_api.py
           --junitxml="$RUNNER_TEMP/mxc-remote.xml"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
