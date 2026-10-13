@@ -103,7 +103,7 @@ def test_export_checker_requires_clean_timeout_event(timeout_event, tmp_path, mo
     if timeout_event == "clean":
         asyncio.run(checker.check("drawio:test", tmp_path, backend))
         report = json.loads(capsys.readouterr().out)
-        assert report["clean_calls"] == 31
+        assert report["clean_calls"] == 32
         assert report["timeout"] == "incomplete without artifact delivery"
     else:
         with pytest.raises(AssertionError):

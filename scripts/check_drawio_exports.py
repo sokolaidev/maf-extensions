@@ -208,8 +208,11 @@ async def check(
     backend: SandboxBackend | None = None,
     *,
     cap_add: tuple[str, ...] = ("CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "KILL"),
-) -> None:
+    emit: bool = True,
+) -> dict[str, object]:
     """Exercise the closed-egress kind and verify no artifact lands on resource refusal."""
+    if not __debug__:
+        raise RuntimeError("Export qualification requires Python assertions")
     scope = "drawio-exports-" + uuid4().hex
     docker_image = backend is None
     if backend is None:
@@ -306,6 +309,7 @@ async def check(
         )
         oversized += b"\x00\x00\x00\x00IDAT\x35\xaf\x06\x1e"
         cases = {
+            "invalid-xml": "<mxfile>",
             "repeated-bundled-asset": repeated_assets(),
             "remote-image": diagram().replace(
                 "img/lib/azure2/ai_machine_learning/Azure_OpenAI.svg",
@@ -450,7 +454,9 @@ async def check(
     finally:
         purge = await router.dispose_scope(scope, "exports")
         assert not purge.undisposed, purge
-    print(json.dumps(report, indent=2))
+    if emit:
+        print(json.dumps(report, indent=2))
+    return report
 
 
 def main() -> None:

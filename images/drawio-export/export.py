@@ -424,7 +424,7 @@ def export_document(xml: str, options: dict, deadline: float) -> None:
         manifest = json.loads((ROOT / "manifest.json").read_text("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise RuntimeError("Invalid offline renderer manifest") from exc
-    if manifest["version"] != 1 or manifest["desktop"] != "31.7.0":
+    if manifest["version"] != 1 or manifest["desktop"] != "32.4.1":
         raise RuntimeError("Unsupported offline renderer manifest")
     if (
         hashlib.sha256(Path("/opt/drawio/resources/app.asar").read_bytes()).hexdigest()

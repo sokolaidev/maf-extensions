@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import struct
 from pathlib import Path
 
@@ -31,10 +32,25 @@ def prepare() -> None:
     guard = (ROOT / "guard.js").read_text("utf-8")
     payload = bytearray()
     assets: dict[str, str] = {}
+    inventory: dict[str, str] = {}
     patched = False
     for name, item in entries:
         start = 8 + header_size + int(item["offset"])
         content = data[start : start + item["size"]]
+        if name == "package.json" or re.fullmatch(
+            r"(?:node_modules/(?:@[^/]+/)?[^/]+/)+package\.json", name
+        ):
+            relative = "node_modules/draw.io/package.json" if name == "package.json" else name
+            metadata = ROOT / "inventory" / relative
+            metadata.parent.mkdir(parents=True, exist_ok=True)
+            metadata.write_bytes(content)
+            inventory[relative] = hashlib.sha256(content).hexdigest()
+        if name in {"LICENSE", "drawio/LICENSE"}:
+            notice = (
+                ROOT / "notices" / ("desktop-LICENSE" if name == "LICENSE" else "drawio-LICENSE")
+            )
+            notice.parent.mkdir(parents=True, exist_ok=True)
+            notice.write_bytes(content)
         if name == WEB + "js/export.js":
             source = content.decode("utf-8")
             if "cache[src].onerror = decrementWaitCounter;" not in source:
@@ -100,11 +116,32 @@ def prepare() -> None:
                     "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                 }
             )
+    electron = ROOT / "inventory/node_modules/electron/package.json"
+    electron.parent.mkdir(parents=True, exist_ok=True)
+    electron.write_text(
+        json.dumps(
+            {
+                "name": "electron",
+                "version": "44.7.0",
+                "license": "MIT",
+                "description": (
+                    "Bundled runtime identified by Draw.io Desktop v32.4.1 package-lock.json"
+                ),
+            }
+        ),
+        "utf-8",
+    )
+    inventory[electron.relative_to(ROOT / "inventory").as_posix()] = hashlib.sha256(
+        electron.read_bytes()
+    ).hexdigest()
     manifest = {
         "version": 1,
-        "desktop": "31.7.0",
+        "desktop": "32.4.1",
+        "electron": "44.7.0",
+        "electron_version_source": "upstream-release-metadata",
         "asar_sha256": hashlib.sha256(ASAR.read_bytes()).hexdigest(),
         "assets": assets,
+        "package_inventory": inventory,
         "fonts": fonts,
         "font_variants": variants,
         "font_hashes": {

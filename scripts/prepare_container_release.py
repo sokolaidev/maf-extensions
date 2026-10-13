@@ -83,6 +83,13 @@ def assess(directory: Path, image_id: str, *, require_clean: bool = True) -> dic
         ]
     )
     verify_inventory(read(directory / "sbom.syft.json"), image_id)
+    runtime = directory / "runtime.json"
+    if runtime.exists() and read(runtime).get("profile") == "drawio-export":
+        import drawio_export_qualification
+
+        drawio_export_qualification.verify_inventory(
+            read(directory / "sbom.syft.json"), read(runtime)
+        )
     write(directory / "grype.yaml", {})
     environment = {k: v for k, v in os.environ.items() if not k.startswith("GRYPE_")}
     environment.update(
