@@ -216,6 +216,74 @@ def test_failed_registry_discovery_cannot_report_clean(monkeypatch, tmp_path, mo
     assert assessment_status(record, DONE) == "unavailable"
 
 
+@pytest.mark.parametrize("lookup", ["matching", "missing", "unexpected", "unavailable"])
+def test_completed_release_retries_failed_discovery_before_reporting_clean(
+    monkeypatch, tmp_path, monitor_context, lookup
+):
+    raw = b"approved manifest"
+    candidate = CANDIDATE | {
+        "registryDigest": sha256(raw),
+        "assessedManifestDigest": sha256(raw),
+    }
+    monitor_context.catalogue = reserve(empty_catalogue(), candidate, AT)
+
+    def unavailable(*args):
+        raise TimeoutError("registry unavailable")
+
+    monkeypatch.setattr(monitor, "manifest", unavailable)
+    monitor.begin(tmp_path / "before-publication")
+    monitor_context.catalogue = complete(
+        monitor_context.catalogue, candidate, CANDIDATE["imageId"], DONE
+    )
+    calls = []
+
+    def manifest(profile, reference):
+        calls.append((profile, reference))
+        if lookup == "unavailable":
+            raise TimeoutError("registry unavailable")
+        return {"matching": raw, "missing": None, "unexpected": b"other manifest"}[lookup]
+
+    monkeypatch.setattr(monitor, "manifest", manifest)
+    monkeypatch.setattr(monitor, "now", lambda: DONE)
+    directory = tmp_path / "after-publication"
+    monitor.begin(directory)
+    record = monitor_context.catalogue["releases"]["bicep/0.1.0"]
+    assert calls == [("bicep", "0.1.0")]
+    assert record["candidate"] == candidate
+    assert record["state"] == "completed"
+    assert record["registryDiscovery"] == {
+        "checkedAt": DONE,
+        "outcome": "unavailable" if lookup in {"unexpected", "unavailable"} else "checked",
+    }
+    assert assessment_status(record, DONE) == "unavailable"
+    assert not record.get("unexpectedDigests")
+    assert read(directory / "plan.json")["targets"] == [
+        {"candidate": candidate, "state": "completed"}
+    ]
+    observation = copy.deepcopy(record)
+    observation["latestAttempt"].update(outcome="clean")
+    assert assessment_status(observation, DONE) == (
+        "clean" if lookup in {"matching", "missing"} else "unavailable"
+    )
+
+
+@pytest.mark.parametrize("previous", [None, "checked"])
+def test_completed_release_without_failed_discovery_keeps_digest_only_monitoring(
+    monkeypatch, tmp_path, monitor_context, previous
+):
+    monitor_context.catalogue = complete(
+        monitor_context.catalogue, CANDIDATE, CANDIDATE["imageId"], AT
+    )
+    if previous:
+        monitor_context.catalogue["releases"]["bicep/0.1.0"]["registryDiscovery"] = {
+            "checkedAt": AT,
+            "outcome": previous,
+        }
+    monkeypatch.setattr(monitor, "manifest", lambda *a: pytest.fail("unneeded tag lookup"))
+    monitor.begin(tmp_path)
+    assert len(read(tmp_path / "plan.json")["targets"]) == 1
+
+
 @pytest.mark.parametrize(
     "media_type",
     [
