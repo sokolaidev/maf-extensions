@@ -11,6 +11,7 @@ on:
       - 'tests/test_mxc_accounting.py'
       - 'tests/test_mxc_private_root.py'
       - 'tests/test_mxc_native_journal.py'
+      - 'tests/test_mxc_process_identity.py'
       - 'tests/test_mxc_idle.py'
       - 'tests/test_mxc_physical.py'
       - 'tests/test_mxc_prelaunch.py'
@@ -53,6 +54,7 @@ jobs:
           tests/test_mxc_host_store.py tests/test_mxc_local_initialization.py
           tests/test_mxc_shared_store.py tests/test_mxc_accounting.py
           tests/test_mxc_private_root.py tests/test_mxc_native_journal.py
+          tests/test_mxc_process_identity.py
           tests/test_mxc_idle.py tests/test_mxc_physical.py tests/test_mxc_prelaunch.py
           --junitxml="$RUNNER_TEMP/mxc-physical.xml"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

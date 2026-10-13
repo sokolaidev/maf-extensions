@@ -605,3 +605,16 @@ The follow-up for [#1866](https://github.com/sokolaidev/maf-extensions/issues/18
 | JUnit SHA-256 | `23418933e627a1e54dd13bf71e4a89ff4c690cccd14aa09d32d9797446ead729` | `f1b385b06857bdea08137c4e1d9a83dd6e163fa6d88d2d9e51928bb639fb183f` |
 
 These controls use ordinary host processes and synthetic checkpoint bytes. They do not qualify native Hyperlight startup, power loss, arbitrary store erasure, cross-machine recovery or production support. #1671's remaining integration and native qualification scope is unchanged.
+
+### Linux helper exit during identity observation
+
+The follow-up for [#1869](https://github.com/sokolaidev/maf-extensions/issues/1869) treats `ProcessLookupError` (`ESRCH`) from reading `/proc/<pid>/stat` as process disappearance, alongside the existing missing-file case. [Linux proc documentation](https://docs.kernel.org/filesystems/proc.html#process-specific-subdirectories) specifies that an open descriptor neither retains the process nor observes a replacement that reuses its PID; operations after exit commonly fail with `ESRCH`. The exception boundary remains confined to the process stat read. Boot/namespace observation failures, permission and other I/O errors, malformed evidence, machine mismatch and namespace mismatch still refuse reconciliation; process creation identity remains mandatory for a live PID.
+
+The [regression controls](../../../tests/test_mxc_process_identity.py) inject read errors after a successful file open and exercise capture, stopped observation and termination. Four controls failed against the preceding implementation, including namespace mismatch after a disappearing process. A Linux-only control repeats a real child exit between opening its proc stat file and reading that descriptor 32 times. These controls qualify ordinary host-process identity handling, not native Hyperlight termination, arbitrary descendants or cross-machine recovery. The local Windows full suite passed 19,041 tests with 922 skips; lint, formatting, package and repository type checks, Markdown examples, documentation paths and live tracker checks also passed.
+
+[Run 38330119277, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/38330119277/attempts/1) qualified implementation source `6c9785a31fabbaac180c72ba81860e03f3330d89` on GitHub-hosted Linux and Windows. Linux passed all 26 identity controls, including the 32 real exit-between-open-and-read iterations. Windows passed the 25 deterministic controls and skipped the Linux-only descriptor control. The full storage matrix passed 526 controls with one platform skip on Linux and 525 with two platform skips on Windows. The additional skips are the Windows private-root ACL control on Linux and the POSIX ownership control on Windows. This evidence applies to the cited executable source; the subsequent evidence documentation does not broaden its qualification.
+
+| Evidence | Linux | Windows |
+|---|---|---|
+| Python / SQLite | 3.12.3 / 3.45.1 | 3.12.10 / 3.49.1 |
+| JUnit SHA-256 | `771f4d2da00b7b6a3cfaf9d3f110e633ddac7f0e0a5829106d15cb2f43d1ec35` | `8f792390fa869928041a4aea0bd16341fdfc4ee803722bcbf39ede1584b15954` |
