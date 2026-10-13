@@ -50,7 +50,6 @@ def test_source_cannot_be_selected_independently_of_dispatch(monkeypatch, change
         "bicep-avm",
         "sbx-bicep",
         "graphviz",
-        "drawio-sandbox",
         "drawio-export",
         "terraform-random",
         "opentofu-random",

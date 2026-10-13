@@ -17,7 +17,7 @@ case "$1" in
     docker build --pull --platform linux/amd64 -t maf-image-scan:target images/graphviz-sandbox
     docker run --rm --network none maf-image-scan:target sh -ec 'printf "digraph { a -> b }" | dot -Tpng -o /tmp/render.png; test -s /tmp/render.png'
     ;;
-  drawio-sandbox)
+  drawio)
     docker build --pull --platform linux/amd64 -t maf-image-scan:target images/drawio-sandbox
     docker run --rm --network none maf-image-scan:target sh -ec 'python3 --version; printf "digraph { a -> b }" | dot -Tpng -o /tmp/render.png; test -s /tmp/render.png'
     ;;
