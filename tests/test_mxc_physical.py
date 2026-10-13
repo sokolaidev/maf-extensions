@@ -302,5 +302,7 @@ def test_corrupt_or_changed_policy_refuses_on_reopen(tmp_path, mutation):
         pass
     with sqlite3.connect(root / "shared.sqlite") as raw:
         raw.execute(mutation)
-    with pytest.raises(store.Refused, match="physical"):
+    with pytest.raises(
+        store.Refused, match="store schema" if mutation.startswith("DROP") else "physical"
+    ):
         open_store(root)

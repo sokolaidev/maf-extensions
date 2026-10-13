@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .host_store import Refused, _lock, _name
+from .host_store import Refused, _check_rollback_format, _lock, _name
 from .private_root import check_file, prepare
 
 MAX_GENERATION = 2**63 - 1
@@ -114,6 +114,7 @@ class Authority:
             path = self.root / "authority.sqlite"
             for suffix in ("", "-journal", "-wal", "-shm"):
                 check_file(Path(str(path) + suffix))
+            _check_rollback_format(path)
             self.db = sqlite3.connect(path, timeout=0, isolation_level=None)
             self.db.row_factory = sqlite3.Row
             try:
