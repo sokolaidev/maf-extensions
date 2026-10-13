@@ -563,12 +563,14 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self._remembered: list[_Remembered] = []
         # Kept fold outputs identify how far a history has already replayed.
         self._kept_folds: dict[str, _Remembered] = {}
+        self._kept_fold_counts: dict[str, int] = {}
 
     def session_state(self) -> dict[str, Any]:
         """Return JSON-safe behavioral state for session persistence."""
         return {
             "remembered": [entry._asdict() for entry in self._remembered],
             "kept_folds": {key: entry._asdict() for key, entry in self._kept_folds.items()},
+            "kept_fold_counts": dict(self._kept_fold_counts),
             # These counts also set the minimum generated summary IDs.
             "compactions": self._compactions,
             "folds": self._folds,
@@ -580,6 +582,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self._kept_folds = {
             entry["summary_id"]: _Remembered(**entry) for entry in data["kept_folds"].values()
         }
+        self._kept_fold_counts = dict(data.get("kept_fold_counts", {}))
         self._compactions = data["compactions"]
         self._folds = data["folds"]
 
@@ -1243,6 +1246,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             return "rejected"
         self._apply_fold(messages, standing, remembered, replayed)
         self._kept_folds[remembered.summary_id] = remembered
+        self._kept_fold_counts[remembered.summary_id] = len(standing)
         return "folded"
 
     def refold(self, messages: list[Message]) -> bool:
@@ -1279,12 +1283,18 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         changed = False
         for kept in kept_folds[applied + 1 :]:
             standing = self._observe_summaries(messages)
-            for count in range(len(standing), 1, -1):
+            source_count = self._kept_fold_counts.get(kept.summary_id)
+            # Snapshots without source counts learn them when their transcript first matches.
+            counts = [source_count] if source_count is not None else range(len(standing), 1, -1)
+            for count in counts:
+                if not 2 <= count <= len(standing):
+                    continue
                 prefix = standing[:count]
                 transcript = _format_turns(
                     [messages[span["start_index"]] for span in prefix], text=_summary_body
                 )
                 if transcript == kept.transcript:
+                    self._kept_fold_counts[kept.summary_id] = count
                     self._apply_fold(messages, prefix, kept, True)
                     changed = True
                     break

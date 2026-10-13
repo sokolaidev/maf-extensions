@@ -516,6 +516,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # transcript, with the text that replaced them; and the ids of the messages its fallback
         # shed. See ``_keep_decisions``. The user fold's are kept by the user half.
         self._kept_records: dict[str, str] = {}
+        self._kept_record_counts: dict[str, int] = {}
         self._shed_ids: set[str] = set()
         # Refusals, kept for the whole run and keyed by the request's transcript, which is the
         # records' content: the transcripts a merge was refused on, and the harshest rewrite
@@ -666,6 +667,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             "decisions": self.decision_state().to_dict(),
             "user_turns": self.user_turns.session_state(),
             "kept_records": dict(self._kept_records),
+            "kept_record_counts": dict(self._kept_record_counts),
             "shed_ids": sorted(self._shed_ids),
             "refused_merges": sorted(self._refused_merges),
             "refused_rewrites": dict(self._refused_rewrites),
@@ -676,6 +678,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self.restore_decisions(ChainDecisions.from_dict(data["decisions"]))
         self.user_turns.restore_session_state(data["user_turns"])
         self._kept_records = dict(data["kept_records"])
+        self._kept_record_counts = dict(data.get("kept_record_counts", {}))
         self._shed_ids = set(data["shed_ids"])
         self._refused_merges = set(data["refused_merges"])
         self._refused_rewrites = dict(data["refused_rewrites"])
@@ -1099,9 +1102,19 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         changed = False
         while self._kept_records:
             groups = consolidatable_record_groups(messages)
-            for count in range(len(groups), 0, -1):
-                text = self._kept_records.get(_transcript(messages, groups[:count]))
-                if text is not None:
+            # Legacy snapshots need a search until their source counts have been learned.
+            counts = (
+                range(len(groups), 0, -1)
+                if self._kept_records.keys() - self._kept_record_counts.keys()
+                else sorted(set(self._kept_record_counts.values()), reverse=True)
+            )
+            for count in counts:
+                if not 1 <= count <= len(groups):
+                    continue
+                transcript = _transcript(messages, groups[:count])
+                text = self._kept_records.get(transcript)
+                if text is not None and self._kept_record_counts.get(transcript, count) == count:
+                    self._kept_record_counts[transcript] = count
                     self.tool_results.consolidate_records(messages, groups[:count], text)
                     changed = True
                     break
@@ -1305,6 +1318,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return "rejected"
         self.tool_results.consolidate_records(messages, groups, text)
         self._kept_records[transcript] = text
+        self._kept_record_counts[transcript] = len(groups)
         # The new record may read exactly as one an earlier pass went on to replace -- a merge of
         # new material can come back as the record an earlier rewrite started from -- and that
         # replacement is already decided, so it is taken here rather than asked for again.

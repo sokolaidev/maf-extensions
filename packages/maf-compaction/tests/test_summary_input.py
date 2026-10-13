@@ -13,6 +13,8 @@ from agent_framework._compaction import (
     project_included_messages,
 )
 
+import maf_compaction._composed as composed_module
+import maf_compaction._usersummary as users_module
 from maf_compaction import (
     ToolResultAnchoredSummarizationCompactionStrategy,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
@@ -304,6 +306,7 @@ async def test_harder_rewrite_bounds_the_request_when_merge_cannot_fit_two():
     client = BoundedClient(650)
     strategy = composed(client, harder_attempts=1)
     messages = records()
+    stored = deepcopy(messages)
     newer = messages[1:]
     assert not await strategy._merge_records(messages)
     assert await strategy._rewrite_records(messages, _ChainStart.take(messages))
@@ -311,6 +314,12 @@ async def test_harder_rewrite_bounds_the_request_when_merge_cannot_fit_two():
     assert "Record 0:" in client.requests[0][-1].text
     assert "Record 1:" not in client.requests[0][-1].text
     assert all(not m.additional_properties.get(EXCLUDED_KEY) for m in newer)
+    restored = composed(client, harder_attempts=1)
+    restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    assert restored._keep_records(stored)
+    assert visible(stored) == visible(messages)
+    assert set(restored.session_state()["kept_record_counts"].values()) == {1}
+    assert len(client.requests) == 1
 
 
 async def test_oversized_record_is_retained_without_any_summary_request():
@@ -500,3 +509,61 @@ async def test_identical_fold_requests_replay_the_latest_id_with_a_larger_memory
         assert visible(stored) == visible(messages)
     assert (strategy.user_folds, strategy.user_summaries_replayed) == (3, 3)
     assert len(client.requests) == 1
+
+
+@pytest.mark.parametrize("kind", ["fold", "record"])
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_partial_replay_renders_only_saved_prefix_sizes(kind, legacy, monkeypatch):
+    body = "same summary " * 100
+    client = BoundedClient(1_000, body)
+    strategy = users(client, summary_mode="fold") if kind == "fold" else composed(client)
+    messages = (
+        summaries(count=48, body=body)
+        if kind == "fold"
+        else [build_record_message(f"Record {index}: {body}") for index in range(48)]
+    )
+    annotate_message_groups(messages)
+    size(messages)
+    stored = deepcopy(messages)
+    original_history = deepcopy(messages)
+    for _ in range(32):
+        if isinstance(strategy, UserTurnAnchoredSummarizationCompactionStrategy):
+            assert await strategy.fold_if_smaller(messages) == "folded"
+        else:
+            assert await strategy._merge_records(messages)
+    assert len(visible(messages)) == 16
+    snapshot = json.loads(json.dumps(strategy.session_state(), sort_keys=True))
+    count_key = "kept_fold_counts" if kind == "fold" else "kept_record_counts"
+    if legacy:
+        snapshot.pop(count_key, None)
+    restored = users(client, summary_mode="fold") if kind == "fold" else composed(client)
+    restored.restore_session_state(snapshot)
+    rendered = []
+    module = users_module if kind == "fold" else composed_module
+    name = "_format_turns" if kind == "fold" else "_transcript"
+    original = getattr(module, name)
+
+    def counted(*args, **kwargs):
+        rendered.append(len(args[0] if kind == "fold" else args[1]))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, name, counted)
+    requests = len(client.requests)
+    replay = (
+        restored.refold
+        if isinstance(restored, UserTurnAnchoredSummarizationCompactionStrategy)
+        else restored._keep_records
+    )
+    assert replay(stored)
+    assert visible(stored) == visible(messages)
+    if not legacy:
+        assert max(rendered) == 2
+        assert len(rendered) <= 33
+    assert not replay(stored)
+    assert len(client.requests) == requests
+    assert set(restored.session_state()[count_key].values()) == {2}
+    rendered.clear()
+    assert replay(original_history)
+    assert visible(original_history) == visible(messages)
+    assert max(rendered) == 2
+    assert len(rendered) <= 33
