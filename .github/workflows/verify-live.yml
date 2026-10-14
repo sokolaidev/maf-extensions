@@ -51,8 +51,8 @@ name: Verify (live)
 # here before. It runs on demand, and once after each release that could change what a sample
 # exercises (dispatched by publish-packages.yml).
 #
-# Samples 02 and 04 are the two with no job, and structurally: `wslc` needs Windows with a WSL
-# that ships it, which the Linux runners are not.
+# Samples 02 and 04 and the WSLC backend suite use Windows Server 2025 with a pinned WSL.
+# Each runner proves engine execution, file transfer and removal before the workload tests.
 #
 # Authentication is OIDC federation to Azure — no stored secret, matching how publishing works.
 # Everything each sample reads is non-secret configuration (endpoints and ids), held as
@@ -2990,41 +2990,231 @@ jobs:
 
   wslc-e2e:
     name: WSLC hosted engine qualification
-    if: inputs.package == 'maf-sandbox-wslc'
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-wslc"]'), inputs.package)
     runs-on: windows-2025
-    timeout-minutes: 20
+    timeout-minutes: 30
     defaults:
       run:
         shell: pwsh
+    env:
+      MAF_SANDBOX_WSLC_E2E_IMAGE: mcr.microsoft.com/devcontainers/python:3.13-bookworm
+      PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      - name: Probe the hosted engine
+      - uses: ./.github/actions/setup-wslc
+      - name: Qualify execution, file transfer and removal
         run: |
-          $ErrorActionPreference = 'Stop'
-          $env:PATH = "C:\Program Files\WSL;$env:PATH"
-          wsl --version
+          wslc pull $env:MAF_SANDBOX_WSLC_E2E_IMAGE
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          wslc --version
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          wslc container list -a --format json
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          wslc pull mcr.microsoft.com/devcontainers/python:3.13-bookworm
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          'C:\Program Files\WSL' | Out-File -FilePath $env:GITHUB_PATH -Append
+          python scripts/qualify_wslc.py $env:MAF_SANDBOX_WSLC_E2E_IMAGE 2>&1 | Tee-Object -FilePath wslc-probe.txt
+          exit $LASTEXITCODE
       - name: Run the live backend suite
-        env:
-          MAF_SANDBOX_WSLC_E2E_IMAGE: mcr.microsoft.com/devcontainers/python:3.13-bookworm
         run: |
           uv sync --locked --python 3.13
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          uv run pytest -q -ra packages/maf-sandbox-wslc/tests/test_wslc_e2e.py --junitxml=wslc-e2e.xml
+          uv run pytest -q -ra packages/maf-sandbox-wslc/tests/test_wslc_e2e.py --junitxml=wslc-e2e.xml 2>&1 | Tee-Object -FilePath wslc-e2e.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/check_wslc_e2e.py wslc-e2e.xml
           exit $LASTEXITCODE
       - name: Retain qualification results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wslc-qualification
-          path: wslc-e2e.xml
+          path: |
+            wslc-probe.txt
+            wslc-e2e.txt
+            wslc-e2e.xml
+
+  sample-02:
+    name: samples/02_wslc_bicep against a live WSLC container
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-wslc", "maf-sandbox-bicep"]'), inputs.package)
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    environment: live-verify
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: ./.github/actions/setup-wslc
+      - name: Qualify execution, file transfer and removal
+        run: |
+          set -euo pipefail
+          wslc pull mcr.microsoft.com/devcontainers/python:3.13-bookworm
+          python "$HARNESS"/scripts/qualify_wslc.py mcr.microsoft.com/devcontainers/python:3.13-bookworm 2>&1 | tee wslc-probe.txt
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Build the Bicep sandbox image
+        run: wslc build -t bicep-sandbox:local images/bicep-sandbox
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+      - name: Run sample 02 and assert its workload evidence
+        env:
+          BICEP_SANDBOX_IMAGE: bicep-sandbox:local
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          source_args="$(python "$HARNESS"/scripts/sample_source_args.py samples/02_wslc_bicep --source "$SOURCE")"
+          uv run --no-project $source_args samples/02_wslc_bicep/agent.py 2>&1 | tee sample02-out.txt
+          python "$HARNESS"/scripts/check_live_sample.py sample02-out.txt
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python "$HARNESS"/scripts/check_live_versions.py sample02-out.txt "$PACKAGE" "$VERSION"
+      - name: Retain sample evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sample02-wslc
+          path: |
+            wslc-probe.txt
+            sample02-out.txt
+
+  sample-04:
+    name: samples/04_wslc_codeact against a live WSLC container
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-wslc", "maf-sandbox-codeact"]'), inputs.package)
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    environment: live-verify
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: ./.github/actions/setup-wslc
+      - name: Qualify execution, file transfer and removal
+        run: |
+          set -euo pipefail
+          wslc pull mcr.microsoft.com/devcontainers/python:3.13-bookworm
+          python "$HARNESS"/scripts/qualify_wslc.py mcr.microsoft.com/devcontainers/python:3.13-bookworm 2>&1 | tee wslc-probe.txt
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+      - name: Run sample 04 and assert its workload evidence
+        env:
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          source_args="$(python "$HARNESS"/scripts/sample_source_args.py samples/04_wslc_codeact --source "$SOURCE")"
+          uv run --no-project $source_args samples/04_wslc_codeact/agent.py 2>&1 | tee sample04-out.txt
+          python "$HARNESS"/scripts/check_live_codeact_sample.py sample04-out.txt
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python "$HARNESS"/scripts/check_live_versions.py sample04-out.txt "$PACKAGE" "$VERSION"
+      - name: Retain sample evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sample04-wslc
+          path: |
+            wslc-probe.txt
+            sample04-out.txt

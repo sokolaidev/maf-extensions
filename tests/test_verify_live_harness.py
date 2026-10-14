@@ -24,7 +24,7 @@ _TEXT = VERIFY_LIVE.read_text("utf-8")
 _WORKFLOW = yaml.safe_load(_TEXT)
 
 #: Any invocation of a live check, whatever it is prefixed with — the prefix is the assertion.
-_CHECK_CALL = re.compile(r"python3\s+(?P<prefix>\S*?)scripts/(?P<script>check_live_\w+\.py)")
+_CHECK_CALL = re.compile(r"python(?:3)?\s+(?P<prefix>\S*?)scripts/(?P<script>check_live_\w+\.py)")
 
 #: The second checkout, the one that fetches the checks. Keyed on the path rather than the step
 #: name, since a name is prose and this is the thing that decides where they come from.
@@ -73,10 +73,7 @@ class TestEveryLiveCheckComesFromTheHarness:
         live_jobs = []
         for job, definition in jobs.items():
             steps = definition.get("steps", [])
-            if any(
-                'python3 "$HARNESS"/scripts/check_live_' in str(step.get("run", ""))
-                for step in steps
-            ):
+            if any('"$HARNESS"/scripts/check_live_' in str(step.get("run", "")) for step in steps):
                 live_jobs.append(job)
                 assert any(
                     step.get("with", {}).get("path") == ".harness"

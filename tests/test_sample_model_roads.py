@@ -118,3 +118,42 @@ class TestSample17:
             ]
         )
         assert sample_17.final_reply({"messages": [reply]}) == "BCP018 at line 3"
+
+
+@pytest.mark.parametrize("directory", ["02_wslc_bicep", "04_wslc_codeact"])
+class TestWslcModelRoads:
+    def test_azure_uses_responses_without_a_local_api_key(self, directory, azure, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        sample = _load(directory)
+        configured = sample.build_client()
+        assert configured is not None
+        client, credential = configured
+        assert type(client).__name__ == "OpenAIChatClient"
+        assert credential is not None
+        asyncio.run(credential.close())
+
+    def test_local_settings_reach_chat_completions(self, directory, monkeypatch):
+        monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "local-placeholder")
+        monkeypatch.setenv("OPENAI_CHAT_MODEL", "local-model")
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
+        sample = _load(directory)
+        seen = {}
+
+        def client(**kwargs):
+            seen.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(sample, "OpenAIChatCompletionClient", client)
+        configured = sample.build_client()
+        assert configured is not None and configured[1] is None
+        assert seen == {
+            "api_key": "local-placeholder",
+            "model": "local-model",
+            "base_url": "http://localhost:11434/v1",
+        }
+
+    def test_missing_azure_model_refuses_without_local_fallback(self, directory, monkeypatch):
+        monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://fake.example.openai.azure.com")
+        monkeypatch.delenv("AZURE_OPENAI_CHAT_MODEL", raising=False)
+        assert _load(directory).build_client() is None
