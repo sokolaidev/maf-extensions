@@ -442,7 +442,9 @@ class AnchoredCompactionStrategy:
                 if is_preserved(message):
                     continue
                 for content in message.contents:
-                    if content.type != "function_result":
+                    if content.type != "function_result" or any(
+                        item.type != "text" for item in content.items or []
+                    ):
                         continue
                     text = (
                         content.result if isinstance(content.result, str) else str(content.result)
@@ -472,6 +474,8 @@ class AnchoredCompactionStrategy:
         """
         for item in plan:
             item.content.result = item.text
+            # Providers may read items instead of the compatibility result field.
+            item.content.items = [Content.from_text(item.text)]
         return bool(plan)
 
     def _keep_tokens_for(self, band_position: int) -> int:

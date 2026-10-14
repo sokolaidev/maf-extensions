@@ -38,6 +38,7 @@ from agent_framework import (
     ChatMiddleware,
     ChatResponse,
     ChatResponseUpdate,
+    Content,
     Message,
     MiddlewareFailure,
     MiddlewareTermination,
@@ -1900,7 +1901,11 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         changed = False
         for message in members:
             for content in message.contents:
-                if content.type != "function_result" or not isinstance(content.result, str):
+                if (
+                    content.type != "function_result"
+                    or not isinstance(content.result, str)
+                    or any(item.type != "text" for item in content.items or [])
+                ):
                     continue
                 original = content.result
                 lines = original.splitlines(keepends=True)
@@ -1919,6 +1924,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 if self.tokenizer.count_tokens(shortened) >= self.tokenizer.count_tokens(original):
                     continue
                 content.result = shortened
+                content.items = [Content.from_text(shortened)]
                 changed = True
         return changed
 
