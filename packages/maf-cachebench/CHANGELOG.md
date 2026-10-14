@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.1.0...maf-cachebench-v0.2.0) (2026-10-14)
+
+
+### Features
+
+* support MAF 1.21 across sandbox and compaction packages ([#1900](https://github.com/sokolaidev/maf-extensions/issues/1900)) ([ff70c0d](https://github.com/sokolaidev/maf-extensions/commit/ff70c0da983032c8aa6efcdeaa4f586183ffddec))
+
+
+### Fixes
+
+* release recorded table rows using the configured record target ([#1893](https://github.com/sokolaidev/maf-extensions/issues/1893)) ([b5e756d](https://github.com/sokolaidev/maf-extensions/commit/b5e756d6a8c80cd7095a3f7878e708611c04b0c5))
+
 ## 0.1.0 (2026-10-07)
 
 
