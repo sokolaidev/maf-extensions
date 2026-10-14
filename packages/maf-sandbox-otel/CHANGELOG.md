@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-otel-v0.8.1...maf-sandbox-otel-v0.9.0) (2026-10-14)
+
+
+### Features
+
+* support MAF 1.21 across sandbox and compaction packages ([#1900](https://github.com/sokolaidev/maf-extensions/issues/1900)) ([ff70c0d](https://github.com/sokolaidev/maf-extensions/commit/ff70c0da983032c8aa6efcdeaa4f586183ffddec))
+
+
+### Fixes
+
+* require maf-sandbox 0.50.0 in the dependents, and admit the 0.50 line ([#1926](https://github.com/sokolaidev/maf-extensions/issues/1926)) ([60be5e5](https://github.com/sokolaidev/maf-extensions/commit/60be5e5346122be47ce8ff80d6108c97b8102c78))
+
 ## [0.8.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-otel-v0.8.0...maf-sandbox-otel-v0.8.1) (2026-10-06)
 
 
