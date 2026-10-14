@@ -12,6 +12,8 @@ Two consequences run through every strategy. Decisions are made from a message's
 
 Keeps a fixed number of head groups and tail groups verbatim and shortens the tool results in the band between them. Each banded result is trimmed to a share of the ceiling set by its position counting from the head, `max_input_tokens × band_share ÷ (position + 1)`, so a result keeps the same allowance on every pass. Only if shortening leaves the prompt over the ceiling does it remove whole groups, oldest first, and only as a last resort does it shed assistant narration. It never touches user turns. Defaults: three head groups, four tail groups, a band share of 0.25, narration collapse on.
 
+In-place tool-result shortening keeps the compatibility `result` field and the provider-facing `items` text in sync. Anchored trimming and removal of recorded table rows skip results containing any non-text item or text item carrying metadata (including security labels, annotations, and provider state); whole-group exclusion still follows each strategy's existing rules. On a later pass, each strategy also repairs stale bare-text `items` when `result` already carries its compaction marker, including after history reload and below the current compaction threshold. The repair retains the existing compacted result and skips metadata-bearing items; unmarked field differences are left alone.
+
 A message another strategy has marked *preserved* is skipped by all three removal paths. Preserved is not excluded: the message is still sent and counted in full, so a pass can end over the ceiling with everything removable gone. That is the intended outcome; the strategy stops on "nothing moved" rather than looping against a band it may not touch, and an honest overflow the caller can see beats a silent loss.
 
 Where it fails: when tool results are smaller than their allowance it plans nothing, and lowering the share does not rescue a small payload, since the whole payload is then under the break-even. Past the window it keeps the conversation admissible at the cost of the values it trims. Measured at 1.5 times a 120,000-token window it kept 40 of 53 facts on one model and 31 on the other; at 3 times, 13.
@@ -103,6 +105,7 @@ Inside the context window nothing here beats not compacting: the best strategy c
 | Decision | State | Tracking |
 |---|---|---|
 | Position-only anchored trimming that honours preserved messages | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
+| Text-only tool-result shortening updates both request content and token-count input | Implemented | [#1929](https://github.com/sokolaidev/maf-extensions/issues/1929) (closed) by [#1940](https://github.com/sokolaidev/maf-extensions/pull/1940) (merged) |
 | Minimum-gain floor at the break-even share | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
 | Record-then-drop with value coverage, re-force, preservation and repeated records | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
 | Session degradation for ignored or failed recall pins | Implemented | [#1876](https://github.com/sokolaidev/maf-extensions/issues/1876) (closed) by [#1941](https://github.com/sokolaidev/maf-extensions/pull/1941) (merged) |

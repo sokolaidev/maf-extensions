@@ -9,7 +9,7 @@ not compacting at all.
 from __future__ import annotations
 
 import pytest
-from agent_framework import CharacterEstimatorTokenizer, Message
+from agent_framework import CharacterEstimatorTokenizer, Content, Message
 from agent_framework._compaction import (
     annotate_message_groups,
     annotate_token_counts,
@@ -790,3 +790,29 @@ async def test_a_band_of_nothing_but_preserved_messages_stops_over_the_ceiling()
     assert included_token_count(messages) > 120, (
         "and must say so by leaving the prompt over the ceiling"
     )
+
+
+@pytest.mark.parametrize(
+    "strategy_type", [AnchoredCompactionStrategy, MinimumGainAnchoredCompactionStrategy]
+)
+@pytest.mark.parametrize("item_type", ["uri", "data", "error"])
+async def test_non_text_results_are_not_planned_or_shortened(strategy_type, item_type):
+    content = Content.from_function_result(
+        call_id="call_0", result=[Content.from_text("x" * 8_000), Content(item_type)]
+    )
+    messages = _tool_turn(0)
+    messages[1].contents = [content]
+    original = content.to_dict()
+    strategy = strategy_type(
+        max_input_tokens=100_000,
+        tokenizer=TOKENIZER,
+        keep_head_groups=0,
+        keep_tail_groups=0,
+        keep_tokens=100,
+    )
+    annotate_message_groups(messages)
+    annotate_token_counts(messages, tokenizer=TOKENIZER)
+
+    assert strategy._plan_shortenings(messages, group_messages(messages)) == []
+    assert not await strategy(messages)
+    assert content.to_dict() == original

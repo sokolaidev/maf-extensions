@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, Literal
 
 import pytest
-from agent_framework import AgentSession, CharacterEstimatorTokenizer, ChatContext, Message
+from agent_framework import AgentSession, CharacterEstimatorTokenizer, ChatContext, Content, Message
 from agent_framework._compaction import included_token_count, project_included_messages
 
 from maf_compaction._anchored import REMOVAL_MARKER, AnchoredCompactionStrategy
@@ -2695,12 +2695,17 @@ def _quota_rows(batch: int = 0, count: int = 300) -> list[str]:
     ]
 
 
-async def test_large_table_releases_quoted_rows_and_keeps_uncovered_bytes() -> None:
+@pytest.mark.parametrize("canonical", [False, True])
+async def test_large_table_releases_quoted_rows_and_keeps_uncovered_bytes(canonical: bool) -> None:
     rows = _quota_rows()
     result = _TABLE_HEADER + "".join(rows)
     record = "\n" + _TABLE_HEADER + "".join(rows[:90])
     messages = _conversation(1, payload_chars=0, result_values=lambda _: result, record=record)
     strategy = _strategy(max_input_tokens=100_000, trigger_fraction=0.001)
+    if canonical:
+        call_id = messages[5].contents[0].call_id
+        assert call_id is not None
+        messages[5].contents[0] = Content.from_function_result(call_id=call_id, result=result)
     original_result = messages[5].contents[0].result
 
     assert await strategy(messages)
@@ -2710,6 +2715,9 @@ async def test_large_table_releases_quoted_rows_and_keeps_uncovered_bytes() -> N
         "[Rows quoted verbatim in compaction records are omitted below.]\n"
         + original_result.replace("".join(rows[:90]), "")
     )
+    items = messages[5].contents[0].items
+    assert items is not None
+    assert items[0].text == remainder
     assert strategy.groups_kept_uncovered == 1
     assert strategy.groups_held_unreachable_coverage == 1
     assert is_preserved(messages[5])
@@ -2914,3 +2922,26 @@ async def test_partial_row_progress_preserves_the_group_bound_on_reforcing() -> 
     assert rows[60] not in messages[5].contents[0].result
     assert not strategy.take_reforce()
     assert all(row in _rendered(messages) for row in rows)
+
+
+@pytest.mark.parametrize("item_type", ["uri", "data", "error"])
+async def test_partial_row_release_leaves_non_text_results_unchanged(
+    item_type: Literal["uri", "data", "error"],
+) -> None:
+    rows = _quota_rows()
+    result = _TABLE_HEADER + "".join(rows)
+    record = "\n" + _TABLE_HEADER + "".join(rows[:90])
+    messages = _conversation(1, payload_chars=0, result_values=lambda _: result, record=record)
+    call_id = messages[5].contents[0].call_id
+    assert call_id is not None
+    content = Content.from_function_result(
+        call_id=call_id,
+        result=[Content.from_text(result), Content(item_type)],
+    )
+    messages[5].contents[0] = content
+    original = content.to_dict()
+    strategy = _strategy(max_input_tokens=100_000, trigger_fraction=0.001)
+
+    assert not await strategy(messages)
+    assert content.to_dict() == original
+    assert is_preserved(messages[5])
