@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.23.0...maf-sandbox-codeact-v0.24.0) (2026-10-14)
+
+
+### Features
+
+* support MAF 1.21 across sandbox and compaction packages ([#1900](https://github.com/sokolaidev/maf-extensions/issues/1900)) ([ff70c0d](https://github.com/sokolaidev/maf-extensions/commit/ff70c0da983032c8aa6efcdeaa4f586183ffddec))
+
 ## [0.23.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.22.1...maf-sandbox-codeact-v0.23.0) (2026-10-11)
 
 
