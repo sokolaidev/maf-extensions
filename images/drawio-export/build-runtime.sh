@@ -15,6 +15,7 @@ echo 'f4455b3bba3d3b539c3cd069218fc64f0462b1b01610fe8d11acc3ca8566f32b  tmp/draw
 chroot "$target" /bin/sh -ec 'DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends /tmp/drawio.deb; rm /tmp/drawio.deb; apt-get clean'
 install -d "$target/opt/maf-drawio" "$target/maf-sandbox/work"
 install -m 644 "$sources/install.py" "$sources/export.py" "$sources/guard.js" "$sources/check-assets.py" "$target/opt/maf-drawio/"
+install -D -m 644 "$sources/DEJAVU-LICENSE" "$target/usr/share/licenses/drawio/DEJAVU-LICENSE"
 chroot "$target" python3 /opt/maf-drawio/install.py
 chroot "$target" python3 /opt/maf-drawio/check-assets.py
 echo "Runtime ready: $target"
