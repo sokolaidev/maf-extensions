@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import sqlite3
 import subprocess
 import sys
 from dataclasses import replace
@@ -363,12 +364,14 @@ with Authority(Path(root), enabled=True) as db:
             db.request_fence(db._decode_owner(encoded), label)
             print(json.dumps({'ok': True, 'fence': label}))
     except Refused as error:
-        print(json.dumps({'ok': False, 'error': str(error)}))
+        print(json.dumps({'ok': False, 'error': str(error),
+                          'sqlite_errorcode': getattr(error.__cause__, 'sqlite_errorcode', None)}))
 """
 
 
 @pytest.mark.parametrize("operation", ["acquire", "fence"])
-def test_competing_processes_grant_exactly_one_owner_or_takeover(tmp_path, operation):
+@pytest.mark.parametrize("hold_reader", [False, True], ids=["race", "held-reader"])
+def test_competing_processes_preserve_exclusive_authority(tmp_path, operation, hold_reader):
     import time
 
     root = tmp_path / "db"
@@ -376,6 +379,7 @@ def test_competing_processes_grant_exactly_one_owner_or_takeover(tmp_path, opera
     with authority(root) as db:
         encoded = db._encode(db.acquire("session", PROFILE, A)) if operation == "fence" else ""
     children = []
+    reader = sqlite3.connect(root / "authority.sqlite", timeout=0, isolation_level=None)
     try:
         for label in ("one", "two"):
             child = subprocess.Popen(
@@ -390,15 +394,50 @@ def test_competing_processes_grant_exactly_one_owner_or_takeover(tmp_path, opera
                 assert child.poll() is None, child.communicate()
                 assert time.monotonic() < deadline
                 time.sleep(0.01)
+        if hold_reader:
+            reader.execute("BEGIN")
+            reader.execute("SELECT * FROM settings").fetchall()
         signal.write_text("go")
         results = []
         for child in children:
             stdout, stderr = child.communicate(timeout=20)
             assert child.returncode == 0, stderr.decode()
             results.append(json.loads(stdout))
-        assert sum(result["ok"] for result in results) == 1, results
+        reader.rollback()
+        winners = [result for result in results if result["ok"]]
+        assert len(winners) <= 1, results
+        if hold_reader:
+            assert not winners, results
+        expected_refusal = (
+            "session already has an owner" if operation == "acquire" else "stale or revoked owner"
+        )
+        for result in results:
+            if not result["ok"]:
+                assert result["sqlite_errorcode"] == sqlite3.SQLITE_BUSY or (
+                    result["sqlite_errorcode"] is None
+                    and result["error"] == expected_refusal
+                    and winners
+                ), results
+        if winners:
+            winner = winners[0]
+        else:
+            # A zero-wait journal guarantees exclusivity, not a winner under contention.
+            with authority(root) as db:
+                assert db.db.execute("SELECT COUNT(*) FROM fences").fetchone()[0] == 0
+                assert db.db.execute("SELECT COUNT(*) FROM resources").fetchone()[0] == (
+                    0 if operation == "acquire" else 1
+                )
+                if operation == "acquire":
+                    assert db.db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+                    owner = db.acquire("session", PROFILE, remote.Resource("one", "boot", "guest"))
+                    assert owner.generation == 1
+                    winner = {"owner": db._encode(owner)}
+                else:
+                    owner = db._decode_owner(encoded)
+                    current(db, owner)
+                    db.request_fence(owner, "one")
+                    winner = {"fence": "one"}
         with authority(root) as db:
-            winner = next(result for result in results if result["ok"])
             if operation == "acquire":
                 current(db, db._decode_owner(winner["owner"]))
                 assert db.db.execute("SELECT COUNT(*) FROM resources").fetchone()[0] == 1
@@ -407,6 +446,7 @@ def test_competing_processes_grant_exactly_one_owner_or_takeover(tmp_path, opera
                 with pytest.raises(remote.Refused, match="not confirmed"):
                     db.acquire("session", PROFILE, B)
     finally:
+        reader.close()
         for child in children:
             if child.poll() is None:
                 child.kill()
