@@ -67,6 +67,7 @@ from agent_framework._compaction import (
 
 from ._preserve import any_preserved, is_preserved, removable_whole
 from ._summary_links import has_summary_links
+from ._tool_result import can_shorten_result
 
 if TYPE_CHECKING:
     from agent_framework import TokenizerProtocol
@@ -442,9 +443,7 @@ class AnchoredCompactionStrategy:
                 if is_preserved(message):
                     continue
                 for content in message.contents:
-                    if content.type != "function_result" or any(
-                        item.type != "text" for item in content.items or []
-                    ):
+                    if content.type != "function_result" or not can_shorten_result(content):
                         continue
                     text = (
                         content.result if isinstance(content.result, str) else str(content.result)

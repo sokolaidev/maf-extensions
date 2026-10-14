@@ -60,6 +60,7 @@ from ._preserve import (
     removable_whole,
     set_preserved,
 )
+from ._tool_result import can_shorten_result
 
 if TYPE_CHECKING:
     from agent_framework import TokenizerProtocol
@@ -1904,7 +1905,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 if (
                     content.type != "function_result"
                     or not isinstance(content.result, str)
-                    or any(item.type != "text" for item in content.items or [])
+                    or not can_shorten_result(content)
                 ):
                     continue
                 original = content.result
