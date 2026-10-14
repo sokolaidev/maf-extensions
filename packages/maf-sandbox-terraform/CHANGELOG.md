@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-terraform-v0.5.6...maf-sandbox-terraform-v0.6.0) (2026-10-14)
+
+
+### Features
+
+* support MAF 1.21 across sandbox and compaction packages ([#1900](https://github.com/sokolaidev/maf-extensions/issues/1900)) ([ff70c0d](https://github.com/sokolaidev/maf-extensions/commit/ff70c0da983032c8aa6efcdeaa4f586183ffddec))
+
 ## [0.5.6](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-terraform-v0.5.5...maf-sandbox-terraform-v0.5.6) (2026-10-06)
 
 
