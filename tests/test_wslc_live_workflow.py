@@ -35,8 +35,11 @@ def test_probe_checks_transferred_bytes_and_removal(monkeypatch, failure):
         if args[:2] == ("container", "run"):
             name = args[4]
         if args[:2] == ("container", "cp"):
+            assert args[3] == f"{name}:/tmp/"
+            assert Path(args[2]).name == "probe.txt"
             marker = Path(args[2]).read_text("utf-8")
         if args[:2] == ("container", "exec"):
+            assert args[-1] == "/tmp/probe.txt"
             return "wrong contents" if failure == "exec" else marker
         if args[:2] == ("container", "list"):
             if failure == "retained":

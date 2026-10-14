@@ -41,8 +41,8 @@ def qualify(image: str) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "probe.txt"
             source.write_text(marker, encoding="utf-8")
-            command("container", "cp", str(source), f"{name}:/tmp/maf-ci-probe.txt")
-        output = command("container", "exec", name, "cat", "/tmp/maf-ci-probe.txt")
+            command("container", "cp", str(source), f"{name}:/tmp/")
+        output = command("container", "exec", name, "cat", "/tmp/probe.txt")
         if output.strip() != marker:
             raise RuntimeError("WSLC did not return the transferred file contents")
     finally:
