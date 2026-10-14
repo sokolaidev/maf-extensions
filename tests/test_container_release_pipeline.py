@@ -896,3 +896,141 @@ def test_recovery_delivery_keeps_original_evidence_source_and_new_writer_identit
     assert calls == ["verified", "retained", "published"]
     assert history.calls == ["789/1/deliver"]
     assert history.catalogue["releases"]["bicep/0.1.0"]["delivery"] == "complete"
+
+
+@pytest.fixture
+def drawio_monitor(monkeypatch, tmp_path, monitor_context):
+    import prepare_container_release as preparation
+
+    packages = [
+        {"name": name, "version": "1.0.0"} for name in ("draw.io", "electron", "dependency")
+    ]
+    runtime = {
+        "profile": "drawio-export",
+        "imageId": CANDIDATE["imageId"],
+        "drawio": {"versions": {"packageInventory": packages}},
+    }
+    remote = {"runtime.json": encode(runtime)}
+    remote["preparation-index.json"] = encode({"runtime.json": sha256(remote["runtime.json"])})
+    candidate = CANDIDATE | {
+        "profile": "drawio-export",
+        "preparationEvidenceSha256": sha256(remote["preparation-index.json"]),
+    }
+    state = {"missing": None, "unavailable": False, "duplicates": False}
+
+    def assets(_):
+        result = [
+            {"id": i, "name": name, "state": "uploaded", "size": len(raw), "digest": sha256(raw)}
+            for i, (name, raw) in enumerate(remote.items(), 1)
+        ]
+        return result + result if state["duplicates"] else result
+
+    def download(asset_id, destination):
+        destination.write_bytes(list(remote.values())[asset_id - 1])
+
+    class DownloadGitHub(GitHub):
+        def assets(self, release_id):
+            return assets(release_id)
+
+        def download_file(self, asset_id, destination):
+            download(asset_id, destination)
+
+    class Storage(Evidence):
+        def __init__(self):
+            super().__init__(DownloadGitHub())
+
+        def find(self, tag):
+            assert tag == "image-drawio-export-v0.1.0"
+            return None if state["unavailable"] else {"id": 1}
+
+        def ensure(self, tag, source):
+            return {}
+
+        def retain(self, release, directory, files):
+            pass
+
+        def publish(self, release, source):
+            return {}
+
+    def run(command, **kwargs):
+        if command[0] == "syft":
+            destination = Path(
+                next(arg.split("=", 1)[1] for arg in command if arg.startswith("syft-json="))
+            )
+            present = [p for p in packages if state["missing"] not in (p["name"], "all")]
+            write(
+                destination,
+                {
+                    "artifacts": [{"name": "os-package", "version": "1"}] + present,
+                    "source": {"type": "image", "metadata": {"imageID": candidate["imageId"]}},
+                },
+            )
+
+    def subprocess_run(command, **kwargs):
+        if command[0] == "grype":
+            write(Path(command[command.index("--file") + 1]), scan_report())
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(monitor, "Evidence", Storage)
+    monkeypatch.setattr(monitor, "anonymous_pull", lambda value: value["imageId"])
+    monkeypatch.setattr(preparation, "run", run)
+    monkeypatch.setattr(preparation, "now", lambda: DONE)
+    monkeypatch.setattr(preparation.subprocess, "run", subprocess_run)
+    monitor_context.catalogue = reserve(empty_catalogue(), candidate, AT)
+    monitor.begin(tmp_path)
+    monkeypatch.setattr(monitor, "now", lambda: DONE)
+    return SimpleNamespace(
+        state=state,
+        remote=remote,
+        candidate=candidate,
+        history=monitor_context,
+        reports=tmp_path / "reports/drawio-export-0.1.0",
+    )
+
+
+@pytest.mark.parametrize("missing", [None, "draw.io", "electron", "dependency", "all"])
+def test_drawio_monitor_requires_approved_application_packages(tmp_path, drawio_monitor, missing):
+    drawio_monitor.state["missing"] = missing
+    monitor.scan(tmp_path, 0)
+    monitor.finish(tmp_path)
+    result = drawio_monitor.history.catalogue["releases"]["drawio-export/0.1.0"]["latestAttempt"]
+    assert result["outcome"] == ("clean" if missing is None else "unavailable")
+    with zipfile.ZipFile(tmp_path / "retained/reports-0000.zip") as archive:
+        for name, raw in drawio_monitor.remote.items():
+            assert archive.read(f"drawio-export-0.1.0/{name}") == raw
+
+
+@pytest.mark.parametrize("fault", ["unavailable", "duplicates", "index", "runtime", "image"])
+def test_drawio_monitor_rejects_unbound_application_inventory(
+    monkeypatch, tmp_path, drawio_monitor, fault
+):
+    if fault in {"unavailable", "duplicates"}:
+        drawio_monitor.state[fault] = True
+    elif fault == "index":
+        drawio_monitor.remote["preparation-index.json"] = encode({})
+    elif fault == "runtime":
+        drawio_monitor.remote["runtime.json"] = encode({})
+    else:
+        monkeypatch.setattr(monitor, "anonymous_pull", lambda _: "sha256:" + "d" * 64)
+    monitor.scan(tmp_path, 0)
+    assert (
+        read(drawio_monitor.reports / "observation.json")["assessment"]["outcome"] == "unavailable"
+    )
+    assert not (drawio_monitor.reports / "grype.json").exists()
+
+
+@pytest.mark.parametrize("fault", ["sbom", "index", "runtime", "missing-runtime"])
+def test_drawio_monitor_finish_rechecks_transferred_inventory(tmp_path, drawio_monitor, fault):
+    monitor.scan(tmp_path, 0)
+    root = drawio_monitor.reports
+    if fault == "sbom":
+        sbom = read(root / "sbom.syft.json")
+        sbom["artifacts"] = [{"name": "os-package", "version": "1"}]
+        write(root / "sbom.syft.json", sbom)
+    elif fault == "missing-runtime":
+        (root / "runtime.json").unlink()
+    else:
+        write(root / ("preparation-index.json" if fault == "index" else "runtime.json"), {})
+    with pytest.raises((ValueError, OSError)):
+        monitor.finish(tmp_path)
+    assert drawio_monitor.history.calls == ["456/1/monitor-start"]
