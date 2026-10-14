@@ -261,13 +261,13 @@ def test_write_checks_remove_private_host_copies(tmp_path, monkeypatch):
         try:
             sandbox = await backend.acquire(key, _spec())
             prepared = await sandbox.exec(
-                "printf hello > small; dd if=/dev/zero of=large bs=1048576 count=64; "
+                "printf hello > small; : > empty; dd if=/dev/zero of=large bs=1048576 count=64; "
                 "ln -s /tmp linked-parent; ln -s /tmp/out linked-leaf",
                 working_directory=_WORK,
                 timeout=30,
             )
             assert prepared.exit_code == 0, prepared.stderr
-            for guest in ("small", "large", "missing"):
+            for guest in ("small", "empty", "large", "missing"):
                 await sandbox.write_file(guest, b"replacement", working_directory=_WORK)
                 assert not list(copies.iterdir())
             for guest in ("linked-parent/out", "linked-leaf", "small/out"):
