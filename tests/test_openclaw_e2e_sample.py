@@ -7,8 +7,12 @@ import copy
 import http.client
 import importlib.util
 import json
+import os
+import signal
+import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +22,7 @@ SAMPLE = Path(__file__).resolve().parents[1] / "samples/experimental/openclaw_bi
 
 
 def load_sample() -> Any:
-    saved = {name: sys.modules.get(name) for name in ("_evidence", "_provider")}
+    saved = {name: sys.modules.get(name) for name in ("_evidence", "_provider", "_windows_job")}
     sys.path.insert(0, str(SAMPLE))
     try:
         for name in saved:
@@ -316,3 +320,157 @@ def test_worker_does_not_inherit_source_path_overrides(monkeypatch: pytest.Monke
     assert "PYTHONHOME" not in environment
     assert environment["PYTHONNOUSERSITE"] == "1"
     assert environment["DOCKER_CONTEXT"] == "selected-daemon"
+
+
+@pytest.mark.parametrize("prefix,suffix", [(" ", ""), ("", "\n"), ("\n", "\t")])
+def test_first_turn_must_match_prompt_bytes(prefix: str, suffix: str) -> None:
+    item = record()
+    source = prefix + evidence["INVALID"] + suffix
+    item["arguments"]["files"][0]["content"] = source
+    item["projected"]["result"]["details"]["structuredContent"]["source_sha256"] = evidence[
+        "digest"
+    ](source)
+    with pytest.raises(RuntimeError, match="First turn changed"):
+        check([item])
+
+
+def test_repair_may_change_whitespace() -> None:
+    item = record(repaired=True)
+    source = "\n  output greeting string = 'hello'\n"
+    item["arguments"]["files"][0]["content"] = source
+    item["projected"]["result"]["details"]["structuredContent"]["source_sha256"] = evidence[
+        "digest"
+    ](source)
+    assert check([item], repaired=True)["verdict"] == "valid"
+
+
+def wait_file(path: Path) -> str:
+    end = time.monotonic() + 15
+    while time.monotonic() < end:
+        if path.exists() and path.read_text():
+            return path.read_text()
+        time.sleep(0.02)
+    raise AssertionError("Child did not publish readiness")
+
+
+def alive(pid: int) -> bool:
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        api = ctypes.WinDLL("kernel32", use_last_error=True)
+        api.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        api.OpenProcess.restype = wintypes.HANDLE
+        api.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        api.WaitForSingleObject.restype = wintypes.DWORD
+        api.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = api.OpenProcess(0x100000, False, pid)
+        if not handle:
+            assert ctypes.get_last_error() == 87
+            return False
+        try:
+            return api.WaitForSingleObject(handle, 0) == 258
+        finally:
+            api.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+@pytest.mark.parametrize("leader_exits", [False, True])
+def test_owned_descendant_is_removed_even_if_leader_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, leader_exits: bool
+) -> None:
+    controller = agent.Processes(tmp_path)
+    original_wait = controller.wait_empty
+    monkeypatch.setattr(
+        controller,
+        "wait_empty",
+        lambda child, timeout: original_wait(child, 0.3 if timeout == 30 else 5),
+    )
+    marker = tmp_path / "descendant"
+    child_code = (
+        "import os,signal,time; from pathlib import Path; signal.signal(signal.SIGTERM,signal.SIG_IGN); Path("
+        + repr(str(marker))
+        + ").write_text(str(os.getpid())); time.sleep(120)"
+    )
+    leader_code = (
+        "import subprocess,sys,time; from pathlib import Path; p=subprocess.Popen([sys.executable,'-c',"
+        + repr(child_code)
+        + "]); marker=Path("
+        + repr(str(marker))
+        + ");\nwhile not marker.exists(): time.sleep(.01)\n"
+        + ("" if leader_exits else "time.sleep(120)")
+    )
+    sentinel = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)"], creationflags=agent.FLAGS
+    )
+    try:
+        controller.start("tree", [sys.executable, "-c", leader_code])
+        descendant = int(wait_file(marker))
+        assert alive(descendant)
+        leader = controller.children[0][0]
+        if leader_exits:
+            leader.wait(timeout=15)
+        assert controller.group_exists(leader)
+        assert controller.close() == []
+        assert controller.stopped
+        assert not alive(descendant)
+        assert sentinel.poll() is None
+    finally:
+        sentinel.kill()
+        sentinel.wait(timeout=10)
+        if not controller.stopped:
+            controller.close()
+        if os.name == "nt":
+            for job in controller.jobs.values():
+                if job.handle:
+                    job.terminate()
+                    job.close()
+        if os.name != "nt" and controller.children:
+            try:
+                os.killpg(controller.children[0][0].pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_failed_group_observation_never_confirms_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = agent.Processes(tmp_path)
+    controller.start("short", [sys.executable, "-c", "pass"])
+    controller.children[0][0].wait(timeout=15)
+
+    def refused(child: Any) -> bool:
+        raise OSError("Cannot inspect owned processes")
+
+    monkeypatch.setattr(controller, "group_exists", refused)
+    assert controller.close() == ["OSError"]
+    assert not controller.stopped
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows job admission")
+def test_failed_job_assignment_never_starts_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = agent.Processes(tmp_path)
+    marker = tmp_path / "must-not-start"
+
+    def refuse(*args: Any) -> None:
+        raise OSError("Job assignment refused")
+
+    monkeypatch.setattr(agent.Job, "assign", refuse)
+    with pytest.raises(OSError, match="assignment refused"):
+        controller.start(
+            "gated",
+            [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; Path(" + repr(str(marker)) + ").touch()",
+            ],
+        )
+    assert controller.close() == []
+    assert controller.stopped
+    assert not marker.exists()

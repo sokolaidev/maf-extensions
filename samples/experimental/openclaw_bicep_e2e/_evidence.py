@@ -50,7 +50,7 @@ def check_turn(
         require(structured.get("completed") is True, "Compiler did not complete")
         require(structured.get("status") == "ok", "Compiler result is not authoritative")
         if not repaired:
-            require(source.strip() == INVALID, "First turn changed the supplied source")
+            require(source == INVALID, "First turn changed the supplied source")
             require(structured.get("verdict") == "invalid", "Expected an invalid first verdict")
     last = selected[-1]
     source = last["arguments"]["files"][0]["content"]

@@ -18,6 +18,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import time
 import uuid
 import zipfile
@@ -27,6 +28,7 @@ from urllib.parse import urlsplit
 
 from _evidence import INVALID, check_turn, require
 from _provider import Provider
+from _windows_job import Job
 
 OPENCLAW = "2026.9.7"
 HERE = Path(__file__).resolve().parent
@@ -91,23 +93,48 @@ class Processes:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.children: list[tuple[subprocess.Popen[bytes], TextIO]] = []
+        self.jobs: dict[int, Job] = {}
+        self.stopped = False
 
     def start(self, name: str, command: list[str], env: dict[str, str] | None = None) -> None:
         log = (self.root / (name + ".log")).open("w", encoding="utf-8")
+        job = None
+        child = None
         try:
+            if os.name == "nt":
+                job = Job()
+                command = [
+                    sys.executable,
+                    "-I",
+                    "-c",
+                    "import subprocess,sys; sys.exit(subprocess.call(sys.argv[1:], "
+                    "stdin=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW) "
+                    "if sys.stdin.buffer.read(1)==b'1' else 1)",
+                    *command,
+                ]
             child = subprocess.Popen(
                 command,
                 cwd=self.root,
                 env=env,
                 stdout=log,
                 stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if job else subprocess.DEVNULL,
                 creationflags=FLAGS,
                 start_new_session=os.name != "nt",
             )
+            self.children.append((child, log))
+            if job is not None:
+                self.jobs[child.pid] = job
+                job.assign(child.pid)
+                assert child.stdin is not None
+                child.stdin.write(b"1")
+                child.stdin.close()
         except BaseException:
-            log.close()
+            if child is None:
+                log.close()
+                if job is not None:
+                    job.close()
             raise
-        self.children.append((child, log))
 
     def ready(self, port: int, path: str, token: str) -> None:
         end = time.monotonic() + 120
@@ -120,37 +147,69 @@ class Processes:
                 if request(port, path, token)[0] == 200:
                     return
             except OSError:
+                # The listener may not be bound yet; retain the delay between probes.
                 pass
             time.sleep(0.25)
         raise RuntimeError("Readiness timed out; inspect private logs")
 
+    def group_exists(self, child: subprocess.Popen[bytes]) -> bool:
+        """Count the ownership unit, including descendants after the leader exits."""
+        if os.name == "nt":
+            return self.jobs[child.pid].active() != 0
+        try:
+            os.killpg(child.pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def wait_empty(self, child: subprocess.Popen[bytes], timeout: float) -> bool:
+        end = time.monotonic() + timeout
+        while True:
+            child.poll()
+            if not self.group_exists(child):
+                return True
+            if time.monotonic() >= end:
+                return False
+            time.sleep(0.05)
+
     def close(self) -> list[str]:
         errors = []
+        self.stopped = False
         for child, log in reversed(self.children):
             try:
-                if child.poll() is None:
-                    if os.name == "nt":
-                        subprocess.run(
-                            [program("taskkill"), "/PID", str(child.pid), "/T", "/F"],
-                            check=True,
-                            capture_output=True,
-                            timeout=30,
-                            creationflags=FLAGS,
-                        )
-                    else:
-                        os.killpg(child.pid, signal.SIGTERM)
+                if os.name == "nt":
+                    self.jobs[child.pid].terminate()
+                    # An assignment failure leaves only the gated wrapper outside the job.
+                    if child.poll() is None:
+                        child.kill()
+                else:
                     try:
-                        child.wait(timeout=30)
-                    except subprocess.TimeoutExpired:
-                        if os.name == "nt":
-                            raise
-                        os.killpg(child.pid, signal.SIGKILL)
-                        child.wait(timeout=10)
-                        errors.append("Process required SIGKILL")
+                        os.killpg(child.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass  # An empty ownership group is already settled.
+                if not self.wait_empty(child, 30):
+                    if os.name != "nt":
+                        try:
+                            os.killpg(child.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass  # The group can settle between the probe and escalation.
+                    require(self.wait_empty(child, 10), "Owned processes remain after termination")
+                child.wait(timeout=10)
             except Exception as exc:
                 errors.append(type(exc).__name__)
             finally:
+                if child.stdin is not None:
+                    try:
+                        child.stdin.close()
+                    except OSError as exc:
+                        errors.append(type(exc).__name__)
                 log.close()
+                if os.name == "nt":
+                    try:
+                        self.jobs[child.pid].close()
+                    except Exception as exc:
+                        errors.append(type(exc).__name__)
+        self.stopped = not errors and all(child.poll() is not None for child, _ in self.children)
         return errors
 
 
@@ -493,13 +552,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 report["owner_lock_released"] = True
         except Exception as exc:
             report["cleanup_errors"].append(type(exc).__name__)
-        report["processes_stopped"] = all(
-            child.poll() is not None for child, _ in processes.children
-        )
+        report["processes_stopped"] = processes.stopped
         report["stop_method"] = (
-            "Windows process-tree termination"
+            "Windows job termination with zero active processes"
             if os.name == "nt"
-            else "POSIX process-group termination"
+            else "POSIX process-group termination with confirmed absence"
         )
         report["passed"] = bool(
             report["passed"]
