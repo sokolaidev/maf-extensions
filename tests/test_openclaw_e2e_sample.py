@@ -481,3 +481,71 @@ def test_failed_job_assignment_never_starts_service(
     assert close_errors == []
     assert controller.stopped
     assert not marker.exists()
+
+
+def test_missing_docker_retains_failure_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agent.shutil, "which", lambda name: None)
+    args = argparse.Namespace(mode="smoke", output=tmp_path / "private")
+    result = agent.run(args)
+    retained = json.loads((args.output / "report.json").read_text())
+    assert retained == result
+    assert not result["passed"]
+    assert result["error"] == "Install docker and place it on PATH"
+    assert result["cleanup_errors"] == []
+
+
+def test_gateway_temp_is_private(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+    root = tmp_path / "private"
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        monkeypatch.setenv(name, str(tmp_path / "shared"))
+
+    class Services:
+        stopped = True
+
+        def __init__(self, directory: Path) -> None:
+            pass
+
+        def start(self, name: str, command: list[str], env: dict[str, str]) -> None:
+            if name == "worker":
+                (root / "owner").mkdir()
+                (root / "owner/owner").write_text("a" * 32)
+                return
+            captured.update(env)
+            raise RuntimeError("captured gateway environment")
+
+        def ready(self, *args: Any) -> None:
+            pass
+
+        def close(self) -> list[str]:
+            return []
+
+    monkeypatch.setattr(agent, "Processes", Services)
+    monkeypatch.setattr(agent, "program", lambda name: name)
+    monkeypatch.setattr(agent, "install", lambda *args: (tmp_path / "python", tmp_path, {}))
+    monkeypatch.setattr(
+        agent,
+        "execute",
+        lambda command, *args, **kwargs: (
+            json.dumps([{"Id": IMAGE}]) if "inspect" in command else ""
+        ),
+    )
+    args = argparse.Namespace(mode="smoke", output=root, image=IMAGE)
+    result = agent.run(args)
+    assert result["error"] == "captured gateway environment"
+    private_temp = root / "temp"
+    assert private_temp.is_dir()
+    assert {captured[name] for name in ("TEMP", "TMP", "TMPDIR")} == {str(private_temp)}
+    if os.name != "nt":
+        assert private_temp.stat().st_mode & 0o777 == 0o700
+    resolved = subprocess.run(
+        [sys.executable, "-I", "-c", "import tempfile; print(tempfile.gettempdir())"],
+        env=captured,
+        check=True,
+        capture_output=True,
+        text=True,
+        creationflags=agent.FLAGS,
+    )
+    assert Path(resolved.stdout.strip()) == private_temp

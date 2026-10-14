@@ -37,7 +37,7 @@ uv run --no-project samples/experimental/openclaw_bicep_e2e/agent.py --wheel dis
 cat "$private_parent/result/report.json"
 ```
 
-Use the wheel filename produced by your build if its version differs. Setup can take several minutes. `setup.log`, `worker.log` and `gateway.log` are in the output directory. Every attempt needs a fresh output directory; the launcher refuses reuse. To reuse only an already provisioned OpenClaw package, add `--openclaw <previous-output>/openclaw/node_modules/openclaw`. Its version must still match the pin; configuration, sessions, owner state and the worker environment are always new.
+Use the wheel filename produced by your build if its version differs. Setup can take several minutes. `setup.log`, `worker.log` and `gateway.log` are in the output directory. Every attempt needs a fresh output directory; the launcher refuses reuse. To reuse only an already provisioned OpenClaw package, add `--openclaw <previous-output>/openclaw/node_modules/openclaw`. Its version must still match the pin; configuration, sessions, owner state and the worker environment are always new. Gateway temporary storage is directed to the private output directory's `temp` child through `TEMP`, `TMP` and `TMPDIR`.
 
 The worker environment pins core 0.48.0, Bicep 0.22.2, Docker backend 0.27.0 and MAF 1.20.0, matching the installed qualification baseline. Other dependency versions are resolved at installation and recorded in the report; this is not a complete transitive lock. A worker or OpenClaw upgrade needs fresh qualification. npm dependency lifecycle scripts are disabled; the launcher explicitly runs the pinned OpenClaw package's bundled-plugin setup script.
 

@@ -390,7 +390,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     upstream, model, key = model_settings(args.mode)
     root = args.output
     root.mkdir(parents=True, mode=0o700)
-    for part in ("home", "state", "workspace"):
+    for part in ("home", "state", "workspace", "temp"):
         (root / part).mkdir(mode=0o700)
     (root / "home/AppData/Local/OpenClaw/locks/openclaw-state-owners").mkdir(parents=True)
     python: Path | None = None
@@ -404,7 +404,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "cleanup_errors": [],
     }
     scope = ""
-    docker = program("docker")
+    docker: str | None = None
 
     def containers() -> list[str]:
         return (
@@ -413,11 +413,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 root,
                 timeout=30,
             ).split()
-            if scope
+            if scope and docker
             else []
         )
 
     try:
+        docker = program("docker")
         python, claw, report["artifact"] = install(args, root)
         image = json.loads(execute([docker, "image", "inspect", args.image], root, timeout=30))[0][
             "Id"
@@ -480,6 +481,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             OPENCLAW_HOME=str(root / "home"),
             HOME=str(root / "home"),
             USERPROFILE=str(root / "home"),
+            TEMP=str(root / "temp"),
+            TMP=str(root / "temp"),
+            TMPDIR=str(root / "temp"),
             OPENCLAW_NO_RESPAWN="1",
             OPENCLAW_SKIP_CHANNELS="1",
         )
@@ -534,6 +538,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 scope = "openclaw-bicep-" + owner
             remaining = containers()
             if remaining:
+                assert docker is not None
                 report["cleanup_errors"].append(
                     "Worker stopped with owned containers; emergency purge required"
                 )
