@@ -67,7 +67,7 @@ from agent_framework._compaction import (
 
 from ._preserve import any_preserved, is_preserved, removable_whole
 from ._summary_links import has_summary_links
-from ._tool_result import can_shorten_result
+from ._tool_result import can_shorten_result, repair_compacted_items
 
 if TYPE_CHECKING:
     from agent_framework import TokenizerProtocol
@@ -311,18 +311,21 @@ class AnchoredCompactionStrategy:
         """
         if not messages:
             return False
+        repaired = repair_compacted_items(
+            messages, lambda text: _SHORTENED.search(text) is not None
+        )
         annotate_message_groups(messages)
-        annotate_token_counts(messages, tokenizer=self.tokenizer)
+        annotate_token_counts(messages, tokenizer=self.tokenizer, force_retokenize=repaired)
 
         groups = group_messages(messages)
         band = self._middle_band(messages, groups)
         if not band:
-            return False
+            return repaired
 
         # Shortening results first is what keeps the conversation legible: the model still
         # sees that each call happened and roughly what it returned. Only when that is not
         # enough does anything get removed outright.
-        changed = self._collapse_tool_results(messages, band, ceiling=ceiling)
+        changed = self._collapse_tool_results(messages, band, ceiling=ceiling) or repaired
         if changed:
             # Token counts are cached per message inside the group annotations, so shortening
             # a result in place leaves the cached number describing text that no longer

@@ -60,7 +60,7 @@ from ._preserve import (
     removable_whole,
     set_preserved,
 )
-from ._tool_result import can_shorten_result
+from ._tool_result import can_shorten_result, repair_compacted_items
 
 if TYPE_CHECKING:
     from agent_framework import TokenizerProtocol
@@ -103,6 +103,7 @@ RECALL_TOOL_NAME: Final[str] = "recall_earlier_tool_results"
 #: has armed it, and a result without this marker is not a record. The model may still call
 #: it; calling it uninvited simply achieves nothing.
 RECORD_MARKER: Final[str] = "[recorded by compaction]"
+_ROWS_OMITTED: Final[str] = "[Rows quoted verbatim in compaction records are omitted below.]\n"
 
 #: What the recall tool writes between :data:`RECORD_MARKER` and the model's own text.
 #:
@@ -1537,8 +1538,11 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         Returns:
             True if the outgoing messages changed.
         """
+        repaired = repair_compacted_items(messages, lambda text: text.startswith(_ROWS_OMITTED))
+        if repaired:
+            annotate_token_counts(messages, tokenizer=self.tokenizer, force_retokenize=True)
         if prompt_tokens <= trigger_tokens:
-            return False
+            return repaired
 
         anchor = find_record_index(messages)
         if anchor is not None:
@@ -1552,7 +1556,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             # every later pass over the same conversation; see ``records_in_conversation``.
             records = _preserve_records(messages)
             self._records_in_conversation = max(self._records_in_conversation, records)
-            changed = self._drop_before(messages, anchor)
+            changed = self._drop_before(messages, anchor) or repaired
             # Layer one and layer two, in that order, over what ``_drop_before`` has just found
             # uncovered -- and before the fallback below, which is what both exist to keep away
             # from those groups.
@@ -1566,13 +1570,13 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         if prompt_tokens < int(self.max_input_tokens * self.fallback_fraction):
             # Still waiting for the middleware's forced call to come back. Nothing may be
             # dropped yet: the record is the only thing that would replace it.
-            return False
+            return repaired
 
         # Out of room to keep waiting. A model that has not answered by now may never answer,
         # and the alternative to compacting without a record is a provider error. The tool
         # results are lost either way at this point; at least the conversation survives.
         self._fallbacks += 1
-        return await self.fallback(messages)
+        return await self.fallback(messages) or repaired
 
     async def fall_back_after_record(
         self, messages: list[Message], *, ceiling: int | None = None
@@ -1899,7 +1903,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         self, members: list[Message], quoted_rows: set[tuple[str, str]]
     ) -> bool:
         """Remove exact quoted Markdown rows, retaining headings and every uncovered byte."""
-        changed = False
+        changed = repair_compacted_items(members, lambda text: text.startswith(_ROWS_OMITTED))
         for message in members:
             for content in message.contents:
                 if (
@@ -1918,10 +1922,9 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 ]
                 if len(retained) == len(lines):
                     continue
-                marker = "[Rows quoted verbatim in compaction records are omitted below.]\n"
                 shortened = "".join(retained)
-                if not shortened.startswith(marker):
-                    shortened = marker + shortened
+                if not shortened.startswith(_ROWS_OMITTED):
+                    shortened = _ROWS_OMITTED + shortened
                 if self.tokenizer.count_tokens(shortened) >= self.tokenizer.count_tokens(original):
                     continue
                 content.result = shortened
