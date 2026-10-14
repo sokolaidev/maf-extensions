@@ -2,6 +2,8 @@
 
 ## [0.24.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.23.0...maf-sandbox-codeact-v0.24.0) (2026-10-14)
 
+> **Correction, added after the release.** This version was tagged and a GitHub Release was created, but it never reached PyPI. The [publish run](https://github.com/sokolaidev/maf-extensions/actions/runs/38627963525/job/116071880893) stopped before build and upload because the repository's MXC ownership race test required exactly one successful contender even when SQLite safely refused both under lock contention. [#1943](https://github.com/sokolaidev/maf-extensions/pull/1943) corrects that test; the replacement release is planned as `0.24.1`, carrying the MAF 1.21 support recorded below. The existing release and tag remain unchanged.
+
 
 ### Features
 
