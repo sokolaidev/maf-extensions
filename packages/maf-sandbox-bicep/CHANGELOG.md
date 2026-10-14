@@ -2,6 +2,14 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.23.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.22.2...maf-sandbox-bicep-v0.23.0) (2026-10-14)
+
+
+### Features
+
+* **bicep:** refresh the packaged diagnostic catalog ([#1884](https://github.com/sokolaidev/maf-extensions/issues/1884)) ([58cf703](https://github.com/sokolaidev/maf-extensions/commit/58cf70340763df716405cb618e6e3956d662689f))
+* support MAF 1.21 across sandbox and compaction packages ([#1900](https://github.com/sokolaidev/maf-extensions/issues/1900)) ([ff70c0d](https://github.com/sokolaidev/maf-extensions/commit/ff70c0da983032c8aa6efcdeaa4f586183ffddec))
+
 ## [0.22.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.22.1...maf-sandbox-bicep-v0.22.2) (2026-10-06)
 
 
