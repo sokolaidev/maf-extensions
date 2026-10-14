@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from contextlib import nullcontext
 from copy import deepcopy
 from typing import Any
@@ -109,19 +110,19 @@ def test_decisions_are_independent_json_values():
 
 
 @pytest.mark.parametrize("composed", [False, True])
-def test_stack_writes_v2_snapshots_and_restores_v1(composed):
+def test_stack_writes_v3_snapshots_and_restores_v1(composed):
     stack = build_stack(composed=composed)
     stack.gate.arm()
     stack.middleware._force_next = True
     snapshot = round_trip(stack.to_dict())
-    assert snapshot["version"] == 2
+    assert snapshot["version"] == 3
     legacy = snapshot | {"version": 1}
     restored = build_stack(composed=composed)
     restored.restore(legacy)
     assert restored.to_dict() == snapshot
 
 
-@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("version", [1, 2, 3])
 async def test_stack_restores_fold_keys_and_replays_without_a_request(version):
     summarizer = Summarizer()
     stack = build_stack(summarizer)
@@ -161,7 +162,7 @@ async def test_stack_restores_fold_keys_and_replays_without_a_request(version):
     ]
     assert not restored_users.refold(stored)
     assert len(summarizer.requests) == 1
-    assert restored.to_dict()["version"] == 2
+    assert restored.to_dict()["version"] == 3
 
 
 def test_cache_is_bounded_and_session_state_wins_on_hits_and_resets():
@@ -199,7 +200,7 @@ def test_cache_is_bounded_and_session_state_wins_on_hits_and_resets():
 
 
 @pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
-async def test_failure_persists_pending_force_and_clears_context(error):
+async def test_failure_persists_pin_verdict_and_clears_context(error):
     registry = SessionCompactionRegistry(build_stack)
     session = AgentSession()
     with registry.activate(session) as stack:
@@ -214,68 +215,92 @@ async def test_failure_persists_pending_force_and_clears_context(error):
         await SessionToolResultRecallMiddleware(registry).process(context, fail)
     cold = SessionCompactionRegistry(build_stack)
     with cold.activate(session) as stack:
-        assert stack.middleware._force_next
-        assert stack.middleware._reforce_next
+        assert stack.middleware._force_next == (error is asyncio.CancelledError)
+        assert stack.middleware._reforce_next == (error is asyncio.CancelledError)
+        assert stack.middleware.pin_disabled == (error is RuntimeError)
         assert not stack.gate.take()
     with pytest.raises(RuntimeError, match="No active"):
         registry.current_stack()
 
 
-@pytest.mark.parametrize(
-    "failure", ["error", "cancel", "close", "unstarted", "finalizer", "success"]
-)
+@pytest.mark.parametrize("failure", ["error", "cancel", "finalizer", "success"])
 @pytest.mark.parametrize("cached", [0, 1])
 @pytest.mark.parametrize("session_scoped", [False, True])
-async def test_forced_stream_completion_persists_retry_state(failure, cached, session_scoped):
+async def test_forced_stream_completion_persists_degradation(failure, cached, session_scoped):
     registry = SessionCompactionRegistry(build_stack, max_cached_sessions=cached)
     session = AgentSession()
     with registry.activate(session) as stack:
         stack.middleware._force_next = True
         stack.middleware._reforce_next = True
-
-    async def updates():
-        yield ChatResponseUpdate(role="assistant", contents=[Content.from_text("partial")])
-        if failure == "error":
-            raise RuntimeError("stream failed")
-        if failure == "cancel":
-            raise asyncio.CancelledError()
-
-    def finalize(_):
-        if failure == "finalizer":
-            raise RuntimeError("finalizer failed")
-        return ChatResponse(messages=Message("assistant", ["done"]))
-
-    source = ResponseStream(updates(), finalizer=finalize)
-    context = ChatContext(None, [], {}, session=session, stream=True)
+    attempts = []
+    closed = []
 
     async def install():
-        context.result = source
+        attempts.append(dict(context.options or {}))
+        pinned = len(attempts) == 1
 
+        async def updates() -> AsyncIterator[ChatResponseUpdate]:
+            yield ChatResponseUpdate(
+                role="assistant", contents=[Content.from_text("partial" if pinned else "answer")]
+            )
+            if pinned and failure == "error":
+                raise RuntimeError("stream failed")
+            if pinned and failure == "cancel":
+                raise asyncio.CancelledError()
+
+        def finalize(_):
+            if pinned and failure == "finalizer":
+                raise RuntimeError("finalizer failed")
+            return ChatResponse(
+                messages=Message(
+                    "assistant",
+                    [
+                        Content.from_function_call(
+                            call_id="rec",
+                            name="recall_earlier_tool_results",
+                            arguments='{"values":"a123"}',
+                        )
+                    ]
+                    if pinned
+                    else ["answer"],
+                )
+            )
+
+        async def cleanup():
+            closed.append(pinned)
+
+        context.result = ResponseStream(updates(), finalizer=finalize).with_cleanup_hook(cleanup)
+
+    options = {"max_tokens": 12000, "temperature": 0.3, "tool_choice": "auto"}
+    context = ChatContext(None, [], options, session=session, stream=True)
     middleware = SessionToolResultRecallMiddleware(registry) if session_scoped else stack.middleware
-    await middleware.process(context, install)
-    result = context.result
-    assert isinstance(result, ResponseStream)
-    if failure == "unstarted":
-        await result.close()
-    elif failure == "close":
-        _ = await anext(result.__aiter__())
-        await result.close()
-    elif failure == "success":
-        await result.get_final_response()
+    if failure == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await middleware.process(context, install)
     else:
-        error = asyncio.CancelledError if failure == "cancel" else RuntimeError
-        with pytest.raises(error):
-            await result.get_final_response()
+        await middleware.process(context, install)
+        result = context.result
+        assert isinstance(result, ResponseStream)
+        texts = [update.text async for update in result]
+        assert texts == (["partial"] if failure == "success" else ["answer"])
+        assert (await result.get_final_response()).text == (
+            "" if failure == "success" else "answer"
+        )
+    assert closed[0] is True
+    assert context.options is options
+    assert len(attempts) == (2 if failure in ("error", "finalizer") else 1)
+    if len(attempts) == 2:
+        assert attempts[1] == options
     if not session_scoped:
         session.state[registry.state_key] = stack.to_dict()
-        assert stack.middleware.forced_calls == (failure == "success")
-        assert stack.middleware.reforced_calls == (failure == "success")
+        assert stack.middleware.forced_calls == (failure != "cancel")
     session.state = round_trip(session.state)
     cold = SessionCompactionRegistry(build_stack)
     with cold.activate(session) as restored:
-        assert restored.middleware._force_next == (failure != "success")
-        assert restored.middleware._reforce_next == (failure != "success")
+        assert restored.middleware._force_next == (failure == "cancel")
+        assert restored.middleware._reforce_next == (failure == "cancel")
         assert restored.middleware._awaiting_record == (failure == "success")
+        assert restored.middleware.pin_disabled == (failure in ("error", "finalizer"))
         assert restored.gate.take() == (failure == "success")
 
 
@@ -427,7 +452,7 @@ class Model(FunctionInvocationLayer, ChatMiddlewareLayer, BaseChatClient):
         response = ChatResponse(messages=Message("assistant", contents, message_id="answer"))
         if stream:
 
-            async def updates():
+            async def updates() -> AsyncIterator[ChatResponseUpdate]:
                 await asyncio.sleep(0)
                 yield ChatResponseUpdate(role="assistant", contents=contents, message_id="answer")
 
@@ -576,3 +601,208 @@ def test_unknown_schema_is_rejected_without_overwriting_state():
         with registry.activate(session):
             pass
     assert session.state[registry.state_key] == {"version": 999}
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("honours_between", [False, True])
+async def test_ignored_pins_degrade_only_their_session_across_cold_restores(
+    stream, honours_between
+):
+    session = AgentSession()
+    options = {"max_tokens": 12000, "tool_choice": "auto"}
+    registry = SessionCompactionRegistry(build_stack, max_cached_sessions=0)
+    sequence = [False, True, False, False] if honours_between else [False, False]
+    for index, honours in enumerate(sequence):
+        registry = SessionCompactionRegistry(build_stack, max_cached_sessions=0)
+        with registry.activate(session) as stack:
+            stack.middleware._force_next = True
+        context = ChatContext(None, [], options, session=session, stream=stream)
+
+        async def respond():
+            assert (context.options or {})["max_tokens"] == 4000
+            contents = (
+                [
+                    Content.from_function_call(
+                        call_id="rec",
+                        name="recall_earlier_tool_results",
+                        arguments='{"values":"a123"}',
+                    )
+                ]
+                if honours
+                else [Content.from_text("ignored")]
+            )
+            response = ChatResponse(messages=Message("assistant", contents))
+            if stream:
+
+                async def updates() -> AsyncIterator[ChatResponseUpdate]:
+                    yield ChatResponseUpdate(role="assistant", contents=contents)
+
+                context.result = ResponseStream(updates(), finalizer=lambda _: response)
+            else:
+                context.result = response
+
+        await SessionToolResultRecallMiddleware(registry).process(context, respond)
+        session.state = round_trip(session.state)
+        with registry.activate(session) as stack:
+            disabled = index == len(sequence) - 1
+            assert stack.middleware.pin_disabled == disabled
+            assert stack.middleware._ignored_streak == (0 if honours else (2 if disabled else 1))
+            if disabled:
+                assert not stack.gate.take()
+                assert not stack.middleware.record_due([])
+                assert isinstance(
+                    stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+                )
+                stack.strategy.tool_results._reforce = _Reforce(frozenset({"a"}), 2, 1, True)
+                assert not stack.strategy.tool_results.record_pending([])
+    other = AgentSession()
+    with registry.activate(other) as fresh:
+        assert not fresh.middleware.pin_disabled
+    # A new provider call keeps the caller's cap even when history triggers recall.
+    context = ChatContext(None, [Message("user", ["large " * 10000])], options, session=session)
+
+    async def ordinary():
+        assert context.options is options
+        context.result = ChatResponse(messages=Message("assistant", ["answer"]))
+
+    await SessionToolResultRecallMiddleware(registry).process(context, ordinary)
+    with registry.activate(session) as stack:
+        assert not stack.middleware._force_next
+
+
+@pytest.mark.parametrize("error_name", ["MiddlewareFailure", "MiddlewareTermination"])
+async def test_forced_requests_preserve_framework_abort_signals(error_name):
+    import agent_framework
+
+    current = build_stack()
+    current.middleware._force_next = True
+    context = ChatContext(None, [], {"max_tokens": 12000})
+    calls = 0
+    error = getattr(agent_framework, error_name)
+
+    async def abort():
+        nonlocal calls
+        calls += 1
+        raise error("stop")
+
+    with pytest.raises(error):
+        await current.middleware.process(context, abort)
+    assert calls == 1
+    assert current.middleware.failed_forced_calls == 0
+    assert not current.gate.take()
+
+
+@pytest.mark.parametrize(
+    "original_options", [{}, {"max_tokens": 12000, "tool_choice": "auto", "temperature": 0.2}]
+)
+async def test_nonstream_retry_restores_request_and_is_bounded(original_options):
+    current = build_stack()
+    current.middleware._force_next = True
+    original = Message("user", ["question"])
+    context = ChatContext(None, [original], original_options)
+    seen = []
+
+    async def respond():
+        seen.append(dict(context.options or {}))
+        assert context.messages == [original]
+        if len(seen) == 1:
+            context.messages = [Message("user", ["loaded history"]), original]
+            context.kwargs["temporary"] = True
+            raise RuntimeError("pin rejected")
+        assert context.kwargs == {}
+        assert not current.gate.take()
+        context.result = ChatResponse(messages=Message("assistant", ["answer"]))
+
+    await current.middleware.process(context, respond)
+    assert len(seen) == 2
+    assert seen[1] == original_options
+    assert context.options is original_options
+    assert isinstance(context.result, ChatResponse)
+    assert context.result.text == "answer"
+    assert current.middleware.failed_forced_calls == 1
+    assert current.middleware.pin_disabled
+
+
+async def test_legacy_middleware_state_starts_with_supported_pin():
+    current = build_stack()
+    state = current.middleware.session_state()
+    state.pop("pin_disabled")
+    state.pop("ignored_streak")
+    current.middleware.restore_session_state(state)
+    assert not current.middleware.pin_disabled
+    assert current.middleware._ignored_streak == 0
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_harness_retries_a_failed_pin_without_persisting_partial_output(stream):
+    class FailingPin(Model):
+        def __init__(self):
+            super().__init__()
+            self.options = []
+
+        def _inner_get_response(self, *, messages, stream, options, **kwargs):
+            self.options.append(dict(options))
+            if isinstance(options.get("tool_choice"), dict):
+                if stream:
+
+                    async def updates() -> AsyncIterator[ChatResponseUpdate]:
+                        yield ChatResponseUpdate(
+                            role="assistant", contents=[Content.from_text("discard me")]
+                        )
+                        raise RuntimeError("provider rejected pin")
+
+                    return ResponseStream(updates(), finalizer=lambda _: ChatResponse(messages=[]))
+
+                async def fail():
+                    raise RuntimeError("provider rejected pin")
+
+                return fail()
+            return super()._inner_get_response(
+                messages=messages, stream=stream, options=options, **kwargs
+            )
+
+    registry = SessionCompactionRegistry(build_stack, max_cached_sessions=0)
+    session = AgentSession()
+    with registry.activate(session) as stack:
+        stack.middleware._force_next = True
+    model = FailingPin()
+    agent = harness(registry, model)
+    result = agent.run("continue", session=session, stream=stream, options={"max_tokens": 12000})
+    if stream:
+        assert isinstance(result, ResponseStream)
+        response = await result.get_final_response()
+    else:
+        response = await result
+    assert response.text == "answer"
+    assert len(model.options) == 2
+    assert model.options[0]["max_tokens"] == 4000
+    assert model.options[1]["max_tokens"] == 12000
+    assert model.options[1].get("tool_choice") == "auto"
+    assert "discard me" not in json.dumps(session.to_dict())
+    with registry.activate(session) as restored:
+        assert restored.middleware.pin_disabled
+        assert not restored.gate.take()
+
+
+async def test_unpinned_stream_failure_propagates_without_a_third_request():
+    current = build_stack()
+    current.middleware._force_next = True
+    context = ChatContext(None, [], {}, stream=True)
+    calls = 0
+
+    async def install():
+        nonlocal calls
+        calls += 1
+
+        async def updates() -> AsyncIterator[ChatResponseUpdate]:
+            raise RuntimeError("provider unavailable")
+            yield ChatResponseUpdate()
+
+        context.result = ResponseStream(updates(), finalizer=lambda _: ChatResponse(messages=[]))
+
+    await current.middleware.process(context, install)
+    assert isinstance(context.result, ResponseStream)
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        await context.result.get_final_response()
+    assert calls == 2
+    assert current.middleware.pin_disabled

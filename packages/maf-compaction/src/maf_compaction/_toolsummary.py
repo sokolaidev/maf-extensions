@@ -39,6 +39,8 @@ from agent_framework import (
     ChatResponse,
     ChatResponseUpdate,
     Message,
+    MiddlewareFailure,
+    MiddlewareTermination,
     ResponseStream,
 )
 from agent_framework._compaction import (
@@ -1220,6 +1222,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         # The ask for another record that is outstanding, if one is. See :meth:`take_reforce`.
         self._reforce: _Reforce | None = None
         self._recall_due: Callable[[list[Message]], bool] | None = None
+        self._recall_disabled: Callable[[], bool] = lambda: False
         # Group ids whose asking has ended -- uncovered still, after a record that covered none
         # of them or after an ask that produced no record -- and which are preserved for good
         # while they stay uncovered. Accumulated, because an ended chain must not restart.
@@ -1452,6 +1455,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
     def bind_recall(self, middleware: ToolResultRecallMiddleware) -> None:
         """Bind this conversation's recall trigger when take_reforce is wrapped."""
         self._recall_due = middleware.record_due
+        self._recall_disabled = lambda: middleware.pin_disabled
 
     def record_pending(self, messages: list[Message]) -> bool:
         """Read the wired middleware's trigger or an outstanding re-force ask without consuming it.
@@ -1459,6 +1463,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         Messages must be grouped and token-annotated. Without middleware wiring, use the
         default recall cadence and this strategy's size trigger.
         """
+        if self._recall_disabled():
+            return False
         if self._reforce is not None:
             return True
         record_index = find_record_index(messages)
@@ -1998,34 +2004,23 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         )
 
 
-def retry_failed_stream(
+async def _buffer_recall_stream(
     source: ResponseStream[ChatResponseUpdate, ChatResponse[Any]],
-    retry: Callable[[], None],
-) -> ResponseStream[ChatResponseUpdate, ChatResponse[Any]]:
-    """Retry an unfinished response, including explicit close before the first update."""
-    completed = False
-    response: ChatResponse[Any] | None = None
+) -> tuple[ResponseStream[ChatResponseUpdate, ChatResponse[Any]], ChatResponse[Any]]:
+    """Keep forced updates private until the response and its finalizer succeed."""
+    buffered: list[ChatResponseUpdate] = []
+    try:
+        async for update in source:
+            buffered.append(update)
+        response = await source.get_final_response()
+    finally:
+        await source.close()
 
     async def updates():
-        nonlocal completed, response
-        async for update in source:
+        for update in buffered:
             yield update
-        response = await source.get_final_response()
-        completed = True
 
-    async def cleanup() -> None:
-        try:
-            if not completed:
-                retry()
-        finally:
-            await source.close()
-
-    def finalize(_: Any) -> ChatResponse[Any]:
-        if response is None:
-            raise RuntimeError("The recall response stream did not complete.")
-        return response
-
-    return ResponseStream(updates(), finalizer=finalize).with_cleanup_hook(cleanup)
+    return ResponseStream(updates(), finalizer=lambda _: response), response
 
 
 class ToolResultRecallMiddleware(ChatMiddleware):
@@ -2169,6 +2164,10 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self._records_truncated = 0
         self._last_record = ""
         self._awaiting_record = False
+        self._pin_disabled = False
+        self._ignored_streak = 0
+        self._ignored_forced_calls = 0
+        self._failed_forced_calls = 0
         self._session_id: str | None = None
         if isinstance(reforce, MethodType) and isinstance(
             reforce.__self__, ToolResultAnchoredSummarizationCompactionStrategy
@@ -2182,6 +2181,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             "reforce_next": self._reforce_next,
             "awaiting_record": self._awaiting_record,
             "last_record": self._last_record,
+            "pin_disabled": self._pin_disabled,
+            "ignored_streak": self._ignored_streak,
         }
 
     def restore_session_state(self, data: dict[str, Any]) -> None:
@@ -2190,6 +2191,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self._reforce_next = data["reforce_next"]
         self._awaiting_record = data["awaiting_record"]
         self._last_record = data["last_record"]
+        self._pin_disabled = data.get("pin_disabled", False)
+        self._ignored_streak = data.get("ignored_streak", 0)
 
     def forget_pending(self) -> None:
         """Drop the decision to force a record on the next call.
@@ -2281,62 +2284,67 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         """
         return self._records_truncated
 
+    @property
+    def pin_disabled(self) -> bool:
+        """Whether this session stopped forcing recall after ignored or failed pins."""
+        return self._pin_disabled
+
+    @property
+    def ignored_forced_calls(self) -> int:
+        """Completed forced responses without a recall tool call, including truncated ones."""
+        return self._ignored_forced_calls
+
+    @property
+    def failed_forced_calls(self) -> int:
+        """Forced requests that raised and triggered one unpinned retry."""
+        return self._failed_forced_calls
+
+    def _disable_pin(self) -> None:
+        self._pin_disabled = True
+        self._force_next = False
+        self._reforce_next = False
+        self._awaiting_record = False
+        if self.disarm is not None:
+            self.disarm()
+
+    def _observe_forced(self, response: ChatResponse[Any]) -> None:
+        if response.finish_reason == "length":
+            self._records_truncated += 1
+        if any(
+            content.type == "function_call" and content.name == RECALL_TOOL_NAME
+            for message in response.messages
+            for content in message.contents
+        ):
+            self._ignored_streak = 0
+        else:
+            self._ignored_forced_calls += 1
+            self._ignored_streak += 1
+            if self._ignored_streak >= 2:
+                self._disable_pin()
+
     async def process(self, context: ChatContext, call_next: Callable[[], Awaitable[None]]) -> None:
-        """Force the recall tool when the last call showed the conversation is large enough.
+        """Pin the next request after loaded history triggers recall.
 
-        The decision is made *after* ``call_next`` and applied on the *following* call, which
-        is not a convenience. Before the pipeline runs, ``context.messages`` holds only the new
-        turn: the history middleware sits deeper and replaces it with the loaded conversation
-        during the call. There is no earlier point at which the size of the history can be
-        known, so the check reads it on the way out and the option is set on the way in next
-        time. The trigger sits well below the strategy's fallback threshold to absorb that
-        one-call delay.
-
-        **The exit of a forced call decides nothing.** The same delay that makes the decision
-        late makes the forced call's own history stale: the record the model has just written
-        is not in ``context.messages``, so the condition that fired still reads as true, and
-        re-deciding there pins the next call as well. That is one trigger event and two
-        records, measured -- ``records_in_conversation=2`` with repeats switched off, four to
-        five with them on -- each one an agent turn, a broken prefix and a permanent addition
-        to the floor under the prompt, and each one taking its call's own pinned tool choice
-        away from it. So a forced call leaves the decision alone and the ask stays outstanding.
-        The call after it is the first that can see the record, and it decides on that: if the
-        record arrived, :meth:`_record_due` reads it and settles; if the model was cut off
-        before writing one, nothing is there, and the trigger fires again one call later than
-        it otherwise would have.
-
-        The outstanding ask is also what makes the attribution honest. A record surfaces on the
-        call *after* the one that was pinned, so crediting the call it became visible on would
-        report every forced record as volunteered.
-
-        Whether the *next* call is pinned is the whole of the decision, and it is taken in
-        :meth:`_record_due`, which is the one place the rule is written down.
-
-        Raises:
-            RuntimeError: If the call belongs to another session than the one this middleware
-                is bound to.
+        Two consecutive ignored pins disable forcing for the session. A forced request
+        that raises disables it immediately and retries once with the original options.
+        Forced streams are buffered so failed updates cannot escape into that retry.
+        Cancellation propagates and leaves the pending ask available for a later request.
         """
         self._bind_session(context)
-        awaiting_record = self._awaiting_record
-        forced_this_call = self._force_next
+        forced_this_call = self._force_next and not self._pin_disabled
         reforced_this_call = forced_this_call and self._reforce_next
+        original_options = context.options
+        original_messages = list(context.messages)
+        original_kwargs = dict(context.kwargs)
         if not forced_this_call and self.disarm is not None:
-            # Not at the forced call's exit: the function layer runs the recall tool after this
-            # middleware returns. By the next call it has, so a permission still armed was never
-            # used -- the forced response carried no valid call -- and must not reach this one.
             self.disarm()
         if forced_this_call:
-            # Replaced rather than mutated: options may be shared with the caller's own dict,
-            # and pinning a tool choice into it would outlive this call.
             self.arm()
             options: dict[str, Any] = {
-                **dict(context.options or {}),
+                **dict(original_options or {}),
                 "tool_choice": {"mode": "required", "required_function_name": RECALL_TOOL_NAME},
             }
             if self.record_max_tokens is not None:
-                # Only here. The run's own cap is sized for an answer to the user and every
-                # other call needs it; this one call writes a record instructed to summarise
-                # everything, which is the only place a runaway is affordable at all.
                 options["max_tokens"] = self.record_max_tokens
             context.options = options
             self._force_next = False
@@ -2347,33 +2355,33 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
         try:
             await call_next()
+            if forced_this_call:
+                if isinstance(context.result, ResponseStream):
+                    context.result, response = await _buffer_recall_stream(context.result)
+                    self._observe_forced(response)
+                elif isinstance(context.result, ChatResponse):
+                    self._observe_forced(context.result)
+        except (MiddlewareFailure, MiddlewareTermination):
+            if forced_this_call:
+                self._requeue_forced(reforced=reforced_this_call)
+            raise
+        except Exception:
+            if not forced_this_call:
+                raise
+            self._failed_forced_calls += 1
+            self._disable_pin()
+            context.options = original_options
+            context.messages = original_messages
+            context.kwargs = original_kwargs
+            context.result = None
+            await call_next()
         except BaseException:
             if forced_this_call:
                 self._requeue_forced(reforced=reforced_this_call)
             raise
-
-        if forced_this_call and isinstance(context.result, ResponseStream):
-
-            def retry() -> None:
-                self._awaiting_record = awaiting_record
-                self._requeue_forced(reforced=reforced_this_call)
-
-            context.result = retry_failed_stream(context.result, retry)
-
-        if (
-            forced_this_call
-            and isinstance(context.result, ChatResponse)
-            and context.result.finish_reason == "length"
-        ):
-            # Taken from the provider rather than inferred from the record's length: the model
-            # is free to write a short record, and a short record is not a cut one. This is
-            # the provider saying it stopped generating because it hit the ceiling, which is
-            # the only statement that separates the two.
-            #
-            # A streamed result is not a ChatResponse yet, so it is not read here. Recording is
-            # a one-shot forced call whose answer nobody displays, so there is nothing to
-            # stream it for -- but a caller that did would lose this count, not get a wrong one.
-            self._records_truncated += 1
+        finally:
+            if forced_this_call:
+                context.options = original_options
 
         messages = list(context.messages)
         record_index = find_record_index(messages) if messages else None
@@ -2394,8 +2402,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 self._records_volunteered += 1
         # One trigger event, one record. A forced call's own history predates the record it
         # asked for, so there is nothing here to decide on; see :meth:`process`.
-        self._awaiting_record = forced_this_call
-        if forced_this_call or not messages:
+        self._awaiting_record = forced_this_call and not self._pin_disabled
+        if forced_this_call or not messages or self._pin_disabled:
             self._force_next = False
             return
         annotate_message_groups(messages)
@@ -2444,6 +2452,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         Returns:
             True when the next call should be forced.
         """
+        if self._pin_disabled:
+            return False
         if self.reforce is not None and self.reforce():
             self._reforce_next = True
             return True
@@ -2465,7 +2475,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         Messages must be grouped and token-annotated. The strategy checks its own re-force
         state; this preview also includes a pin queued or already sent by the middleware.
         """
-        return (
+        return not self._pin_disabled and (
             self._force_next
             or self._awaiting_record
             or self._trigger_due(messages, find_record_index(messages))

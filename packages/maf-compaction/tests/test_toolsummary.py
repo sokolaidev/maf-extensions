@@ -1621,7 +1621,13 @@ class _Recorder:
         # What the provider says about why it stopped, which is the only thing that separates
         # a record the model chose to keep short from one it was cut off in the middle of.
         self.context.result = ChatResponse(
-            messages=Message(role="assistant", contents=["ok"]), finish_reason=self.finish_reason
+            messages=(
+                _record_messages("CODE-0")[0]
+                if (self.context.options or {}).get("tool_choice")
+                == {"mode": "required", "required_function_name": RECALL_TOOL_NAME}
+                else Message(role="assistant", contents=["ok"])
+            ),
+            finish_reason=self.finish_reason,
         )
 
 
@@ -1721,8 +1727,8 @@ async def test_the_middleware_refuses_a_second_session() -> None:
     assert "tool_choice" not in released, "a restore releases the session binding"
 
 
-async def test_a_forced_call_that_fails_is_forced_again_and_leaves_the_tool_disarmed() -> None:
-    """The ask outlives a failed call, and the permission armed for it does not."""
+async def test_a_failed_unpinned_retry_propagates_and_leaves_the_tool_disarmed() -> None:
+    """A retry failure propagates without restoring the rejected pin."""
     gate = RecallGate()
     middleware = ToolResultRecallMiddleware(
         max_input_tokens=1_000,
@@ -1742,9 +1748,11 @@ async def test_a_forced_call_that_fails_is_forced_again_and_leaves_the_tool_disa
         await middleware.process(context, failing)
 
     assert gate.take() is False, "no unpinned call may use the failed call's permission"
-    assert middleware.forced_calls == 0
+    assert middleware.forced_calls == 1
+    assert middleware.failed_forced_calls == 1
+    assert middleware.pin_disabled
     retried = await _run(middleware, big)
-    assert retried["tool_choice"]["required_function_name"] == RECALL_TOOL_NAME
+    assert "tool_choice" not in retried
     assert middleware.forced_calls == 1
 
 
