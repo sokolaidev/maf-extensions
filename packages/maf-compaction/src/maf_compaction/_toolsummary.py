@@ -47,13 +47,13 @@ from agent_framework import (
 from agent_framework._compaction import (
     EXCLUDED_KEY,
     annotate_message_groups,
-    annotate_token_counts,
     group_messages,
     included_token_count,
     set_excluded,
 )
 
 from ._anchored import AnchoredCompactionStrategy
+from ._media import annotate_token_counts
 from ._preserve import (
     PRESERVE_REASON_KEY,
     is_preserved,

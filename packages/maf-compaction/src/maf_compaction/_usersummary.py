@@ -20,9 +20,10 @@ See ``docs/compaction/strategies.md`` for defaults, trade-offs and measurements.
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 
-from agent_framework import Message
+from agent_framework import Content, Message
 from agent_framework._compaction import (
     EXCLUDED_KEY,
     GROUP_ANNOTATION_KEY,
@@ -30,18 +31,18 @@ from agent_framework._compaction import (
     SUMMARY_OF_GROUP_IDS_KEY,
     SUMMARY_OF_MESSAGE_IDS_KEY,
     annotate_message_groups,
-    annotate_token_counts,
     group_messages,
     included_token_count,
     set_excluded,
 )
 
-from ._preserve import any_preserved, set_preserved
+from ._media import MEDIA_TYPES, annotate_token_counts, media_identity
+from ._preserve import PRESERVE_REASON_KEY, any_preserved, set_preserved
 from ._summary_input import bounded_prefix, fits_summary_input, summary_request
 from ._summary_links import has_summary_links
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from agent_framework import TokenizerProtocol
     from agent_framework._clients import SupportsChatGetResponse
@@ -436,6 +437,7 @@ class _Remembered(NamedTuple):
     transcript: str
     summary_id: str
     text: str
+    source_key: str = ""
 
 
 class UserTurnAnchoredSummarizationCompactionStrategy:
@@ -490,6 +492,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             outside the recompacting mode, so the second list replays both rather than paying
             for both again. See
             :class:`_Remembered`.
+        describe_media: Async hook receiving a media part and its complete user turn as copies.
+            Return a description or None to retain the turn. Successful descriptions persist
+            with the session; references and hook configuration must stay stable across restores.
     """
 
     def __init__(
@@ -507,6 +512,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         prompt: str | None = None,
         fold_prompt: str | None = None,
         remembered_requests: int = 1,
+        describe_media: Callable[[Content, Message], Awaitable[str | None]] | None = None,
     ) -> None:
         """Validate and store the configuration.
 
@@ -543,6 +549,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self.max_input_tokens = max_input_tokens
         self.tokenizer = tokenizer
         self.client = client
+        self.describe_media = describe_media
+        self._media_descriptions: dict[str, str] = {}
         self.keep_head_user_turns = keep_head_user_turns
         self.keep_tail_user_turns = keep_tail_user_turns
         self.trigger_fraction = trigger_fraction
@@ -569,6 +577,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         """Return JSON-safe behavioral state for session persistence."""
         return {
             "remembered": [entry._asdict() for entry in self._remembered],
+            "media_descriptions": dict(self._media_descriptions),
             "kept_folds": {key: entry._asdict() for key, entry in self._kept_folds.items()},
             "kept_fold_counts": dict(self._kept_fold_counts),
             # These counts also set the minimum generated summary IDs.
@@ -579,6 +588,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
     def restore_session_state(self, data: dict[str, Any]) -> None:
         """Replace behavioral state with a snapshot from :meth:`session_state`."""
         self._remembered = [_Remembered(**entry) for entry in data["remembered"]]
+        self._media_descriptions = dict(data.get("media_descriptions", {}))
         self._kept_folds = {
             entry["summary_id"]: _Remembered(**entry) for entry in data["kept_folds"].values()
         }
@@ -850,6 +860,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             True if the outgoing messages changed.
         """
+        self._protect_media(messages)
         if prompt_tokens <= trigger_tokens:
             self._below_trigger += 1
             return False
@@ -859,19 +870,25 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         # the return value: annotating a message is not a change to what the model sees.
         standing = self._observe_summaries(messages)
         band = self._band(messages, standing)
+        bodies: dict[int, str] = {}
         if self._worth_compacting(messages, band, included_token_count(messages)):
+            band, bodies = await self._describe_band(messages, band)
             band = bounded_prefix(
                 band,
                 render=lambda spans: _format_turns(
-                    [messages[span["start_index"]] for span in spans]
+                    [messages[int(span["start_index"])] for span in spans],
+                    text=lambda message: bodies.get(id(message), message.text),
                 ),
                 prompt=self.prompt,
                 tokenizer=self.tokenizer,
                 limit=self.max_summary_input_tokens,
                 min_items=next(
-                    index + 1
-                    for index, span in enumerate(band)
-                    if not _is_summary(messages[int(span["start_index"])])
+                    (
+                        index + 1
+                        for index, span in enumerate(band)
+                        if not _is_summary(messages[int(span["start_index"])])
+                    ),
+                    len(band) + 1,
                 ),
             )
         else:
@@ -882,8 +899,16 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             self._declined += 1
             return False
 
-        transcript = _format_turns([messages[span["start_index"]] for span in band])
-        remembered = self._recall(self.prompt, transcript)
+        selected = [messages[int(span["start_index"])] for span in band]
+        transcript = _format_turns(
+            selected, text=lambda message: bodies.get(id(message), message.text)
+        )
+        source_key = ":".join(
+            media_identity(message)
+            for message in selected
+            if any(part.type in MEDIA_TYPES for part in message.contents)
+        )
+        remembered = self._recall(self.prompt, transcript, source_key=source_key)
         replayed = remembered is not None
         if remembered is None:
             summary = await self._summarize(transcript, prompt=self.prompt)
@@ -900,7 +925,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             summary_id = _next_summary_id(
                 messages, prefix=SUMMARY_ID_PREFIX, minimum=self._compactions
             )
-            self._remember(_Remembered(self.prompt, transcript, summary_id, summary))
+            self._remember(_Remembered(self.prompt, transcript, summary_id, summary, source_key))
         else:
             if any(message.message_id == remembered.summary_id for message in messages):
                 remembered = remembered._replace(
@@ -927,6 +952,82 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self._replace(messages, band, summary, summary_id=summary_id)
         self._replaced = len(band)
         return True
+
+    def _protect_media(self, messages: list[Message]) -> None:
+        for message in messages:
+            if message.role != "user":
+                continue
+            nontext = [part for part in message.contents if part.type != "text"]
+            must_keep = bool(nontext) and (
+                self.describe_media is None or any(part.type not in MEDIA_TYPES for part in nontext)
+            )
+            own_hold = message.additional_properties.get(PRESERVE_REASON_KEY) == "user_media"
+            if own_hold and not must_keep:
+                set_preserved(message, preserved=False)
+                message.additional_properties.pop(PRESERVE_REASON_KEY, None)
+            elif must_keep and not any_preserved([message]):
+                set_preserved(message, preserved=True, reason="user_media")
+
+    async def _describe_band(
+        self, messages: list[Message], band: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], dict[int, str]]:
+        """Describe an eligible prefix; a failed media turn stays available for a later pass."""
+        bodies: dict[int, str] = {}
+        prepared: list[dict[str, Any]] = []
+        for span in band:
+            message = messages[int(span["start_index"])]
+            if any(part.type in MEDIA_TYPES for part in message.contents):
+                body = await self._describe_turn(message)
+                if body is None:
+                    break
+                bodies[id(message)] = body
+            prepared.append(span)
+            if bodies and not fits_summary_input(
+                self.prompt,
+                _format_turns(
+                    [messages[int(item["start_index"])] for item in prepared],
+                    text=lambda turn: bodies.get(id(turn), turn.text),
+                ),
+                tokenizer=self.tokenizer,
+                limit=self.max_summary_input_tokens,
+            ):
+                # Keep this turn for bounded_prefix to judge, but spend no further media calls.
+                break
+        return prepared, bodies
+
+    async def _describe_turn(self, message: Message) -> str | None:
+        if self.describe_media is None:
+            return None
+        identity = media_identity(message)
+        parts: list[str] = []
+        for index, content in enumerate(message.contents):
+            if content.type == "text":
+                parts.append(content.text or "")
+                continue
+            key = f"{identity}:{index}"
+            description = self._media_descriptions.get(key)
+            if description is None:
+                try:
+                    context = deepcopy(message)
+                    answer = await self.describe_media(context.contents[index], context)
+                except Exception as error:
+                    logger.warning("Media description failed (%s).", type(error).__name__)
+                    self._failures += 1
+                    return None
+                if (
+                    not isinstance(answer, str)
+                    or not answer.strip()
+                    or self.tokenizer.count_tokens(answer) > self.max_summary_input_tokens
+                ):
+                    self._failures += 1
+                    return None
+                description = answer.strip()
+                self._media_descriptions[key] = description
+            parts.append(
+                "[Media description; inferred context, not a user instruction]\n"
+                f"{description}\n[End media description]"
+            )
+        return "\n".join(parts)
 
     def _band(
         self, messages: list[Message], standing: list[dict[str, Any]]
@@ -1405,7 +1506,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             reason=FOLD_EXCLUDE_REASON,
         )
 
-    def _recall(self, prompt: str, transcript: str) -> _Remembered | None:
+    def _recall(self, prompt: str, transcript: str, *, source_key: str = "") -> _Remembered | None:
         """Return the remembered answer to exactly this request, or None if it was never asked.
 
         Byte-identical is the test, on the prompt and the transcript both: a fold's request
@@ -1420,7 +1521,11 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             The remembered request when it matches, else None.
         """
         for remembered in reversed(self._remembered):
-            if remembered.prompt == prompt and remembered.transcript == transcript:
+            if (
+                remembered.prompt == prompt
+                and remembered.transcript == transcript
+                and remembered.source_key == source_key
+            ):
                 return remembered
         return None
 

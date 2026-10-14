@@ -36,7 +36,6 @@ from agent_framework._compaction import (
     EXCLUDE_REASON_KEY,
     EXCLUDED_KEY,
     annotate_message_groups,
-    annotate_token_counts,
     included_token_count,
 )
 
@@ -45,6 +44,7 @@ from ._anchored import (
     EXCLUDE_REASON,
     _is_marker,  # pyright: ignore[reportPrivateUsage]
 )
+from ._media import annotate_token_counts
 from ._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
 from ._summary_input import bounded_prefix, fits_summary_input, summary_request
 from ._toolsummary import (

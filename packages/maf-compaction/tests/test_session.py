@@ -110,19 +110,19 @@ def test_decisions_are_independent_json_values():
 
 
 @pytest.mark.parametrize("composed", [False, True])
-def test_stack_writes_v3_snapshots_and_restores_v1(composed):
+def test_stack_writes_v4_snapshots_and_restores_v1(composed):
     stack = build_stack(composed=composed)
     stack.gate.arm()
     stack.middleware._force_next = True
     snapshot = round_trip(stack.to_dict())
-    assert snapshot["version"] == 3
+    assert snapshot["version"] == 4
     legacy = snapshot | {"version": 1}
     restored = build_stack(composed=composed)
     restored.restore(legacy)
     assert restored.to_dict() == snapshot
 
 
-@pytest.mark.parametrize("version", [1, 2, 3])
+@pytest.mark.parametrize("version", [1, 2, 3, 4])
 async def test_stack_restores_fold_keys_and_replays_without_a_request(version):
     summarizer = Summarizer()
     stack = build_stack(summarizer)
@@ -162,7 +162,7 @@ async def test_stack_restores_fold_keys_and_replays_without_a_request(version):
     ]
     assert not restored_users.refold(stored)
     assert len(summarizer.requests) == 1
-    assert restored.to_dict()["version"] == 3
+    assert restored.to_dict()["version"] == 4
 
 
 def test_cache_is_bounded_and_session_state_wins_on_hits_and_resets():
