@@ -2987,3 +2987,44 @@ jobs:
           path: ${{ runner.temp }}/terraform-acas-opentofu-live.log
           if-no-files-found: ignore
           retention-days: 7
+
+  wslc-e2e:
+    name: WSLC hosted engine qualification
+    if: inputs.package == 'maf-sandbox-wslc'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Probe the hosted engine
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PATH = "C:\Program Files\WSL;$env:PATH"
+          wsl --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          wslc --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          wslc container list -a --format json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          wslc pull mcr.microsoft.com/devcontainers/python:3.13-bookworm
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          'C:\Program Files\WSL' | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Run the live backend suite
+        env:
+          MAF_SANDBOX_WSLC_E2E_IMAGE: mcr.microsoft.com/devcontainers/python:3.13-bookworm
+        run: |
+          uv sync --locked --python 3.13
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv run pytest -q -ra packages/maf-sandbox-wslc/tests/test_wslc_e2e.py --junitxml=wslc-e2e.xml
+          exit $LASTEXITCODE
+      - name: Retain qualification results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wslc-qualification
+          path: wslc-e2e.xml
