@@ -75,7 +75,7 @@ def _qualify(source: Path, output: Path, report: dict) -> None:
             ("capture", ["--lib", "capture_"], 5),
             ("limits", ["--test", "python", "python_output_limit"], 3),
             ("echo", ["--test", "python", "python_echo_output"], 1),
-            ("comparison", ["--test", "maf_output_qualification"], 6),
+            ("comparison", ["--test", "maf_output_qualification"], 7),
         ]
         for name, args, count in stages:
             log = _execute(
@@ -115,6 +115,13 @@ def _qualify(source: Path, output: Path, report: dict) -> None:
             "production acceptance",
         ]
     finally:
+        report["test_binaries"] = {
+            path.name: _digest(path)
+            for prefix in ("maf_output_qualification-", "python-", "hyperlight_unikraft-")
+            for path in (source / "target/debug/deps").glob(prefix + "*")
+            if path.suffix == (".exe" if os.name == "nt" else "")
+        }
+        shutil.copyfile(source / "Cargo.lock", output / "Cargo.lock")
         target.unlink()
 
 

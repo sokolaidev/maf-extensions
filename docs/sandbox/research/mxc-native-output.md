@@ -87,3 +87,23 @@ All 23 stream/failure cases matched across hosts: zero output; 4095/4096/4097-by
 The format-4 crash matrix exercised all eight publication/cleanup boundaries with both full byte prefixes and omission counts. Committed retries returned the identical envelope without a helper, including after checkpoint collection. Uncommitted failure preserved the previous checkpoint; quota refusal occurred before native launch; independently reconciled SQLite totals matched persisted accounting. This is same-machine process-crash evidence, not cross-machine fencing, machine power-loss evidence or a production adapter qualification.
 
 After this native run, the only executable adjustment tightened host scratch admission by one KiB to reserve readiness/control headroom explicitly. Its focused boundary test passed; the native kernel, Rust overlays, helper and transport remained unchanged. The reports deliberately retain the actual native-tested commit rather than relabeling it as the final documentation commit. The [experiment README](../../../scripts/experiments/mxc_streams_patch/README.md) describes running and removing the profile.
+
+## Upstream bounded capture qualification (2026-10-15)
+
+[Upstream PR #146](https://github.com/hyperlight-dev/hyperlight-unikraft/pull/146) closed [upstream #140](https://github.com/hyperlight-dev/hyperlight-unikraft/issues/140) at commit `cf458a07ed847f06d78284998a5beb13dc9fb426`. [#1948](https://github.com/sokolaidev/maf-extensions/issues/1948) tracks downstream qualification. This comparison preserves the older experiments and their evidence; the upstream fix does not retroactively change their pinned runtime.
+
+### Source comparison
+
+| Concern | Upstream at the pinned commit | Consequence for the MXC profile |
+|---|---|---|
+| Retained output | `output_limit(bytes)` bounds each capture between drains; overflow retains a UTF-8 prefix and continues execution | The original host-accumulation requirement is implemented, but the default remains unlimited |
+| Mirroring | `echo_output(false)` is a separate setting | Both settings must be applied on fresh boot and restore |
+| Stream identity | `take_output()` contains stdout and stderr together; `take_stderr()` duplicates stderr separately | A stderr flood can exhaust the combined budget before stdout is retained; these are not independent stdout/stderr budgets |
+| Drain ordering | `take_output()` clears the stderr text and omission counter | Stderr must be collected first |
+| Binary transport | `CapturedOutput.text` is a Rust `String`; callbacks accept strings | It cannot represent the existing arbitrary-byte stream contract |
+| Omission counters | `Capture::push` uses ordinary `u64` addition without a saturation flag | Preserve the downstream saturation contract; this is a source finding, not a measured long-running overflow |
+| Persistence | The upstream output API does not implement the MXC format-4 result/checkpoint transaction or bounded-export overlay | Session, storage and durable replay support cannot be retired on the strength of this fix |
+
+The upstream snapshot contract is `c4` and its embedded x86-64 kernel has SHA-256 `2d5dc13d1dd13e31b37c98f0ab5413d90b5eed9104e6215e1e06ede559c9f275`. The retained MXC 1.0 runtime at `8f636e00cdf29e6c33ba0f578482c595d7827cf6` used contract `c3`. These source identities differ before attempting any old-checkpoint restore; a migration must keep old profiles available and explicitly qualify refusal/recovery. This comparison does not attribute all intervening kernel and contract changes to PR #146.
+
+The [qualification harness](../../../scripts/experiments/unikraft_output/README.md) runs the exact upstream collector, output-limit, restore and echo tests alongside independent native contract comparisons. It leaves the existing MXC overlay sources and pins unchanged.

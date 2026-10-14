@@ -55,34 +55,42 @@ fn combined_drain_discards_stderr_metadata() {
 }
 
 #[test]
-fn unicode_prefix_and_reopened_devices() {
+fn unicode_prefix_and_reopened_stdout() {
     let mut vm = sandbox(2);
     vm.run("import os\nos.write(1, 'aéb'.encode())").unwrap();
     let out = vm.take_output();
     assert_eq!(out.text, "a");
     assert_eq!(out.omitted, 3);
-    vm.run("open('/dev/stdout', 'wb', buffering=0).write(b'X' * 8192)\nopen('/dev/stderr', 'wb', buffering=0).write(b'E' * 8192)")
+    vm.run("open('/dev/stdout', 'wb', buffering=0).write(b'X' * 8192)")
         .unwrap();
-    let err = vm.take_stderr();
     let out = vm.take_output();
-    assert_eq!(err.text, "EE");
-    assert_eq!(err.omitted, 8190);
     assert_eq!(out.text, "XX");
-    assert_eq!(out.omitted, 16382);
+    assert_eq!(out.omitted, 8190);
 }
 
 #[test]
 fn binary_fidelity_observation() {
     let mut vm = sandbox(4096);
-    vm.run("import os\nos.write(1, bytes(range(256)))").unwrap();
-    let out = vm.take_output();
-    let expected: Vec<u8> = (0..=255).collect();
-    assert_ne!(out.text.as_bytes(), expected.as_slice());
+    let error = vm.run("import os\nos.write(1, bytes(range(256)))").unwrap_err();
+    let detail = format!("{error:?}");
+    assert!(detail.contains("ReadHostFunctionCall"), "{detail}");
     println!("OBSERVATION {}", serde_json::json!({
         "case": "all_byte_values", "equivalent": false,
-        "guest_bytes": 256, "captured_utf8_bytes": out.text.len(),
-        "captured_hex": out.text.as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>(),
-        "omitted": out.omitted, "snapshot_key": SNAPSHOT_KEY
+        "guest_bytes": 256, "outcome": "host-call-decoding-error",
+        "error": detail, "snapshot_key": SNAPSHOT_KEY
+    }));
+}
+
+#[test]
+fn reopened_stderr_observation() {
+    let mut vm = sandbox(65536);
+    let error = vm.run("open('/dev/stderr', 'wb', buffering=0).write(b'E' * 8192)").unwrap_err();
+    let err = vm.take_stderr();
+    let out = vm.take_output();
+    println!("OBSERVATION {}", serde_json::json!({
+        "case": "reopened_stderr", "equivalent": false,
+        "error": format!("{error:?}"), "combined": out.text, "stderr": err.text,
+        "combined_omitted": out.omitted, "stderr_omitted": err.omitted
     }));
 }
 

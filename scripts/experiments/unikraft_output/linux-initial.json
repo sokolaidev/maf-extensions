@@ -1,0 +1,45 @@
+{
+  "status": "unqualified",
+  "platform": "Linux",
+  "source_commit": "a4d79f147fbf257f6032472fee18d4627948f1b1",
+  "run_id": "38651934008",
+  "run_attempt": "1",
+  "upstream_commit": "cf458a07ed847f06d78284998a5beb13dc9fb426",
+  "rootfs": {
+    "upstream_commit": "cf458a07ed847f06d78284998a5beb13dc9fb426",
+    "run_id": "38651934008",
+    "run_attempt": "1",
+    "rootfs_sha256": "8b3f379114d4b1581b07b7a5cd29544e39c231eedce2889bb34a7db2a60f153a",
+    "images": {
+      "python:3.12-slim-bookworm": {
+        "id": "sha256:4f228bc1cbcfc794e4878312cfc241d368eff55a21c08d1e2bb263116c4ef524",
+        "repo_digests": [
+          "python@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258"
+        ]
+      },
+      "hluk-python-rootfs": {
+        "id": "sha256:d0d93a815ce8dfff2a194f259ade9fe268ad2a4c9188377a61b5ef73cab5cc33",
+        "repo_digests": []
+      }
+    }
+  },
+  "kernel_sha256": "2d5dc13d1dd13e31b37c98f0ab5413d90b5eed9104e6215e1e06ede559c9f275",
+  "cargo_lock_sha256": "f9611836e9490ac971e7e463fd771076005b03b1833d837917f371692c2dbde8",
+  "probe_sha256": "96b3e9fe50b719e6e1cc284a6563f96deb950976ce3f79352ee7168feb62e14e",
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "stages": {
+    "capture": {
+      "passed": 5,
+      "log_sha256": "249da043b444136024984ce03eee7c623e594358675a4315261f4b162025333f"
+    },
+    "limits": {
+      "passed": 3,
+      "log_sha256": "5ef3d7406ccedf8ab763f6e467ea695f72010ac9217182958260ae26506ec644"
+    },
+    "echo": {
+      "passed": 1,
+      "log_sha256": "75d3c718f0c4a934e775349f0b9f28344a81c3b4f8e05ce69f5db72a26342030"
+    }
+  },
+  "error": "comparison failed or did not execute exactly 6 tests"
+}
