@@ -3,22 +3,22 @@
 from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes
 import os
 import time
-from ctypes import wintypes
 
 
 class _BasicLimits(ctypes.Structure):
     _fields_ = [
         ("PerProcessUserTimeLimit", ctypes.c_int64),
         ("PerJobUserTimeLimit", ctypes.c_int64),
-        ("LimitFlags", wintypes.DWORD),
+        ("LimitFlags", ctypes.wintypes.DWORD),
         ("MinimumWorkingSetSize", ctypes.c_size_t),
         ("MaximumWorkingSetSize", ctypes.c_size_t),
-        ("ActiveProcessLimit", wintypes.DWORD),
+        ("ActiveProcessLimit", ctypes.wintypes.DWORD),
         ("Affinity", ctypes.c_size_t),
-        ("PriorityClass", wintypes.DWORD),
-        ("SchedulingClass", wintypes.DWORD),
+        ("PriorityClass", ctypes.wintypes.DWORD),
+        ("SchedulingClass", ctypes.wintypes.DWORD),
     ]
 
 
@@ -36,17 +36,17 @@ class _ExtendedLimits(ctypes.Structure):
 class _Accounting(ctypes.Structure):
     _fields_ = [
         ("Times", ctypes.c_int64 * 4),
-        ("TotalPageFaultCount", wintypes.DWORD),
-        ("TotalProcesses", wintypes.DWORD),
-        ("ActiveProcesses", wintypes.DWORD),
-        ("TotalTerminatedProcesses", wintypes.DWORD),
+        ("TotalPageFaultCount", ctypes.wintypes.DWORD),
+        ("TotalProcesses", ctypes.wintypes.DWORD),
+        ("ActiveProcesses", ctypes.wintypes.DWORD),
+        ("TotalTerminatedProcesses", ctypes.wintypes.DWORD),
     ]
 
 
 class _ProcessIds(ctypes.Structure):
     _fields_ = [
-        ("assigned", wintypes.DWORD),
-        ("count", wintypes.DWORD),
+        ("assigned", ctypes.wintypes.DWORD),
+        ("count", ctypes.wintypes.DWORD),
         ("pids", ctypes.c_size_t * 4096),
     ]
 
@@ -54,25 +54,48 @@ class _ProcessIds(ctypes.Structure):
 class Job:
     """Hold a non-inherited job handle until its active process count reaches zero."""
 
+    api: ctypes.CDLL
+
     def __init__(self) -> None:
         if os.name != "nt":
             raise OSError("Windows jobs require Windows")
         self.api = ctypes.WinDLL("kernel32", use_last_error=True)
         signatures = {
-            "CreateJobObjectW": ([ctypes.c_void_p, wintypes.LPCWSTR], wintypes.HANDLE),
+            "CreateJobObjectW": (
+                [ctypes.c_void_p, ctypes.wintypes.LPCWSTR],
+                ctypes.wintypes.HANDLE,
+            ),
             "SetInformationJobObject": (
-                [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD],
-                wintypes.BOOL,
+                [ctypes.wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, ctypes.wintypes.DWORD],
+                ctypes.wintypes.BOOL,
             ),
             "QueryInformationJobObject": (
-                [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p],
-                wintypes.BOOL,
+                [
+                    ctypes.wintypes.HANDLE,
+                    ctypes.c_int,
+                    ctypes.c_void_p,
+                    ctypes.wintypes.DWORD,
+                    ctypes.c_void_p,
+                ],
+                ctypes.wintypes.BOOL,
             ),
-            "OpenProcess": ([wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE),
-            "AssignProcessToJobObject": ([wintypes.HANDLE, wintypes.HANDLE], wintypes.BOOL),
-            "TerminateJobObject": ([wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
-            "CloseHandle": ([wintypes.HANDLE], wintypes.BOOL),
-            "WaitForSingleObject": ([wintypes.HANDLE, wintypes.DWORD], wintypes.DWORD),
+            "OpenProcess": (
+                [ctypes.wintypes.DWORD, ctypes.wintypes.BOOL, ctypes.wintypes.DWORD],
+                ctypes.wintypes.HANDLE,
+            ),
+            "AssignProcessToJobObject": (
+                [ctypes.wintypes.HANDLE, ctypes.wintypes.HANDLE],
+                ctypes.wintypes.BOOL,
+            ),
+            "TerminateJobObject": (
+                [ctypes.wintypes.HANDLE, ctypes.wintypes.UINT],
+                ctypes.wintypes.BOOL,
+            ),
+            "CloseHandle": ([ctypes.wintypes.HANDLE], ctypes.wintypes.BOOL),
+            "WaitForSingleObject": (
+                [ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD],
+                ctypes.wintypes.DWORD,
+            ),
         }
         for name, (args, result) in signatures.items():
             function = getattr(self.api, name)

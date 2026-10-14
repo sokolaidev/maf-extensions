@@ -356,14 +356,18 @@ def wait_file(path: Path) -> str:
 def alive(pid: int) -> bool:
     if os.name == "nt":
         import ctypes
-        from ctypes import wintypes
+        import ctypes.wintypes
 
         api = ctypes.WinDLL("kernel32", use_last_error=True)
-        api.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        api.OpenProcess.restype = wintypes.HANDLE
-        api.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-        api.WaitForSingleObject.restype = wintypes.DWORD
-        api.CloseHandle.argtypes = [wintypes.HANDLE]
+        api.OpenProcess.argtypes = [
+            ctypes.wintypes.DWORD,
+            ctypes.wintypes.BOOL,
+            ctypes.wintypes.DWORD,
+        ]
+        api.OpenProcess.restype = ctypes.wintypes.HANDLE
+        api.WaitForSingleObject.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD]
+        api.WaitForSingleObject.restype = ctypes.wintypes.DWORD
+        api.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
         handle = api.OpenProcess(0x100000, False, pid)
         if not handle:
             assert ctypes.get_last_error() == 87
@@ -415,7 +419,8 @@ def test_owned_descendant_is_removed_even_if_leader_exits(
         if leader_exits:
             leader.wait(timeout=15)
         assert controller.group_exists(leader)
-        assert controller.close() == []
+        close_errors = controller.close()
+        assert close_errors == []
         assert controller.stopped
         assert not alive(descendant)
         assert sentinel.poll() is None
@@ -433,7 +438,7 @@ def test_owned_descendant_is_removed_even_if_leader_exits(
             try:
                 os.killpg(controller.children[0][0].pid, signal.SIGKILL)
             except ProcessLookupError:
-                pass
+                pass  # Successful cleanup already removed the process group.
 
 
 def test_failed_group_observation_never_confirms_stopped(
@@ -447,7 +452,8 @@ def test_failed_group_observation_never_confirms_stopped(
         raise OSError("Cannot inspect owned processes")
 
     monkeypatch.setattr(controller, "group_exists", refused)
-    assert controller.close() == ["OSError"]
+    close_errors = controller.close()
+    assert close_errors == ["OSError"]
     assert not controller.stopped
 
 
@@ -471,6 +477,7 @@ def test_failed_job_assignment_never_starts_service(
                 "from pathlib import Path; Path(" + repr(str(marker)) + ").touch()",
             ],
         )
-    assert controller.close() == []
+    close_errors = controller.close()
+    assert close_errors == []
     assert controller.stopped
     assert not marker.exists()

@@ -107,9 +107,11 @@ class Processes:
                     sys.executable,
                     "-I",
                     "-c",
-                    "import subprocess,sys; sys.exit(subprocess.call(sys.argv[1:], "
-                    "stdin=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW) "
-                    "if sys.stdin.buffer.read(1)==b'1' else 1)",
+                    (
+                        "import subprocess,sys; sys.exit(subprocess.call(sys.argv[1:], "
+                        "stdin=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW) "
+                        "if sys.stdin.buffer.read(1)==b'1' else 1)"
+                    ),
                     *command,
                 ]
             child = subprocess.Popen(
