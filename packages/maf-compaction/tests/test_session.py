@@ -110,7 +110,7 @@ def test_decisions_are_independent_json_values():
 
 
 @pytest.mark.parametrize("composed", [False, True])
-def test_stack_writes_v2_snapshots_and_restores_v1(composed):
+def test_stack_writes_v3_snapshots_and_restores_v1(composed):
     stack = build_stack(composed=composed)
     stack.gate.arm()
     stack.middleware._force_next = True
