@@ -2,11 +2,6 @@ name: Upstream Unikraft output qualification
 
 on:
   workflow_dispatch:
-  push:
-    branches: ['test/1948-unikraft-output-qualification']
-    paths:
-      - '.github/workflows/unikraft-output.yml'
-      - 'scripts/experiments/unikraft_output/**'
 
 permissions:
   contents: read
