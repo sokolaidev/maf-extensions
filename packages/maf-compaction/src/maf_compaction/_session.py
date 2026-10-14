@@ -16,7 +16,6 @@ from agent_framework import (
     CompactionProvider,
     FunctionInvocationContext,
     Message,
-    ResponseStream,
     TokenizerProtocol,
 )
 
@@ -28,7 +27,6 @@ from ._toolsummary import (
     ToolResultAnchoredSummarizationCompactionStrategy,
     ToolResultRecallMiddleware,
     make_recall_tool,
-    retry_failed_stream,
 )
 
 _Strategy = (
@@ -58,7 +56,7 @@ class CompactionStack:
             else self.strategy.decision_state().to_dict()
         )
         return {
-            "version": 2,
+            "version": 3,
             "kind": "composed" if composed else "record",
             "strategy": strategy,
             "gate": self.gate.session_state(),
@@ -66,11 +64,11 @@ class CompactionStack:
         }
 
     def restore(self, data: dict[str, Any]) -> None:
-        """Restore a version 1 or 2 snapshot made with the same stack configuration."""
+        """Restore a version 1, 2 or 3 snapshot made with the same stack configuration."""
         composed = isinstance(
             self.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
         )
-        if data.get("version") not in (1, 2) or data.get("kind") != (
+        if data.get("version") not in (1, 2, 3) or data.get("kind") != (
             "composed" if composed else "record"
         ):
             raise ValueError("Unsupported compaction state version or stack kind.")
@@ -221,20 +219,7 @@ class SessionToolResultRecallMiddleware(ChatMiddleware):
 
             context.kwargs = {**context.kwargs, "compaction_strategy": compact}
         with self.registry.activate(session) as stack:
-            pending = stack.middleware.session_state()
             await stack.middleware.process(context, call_next)
-        if pending["force_next"] and isinstance(context.result, ResponseStream):
-
-            def retry() -> None:
-                # Re-enter from persisted state: deferred consumption can outlive cache eviction.
-                with self.registry.activate(session) as current:
-                    state = current.middleware.session_state()
-                    for key in ("force_next", "reforce_next", "awaiting_record"):
-                        state[key] = pending[key]
-                    current.middleware.restore_session_state(state)
-                    current.gate.disarm()
-
-            context.result = retry_failed_stream(context.result, retry)
 
 
 def make_session_recall_tool(

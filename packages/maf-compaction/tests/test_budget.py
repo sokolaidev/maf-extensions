@@ -170,11 +170,14 @@ async def test_shed_groups_do_not_rearm_recall(group_bound):
     async def call():
         context = ChatContext(None, messages, {})
 
+        seen = {}
+
         async def respond():
+            seen.update(context.options or {})
             context.result = ChatResponse(messages=Message("assistant", ["Continue."]))
 
         await middleware.process(context, respond)
-        return context.options
+        return seen
 
     for _ in range(5):
         assert "tool_choice" not in await call()
