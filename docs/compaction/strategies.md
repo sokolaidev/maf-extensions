@@ -110,6 +110,8 @@ Description identities include the source message ID, ordered content and surrou
 
 Preserved media remains part of the budget. If protected material cannot fit, the composition raises `CompactionBudgetExceeded` under either overflow policy. The host must reduce protected context or use a larger budget; silent image loss is not an overflow policy.
 
+The [live image verification record](research/media-live-1878.md) measures description, compaction, session replay and provider usage on synthetic images; its scope does not extend to other media or providers.
+
 ## What none of them do
 
 Inside the context window nothing here beats not compacting: the best strategy costs within 3-8% of the control, inside the seed spread, and the whole conversation stays cached. Past the window the composition keeps every fact and is cheaper than an unlimited model, except on gpt-5.6-luna at three times the window, where it costs more and overflows on one seed of five; the rest either lose facts or overflow. None of them measures what a user-turn summary kept of the turns. All of them call `agent_framework._compaction`, the framework's private compaction helpers, for grouping, token annotation and the exclusion flags, so the dependency is pinned to one minor and re-read before the pin moves.

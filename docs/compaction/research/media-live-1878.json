@@ -1,0 +1,379 @@
+{
+  "date": "2026-10-14",
+  "source_commit": "d4e968fd3e796bdd5390f0ef294129001cd3541a",
+  "transport": "Local Ollama HTTP endpoint forwarding to Ollama Cloud",
+  "versions": {
+    "ollama_server": "0.40.1",
+    "agent_framework_core": "1.21.0",
+    "ollama_python": "0.5.3",
+    "python": "3.13.12",
+    "agent_framework_ollama": "1.0.0b261008",
+    "pillow": "12.3.0"
+  },
+  "fixtures": [
+    {
+      "warehouse": "A17",
+      "color": "red",
+      "sha256": "a3bc20e399467d49e257927697689e8f84c028991bf7010a367fd8d9e15a5142",
+      "count": 3,
+      "inspection": "PASSED"
+    },
+    {
+      "warehouse": "B29",
+      "color": "blue",
+      "sha256": "39be7d1c114e0e31a09a56e9eb4a5c3e781278d5d4d8aa78758b0fce8a009325",
+      "count": 5,
+      "inspection": "PASSED"
+    }
+  ],
+  "completed_run": {
+    "checks": [
+      {
+        "name": "default preserved without requests",
+        "passed": true
+      },
+      {
+        "name": "single image compacted",
+        "passed": true
+      },
+      {
+        "name": "single image facts retained",
+        "passed": true
+      },
+      {
+        "name": "image replaced after acceptance",
+        "passed": true
+      },
+      {
+        "name": "v4 snapshot has no media payload",
+        "passed": true
+      },
+      {
+        "name": "restored replay compacted",
+        "passed": true
+      },
+      {
+        "name": "restored replay makes zero requests",
+        "passed": true
+      },
+      {
+        "name": "different image does not alias",
+        "passed": true
+      },
+      {
+        "name": "different image facts retained",
+        "passed": true
+      },
+      {
+        "name": "multiple images compacted",
+        "passed": true
+      },
+      {
+        "name": "multiple image facts retained",
+        "passed": true
+      },
+      {
+        "name": "live recall preserves both images",
+        "passed": true
+      },
+      {
+        "name": "provider reports exact requested model",
+        "passed": true
+      },
+      {
+        "name": "provider reports positive input usage",
+        "passed": true
+      }
+    ],
+    "events": [
+      {
+        "phase": "describe",
+        "model": "glm-5.3-flash",
+        "seconds": 2.587,
+        "usage": {
+          "input_token_count": 381,
+          "output_token_count": 158,
+          "total_token_count": 539
+        },
+        "text": "The image displays a white background with text reading \"Warehouse A17,\" \"3 red crates,\" and \"Inspection: PASSED.\" Below the text are three solid red rectangles with black outlines, arranged side by side in a row. These rectangles visually correspond to the stated crate count and color. No other objects, people, or details appear in the image, and no additional information about the warehouse or crates is shown."
+      },
+      {
+        "phase": "summarize",
+        "model": "glm-5.3-flash",
+        "seconds": 1.741,
+        "usage": {
+          "input_token_count": 258,
+          "output_token_count": 356,
+          "total_token_count": 614
+        },
+        "text": "The user asked the assistant to read an image. The image (per the accompanying description) shows a white background with the text \"Warehouse A17,\" \"3 red crates,\" and \"Inspection: PASSED,\" below which are three solid red rectangles with black outlines arranged side by side; no other objects or details are shown."
+      },
+      {
+        "phase": "describe",
+        "model": "glm-5.3-flash",
+        "seconds": 1.642,
+        "usage": {
+          "input_token_count": 381,
+          "output_token_count": 134,
+          "total_token_count": 515
+        },
+        "text": "The image displays text on a white background reading \"Warehouse B29,\" \"5 blue crates,\" and \"Inspection: PASSED.\" Below the text are five solid blue rectangles arranged in a horizontal row, each with a thin black border. The rectangles visually correspond to the stated crate count and color. No other objects, people, or background details are present in the image."
+      },
+      {
+        "phase": "summarize",
+        "model": "glm-5.3-flash",
+        "seconds": 1.741,
+        "usage": {
+          "input_token_count": 249,
+          "output_token_count": 284,
+          "total_token_count": 533
+        },
+        "text": "The user asked the assistant to read an image. The image contained a white background with text reading \"Warehouse B29,\" \"5 blue crates,\" and \"Inspection: PASSED,\" and below the text, five solid blue rectangles with thin black borders arranged in a horizontal row, visually corresponding to the stated crate count and color; no other objects, people, or background details were present."
+      },
+      {
+        "phase": "describe",
+        "model": "glm-5.3-flash",
+        "seconds": 1.425,
+        "usage": {
+          "input_token_count": 389,
+          "output_token_count": 197,
+          "total_token_count": 586
+        },
+        "text": "Warehouse A17 contains 3 red crates, displayed as three red rectangles in the image. Its inspection status is marked as PASSED.\n\nThe second warehouse appears at the top of the layout, but its image or details (identifier, crate count, color, inspection status) are not provided, so no facts about it can be stated. A comparison of the two inventories is not possible without the second warehouse's data."
+      },
+      {
+        "phase": "describe",
+        "model": "glm-5.3-flash",
+        "seconds": 3.18,
+        "usage": {
+          "input_token_count": 389,
+          "output_token_count": 521,
+          "total_token_count": 910
+        },
+        "text": "The supplied image shows **Warehouse B29**: it contains **5 blue crates**, depicted as five blue rectangles, and its **inspection status is PASSED**.\n\nOnly one warehouse is depicted in the image. No details for a second warehouse are provided, so a side-by-side inventory comparison cannot be made. All that can be stated factually is Warehouse B29's inventory: 5 blue crates, inspection passed."
+      },
+      {
+        "phase": "summarize",
+        "model": "glm-5.3-flash",
+        "seconds": 4.502,
+        "usage": {
+          "input_token_count": 366,
+          "output_token_count": 687,
+          "total_token_count": 1053
+        },
+        "text": "The user shared images of two warehouses: the first shows Warehouse **A17** with **3 red crates** and inspection status **PASSED**; the second shows Warehouse **B29** with **5 blue crates** and inspection status **PASSED** (each image depicts only one warehouse). They then asked: \"Compare both warehouse inventories.\""
+      },
+      {
+        "phase": "recall",
+        "model": "glm-5.3-flash",
+        "seconds": 3.561,
+        "usage": {
+          "input_token_count": 127,
+          "output_token_count": 477,
+          "total_token_count": 604
+        },
+        "text": "Here are the warehouse facts from prior context, retained for later use:\n\n**Warehouse A17**\n- Identifier: A17\n- Crate count: 3\n- Crate color: red\n- Inspection status: PASSED\n\n**Warehouse B29**\n- Identifier: B29\n- Crate count: 5\n- Crate color: blue\n- Inspection status: PASSED\n\n**Quick comparison summary:**\n- B29 has 2 more crates than A17 (5 vs. 3)\n- Crate colors differ: red (A17) vs. blue (B29)\n- Both warehouses share the same inspection result: PASSED\n\nAll facts above come solely from the earlier context — I've stored them and can reference them in later turns."
+      },
+      {
+        "phase": "usage-baseline",
+        "model": "glm-5.3-flash",
+        "seconds": 1.068,
+        "usage": {
+          "input_token_count": 16,
+          "output_token_count": 123,
+          "total_token_count": 139
+        },
+        "text": "OK"
+      },
+      {
+        "phase": "usage-image",
+        "model": "glm-5.3-flash",
+        "seconds": 1.554,
+        "usage": {
+          "input_token_count": 340,
+          "output_token_count": 39,
+          "total_token_count": 379
+        },
+        "text": "OK"
+      }
+    ],
+    "offline": false,
+    "model_requested": "glm-5.3-flash:cloud",
+    "image_size": [
+      640,
+      384
+    ],
+    "image_tokens_configured": 1024,
+    "single_history_estimated_before": 1148,
+    "single_history_estimated_after": 198,
+    "description_calls": 4
+  },
+  "first_attempt": {
+    "checks": [
+      {
+        "name": "default preserved without requests",
+        "passed": true
+      },
+      {
+        "name": "single image compacted",
+        "passed": true
+      },
+      {
+        "name": "single image facts retained",
+        "passed": true
+      },
+      {
+        "name": "image replaced after acceptance",
+        "passed": true
+      },
+      {
+        "name": "v4 snapshot has no media payload",
+        "passed": true
+      },
+      {
+        "name": "restored replay compacted",
+        "passed": true
+      },
+      {
+        "name": "restored replay makes zero requests",
+        "passed": true
+      },
+      {
+        "name": "different image does not alias",
+        "passed": true
+      },
+      {
+        "name": "different image facts retained",
+        "passed": true
+      },
+      {
+        "name": "multiple images compacted",
+        "passed": true
+      },
+      {
+        "name": "multiple image facts retained",
+        "passed": true
+      },
+      {
+        "name": "live recall preserves both images",
+        "passed": true
+      },
+      {
+        "name": "provider reports exact requested model",
+        "passed": false
+      }
+    ],
+    "events": [
+      {
+        "phase": "describe",
+        "model": "glm-5.3-flash",
+        "seconds": 2.194,
+        "usage": {
+          "input_token_count": 381,
+          "output_token_count": 155,
+          "total_token_count": 536
+        },
+        "text": "The image displays a white background with text reading \"Warehouse A17,\" \"3 red crates,\" and \"Inspection: PASSED.\" Below the text are three black-outlined red rectangles arranged in a horizontal row, depicting the crates.</think>The image shows a warehouse record on a white background. The text reads \"Warehouse A17,\" \"3 red crates,\" and \"Inspection: PASSED.\" Below the text, three red rectangles with black outlines are arranged in a horizontal row, representing the crates."
+      },
+      {
+        "phase": "summarize",
+        "model": "glm-5.3-flash",
+        "seconds": 1.575,
+        "usage": {
+          "input_token_count": 275,
+          "output_token_count": 251,
+          "total_token_count": 526
+        },
+        "text": "The user asked to read an image. The image displays a white background with text reading \"Warehouse A17,\" \"3 red crates,\" and \"Inspection: PASSED.\" Below the text are three black-outlined red rectangles arranged in a horizontal row, depicting the crates."
+      },
+      {
+        "phase": "describe",
+        "model": "glm-5.3-flash",
+        "seconds": 1.212,
+        "usage": {
+          "input_token_count": 381,
+          "output_token_count": 132,
+          "total_token_count": 513
+        },
+        "text": "The image displays text reading \"Warehouse B29,\" \"5 blue crates,\" and \"Inspection: PASSED.\" Below the text are five blue squares arranged in a horizontal row with black borders, representing the crates. The background is white. No other details are shown."
+      },
+      {
+        "phase": "summarize",
+        "model": "glm-5.3-flash",
+        "seconds": 1.252,
+        "usage": {
+          "input_token_count": 228,
+          "output_token_count": 249,
+          "total_token_count": 477
+        },
+        "text": "The user submitted an image and asked the assistant to read it. The image shows the text \"Warehouse B29,\" \"5 blue crates,\" and \"Inspection: PASSED,\" above five blue squares with black borders arranged in a horizontal row on a white background."
+      },
+      {
+        "phase": "describe",
+        "model": "glm-5.3-flash",
+        "seconds": 2.482,
+        "usage": {
+          "input_token_count": 389,
+          "output_token_count": 396,
+          "total_token_count": 785
+        },
+        "text": "The visible image shows Warehouse A17, which contains 3 red crates and has an inspection status of PASSED. Three red rectangles are displayed beneath the text. No second warehouse image is present in the supplied content, so only Warehouse A17's facts can be stated. No data exists for the second warehouse's identifier, crate count, color, or inspection status, and no inventory comparison can be made without it."
+      },
+      {
+        "phase": "describe",
+        "model": "glm-5.3-flash",
+        "seconds": 3.248,
+        "usage": {
+          "input_token_count": 389,
+          "output_token_count": 260,
+          "total_token_count": 649
+        },
+        "text": "The supplied image shows Warehouse B29 containing 5 blue crates. Its inspection status is PASSED. No image or details for a second warehouse are provided, so crate count, color, or inspection status for another warehouse cannot be determined from the available material. Accordingly, an inventory comparison is not possible without inferring facts that are not present; only Warehouse B29's inventory can be stated."
+      },
+      {
+        "phase": "summarize",
+        "model": "glm-5.3-flash",
+        "seconds": 3.203,
+        "usage": {
+          "input_token_count": 360,
+          "output_token_count": 407,
+          "total_token_count": 767
+        },
+        "text": "The user shared two warehouse images and asked to \"Compare both warehouse inventories.\"\n\n- First image: Warehouse A17 — 3 red crates, inspection status PASSED; three red rectangles displayed beneath the text.\n- Second image: Warehouse B29 — 5 blue crates, inspection status PASSED."
+      },
+      {
+        "phase": "recall",
+        "model": "glm-5.3-flash",
+        "seconds": 3.896,
+        "usage": {
+          "input_token_count": 115,
+          "output_token_count": 489,
+          "total_token_count": 604
+        },
+        "text": "**Warehouse inventory summary (from prior context):**\n\n| Warehouse ID | Crate Count | Crate Color | Inspection Status |\n|---|---|---|---|\n| A17 | 3 | Red | PASSED |\n| B29 | 5 | Blue | PASSED |\n\nAdditional note: the first image (A17) displayed three red rectangles beneath the text, consistent with the 3 crates described.\n\nAll facts retained for later reference."
+      },
+      {
+        "phase": "usage-baseline",
+        "model": "glm-5.3-flash",
+        "seconds": 1.158,
+        "usage": {
+          "input_token_count": 16,
+          "output_token_count": 79,
+          "total_token_count": 95
+        },
+        "text": "OK"
+      },
+      {
+        "phase": "usage-image",
+        "model": "glm-5.3-flash",
+        "seconds": 1.541,
+        "usage": {
+          "input_token_count": 340,
+          "output_token_count": 88,
+          "total_token_count": 428
+        },
+        "text": "OK"
+      }
+    ]
+  }
+}
