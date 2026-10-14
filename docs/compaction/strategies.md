@@ -105,7 +105,7 @@ Inside the context window nothing here beats not compacting: the best strategy c
 | Position-only anchored trimming that honours preserved messages | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
 | Minimum-gain floor at the break-even share | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
 | Record-then-drop with value coverage, re-force, preservation and repeated records | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
-| Session degradation for ignored or failed recall pins | In progress | [#1876](https://github.com/sokolaidev/maf-extensions/issues/1876) (open) |
+| Session degradation for ignored or failed recall pins | Implemented | [#1876](https://github.com/sokolaidev/maf-extensions/issues/1876) (closed) by [#1941](https://github.com/sokolaidev/maf-extensions/pull/1941) (merged) |
 | Partial coverage of large table results and a record-budget diagnostic | Implemented | [#1875](https://github.com/sokolaidev/maf-extensions/issues/1875) (closed) by [#1893](https://github.com/sokolaidev/maf-extensions/pull/1893) (merged) |
 | User-turn summaries in three modes, bounded by the band share | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
 | Bounded summarizer requests for user turns, folds, record merges and rewrites | Implemented | [#1877](https://github.com/sokolaidev/maf-extensions/issues/1877) (closed) by [#1903](https://github.com/sokolaidev/maf-extensions/pull/1903) (merged) |
