@@ -1,0 +1,13 @@
+# Upstream Unikraft output qualification
+
+This experiment tracks [#1948](https://github.com/sokolaidev/maf-extensions/issues/1948). It compares upstream commit `cf458a07ed847f06d78284998a5beb13dc9fb426` with the existing MXC native-output contract. It does not modify the qualified MXC profiles or install an upstream runtime into a persistent store.
+
+The workflow builds one Python rootfs from the pinned upstream driver and passes its exact bytes to both native jobs. Its build report records the CPIO hash and observed Docker image identities. The Dockerfile still installs unversioned Debian packages; a later build is not promised to produce identical bytes. The embedded kernel and Cargo dependency lock come from the pinned upstream commit.
+
+Each native job checks source and rootfs identity, runs five upstream collector tests, three upstream native output-limit tests, the upstream echo test, and six independent comparison tests. Missing or ignored tests refuse qualification. The report records kernel, rootfs, dependency lock, probe and native comparison executable hashes. Logs and reports are uploaded even on failure. Guest networking remains disabled by the upstream builder default.
+
+The comparison tests intentionally establish whether upstream matches the existing contract. A successful experiment may establish a mismatch: stderr consumes the combined output budget, draining combined output clears stderr metadata, and text capture cannot preserve all 256 byte values. Such a result is recorded as `measured` with `defer-overlay-removal`, never as a qualified MXC integration. The guest-control-text probe checks that text is returned as data; it does not exercise our durable publication protocol.
+
+Run the **Upstream Unikraft output qualification** workflow at the reviewed branch. For manual reproduction, provide a fresh checkout at the exact upstream commit, Rust 1.98.0, a matching `build-elfloader/python-rootfs.cpio`, and its `rootfs-build.json` from the same workflow run and attempt. Run `python scripts/experiments/unikraft_output/qualify.py --source UPSTREAM_CHECKOUT --output EVIDENCE_DIRECTORY`. Existing test files or modified tracked upstream source are refused. The temporary integration test is removed after execution.
+
+The [research record](../../../docs/sandbox/research/mxc-native-output.md) owns the adoption decision. Old-checkpoint restore, MXC durable publication/replay and the complete timeout/cancellation/owner-loss matrix require an integrated migration candidate; the standalone upstream tests do not establish them.
