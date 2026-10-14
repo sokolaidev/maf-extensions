@@ -105,6 +105,7 @@ Inside the context window nothing here beats not compacting: the best strategy c
 | Decision | State | Tracking |
 |---|---|---|
 | Position-only anchored trimming that honours preserved messages | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
+| Text-only tool-result shortening updates both request content and token-count input | Implemented | [#1929](https://github.com/sokolaidev/maf-extensions/issues/1929) (closed) by [#1940](https://github.com/sokolaidev/maf-extensions/pull/1940) (merged) |
 | Minimum-gain floor at the break-even share | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
 | Record-then-drop with value coverage, re-force, preservation and repeated records | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
 | Session degradation for ignored or failed recall pins | Implemented | [#1876](https://github.com/sokolaidev/maf-extensions/issues/1876) (closed) by [#1941](https://github.com/sokolaidev/maf-extensions/pull/1941) (merged) |
