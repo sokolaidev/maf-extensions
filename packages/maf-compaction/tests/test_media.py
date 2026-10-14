@@ -349,7 +349,7 @@ async def test_media_cost_reaches_composed_overflow(policy):
 @pytest.mark.parametrize(
     "factory",
     [
-        lambda: image(),
+        image,
         lambda: Content.from_uri("https://example.org/a.png", media_type="IMAGE/PNG"),
         lambda: Content.from_data(b"x" * 100000, media_type="image/png"),
         lambda: Content.from_hosted_file("file-a", media_type="image/png"),
@@ -418,3 +418,65 @@ def test_invalid_media_costs_are_rejected(cost):
     estimator = MediaTokenEstimator(BASE, estimate_media=lambda part: cost)
     with pytest.raises(ValueError):
         annotate_token_counts(history(), tokenizer=estimator)
+
+
+@pytest.mark.parametrize("mode", ["recompact", "boundary", "fold"])
+@pytest.mark.parametrize("text_turns", [128, 256])
+async def test_mixed_band_sizing_bounds_total_tokenized_text(mode, text_turns):
+    class CountingTokenizer:
+        def __init__(self):
+            self.characters = 0
+
+        def count_tokens(self, text):
+            self.characters += len(text)
+            return BASE.count_tokens(text)
+
+    async def describe(part, turn):
+        return "diagram"
+
+    tokenizer = CountingTokenizer()
+    client = Summarizer()
+    strategy = users(
+        client,
+        tokenizer=tokenizer,
+        describe_media=describe,
+        summary_mode=mode,
+        max_summary_input_tokens=100_000,
+    )
+    messages = history()
+    messages[2:2] = [
+        Message("user", [f"Turn {i}: " + "x" * 256], message_id=f"text-{i}")
+        for i in range(text_turns)
+    ]
+    originals = list(messages)
+    text_size = sum(len(message.text) for message in messages)
+    assert await strategy(messages)
+    assert tokenizer.characters < 20 * text_size
+    assert len(client.requests) == 1
+    assert all(message.additional_properties.get(EXCLUDED_KEY) for message in originals[1:-1])
+    assert not originals[0].additional_properties.get(EXCLUDED_KEY)
+    assert not originals[-1].additional_properties.get(EXCLUDED_KEY)
+
+
+@pytest.mark.parametrize("first_media", [False, True])
+async def test_full_text_prefix_stops_before_another_media_description(first_media):
+    calls = []
+
+    async def describe(part, turn):
+        calls.append(part.uri)
+        return "diagram"
+
+    client = Summarizer()
+    strategy = users(client, describe_media=describe, max_summary_input_tokens=650)
+    messages = history()
+    if not first_media:
+        messages.pop(1)
+    large = Message("user", ["x" * 10000], message_id="large")
+    later = Message("user", [image("later")], message_id="later")
+    messages[-1:-1] = [large, later]
+    assert await strategy(messages) == first_media
+    assert calls == (["https://example.org/a.png"] if first_media else [])
+    assert not large.additional_properties.get(EXCLUDED_KEY)
+    assert not later.additional_properties.get(EXCLUDED_KEY)
+    for request in client.requests:
+        assert fits_summary_input(request[0].text, request[1].text, tokenizer=BASE, limit=650)
