@@ -954,3 +954,56 @@ def test_stream_storage_failure_cleans_partial_bytes_without_refunding(
         store = db.stores["session"][1]
         assert store.db.execute("SELECT status FROM calls").fetchone()[0] == "pending"
         assert store.db.execute("SELECT COUNT(*) FROM reservations").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("phase", ["inventory", "payload"])
+@pytest.mark.parametrize("target", ["session", "other"])
+def test_stream_socket_io_does_not_block_revocation(tmp_path, phase, target):
+    from concurrent.futures import ThreadPoolExecutor
+
+    with coordinator(tmp_path / "db") as db:
+        owner = start(db)
+        direct(db, "publish", **publication(owner))
+        with db.authority() as authority:
+            victim = (
+                authority._decode_owner(owner)
+                if target == "session"
+                else authority.acquire(
+                    "other", SESSION.digest, remote.Resource("host-b", "boot-b", "guest-b")
+                )
+            )
+
+        def revoke():
+            with db.authority() as authority:
+                authority.request_fence(victim, "stop")
+
+        fenced = []
+
+        class PausedConnection:
+            writes = 0
+
+            def settimeout(self, value):
+                pass
+
+            def sendall(self, block):
+                self.writes += 1
+                if self.writes == (1 if phase == "inventory" else 2):
+                    # Sending cannot resume until a separate connection commits revocation.
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        pool.submit(revoke).result(timeout=10)
+                    fenced.append(True)
+
+        connection = PausedConnection()
+        wire = request("restore", owner=owner) | {"version": 2}
+        if target == "session":
+            with pytest.raises(api.Refused, match="revoked"):
+                db.dispatch(FINGERPRINT, wire, connection)
+        else:
+            assert db.dispatch(FINGERPRINT, wire, connection) == {"complete": True}
+        assert fenced == [True]
+        assert connection.writes == 2
+        assert not (db.root / "transfer").exists()
+        with db.authority() as authority:
+            with pytest.raises(api.Refused, match="revoked"):
+                with authority.guard(victim):
+                    pass

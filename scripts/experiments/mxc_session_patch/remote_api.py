@@ -359,11 +359,12 @@ class Coordinator:
                             else []
                         )
                         with authority.guard(owner):
-                            _send(
-                                connection,
-                                {"ok": True, "value": {"call": call, "files": entries}},
-                                deadline,
-                            )
+                            pass
+                        _send(
+                            connection,
+                            {"ok": True, "value": {"call": call, "files": entries}},
+                            deadline,
+                        )
                         if call:
                             transfer.send(
                                 destination,
