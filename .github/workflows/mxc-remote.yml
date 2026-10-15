@@ -1,4 +1,4 @@
-name: MXC remote ownership controls
+name: MXC remote ownership and checkpoint transfer
 
 on:
   pull_request:
@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   qualify:
-    name: Remote ownership process controls (${{ matrix.os }})
+    name: Remote ownership and transfer controls (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -37,7 +37,9 @@ jobs:
           source_commit=os.environ['GITHUB_SHA'], run_id=os.environ['GITHUB_RUN_ID'], run_attempt=os.environ['GITHUB_RUN_ATTEMPT']);
           print(json.dumps(report));
           (Path(os.environ['RUNNER_TEMP']) / 'mxc-remote-runtime.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')"
-      - name: Exercise mutual TLS, publication fencing and coordinator crashes
+      - name: Exercise mutual TLS, 1 GiB transfer, fencing and coordinator crashes
+        env:
+          MXC_TRANSFER_BYTES: '1073741824'
         shell: bash
         run: >-
           uv run pytest -q tests/test_mxc_remote_authority.py tests/test_mxc_remote_api.py
