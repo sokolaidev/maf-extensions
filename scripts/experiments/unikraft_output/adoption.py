@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -85,30 +86,6 @@ def publication(root: Path, observation: dict) -> dict:
     root.mkdir()
     store_root = root / "store"
     store_root.mkdir(mode=0o700)
-    if sys.platform == "win32":
-        subprocess.run(
-            [
-                "pwsh",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                (
-                    "$ErrorActionPreference = 'Stop'; "
-                    "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; "
-                    'icacls $env:MXC_ASSESSMENT_STORE /setowner "*$sid"; '
-                    "if ($LASTEXITCODE -ne 0) { throw 'Fixture owner setup failed' }; "
-                    'icacls $env:MXC_ASSESSMENT_STORE /inheritance:r /grant:r "*S-1-3-4:(OI)(CI)F" '
-                    '"*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"; '
-                    "if ($LASTEXITCODE -ne 0) { throw 'Fixture access setup failed' }; "
-                    'icacls $env:MXC_ASSESSMENT_STORE /remove:g "*$sid"; '
-                    "if ($LASTEXITCODE -ne 0) { throw 'Fixture account ACE removal failed' }"
-                ),
-            ],
-            env=os.environ | {"MXC_ASSESSMENT_STORE": str(store_root)},
-            capture_output=True,
-            check=True,
-            timeout=30,
-        )
     checkpoint = root / "checkpoint"
     checkpoint.mkdir()
     (checkpoint / "index.json").write_bytes(b"synthetic checkpoint fixture")
@@ -130,6 +107,36 @@ def publication(root: Path, observation: dict) -> dict:
             "streams": {"stdout": metadata, "stderr": metadata},
         },
     }
+    if sys.platform == "win32":
+        for name in (
+            "initialize.lock",
+            "shared.sqlite",
+            *(hashlib.sha256(name.encode()).hexdigest() + ".lock" for name in cases),
+        ):
+            (store_root / name).touch(exist_ok=False)
+        subprocess.run(
+            [
+                "pwsh",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                (
+                    "$ErrorActionPreference = 'Stop'; "
+                    "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; "
+                    "$targets = @((Get-Item -LiteralPath $env:MXC_ASSESSMENT_STORE)) + "
+                    "@(Get-ChildItem -LiteralPath $env:MXC_ASSESSMENT_STORE -File); "
+                    "foreach ($item in $targets) { "
+                    "$acl = Get-Acl -LiteralPath $item.FullName; "
+                    '$acl.SetSecurityDescriptorSddlForm("O:${sid}D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", '
+                    "[System.Security.AccessControl.AccessControlSections]'Owner, Access'); "
+                    "[System.IO.FileSystemAclExtensions]::SetAccessControl($item, $acl) }"
+                ),
+            ],
+            env=os.environ | {"MXC_ASSESSMENT_STORE": str(store_root)},
+            capture_output=True,
+            check=True,
+            timeout=30,
+        )
     refusals = {}
     for name, data in cases.items():
         with SharedStore(root / "store", name, profile, limits) as store:
