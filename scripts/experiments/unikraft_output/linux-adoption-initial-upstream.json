@@ -1,0 +1,87 @@
+{
+  "status": "measured",
+  "platform": "Linux",
+  "source_commit": "7bd8c13403522ba98412a9d064d2f1468a675c3f",
+  "run_id": "38811214907",
+  "run_attempt": "1",
+  "upstream_commit": "cf458a07ed847f06d78284998a5beb13dc9fb426",
+  "rootfs": {
+    "upstream_commit": "cf458a07ed847f06d78284998a5beb13dc9fb426",
+    "run_id": "38811214907",
+    "run_attempt": "1",
+    "rootfs_sha256": "10be147d698b38ce61cc90ab19f9083006258d03aed76b5effe1114c8758d26b",
+    "images": {
+      "python:3.12-slim-bookworm": {
+        "id": "sha256:4f228bc1cbcfc794e4878312cfc241d368eff55a21c08d1e2bb263116c4ef524",
+        "repo_digests": [
+          "python@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258"
+        ]
+      },
+      "hluk-python-rootfs": {
+        "id": "sha256:60d8985a69fdbdaa5886c45efbeedaa71f39ee0205902271a7e10265c5c7bd5b",
+        "repo_digests": []
+      }
+    }
+  },
+  "kernel_sha256": "2d5dc13d1dd13e31b37c98f0ab5413d90b5eed9104e6215e1e06ede559c9f275",
+  "cargo_lock_sha256": "f9611836e9490ac971e7e463fd771076005b03b1833d837917f371692c2dbde8",
+  "probe_sha256": "c46332f27c8a7dd82a1c421fa086bea927ea26c4ca7a9379a5eab761bb2bbf68",
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "stages": {
+    "capture": {
+      "passed": 5,
+      "log_sha256": "bb7f0283fb92047834b801fb016eb12e546f6193fcf977354db6f285977dfcd5"
+    },
+    "limits": {
+      "passed": 3,
+      "log_sha256": "f168d048290fb62ada50ebd72ca1a53a45ecc9c419c68155ba5152a570a02fc4"
+    },
+    "echo": {
+      "passed": 1,
+      "log_sha256": "9e69737190ca38f2b4176a9da6ace2694040591fed38d30f2511c58306244f3a"
+    },
+    "comparison": {
+      "passed": 7,
+      "log_sha256": "34f0a3e9f9bb2045f1c33f14da74c5a36c8b1cad82d1bd5e2abd1deaa0b42e68"
+    }
+  },
+  "observations": [
+    {
+      "case": "all_byte_values",
+      "equivalent": false,
+      "error": "Hyperlight(HyperlightVmError(DispatchGuestCall(Run(HandleIo(Outb(ReadHostFunctionCall(\"Failed to execute shared memory operation: pop_buffer_into: failed to convert buffer to hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall\")))))))",
+      "guest_bytes": 256,
+      "outcome": "host-call-decoding-error",
+      "snapshot_key": "k2d5dc13d1dd13e31-c4"
+    },
+    {
+      "case": "reopened_stderr",
+      "combined": "Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nOSError: [Errno 22] Invalid argument: '/dev/stderr'\nhl_driver: dispatch callback failed\n",
+      "combined_omitted": 0,
+      "equivalent": false,
+      "error": "CallFailed { status: 1 }",
+      "stderr": "Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nOSError: [Errno 22] Invalid argument: '/dev/stderr'\nhl_driver: dispatch callback failed\n",
+      "stderr_omitted": 0
+    },
+    {
+      "case": "independent_stdout",
+      "combined": "EEEEEEEEEEEEEEEE",
+      "equivalent": false,
+      "stderr": "EEEEEEEEEEEEEEEE",
+      "stdout_bytes_recoverable": 0
+    }
+  ],
+  "test_binaries": {
+    "maf_output_qualification-72837ed7016e7eb5": "07a309876a295034c9cd1c7bdc2d5ca297e638a521c3abd30023200abf495115",
+    "python-1deb59eff9fcf386": "18e8c00acca3c43977a36e4690ea190cae5d677e86b3818adbbda9dd20e75f84",
+    "hyperlight_unikraft-f559015bf11aa260": "5d0beeca3eb2553a8799b5c2a447f03790b47561410682f28bb8252f56d96098"
+  },
+  "adoption": "defer-overlay-removal",
+  "not_qualified": [
+    "MXC integration",
+    "durable publication and replay on this runtime",
+    "old checkpoint restore",
+    "timeout/cancellation/owner-loss matrix",
+    "production acceptance"
+  ]
+}

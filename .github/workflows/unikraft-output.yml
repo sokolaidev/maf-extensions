@@ -59,7 +59,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -73,6 +73,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
+      - name: Verify private publication fixture
+        run: >-
+          python -c "from pathlib import Path; from scripts.experiments.unikraft_output.adoption import publication; print(publication(Path('publication-preflight'), {'case': 'byte_prefix', 'retained_bytes': 1048575, 'omitted_bytes': 3, 'limit_bytes': 1048576}))"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: unikraft-output-rootfs
@@ -82,10 +85,14 @@ jobs:
         run: |
           sudo chmod 666 /dev/kvm
           test -r /dev/kvm && test -w /dev/kvm
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev libclang-dev
       - name: Install pinned Rust
         run: rustup toolchain install 1.98.0 --profile minimal
       - name: Measure upstream and contract differences
         run: python scripts/experiments/unikraft_output/qualify.py --source upstream --output evidence
+      - name: Assess retained checkpoint recovery and publication boundaries
+        run: python -m scripts.experiments.unikraft_output.adoption --source upstream --output evidence --root retained-mxc
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
