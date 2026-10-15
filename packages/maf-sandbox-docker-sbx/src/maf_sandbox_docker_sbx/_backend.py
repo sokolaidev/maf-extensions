@@ -1107,7 +1107,6 @@ class SbxSandboxBackend:
             "off",
             "--deny-network",
             "**",
-            "--quiet",
         ]
         template = spec.image_id or spec.image
         if template:

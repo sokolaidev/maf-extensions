@@ -185,12 +185,15 @@ class FakeSbx:
                 ]
                 return _ok(json.dumps(rows if self.bare_lists else {"sandboxes": rows}).encode())
             case ("create", "shell", "--name", name, *_rest):
+                unsupported = "--quiet" if self.bare_lists else "--no-progress"
+                if unsupported in _rest:
+                    return _Result(2, b"", f"unknown flag: {unsupported}\n".encode())
                 if name in self.ids or any(call[:4] == args[:4] for call in self.calls[:-1]):
                     self.ids[name] = f"id-{name}-{len(self.calls)}"
                 self.sandboxes[name] = args[-1]
                 self.sandbox_rules[name] = []
                 self._add_rule("deny", name, ("**",))
-                return _ok()
+                return _ok(f"Created sandbox {name}\n".encode(), b"Creating sandbox...\n")
             case ("rm", "--force", name):
                 if self.rm_result is not None:
                     return self.rm_result
@@ -448,7 +451,6 @@ class TestAcquire:
             "off",
             "--deny-network",
             "**",
-            "--quiet",
             str(workspace),
         )
         mount_point = next(call for call in sbx.calls if _MOUNT_POINT_SCRIPT in call)
