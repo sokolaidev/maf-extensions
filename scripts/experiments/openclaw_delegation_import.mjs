@@ -38,5 +38,7 @@ for (const specifier of ["openclaw/plugin-sdk/plugin-entry", "openclaw/plugin-sd
     });
   }
 }
-await new Promise((resolve) => setImmediate(resolve));
-process.stdout.write(JSON.stringify({ imports, side_effect_attempts: attempts }));
+// Exit runs after timers and beforeExit work; its output must be synchronous.
+process.once("exit", () => {
+  fs.writeSync(1, JSON.stringify({ imports, side_effect_attempts: attempts }));
+});

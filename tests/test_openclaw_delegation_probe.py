@@ -157,22 +157,47 @@ def test_external_import_control_is_inert_and_has_no_ambient_secrets(
     assert result["imports"][1]["exports"] == ["withConfiguredModelEgress"]
 
 
+@pytest.mark.parametrize("schedule", ["immediate", "timer", "before_exit"])
 @pytest.mark.parametrize(
-    "code,operation",
+    "imports,code,operation",
     [
-        ("import net from 'node:net'; net.connect(9, '127.0.0.1');", "network.connect"),
-        ("import fs from 'node:fs'; fs.writeFileSync('unwanted', 'data');", "files.writeFileSync"),
-        ("import {spawn} from 'node:child_process'; spawn('never-started');", "process.spawn"),
+        ("import net from 'node:net';", "net.connect(9, '127.0.0.1');", "network.connect"),
+        (
+            "import fs from 'node:fs';",
+            "fs.writeFileSync('unwanted', 'data');",
+            "files.writeFileSync",
+        ),
+        ("import {spawn} from 'node:child_process';", "spawn('never-started');", "process.spawn"),
     ],
 )
-def test_import_side_effects_are_visible_and_blocked(module, installed_fixture, code, operation):
+def test_import_side_effects_are_visible_and_blocked(
+    module, installed_fixture, imports, code, operation, schedule
+):
     project, package, home = installed_fixture
-    (package / "private.js").write_text(code, encoding="utf-8")
+    if schedule != "immediate":
+        code = "setTimeout(() => { try { " + code + " } catch {} }, 25);"
+    if schedule == "before_exit":
+        code = "process.once('beforeExit', () => { " + code + " });"
+    (package / "private.js").write_text(imports + code, encoding="utf-8")
     result = module.observe_imports(project, node_program(), home)
     assert result["imports"][0]["status"] == "imported"
-    assert result["imports"][1]["status"] == "failed"
+    assert result["imports"][1]["status"] == ("failed" if schedule == "immediate" else "imported")
     assert result["side_effect_attempts"] == [operation]
     assert not (project / "unwanted").exists()
+
+
+def test_import_that_never_settles_is_refused(module, installed_fixture, monkeypatch):
+    project, package, home = installed_fixture
+    (package / "private.js").write_text("setInterval(() => {}, 10);", encoding="utf-8")
+    run = module.subprocess.run
+
+    def bounded_run(*args, **kwargs):
+        kwargs["timeout"] = 0.25
+        return run(*args, **kwargs)
+
+    monkeypatch.setattr(module.subprocess, "run", bounded_run)
+    with pytest.raises(module.ProbeRefused, match="import_timeout"):
+        module.observe_imports(project, node_program(), home)
 
 
 def test_checkout_refusal_precedes_artifact_access(module, tmp_path):
