@@ -43,7 +43,7 @@ fn unicode_capture_cannot_supply_byte_prefix_metadata() {
     let mut vm = SandboxBuilder::from_initrd(rootfs)
         .scratch_mb(256).output_limit(1048576).echo_output(false).boot().unwrap();
     vm.drain_output();
-    vm.run("import os\nos.write(1, b'A' * 1048575 + 'éb'.encode())").unwrap();
+    vm.run("import os\nos.write(1, b'A' * 1048575)\nos.write(1, 'éb'.encode())").unwrap();
     let out = vm.take_output();
     assert_eq!(out.text.len(), 1048575);
     assert_eq!(out.omitted, 3);
