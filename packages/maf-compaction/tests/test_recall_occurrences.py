@@ -14,6 +14,7 @@ from maf_compaction._toolsummary import (
     _is_recall_group,
     _newest_record_identity,
     active_record_groups,
+    consolidatable_record_groups,
     find_record_index,
     record_body,
     record_text,
@@ -154,6 +155,70 @@ def test_newest_record_identity_advances_within_a_batched_result():
 def test_repeated_unidentified_legacy_calls_fail_closed():
     messages = [call(None), result(None), call(None), result(None)]
     assert find_record_index(messages) is None
+    annotate_message_groups(messages)
+    assert find_record_index(messages) is None
+    assert find_record_index([Message.from_dict(m.to_dict()) for m in messages]) is None
+
+
+def test_legacy_identity_survives_independently_grouped_projection():
+    messages = [
+        Message("user", "Earlier"),
+        Message("assistant", "Answer"),
+        call(None),
+        result(None),
+    ]
+    tail = copy.deepcopy(messages[2:])
+    expected = _newest_record_identity(messages)
+    annotate_message_groups(messages)
+    annotate_message_groups(tail)
+    assert _newest_record_identity(messages) == expected
+    assert _newest_record_identity(tail) == expected
+
+
+@pytest.mark.parametrize("reload", [False, True])
+def test_sequential_idless_results_leave_complete_occurrences_removable(reload):
+    messages = [call("first"), result(None), Message("user", "More"), call("second"), result(None)]
+    if reload:
+        messages = [Message.from_dict(m.to_dict()) for m in messages]
+    annotate_message_groups(messages)
+    spans = group_messages(messages)
+    assert all(removable_whole(messages, spans, span) for span in spans)
+    records = consolidatable_record_groups(messages)
+    assert len(records) == 2
+    strategy = ToolResultAnchoredSummarizationCompactionStrategy(
+        max_input_tokens=1000, tokenizer=CharacterEstimatorTokenizer()
+    )
+    original = list(messages)
+    strategy.consolidate_records(messages, records, "CODE-123")
+    assert all(original[i].additional_properties[EXCLUDED_KEY] for i in (0, 1, 3, 4))
+    assert not original[2].additional_properties.get(EXCLUDED_KEY, False)
+
+
+def test_a_batch_containing_only_matched_recall_results_can_be_consolidated():
+    messages = [
+        Message("assistant", [call("first").contents[0], call("second").contents[0]]),
+        Message("tool", [result("first").contents[0], result("second").contents[0]]),
+    ]
+    annotate_message_groups(messages)
+    assert len(consolidatable_record_groups(messages)) == 1
+
+
+def test_framework_shaped_caller_ids_do_not_supply_legacy_occurrence_authority():
+    messages = [
+        call(None, message_id="msg_7"),
+        result(None),
+        call(None, message_id="msg_8"),
+        result(None),
+    ]
+    assert find_record_index(messages) is None
+
+
+def test_ambiguous_idless_result_does_not_allow_partial_removal():
+    messages = [call("first"), Message("user", "More"), call("second"), result(None)]
+    annotate_message_groups(messages)
+    spans = group_messages(messages)
+    assert not removable_whole(messages, spans, spans[0])
+    assert not removable_whole(messages, spans, spans[-1])
 
 
 def test_user_authored_declaration_cannot_establish_a_recall_record():

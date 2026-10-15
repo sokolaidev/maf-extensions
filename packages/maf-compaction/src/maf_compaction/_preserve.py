@@ -45,6 +45,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Final
 
+from ._occurrences import function_result_candidates
+
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
@@ -172,22 +174,12 @@ def removable_whole(
     ):
         return False
     members = messages[span["start_index"] : span["end_index"] + 1]
-    outside = [
-        content
-        for index, message in enumerate(messages)
-        if not span["start_index"] <= index <= span["end_index"]
-        for content in message.contents
-        if content.type in ("function_call", "function_result") and content.call_id
-    ]
     # Framework grouping may leave interleaved occurrences in separate spans.
     if any(
-        content.type != other.type
-        and content.call_id == other.call_id
-        and (not content.id or not other.id or content.id == other.id)
-        for message in members
-        for content in message.contents
-        if content.type in ("function_call", "function_result") and content.call_id
-        for other in outside
+        (span["start_index"] <= result[0] <= span["end_index"])
+        != (span["start_index"] <= call[0] <= span["end_index"])
+        for result, candidates in function_result_candidates(messages).items()
+        for call in candidates
     ):
         return False
     loaded = [_ATTRIBUTION_KEY in message.additional_properties for message in members]
