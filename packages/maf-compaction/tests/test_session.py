@@ -516,7 +516,10 @@ class Model(FunctionInvocationLayer, ChatMiddlewareLayer, BaseChatClient):
         if required:
             contents = [
                 Content.from_function_call(
-                    call_id="recall", name=required, arguments={"values": "recorded fact123"}
+                    call_id="recall",
+                    name=required,
+                    arguments={"values": "recorded fact123"},
+                    id=f"recall-{len(messages)}",
                 )
             ]
         else:

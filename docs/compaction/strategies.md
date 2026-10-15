@@ -116,6 +116,8 @@ Preserved media remains part of the budget. If protected material cannot fit, th
 
 The [live image verification record](research/media-live-1878.md) measures description, compaction, session replay and provider usage on synthetic images; its scope does not extend to other media or providers.
 
+Recall records bind to local call occurrences, not globally unique service call IDs. An id-less legacy result must have exactly one unanswered matching declaration. Hosted calls, ambiguous matches and duplicate results cannot establish coverage. With legacy declarations, message identity distinguishes repeated service call IDs; a repeated service ID without either occurrence or message identity is conservatively refused. Matched record text alone authorizes removal, including when unrelated marked results share its message. Call/result pairs spanning separate groups are retained together.
+
 ## Request resilience
 
 The composition reserves outgoing instructions and tool schemas per call and can leave an additional `estimate_margin` for tokenizer error. Its history-storage phase keeps the configured budget. Recall waits through tools-disabled calls, validates forced arguments before returning them to the framework, and can bound a complete forced response with `forced_call_timeout_seconds`. Internal records explicitly retain values regardless of user-facing reply-format instructions; re-asks name missed results in a temporary tool description, and `records_without_values` reports records that quoted no distinctive target value.
@@ -153,3 +155,4 @@ Inside the context window nothing here beats not compacting: the best strategy c
 | Deferred tools-disabled recall, validated arguments and forced deadlines | Implemented | [#1996](https://github.com/sokolaidev/maf-extensions/issues/1996) (closed) by [#2008](https://github.com/sokolaidev/maf-extensions/pull/2008) (merged) |
 | Stable chunked user summaries and optional summary-options recovery | Implemented | [#1997](https://github.com/sokolaidev/maf-extensions/issues/1997) (closed) by [#2008](https://github.com/sokolaidev/maf-extensions/pull/2008) (merged) |
 | Private record guidance, targeted re-asks and value-free record diagnostics | Implemented | [#2005](https://github.com/sokolaidev/maf-extensions/issues/2005) (closed) by [#2008](https://github.com/sokolaidev/maf-extensions/pull/2008) (merged) |
+| MAF 1.22 occurrence-aware recall and whole-call preservation | Offline contracts implemented; live and release qualification pending | [#1961](https://github.com/sokolaidev/maf-extensions/issues/1961) (open) |

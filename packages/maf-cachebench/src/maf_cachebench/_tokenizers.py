@@ -28,9 +28,8 @@ REASONING_TOKENS_KEY: Final[str] = "reasoning_output_token_count"
 
 _STAMP_MARKER: Final[str] = f'"{REASONING_TOKENS_KEY}"'
 
-#: The member a provider's replayed reasoning item keeps its encrypted payload under. The
-#: framework drops it from the top level of a content's ``additional_properties``; this
-#: wrapper drops it at any depth below, where the Foundry client keeps a copy of the item.
+#: Legacy serialized prompts can retain the Foundry replay payload even though the
+#: framework's current compaction serializer removes it before token counting.
 _OPAQUE_KEY: Final[str] = "encrypted_content"
 _OPAQUE_MARKER: Final[str] = f'"{_OPAQUE_KEY}"'
 
