@@ -176,7 +176,7 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
         ("Database built at (UTC)", database.get("built", UNAVAILABLE)),
         ("Database valid", database.get("valid", UNAVAILABLE)),
     ]
-    if candidate["profile"] == "drawio":
+    if candidate["profile"] in {"drawio", "drawio-export"}:
         drawio = runtime.get("drawio", {})
         for check in drawio.get("checks", []):
             rows.append(("Draw.io check", check))
@@ -189,6 +189,14 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
             ("Draw.io container observations", "observations"),
         ):
             rows.append((label, drawio.get(key, UNAVAILABLE)))
+        if candidate["profile"] == "drawio-export":
+            for label, key in (
+                ("Native export and renderer checks", "exports"),
+                ("Editable checks without capability grants", "editable"),
+                ("Export artifacts (hashes and sizes)", "artifacts"),
+                ("Required coordinator capabilities", "coordinatorCapabilities"),
+            ):
+                rows.append((label, drawio.get(key, UNAVAILABLE)))
     if candidate["profile"] == "bicep":
         bicep = runtime.get("bicep", {})
         for check in bicep.get("checks", []):

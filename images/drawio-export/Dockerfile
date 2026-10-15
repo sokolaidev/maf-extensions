@@ -1,7 +1,9 @@
 FROM cgr.dev/chainguard/wolfi-base@sha256:9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03
 
-ARG DRAWIO_VERSION=31.7.0
-ARG DRAWIO_SHA256=eb9695e208fcc5ccfbfc496aa8ab2f52a273297d83715de2177b231c172c13de
+LABEL org.opencontainers.image.description="Editable Draw.io and native PNG, SVG and JPEG export for Linux/amd64. Usage, verification and sandbox requirements: https://github.com/sokolaidev/maf-extensions/blob/main/images/drawio-export/README.md"
+
+ARG DRAWIO_VERSION=32.4.1
+ARG DRAWIO_SHA256=f4455b3bba3d3b539c3cd069218fc64f0462b1b01610fe8d11acc3ca8566f32b
 RUN apk upgrade --no-cache \
     && apk add --no-cache ca-certificates-bundle python-3.13 py3.13-pillow \
        graphviz xvfb-run xauth xkbcomp xkeyboard-config font-misc ttf-dejavu \
@@ -17,6 +19,8 @@ RUN apk upgrade --no-cache \
     && rm -rf /tmp/drawio-unpacked /tmp/drawio.deb \
     && apk del --no-cache .unpack \
     && dot -c
+
+COPY DEJAVU-LICENSE /usr/share/licenses/drawio/DEJAVU-LICENSE
 
 COPY install.py export.py guard.js check-assets.py /opt/maf-drawio/
 RUN python3 /opt/maf-drawio/install.py \

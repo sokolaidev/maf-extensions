@@ -653,7 +653,7 @@ def font_runtime(tmp_path, monkeypatch):
         json.dumps(
             {
                 "version": 1,
-                "desktop": "31.7.0",
+                "desktop": "32.4.1",
                 "asar_sha256": hashlib.sha256(b"asar").hexdigest(),
                 "assets": {},
                 "fonts": {"DejaVu Sans": variants[0]["path"]},

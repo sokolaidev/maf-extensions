@@ -57,8 +57,12 @@ CONSUMER_GUIDES = {
     "images/hyperlight-sandbox/README.md",
 }
 SCRIPT_INPUTS = {
-    "scripts/drawio_qualification.py": ("drawio",),
-    "scripts/check_drawio_docker.py": ("drawio",),
+    "scripts/drawio_qualification.py": ("drawio", "drawio-export"),
+    "scripts/drawio_export_qualification.py": ("drawio-export",),
+    "scripts/drawio_export_runtime.py": ("drawio-export",),
+    "scripts/check_drawio_exports.py": ("drawio-export",),
+    "scripts/check_drawio_renderer.py": ("drawio-export",),
+    "scripts/check_drawio_docker.py": ("drawio", "drawio-export"),
     "scripts/terraform_dependencies.py": (
         "terraform-avm",
         "terraform-prepared",

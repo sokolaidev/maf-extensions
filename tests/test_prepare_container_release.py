@@ -50,7 +50,6 @@ def test_source_cannot_be_selected_independently_of_dispatch(monkeypatch, change
         "bicep-avm",
         "sbx-bicep",
         "graphviz",
-        "drawio-export",
         "terraform-random",
         "opentofu-random",
         "terraform-avm",
@@ -79,12 +78,7 @@ def test_runtime_probe_is_offline_bounded_and_removed_on_failure(monkeypatch, tm
     assert "--read-only" in create and "--pids-limit" in create and "--memory" in create
     assert create[create.index("--cap-drop") + 1] == "ALL"
     assert cleanup == ["docker", "rm", "--force", create[create.index("--name") + 1]]
-    if profile == "drawio-export":
-        compile(create[-1], "drawio-export-probe", "exec")
-        grants = {create[i + 1] for i, value in enumerate(create) if value == "--cap-add"}
-        assert grants == {"CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "KILL"}
-    else:
-        assert "--cap-add" not in create
+    assert "--cap-add" not in create
     if profile.startswith(("terraform-", "opentofu-")):
         compile(create[-1], "terraform-probe", "exec")
 

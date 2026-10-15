@@ -28,8 +28,8 @@ from container_release import (
     validate_identity,
     write,
 )
-from container_release_assets import Evidence
-from container_release_history import History, sha256
+from container_release_assets import Evidence, image_tag
+from container_release_history import History, positive_id, sha256
 from container_release_oci import MANIFEST
 from container_release_publish import context, outputs
 from container_release_registry import anonymous_pull, manifest
@@ -165,6 +165,39 @@ def plan(directory: Path) -> dict[str, Any]:
     return value
 
 
+def application_inventory(
+    directory: Path, candidate: dict[str, Any], image_id: str, *, restore: bool = False
+) -> dict[str, Any] | None:
+    """Bind the expected application packages to the approved preparation and image bytes."""
+    if candidate["profile"] != "drawio-export":
+        return None
+    if image_id != candidate["imageId"]:
+        raise ValueError("No approved application inventory for this image")
+    evidence = Evidence() if restore else None
+    assets = []
+    if evidence is not None:
+        release = evidence.find(image_tag(candidate))
+        if release is None:
+            raise ValueError("Approved application inventory is unavailable")
+        assets = evidence.github.assets(positive_id(release["id"]))
+    expected = require_digest(candidate.get("preparationEvidenceSha256"))
+    for name in ("preparation-index.json", "runtime.json"):
+        path = directory / name
+        if evidence is not None:
+            matches = [asset for asset in assets if asset.get("name") == name]
+            if len(matches) != 1 or path.exists() or path.is_symlink():
+                raise ValueError("Ambiguous application inventory evidence")
+            evidence.download(matches[0], path, expected)
+        if path.is_symlink() or digest(path) != expected:
+            raise ValueError("Application inventory differs from approved preparation")
+        if name == "preparation-index.json":
+            expected = require_digest(read(path).get("runtime.json"))
+    runtime = read(directory / "runtime.json")
+    if runtime.get("profile") != candidate["profile"] or runtime.get("imageId") != image_id:
+        raise ValueError("Application inventory identifies another image or profile")
+    return runtime
+
+
 def scan(directory: Path, batch: int) -> None:
     """Scan exact anonymous registry bytes without executing the image's entrypoint."""
     value = plan(directory)
@@ -218,6 +251,7 @@ def scan(directory: Path, batch: int) -> None:
                 }
             else:
                 image_id = anonymous_pull(selected_candidate)
+                application_inventory(root, candidate, image_id, restore=True)
                 result.update(assess(root, image_id, require_clean=False))
         except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError):
             result.update(
@@ -287,6 +321,11 @@ def finish(directory: Path) -> None:
                 if document.get("mediaType") != MANIFEST or assessment.get("imageId") != image_id:
                     raise ValueError("Unexpected image configuration differs from its assessment")
             verify_inventory(read(root / "sbom.syft.json"), image_id)
+            runtime = application_inventory(root, candidate, image_id)
+            if runtime is not None:
+                from drawio_export_qualification import verify_inventory as verify_application
+
+                verify_application(read(root / "sbom.syft.json"), runtime)
             verified = scan_result(read(root / "grype.json"), image_id, assessment["assessedAt"])
             if any(assessment.get(field) != expected for field, expected in verified.items()):
                 raise ValueError("Monitor result differs from its retained scanner report")
@@ -312,6 +351,8 @@ def finish(directory: Path) -> None:
                         "grype.json",
                         "grype.yaml",
                         "manifest.json",
+                        "preparation-index.json",
+                        "runtime.json",
                     }
                 ):
                     raise ValueError("Unexpected monitor evidence file")

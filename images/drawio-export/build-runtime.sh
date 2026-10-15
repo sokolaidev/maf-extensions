@@ -10,11 +10,12 @@ test ! -e "$target" || { echo 'Destination must not exist.' >&2; exit 1; }
 sources=$(cd -- "$(dirname -- "$0")" && pwd)
 debootstrap --variant=minbase --arch=amd64 bookworm "$target" https://deb.debian.org/debian
 chroot "$target" /bin/sh -ec 'apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-pil graphviz xvfb xauth fonts-dejavu-core fonts-dejavu-extra libgbm1 libasound2 ca-certificates curl'
-chroot "$target" curl -fL --retry 3 -o /tmp/drawio.deb https://github.com/jgraph/drawio-desktop/releases/download/v31.7.0/drawio-amd64-31.7.0.deb
-echo 'eb9695e208fcc5ccfbfc496aa8ab2f52a273297d83715de2177b231c172c13de  tmp/drawio.deb' | (cd "$target" && sha256sum -c -)
+chroot "$target" curl -fL --retry 3 -o /tmp/drawio.deb https://github.com/jgraph/drawio-desktop/releases/download/v32.4.1/drawio-amd64-32.4.1.deb
+echo 'f4455b3bba3d3b539c3cd069218fc64f0462b1b01610fe8d11acc3ca8566f32b  tmp/drawio.deb' | (cd "$target" && sha256sum -c -)
 chroot "$target" /bin/sh -ec 'DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends /tmp/drawio.deb; rm /tmp/drawio.deb; apt-get clean'
 install -d "$target/opt/maf-drawio" "$target/maf-sandbox/work"
 install -m 644 "$sources/install.py" "$sources/export.py" "$sources/guard.js" "$sources/check-assets.py" "$target/opt/maf-drawio/"
+install -D -m 644 "$sources/DEJAVU-LICENSE" "$target/usr/share/licenses/drawio/DEJAVU-LICENSE"
 chroot "$target" python3 /opt/maf-drawio/install.py
 chroot "$target" python3 /opt/maf-drawio/check-assets.py
 echo "Runtime ready: $target"

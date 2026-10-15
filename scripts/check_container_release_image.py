@@ -22,10 +22,12 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
     require_digest(image_id)
     if profile not in profiles():
         raise ValueError("Unknown image profile")
-    if profile == "drawio":
+    if profile in {"drawio", "drawio-export"}:
+        import drawio_export_qualification
         import drawio_qualification
 
-        result = asyncio.run(drawio_qualification.check(image_id))
+        checker = drawio_qualification if profile == "drawio" else drawio_export_qualification
+        result = asyncio.run(checker.check(image_id))
         return {
             "imageId": image_id,
             "profile": profile,
@@ -63,12 +65,6 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             "sh",
             "-ec",
             "printf 'digraph { a -> b }' | dot -Tpng -o /tmp/render.png; test -s /tmp/render.png",
-        ]
-    elif profile == "drawio-export":
-        command = [
-            "python3",
-            "-c",
-            "import json,runpy,time; from pathlib import Path; export=runpy.run_path('/opt/maf-drawio/export.py')['export_document']; xml='<mxfile><diagram><mxGraphModel><root><mxCell id=\"0\"/><mxCell id=\"1\" parent=\"0\"/><mxCell id=\"2\" parent=\"1\" vertex=\"1\" value=\"Smoke\"><mxGeometry x=\"10\" y=\"10\" width=\"120\" height=\"60\" as=\"geometry\"/></mxCell></root></mxGraphModel></diagram></mxfile>'; export(xml, {'pages': [], 'formats': ['png', 'svg', 'jpg'], 'scale': 1, 'jpeg_quality': 90, 'transparent': False}, time.monotonic()+45); assert json.loads(Path('exports.json').read_text())['files']==['diagram-1.png','diagram-1.svg','diagram-1.jpg']; assert Path('diagram-1.png').read_bytes().startswith(bytes.fromhex('89504e470d0a1a0a'))",
         ]
     elif profile == "terraform-avm":
         command = terraform_avm_qualification.command()
@@ -119,9 +115,6 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
         create[2:2] = ["--env", "DOTNET_BUNDLE_EXTRACT_BASE_DIR=/tmp/dotnet-bundle"]
     if profile == "bicep":
         create[2:2] = ["--tmpfs", f"{bicep_qualification.WORK}:rw,noexec,size=16m"]
-    if profile == "drawio-export":
-        for capability in ("CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "KILL"):
-            create[2:2] = ["--cap-add", capability]
     subprocess.run(create, check=True, capture_output=True, timeout=30)
     try:
         start = ["docker", "start", "--attach", name]
