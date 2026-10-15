@@ -24,6 +24,43 @@ from container_release_history import GitHub, History, positive_id
 MONITOR = "container-image-monitor.yml"
 
 
+def state_delivery(github: GitHub, monitor: dict[str, Any]) -> bool:
+    """Confirm registration and durable delivery in the exact failed workflow attempt."""
+    jobs: list[dict[str, Any]] = []
+    for page in range(1, 11):
+        document = decode(
+            github.request(
+                f"repos/{REPOSITORY}/actions/runs/{monitor['id']}/attempts/"
+                f"{monitor['run_attempt']}/jobs?per_page=100&page={page}"
+            )
+        )
+        batch, total = document.get("jobs"), document.get("total_count")
+        if (
+            not isinstance(batch, list)
+            or any(not isinstance(job, dict) for job in batch)
+            or type(total) is not int
+            or not 0 <= total <= 1000
+        ):
+            return False
+        jobs.extend(batch)
+        if len(batch) < 100 or len(jobs) == total:
+            if len(jobs) != total or len({positive_id(job.get("id")) for job in jobs}) != total:
+                return False
+            if any(
+                job.get("run_id") != monitor["id"]
+                or job.get("run_attempt") != monitor["run_attempt"]
+                for job in jobs
+            ):
+                return False
+            return all(
+                len(matches := [job for job in jobs if job.get("name") == name]) == 1
+                and matches[0].get("status") == "completed"
+                and matches[0].get("conclusion") == "success"
+                for name in ("begin", "finish")
+            )
+    return False
+
+
 def latest_monitor(github: GitHub) -> dict[str, Any]:
     """Include reruns of old workflows; creation order alone does not identify the latest attempt."""
     latest: dict[str, Any] | None = None
@@ -75,10 +112,16 @@ def latest_monitor(github: GitHub) -> dict[str, Any]:
         raise ValueError("No authoritative monitoring attempt exists")
     if len(latest_attempts) != 1:
         raise ValueError("Latest monitor attempts have ambiguous update times")
-    return {
+    result = {
         field: latest.get(field)
         for field in ("id", "run_attempt", "status", "conclusion", "updated_at")
     }
+    if result["status"] == "completed" and result["conclusion"] == "failure":
+        try:
+            result["stateDeliveryVerified"] = state_delivery(github, result)
+        except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError):
+            result["stateDeliveryVerified"] = False
+    return result
 
 
 def report(
@@ -147,7 +190,10 @@ def report(
         if attempt.get("outcome") == "vulnerable":
             result["monitoringStatus"] = "vulnerable"
             return result
-        if second["status"] != "completed" or second["conclusion"] != "success":
+        if second["status"] != "completed" or not (
+            second["conclusion"] == "success"
+            or (second["conclusion"] == "failure" and second.get("stateDeliveryVerified") is True)
+        ):
             raise ValueError("Latest monitor workflow has no confirmed successful state delivery")
         result["monitoringStatus"] = assessment_status(record, checked_at)
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:

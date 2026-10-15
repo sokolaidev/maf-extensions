@@ -59,6 +59,25 @@ async function history() {
   return records;
 }
 
+async function stateDelivery(monitor) {
+  const jobs = [];
+  for (let page = 1; page <= 10; page++) {
+    const response = await (await get(`${API}/actions/runs/${monitor.id}/attempts/${monitor.run_attempt}/jobs?per_page=100&page=${page}`)).json();
+    const batch = response.jobs, total = response.total_count;
+    if (!Array.isArray(batch) || batch.some(j => !j || typeof j !== "object") || !Number.isSafeInteger(total) || total < 0 || total > 1000) return false;
+    jobs.push(...batch);
+    if (batch.length < 100 || jobs.length === total) {
+      if (jobs.length !== total || new Set(jobs.map(j => j.id)).size !== total) return false;
+      if (jobs.some(j => !Number.isSafeInteger(j.id) || j.id <= 0 || j.run_id !== monitor.id || j.run_attempt !== monitor.run_attempt)) return false;
+      return ["begin", "finish"].every(name => {
+        const matches = jobs.filter(j => j.name === name);
+        return matches.length === 1 && matches[0].status === "completed" && matches[0].conclusion === "success";
+      });
+    }
+  }
+  return false;
+}
+
 async function latestMonitor(at = Date.now()) {
   const runs = (await monitorRuns(at))
     .filter(r => ["schedule", "workflow_dispatch", "workflow_run"].includes(r.event) && r.head_branch === "main");
@@ -71,7 +90,12 @@ async function latestMonitor(at = Date.now()) {
   assert(runs.length > 0, "No authoritative monitoring attempt exists");
   assert(runs.length === 1 || date(runs[0].updated_at) !== date(runs[1].updated_at), "Latest monitor attempts have ambiguous update times");
   const r = runs[0];
-  return {id: r.id, run_attempt: r.run_attempt, status: r.status, conclusion: r.conclusion, updated_at: r.updated_at};
+  const result = {id: r.id, run_attempt: r.run_attempt, status: r.status, conclusion: r.conclusion, updated_at: r.updated_at};
+  if (r.status === "completed" && r.conclusion === "failure") {
+    try { result.stateDeliveryVerified = await stateDelivery(r); }
+    catch { result.stateDeliveryVerified = false; }
+  }
+  return result;
 }
 
 function unexpectedRecord(entry) {
@@ -96,7 +120,7 @@ function status(record, monitor, at) {
   if (!monitor || !a || a.digest !== record.registryDigest || a.monitorRunId !== String(monitor.id) || a.monitorRunAttempt !== monitor.run_attempt || date(a.assessedAt) > at || date(monitor.updated_at) > at) return "unavailable";
   if (a.outcome === "vulnerable") return "vulnerable";
   if (Object.values(record.unexpectedDigests || {}).some(entry => monitoringEnd(unexpectedRecord(entry)) === null) || record.registryDiscovery?.outcome === "unavailable") return "unavailable";
-  if (monitor.status !== "completed" || monitor.conclusion !== "success" || a.outcome !== "clean") return "unavailable";
+  if (monitor.status !== "completed" || !(monitor.conclusion === "success" || (monitor.conclusion === "failure" && monitor.stateDeliveryVerified === true)) || a.outcome !== "clean") return "unavailable";
   return at - date(a.assessedAt) >= 48 * HOUR ? "stale" : "clean";
 }
 
@@ -137,7 +161,7 @@ function render(value, monitor, at) {
     const databaseText = database ? `Source: ${database.from}; built: ${database.built}; schema: ${database.schemaVersion}; checksum: ${database.checksum || "Unavailable"}${a?.database ? "" : " (last known vulnerable assessment)"}` : "Unavailable";
     const endTime = monitoringEnd(r);
     const end = endTime === null ? "Not scheduled" : new Date(endTime).toISOString();
-    const workflow = monitor ? `Workflow ${monitor.id}, attempt ${monitor.run_attempt}: ${monitor.status} / ${monitor.conclusion || "pending"}` : "Workflow unavailable";
+    const workflow = monitor ? `Workflow ${monitor.id}, attempt ${monitor.run_attempt}: ${monitor.status} / ${monitor.conclusion || "pending"}${monitor.stateDeliveryVerified === true ? "; assessment delivery verified" : ""}` : "Workflow unavailable";
     const findings = (r.lastKnownVulnerable?.findings || []).map(f => `${f.id} (${f.severity}); fix: ${f.fix?.state || "unknown"}; versions: ${(f.fix?.versions || []).join(", ") || "not reported"}`).join("; ") || "None recorded";
     const publication = r.unexpectedDigests && Object.keys(r.unexpectedDigests).length ? " / failed: unexpected public bytes" : "";
     const values = [r.state === "unexpected" ? `${name} (unexpected image)` : name, `${r.state} / ${r.delivery}${publication}`, state, a?.assessedAt || "Unavailable", `Outcome: ${a?.outcome || "unavailable"}; ${workflow}`, databaseText, end, findings];
