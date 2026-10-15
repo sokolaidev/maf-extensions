@@ -858,9 +858,19 @@ class SbxSandboxBackend:
         result = await self._sbx("ls", "--json", timeout=timeout)
         if result.returncode != 0:
             raise _failure("sbx ls", result)
-        payload = json.loads(result.stdout or b"{}")
-        rows = cast("list[dict[str, object]]", payload.get("sandboxes") or [])
-        return {str(row["name"]): row for row in rows if "name" in row}
+        rows = _listed_rows(result.stdout, "sandboxes")
+        if rows is None:
+            raise SbxError("`sbx ls --json` gave no sandbox list; refusing to assume none exist")
+        listed: dict[str, dict[str, object]] = {}
+        for entry in rows:
+            if not isinstance(entry, dict):
+                raise SbxError("`sbx ls --json` gave a sandbox row without a name")
+            row = cast("dict[str, object]", entry)
+            name = row.get("name")
+            if not isinstance(name, str) or not name:
+                raise SbxError("`sbx ls --json` gave a sandbox row without a name")
+            listed[name] = row
+        return listed
 
     async def check_host(self) -> None:
         """Refuse unless the host-wide settings this backend's isolation rests on hold."""
@@ -878,10 +888,10 @@ class SbxSandboxBackend:
             )
         if servers.returncode != 0:
             raise _failure("sbx mcp ls", servers)
-        registered = _listed_servers(servers.stdout)
+        registered = _listed_rows(servers.stdout, "servers")
         if registered is None:
             raise SbxError(
-                "`sbx mcp ls --json` gave no `servers` list, so whether an MCP server is "
+                "`sbx mcp ls --json` gave no server list, so whether an MCP server is "
                 "registered cannot be told; refusing rather than assuming none is"
             )
         if registered:
@@ -1492,16 +1502,15 @@ def _write_record(path: Path, meta: dict[str, object]) -> None:
     os.replace(part, path)
 
 
-def _listed_servers(stdout: bytes) -> list[object] | None:
-    """The servers `sbx mcp ls --json` names, or ``None`` for any other shape."""
+def _listed_rows(stdout: bytes, key: str) -> list[object] | None:
+    """Accept a direct array or a legacy keyed list; unknown shapes remain unknown."""
     try:
         payload: object = json.loads(stdout)
     except ValueError:
         return None
-    if not isinstance(payload, dict):
-        return None
-    servers = cast("dict[str, object]", payload).get("servers")
-    return cast("list[object]", servers) if isinstance(servers, list) else None
+    if isinstance(payload, dict):
+        payload = cast("dict[str, object]", payload).get(key)
+    return cast("list[object]", payload) if isinstance(payload, list) else None
 
 
 def _generation_of(directory: Path, row: dict[str, object]) -> str | None:

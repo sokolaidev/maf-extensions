@@ -71,7 +71,7 @@ def _decode(argument: str) -> str:
 
 
 class FakeSbx:
-    """Answers ``sbx`` the way v0.45.1 did, keeping a listing and each workspace's host path."""
+    """Answers ``sbx`` with legacy or array listings and each workspace's host path."""
 
     def __init__(self, backend: SbxSandboxBackend) -> None:
         self.backend = backend
@@ -81,6 +81,8 @@ class FakeSbx:
         self.forwarding = b"false\n"
         self.servers: list[object] = []
         self.mcp_payload: bytes | None = None
+        self.listing_payload: bytes | None = None
+        self.bare_lists = False
         self.exec_hook: Callable[[tuple[str, ...]], _Result | None] = lambda _args: None
         self.rm_result: _Result | None = None
         self.mount_exit = 0
@@ -156,7 +158,7 @@ class FakeSbx:
             # What a daemon that has lost its engine measured: an empty listing, and every
             # sandbox command refused.
             if args[:2] == ("ls", "--json"):
-                return _ok(json.dumps({"sandboxes": []}).encode())
+                return _ok(json.dumps([] if self.bare_lists else {"sandboxes": []}).encode())
             return _Result(1, b"", b"error: 500 Internal Server Error: backend unavailable\n")
         match args:
             case ("settings", "get", "ssh.agentForwardingEnabled"):
@@ -164,8 +166,14 @@ class FakeSbx:
             case ("mcp", "ls", "--json"):
                 if self.mcp_payload is not None:
                     return _ok(self.mcp_payload)
-                return _ok(json.dumps({"servers": self.servers}).encode())
+                return _ok(
+                    json.dumps(
+                        self.servers if self.bare_lists else {"servers": self.servers}
+                    ).encode()
+                )
             case ("ls", "--json"):
+                if self.listing_payload is not None:
+                    return _ok(self.listing_payload)
                 rows = [
                     {
                         "name": name,
@@ -175,7 +183,7 @@ class FakeSbx:
                     for name, workspace in self.sandboxes.items()
                     if name not in self.unlisted
                 ]
-                return _ok(json.dumps({"sandboxes": rows}).encode())
+                return _ok(json.dumps(rows if self.bare_lists else {"sandboxes": rows}).encode())
             case ("create", "shell", "--name", name, *_rest):
                 if name in self.ids or any(call[:4] == args[:4] for call in self.calls[:-1]):
                     self.ids[name] = f"id-{name}-{len(self.calls)}"
@@ -268,9 +276,11 @@ def backend(tmp_path: Path) -> SbxSandboxBackend:
     return SbxSandboxBackend(SbxSandboxConfig(workspace_root=tmp_path / "root"))
 
 
-@pytest.fixture
-def sbx(backend: SbxSandboxBackend) -> FakeSbx:
-    return FakeSbx(backend)
+@pytest.fixture(params=[False, True], ids=["legacy-listings", "array-listings"])
+def sbx(backend: SbxSandboxBackend, request: pytest.FixtureRequest) -> FakeSbx:
+    fake = FakeSbx(backend)
+    fake.bare_lists = request.param
+    return fake
 
 
 class TestDeclarations:
@@ -355,20 +365,44 @@ class TestHostChecks:
         sbx.servers = [{"name": "github"}]
         with pytest.raises(SbxHostNotConfined, match="sbx mcp rm"):
             asyncio.run(backend.acquire(KEY, _spec()))
+        assert not any(call[0] == "create" for call in sbx.calls)
 
     @pytest.mark.parametrize(
         "payload",
-        [b"", b"{}", b'{"servers": null}', b'{"mcpServers": []}', b"[]", b"not json"],
+        [
+            b"",
+            b"{}",
+            b'{"servers": null}',
+            b'{"servers": {}}',
+            b'{"mcpServers": []}',
+            b"null",
+            b"false",
+            b"not json",
+        ],
     )
     def test_an_mcp_listing_without_a_server_list_is_refused(self, backend, sbx, payload):
         sbx.mcp_payload = payload
-        with pytest.raises(SbxError, match="no `servers` list"):
+        with pytest.raises(SbxError, match="no server list"):
             asyncio.run(backend.acquire(KEY, _spec()))
         assert not any(call[0] == "create" for call in sbx.calls)
 
     def test_the_measured_mcp_listing_with_no_servers_passes(self, backend, sbx):
         sbx.mcp_payload = json.dumps({"gateway": {"name": "LOCAL"}, "servers": []}).encode()
         asyncio.run(backend.check_host())
+
+    def test_an_array_mcp_listing_with_no_servers_passes(self, backend, sbx):
+        sbx.mcp_payload = b"[]"
+        asyncio.run(backend.check_host())
+
+    @pytest.mark.parametrize(
+        "row", [None, "server", {}, {"name": "github", "gateway": {"name": "LOCAL"}}]
+    )
+    def test_a_nonempty_mcp_listing_is_never_treated_as_empty(self, backend, sbx, row):
+        rows = [row]
+        sbx.mcp_payload = json.dumps(rows if sbx.bare_lists else {"servers": rows}).encode()
+        with pytest.raises(SbxHostNotConfined, match="sbx mcp rm"):
+            asyncio.run(backend.acquire(KEY, _spec()))
+        assert not any(call[0] == "create" for call in sbx.calls)
 
     @pytest.mark.parametrize(
         "stderr",
@@ -1643,6 +1677,32 @@ class TestLocks:
 
 
 class TestDisposal:
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            b"",
+            b"{}",
+            b"null",
+            b"false",
+            b"not json",
+            b'{"sandboxes": null}',
+            b'{"sandboxes": {}}',
+            b"[null]",
+            b"[{}]",
+            b'[{"name": null}]',
+        ],
+    )
+    def test_an_invalid_listing_refuses_instance_disposal_and_keeps_the_workspace(
+        self, backend, sbx, tmp_path, payload
+    ):
+        sandbox = asyncio.run(backend.acquire(KEY, _spec()))
+        sbx.listing_payload = payload
+        failure = asyncio.run(backend.dispose(KEY, kind="kind", instance_id=sandbox.instance_id))
+        assert failure is not None and failure.code == "unlisted"
+        assert sandbox.name in sbx.sandboxes
+        assert (tmp_path / "root" / sandbox.name / "meta.json").is_file()
+        assert not any(call[0] == "rm" for call in sbx.calls)
+
     def test_dispose_removes_every_kind_and_its_workspace(self, backend, sbx, tmp_path):
         asyncio.run(backend.acquire(KEY, _spec()))
         asyncio.run(backend.acquire(KEY, SandboxSpec(kind="second")))
