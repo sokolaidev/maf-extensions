@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -82,6 +83,28 @@ def publication(root: Path, observation: dict) -> dict:
     }:
         raise ValueError("unexpected native byte-prefix observation")
     root.mkdir()
+    store_root = root / "store"
+    store_root.mkdir(mode=0o700)
+    if sys.platform == "win32":
+        subprocess.run(
+            [
+                "pwsh",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ErrorActionPreference = 'Stop'; "
+                "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; "
+                'icacls $env:MXC_ASSESSMENT_STORE /setowner "*$sid"; '
+                "if ($LASTEXITCODE -ne 0) { throw 'Fixture owner setup failed' }; "
+                'icacls $env:MXC_ASSESSMENT_STORE /inheritance:r /grant:r "*${sid}:(OI)(CI)F" '
+                '"*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"; '
+                "if ($LASTEXITCODE -ne 0) { throw 'Fixture access setup failed' }",
+            ],
+            env=os.environ | {"MXC_ASSESSMENT_STORE": str(store_root)},
+            capture_output=True,
+            check=True,
+            timeout=30,
+        )
     checkpoint = root / "checkpoint"
     checkpoint.mkdir()
     (checkpoint / "index.json").write_bytes(b"synthetic checkpoint fixture")

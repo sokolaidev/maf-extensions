@@ -41,6 +41,22 @@ def test_changed_native_observation_cannot_reuse_expected_decision(tmp_path):
     assert not (tmp_path / "host").exists()
 
 
+def test_publication_fixture_never_repairs_an_existing_store(tmp_path):
+    (tmp_path / "sentinel").write_bytes(b"retained data")
+    with pytest.raises(FileExistsError):
+        adoption.publication(
+            tmp_path,
+            {
+                "case": "byte_prefix",
+                "retained_bytes": 1048575,
+                "omitted_bytes": 3,
+                "limit_bytes": 1048576,
+            },
+        )
+    assert (tmp_path / "sentinel").read_bytes() == b"retained data"
+    assert not (tmp_path / "store").exists()
+
+
 def test_failed_assessment_retains_unqualified_report(tmp_path, monkeypatch):
     def fail(*args):
         raise RuntimeError("native recovery failed")
