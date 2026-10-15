@@ -1631,12 +1631,18 @@ def test_recovery_non_object_response_retains_ownership_until_retry(monkeypatch,
             return HyperlightPodController.api(controller, *arguments, body=body)
         return original_api(*arguments, body=body)
 
-    monkeypatch.setattr(
-        subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, response)
-    )
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(kubernetes, "time", SimpleNamespace(monotonic=lambda: clock.now))
+
+    def malformed_response(*args, **kwargs):
+        # Expire the budget at the response, before either recovery deadline check.
+        clock.now += 1.0
+        return subprocess.CompletedProcess(args, 0, response)
+
+    monkeypatch.setattr(subprocess, "run", malformed_response)
     monkeypatch.setattr(controller, "api", malformed)
     with pytest.raises(HyperlightPodCleanupPending) as raised:
-        controller.recover(KEY, KIND, timeout=0.001)
+        controller.recover(KEY, KIND, timeout=1.0)
     assert type(raised.value.__cause__) is HyperlightWorkerError
     assert "non-object response" in str(raised.value.__cause__)
     assert controller.ledger == ledger and controller.pod == pod

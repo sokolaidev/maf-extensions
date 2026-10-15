@@ -1,0 +1,1 @@
+output greeting int = 'hello'

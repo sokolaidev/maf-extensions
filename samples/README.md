@@ -27,6 +27,8 @@ For contributors, [adding a sample](../CONTRIBUTING.md#adding-a-sample) covers d
 | [`19_autogen_docker_codeact`](19_autogen_docker_codeact/) | Sample 06's task, image and router under an AutoGen agent: `AssistantAgent` with `PythonCodeExecutionTool` attached, and the `CodeExecutor` the sample writes acquiring from the router — AutoGen's executor surface over the same isolation floor, GET-only PyPI egress and purge | A Docker-compatible engine, the packaged egress proxy and an Azure OpenAI deployment (no key — `az login`) or any OpenAI-compatible endpoint |
 | [`20_terraform_validation`](20_terraform_validation/) | One agent validates a random-provider module with Terraform or OpenTofu on Docker or ACAS; checks the engine report and per-call disposal | A random-profile image, Docker or an ACAS group with that image imported, and Azure OpenAI |
 
+The [experimental OpenClaw Bicep end-to-end sample](experimental/openclaw_bicep_e2e/) provisions an isolated OpenClaw Gateway and installs the MCP worker from a wheel. It validates deliberately invalid Bicep and its repair through Docker, with deterministic smoke mode requiring no model account and optional model mode. It remains experimental until the worker is published.
+
 The [experimental Hyperlight AKS CodeAct sample](experimental/hyperlight_aks_codeact/) runs a complete application inside a supervised AKS pod, with deterministic smoke mode, optional model inference, and a host launcher for confirmed cleanup and recovery.
 
 ## How these are meant to be read
