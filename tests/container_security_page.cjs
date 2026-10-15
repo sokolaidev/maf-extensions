@@ -145,3 +145,50 @@ test('fresh catalogue lookup excludes the experimental namespace', async () => {
   assert.deepEqual(await history(), []);
   await assert.rejects(verifySnapshot(JSON.stringify({sequence: 8}), []), /no longer authoritative/);
 });
+
+
+test('failed aggregate keeps clean and vulnerable images distinct after exact-attempt delivery', async () => {
+  const failed = {...run, conclusion: 'failure', event: 'schedule', head_branch: 'main', path: '.github/workflows/container-image-monitor.yml', head_repository: {full_name: 'sokolaidev/maf-extensions'}};
+  let jobs = ['begin', 'finish'].map((name, i) => ({id: i + 1, run_id: run.id, run_attempt: 1, name, status: 'completed', conclusion: 'success'}));
+  global.fetch = async url => {
+    if (url.includes('/jobs?')) {
+      assert.ok(url.includes('/runs/123/attempts/1/jobs?'), url);
+      return {ok: true, json: async () => ({total_count: jobs.length, jobs})};
+    }
+    return {ok: true, json: async () => ({total_count: 1, workflow_runs: [failed]})};
+  };
+  const delivered = await latestMonitor(at);
+  assert.equal(delivered.stateDeliveryVerified, true);
+  assert.equal(status(record, delivered, at), 'clean');
+  assert.equal(status(record, delivered, at + 24 * 3600000), 'stale');
+  for (const outcome of ['vulnerable', 'unavailable', 'running']) {
+    assert.equal(status({...record, latestAttempt: {...record.latestAttempt, outcome}}, delivered, at), outcome === 'running' ? 'unavailable' : outcome);
+  }
+  assert.equal(status(record, {...delivered, run_attempt: 2}, at), 'unavailable');
+  assert.equal(status(record, {...delivered, conclusion: 'cancelled'}, at), 'unavailable');
+  const good = jobs;
+  for (const bad of [good.slice(0, 1), [...good, {...good[1], id: 3}], [good[0], {...good[1], conclusion: 'failure'}], [good[0], {...good[1], status: 'in_progress'}], [good[0], {...good[1], run_id: 122}], [good[0], {...good[1], run_attempt: 2}], [good[0], {...good[1], id: 1}]]) {
+    jobs = bad;
+    assert.equal(status(record, await latestMonitor(at), at), 'unavailable');
+  }
+});
+
+test('delivery lookup paginates and refuses incomplete or inaccessible jobs', async () => {
+  const failed = {...run, conclusion: 'failure', event: 'schedule', head_branch: 'main', path: '.github/workflows/container-image-monitor.yml', head_repository: {full_name: 'sokolaidev/maf-extensions'}};
+  const common = {run_id: 123, run_attempt: 1, status: 'completed', conclusion: 'success'};
+  const jobs = [...Array.from({length: 100}, (_, i) => ({...common, id: i + 3, name: 'scan'})), {...common, id: 1, name: 'begin'}, {...common, id: 2, name: 'finish'}];
+  let inaccessible = false;
+  global.fetch = async url => {
+    if (!url.includes('/jobs?')) return {ok: true, json: async () => ({total_count: 1, workflow_runs: [failed]})};
+    if (inaccessible) return {ok: false};
+    const page = Number(new URL(url).searchParams.get('page'));
+    return {ok: true, json: async () => ({total_count: 102, jobs: jobs.slice((page - 1) * 100, page * 100)})};
+  };
+  assert.equal((await latestMonitor(at)).stateDeliveryVerified, true);
+  jobs.pop();
+  assert.equal((await latestMonitor(at)).stateDeliveryVerified, false);
+  inaccessible = true;
+  const monitor = await latestMonitor(at);
+  assert.equal(status(record, monitor, at), 'unavailable');
+  assert.equal(status({...record, latestAttempt: {...record.latestAttempt, outcome: 'vulnerable'}}, monitor, at), 'vulnerable');
+});
