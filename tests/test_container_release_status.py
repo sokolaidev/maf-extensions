@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from container_release import complete, empty_catalogue, observe, reserve  # noqa: E402
-from container_release_history import encode  # noqa: E402
+from container_release_history import GitHub, encode  # noqa: E402
 from container_release_status import latest_monitor, report  # noqa: E402
 
 AT = "2026-01-01T00:00:00Z"
@@ -57,9 +57,12 @@ def current(monkeypatch):
         assessment,
     )
     snapshot = SimpleNamespace(catalogue=catalogue, number=5, digest=DIGEST)
-    state = {"runs": [run()], "snapshot": snapshot}
+    state = {"runs": [run()], "snapshot": snapshot, "jobs": []}
 
     def request(_self, _endpoint, **_kwargs):
+        if "/jobs?" in _endpoint:
+            assert "/runs/" in _endpoint and "/attempts/" in _endpoint
+            return encode({"jobs": state["jobs"], "total_count": len(state["jobs"])})
         return encode({"workflow_runs": state["runs"], "total_count": len(state["runs"])})
 
     monkeypatch.setattr("container_release_status.GitHub.request", request)
@@ -173,3 +176,94 @@ def test_monitor_lists_all_pages_when_locating_old_rerun():
             return encode({"workflow_runs": records, "total_count": 101})
 
     assert latest_monitor(Pages())["id"] == 100
+
+
+def delivered_jobs():
+    return [
+        {
+            "id": n,
+            "run_id": 200,
+            "run_attempt": 1,
+            "name": name,
+            "status": "completed",
+            "conclusion": "success",
+        }
+        for n, name in enumerate(("begin", "finish"), 1)
+    ]
+
+
+@pytest.mark.parametrize("outcome", ["clean", "vulnerable", "unavailable", "running"])
+def test_failed_aggregate_preserves_each_delivered_assessment(current, outcome):
+    current["runs"][0]["conclusion"] = "failure"
+    current["jobs"] = delivered_jobs()
+    current["snapshot"].catalogue["releases"]["bicep/0.1.0"]["latestAttempt"]["outcome"] = outcome
+    result = report(CANDIDATE, at=AT)
+    assert result["monitoringStatus"] == ("unavailable" if outcome == "running" else outcome)
+    assert result["monitorWorkflow"]["stateDeliveryVerified"] is True
+    if outcome == "clean":
+        assert report(CANDIDATE, at="2026-01-03T00:00:00Z")["monitoringStatus"] == "stale"
+
+
+@pytest.mark.parametrize(
+    "change", ["missing", "duplicate", "failed", "pending", "run", "attempt", "id"]
+)
+def test_failed_aggregate_requires_unambiguous_delivery_from_exact_attempt(current, change):
+    current["runs"][0]["conclusion"] = "failure"
+    jobs = delivered_jobs()
+    if change == "missing":
+        jobs.pop()
+    elif change == "duplicate":
+        jobs.append(jobs[-1] | {"id": 3})
+    elif change == "failed":
+        jobs[-1]["conclusion"] = "failure"
+    elif change == "pending":
+        jobs[-1]["status"] = "in_progress"
+    elif change == "run":
+        jobs[-1]["run_id"] = 199
+    elif change == "attempt":
+        jobs[-1]["run_attempt"] = 2
+    else:
+        jobs[-1]["id"] = jobs[0]["id"]
+    current["jobs"] = jobs
+    assert report(CANDIDATE, at=AT)["monitoringStatus"] == "unavailable"
+
+
+def test_delivery_retrieval_failure_preserves_vulnerability_evidence(current, monkeypatch):
+    current["runs"][0]["conclusion"] = "failure"
+
+    def failed(*args):
+        raise OSError("offline")
+
+    monkeypatch.setattr("container_release_status.state_delivery", failed)
+    assert report(CANDIDATE, at=AT)["monitoringStatus"] == "unavailable"
+    current["snapshot"].catalogue["releases"]["bicep/0.1.0"]["latestAttempt"]["outcome"] = (
+        "vulnerable"
+    )
+    assert report(CANDIDATE, at=AT)["monitoringStatus"] == "vulnerable"
+
+
+def test_delivery_listing_requires_all_pages_and_refuses_truncation(monkeypatch):
+    from container_release_status import state_delivery
+
+    jobs = [
+        {
+            "id": n,
+            "run_id": 200,
+            "run_attempt": 1,
+            "name": "scan",
+            "status": "completed",
+            "conclusion": "success",
+        }
+        for n in range(3, 103)
+    ]
+    jobs += delivered_jobs()
+
+    def request(self, endpoint):
+        assert "/runs/200/attempts/1/jobs?" in endpoint
+        page = int(endpoint.rsplit("=", 1)[1])
+        return encode({"total_count": 102, "jobs": jobs[(page - 1) * 100 : page * 100]})
+
+    monkeypatch.setattr(GitHub, "request", request)
+    assert state_delivery(GitHub(), run()) is True
+    jobs.pop()
+    assert state_delivery(GitHub(), run()) is False
