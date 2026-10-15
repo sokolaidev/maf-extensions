@@ -92,13 +92,15 @@ def publication(root: Path, observation: dict) -> dict:
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "$ErrorActionPreference = 'Stop'; "
-                "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; "
-                'icacls $env:MXC_ASSESSMENT_STORE /setowner "*$sid"; '
-                "if ($LASTEXITCODE -ne 0) { throw 'Fixture owner setup failed' }; "
-                'icacls $env:MXC_ASSESSMENT_STORE /inheritance:r /grant:r "*${sid}:(OI)(CI)F" '
-                '"*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"; '
-                "if ($LASTEXITCODE -ne 0) { throw 'Fixture access setup failed' }",
+                (
+                    "$ErrorActionPreference = 'Stop'; "
+                    "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; "
+                    'icacls $env:MXC_ASSESSMENT_STORE /setowner "*$sid"; '
+                    "if ($LASTEXITCODE -ne 0) { throw 'Fixture owner setup failed' }; "
+                    'icacls $env:MXC_ASSESSMENT_STORE /inheritance:r /grant:r "*${sid}:(OI)(CI)F" '
+                    '"*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"; '
+                    "if ($LASTEXITCODE -ne 0) { throw 'Fixture access setup failed' }"
+                ),
             ],
             env=os.environ | {"MXC_ASSESSMENT_STORE": str(store_root)},
             capture_output=True,
