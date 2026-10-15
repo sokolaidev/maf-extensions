@@ -314,6 +314,49 @@ RECALL_VALUES_DESCRIPTION: Final[str] = (
 )
 
 
+def _recall_results(messages: Sequence[Message]) -> dict[int, str]:
+    """Match local recall results to unique, preceding, unanswered call occurrences."""
+    pending: dict[str, list[tuple[Content, str, bool]]] = {}
+    identities: Counter[str] = Counter()
+    matched: dict[int, str] = {}
+    for message in messages:
+        if message.role not in ("assistant", "tool"):
+            continue
+        for position, content in enumerate(message.contents):
+            if not content.call_id:
+                continue
+            if message.role == "assistant" and content.type == "function_call":
+                identity = (
+                    f"occurrence:{content.id}"
+                    if content.id
+                    else f"message:{message.message_id}:{position}"
+                    if message.message_id
+                    else f"call:{content.call_id}"
+                )
+                identities[identity] += 1
+                eligible = (
+                    content.name == RECALL_TOOL_NAME
+                    and not content.hosted
+                    and not content.informational_only
+                    and not message.additional_properties.get(EXCLUDED_KEY, False)
+                )
+                pending.setdefault(content.call_id, []).append((content, identity, eligible))
+            elif content.type == "function_result":
+                calls = pending.get(content.call_id, [])
+                candidates = [
+                    index
+                    for index, (call, _, _) in enumerate(calls)
+                    if not content.id or call.id == content.id
+                ]
+                if len(candidates) != 1:
+                    continue
+                _, identity, eligible = calls.pop(candidates[0])
+                if eligible and not message.additional_properties.get(EXCLUDED_KEY, False):
+                    matched[id(content)] = identity
+    # Legacy calls without occurrence or message IDs must have unique service IDs.
+    return {key: identity for key, identity in matched.items() if identities[identity] == 1}
+
+
 def find_record_index(messages: Sequence[Message]) -> int | None:
     """Return the index of the newest recall tool result, if one exists.
 
@@ -321,10 +364,8 @@ def find_record_index(messages: Sequence[Message]) -> int | None:
     a record exists -- otherwise one would force a call that was already made, or drop results
     a record never covered.
 
-    The call and its result are matched by ``call_id`` rather than by adjacency, because a
-    provider is free to order or batch them differently. A result whose call is absent does not
-    count: that is the shape a client-synthesised pair produces, and exactly what breaks on
-    routes that track tool calls server-side.
+    Results bind to call occurrences; an id-less result requires one unanswered candidate.
+    Hosted, ambiguous and orphaned results cannot establish a local recall record.
 
     **Two forms are records.** The recall tool's result, as above, and a record this package
     wrote in place of several (:func:`build_record_message`), which is a message of its own with
@@ -345,12 +386,7 @@ def find_record_index(messages: Sequence[Message]) -> int | None:
     Returns:
         The index of the result message, or None when no complete record exists.
     """
-    recall_ids = {
-        content.call_id
-        for message in messages
-        for content in message.contents
-        if content.type == "function_call" and content.name == RECALL_TOOL_NAME and content.call_id
-    }
+    recall_results = _recall_results(messages)
     newest: int | None = None
     for index, message in enumerate(messages):
         if message.additional_properties.get(EXCLUDED_KEY, False):
@@ -358,10 +394,8 @@ def find_record_index(messages: Sequence[Message]) -> int | None:
         if _is_written_record(message):
             newest = index
             continue
-        if not recall_ids:
-            continue
         for content in message.contents:
-            if content.type != "function_result" or content.call_id not in recall_ids:
+            if id(content) not in recall_results:
                 continue
             result = content.result if isinstance(content.result, str) else str(content.result)
             # The marker is what separates a record from a call the model made on its own
@@ -379,7 +413,8 @@ def _newest_record_identity(messages: list[Message]) -> str:
     (:func:`find_record_index`), and named by something the copies sent on a call
     and the store after it both carry -- not a position, which differs between the two lists.
 
-    A record the model made is named by its call id, which the provider issued. A record the
+    A record the model made is named by its call occurrence, falling back to its declaration's
+    message identity or a unique legacy service call id. A record the
     chain wrote has no call id -- it is an ordinary message, see
     :func:`build_record_message` -- so it is named by its text. The two lists agree on that text
     because the chain puts the answer the copies pass was given on the store
@@ -392,9 +427,10 @@ def _newest_record_identity(messages: list[Message]) -> str:
     if index is None:
         return ""
     message = messages[index]
-    for content in message.contents:
-        if content.type == "function_result" and RECORD_MARKER in str(content.result):
-            return f"call:{content.call_id or ''}"
+    recall_results = _recall_results(messages)
+    for content in reversed(message.contents):
+        if id(content) in recall_results and RECORD_MARKER in str(content.result):
+            return recall_results[id(content)]
     return f"text:{message.text}"
 
 
@@ -411,7 +447,7 @@ def _is_written_record(message: Message) -> bool:
     )
 
 
-def record_text(message: Message) -> str:
+def record_text(message: Message, *, history: Sequence[Message] | None = None) -> str:
     """Return the record text a message carries: a recall result, or a record this package wrote.
 
     A written record (:func:`_is_written_record`) is its text, whole. Otherwise only results
@@ -429,7 +465,14 @@ def record_text(message: Message) -> str:
 
     Returns:
         The record, or an empty string when the message carries none.
+
+    Pass ``history`` when using the text to authorize removal; it verifies call occurrences.
     """
+    return _record_text(message, _recall_results(history) if history is not None else None)
+
+
+def _record_text(message: Message, recall_results: dict[int, str] | None) -> str:
+    """Extract record text, optionally restricting it to matched local results."""
     if message.additional_properties.get(EXCLUDED_KEY, False):
         return ""
     if _is_written_record(message):
@@ -437,6 +480,8 @@ def record_text(message: Message) -> str:
     parts: list[str] = []
     for content in message.contents:
         if content.type != "function_result":
+            continue
+        if recall_results is not None and id(content) not in recall_results:
             continue
         result = content.result if isinstance(content.result, str) else str(content.result)
         if RECORD_MARKER in result:
@@ -625,7 +670,12 @@ def _distinctive_tokens(text: str) -> set[str]:
     }
 
 
-def _is_recall_group(messages: Sequence[Message], group: dict[str, Any]) -> bool:
+def _is_recall_group(
+    messages: Sequence[Message],
+    group: dict[str, Any],
+    *,
+    recall_results: dict[int, str] | None = None,
+) -> bool:
     """Return whether a group is itself a record rather than ordinary tool work.
 
     Shared by the strategy and the middleware for the same reason :func:`find_record_index` is:
@@ -644,22 +694,21 @@ def _is_recall_group(messages: Sequence[Message], group: dict[str, Any]) -> bool
         its result can land in separate spans when another message sits between them -- or a
         record this package wrote.
     """
-    if RECALL_TOOL_NAME in _called_function_names(messages, group):
-        return True
     members = messages[group["start_index"] : group["end_index"] + 1]
     if any(_is_written_record(message) for message in members):
         return True
-    result_ids = {
-        content.call_id
+    if recall_results is None:
+        recall_results = _recall_results(messages)
+    return any(
+        id(content) in recall_results
+        or (
+            message.role == "assistant"
+            and content.type == "function_call"
+            and content.name == RECALL_TOOL_NAME
+            and not content.hosted
+            and not content.informational_only
+        )
         for message in members
-        for content in message.contents
-        if content.type == "function_result" and content.call_id
-    }
-    return bool(result_ids) and any(
-        content.type == "function_call"
-        and content.name == RECALL_TOOL_NAME
-        and content.call_id in result_ids
-        for message in messages
         for content in message.contents
     )
 
@@ -715,12 +764,13 @@ def active_record_groups(messages: list[Message]) -> list[dict[str, Any]]:
     Returns:
         One span from :func:`group_messages` per record.
     """
+    recall_results = _recall_results(messages)
     return [
         group
         for group in group_messages(messages)
-        if _is_recall_group(messages, group)
+        if _is_recall_group(messages, group, recall_results=recall_results)
         and any(
-            record_text(message)
+            _record_text(message, recall_results)
             for message in messages[group["start_index"] : group["end_index"] + 1]
         )
     ]
@@ -765,8 +815,9 @@ def record_body(messages: list[Message], group: dict[str, Any]) -> str:
         The record's own text, several results in one span joined by newlines.
     """
     parts: list[str] = []
+    recall_results = _recall_results(messages)
     for message in messages[group["start_index"] : group["end_index"] + 1]:
-        text = record_text(message)
+        text = _record_text(message, recall_results)
         for part in text.split(RECORD_MARKER)[1:]:
             parts.append(part.strip().removeprefix(_RECORD_PREAMBLE).strip())
     return "\n".join(part for part in parts if part)
@@ -1796,8 +1847,11 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             True if anything was excluded.
         """
         groups = group_messages(messages)
+        recall_results = _recall_results(messages)
         record = "\n".join(
-            text for message in messages[: anchor + 1] if (text := record_text(message))
+            text
+            for message in messages[: anchor + 1]
+            if (text := _record_text(message, recall_results))
         )
         # Tokenised once, and kept in both shapes the two rules need: a set for "is this value
         # in the record", a count for "is this name mentioned as often as it was called".

@@ -302,7 +302,8 @@ def run_suite(
             # The wheel under test carries Requires-Dist on the core, which the override
             # rewrites to the forced artifact — the operand named below is what keeps the
             # pairing resolvable without a second spelling of the version.
-            pinned = ["--overrides", str(override), str(core)]
+            # Required siblings must resolve before the optional no-deps sibling pass.
+            pinned = ["--overrides", str(override), "--find-links", str(wheel.parent), str(core)]
         else:
             # A published core under test: each published sibling rides at the newest version
             # whose own metadata admits this core — what a consumer capped to that core would

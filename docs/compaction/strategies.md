@@ -112,6 +112,8 @@ Preserved media remains part of the budget. If protected material cannot fit, th
 
 The [live image verification record](research/media-live-1878.md) measures description, compaction, session replay and provider usage on synthetic images; its scope does not extend to other media or providers.
 
+Recall records bind to local call occurrences, not globally unique service call IDs. An id-less legacy result must have exactly one unanswered matching declaration. Hosted calls, ambiguous matches and duplicate results cannot establish coverage. With legacy declarations, message identity distinguishes repeated service call IDs; a repeated service ID without either occurrence or message identity is conservatively refused. Matched record text alone authorizes removal, including when unrelated marked results share its message. Call/result pairs spanning separate groups are retained together.
+
 ## What none of them do
 
 Inside the context window nothing here beats not compacting: the best strategy costs within 3-8% of the control, inside the seed spread, and the whole conversation stays cached. Past the window the composition keeps every fact and is cheaper than an unlimited model, except on gpt-5.6-luna at three times the window, where it costs more and overflows on one seed of five; the rest either lose facts or overflow. None of them measures what a user-turn summary kept of the turns. All of them call `agent_framework._compaction`, the framework's private compaction helpers, for grouping, token annotation and the exclusion flags, so the dependency is pinned to one minor and re-read before the pin moves.
@@ -136,3 +138,4 @@ Inside the context window nothing here beats not compacting: the best strategy c
 | Separating the three user-summary modes by measurement | Not started | untracked |
 | Summarising each tool result individually rather than all in one record | Not started | untracked |
 | Private-API dependency re-read on every core minor | Ongoing | [release-compatibility.md](../release-compatibility.md) |
+| MAF 1.22 occurrence-aware recall and whole-call preservation | Offline contracts implemented; live and release qualification pending | [#1961](https://github.com/sokolaidev/maf-extensions/issues/1961) (open) |

@@ -2663,7 +2663,9 @@ async def test_the_wait_reads_a_written_record_arriving_the_same_way_on_both_lis
     await strategy(store)
 
     merged = _newest_record_identity(copies)
-    assert model_made == "call:rec2" and merged.startswith("text:") and merged != model_made
+    assert (
+        model_made == "message:rec2_call:0" and merged.startswith("text:") and merged != model_made
+    )
     assert _newest_record_identity(store) == merged, "the replay is named alike on both lists"
     assert strategy._anchor == model_made, "neither pass saw the merge before it was made"
 

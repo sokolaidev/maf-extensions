@@ -172,5 +172,23 @@ def removable_whole(
     ):
         return False
     members = messages[span["start_index"] : span["end_index"] + 1]
+    outside = [
+        content
+        for index, message in enumerate(messages)
+        if not span["start_index"] <= index <= span["end_index"]
+        for content in message.contents
+        if content.type in ("function_call", "function_result") and content.call_id
+    ]
+    # Framework grouping may leave interleaved occurrences in separate spans.
+    if any(
+        content.type != other.type
+        and content.call_id == other.call_id
+        and (not content.id or not other.id or content.id == other.id)
+        for message in members
+        for content in message.contents
+        if content.type in ("function_call", "function_result") and content.call_id
+        for other in outside
+    ):
+        return False
     loaded = [_ATTRIBUTION_KEY in message.additional_properties for message in members]
     return all(loaded) or not any(loaded)

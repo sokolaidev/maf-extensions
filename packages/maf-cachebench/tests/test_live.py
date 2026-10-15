@@ -2574,9 +2574,8 @@ async def test_the_composed_rows_user_half_waits_for_the_record_through_the_live
 async def test_when_the_record_is_not_enough_the_user_half_acts_on_what_it_left() -> None:
     """The other half of the layering: the user half acts, and only behind the record.
 
-    Smaller lookups, so dropping them leaves the prompt over the line. Here the crossing is first
-    seen on a store pass -- the middleware, reading the call's own prompt, had not yet seen it
-    over -- and the wait, counted in responses, still lasts until the pinned call's record is in.
+    Smaller lookups leave the prompt over the line after removal. The user half must wait
+    until the pinned call's record arrives before summarizing what remains.
     """
     run = await _run_wait_fixture(tool_tokens=400, filler_turns=11)
     strategy = run.strategy
@@ -2590,7 +2589,7 @@ async def test_when_the_record_is_not_enough_the_user_half_acts_on_what_it_left(
     assert compacting == [True, True], (
         "once the record stood: the copies, then the store replaying them"
     )
-    assert strategy.user_passes_waited == 4
+    assert strategy.user_passes_waited == 3
 
 
 async def test_a_model_that_never_records_leaves_the_user_half_waiting_only_two_responses() -> None:

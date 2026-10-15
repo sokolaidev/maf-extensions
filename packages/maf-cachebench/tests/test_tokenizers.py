@@ -265,16 +265,10 @@ def test_build_tokenizer_wraps_every_name_and_keeps_the_names() -> None:
 
 @pytest.mark.parametrize("base", _bases(), ids=lambda base: type(base).__name__)
 def test_a_replayed_items_nested_payload_is_not_counted_but_its_summary_is(base: Any) -> None:
-    """The Foundry client keeps the whole replayed reasoning item under additional_properties.
-
-    The framework strips ``encrypted_content`` at the top level of those properties and nothing
-    below, so the payload inside the kept item is counted as prompt text: 1,128 tokens for a
-    reply billed at about 110. The wrapper drops the member at any depth and leaves the item's
-    clear-text summary, which the provider does send, counted as the framework counts it.
-    """
+    """Framework filtering and reasoning-stamp accounting retain clear-text replay summaries."""
     blob = _blob()
     with_replay = _serialize_message(_reasoning_message(blob, replay={0: blob}))
-    assert blob in with_replay, "the framework counts the nested payload; the premise of this test"
+    assert blob not in with_replay
     twin = _reasoning_message(blob, replay={0: blob})
     del twin.contents[0].additional_properties["__foundry_reasoning_replay_item__"][
         "encrypted_content"
