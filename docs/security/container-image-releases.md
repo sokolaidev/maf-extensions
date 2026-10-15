@@ -54,7 +54,7 @@ The first publishing workflow covers all thirteen currently scanned profiles on 
 | `terraform-prepared` | Terraform with the approved prepared dependency manifest |
 | `opentofu-prepared` | OpenTofu with the approved prepared dependency manifest |
 | `hyperlight` | The repository's Hyperlight runtime and verification application |
-| `egress-proxy` | The shared Docker/WSLC egress proxy implementation |
+| `egress-proxy` | [Patched proxy infrastructure for Docker/WSLC, with Docker consumer qualification](../../images/egress-proxy/README.md) |
 
 The initial platform is `linux/amd64`. Custom provider manifests, the larger AVM/platform variants, other architectures and the upstream Hyperlight device plugin require their own release scope and evidence. Publishing the Hyperlight verification application does not qualify an embedding application's payload or prove live KVM/AKS behavior. Each profile records its intended consumers and actual compatibility checks before its first publication.
 

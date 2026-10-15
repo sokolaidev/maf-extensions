@@ -59,7 +59,8 @@ PY
     uv run --locked python scripts/build_hyperlight_aks_image.py --require-clean --output "$RUNNER_TEMP/hyperlight-image" --tag maf-image-scan:target
     ;;
   egress-proxy)
-    docker build --pull --platform linux/amd64 -t maf-image-scan:target packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy
+    docker build --pull --platform linux/amd64 -t maf-image-scan:proxy-base packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy
+    docker build --platform linux/amd64 --build-context suite=. --build-context proxy=packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy -t maf-image-scan:target images/egress-proxy
     ;;
   *) echo "Unknown image scan profile: $1" >&2; exit 2 ;;
 esac
