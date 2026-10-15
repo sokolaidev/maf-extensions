@@ -59,7 +59,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -86,6 +86,8 @@ jobs:
         run: rustup toolchain install 1.98.0 --profile minimal
       - name: Measure upstream and contract differences
         run: python scripts/experiments/unikraft_output/qualify.py --source upstream --output evidence
+      - name: Assess retained checkpoint recovery and publication boundaries
+        run: python -m scripts.experiments.unikraft_output.adoption --source upstream --output evidence --root retained-mxc
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
