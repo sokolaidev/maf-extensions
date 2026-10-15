@@ -138,4 +138,4 @@ Inside the context window nothing here beats not compacting: the best strategy c
 | Separating the three user-summary modes by measurement | Not started | untracked |
 | Summarising each tool result individually rather than all in one record | Not started | untracked |
 | Private-API dependency re-read on every core minor | Ongoing | [release-compatibility.md](../release-compatibility.md) |
-| MAF 1.22 occurrence-aware recall and whole-call preservation | Offline contracts implemented; live and release qualification pending | [#1961](https://github.com/sokolaidev/maf-extensions/issues/1961) (open) |
+| MAF 1.22 occurrence-aware recall and whole-call preservation | Offline contracts implemented; live and release qualification pending | [#1961](https://github.com/sokolaidev/maf-extensions/issues/1961) (open), [#1963](https://github.com/sokolaidev/maf-extensions/pull/1963) (merged) |
