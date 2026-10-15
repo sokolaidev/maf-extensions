@@ -1,0 +1,95 @@
+name: Upstream Unikraft output qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rootfs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: hyperlight-dev/hyperlight-unikraft
+          ref: cf458a07ed847f06d78284998a5beb13dc9fb426
+          path: upstream
+          persist-credentials: false
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+      - name: Build matching Python rootfs once
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends cpio
+          docker pull python:3.12-slim-bookworm
+          cd upstream
+          just build-rootfs python
+          python - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path("build-elfloader")
+          report = {
+              "upstream_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "rootfs_sha256": hashlib.sha256((root / "python-rootfs.cpio").read_bytes()).hexdigest(),
+              "images": {},
+          }
+          for name in ["python:3.12-slim-bookworm", "hluk-python-rootfs"]:
+              obj = json.loads(subprocess.check_output(["docker", "image", "inspect", name]))[0]
+              report["images"][name] = {"id": obj["Id"], "repo_digests": obj["RepoDigests"]}
+          (root / "rootfs-build.json").write_text(json.dumps(report, indent=2) + "\n")
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unikraft-output-rootfs
+          path: |
+            upstream/build-elfloader/python-rootfs.cpio
+            upstream/build-elfloader/rootfs-build.json
+          if-no-files-found: error
+          retention-days: 14
+
+  native:
+    needs: rootfs
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: hyperlight-dev/hyperlight-unikraft
+          ref: cf458a07ed847f06d78284998a5beb13dc9fb426
+          path: upstream
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unikraft-output-rootfs
+          path: upstream/build-elfloader
+      - name: Enable KVM
+        if: runner.os == 'Linux'
+        run: |
+          sudo chmod 666 /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.98.0 --profile minimal
+      - name: Measure upstream and contract differences
+        run: python scripts/experiments/unikraft_output/qualify.py --source upstream --output evidence
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: unikraft-output-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 14

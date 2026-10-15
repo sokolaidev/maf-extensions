@@ -87,3 +87,44 @@ All 23 stream/failure cases matched across hosts: zero output; 4095/4096/4097-by
 The format-4 crash matrix exercised all eight publication/cleanup boundaries with both full byte prefixes and omission counts. Committed retries returned the identical envelope without a helper, including after checkpoint collection. Uncommitted failure preserved the previous checkpoint; quota refusal occurred before native launch; independently reconciled SQLite totals matched persisted accounting. This is same-machine process-crash evidence, not cross-machine fencing, machine power-loss evidence or a production adapter qualification.
 
 After this native run, the only executable adjustment tightened host scratch admission by one KiB to reserve readiness/control headroom explicitly. Its focused boundary test passed; the native kernel, Rust overlays, helper and transport remained unchanged. The reports deliberately retain the actual native-tested commit rather than relabeling it as the final documentation commit. The [experiment README](../../../scripts/experiments/mxc_streams_patch/README.md) describes running and removing the profile.
+
+## Upstream bounded capture qualification (2026-10-15)
+
+[Upstream PR #146](https://github.com/hyperlight-dev/hyperlight-unikraft/pull/146) closed [upstream #140](https://github.com/hyperlight-dev/hyperlight-unikraft/issues/140) at commit `cf458a07ed847f06d78284998a5beb13dc9fb426`. [#1948](https://github.com/sokolaidev/maf-extensions/issues/1948) tracks downstream qualification. This comparison preserves the older experiments and their evidence; the upstream fix does not retroactively change their pinned runtime.
+
+### Source comparison
+
+| Concern | Upstream at the pinned commit | Consequence for the MXC profile |
+|---|---|---|
+| Retained output | `output_limit(bytes)` bounds each capture between drains; overflow retains a UTF-8 prefix and continues execution | The original host-accumulation requirement is implemented, but the default remains unlimited |
+| Mirroring | `echo_output(false)` is a separate setting | Both settings must be applied on fresh boot and restore |
+| Stream identity | `take_output()` contains stdout and stderr together; `take_stderr()` duplicates stderr separately | A stderr flood can exhaust the combined budget before stdout is retained; these are not independent stdout/stderr budgets |
+| Drain ordering | `take_output()` clears the stderr text and omission counter | Stderr must be collected first |
+| Binary transport | `CapturedOutput.text` is a Rust `String`; callbacks accept strings | It cannot represent the existing arbitrary-byte stream contract |
+| Omission counters | `Capture::push` uses ordinary `u64` addition without a saturation flag | Preserve the downstream saturation contract; this is a source finding, not a measured long-running overflow |
+| Persistence | The upstream output API does not implement the MXC format-4 result/checkpoint transaction or bounded-export overlay | Session, storage and durable replay support cannot be retired on the strength of this fix |
+
+The upstream snapshot contract is `c4` and its embedded x86-64 kernel has SHA-256 `2d5dc13d1dd13e31b37c98f0ab5413d90b5eed9104e6215e1e06ede559c9f275`. The retained MXC 1.0 runtime at `8f636e00cdf29e6c33ba0f578482c595d7827cf6` used contract `c3`. These source identities differ before attempting any old-checkpoint restore; a migration must keep old profiles available and explicitly qualify refusal/recovery. This comparison does not attribute all intervening kernel and contract changes to PR #146.
+
+The [qualification harness](../../../scripts/experiments/unikraft_output/README.md) runs the exact upstream collector, output-limit, restore and echo tests alongside independent native contract comparisons. It leaves the existing MXC overlay sources and pins unchanged.
+
+### Native measurements and decision
+
+The first [comparison run 38651934008](https://github.com/sokolaidev/maf-extensions/actions/runs/38651934008), source `a4d79f147fbf257f6032472fee18d4627948f1b1`, passed all nine upstream controls on both hosts but failed two of six independent comparisons. The unqualified [Linux](../../../scripts/experiments/unikraft_output/linux-initial.json) and [Windows](../../../scripts/experiments/unikraft_output/windows-initial.json) reports remain retained. Binary output produced a host-call decoding error; the combined Unicode/reopened-device probe failed when opening stderr.
+
+The diagnostic [run 38652752789](https://github.com/sokolaidev/maf-extensions/actions/runs/38652752789), source `9c61b9e8520dfa839596e07dcf29e293108125f4`, separated the reopened-device cases and captured the failure details. Both [Linux/KVM](../../../scripts/experiments/unikraft_output/linux-result.json) and [Windows/WHP](../../../scripts/experiments/unikraft_output/windows-result.json) completed five upstream collector tests, three upstream native limit/restore tests, one upstream echo test and seven independent comparison/diagnostic tests. The diagnostic tests assert the observed gaps; their successful completion means the behavior was measured, not that MXC adoption passed.
+
+Both hosts used CPIO SHA-256 `8a1439a2085d218500f4ef5cfe42aecd63a233ac01f09db2ad95b9b3eaff52e9`, dependency-lock SHA-256 `f9611836e9490ac971e7e463fd771076005b03b1833d837917f371692c2dbde8`, and the same probe bytes. Their observations match exactly. The reports retain the observed base/rootfs image identities, kernel and executable hashes, Rust version, source commit, run and attempt. This is a standalone upstream Python rootfs, not the MXC rich-agent helper or a production adapter.
+
+| Measured behavior | Linux/KVM and Windows/WHP result |
+|---|---|
+| Prefix limits, 4095/4096/4097-byte boundaries, four-MiB output, continuation and reset | Passed |
+| UTF-8 prefix, reopened stdout, restore and echo controls | Passed |
+| Combined drain ordering | Clears both stderr text and its omitted count, as documented upstream |
+| Independent stdout budget | Not equivalent: 32 stderr bytes exhaust a 16-byte combined prefix; eight later stdout bytes are omitted, even though stderr is separately retained |
+| All 256 byte values | Rejected with `ReadHostFunctionCall` / FlatBuffer function-call decoding error |
+| Reopened stderr in this image | `OSError: [Errno 22] Invalid argument: '/dev/stderr'`, native `CallFailed { status: 1 }` |
+
+**Decision: defer overlay removal.** The original configurable text-capture bound is implemented and its controls pass on both hosts. Upstream PR #146 does not replace the qualified independent byte-stream transport. A future adapter may reuse bounded text capture for diagnostics, but must explicitly disable echo, account for both buffers, respect drain ordering and preserve omission-counter semantics. Keep the current session, storage, stream and kernel profiles available.
+
+No migrated MXC helper was qualified here. Durable result/checkpoint publication and replay, old-checkpoint refusal/recovery, and the complete timeout/cancellation/owner-loss matrix remain unverified on this upstream revision. [#1948](https://github.com/sokolaidev/maf-extensions/issues/1948) stays open for that adoption work beneath parent #1648. The earlier reports continue to describe only their original candidates.
