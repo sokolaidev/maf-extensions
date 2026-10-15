@@ -82,6 +82,8 @@ jobs:
         run: |
           sudo chmod 666 /dev/kvm
           test -r /dev/kvm && test -w /dev/kvm
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev libclang-dev
       - name: Install pinned Rust
         run: rustup toolchain install 1.98.0 --profile minimal
       - name: Measure upstream and contract differences
