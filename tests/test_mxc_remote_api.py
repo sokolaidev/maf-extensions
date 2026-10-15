@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib
 import json
+import os
+import random
 import socket
 import ssl
 import struct
@@ -273,10 +276,27 @@ SERVER = r"""
 import json, os, sys
 from pathlib import Path
 from scripts.experiments.mxc_session_patch.remote_api import Coordinator, Grant, Session, Limits, Server, server_context
-from scripts.experiments.mxc_session_patch import remote_api
+from scripts.experiments.mxc_session_patch import remote_api, remote_authority
 config = json.loads(Path(sys.argv[1]).read_text())
 certs = Path(config['certificates'])
 remote_api.TIMEOUT = config['timeout']
+remote_api.TRANSFER_TIMEOUT = config['transfer_timeout']
+original_send = remote_api.transfer.send
+def send(root, entries, write):
+    damage = config.get('download_damage')
+    if damage == 'corrupt':
+        original_send(root, entries, lambda block: write(bytes([block[0] ^ 1]) + block[1:]))
+    elif damage == 'partial':
+        write(b'part')
+        raise remote_api.Refused('injected interrupted download')
+    else:
+        original_send(root, entries, write)
+        if damage == 'revoked':
+            with coordinator.authority() as authority:
+                owner = authority.acquire('session', sessions['session'].digest,
+                    remote_authority.Resource('host-a', 'boot-a', 'guest'))
+                authority.request_fence(owner, 'stop')
+remote_api.transfer.send = send
 def boundary(point):
     if point == config.get('crash'):
         os._exit(76)
@@ -298,7 +318,17 @@ def fingerprint(certs, name):
 
 
 @contextmanager
-def running(root, certs, *, crash=None, grants=None, timeout=api.TIMEOUT):
+def running(
+    root,
+    certs,
+    *,
+    crash=None,
+    grants=None,
+    timeout=api.TIMEOUT,
+    limits=LIMITS,
+    transfer_timeout=api.TRANSFER_TIMEOUT,
+    download_damage=None,
+):
     import time
 
     root.mkdir(exist_ok=True)
@@ -323,9 +353,11 @@ def running(root, certs, *, crash=None, grants=None, timeout=api.TIMEOUT):
                 "ready": str(ready),
                 "crash": crash,
                 "timeout": timeout,
+                "transfer_timeout": transfer_timeout,
+                "download_damage": download_damage,
                 "grants": grants,
                 "profile": PROFILE,
-                "limits": asdict(LIMITS),
+                "limits": asdict(limits),
             }
         )
     )
@@ -526,7 +558,8 @@ def test_transfer_recovery_refuses_unowned_or_over_budget_entries(tmp_path, dama
     api.prepare(transfer)
     file = transfer / "index.json"
     if damage == "directory":
-        file.mkdir()
+        file = transfer.joinpath(*(["d"] * (api.transfer.MAX_DEPTH + 2)))
+        file.mkdir(parents=True)
     elif damage == "hardlink":
         import os
 
@@ -535,7 +568,7 @@ def test_transfer_recovery_refuses_unowned_or_over_budget_entries(tmp_path, dama
         os.link(other, file)
     else:
         with file.open("wb") as stream:
-            stream.truncate(api.MAX_PAYLOAD + 1)
+            stream.truncate(api.MAX_CHECKPOINT + 1)
     with pytest.raises(api.Refused):
         with coordinator(root):
             pass
@@ -611,3 +644,366 @@ def test_restore_destination_stays_below_private_transfer_root(tmp_path, monkeyp
         assert direct(db, "restore", owner=owner)["call"] == "call"
         assert not (db.root / "transfer").exists()
         assert len(observed) == 1
+
+
+@contextmanager
+def streaming_request(a, operation, **arguments):
+    with a._stream(operation, "session", arguments) as (connection, deadline):
+        yield connection, deadline
+
+
+def entry(name="blobs/sha256/data", data=b"checkpoint"):
+    return dict(path=name, size=len(data), sha256=hashlib.sha256(data).hexdigest())
+
+
+def tls_start(a):
+    owner = a.call("acquire", "session", guest="guest")["owner"]
+    a.call("begin", "session", owner=owner, call="call", request=encoded(b"code"))
+    return owner
+
+
+def stream_args(owner, **changes):
+    return (
+        dict(
+            owner=owner,
+            call="call",
+            request=encoded(b"code"),
+            files=[entry()],
+            result=encoded(b"result"),
+        )
+        | changes
+    )
+
+
+def test_streaming_nested_checkpoint_restart_and_native_size(
+    tmp_path, certificates, record_property, monkeypatch
+):
+    size = int(os.environ.get("MXC_TRANSFER_BYTES", 8 * 1024**2))
+    record_property("checkpoint_payload_bytes", size + 2)
+    limits = api.Limits(
+        size * 4 + 200_000, size * 8 + 500_000, checkpoint_bytes=size + 2, result_bytes=128, files=3
+    )
+    source = tmp_path / "source"
+    blob = source / "blobs/sha256/data"
+    blob.parent.mkdir(parents=True)
+    block = random.Random(1671).randbytes(1024**2)
+    digest = hashlib.sha256()
+    with blob.open("wb") as stream:
+        remaining = size
+        while remaining:
+            part = block[: min(len(block), remaining)]
+            stream.write(part)
+            digest.update(part)
+            remaining -= len(part)
+    (source / "index.json").write_bytes(b"{}")
+    (source / "empty").write_bytes(b"")
+    original = Path.read_bytes
+
+    def read_bytes(path):
+        assert path.name != "data", "checkpoint must not be buffered as a whole file"
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    root = tmp_path / "runner"
+    with running(root, certificates, limits=limits) as (_, address):
+        a = client(certificates, address)
+        owner = tls_start(a)
+        a.publish("session", owner, "call", b"code", source, b"result")
+        assert not (root / "service/transfer").exists()
+        with pytest.raises(api.Refused, match="streaming"):
+            a.call("restore", "session", owner=owner)
+    with running(root, certificates, limits=limits) as (_, address):
+        a = client(certificates, address)
+        destination = tmp_path / "restored"
+        assert (
+            a.restore("session", owner, destination, checkpoint_bytes=size + 2, files=3) == "call"
+        )
+        restored = destination / "blobs/sha256/data"
+        with restored.open("rb") as stream:
+            assert hashlib.file_digest(stream, "sha256").hexdigest() == digest.hexdigest()
+        assert restored.stat().st_size == size
+        assert (destination / "index.json").read_bytes() == b"{}"
+        assert (destination / "empty").read_bytes() == b""
+        assert a.call("retry", "session", owner=owner, call="call", request=encoded(b"code"))[
+            "result"
+        ] == encoded(b"result")
+        assert not list(tmp_path.glob("mxc-transfer-*"))
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        [],
+        [entry("../escape")],
+        [entry("CON")],
+        [entry("a\\b")],
+        [entry("/absolute")],
+        [entry("a/" * 16 + "b")],
+        [entry("a" * 513)],
+        [entry("A"), entry("a")],
+        [entry("A/x"), entry("a/y")],
+        [entry("a"), entry("a/b")],
+        [entry("a/b"), entry("a")],
+        [entry(), entry()],
+        [entry() | {"size": True}],
+        [entry() | {"size": -1}],
+        [entry() | {"size": 1025}],
+        [entry() | {"sha256": "bad"}],
+        [entry() | {"extra": 1}],
+        [entry("a"), entry("b"), entry("c")],
+    ],
+)
+def test_stream_manifest_refused_before_ready(tmp_path, certificates, files):
+    with running(tmp_path / "runner", certificates) as (_, address):
+        a = client(certificates, address)
+        owner = tls_start(a)
+        with streaming_request(a, "publish", **stream_args(owner, files=files)) as (
+            connection,
+            deadline,
+        ):
+            with pytest.raises(api.Refused):
+                api._reply(connection, deadline)
+        assert not (tmp_path / "runner/service/transfer").exists()
+
+
+@pytest.mark.parametrize("failure", ["hash", "partial", "completion", "timeout"])
+def test_stream_failure_preserves_previous_checkpoint_and_reservation(
+    tmp_path, certificates, failure
+):
+    root = tmp_path / "runner"
+    with running(root, certificates, transfer_timeout=0.5) as (_, address):
+        a = client(certificates, address)
+        owner = tls_start(a)
+        a.call("publish", "session", **publication(owner))
+        a.call("begin", "session", owner=owner, call="next", request=encoded(b"code"))
+        with streaming_request(a, "publish", **stream_args(owner, call="next")) as (
+            connection,
+            deadline,
+        ):
+            assert api._reply(connection, deadline) == {"ready": True}
+            if failure == "partial":
+                connection.sendall(b"short")
+            else:
+                if failure != "timeout":
+                    connection.sendall(b"corruption" if failure == "hash" else b"checkpoint")
+                    if failure == "completion":
+                        api._send(connection, {"complete": False})
+                with pytest.raises(api.Refused):
+                    api._reply(connection, deadline)
+        destination = tmp_path / "restored"
+        assert a.restore("session", owner, destination) == "call"
+        assert (destination / "index.json").read_bytes() == b"checkpoint"
+        assert not (root / "service/transfer").exists()
+        with pytest.raises(api.Refused, match="explicit recovery"):
+            a.call("retry", "session", owner=owner, call="next", request=encoded(b"code"))
+    with api.SharedStore(root / "service/publication", "session", PROFILE, LIMITS) as store:
+        assert (
+            store.db.execute("SELECT COUNT(*) FROM reservations WHERE call='next'").fetchone()[0]
+            == 1
+        )
+
+
+@pytest.mark.parametrize("boundary", ["checkpoint_stored", "before_commit", "after_commit"])
+def test_stream_crash_resolves_original_identity(tmp_path, certificates, boundary):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "index.json").write_bytes(b"checkpoint")
+    root = tmp_path / "runner"
+    with running(root, certificates, crash=boundary) as (child, address):
+        a = client(certificates, address)
+        owner = tls_start(a)
+        with pytest.raises(api.Refused):
+            a.publish("session", owner, "call", b"code", source, b"result")
+        assert child.wait(timeout=10) == 76
+    with running(root, certificates) as (_, address):
+        a = client(certificates, address)
+        if boundary == "after_commit":
+            assert a.call("retry", "session", owner=owner, call="call", request=encoded(b"code"))[
+                "result"
+            ] == encoded(b"result")
+            assert a.restore("session", owner, tmp_path / "restored") == "call"
+        else:
+            with pytest.raises(api.Refused, match="explicit recovery"):
+                a.call("retry", "session", owner=owner, call="call", request=encoded(b"code"))
+            assert a.restore("session", owner, tmp_path / "absent") is None
+            assert not (tmp_path / "absent").exists()
+        assert not (root / "service/transfer").exists()
+
+
+def test_stream_rejects_revocation_during_upload(tmp_path, certificates):
+    root = tmp_path / "runner"
+    with running(root, certificates) as (_, address):
+        a = client(certificates, address)
+        owner = tls_start(a)
+        with streaming_request(a, "publish", **stream_args(owner)) as (connection, deadline):
+            assert api._reply(connection, deadline) == {"ready": True}
+            with remote.Authority(root / "service/ownership", enabled=True) as authority:
+                authority.request_fence(authority._decode_owner(owner), "stop")
+            connection.sendall(b"checkpoint")
+            api._send(connection, {"complete": True})
+            with pytest.raises(api.Refused, match="revoked"):
+                api._reply(connection, deadline)
+    with api.SharedStore(root / "service/publication", "session", PROFILE, LIMITS) as store:
+        assert (
+            store.db.execute("SELECT COUNT(*) FROM calls WHERE status='committed'").fetchone()[0]
+            == 0
+        )
+        assert store.db.execute("SELECT COUNT(*) FROM reservations").fetchone()[0] == 1
+
+
+def test_stream_download_limits_and_existing_destination(tmp_path, certificates):
+    with running(tmp_path / "runner", certificates) as (_, address):
+        a = client(certificates, address)
+        owner = tls_start(a)
+        a.call("publish", "session", **publication(owner))
+        destination = tmp_path / "restored"
+        with pytest.raises(api.Refused, match="byte limit"):
+            a.restore("session", owner, destination, checkpoint_bytes=1)
+        assert not destination.exists()
+        assert not list(tmp_path.glob("mxc-transfer-*"))
+        destination.mkdir()
+        (destination / "preserve").write_bytes(b"keep")
+        with pytest.raises(api.Refused, match="already exists"):
+            a.restore("session", owner, destination)
+        assert (destination / "preserve").read_bytes() == b"keep"
+
+
+def test_stream_requires_admitted_call_and_certificate_scope(tmp_path, certificates):
+    with running(tmp_path / "runner", certificates) as (_, address):
+        a = client(certificates, address)
+        owner = tls_start(a)
+        for peer, arguments, message in [
+            (a, stream_args(owner, call="unknown"), "identity"),
+            (a, stream_args(owner, request=encoded(b"changed")), "identity"),
+            (client(certificates, address, "b"), stream_args(owner), "scope"),
+        ]:
+            with streaming_request(peer, "publish", **arguments) as (connection, deadline):
+                with pytest.raises(api.Refused, match=message):
+                    api._reply(connection, deadline)
+
+
+def test_stream_source_mutation_refused_before_completion(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    path = source / "data"
+    path.write_bytes(b"first")
+    entries = api.transfer.describe(source, 100, 1)
+    path.write_bytes(b"other")
+    with pytest.raises(api.Refused, match="changed"):
+        api.transfer.send(source, entries, lambda _: None)
+
+
+def test_stream_nested_staging_recovered_after_process_death(tmp_path, certificates):
+    root = tmp_path / "runner"
+    with running(root, certificates) as (child, address):
+        a = client(certificates, address)
+        owner = tls_start(a)
+        with streaming_request(a, "publish", **stream_args(owner)) as (connection, deadline):
+            assert api._reply(connection, deadline) == {"ready": True}
+            connection.sendall(b"part")
+            child.terminate()
+            child.wait(timeout=10)
+    with running(root, certificates) as (_, address):
+        assert not (root / "service/transfer").exists()
+        with pytest.raises(api.Refused, match="explicit recovery"):
+            client(certificates, address).call(
+                "retry", "session", owner=owner, call="call", request=encoded(b"code")
+            )
+
+
+@pytest.mark.parametrize("damage", ["corrupt", "partial", "revoked"])
+def test_stream_download_failure_never_exposes_destination(tmp_path, certificates, damage):
+    with running(tmp_path / "runner", certificates, download_damage=damage) as (_, address):
+        a = client(certificates, address)
+        owner = tls_start(a)
+        a.call("publish", "session", **publication(owner))
+        destination = tmp_path / "restored"
+        with pytest.raises(api.Refused):
+            a.restore("session", owner, destination)
+        assert not destination.exists()
+        assert not list(tmp_path.glob("mxc-transfer-*"))
+
+
+def test_stream_storage_failure_cleans_partial_bytes_without_refunding(
+    tmp_path, certificates, monkeypatch
+):
+    import io
+
+    class Connection:
+        def __init__(self):
+            self.output = io.BytesIO()
+
+        def settimeout(self, value):
+            pass
+
+        def sendall(self, value):
+            self.output.write(value)
+
+    def fail(root, entries, read):
+        root.mkdir()
+        (root / "partial").write_bytes(b"part")
+        raise OSError("injected storage failure")
+
+    monkeypatch.setattr(api.transfer, "receive", fail)
+    with coordinator(tmp_path / "db") as db:
+        owner = start(db)
+        wire = request("publish", **stream_args(owner)) | {"version": 2}
+        with pytest.raises(OSError, match="storage failure"):
+            db.dispatch(FINGERPRINT, wire, Connection())
+        assert not (db.root / "transfer").exists()
+        store = db.stores["session"][1]
+        assert store.db.execute("SELECT status FROM calls").fetchone()[0] == "pending"
+        assert store.db.execute("SELECT COUNT(*) FROM reservations").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("phase", ["inventory", "payload"])
+@pytest.mark.parametrize("target", ["session", "other"])
+def test_stream_socket_io_does_not_block_revocation(tmp_path, phase, target):
+    from concurrent.futures import ThreadPoolExecutor
+
+    with coordinator(tmp_path / "db") as db:
+        owner = start(db)
+        direct(db, "publish", **publication(owner))
+        with db.authority() as authority:
+            victim = (
+                authority._decode_owner(owner)
+                if target == "session"
+                else authority.acquire(
+                    "other", SESSION.digest, remote.Resource("host-b", "boot-b", "guest-b")
+                )
+            )
+
+        def revoke():
+            with db.authority() as authority:
+                authority.request_fence(victim, "stop")
+
+        fenced = []
+
+        class PausedConnection:
+            writes = 0
+
+            def settimeout(self, value):
+                pass
+
+            def sendall(self, block):
+                self.writes += 1
+                if self.writes == (1 if phase == "inventory" else 2):
+                    # Sending cannot resume until a separate connection commits revocation.
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        pool.submit(revoke).result(timeout=10)
+                    fenced.append(True)
+
+        connection = PausedConnection()
+        wire = request("restore", owner=owner) | {"version": 2}
+        if target == "session":
+            with pytest.raises(api.Refused, match="revoked"):
+                db.dispatch(FINGERPRINT, wire, connection)
+        else:
+            assert db.dispatch(FINGERPRINT, wire, connection) == {"complete": True}
+        assert fenced == [True]
+        assert connection.writes == 2
+        assert not (db.root / "transfer").exists()
+        with db.authority() as authority:
+            with pytest.raises(api.Refused, match="revoked"):
+                with authority.guard(victim):
+                    pass

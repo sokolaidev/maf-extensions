@@ -12,6 +12,7 @@ import socketserver
 import sqlite3
 import ssl
 import struct
+import tempfile
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -19,7 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from .host_store import Refused, _lock, _name, _relative
+from . import remote_transfer as transfer
+from .host_store import MAX_CHECKPOINT, MAX_FILES, Refused, _lock, _name, _relative
 from .private_root import check_file, prepare
 from .remote_authority import Authority, Owner, Resource
 from .shared_store import Limits, SharedStore
@@ -28,6 +30,7 @@ MAX_FRAME = 8 * 1024**2
 MAX_PAYLOAD = 4 * 1024**2
 MAX_REQUEST = 64 * 1024
 TIMEOUT = 10.0
+TRANSFER_TIMEOUT = 300.0
 OPERATIONS = frozenset({"acquire", "begin", "publish", "retry", "restore"})
 
 
@@ -112,7 +115,7 @@ class Session:
             not self.profile
             or any(type(k) is not str or type(v) is not str for k, v in self.profile.items())
             or len(_json(dict(self.profile))) > 4096
-            or self.limits.checkpoint_bytes + self.limits.result_bytes > MAX_PAYLOAD
+            or self.limits.result_bytes > MAX_PAYLOAD
         ):
             raise Refused("session exceeds the bounded API profile")
 
@@ -185,31 +188,7 @@ class Coordinator:
         if not path.exists() and not path.is_symlink():
             return
         prepare(path)
-        entries = []
-        directories = []
-        pending = [path]
-        total = 0
-        while pending:
-            directory = pending.pop()
-            for entry in directory.iterdir():
-                if entry.is_symlink() or entry.is_junction():
-                    raise Refused("transfer contains links")
-                if directory == path and entry.name == "checkpoint" and entry.is_dir():
-                    directories.append(entry)
-                    pending.append(entry)
-                    continue
-                if len(_relative(entry.name).parts) != 1:
-                    raise Refused("invalid transfer path")
-                check_file(entry)
-                total += entry.stat().st_size
-                entries.append(entry)
-                if total > MAX_PAYLOAD or len(entries) > 128:
-                    raise Refused("transfer cleanup exceeds bounds")
-        for entry in entries:
-            entry.unlink()
-        for directory in directories:
-            directory.rmdir()
-        path.rmdir()
+        transfer.clear(path)
 
     @contextmanager
     def _transfer(self) -> Iterator[Path]:
@@ -236,14 +215,20 @@ class Coordinator:
         self.stores[owner.session] = owner, store
         return store
 
-    def dispatch(self, fingerprint: str, request: dict) -> dict:
+    def dispatch(
+        self, fingerprint: str, request: dict, connection: ssl.SSLSocket | None = None
+    ) -> dict:
         """Authorize a verified TLS peer before opening any session store."""
         if self.lock.closed:
             raise Refused("coordinator is closed")
         _fields(request, {"version", "operation", "session", "arguments"})
-        if type(request["version"]) is not int or request["version"] != 1:
+        if type(request["version"]) is not int or request["version"] not in (1, 2):
             raise Refused("unsupported API version")
+        streaming = request["version"] == 2
         operation = _text(request["operation"])
+        if streaming and (connection is None or operation not in {"publish", "restore"}):
+            raise Refused("version 2 requires checkpoint streaming")
+        deadline = time.monotonic() + TRANSFER_TIMEOUT
         session = _name(_text(request["session"]))
         grant = self.grants.get(fingerprint)
         if grant is None or session not in grant.sessions or operation not in grant.operations:
@@ -263,6 +248,12 @@ class Coordinator:
             expected = {"owner"}
             if operation in ("begin", "retry", "publish"):
                 expected |= {"call", "request"}
+            if (
+                not streaming
+                and operation in {"publish", "restore"}
+                and (config.limits.checkpoint_bytes + config.limits.result_bytes > MAX_PAYLOAD)
+            ):
+                raise Refused("session requires streaming checkpoint transfer")
             if operation == "publish":
                 expected |= {"files", "result"}
             _fields(args, expected)
@@ -298,6 +289,41 @@ class Coordinator:
                 if row is None or row[0] != hashlib.sha256(code).hexdigest():
                     raise Refused("call request identity differs")
                 files = args["files"]
+                if streaming:
+                    assert connection is not None
+                    reserved = store.db.execute(
+                        "SELECT c.status,c.generation,r.generation FROM calls c JOIN reservations r ON c.session=r.session AND c.id=r.call WHERE c.session=? AND c.id=?",
+                        (session, call),
+                    ).fetchone()
+                    if reserved is None or tuple(reserved) != (
+                        "pending",
+                        store.generation,
+                        store.generation,
+                    ):
+                        raise Refused("call is not reserved for this owner")
+                    entries = transfer.inventory(
+                        files, config.limits.checkpoint_bytes, config.limits.files
+                    )
+                    result = _bytes(args["result"], config.limits.result_bytes)
+                    with self._transfer() as path:
+                        destination = path / "checkpoint"
+                        _send(connection, {"ok": True, "value": {"ready": True}}, deadline)
+                        transfer.receive(
+                            destination,
+                            entries,
+                            lambda count: _receive(connection, count, deadline),
+                        )
+                        complete = _read(connection, deadline)
+                        if complete != {"complete": True} or type(complete["complete"]) is not bool:
+                            raise Refused("incomplete checkpoint transfer")
+                        store.commit(
+                            call,
+                            destination,
+                            result,
+                            self.boundary,
+                            commit_guard=lambda: authority.guard(owner),
+                        )
+                    return {"committed": True}
                 if not isinstance(files, dict) or not files or len(files) > config.limits.files:
                     raise Refused("invalid checkpoint inventory")
                 result = _bytes(args["result"], config.limits.result_bytes)
@@ -323,6 +349,30 @@ class Coordinator:
                 with self._transfer() as path:
                     destination = path / "checkpoint"
                     call = store.restore(destination)
+                    if streaming:
+                        assert connection is not None
+                        entries = (
+                            transfer.describe(
+                                destination, config.limits.checkpoint_bytes, config.limits.files
+                            )
+                            if call
+                            else []
+                        )
+                        with authority.guard(owner):
+                            pass
+                        _send(
+                            connection,
+                            {"ok": True, "value": {"call": call, "files": entries}},
+                            deadline,
+                        )
+                        if call:
+                            transfer.send(
+                                destination,
+                                entries,
+                                lambda block: _write(connection, block, deadline),
+                            )
+                        with authority.guard(owner):
+                            return {"complete": True}
                     files = (
                         {p.name: _encoded(p.read_bytes()) for p in destination.iterdir()}
                         if call
@@ -365,20 +415,42 @@ def _receive(connection: ssl.SSLSocket, count: int, deadline: float) -> bytes:
     return bytes(result)
 
 
-def _read(connection: ssl.SSLSocket) -> dict:
-    deadline = time.monotonic() + TIMEOUT
+def _read(connection: ssl.SSLSocket, deadline: float | None = None) -> dict:
+    if deadline is None:
+        deadline = time.monotonic() + TIMEOUT
     size = struct.unpack("!I", _receive(connection, 4, deadline))[0]
     if not 0 < size <= MAX_FRAME:
         raise Refused("API frame exceeds limit")
     return _load(_receive(connection, size, deadline))
 
 
-def _send(connection: ssl.SSLSocket, value: dict) -> None:
+def _send(connection: ssl.SSLSocket, value: dict, deadline: float | None = None) -> None:
     payload = _json(value)
     if len(payload) > MAX_FRAME:
         raise Refused("API frame exceeds limit")
-    connection.settimeout(TIMEOUT)
-    connection.sendall(struct.pack("!I", len(payload)) + payload)
+    _write(
+        connection,
+        struct.pack("!I", len(payload)) + payload,
+        deadline or time.monotonic() + TIMEOUT,
+    )
+
+
+def _write(connection: ssl.SSLSocket, block: bytes, deadline: float) -> None:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("API transfer deadline elapsed")
+    connection.settimeout(remaining)
+    connection.sendall(block)
+
+
+def _reply(connection: ssl.SSLSocket, deadline: float) -> dict:
+    response = _read(connection, deadline)
+    if response.get("ok") is not True:
+        raise Refused(_text(response.get("error")))
+    _fields(response, {"ok", "value"})
+    if not isinstance(response["value"], dict):
+        raise Refused("invalid coordinator response")
+    return response["value"]
 
 
 class Server(socketserver.TCPServer):
@@ -420,7 +492,7 @@ class _Handler(socketserver.BaseRequestHandler):
             fingerprint = hashlib.sha256(certificate).hexdigest()
             if fingerprint not in server.coordinator.grants:
                 raise Refused("certificate is not authorized")
-            response = server.coordinator.dispatch(fingerprint, _read(connection))
+            response = server.coordinator.dispatch(fingerprint, _read(connection), connection)
             _send(connection, {"ok": True, "value": response})
         except Refused as error:
             _send(connection, {"ok": False, "error": str(error)})
@@ -467,3 +539,88 @@ class Client:
             return response["value"]
         except (OSError, ValueError) as error:
             raise Refused("coordinator unavailable; resolve call identity") from error
+
+    @contextmanager
+    def _stream(
+        self, operation: str, session: str, arguments: dict
+    ) -> Iterator[tuple[ssl.SSLSocket, float]]:
+        try:
+            deadline = time.monotonic() + TRANSFER_TIMEOUT
+            with socket.create_connection(self.address, timeout=TIMEOUT) as raw:
+                with self.context.wrap_socket(raw, server_hostname=self.hostname) as connection:
+                    _send(
+                        connection,
+                        dict(version=2, operation=operation, session=session, arguments=arguments),
+                        deadline,
+                    )
+                    yield connection, deadline
+        except (OSError, ValueError) as error:
+            raise Refused("coordinator unavailable; resolve call identity") from error
+
+    def publish(
+        self, session: str, owner: str, call: str, request: bytes, checkpoint: Path, result: bytes
+    ) -> None:
+        """Stream a stable checkpoint after begin; never retry an ambiguous publication automatically."""
+        if len(request) > MAX_REQUEST or len(result) > MAX_PAYLOAD:
+            raise Refused("payload exceeds limit")
+        entries = transfer.describe(checkpoint, MAX_CHECKPOINT, MAX_FILES)
+        arguments = dict(
+            owner=owner,
+            call=call,
+            request=_encoded(request),
+            files=entries,
+            result=_encoded(result),
+        )
+        with self._stream("publish", session, arguments) as (connection, deadline):
+            if _reply(connection, deadline) != {"ready": True}:
+                raise Refused("invalid coordinator readiness")
+            transfer.send(checkpoint, entries, lambda block: _write(connection, block, deadline))
+            _send(connection, {"complete": True}, deadline)
+            if _reply(connection, deadline) != {"committed": True}:
+                raise Refused("invalid publication acknowledgment")
+
+    def restore(
+        self,
+        session: str,
+        owner: str,
+        destination: Path,
+        *,
+        checkpoint_bytes: int = MAX_CHECKPOINT,
+        files: int = MAX_FILES,
+    ) -> str | None:
+        """Expose a verified checkpoint only after the coordinator's final ownership check."""
+        if (
+            type(checkpoint_bytes) is not int
+            or not 0 < checkpoint_bytes <= MAX_CHECKPOINT
+            or type(files) is not int
+            or not 0 < files <= MAX_FILES
+        ):
+            raise Refused("invalid download limits")
+        if destination.exists() or destination.is_symlink():
+            raise Refused("restore destination already exists")
+        with tempfile.TemporaryDirectory(
+            prefix="mxc-transfer-", dir=destination.parent
+        ) as temporary:
+            root = Path(temporary)
+            prepare(root)
+            staged = root / "checkpoint"
+            with self._stream("restore", session, {"owner": owner}) as (connection, deadline):
+                response = _reply(connection, deadline)
+                _fields(response, {"call", "files"})
+                call = response["call"]
+                if call is None:
+                    if response["files"] != []:
+                        raise Refused("unexpected checkpoint without call")
+                else:
+                    call = _name(_text(call))
+                    entries = transfer.inventory(response["files"], checkpoint_bytes, files)
+                    transfer.receive(
+                        staged, entries, lambda count: _receive(connection, count, deadline)
+                    )
+                if _reply(connection, deadline) != {"complete": True}:
+                    raise Refused("incomplete checkpoint transfer")
+            if call is not None:
+                if destination.exists() or destination.is_symlink():
+                    raise Refused("restore destination already exists")
+                staged.rename(destination)
+            return call
