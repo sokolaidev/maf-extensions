@@ -156,6 +156,14 @@ def test_hyperlight_release_transition_defers_the_entire_scan_evidence_chain():
     )
     assert '"$GITHUB_STEP_SUMMARY"' in deferred["run"]
     evidence_steps = steps[steps.index(build) + 1 : -1]
+    qualification = next(
+        step for step in evidence_steps if step["name"] == "Qualify the selected Bicep compiler"
+    )
+    assert qualification["if"] == (
+        "steps.identity.outcome == 'success' && "
+        'contains(fromJSON(\'["bicep","bicep-avm","sbx-bicep"]\'), matrix.profile)'
+    )
+    evidence_steps.remove(qualification)
     assert {step["name"] for step in evidence_steps} == {
         "Record the immutable local image identity",
         "Inventory the exact built image",

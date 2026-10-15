@@ -11,6 +11,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from build_bicep_image import PROFILES as BICEP_PROFILES
+from build_bicep_image import ROUTES, validate_route
 from check_container_release_image import check
 from container_release import (
     PREFIX,
@@ -84,6 +86,10 @@ def assess(directory: Path, image_id: str, *, require_clean: bool = True) -> dic
     )
     verify_inventory(read(directory / "sbom.syft.json"), image_id)
     runtime = directory / "runtime.json"
+    if runtime.exists() and read(runtime).get("profile") in BICEP_PROFILES:
+        from bicep_source import verify_inventory as verify_bicep_inventory
+
+        verify_bicep_inventory(read(directory / "sbom.syft.json"), read(runtime))
     if runtime.exists() and read(runtime).get("profile") == "drawio-export":
         import drawio_export_qualification
 
@@ -180,12 +186,19 @@ def retain(image_id: str, output: Path) -> dict[str, str]:
 
 
 def prepare(
-    profile: str, release_version: str, revision: str, attempt: str, output: Path
+    profile: str,
+    release_version: str,
+    revision: str,
+    attempt: str,
+    output: Path,
+    *,
+    bicep_route: str = "upstream",
 ) -> dict[str, Any]:
     """Build and retain a candidate; no registry or signing credentials are required."""
     if profile not in profiles():
         raise ValueError("Unrecognized release profile")
     version(release_version)
+    validate_route(bicep_route, profile)
     require_source(revision)
     if output.exists():
         raise ValueError("Use a fresh candidate directory")
@@ -194,6 +207,7 @@ def prepare(
         ["bash", "scripts/build_scan_image.sh", profile],
         cwd=ROOT,
         timeout=7200 if profile == "terraform-avm" else 2400,
+        env=os.environ | {"BICEP_ROUTE": bicep_route},
     )
     target = "maf-image-release:candidate"
     command = ["docker", "build", "--network", "none", "--platform", "linux/amd64", "--tag", target]
@@ -230,6 +244,8 @@ def prepare(
         "sourceRef": "refs/heads/main",
         "attemptId": attempt,
     }
+    if profile in BICEP_PROFILES:
+        candidate["bicepRoute"] = bicep_route
     validate_identity(candidate)
     write(output / "candidate.json", candidate)
     inputs = {"uv.lock": digest(ROOT / "uv.lock")}
@@ -245,7 +261,12 @@ def prepare(
             )
         candidate["buildInputsSha256"] = digest(output / "hyperlight-build-inputs.json")
         write(output / "candidate.json", candidate)
-    write(output / "runtime.json", check(profile, image_id, output))
+    runtime = check(profile, image_id, output)
+    if profile in BICEP_PROFILES:
+        build = runtime["bicepAvm" if profile == "bicep-avm" else "bicep"]["build"]
+        if build["route"] != bicep_route:
+            raise ValueError("Built Bicep route differs from the dispatch selection")
+    write(output / "runtime.json", runtime)
     assess(output, image_id)
     write(
         output / "preparation-index.json",
@@ -266,6 +287,7 @@ def main() -> None:
     parser.add_argument("--profile", choices=profiles(), required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--bicep-route", choices=ROUTES, default="upstream")
     args = parser.parse_args()
     print(
         json.dumps(
@@ -275,6 +297,7 @@ def main() -> None:
                 os.environ["GITHUB_SHA"],
                 os.environ["GITHUB_RUN_ID"],
                 args.output,
+                bicep_route=args.bicep_route,
             )
         )
     )

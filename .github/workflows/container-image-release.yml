@@ -36,8 +36,15 @@ on:
         type: string
         required: true
       reason:
+        # Abandonment uses the retained candidate, including its original route.
         description: Required explanation when abandoning an incomplete version
         type: string
+      bicep_route:
+        description: Bicep compiler acquisition (Bicep profiles only)
+        type: choice
+        options: [upstream, source]
+        default: upstream
+        required: true
 
 permissions:
   contents: read
@@ -71,6 +78,7 @@ jobs:
           PROFILE: ${{ inputs.profile }}
           VERSION: ${{ inputs.version }}
           OPERATION: ${{ inputs.operation }}
+          BICEP_ROUTE: ${{ inputs.bicep_route }}
           REASON: ${{ inputs.reason }}
         run: |
           test "$ENABLED" = true
@@ -84,10 +92,13 @@ jobs:
           sys.path.insert(0, "scripts")
           from container_release import profiles, version
           from container_release_publish import context
+          from build_bicep_image import validate_route
           context()
           if os.environ["PROFILE"] not in profiles():
               raise ValueError("Unknown release profile")
           version(os.environ["VERSION"])
+          if os.environ["OPERATION"] == "release":
+              validate_route(os.environ["BICEP_ROUTE"], os.environ["PROFILE"])
           if os.environ["OPERATION"] == "abandon" and not os.environ["REASON"].strip():
               raise ValueError("Abandonment requires a reason")
           PY
@@ -140,9 +151,11 @@ jobs:
         env:
           PROFILE: ${{ inputs.profile }}
           VERSION: ${{ inputs.version }}
+          BICEP_ROUTE: ${{ inputs.bicep_route }}
         run: |
           uv run --locked python scripts/prepare_container_release_dispatch.py \
             --profile "$PROFILE" --version "$VERSION" \
+            --bicep-route "$BICEP_ROUTE" \
             --directory "$RUNNER_TEMP/candidate" --selection "$RUNNER_TEMP/selection"
       - name: Retain the original OCI candidate
         if: steps.candidate.outputs.mode == 'built'

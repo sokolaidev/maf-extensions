@@ -13,11 +13,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import bicep_avm_qualification as avm  # noqa: E402
 import check_container_release_image as runtime  # noqa: E402
+from bicep_image_pin import read_pin  # noqa: E402
 
 
 def report():
     manifest = avm.read(avm.CONTEXT / "dependencies.bicep-avm.json")
     return {
+        "compilerSha256": read_pin(avm.CONTEXT / "Dockerfile")[1],
         "receipt": {
             "schema": 1,
             "manifest_sha256": hashlib.sha256(

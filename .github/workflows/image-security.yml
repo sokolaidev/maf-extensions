@@ -10,6 +10,11 @@ on:
         type: choice
         default: all
         options: [all, bicep, bicep-avm, sbx-bicep, graphviz, drawio, drawio-export, terraform-random, opentofu-random, terraform-avm, terraform-prepared, opentofu-prepared, hyperlight, egress-proxy]
+      bicep_route:
+        description: Bicep compiler acquisition for selected Bicep profiles
+        type: choice
+        default: upstream
+        options: [upstream, source]
 
 permissions:
   contents: read
@@ -74,6 +79,7 @@ jobs:
         if: matrix.profile != 'hyperlight' || steps.hyperlight-image.outputs.build == 'true'
         env:
           PROFILE: ${{ matrix.profile }}
+          BICEP_ROUTE: ${{ inputs.bicep_route || 'upstream' }}
         run: bash scripts/build_scan_image.sh "$PROFILE"
       - name: Record the immutable local image identity
         if: steps.build.outcome == 'success'
@@ -87,6 +93,27 @@ jobs:
           docker image inspect maf-image-scan:target > "$RUNNER_TEMP/image-security/image-inspect.json"
           python3 scripts/image_security_evidence.py "$RUNNER_TEMP/image-security"
           printf '{}\n' > "$RUNNER_TEMP/image-security/grype.yaml"
+      - name: Qualify the selected Bicep compiler
+        if: steps.identity.outcome == 'success' && contains(fromJSON('["bicep","bicep-avm","sbx-bicep"]'), matrix.profile)
+        env:
+          PROFILE: ${{ matrix.profile }}
+          IMAGE_ID: ${{ steps.identity.outputs.image_id }}
+          BICEP_ROUTE: ${{ inputs.bicep_route || 'upstream' }}
+        run: |
+          uv run --locked python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          from check_container_release_image import check
+          from container_release import write
+          directory = Path(os.environ["RUNNER_TEMP"]) / "image-security"
+          runtime = check(os.environ["PROFILE"], os.environ["IMAGE_ID"], directory)
+          build = runtime.get("bicepAvm", runtime.get("bicep", {}))["build"]
+          if build["route"] != os.environ["BICEP_ROUTE"]:
+              raise ValueError("Bicep route differs from the selection")
+          write(directory / "runtime.json", runtime)
+          PY
       - name: Inventory the exact built image
         if: steps.build.outcome == 'success'
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3

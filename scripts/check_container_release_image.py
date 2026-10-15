@@ -13,6 +13,7 @@ from uuid import uuid4
 import bicep_avm_qualification
 import bicep_qualification
 import terraform_avm_qualification
+from bicep_source import receipt_command, verify_receipt
 from build_hyperlight_aks_image import _smoke_output, verify_image
 from container_release import ROOT, now, profiles, read, require_digest, write
 
@@ -60,6 +61,13 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             command = bicep_qualification.command()
         elif profile == "bicep-avm":
             command = bicep_avm_qualification.command()
+        else:
+            command[-1] = command[-1].replace("bicep --version;", "bicep --version >&2;") + (
+                "; hash=$(sha256sum /usr/local/bin/bicep); "
+                'printf \'{"compilerSha256":"%s"\' "${hash%% *}"; '
+                + receipt_command()
+                + "; printf '}'"
+            )
     elif profile == "graphviz":
         command = [
             "sh",
@@ -130,6 +138,16 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             result = bicep_qualification.evidence(output)
         elif profile == "bicep-avm":
             result = bicep_avm_qualification.evidence(output)
+        elif profile == "sbx-bicep":
+            identity = json.loads(output)
+            evidence_key = "bicep"
+            result = {
+                "build": verify_receipt(
+                    identity.get("buildReceipt"),
+                    identity["compilerSha256"],
+                    bicep_qualification.CONTEXT,
+                )
+            }
         elif profile == "terraform-avm":
             result = terraform_avm_qualification.evidence(output)
     finally:
