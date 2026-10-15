@@ -3,8 +3,7 @@
 Shared by `samples/03_acas_codeact` (a real Azure sandbox), `samples/06_docker_codeact` (a
 Docker container) and `samples/19_autogen_docker_codeact` (sample 06's container under an
 AutoGen agent) — the task, the one right answer and the printed shape are identical, so one
-checker serves all three. `samples/04_wslc_codeact` prints the same shape and has no job,
-because its guest needs a Windows runner with WSL. The live workflow installs the *published*
+checker also serves `samples/04_wslc_codeact` on the Windows runner with WSLC. The live workflow installs the *published*
 wheels, runs the sample, and pipes its output here.
 
     python samples/03_acas_codeact/agent.py | tee out.txt

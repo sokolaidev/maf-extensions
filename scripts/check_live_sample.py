@@ -4,8 +4,7 @@ The live workflow installs the *published* wheels, runs one of the Bicep samples
 `samples/01_acas_bicep` against Azure, `samples/05_docker_bicep` in a local container,
 `samples/09_inprocess_bicep` in-process — and pipes its output here. They all compile the
 same `main.bicep` with the same CLI, so the same two rule ids come back whatever ran them;
-one assertion serves every Bicep sample. `samples/02_wslc_bicep` prints the same shape and has
-no job, because its guest needs a Windows runner with WSL.
+one assertion also serves `samples/02_wslc_bicep` on the Windows runner with WSLC.
 
     python samples/01_acas_bicep/agent.py | tee out.txt
     python scripts/check_live_sample.py out.txt   # or: ... | python scripts/check_live_sample.py

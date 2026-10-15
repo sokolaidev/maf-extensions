@@ -776,7 +776,7 @@ jobs:
     if: >-
       needs.build.outputs.target == 'pypi'
       && needs.dispatch.outputs.live_check != 'skip'
-      && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-deepagents", "maf-sandbox-docker", "maf-sandbox-docker-sbx", "maf-sandbox-drawio", "maf-sandbox-terraform"]'), needs.build.outputs.package)
+      && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-deepagents", "maf-sandbox-docker", "maf-sandbox-docker-sbx", "maf-sandbox-drawio", "maf-sandbox-terraform", "maf-sandbox-wslc"]'), needs.build.outputs.package)
     runs-on: ubuntu-latest
     steps:
       - name: Poll PyPI until the just-published version is installable
@@ -902,7 +902,7 @@ jobs:
     if: >-
       needs.build.outputs.target == 'pypi'
       && needs.dispatch.outputs.live_check != 'skip'
-      && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-deepagents", "maf-sandbox-docker", "maf-sandbox-docker-sbx", "maf-sandbox-drawio", "maf-sandbox-terraform"]'), needs.build.outputs.package)
+      && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-deepagents", "maf-sandbox-docker", "maf-sandbox-docker-sbx", "maf-sandbox-drawio", "maf-sandbox-terraform", "maf-sandbox-wslc"]'), needs.build.outputs.package)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -950,7 +950,7 @@ jobs:
   # covers — 01_acas_bicep, 03_acas_codeact, 06_docker_codeact and 08_docker_codeact_files —
   # against a live sandbox at the just-released version, proving router, backend, image and
   # workload agree. This job's own `if:` is gated to the packages any of those samples exercises;
-  # a maf-sandbox-wslc release touches none, so it triggers nothing. Which samples actually run
+  # maf-sandbox-wslc releases run the two Windows samples. Which samples actually run
   # is the called workflow's decision: `package` tells it which package was just released, and
   # each job runs only if that release could affect it — so a maf-sandbox-docker release runs
   # both docker jobs (neither creates a billable sandbox) and not the ACAS ones. A batch release
@@ -971,7 +971,7 @@ jobs:
     if: >-
       needs.build.outputs.target == 'pypi'
       && needs.dispatch.outputs.live_check != 'skip'
-      && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-deepagents", "maf-sandbox-docker", "maf-sandbox-docker-sbx", "maf-sandbox-drawio", "maf-sandbox-terraform"]'), needs.build.outputs.package)
+      && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-deepagents", "maf-sandbox-docker", "maf-sandbox-docker-sbx", "maf-sandbox-drawio", "maf-sandbox-terraform", "maf-sandbox-wslc"]'), needs.build.outputs.package)
     uses: ./.github/workflows/verify-live.yml
     with:
       package: ${{ needs.build.outputs.package }}

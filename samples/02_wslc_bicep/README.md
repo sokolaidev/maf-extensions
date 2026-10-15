@@ -1,6 +1,6 @@
 # 02 — validate a Bicep file in a WSL container
 
-Sample 01 with exactly one thing changed: the backend. Same agent, same tool, same file — a compiler's diagnostics rather than a model's opinion of its own output — but the sandbox is a container on your own machine, created in about half a second, and there is no Azure subscription anywhere in the picture.
+Sample 01 with exactly one thing changed: the backend. Same agent, same tool, same file — a compiler's diagnostics rather than a model's opinion of its own output — but the sandbox is a container on your own machine, created in about half a second, and local execution needs no Azure subscription. CI can use Azure OIDC for its model connection.
 
 ```
 app  ->  maf_sandbox (router)  ->  maf_sandbox_wslc  ->  the container
@@ -36,18 +36,22 @@ Dependencies are declared in `agent.py` itself, in a [PEP 723](https://peps.pyth
 uv run agent.py
 ```
 
-`maf-sandbox` arrives as a dependency, and nothing Azure does — the backend drives `wslc.exe` and imports only the standard library. `agent-framework-openai` is separate because the framework's core ships no model connector.
+`maf-sandbox` arrives as a dependency. The backend drives `wslc.exe` and imports only the standard library; the sample also installs the Azure identity client for its optional CI model connection. A local model needs no Azure subscription or credentials.
 
 ## Environment
 
 | Variable | What it is |
 |---|---|
 | `BICEP_SANDBOX_IMAGE` | Local image reference, e.g. `bicep-sandbox:local`. No registry qualifies it — `wslc` runs what is already on this machine |
-| `OPENAI_API_KEY` | Key for the endpoint below. A local server that ignores it still wants something non-empty here |
+| `AZURE_OPENAI_ENDPOINT` | Optional Azure model endpoint; selects Responses with `DefaultAzureCredential`, including the workflow's OIDC login |
+| `AZURE_OPENAI_CHAT_MODEL` | Required deployment name when `AZURE_OPENAI_ENDPOINT` is set |
+| `OPENAI_API_KEY` | Required on the local/OpenAI road only. Key for the endpoint below. A local server that ignores it still wants something non-empty here |
 | `OPENAI_CHAT_MODEL` | Model name, e.g. `gpt-4o` — or whatever your local server calls the model it serves |
 | `OPENAI_BASE_URL` | *Optional.* An OpenAI-compatible base URL, e.g. `http://localhost:11434/v1`. Unset, the client talks to OpenAI |
 
-With any of the first three unset the program says which and exits non-zero, rather than running. That is deliberate: `make_bicep_tools` returns an empty list when the router has no backend, so a half-configured run does not crash — it produces an agent with no tools, which answers from the model alone. That failure looks exactly like success.
+On the local/OpenAI road, with `BICEP_SANDBOX_IMAGE`, `OPENAI_API_KEY` or `OPENAI_CHAT_MODEL` unset the program says which and exits non-zero, rather than running. That is deliberate: `make_bicep_tools` returns an empty list when the router has no backend, so a half-configured run does not crash — it produces an agent with no tools, which answers from the model alone. That failure looks exactly like success.
+
+The hosted job in [Verify (live)](../../.github/workflows/verify-live.yml) runs on `windows-2025` with pinned WSL 3.0.3, verifies engine execution and removal, then runs this sample with Azure OIDC. Local configuration remains unchanged. Branch mode uses checkout packages; published mode resolves the sample's declared requirements from PyPI. Logs are retained even after failure.
 
 ## Run
 

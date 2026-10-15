@@ -13,7 +13,7 @@ endpoint instead of the Azure deployment).  That is what makes the pair worth
 having: a workload written against `maf_sandbox` runs unchanged on another
 backend, shown rather than asserted.
 
-Nothing here needs Azure.  `wslc`, the container CLI that ships with WSL 2.9.3 and
+Local execution needs no Azure; CI can use Azure OIDC for the model.  `wslc`, the container CLI that ships with WSL 2.9.3 and
 later, runs the sandbox on the developer's own machine, and the model is any
 OpenAI-compatible endpoint, a local server included.
 
@@ -27,6 +27,8 @@ before running this.
 # requires-python = ">=3.12"
 # dependencies = [
 #     "agent-framework-openai",
+#     "azure-core[aio]",
+#     "azure-identity",
 #     "maf-sandbox-codeact",
 #     "maf-sandbox-wslc",
 #     "maf-sandbox>=0.48",
@@ -39,14 +41,18 @@ import asyncio
 import os
 import re
 import sys
+from typing import TYPE_CHECKING, Any
 
 from _scaffold import MEASURED, evidence, installed_versions, quoted, require_env_vars, tool_results
-from agent_framework import Agent
-from agent_framework.openai import OpenAIChatCompletionClient
+from agent_framework import Agent, SupportsChatGetResponse
+from agent_framework.openai import OpenAIChatClient, OpenAIChatCompletionClient
 from maf_sandbox import Isolation, SandboxRouter
 from maf_sandbox.maf import list_no_files, make_caller_context
 from maf_sandbox_codeact import make_codeact_tools
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
+
+if TYPE_CHECKING:
+    from azure.identity.aio import DefaultAzureCredential
 
 # Keyed by the caller's scope, thread and agent directory — see sample 03's agent.py.
 SCOPE = "samples"
@@ -78,12 +84,39 @@ _RAN = re.compile(r"^(stdout|stderr|exit code):", re.MULTILINE)
 MODEL_VARS = ("OPENAI_API_KEY", "OPENAI_CHAT_MODEL")
 
 
-async def run() -> int:
-    """Wire the stack, run one turn, and take the container down again."""
+def build_client() -> tuple[SupportsChatGetResponse[Any], DefaultAzureCredential | None] | None:
+    """Use Azure Responses with OIDC in CI, or the configured chat-completions endpoint locally."""
+    azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+    if azure_endpoint:
+        env = require_env_vars(("AZURE_OPENAI_CHAT_MODEL",))
+        if env is None:
+            return None
+        from azure.identity.aio import DefaultAzureCredential
+
+        credential = DefaultAzureCredential()
+        return (
+            OpenAIChatClient(
+                model=env["AZURE_OPENAI_CHAT_MODEL"],
+                azure_endpoint=azure_endpoint,
+                credential=credential,
+            ),
+            credential,
+        )
     env = require_env_vars(MODEL_VARS)
     if env is None:
-        return 2
+        return None
+    return (
+        OpenAIChatCompletionClient(
+            model=env["OPENAI_CHAT_MODEL"],
+            api_key=env["OPENAI_API_KEY"],
+            base_url=os.environ.get("OPENAI_BASE_URL"),
+        ),
+        None,
+    )
 
+
+async def run() -> int:
+    """Wire the stack, run one turn, and take the container down again."""
     backend = WslcSandboxBackend(WslcSandboxConfig())
 
     # Below the router's default `microvm` floor; opted down explicitly.
@@ -108,13 +141,14 @@ async def run() -> int:
         print("No sandbox backend: execute_code was not attached.", file=sys.stderr)
         return 2
 
+    configured = build_client()
+    if configured is None:
+        return 2
+    client, credential = configured
+
     try:
         agent = Agent(
-            client=OpenAIChatCompletionClient(
-                model=env["OPENAI_CHAT_MODEL"],
-                api_key=env["OPENAI_API_KEY"],
-                base_url=os.environ.get("OPENAI_BASE_URL"),
-            ),
+            client=client,
             name=AGENT_DIR,
             instructions=(
                 "You answer computational questions by writing and running Python "
@@ -146,6 +180,8 @@ async def run() -> int:
         print(f"\n{MEASURED}Disposed {purge.disposed} sandbox(es).")
         if purge.undisposed is not None:
             print(f"{MEASURED}Not fully disposed: {purge.undisposed}")
+        if credential is not None:
+            await credential.close()
 
     return 0
 
