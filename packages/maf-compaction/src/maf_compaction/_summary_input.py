@@ -6,7 +6,9 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from agent_framework import Message
-from agent_framework._compaction import annotate_token_counts, included_token_count
+from agent_framework._compaction import included_token_count
+
+from ._media import annotate_token_counts
 
 if TYPE_CHECKING:
     from agent_framework import TokenizerProtocol

@@ -58,6 +58,7 @@ from ._composed import (
     CompactionBudgetExceeded,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
 )
+from ._media import MediaTokenEstimator
 from ._nested import find_nested_strategy
 from ._preserve import (
     PRESERVE_REASON_KEY,
@@ -148,6 +149,7 @@ __all__ = [
     "CompactionBudgetExceeded",
     "MafCompactionExperimentalWarning",
     "MinimumGainAnchoredCompactionStrategy",
+    "MediaTokenEstimator",
     "RecallGate",
     "RecordDecisions",
     "SessionCompactionProvider",

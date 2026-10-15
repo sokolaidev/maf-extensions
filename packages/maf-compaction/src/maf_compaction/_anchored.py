@@ -59,12 +59,12 @@ from agent_framework._compaction import (
     SUMMARY_OF_GROUP_IDS_KEY,
     SUMMARY_OF_MESSAGE_IDS_KEY,
     annotate_message_groups,
-    annotate_token_counts,
     group_messages,
     included_token_count,
     set_excluded,
 )
 
+from ._media import annotate_token_counts
 from ._preserve import any_preserved, is_preserved, removable_whole
 from ._summary_links import has_summary_links
 from ._tool_result import can_shorten_result, repair_compacted_items
