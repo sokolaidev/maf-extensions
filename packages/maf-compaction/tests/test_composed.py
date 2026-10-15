@@ -41,7 +41,13 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
-from agent_framework import CharacterEstimatorTokenizer, ChatResponse, Message, SessionContext
+from agent_framework import (
+    CharacterEstimatorTokenizer,
+    ChatResponse,
+    Content,
+    Message,
+    SessionContext,
+)
 from agent_framework._compaction import (
     EXCLUDE_REASON_KEY,
     EXCLUDED_KEY,
@@ -1898,6 +1904,52 @@ async def test_a_merge_that_is_no_smaller_is_refused_and_the_old_records_stay() 
         (message,) = (m for m in messages if m.message_id == message_id)
         assert is_preserved(message) and not message.additional_properties.get(EXCLUDED_KEY, False)
     assert not [m for m in messages if _is_written_record(m)], "nothing inserted"
+
+
+async def test_mixed_recall_batch_survives_the_composed_merge_and_rewrite_chain() -> None:
+    messages = _chain_conversation()
+    declaration = next(m for m in messages if m.message_id == "rec1_call")
+    output = next(m for m in messages if m.message_id == "rec1_res")
+    declaration.contents.append(
+        Content.from_function_call(
+            call_id="mixed", id="mixed", name="lookup_secret", arguments="{}"
+        )
+    )
+    output.contents.append(
+        Content.from_function_result(
+            call_id="mixed", id="mixed", result=RECORD_MARKER + " SECRET-999"
+        )
+    )
+    summarizer = _RoutingSummarizer(
+        merge=_short_record, fold=_short_summary, harder=lambda *_: _SHORT_RECORD
+    )
+    strategy = _chain_composed(summarizer, ceiling=await _post_record_size() - 500)
+    try:
+        await strategy(messages)
+    except CompactionBudgetExceeded:
+        pass
+    assert not output.additional_properties.get(EXCLUDED_KEY, False)
+    assert not declaration.additional_properties.get(EXCLUDED_KEY, False)
+    assert output.contents[-1].result == RECORD_MARKER + " SECRET-999"
+    assert "merge" not in summarizer.log
+
+
+def test_consolidation_rejects_mixed_recall_batches_before_mutating():
+    messages = _record_messages("lookup: CODE-1 " + "details " * 100)
+    messages[0].contents.append(
+        Content.from_function_call(call_id="mixed", name="lookup", arguments="{}")
+    )
+    messages[1].contents.append(
+        Content.from_function_result(call_id="mixed", result=RECORD_MARKER + " SECRET-999")
+    )
+    annotate_message_groups(messages)
+    groups = active_record_groups(messages)
+    assert len(groups) == 1
+    with pytest.raises(ValueError, match="unrelated"):
+        _record_phase(_CHAIN_CEILING).consolidate_records(messages, groups, "short")
+    assert not _excluded_ids(messages)
+    assert len(messages) == 2
+    assert consolidatable_record_groups(messages) == []
 
 
 async def test_a_replacement_the_same_size_as_what_it_replaces_is_refused() -> None:
