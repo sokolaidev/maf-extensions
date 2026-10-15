@@ -54,7 +54,7 @@ OpenClaw already supports Docker/Podman, SSH and OpenShell execution, tool polic
 | Conformance scenarios | Reusable adversarial probes for files, lifecycle, policy, authority and distribution | Early contribution path; a passing subset is not a complete security audit |
 | Full sandbox provider | Expose suitable suite backends through OpenClaw's execution/workspace model | Later feasibility decision; interactive process contracts and SDK support are unresolved |
 
-OpenClaw's [secret egress proxy](https://docs.openclaw.ai/gateway/secrets/secret-store-and-egress) already provides destination-bound secrets and per-process grants. Its documented automatic integration covers Gateway-hosted execution, not sandbox or remote-node execution, and cooperative proxy settings can be bypassed by direct sockets. The suite's configured Docker and WSLC topology removes the guest's direct external route and supplies host/method/path rules plus optional gateway credentials. This is a specific integration opportunity, not a superiority claim over every OpenClaw backend: OpenShell also has policy enforcement. The suite's [network contract](../network.md) retains backend-specific DNS, TLS, observation and authority limits. GET-only or path-restricted access is not a confidentiality guarantee.
+OpenClaw's [secret egress proxy](https://docs.openclaw.ai/gateway/secrets/secret-store-and-egress) already provides destination-bound secrets and per-process grants. Its documented automatic integration covers Gateway-hosted execution, not sandbox or remote-node execution, and cooperative proxy settings can be bypassed by direct sockets. The suite's configured Docker and WSLC topology removes the guest's direct external route and supplies host/method/path rules plus optional gateway credentials. This is a specific integration opportunity, not a superiority claim over every OpenClaw backend: OpenShell also has policy enforcement. The suite's [network contract](../network.md) retains backend-specific DNS, TLS, observation and authority limits. GET-only or path-restricted access is not a confidentiality guarantee. The [2026-10-15 refresh](#egress-and-credential-mediation-disposition-2026-10-15) also accounts for OpenClaw's explicit Crabbox grants and the private SDK boundary.
 
 ## Proposed first deliverable: closed-network Bicep validation
 
@@ -181,7 +181,7 @@ The probe can be reproduced by creating `FastMCP(..., json_response=True)`, regi
 
 For additional workload tools, assess [Terraform](../kinds/terraform.md), [draw.io](../kinds/drawio.md) and [CodeAct](../kinds/codeact.md) independently. Formatting returns proposed content for a separate authorized save. Diagram validation is not sanitization of every embedded reference. General code execution requires a larger authority and artifact contract than a fixed validator. Avoid duplicating OpenClaw Code Mode without a concrete confined-workload benefit.
 
-The egress design should map OpenClaw-approved authority to finite grants for a trusted caller, exact destination and live sandbox generation. Specify secret ownership, grant/revocation behavior, cancellation, expiry during streaming, and cleanup. Prove a permitted request succeeds while wrong destinations, methods/paths, direct-route attempts and stale grants fail. Qualify DNS and alternate protocols explicitly rather than inferring them from HTTP proxy tests. Reuse the existing [host credential contract](../hosts.md) without inventing a second source of user authorization.
+The [2026-10-15 egress disposition](#egress-and-credential-mediation-disposition-2026-10-15) records the authority mapping, conditional relay architecture, lifecycle and qualification plan for #1640. Supported OpenClaw delegation is the first prerequisite; generic MCP credentials do not establish per-agent authority.
 
 The conformance design should choose cases applicable to both projects: workspace modes, protected-root overlaps, host-side file escapes and races, bounded results, process descendants, cancellation, stale runtime generations, policy drift and installed-package loading. A qualified MXC 0.9 upgrade is an optional upstream experiment, not a dependency of the Bicep prototype. Native runtime evidence belongs to each exact backend/version combination. Creating issues here does not authorize publishing a third-party PR.
 
@@ -226,19 +226,135 @@ The [packaged worker](../../../packages/maf-sandbox-mcp/README.md) implements #1
 
 This delivers a locally qualified wheel, not a published package or unattended-service guarantee. Adoption continues under #1637; #1641 retains reusable conformance, platform/fault/model prioritization and upgrade policy, while #1639/#1640/#1642 retain their distinct design decisions. The pending MAF client timeout after service retirement remains documented. No historical qualification report or image identity is rewritten.
 
+## Egress and credential mediation disposition (2026-10-15)
+
+**Decision: proceed with a bounded delegation-contract probe; defer a supported credential adapter until that probe establishes a public integration boundary.** A conditional Docker relay is the next implementation candidate. This continues adoption without introducing more workload tools under #1639 or changing closed-network Bicep validation. #1640 is a design deliverable, not runtime qualification.
+
+This refresh inspected OpenClaw `27721b8fec4bd5593bb0ba609b4ab1257f9613c1` and suite `d6a512c2b3d77500a3d16921779dc96fced3dee7`. Live OpenClaw documentation was checked on 2026-10-15. The earlier snapshots above remain historical evidence. No OpenClaw credential flow, proxy chain or sandbox network was executed for this design.
+
+### Current contracts and the integration gap
+
+OpenClaw's [secret documentation at the assessed revision](https://github.com/openclaw/openclaw/blob/27721b8fec4bd5593bb0ba609b4ab1257f9613c1/docs/gateway/secrets/secret-store-and-egress.md) now describes explicit Crabbox model and setup grants alongside automatic Gateway-hosted exec. The automatic path still excludes sandbox and remote-node exec; proxy configuration alone does not prevent direct sockets. Setup selects protected store entries; the model route resolves a configured API-key SecretRef. This supersedes any interpretation that OpenClaw has no remote credential bridge. Identity-scoped store secrets remain unsupported.
+
+The [SDK subpath catalog](https://github.com/openclaw/openclaw/blob/27721b8fec4bd5593bb0ba609b4ab1257f9613c1/docs/plugins/sdk-subpaths.md) explicitly excludes `secret-egress-runtime` from the third-party API. Its [export module](https://github.com/openclaw/openclaw/blob/27721b8fec4bd5593bb0ba609b4ab1257f9613c1/src/plugin-sdk/secret-egress-runtime.ts) calls both helpers private official-plugin runtime, and the [private-local list](https://github.com/openclaw/openclaw/blob/27721b8fec4bd5593bb0ba609b4ab1257f9613c1/scripts/lib/plugin-sdk-private-local-only-subpaths.json) includes it. Finding a source export is not proof that a clean installed third-party plugin may use it.
+
+The [job helper](https://github.com/openclaw/openclaw/blob/27721b8fec4bd5593bb0ba609b4ab1257f9613c1/src/secrets/job-egress.ts) returns sentinels, host-only proxy authentication, a public CA bundle and a revocation callback. The [model helper](https://github.com/openclaw/openclaw/blob/27721b8fec4bd5593bb0ba609b4ab1257f9613c1/src/secrets/model-egress.ts) provides a narrower model context and cancellation signal. Neither is the suite's bearer-grant interface. The [OpenShell integration](https://docs.openclaw.ai/gateway/openshell) already accepts backend policy and provider configuration; evaluate that existing route before proposing equivalent enforcement.
+
+The suite's [host credential contract](../hosts.md#credentials-for-guest-http-requests), [network contract](../network.md) and [grant implementation](../../../packages/maf-sandbox/src/maf_sandbox/credentials.py) support fresh Docker/WSLC generations with exact HTTPS bearer origins, method/path limits and independent expiry. `CredentialRequest` contains the key, kind, runtime instance, generation, audience set and deadline; it does not contain an OpenClaw approval or policy digest. `CredentialGrant.token` is a real bearer value. Passing an OpenClaw sentinel or proxy password as that token is not an adapter. The existing provider has no general remote revocation callback; disposal and the gateway's independent deadline bound authority. Do not claim synchronous OpenClaw cancellation merely from those existing interfaces.
+
+### Selected architecture and trust boundary
+
+Prefer retaining substitution in OpenClaw and adding an enforced route around it. Do not read its database, copy long-lived keys into Python configuration, create another secret store, or forward a Gateway-wide API token into a guest. The conditional relay must be a generic delegated HTTP transport capability with an OpenClaw-specific host binding; it must not overload `CredentialGrant` or introduce an OpenClaw import into the dependency-free protocol. The implementation issue must settle that interface before changing package contracts.
+
+```mermaid
+flowchart LR
+    A[OpenClaw approval and credential owner] -->|authenticated per-call delegation| B[Trusted host adapter]
+    B -->|policy and fresh generation| C[Suite enforcing relay]
+    G[Disposable guest] -->|only admitted HTTPS route| C
+    C -->|authenticated fixed-origin route| H[Per-call host bridge]
+    H -->|host-only proxy grant| P[OpenClaw substitution proxy]
+    P -->|verified HTTPS| U[Approved upstream]
+    B -->|revoke and settle| P
+```
+
+The arrows describe proposed responsibilities, not an available deployment. The suite relay terminates guest TLS to enforce method/path policy before forwarding through the host-owned OpenClaw proxy; OpenClaw retains the upstream key and performs substitution. The relay must remove guest proxy-authentication and credential headers and synthesize only the selected credential placeholder in the configured header. Keep that placeholder in the relay; the initial guest profile receives neither a sentinel nor owner proxy authentication. Arbitrary secret substitution in guest URLs, headers or bodies is outside this first profile. The relay-to-owner hop must authenticate the exact grant, verify its configured trust, and offer no generic CONNECT tunnel bypassing method/path checks. A container cannot use the host's loopback proxy directly: a per-call host bridge must expose only the selected owner grant to the isolated relay, authenticate its generation, and forward to the configured loopback proxy. Bind that endpoint to a dedicated private interface reachable by the relay only, keep owner proxy authentication on the host, and reject guest/direct callers. The final transport/address-policy checks must survive this extra hop. The present iron-proxy credential gateway does not implement this chain.
+
+Initially all trusted components run on one operator-controlled host with an isolated guest network. A loopback listener alone is not authentication: use an OS-protected local channel or a separately authenticated endpoint whose credential never enters the guest. Remote delegation, multiple credential-owner hosts and multi-tenant service operation are deferred. The existing MCP service token grants uniform operator access; MCP session IDs and request IDs are transport routing data. They cannot supply the authenticated owner, agent or business approval for this design.
+
+Trust the Gateway approval/credential owner, host adapter, runtime manager, enforcing relay and selected upstream. Treat model arguments, guest code, supplied headers, proxy environment overrides and network replies as untrusted. Same-user host compromise, runtime-admin access and a malicious authorized upstream are outside the guest boundary. An upstream can reflect a credential or act on an accepted request; egress rules cannot undo that or guarantee confidentiality. Host tools, model traffic, output sinks and runtime management are separate network/authority channels.
+
+### Authority mapping and admission
+
+The trusted adapter must receive an authenticated host context after OpenClaw authorizes the concrete operation. Until a supported hook supplies it, refuse credential-backed execution. Do not invent identity fields from tool arguments or treat permission to call an MCP tool as authorization to spend any stored secret. Where OpenClaw supplies only team credentials, record that principal honestly: per-call mediation does not turn a team API key into a user's delegated identity.
+
+| Input | Trusted source and binding | Refusal |
+|---|---|---|
+| Owner and scope | Host authorization context; opaque mapping including tenant and user where distinct | Missing identity or a team-wide scope used to claim user-specific authority |
+| Conversation, agent and call | Authenticated host context plus host-minted call nonce; map to `SandboxKey.thread_id`, `agent_id` and `call_id` | Model-provided identity, duplicate/replayed admission, or another owner's handle |
+| Operation and policy | Operator-approved named profile, approval reference and digest of the exact operation inputs, destination rules, credential selection and limits | Changed inputs after approval, policy widening, unknown profile or stale policy revision |
+| Credential selection | Approved owner-side SecretRef/handle and principal class; no secret value in the request | Model-selected secret, unsupported auth scheme or missing owner authorization |
+| Runtime | Backend-created instance ID, fresh generation and proxy boot identity, bound after resource creation and before guest start | Missing/mismatched generation, adoption of old resources, or restart reuse |
+| Destination | Exact HTTPS origin plus explicit methods and path rules; audience identifies authority, not just a hostname | Wildcards for credentials, redirects outside policy, unsupported ports/paths/protocols |
+| Lifetime | Earliest of approval validity, owner grant deadline, configured relay lifetime and workload retention | Expired/nonfinite deadline, renewal, or missing independent orphan cutoff |
+
+Maintain the approval/policy/handle association in the adapter's per-call state; those fields are not additions already present in `CredentialRequest`. Authenticate and integrity-protect the whole association across the control channel. A proposed one-use opaque delegation handle is consumed atomically for one live generation; it is not a bearer credential for a guest. Repeated HTTP requests within that generation remain possible until it closes. Exact-once business effects require upstream idempotency/authorization, not merely a nonce or an HTTP method allowlist.
+
+Host configuration fixes the backend, image digests, local credential-owner endpoint/trust, operation profiles, audience-to-origin mapping, methods/paths, bounded bodies/results, maximum grant duration and cleanup policy. The initial qualification profile uses one exact public HTTPS origin on port 443, one selected credential header and finite foreground execution. No model-controlled URL, proxy endpoint, CA, audience, timeout extension or fallback backend is admitted. An internal test fixture may emulate the public service on an explicitly isolated private route; that is not public-network qualification.
+
+Require call isolation, `ALLOWLIST`, `EGRESS_METHODS`, `EGRESS_PATHS`, and explicit attached-authority scope/channel/retention permission before provisioning. A delegated relay must independently satisfy the declared attachment contract before advertising it. A failed import, unsupported owner API, unavailable proxy, unsupported policy or failed trust check is a refusal, never unrestricted execution. Bicep continues to select a separate credential-free backend with closed networking.
+
+### Grant lifecycle and interrupted results
+
+The proposed host record is `prepared -> active -> closing -> closed`, with `cleanup_pending` when settlement is uncertain. `prepared` reserves an approved operation without exposing a spendable guest route. Create fresh resources, bind the exact generation, acquire a finite owner grant, install the relay policy and deadline, and recheck cancellation/approval before guest start. Cancellation during any preparation step closes what was created; a late callback cannot activate a cancelled call.
+
+Normal completion, cancellation, timeout, approval withdrawal and transport-owner shutdown first fence new credential use and abort active forwarding, then settle guest and proxy cleanup. A lost MCP response stream alone is not cancellation: retain the supervisor until explicit cancellation or its fixed deadline. Close/revoke are idempotent and generation-specific so an old callback cannot revoke a sibling. A policy/secret change closes affected active grants before admitting new work under the new revision; a refreshed secret snapshot alone is not revocation.
+
+The initial relay must cap authority at 300 seconds or a shorter owner/approval deadline, never renew it, and enforce a monotonic cutoff inside the isolated relay even if every host supervisor disappears. Start that cap before grant installation and guest launch; preparation time cannot extend it. This is a proposed integration bound, not an OpenClaw helper guarantee. On owner/relay restart, discard all old handles and refuse automatic replay. Failure to acknowledge revocation means authority loss is unconfirmed until an independently established cutoff; report that uncertainty rather than saying cancellation was immediate. Keep resources quarantined from reuse while cleanup is incomplete. A later sweep needs the recorded ownership/generation and must not remove sibling work.
+
+On expiry/revocation, terminate existing upstream streams as well as subsequent requests. Bytes already sent cannot be recalled, and a truncated response must not be promoted to a completed success because the guest swallowed a socket error. The host result and audit record, not guest stdout, own the following proposed fields; these are not changes to the Bicep result schema:
+
+| Field | Proposed values and interpretation |
+|---|---|
+| `completion` | `complete`, `refused`, `interrupted`; complete requires a fully settled response and confirmed cleanup |
+| `reason` | `ok`, `authority_unavailable`, `policy_denied`, `grant_expired`, `grant_revoked`, `cancelled`, `upstream_failed`, `cleanup_incomplete`; use a bounded enum, no raw secret-bearing exception |
+| `upstream_effect` | `not_sent` only when the trusted relay proves no bytes were sent; otherwise `may_have_occurred`, including response loss and cancellation |
+| `authority_end` | `confirmed` or `unconfirmed`, with the fixed expiry retained in the protected host record |
+| `cleanup` | `complete` or `pending`; pending prevents reuse and successful completion |
+| `response_complete` | Boolean from relay framing/termination, never inferred solely from process exit code |
+
+If cancellation prevents delivery of a tool result, retain this outcome in the host audit. Do not retry a possibly accepted operation automatically. The relay bounds input/output and forwarded bytes and rejects oversized or unsupported request forms. Logs contain opaque correlation IDs, policy digest, generation fingerprint, rule decision, byte counts, termination reason and cleanup state. Exclude keys, sentinels, proxy credentials, CA private material, request/response bodies and secret-bearing URLs/query strings. Redaction and audit completeness require tests; logs alone do not prove enforcement.
+
+### Network constraints and alternatives
+
+Use the [existing network semantics](../network.md) rather than silently strengthening their claims. Docker/WSLC resolve and check the selected address per dial, but permitted private addresses are not universally blocked. DNS behavior is not fully confined by CONNECT. The relay chain introduces another resolver and dialer: the final owner-side dial must enforce the same resolved-address policy, or the initial profile is refused. OpenClaw's hostname-only authorization is insufficient evidence for that condition. Explicitly deny loopback, link-local, metadata and runtime/proxy interface destinations at the final hop and qualify IPv4, IPv6, rebinding and reconnect behavior. The proposed public-origin profile additionally refuses private destination ranges, except the explicitly isolated qualification fixture; this is an adapter requirement, not a claim about the existing general allowlist. General private-service support requires a separately approved address policy.
+
+TLS interception requires a guest-scoped public trust bundle; neither CA private key enters the guest. Verify both relay-to-owner and final upstream TLS. Certificate pinning failures are incompatibility refusals, never bypass hosts or disabled verification. Redirects are separate requests and must pass origin/method/path checks anew; no authorization follows an unapproved redirect. Path matching must account for encoded separators, dot segments, prefixes and upstream normalization; query/body contents are not authorized by a path rule. Restrict the initial chain to qualified HTTP request forms; refuse raw CONNECT tunnels, upgrades/WebSockets, QUIC/UDP and alternate protocols. Direct sockets, proxy-variable removal and IPv6 routes need independent denial probes. Removing a TCP route does not establish DNS confidentiality.
+
+| Candidate | Disposition |
+|---|---|
+| Existing OpenClaw host proxy | Keep where cooperative host execution is sufficient; adding another proxy alone adds no confinement |
+| Existing OpenShell policy/provider route | Prefer when it meets the workload; qualify its concrete policy and credential lifecycle rather than claiming suite-wide superiority |
+| Docker delegated relay | Conditional first implementation: fresh call resources, explicit method/path enforcement and independent cutoff, with installed end-to-end evidence |
+| WSLC delegated relay | Reuse the eventual generic contract only after separate network, teardown and platform qualification; Docker evidence does not transfer |
+| MXC, Hyperlight, ACAS and Docker Sandboxes | No credential-adapter support inferred; their policy/channel contracts and available paths differ |
+| Copy OpenClaw keys into `CredentialGrant` | Decline as the default: expands plaintext ownership and loses upstream revocation unless a supported delegation API explicitly authorizes and controls that export |
+| Chain the current proxies unchanged | Decline: no qualified delegated transport, immediate revocation bridge or shared final-dial address enforcement exists in this assessment |
+
+### Qualification and next deliverables
+
+Every runtime claim must name installed OpenClaw/adapter/wheel versions, backend/runtime versions, proxy image digests, OS, topology, approved profile and evidence artifacts. A pinned source-only helper experiment is exploratory and must say so. Use a controlled HTTPS service with a synthetic secret and observable request counters; do not use production credentials or add a public general-purpose tool just to test this design.
+
+| Case group | Required positive and negative evidence |
+|---|---|
+| Public integration boundary | Clean installed third-party loading and authenticated context/approval/cancellation capture; missing/private-only exports refuse before provisioning |
+| Allowed control | Approved HTTPS method/path succeeds with expected synthetic credential at the upstream, complete response and cleanup; an unavailable upstream or blocked-all configuration cannot pass |
+| Destination and operation | Wrong host, port, scheme, audience, method, path, encoded path, redirect, credential header and unknown profile fail; upstream counters prove denied cases were not forwarded |
+| Network bypass | Direct IPv4/IPv6 socket, removed proxy env, raw CONNECT, alternate protocol, DNS/rebinding and forbidden final-hop address attempts; use reachable controls to distinguish enforcement from broken routing |
+| Identity and replay | Wrong owner/agent/session/call, altered policy/input digest, consumed handle, stale generation, restart, and concurrent sibling calls; cancellation of one leaves the other usable |
+| Authority lifetime | Expiry before activation, during upload, after upstream acceptance and during response streaming; owner withdrawal/cancellation fences access and reports partial responses honestly |
+| Failure and recovery | Owner/relay/adapter crash, network partition, cancellation during provisioning, lost response stream, failed revoke acknowledgement, failed cleanup and orphan expiry after host loss |
+| Credential confinement | Inspect guest files/env/argv, errors, logs, artifacts and snapshot exclusions; no upstream key, owner proxy auth or CA private key; a hostile allowed upstream remains an explicit limit |
+| Installed compatibility | Independent Docker run first, WSLC run separately; reinstall/upgrade rejection and capability refusal; record skipped cases without translating them into support |
+
+First deliverable: **[#1951](https://github.com/sokolaidev/maf-extensions/issues/1951)** implements a bounded supported-API/authority probe and records an implement/defer decision. It may demonstrate the private official-plugin path as a clearly labeled control, but must not ship that path as supported third-party integration or open an upstream PR without maintainer confirmation. If no supported API exists, retain the blocker with the concrete required contract; proceed with the other OpenClaw design PBIs rather than copying private internals.
+
+Conditional implementation: **[#1952](https://github.com/sokolaidev/maf-extensions/issues/1952)** implements the generic delegated relay and synthetic Docker qualification only after the API, identity, final-dial address enforcement and revocation prerequisites are satisfied. Keep WSLC support gated on its own evidence. #1641 owns reusable conformance packaging and upgrade policy; #1642 owns full backend feasibility; #1639 remains deferred. Closing #1640 records this design and its follow-up ownership, not a working credential integration or a stop to adoption.
+
 ## Status
 
 The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audit.md#consolidated-closure-reconciliation-2026-10-12) covers every original #1676 acceptance row using the separately recorded Gateway, Bicep/MAF and published transport evidence. Both finite follow-ups are merged. Qualification is complete for that supervised, selected baseline; the first-tool design is complete and #1898 delivers the separately qualified installed worker. Historical reports and their `complete_matrix: false` values are unchanged.
 
-The Bicep workstream has a locally qualified installed worker and its historical source prototype; the other integration opportunities remain proposed. Closing a design issue requires its decisions and acceptance follow-ups, not a claim that a generic MCP test qualifies the OpenClaw host integration.
+The Bicep workstream has a locally qualified installed worker and its historical source prototype; the other integration opportunities remain proposed. On 2026-10-15, [PyPI 0.1.0 metadata](https://pypi.org/project/maf-sandbox-mcp/0.1.0/) reports the worker wheel and sdist uploaded at 20:22 UTC. This index check updates publication status only; the published artifact was not installed or requalified in the #1640 design work, and the dated pre-publication reports above are unchanged. Closing a design issue requires its decisions and acceptance follow-ups, not a claim that a generic MCP test qualifies the OpenClaw host integration.
 
 | Decision | State | Tracking |
 |---|---|---|
 | OpenClaw integration direction and delivery sequence | Open; research recorded | [#1637](https://github.com/sokolaidev/maf-extensions/issues/1637) (open) |
-| Installed worker | Implemented and locally qualified; not published | [#1898](https://github.com/sokolaidev/maf-extensions/issues/1898) (closed) by [#1920](https://github.com/sokolaidev/maf-extensions/pull/1920) (merged) |
+| Installed worker | Implemented and locally qualified; 0.1.0 publication confirmed from PyPI metadata on 2026-10-15, without new artifact qualification | [#1898](https://github.com/sokolaidev/maf-extensions/issues/1898) (closed) by [#1920](https://github.com/sokolaidev/maf-extensions/pull/1920) (merged) |
 | First closed-network Bicep validation tool | Design complete; source implementation and finite qualification delivered; installed worker delivered separately in #1898 | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (closed) by [#1901](https://github.com/sokolaidev/maf-extensions/pull/1901) (merged) |
 | MCP service ownership across OpenClaw sessions | Finite acceptance reconciled across recorded Gateway evidence, five Bicep/MAF cases and 43 published transport cases with 109 SDK retirements; qualification complete. Active MAF callers can remain pending until their request timeout after service retirement; broader stress, crash and platform scenarios remain unqualified | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged); [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (closed) by [#1680](https://github.com/sokolaidev/maf-extensions/pull/1680) (merged); [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (closed) by [#1882](https://github.com/sokolaidev/maf-extensions/pull/1882) (merged); [#1850](https://github.com/sokolaidev/maf-extensions/issues/1850) (closed) by [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865) (merged); [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851) (closed) by [#1870](https://github.com/sokolaidev/maf-extensions/pull/1870) (merged) |
-| Additional workload tools and artifact delivery | Open; design follows the Bicep contract | [#1639](https://github.com/sokolaidev/maf-extensions/issues/1639) (open) |
-| Enforced egress and credential mediation | Open; backend-specific design required | [#1640](https://github.com/sokolaidev/maf-extensions/issues/1640) (open) |
+| Additional workload tools and artifact delivery | Open; deferred for now by maintainer priority | [#1639](https://github.com/sokolaidev/maf-extensions/issues/1639) (open) |
+| Enforced egress and credential mediation | Design recorded; delegation probe next, runtime adapter conditional on supported authority and enforcement | [#1640](https://github.com/sokolaidev/maf-extensions/issues/1640) (open) |
+| Supported credential delegation probe | Open; first egress follow-up | [#1951](https://github.com/sokolaidev/maf-extensions/issues/1951) (open) |
+| Enforced delegated Docker relay | Open; conditional on supported delegation, revocation and final-dial enforcement | [#1952](https://github.com/sokolaidev/maf-extensions/issues/1952) (open) |
 | Conformance and installed-package qualification | Open; scenario and harness design required | [#1641](https://github.com/sokolaidev/maf-extensions/issues/1641) (open) |
 | Full sandbox provider | Open; feasibility and supported SDK decision required | [#1642](https://github.com/sokolaidev/maf-extensions/issues/1642) (open) |
