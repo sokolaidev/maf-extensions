@@ -1927,6 +1927,7 @@ async def test_mixed_recall_batch_survives_the_composed_merge_and_rewrite_chain(
     try:
         await strategy(messages)
     except CompactionBudgetExceeded:
+        # An unreachable budget must still leave the mixed batch intact.
         pass
     assert not output.additional_properties.get(EXCLUDED_KEY, False)
     assert not declaration.additional_properties.get(EXCLUDED_KEY, False)
