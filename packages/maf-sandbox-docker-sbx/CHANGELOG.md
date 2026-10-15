@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-sbx-v0.6.0...maf-sandbox-docker-sbx-v0.6.1) (2026-10-15)
+
+
+### Fixes
+
+* **docker-sbx:** support sbx v0.48 listings and sandbox creation ([#1953](https://github.com/sokolaidev/maf-extensions/issues/1953)) ([765c811](https://github.com/sokolaidev/maf-extensions/commit/765c811fef945848774658545dde20a70fd5226d))
+
 ## [0.6.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-sbx-v0.5.1...maf-sandbox-docker-sbx-v0.6.0) (2026-10-14)
 
 
