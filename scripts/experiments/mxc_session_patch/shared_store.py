@@ -11,7 +11,7 @@ import time
 import uuid
 import zlib
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -569,11 +569,16 @@ class SharedStore:
         checkpoint: Path,
         result: bytes,
         boundary: Callable[[str], None] = lambda _: None,
+        *,
+        commit_guard: Callable[[], AbstractContextManager[object]] = nullcontext,
     ) -> None:
-        """Publish bounded checkpoint content and delivery in the reservation's transaction."""
+        """Publish checkpoint and result with any external authority guard held through commit.
+
+        The guard must refuse invalid authority and must not suppress commit failures.
+        """
         if len(result) > self.limits.result_bytes:
             raise Refused("result exceeds limit")
-        with self._transaction():
+        with ExitStack() as guard, self._transaction():
             if self._owner()["state"] != "active":
                 raise Refused("session is retired")
             row = self.db.execute(
@@ -634,6 +639,7 @@ class SharedStore:
                 "UPDATE sessions SET current_call=? WHERE id=?", (call_id, self.session)
             )
             idle.finish(self)
+            guard.enter_context(commit_guard())
         boundary("after_commit")
 
     def _capture(self, call_id: str, root: Path) -> int:
