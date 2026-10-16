@@ -38,6 +38,27 @@ test('historical failures and stale findings remain monitoring problems', () => 
   }
 });
 
+test('vulnerable labels do not hide unverified monitor delivery', () => {
+  const catalogue = healthCatalogue();
+  catalogue.releases['bicep/0.1.1'].latestAttempt = {...record.latestAttempt, outcome: 'vulnerable'};
+  const identities = Object.keys(catalogue.releases);
+  for (const monitor of [
+    {...run, conclusion: 'failure', stateDeliveryVerified: false},
+    {...run, conclusion: 'failure'},
+    {...run, conclusion: 'cancelled', stateDeliveryVerified: true},
+    {...run, status: 'in_progress', stateDeliveryVerified: true},
+  ]) {
+    const result = health(catalogue, monitor, at);
+    assert.deepEqual(result.monitoringProblems, identities);
+    assert.equal(result.current['bicep/0.1.1'], 'vulnerable');
+    assert.equal(result.historical['bicep/0.1.0'], 'vulnerable');
+  }
+  for (const monitor of [run, {...run, conclusion: 'failure', stateDeliveryVerified: true}]) {
+    assert.deepEqual(health(catalogue, monitor, at).monitoringProblems, []);
+  }
+  assert.deepEqual(health(catalogue, null, at).monitoringProblems, identities);
+});
+
 test('every superseded image retains its own full 90-day window', () => {
   const catalogue = healthCatalogue();
   const old = catalogue.releases['bicep/0.1.0'];
@@ -74,6 +95,14 @@ test('render separates current health and historical warnings and names the repl
   context.run = {...run, status: 'in_progress'};
   vm.runInContext('render(value, run, at)', context);
   assert.match(nodes.summary.textContent, /needs attention/);
+  context.value.catalogue.releases['bicep/0.1.1'].latestAttempt = {...record.latestAttempt, outcome: 'vulnerable'};
+  context.run = {...run, conclusion: 'failure', stateDeliveryVerified: false};
+  vm.runInContext('render(value, run, at)', context);
+  assert.match(nodes['monitoring-summary'].textContent, /needs attention for 2 images/);
+  assert.ok(nodes.releases.children.every(row => row.children[2].textContent === 'vulnerable'));
+  context.run.stateDeliveryVerified = true;
+  vm.runInContext('render(value, run, at)', context);
+  assert.match(nodes['monitoring-summary'].textContent, /evidence is available for all active images/);
 });
 
 test('fresh clean status requires the actual latest successful attempt', () => {

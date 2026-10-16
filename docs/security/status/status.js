@@ -113,6 +113,10 @@ function monitoringEnd(record) {
   return null;
 }
 
+function monitorDelivered(monitor) {
+  return monitor?.status === "completed" && (monitor.conclusion === "success" || (monitor.conclusion === "failure" && monitor.stateDeliveryVerified === true));
+}
+
 function status(record, monitor, at) {
   const end = monitoringEnd(record);
   if (end !== null && at >= end) return "no-longer-monitored";
@@ -120,7 +124,7 @@ function status(record, monitor, at) {
   if (!monitor || !a || a.digest !== record.registryDigest || a.monitorRunId !== String(monitor.id) || a.monitorRunAttempt !== monitor.run_attempt || date(a.assessedAt) > at || date(monitor.updated_at) > at) return "unavailable";
   if (a.outcome === "vulnerable") return "vulnerable";
   if (Object.values(record.unexpectedDigests || {}).some(entry => monitoringEnd(unexpectedRecord(entry)) === null) || record.registryDiscovery?.outcome === "unavailable") return "unavailable";
-  if (monitor.status !== "completed" || !(monitor.conclusion === "success" || (monitor.conclusion === "failure" && monitor.stateDeliveryVerified === true)) || a.outcome !== "clean") return "unavailable";
+  if (!monitorDelivered(monitor) || a.outcome !== "clean") return "unavailable";
   return at - date(a.assessedAt) >= 48 * HOUR ? "stale" : "clean";
 }
 
@@ -167,7 +171,7 @@ function health(catalogue, monitor, at) {
       const identity = r.state === "unexpected" ? `${name} (${r.registryDigest})` : name;
       groups[scope][identity] = state === "clean" && r.delivery !== "complete" ? "incomplete" : state;
       const age = r.latestAttempt ? at - date(r.latestAttempt.assessedAt) : Infinity;
-      if (!["clean", "vulnerable"].includes(state) || age < 0 || age >= 48 * HOUR || r.delivery !== "complete" || r.registryDiscovery?.outcome === "unavailable") groups.monitoringProblems.push(identity);
+      if (!monitorDelivered(monitor) || !["clean", "vulnerable"].includes(state) || age < 0 || age >= 48 * HOUR || r.delivery !== "complete" || r.registryDiscovery?.outcome === "unavailable") groups.monitoringProblems.push(identity);
     }
   }
   return groups;
