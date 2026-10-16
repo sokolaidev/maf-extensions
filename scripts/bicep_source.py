@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any
 
 RECEIPT = "/usr/share/maf-bicep/build.json"
-PACKAGES = {"System.Security.Cryptography.Xml", "System.Security.Cryptography.Pkcs"}
+LEGACY_PACKAGES = {"System.Security.Cryptography.Xml", "System.Security.Cryptography.Pkcs"}
+PACKAGES = LEGACY_PACKAGES | {"MessagePack"}
 
 
 def receipt_command() -> str:
@@ -62,7 +63,8 @@ def verify_inventory(sbom: dict[str, Any], runtime: dict[str, Any]) -> None:
     if build.get("route") != "source":
         return
     packages = build.get("packages", {})
-    if set(packages) != PACKAGES:
+    # Published receipts retain the package policy used to build their immutable images.
+    if set(packages) not in (LEGACY_PACKAGES, PACKAGES):
         raise ValueError("Bicep source dependency evidence is incomplete")
     for name, version in packages.items():
         found = {
