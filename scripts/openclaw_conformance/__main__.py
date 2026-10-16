@@ -196,6 +196,7 @@ def run(prepared: Path, manifest_path: Path, output: Path) -> dict[str, Any]:
     sentinel = ""
     stopped = True
     failure = ""
+    installed_after: dict[str, Any] = {}
 
     def retain(group: str, observations: dict[str, Any], *, incomplete: bool = False) -> None:
         aid = uuid.uuid4().hex
@@ -262,13 +263,26 @@ def run(prepared: Path, manifest_path: Path, output: Path) -> dict[str, Any]:
                 raise
             retain(group, observations)
         check_prepared(prepared, manifest)
+        postflight = output / "postflight"
+        postflight.mkdir()
+        (postflight / "temp").mkdir()
+        installed_after = stage(
+            "installed", postflight, prepared, output / "expected-candidate.json"
+        )
+        predicates("installed", installed_after, manifest)
     except (Exception, KeyboardInterrupt) as exc:
         failure = str(exc) if isinstance(exc, Refused) else type(exc).__name__
         stopped = False
     finally:
         if sentinel:
             try:
-                retain("cleanup", cleanup(output, prepared, sentinel, stopped))
+                retain(
+                    "cleanup",
+                    {
+                        **cleanup(output, prepared, sentinel, stopped),
+                        "installed_after": installed_after,
+                    },
+                )
             except Exception as exc:
                 failure = failure or type(exc).__name__
         summary["ended"] = utc()

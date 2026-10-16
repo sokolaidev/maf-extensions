@@ -536,6 +536,7 @@ class Check:
                 self.events()[before:], a, self.prototype.snapshot(LARGE).digest
             )
             self.observations["response_loss"] = {
+                "session": digest(a.encode().hex()),
                 "container": digest(container),
                 "socket_closed": writer.is_closing(),
                 "binding_result": binding_result,

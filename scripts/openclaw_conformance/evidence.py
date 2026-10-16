@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import importlib
 import json
@@ -40,6 +41,52 @@ LIMITS = {
     "bundle": 67108864,
     "stage_seconds": 1800,
 }
+TRANSPORT_CASES = (
+    "test_two_maf_clients_discover_distinct_bindings_and_close_independently",
+    "test_shared_admission_equal_ids_cancel_and_delete_drain",
+    "test_registry_saturation_churn_and_idle_expiry",
+    "test_authentication_and_host_refusal_precede_allocation[GET]",
+    "test_authentication_and_host_refusal_precede_allocation[POST]",
+    "test_authentication_and_host_refusal_precede_allocation[DELETE]",
+    "test_bad_initialization_input_and_output_bounds",
+    "test_disconnect_does_not_cancel_and_idle_close_preserves_other_call",
+    "test_get_stream_limit_and_shutdown_retirement",
+    "test_shutdown_drains_sessions_already_retiring",
+    "test_retirement_failure_retains_ownership_until_retry_settles[cancel]",
+    "test_retirement_failure_retains_ownership_until_retry_settles[transport]",
+    "test_slow_initialize_cannot_allocate_after_shutdown_closes_admission",
+    "test_shutdown_waits_for_transport_startup_settlement[connected]",
+    "test_shutdown_waits_for_transport_startup_settlement[failed]",
+    "test_initialized_ack_waits_for_sdk_dispatch",
+    "test_actual_chunked_body_header_and_slow_body_limits",
+    "test_actual_connection_cap_includes_incomplete_requests",
+    "test_body_reader_budget_released_after_rejection",
+    "test_initialization_reservations_are_atomic_and_count_toward_cap",
+    "test_idle_expiry_does_not_evict_active_call_and_restart_rejects_old_id",
+    "test_incomplete_headers_have_a_real_connection_deadline",
+    "test_delete_can_retire_session_before_initialized_notification",
+    "test_pending_post_retains_session_reservation[delete]",
+    "test_pending_post_retains_session_reservation[shutdown]",
+    "test_pending_post_retains_session_reservation[idle]",
+    "test_pending_post_releases_reservation_on_body_failure[malformed]",
+    "test_pending_post_releases_reservation_on_body_failure[timeout]",
+    "test_pending_post_releases_reservation_on_body_failure[oversize]",
+    "test_pending_post_releases_reservation_on_body_failure[cancel]",
+    "test_nonfinite_json_is_rejected_before_dispatch[False-NaN]",
+    "test_nonfinite_json_is_rejected_before_dispatch[False-Infinity]",
+    "test_nonfinite_json_is_rejected_before_dispatch[False--Infinity]",
+    "test_nonfinite_json_is_rejected_before_dispatch[False-1e400]",
+    "test_nonfinite_json_is_rejected_before_dispatch[False--1e400]",
+    "test_nonfinite_json_is_rejected_before_dispatch[True-NaN]",
+    "test_nonfinite_json_is_rejected_before_dispatch[True-Infinity]",
+    "test_nonfinite_json_is_rejected_before_dispatch[True--Infinity]",
+    "test_nonfinite_json_is_rejected_before_dispatch[True-1e400]",
+    "test_nonfinite_json_is_rejected_before_dispatch[True--1e400]",
+    "test_typed_request_ids_keep_responses_and_cancellation_independent[42-42_0]",
+    "test_typed_request_ids_keep_responses_and_cancellation_independent[42-42_1]",
+    "test_client_request_ids_cannot_replace_sdk_get_stream",
+)
+LARGE_SOURCE_SHA256 = "237cd37d665cef33521913424b3254501e539299b89d24cb832cfac6b4210ce3"
 OWNERSHIP = {
     "equal_ids_repeated_cancel",
     "response_loss",
@@ -67,6 +114,10 @@ def encode(value: Any) -> bytes:
 def digest(value: Any) -> str:
     """Bind a normalized contract to its canonical bytes."""
     return hashlib.sha256(encode(value)).hexdigest()
+
+
+def _same(left: Any, right: Any) -> bool:
+    return encode(left) == encode(right)
 
 
 def file_hash(path: Path) -> str:
@@ -208,13 +259,15 @@ def predicates(group: str, value: dict[str, Any], manifest: dict[str, Any]) -> N
         )
     elif group == "discovery":
         require(
-            value
-            == {
-                "imports": ["maf_sandbox_mcp.server", "maf_sandbox_mcp.workload_http"],
-                "side_effect_attempts": [],
-                "exit_code": 0,
-                "late_guard_control": True,
-            },
+            _same(
+                value,
+                {
+                    "imports": ["maf_sandbox_mcp.server", "maf_sandbox_mcp.workload_http"],
+                    "side_effect_attempts": [],
+                    "exit_code": 0,
+                    "late_guard_control": True,
+                },
+            ),
             "discovery_effect_or_missing_control",
         )
     elif group == "policy":
@@ -235,7 +288,7 @@ def predicates(group: str, value: dict[str, Any], manifest: dict[str, Any]) -> N
         rows = value["observations"]
         require(
             len(rows) == 2
-            and rows[0] == {"mode": "bridge", "exit_code": 0, "control_body_matches": True},
+            and _same(rows[0], {"mode": "bridge", "exit_code": 0, "control_body_matches": True}),
             "unreachable_control",
         )
         require(
@@ -254,6 +307,7 @@ def predicates(group: str, value: dict[str, Any], manifest: dict[str, Any]) -> N
         observed.retirements = value["retirements"]
         observed.final_state = value["final_state"]
         observed.verify(0)
+        require(tuple(value["cases"]) == TRANSPORT_CASES, "transport_case_identity")
         direct = importlib.import_module("openclaw_published_transport_check").DIRECT_ASGI
         require(
             value["evidence_classes"]
@@ -295,21 +349,57 @@ def predicates(group: str, value: dict[str, Any], manifest: dict[str, Any]) -> N
         lost = value["cases"]["response_loss"]
         require(
             lost["socket_closed"] is True
-            and lost["binding_result"]["completed"] is True
+            and type(lost["binding_result"]["completed"]) is bool
+            and lost["binding_result"]["status"]
+            == ("ok" if lost["binding_result"]["completed"] else "incomplete")
+            and lost["binding_result"]["source_sha256"] == LARGE_SOURCE_SHA256
             and lost["binding_result"]["cleanup"] == "confirmed",
             "response_loss",
+        )
+        require(
+            isinstance(lost["session"], str) and re.fullmatch(r"[0-9a-f]{64}", lost["session"]),
+            "loss_session_identity",
+        )
+        events = [row for row in value["transport"] if row.get("session") == lost["session"]]
+        results = [row for row in events if row.get("event") == "binding_result"]
+        require(
+            len(results) == 1
+            and all(
+                _same(results[0].get(key), expected)
+                for key, expected in lost["binding_result"].items()
+            ),
+            "loss_result_correlation",
+        )
+        require(
+            sum(row.get("event") == "binding_started" for row in events) == 1
+            and sum(
+                row.get("event") == "request" and row.get("method") == "tools/call"
+                for row in events
+            )
+            == 1,
+            "loss_replay",
+        )
+        require(
+            not any(
+                row.get("event") == "binding_cancelled"
+                or row.get("method") == "notifications/cancelled"
+                for row in events
+            ),
+            "loss_implicit_cancel",
         )
         for name in ("maf_idle_close", "maf_active_close"):
             require(value["cases"][name]["delete_observed"] is True, "missing_delete")
         require(
-            value["shutdown"]
-            == {
-                "sessions": 0,
-                "active": False,
-                "poisoned": False,
-                "owned_empty": True,
-                "unrelated_preserved": True,
-            }
+            _same(
+                value["shutdown"],
+                {
+                    "sessions": 0,
+                    "active": False,
+                    "poisoned": False,
+                    "owned_empty": True,
+                    "unrelated_preserved": True,
+                },
+            )
             and value["sentinel_removed"] is True,
             "ownership_cleanup",
         )
@@ -355,25 +445,44 @@ def predicates(group: str, value: dict[str, Any], manifest: dict[str, Any]) -> N
         )
     elif group == "cleanup":
         require(
-            value
+            set(value)
             == {
-                "sentinel_survived": True,
-                "sentinel_removed": True,
-                "processes_stopped": True,
-                "owned_empty": True,
-                "emergency_cleanup": False,
+                "sentinel_survived",
+                "sentinel_removed",
+                "processes_stopped",
+                "owned_empty",
+                "emergency_cleanup",
+                "installed_after",
             },
+            "cleanup_fields",
+        )
+        predicates("installed", value["installed_after"], manifest)
+        require(
+            _same(
+                {k: v for k, v in value.items() if k != "installed_after"},
+                {
+                    "sentinel_survived": True,
+                    "sentinel_removed": True,
+                    "processes_stopped": True,
+                    "owned_empty": True,
+                    "emergency_cleanup": False,
+                },
+            ),
             "campaign_cleanup",
         )
 
 
 def evaluate(root: Path, expected: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
     """Reject incomplete or transplanted bundles; never select claims from their reports."""
-    require(expected == plan(manifest, expected["campaign_id"]), "plan_narrowed")
+    require(_same(expected, plan(manifest, expected["campaign_id"])), "plan_narrowed")
     require(
         not (root / "summary.json").is_symlink()
         and (root / "summary.json").resolve().parent == root.resolve(),
         "summary_escape",
+    )
+    require(
+        {p.name for p in root.iterdir()} == {"summary.json", *(g + ".json" for g in GROUPS)},
+        "bundle_inventory",
     )
     summary = read(root / "summary.json")
     keys(
@@ -410,12 +519,19 @@ def evaluate(root: Path, expected: dict[str, Any], manifest: dict[str, Any]) -> 
         and summary["started"] <= summary["ended"],
         "campaign_timestamps",
     )
+    try:
+        stamps = [datetime.datetime.fromisoformat(summary[key]) for key in ("started", "ended")]
+        require(
+            all(stamp.utcoffset() == datetime.timedelta(0) for stamp in stamps), "campaign_timezone"
+        )
+    except ValueError as exc:
+        raise Refused("campaign_timestamps") from exc
     require(
         isinstance(summary["attempts"], list) and len(summary["attempts"]) == len(GROUPS),
         "case_inventory",
     )
     seen: set[str] = set()
-    total = 0
+    total = (root / "summary.json").stat().st_size
     for attempt, group in zip(summary["attempts"], GROUPS, strict=True):
         keys(attempt, {"group", "attempt_id", "file", "bytes", "sha256", "outcome"})
         require(
