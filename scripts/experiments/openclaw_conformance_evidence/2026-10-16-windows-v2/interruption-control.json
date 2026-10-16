@@ -1,0 +1,1 @@
+{"control":"forced_child_termination_with_observation_failure","control_resources":4,"emergency_cleanup":true,"errors":["sentinel_observation"],"owned_empty":true,"processes_stopped":true,"runner_commit":"7c8740bd94b34ef7e7db1c20c6a7d9259ae7bb43","sentinel_removed":true,"sentinel_survived":false,"unrelated_preserved":true}

@@ -1060,6 +1060,8 @@ The revised installed wheel repeated all 43 transport cases and 109 SDK retireme
 
 ## Published candidate conformance campaign (2026-10-16)
 
+**Historical v1 evidence, superseded by the reviewed v2 contract below.** PR #1983 review identified missing transitive/native byte checks, incomplete source/control correlation, auxiliary-log bounds and interrupted-stage cleanup gaps. The original report and its evaluator result are retained unchanged; the current evaluator refuses that profile.
+
 The repository-local runner for #1972 completed `installed-bicep-windows-v1` on one fresh external installation, with campaign `fce960ecf9f64cb794a4af2a69c03ca4` and candidate SHA-256 `1d2c51882a090bccab8f12ca04a000c65c0ea9dc2386a594d10fa10d836268f8`. Independent evaluation returned `qualified_for_profile` for all eight required groups. This is new evidence for the published worker; none of the historical source or wheel reports above was relabelled or reused.
 
 The retained [expected candidate](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows/candidate.json), [selected plan](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows/plan.json), [complete summary](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows/evidence/summary.json) and [evaluation](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows/evaluation.json) bind the artifact records in the adjacent evidence directory. The summary SHA-256 is `c0f75f4f8673635280babce5ce1c9a0e697cf8935ab4e252363429e778348c35`. The candidate includes every resolved Python distribution, both dependency-lock hashes, installed worker module hashes, npm archive/tree identity and host configuration. Private setup/campaign directories retain the original locks and diagnostics; the public records contain no operator paths, credentials or provider state.
@@ -1089,13 +1091,34 @@ Active MAF closure settled the service in 20.53 seconds, while the pending calle
 
 The [development-attempt metadata](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows/development-attempts.json) retains two separate failed campaign summaries: an evaluator that incorrectly required response-loss compilation to complete, and a superseded runner rejected when its fingerprint changed. Their full private evidence directories remain separate. The accepted campaign used a fresh installation and fresh output directory after the corrections; it does not combine successful stages from those attempts.
 
-Re-evaluate the retained report from the repository root without Docker or installed OpenClaw:
-
-```powershell
-$record = 'scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows'
-uv run --no-project --python 3.13 python -m scripts.openclaw_conformance evaluate --bundle "$record/evidence" --plan "$record/plan.json" --manifest "$record/candidate.json"
-```
+The historical bundle remains inspectable, but re-evaluation requires its recorded runner revision. It does not satisfy the current v2 contract.
 
 The [operator guide](../openclaw.md#installed-bicep-conformance-runner) describes fresh preparation and execution. Expected inputs must be selected independently and trusted: hashes establish byte correlation, not the truth of a forged observation. The evaluator fixes required groups and case identities and refuses missing, duplicated, transplanted, malformed, narrowed or failed evidence; offline adversarial tests also cover boolean count substitutions, late import effects, changed installed bytes and all-denied network controls. PR CI exercises these offline checks, not the opt-in Docker/Gateway campaign.
 
 This profile is finite, supervised Windows/Docker deterministic evidence. Process supervision confirms stopped processes and released ownership; it does not establish graceful console shutdown, unattended recovery, a model's reasoning, Linux-host support, native MXC/file boundaries, credential delegation, package publication or production acceptance. Worker owner-loss qualification remains #1973; native qualification remains conditional in #1974, credential enforcement remains blocked in #1952, additional tools remain deferred in #1639, and full-backend design remains #1642.
+
+
+## Reviewed v2 conformance campaign (2026-10-16)
+
+The reviewed `installed-bicep-windows-v2` contract requires archive-backed dependency and native assets plus a complete preflight/postflight inventory. Each ownership survivor identifies the fixed simple source; each of six Gateway outcomes retains its image, configuration and source digest; prepared-module qualification requires the fixed AVM source digest shared with the live probe. Ownership checks correlate session/request IDs, accepted cancellation responses, binding cancellation, busy admission, DELETE retirement and survivor ordering. Idle close must preserve the original peer call without an exception.
+
+The file inventory covers the prepared Python environment's `Lib/site-packages` and `Scripts` trees and OpenClaw's complete `node_modules` tree. The host Python installation, Node executable, Docker engine and operating system remain host prerequisites recorded by version; this is not an attestation of those host binaries. The only archive transformations accepted are the pinned OpenClaw lifecycle-marker removal, wheel script relocation with identical bytes, and npm's first-line CRLF normalization for archive-declared executables.
+
+The parent bounds outer, worker, Gateway and observer logs during execution and after process-job cleanup. Before creating resources it persists the exact names and campaign label of the outer sentinel, ownership sentinel and two network controls. Cleanup attempts every recorded owner and control resource independently, retains observation/removal failures, and marks emergency reclamation as a failed campaign. It never sweeps a global container-name prefix.
+
+The fresh v2 candidate is `293320ccbd77ac0cc1522dfd3e8fe839c0cea352236833d39e1a908a605c1eaf`, prepared from runner commit `95ec72deae02e240cc19a176d6b226ee58186224` with runner fingerprint `4fcfefc1012f2e472efb92015925d287228370134180956850e57a8aef29123a`. It contains 43,862 inventoried files: 43,597 verified against 388 locked archives, plus 265 explicitly listed installer outputs. The selected published dependency versions remain worker 0.1.0, core 0.50.0, Bicep 0.23.0, Docker backend 0.28.2, MAF 1.21.0 and MCP 1.28.1.
+
+Independent evaluation returned `qualified_for_profile` for campaign `608ffe97c305475a9e323deb44c9ab2b` across all eight required groups. The [candidate](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows-v2/candidate.json), [plan](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows-v2/plan.json), [evaluation](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows-v2/evaluation.json) and complete bounded observations are retained together. All 43 transport cases and 109 SDK retirements, five real ownership scenarios, six Gateway outcomes, prepared-module execution and paired network controls passed. Fresh postflight verification matched the original runtime inventory; independent cleanup found empty owner scopes, stopped processes, preserved then removed the sentinel, and required no emergency reclamation.
+
+Active MAF close settled the service in 19.84 seconds and the caller in 240.02 seconds, with error code 408; its surviving peer completed valid work. The response-loss result was explicitly incomplete with confirmed cleanup and no replay or implicit cancellation. These observations preserve the client-timeout limitation.
+
+The [separate live interruption control](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows-v2/interruption-control.json) killed a supervised child after resource creation and injected a sentinel-observation failure. All four recorded controls were reclaimed while an unrelated container survived; the observation error and emergency-cleanup flag remained, so this control cannot qualify as a successful campaign. The [development-attempt metadata](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows-v2/development-attempts.json) retains the refused installer-layout checks, a superseded campaign rejected by its runner fingerprint, and a campaign refused after its isolated supervisor added startup bytecode. Full private diagnostics remain separate, and no earlier stage is reused in the accepted campaign.
+
+Re-evaluate the retained v2 report without Docker or installed OpenClaw:
+
+```powershell
+$record = 'scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows-v2'
+uv run --no-project --python 3.13 python -m scripts.openclaw_conformance evaluate --bundle "$record/evidence" --plan "$record/plan.json" --manifest "$record/candidate.json"
+```
+
+This qualifies the selected supervised Windows/Docker candidate with a deterministic provider. Unattended parent/owner loss remains #1973, native qualification remains conditional in #1974, credential enforcement remains blocked in #1952, additional tools remain deferred in #1639, and broader backend design remains #1642.
