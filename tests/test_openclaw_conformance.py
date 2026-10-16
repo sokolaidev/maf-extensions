@@ -915,3 +915,11 @@ def test_survivor_event_does_not_accept_a_numeric_boolean(bundle):
     change_artifact(bundle, "ownership", mutate)
     with pytest.raises(e.Refused):
         e.evaluate(*bundle)
+
+
+def test_retained_reviewed_v2_campaign_evaluates_offline():
+    record = ROOT / "scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows-v2"
+    result = e.evaluate(
+        record / "evidence", e.read(record / "plan.json"), e.read(record / "candidate.json")
+    )
+    assert result == e.read(record / "evaluation.json")

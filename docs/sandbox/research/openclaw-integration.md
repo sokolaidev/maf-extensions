@@ -487,7 +487,7 @@ Other platforms, arbitrary backends, indefinite/concurrent stress, host power lo
 
 This disposition closes #1641's design scope because the reusable boundaries, prioritized scenarios, evidence rules, upgrade policy and implementation owners are explicit. It ships no runner, native adapter or new runtime qualification, and it does not stop OpenClaw adoption.
 
-**Implementation update (2026-10-16):** #1972 now supplies the repository-local runner, independent evaluator and a [fresh published-candidate Windows report](openclaw-gateway-qualification.md#published-candidate-conformance-campaign-2026-10-16). The P0 profile passed on OpenClaw 2026.9.7, worker 0.1.0, core 0.50.0 and MAF 1.21.0, with all transport/ownership cases and two deterministic Gateway sessions. This leaves #1973 as the next implementation increment and #1642 as the next broader design; the deferred and blocked decisions above are unchanged.
+**Implementation update (2026-10-16):** #1972 now supplies the repository-local runner, independent evaluator and a [fresh published-candidate Windows report](openclaw-gateway-qualification.md#reviewed-v2-conformance-campaign-2026-10-16). The reviewed v2 profile binds dependency/native files and correlated source/control evidence. It passed on OpenClaw 2026.9.7, worker 0.1.0, core 0.50.0 and MAF 1.21.0, with all transport/ownership cases and two deterministic Gateway sessions. This leaves #1973 as the next implementation increment and #1642 as the next broader design; the deferred and blocked decisions above are unchanged.
 
 ## Status
 
