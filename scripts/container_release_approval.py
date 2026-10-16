@@ -36,9 +36,9 @@ PROFILE_GUIDES = {
         "Offline Bicep validation with the Bicep CLI, fallback configuration and prepared Azure Verified Modules cache.",
         "images/bicep-sandbox/README.md#prepared-avm-profile",
     ),
-    "sbx-bicep": (
-        "Bicep validation with the Bicep base image and sbx runtime template.",
-        "images/sbx-template/README.md",
+    "bicep-docker-sbx": (
+        "Bicep validation and staged configuration through the Docker Sandboxes backend.",
+        "images/bicep-docker-sbx/README.md",
     ),
     "graphviz": (
         "Offline graph rendering with Graphviz and fonts.",
@@ -209,7 +209,7 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
             ("Remaining qualification networks", "networksRemaining"),
         ):
             rows.append((label, proxy.get(key, UNAVAILABLE)))
-    if candidate["profile"] == "bicep":
+    if candidate["profile"] in {"bicep", "bicep-docker-sbx"}:
         bicep = runtime.get("bicep", {})
         for check in bicep.get("checks", []):
             rows.append(("Bicep check", check))
@@ -218,10 +218,24 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
         for label, key in (
             ("Bicep version", "bicepVersion"),
             ("Bicep compiler SHA-256", "compilerSha256"),
-            ("Bicep fallback configuration SHA-256", "configSha256"),
+            ("Bicep configuration SHA-256", "configSha256"),
             ("Bicep license SHA-256", "licenseSha256"),
             ("Bicep check backend", "backend"),
             ("Bicep check network", "network"),
+        ):
+            rows.append((label, bicep.get(key, UNAVAILABLE)))
+    if candidate["profile"] == "bicep-docker-sbx":
+        bicep = runtime.get("bicep", {})
+        for label, key in (
+            ("Docker Sandboxes CLI version", "sbxVersion"),
+            ("Docker Sandboxes backend version", "backendVersion"),
+            ("Docker Sandboxes host", "host"),
+            ("Imported template identity", "template"),
+            ("Workspace round trip", "workspaceRoundTrip"),
+            ("Compiled output transfer", "compiledOutputTransfer"),
+            ("Workspace removed", "workspaceRemoved"),
+            ("Template removed", "templateRemoved"),
+            ("Sandboxes remaining", "sandboxesRemaining"),
         ):
             rows.append((label, bicep.get(key, UNAVAILABLE)))
     for check in runtime.get("bicepAvm", {}).get("checks", []):
@@ -231,7 +245,7 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
             ("Prepared Bicep version", runtime["bicepAvm"].get("bicepVersion", UNAVAILABLE))
         )
         rows.append(("Prepared Bicep modules", runtime["bicepAvm"].get("modules", UNAVAILABLE)))
-    if candidate["profile"] in {"bicep", "bicep-avm", "sbx-bicep"}:
+    if candidate["profile"] in {"bicep", "bicep-avm", "bicep-docker-sbx"}:
         build = runtime.get("bicepAvm" if candidate["profile"] == "bicep-avm" else "bicep", {}).get(
             "build", {}
         )

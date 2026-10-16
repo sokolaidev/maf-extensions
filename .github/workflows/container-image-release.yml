@@ -19,7 +19,7 @@ on:
         options:
           - bicep
           - bicep-avm
-          - sbx-bicep
+          - bicep-docker-sbx
           - graphviz
           - drawio
           - drawio-export
@@ -118,7 +118,7 @@ jobs:
   prepare:
     needs: policy
     if: inputs.operation == 'release'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.profile == 'bicep-docker-sbx' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     timeout-minutes: ${{ inputs.profile == 'terraform-avm' && 150 || 60 }}
     outputs:
       approval_name: ${{ steps.approval-summary.outputs.approval_name }}
@@ -132,6 +132,12 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Prepare Docker Sandboxes consumer host
+        if: inputs.profile == 'bicep-docker-sbx' && github.run_attempt == 1
+        uses: ./.github/actions/setup-sbx
+        with:
+          docker-username: ${{ secrets.DOCKER_USERNAME }}
+          docker-pat: ${{ secrets.DOCKER_PAT }}
       - name: Make room for the AVM provider toolchain and build cache
         if: inputs.profile == 'terraform-avm' && github.run_attempt == 1
         run: |
@@ -311,7 +317,7 @@ jobs:
 
   qualify:
     needs: [prepare, promote]
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.profile == 'bicep-docker-sbx' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -324,6 +330,12 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Prepare Docker Sandboxes consumer host
+        if: inputs.profile == 'bicep-docker-sbx'
+        uses: ./.github/actions/setup-sbx
+        with:
+          docker-username: ${{ secrets.DOCKER_USERNAME }}
+          docker-pat: ${{ secrets.DOCKER_PAT }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: promoted-image-evidence

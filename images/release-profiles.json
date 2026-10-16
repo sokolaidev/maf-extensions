@@ -5,7 +5,7 @@
   "profiles": [
     "bicep",
     "bicep-avm",
-    "sbx-bicep",
+    "bicep-docker-sbx",
     "graphviz",
     "drawio",
     "drawio-export",

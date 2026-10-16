@@ -44,7 +44,7 @@ The first publishing workflow covers all thirteen currently scanned profiles on 
 |---|---|
 | `bicep` | Base Bicep sandbox |
 | `bicep-avm` | [Bicep with selected virtual-network and storage-account AVM modules](../../images/bicep-sandbox/AVM.md) |
-| `sbx-bicep` | The `sbx` template applied to the base Bicep image |
+| `bicep-docker-sbx` | [Bicep and workspace utilities for Docker Sandboxes](../../images/bicep-docker-sbx/README.md) |
 | `diagram` | Graphviz diagram sandbox |
 | `drawio` | [Editable Draw.io authoring with Python and Graphviz](../../images/drawio-sandbox/README.md) |
 | `drawio-export` | Draw.io Desktop export runtime |
@@ -74,7 +74,7 @@ Consumer instructions verify both attestations with GitHub CLI under the expecte
 
 ## Build and publication flow
 
-For `bicep`, `bicep-avm` and `sbx-bicep`, the release dispatch's `bicep_route` selects `upstream` (default, verified upstream executable) or `source` (pinned source and SDK with reviewed dependency overrides). The [Bicep build guide](../../images/bicep-sandbox/README.md#choose-the-compiler-route) describes both routes. The retained candidate binds this choice; its runtime evidence and approval summary report the route and binary identity, plus the source build inputs when applicable. A retry cannot change routes or rebuild. Source builds must retain the patched packages in the scanned inventory, including subsequent monitoring of the published digest. Selecting a route does not bypass any publication gate.
+For `bicep`, `bicep-avm` and `bicep-docker-sbx`, the release dispatch's `bicep_route` selects `upstream` (default, verified upstream executable) or `source` (pinned source and SDK with reviewed dependency overrides). The [Bicep build guide](../../images/bicep-sandbox/README.md#choose-the-compiler-route) describes both routes. The retained candidate binds this choice; its runtime evidence and approval summary report the route and binary identity, plus the source build inputs when applicable. A retry cannot change routes or rebuild. Source builds must retain the patched packages in the scanned inventory, including subsequent monitoring of the published digest. Selecting a route does not bypass any publication gate.
 
 1. Select one or more profiles and unused release versions. Dispatch the release workflow on protected `main`; its `github.sha` is the selected full source commit. Validate the request against a checked-in profile catalogue. Require a clean checkout of that exact commit and equality between payload, workflow and OIDC source revisions before building or signing. Reject a separately selected payload revision; retry retained bytes only within a run or rerun carrying the same source identity.
 2. Build each candidate once with its release labels, convert it to the retained OCI layout, then reload that layout and verify the loaded configuration digest. OCI conversion can change configuration bytes; run the profile's packaging and runtime checks and generate the Syft inventory against the retained configuration's image ID. Enforce the existing Grype gate with a valid vulnerability database and record the database identity and scan time. Preserve the original build image ID separately in `build.json`; changing the retained configuration after scanning requires a new assessment.

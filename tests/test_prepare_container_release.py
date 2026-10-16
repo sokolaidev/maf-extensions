@@ -48,7 +48,6 @@ def test_source_cannot_be_selected_independently_of_dispatch(monkeypatch, change
     [
         "bicep",
         "bicep-avm",
-        "sbx-bicep",
         "graphviz",
         "terraform-random",
         "opentofu-random",

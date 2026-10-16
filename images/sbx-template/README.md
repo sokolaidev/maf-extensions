@@ -18,3 +18,5 @@ sbx template load bicep-sandbox-sbx.tar
 Then pass `bicep-sandbox:sbx` as the image. A base that already meets the requirements, such as [`graphviz-sandbox`](../graphviz-sandbox/), loads without this layer.
 
 Removing `/maf-sandbox` also removes whatever the base kept there. For `bicep-sandbox` that is its fallback `bicepconfig.json`. The Bicep kind stages its own configuration into every call, so nothing that uses the kind reads the fallback.
+
+The public Bicep variant is [`bicep-docker-sbx`](../bicep-docker-sbx/README.md). Its consumer guide covers signed release verification, template loading and Docker Sandboxes qualification. Local names such as `bicep-sandbox:sbx` in this generic recipe are development fixtures.

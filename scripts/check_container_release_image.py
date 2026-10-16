@@ -13,7 +13,6 @@ from uuid import uuid4
 import bicep_avm_qualification
 import bicep_qualification
 import terraform_avm_qualification
-from bicep_source import receipt_command, verify_receipt
 from build_hyperlight_aks_image import _smoke_output, verify_image
 from container_release import ROOT, now, profiles, read, require_digest, write
 
@@ -65,23 +64,26 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             "kind": "packaging",
             "result": result,
         }
-    if profile in {"bicep", "bicep-avm", "sbx-bicep"}:
-        command = [
-            "sh",
-            "-ec",
-            "bicep --version; printf \"param name string = 'release-probe'\\noutput result string = name\\n\" > /tmp/main.bicep; bicep build /tmp/main.bicep --outfile /tmp/main.json; test -s /tmp/main.json",
-        ]
-        if profile == "bicep":
-            command = bicep_qualification.command()
-        elif profile == "bicep-avm":
-            command = bicep_avm_qualification.command()
-        else:
-            command[-1] = command[-1].replace("bicep --version;", "bicep --version >&2;") + (
-                "; hash=$(sha256sum /usr/local/bin/bicep); "
-                'printf \'{"compilerSha256":"%s"\' "${hash%% *}"; '
-                + receipt_command()
-                + "; printf '}'"
-            )
+    if profile == "bicep-docker-sbx":
+        import bicep_docker_sbx_qualification
+
+        result = asyncio.run(bicep_docker_sbx_qualification.check(image_id))
+        return {
+            "imageId": image_id,
+            "profile": profile,
+            "checkedAt": now(),
+            "kind": "docker-sbx-consumer",
+            "passed": True,
+            "bicep": result,
+            "sandboxesRemaining": result["sandboxesRemaining"],
+            "liveDeploymentVerified": False,
+        }
+    if profile in {"bicep", "bicep-avm"}:
+        command = (
+            bicep_qualification.command()
+            if profile == "bicep"
+            else bicep_avm_qualification.command()
+        )
     elif profile == "graphviz":
         command = [
             "sh",
@@ -129,7 +131,7 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
         image_id,
         *command[1:],
     ]
-    if profile in {"bicep", "bicep-avm", "sbx-bicep"}:
+    if profile in {"bicep", "bicep-avm"}:
         create[2:2] = ["--env", "DOTNET_BUNDLE_EXTRACT_BASE_DIR=/tmp/dotnet-bundle"]
     if profile == "bicep":
         create[2:2] = ["--tmpfs", f"{bicep_qualification.WORK}:rw,noexec,size=16m"]
@@ -148,16 +150,6 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             result = bicep_qualification.evidence(output)
         elif profile == "bicep-avm":
             result = bicep_avm_qualification.evidence(output)
-        elif profile == "sbx-bicep":
-            identity = json.loads(output)
-            evidence_key = "bicep"
-            result = {
-                "build": verify_receipt(
-                    identity.get("buildReceipt"),
-                    identity["compilerSha256"],
-                    bicep_qualification.CONTEXT,
-                )
-            }
         elif profile == "terraform-avm":
             result = terraform_avm_qualification.evidence(output)
     finally:
