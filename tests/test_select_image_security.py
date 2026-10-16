@@ -82,11 +82,32 @@ def test_bicep_profile_rename_selects_only_changed_membership(bicep_builder, rev
 
 
 @pytest.mark.parametrize("profile", ["bicep", "bicep-avm"])
-def test_bicep_profile_removal_remains_an_input_change(bicep_builder, profile):
+@pytest.mark.parametrize("reverse", [False, True])
+def test_bicep_profile_removal_remains_an_input_change(bicep_builder, profile, reverse):
     root, base, path, source = bicep_builder
     source = source.replace(f'"{profile}", ', "", 1)
     head = commit(root, {path: source})
-    assert changed_profiles(root, base, head, path) == (profile, "bicep-docker-sbx")
+    if reverse:
+        base, head = head, base
+    expected = affected(path) if profile == "bicep" else (profile, "bicep-docker-sbx")
+    assert changed_profiles(root, base, head, path) == expected
+
+
+@pytest.mark.parametrize(
+    "validation",
+    [
+        'validate_route(route, "bicep-docker-sbx")',
+        "validate_route(route, profile)",
+        'validate_route(route, profile="bicep")',
+        'validate_route(route, "bicep"); guard = validate_route',
+    ],
+)
+def test_bicep_profile_edit_preserves_shared_route_dependencies(bicep_builder, validation):
+    root, _, path, source = bicep_builder
+    source = source.replace('validate_route(route, "bicep")', validation)
+    base = commit(root, {path: source.replace('"bicep-docker-sbx"}', '"sbx-bicep"}')})
+    head = commit(root, {path: source})
+    assert changed_profiles(root, base, head, path) == affected(path)
 
 
 @pytest.mark.parametrize(

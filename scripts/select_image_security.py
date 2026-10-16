@@ -224,7 +224,7 @@ def _build_branches(source: str) -> tuple[str, dict[str, str]]:
     raise ValueError("Missing dispatcher ending")
 
 
-def _bicep_profiles(source: str) -> tuple[bytes, set[str]]:
+def _bicep_profiles(source: str) -> tuple[bytes, set[str], set[str]]:
     """Recognize a literal profile set used only in the route's membership guard."""
     tree = ast.parse(source)
     assignments = [
@@ -256,12 +256,36 @@ def _bicep_profiles(source: str) -> tuple[bytes, set[str]]:
     ]
     if len(names) != 2 or len(checks) != 1:
         raise ValueError("Unknown Bicep profile use")
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "validate_route"
+    ]
+    uses = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and node.id == "validate_route"
+    ]
+    shared: set[str] = set()
+    if not calls or len(calls) != len(uses):
+        raise ValueError("Unknown Bicep route validation use")
+    for call in calls:
+        if (
+            len(call.args) != 2
+            or call.keywords
+            or not isinstance(call.args[1], ast.Constant)
+            or not isinstance(call.args[1].value, str)
+        ):
+            raise ValueError("Unknown Bicep route validation profile")
+        shared.add(call.args[1].value)
     lines = source.encode("utf-8").split(b"\n")
     line = lines[value.lineno - 1]
     lines[value.lineno - 1] = (
         line[: value.col_offset] + b"{PROFILE_MEMBERS}" + line[value.end_col_offset :]
     )
-    return b"\n".join(lines), members
+    return b"\n".join(lines), members, shared
 
 
 def changed_profiles(root: Path, base: str, head: str, path: str) -> tuple[str, ...]:
@@ -275,11 +299,12 @@ def changed_profiles(root: Path, base: str, head: str, path: str) -> tuple[str, 
     try:
         before, after = (_git(root, "show", f"{ref}:{path}") for ref in (base, head))
         if path == "scripts/build_bicep_image.py":
-            common_before, old_profiles = _bicep_profiles(before)
-            common_after, new_profiles = _bicep_profiles(after)
-            if common_before != common_after:
+            common_before, old_profiles, old_shared = _bicep_profiles(before)
+            common_after, new_profiles, new_shared = _bicep_profiles(after)
+            changed = old_profiles ^ new_profiles
+            if common_before != common_after or changed & (old_shared | new_shared):
                 return affected(path)
-            return tuple(p for p in affected(path) if p in old_profiles ^ new_profiles)
+            return tuple(p for p in affected(path) if p in changed)
         if path == "scripts/build_scan_image.sh":
             common_before, old = _build_branches(before)
             common_after, new = _build_branches(after)
