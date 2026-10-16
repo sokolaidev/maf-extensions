@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .evidence import LARGE_SOURCE_SHA256, digest, require
+from .evidence import LARGE_SOURCE_SHA256, digest, encode, require
 
 
 def verify(value: dict[str, Any]) -> None:
@@ -73,7 +73,7 @@ def verify(value: dict[str, Any]) -> None:
         require(bool(survivor), "survivor_result")
         require(
             all(
-                survivor[-1].get(k) == case["survivor"][k]
+                encode(survivor[-1].get(k)) == encode(case["survivor"][k])
                 for k in ("completed", "status", "cleanup", "source_sha256")
             ),
             "survivor_result",
@@ -95,6 +95,11 @@ def verify(value: dict[str, Any]) -> None:
         ]
         require(bool(starts), "active_binding")
         start = starts[0]
+        require(
+            isinstance(start.get("request"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", start["request"]),
+            "active_request_identity",
+        )
         if name in ("equal_ids_repeated_cancel", "response_loss"):
             require(start.get("request") == digest(42), "active_request")
         cancelled = [e for e in subset if e.get("event") == "binding_cancelled"]
@@ -188,7 +193,8 @@ def _response(events: list[dict[str, Any]], request: dict[str, Any], status: int
 
 def _binding(events: list[dict[str, Any]], result: dict[str, Any]) -> None:
     require(
-        bool(result.get("request"))
+        isinstance(result.get("request"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", result["request"])
         and any(
             e.get("event") == "binding_started"
             and e.get("session") == result["session"]
