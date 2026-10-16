@@ -90,6 +90,7 @@ def test_patch_changes_existing_pin_and_adds_transitive_pin(tmp_path, existing_p
     path.write_text(
         "<Project><PropertyGroup><CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled></PropertyGroup>"
         '<ItemGroup><PackageVersion Include="System.Security.Cryptography.Xml" Version="10.0.10" />'
+        '<PackageVersion Include="MessagePack" Version="3.1.7" />'
         '<PackageVersion Include="Unrelated" Version="1.0.0" />' + pkcs + "</ItemGroup></Project>"
     )
     source.patch_packages(path, POLICY["packages"])
@@ -100,20 +101,30 @@ def test_patch_changes_existing_pin_and_adds_transitive_pin(tmp_path, existing_p
     assert pins == {**POLICY["packages"], "Unrelated": "1.0.0"}
 
 
-@pytest.mark.parametrize("versions", [["10.0.10"], [], ["10.0.13", "10.0.10"]])
-def test_restore_graph_must_contain_only_patched_versions(tmp_path, versions):
+@pytest.mark.parametrize("name", sorted(POLICY["packages"]))
+@pytest.mark.parametrize("mode", ["patched", "stale", "missing", "duplicate"])
+def test_restore_graph_must_contain_only_patched_versions(tmp_path, name, mode):
+    libraries = {f"{package}/{version}": {} for package, version in POLICY["packages"].items()}
+    if mode in {"stale", "missing"}:
+        del libraries[f"{name}/{POLICY['packages'][name]}"]
+    if mode in {"stale", "duplicate"}:
+        libraries[f"{name}/0.0.1"] = {}
     path = tmp_path / "project.assets.json"
-    path.write_text(
-        json.dumps(
-            {
-                "libraries": {
-                    f"{name}/{version}": {} for name in source.PACKAGES for version in versions
-                }
-            }
-        )
-    )
-    with pytest.raises(ValueError, match="dependency differs"):
-        source.resolved_packages(path, POLICY["packages"])
+    path.write_text(json.dumps({"libraries": libraries}))
+    if mode == "patched":
+        assert source.resolved_packages(path, POLICY["packages"]) == POLICY["packages"]
+    else:
+        with pytest.raises(ValueError, match="dependency differs"):
+            source.resolved_packages(path, POLICY["packages"])
+
+
+def test_new_source_policy_requires_messagepack_override(tmp_path):
+    data = copy.deepcopy(POLICY)
+    del data["packages"]["MessagePack"]
+    path = tmp_path / "source.json"
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="Invalid pinned"):
+        source.policy(path)
 
 
 @pytest.mark.parametrize(
@@ -145,19 +156,24 @@ def test_source_receipt_is_accepted_and_approval_displays_it():
     assert ("Bicep patched packages", POLICY["packages"]) in rows
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("kind", ["bicep", "bicepAvm"])
 @pytest.mark.parametrize("mode", ["complete", "missing", "stale", "os-only"])
-def test_inventory_must_include_patched_application_packages(mode):
+def test_inventory_must_include_patched_application_packages(mode, kind, legacy):
+    data = receipt()
+    if legacy:
+        del data["packages"]["MessagePack"]
     artifacts = [
         {"name": name, "version": version, "type": "dotnet"}
-        for name, version in POLICY["packages"].items()
+        for name, version in data["packages"].items()
     ]
     if mode == "missing":
-        artifacts.pop()
+        artifacts.pop(0)
     elif mode == "stale":
         artifacts[0]["version"] = "10.0.10"
     elif mode == "os-only":
         artifacts = [{"name": "icu", "version": "1", "type": "rpm"}]
-    runtime = {"bicep": {"build": receipt()}}
+    runtime = {kind: {"build": data}}
     if mode == "complete":
         source.verify_inventory({"artifacts": artifacts}, runtime)
     else:
