@@ -192,6 +192,8 @@ def observation(name: str, image_id: str, guest_id: str) -> dict[str, Any]:
     )
     require(proxy["Config"]["User"] == "65532:65532", "Proxy is not the unprivileged release user")
     require("ALL" in proxy["HostConfig"]["CapDrop"], "Proxy retains capabilities")
+    require(not proxy["HostConfig"]["CapAdd"], "Proxy adds capabilities")
+    require(proxy["HostConfig"]["Privileged"] is False, "Proxy is privileged")
     require(
         proxy["HostConfig"]["SecurityOpt"] == ["no-new-privileges"],
         "Proxy can acquire privileges",
@@ -205,6 +207,8 @@ def observation(name: str, image_id: str, guest_id: str) -> dict[str, Any]:
         "hostGateway": False,
         "proxyUser": "65532:65532",
         "capabilitiesDropped": "ALL",
+        "capabilitiesAdded": [],
+        "privileged": False,
         "noNewPrivileges": True,
     }
 

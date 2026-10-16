@@ -41,6 +41,8 @@ GUEST = "sha256:" + "b" * 64
         "gateway",
         "root",
         "capabilities",
+        "added-capabilities",
+        "privileged-mode",
         "privileges",
         "privileges-false-equals",
         "privileges-false-colon",
@@ -61,7 +63,12 @@ def test_observation_refuses_identity_and_network_drift(monkeypatch, fault):
         "Config": {"Image": IMAGE, "User": "65532:65532"},
         "State": {"Running": True},
         "Id": "proxy",
-        "HostConfig": {"CapDrop": ["ALL"], "SecurityOpt": ["no-new-privileges"]},
+        "HostConfig": {
+            "CapDrop": ["ALL"],
+            "CapAdd": None,
+            "Privileged": False,
+            "SecurityOpt": ["no-new-privileges"],
+        },
         "NetworkSettings": {"Networks": {"guest-net": {}, "bridge": {}}},
     }
     network = {"Internal": True, "Driver": "bridge", "IPAM": {"Config": [{}]}}
@@ -85,6 +92,10 @@ def test_observation_refuses_identity_and_network_drift(monkeypatch, fault):
         sidecar["Config"]["User"] = "0"
     if fault == "capabilities":
         sidecar["HostConfig"]["CapDrop"] = []
+    if fault == "added-capabilities":
+        sidecar["HostConfig"]["CapAdd"] = ["NET_ADMIN"]
+    if fault == "privileged-mode":
+        sidecar["HostConfig"]["Privileged"] = True
     if fault == "privileges":
         sidecar["HostConfig"]["SecurityOpt"] = []
     if fault == "privileges-false-equals":
@@ -103,7 +114,12 @@ def test_observation_refuses_identity_and_network_drift(monkeypatch, fault):
         with pytest.raises(ValueError):
             proxy.observation("guest", IMAGE, GUEST)
     else:
-        assert proxy.observation("guest", IMAGE, GUEST)["proxyImageId"] == IMAGE
+        result = proxy.observation("guest", IMAGE, GUEST)
+        assert result["proxyImageId"] == IMAGE
+        assert result["capabilitiesAdded"] == []
+        assert result["privileged"] is False
+        sidecar["HostConfig"]["CapAdd"] = []
+        assert proxy.observation("guest", IMAGE, GUEST) == result
 
 
 @pytest.mark.parametrize(
