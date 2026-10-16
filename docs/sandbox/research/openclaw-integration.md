@@ -340,6 +340,60 @@ First deliverable: **[#1951](https://github.com/sokolaidev/maf-extensions/issues
 
 Conditional implementation: **[#1952](https://github.com/sokolaidev/maf-extensions/issues/1952)** implements the generic delegated relay and synthetic Docker qualification only after the API, identity, final-dial address enforcement and revocation prerequisites are satisfied. Keep WSLC support gated on its own evidence. #1641 owns reusable conformance packaging and upgrade policy; #1642 owns full backend feasibility; #1639 remains deferred. Closing #1640 records this design and its follow-up ownership, not a working credential integration or a stop to adoption.
 
+## Installed credential-delegation probe (2026-10-15)
+
+**Decision: defer the supported credential adapter in #1952; #1951 completes the installed compatibility/refusal probe.** OpenClaw 2026.10.3's egress facade imports successfully from an external npm project, but its own packaged SDK catalog explicitly says it is private to official plugins. Importability does not supply a supported third-party authority contract. Continue the OpenClaw design sequence with #1641 and #1642; #1639 remains deferred. This decision does not stop adoption or reopen the completed Bicep work.
+
+The [probe](../../../scripts/experiments/openclaw_delegation_probe.py), [Node import observer](../../../scripts/experiments/openclaw_delegation_import.mjs) and [retained result](../../../scripts/experiments/openclaw_delegation_result.json) record Windows AMD64 with Node 26.8.1. A fresh npm project outside the checkout installed the [OpenClaw 2026.10.3 registry artifact](https://registry.npmjs.org/openclaw/2026.10.3), with lifecycle scripts and optional dependencies disabled. The probe verified the pinned SHA-512 integrity and every one of the artifact's 13,937 regular files against the installation: 257,692,083 bytes. The tarball SHA-256 is `761685d010d96645d1deabe19299ecde263eac3f2489a17322f48c461a1130a5`. The JSON also retains package metadata, SDK documentation, lockfile and artifact-order file-tree hashes; it contains no host paths or credential values. Dependency bytes are not included in the OpenClaw file-tree claim; npm installed them separately and the lockfile hash identifies that resolution.
+
+### Measured boundary and source findings
+
+| Check | Result and limit |
+|---|---|
+| External public import control | `openclaw/plugin-sdk/plugin-entry` imports and exports `definePluginEntry`; this establishes SDK resolution in the clean npm project, not Gateway plugin registration |
+| Egress facade import | `openclaw/plugin-sdk/secret-egress-runtime` imports and exports only `withConfiguredModelEgress`; the export mapping has JavaScript but no `types` entry |
+| Support classification | The packaged SDK subpath catalog labels that facade private and not a third-party API; this explicit statement, not absence of types alone, determines the refusal |
+| Difference from the #1640 source snapshot | The released facade does not export `withSetupSecretEgress`; the newer inspected upstream source did. Do not apply source-main helper coverage to this released artifact |
+| Discovery observations | No attempts at the instrumented process/network/file-write operations; the isolated temporary home stayed empty. The report is written synchronously at process exit after pending timers and `beforeExit` work; nonsettling imports hit the parent timeout. Guard hits after reporting force a nonzero child exit, which the parent rejects even if an exit listener catches the guard exception. These JavaScript guards are observation/refusal controls, not an OS sandbox or exhaustive side-effect detector |
+| Synthetic owner admission | `private_official_plugin_api` before the synthetic owner callback; zero fixture credential requests. No actual owner grant, sandbox resource or Gateway was created |
+| Failure controls | Tests reject changed artifact bytes, altered installed files, archive escape paths, missing exports and unknown support/version declarations; import fixtures exercise blocked process creation, network connection and file writing, plus ambient-secret/Node-option exclusion |
+| Runtime authority/network matrix | Not executed: no authenticated Gateway context, live credential, expiry/revocation stream, replay, orphan cutoff or final upstream connection. The recorded refusal does not count as successful egress enforcement |
+
+The released tool-context declarations include host-supplied `agentId`, session identifiers, trusted requester/owner fields and `assertInvocationCurrent`; context version 2 requires that current-authority guard. These are useful building blocks, so the result is not that OpenClaw has no trusted plugin context. They do not, by themselves, bind a selected secret and operation-input/policy digest to an external runtime generation or provide the delegated relay's revocation and final-dial contract. This is declaration inspection, not a live callback test.
+
+The release's public `secret-ref-runtime`/`secret-input-runtime` declarations expose resolved secret values or prepared plugin credentials. They are not substitutes for owner-held proxy delegation: using them would deliberately expand plaintext ownership and would still require an operation authorization/revocation design. The private model helper's installed implementation accepts an optional abort signal, returns a sentinel, host proxy environment and public CA bundle, and revokes its internal grant during cleanup/cancellation. Its callable shape does not expose the generation-bound approval, independent finite deadline, revocation acknowledgement or final-dial policy hook needed here. No private helper was invoked to acquire a credential.
+
+### Reproduce and interpret the result
+
+Use a Node version in the release's engine range (`>=24.16.0 <25 || >=26.1.0`) and a fresh external project. From the repository, the following PowerShell creates only an isolated installation and result file; it neither configures a Gateway nor starts a sandbox. Installation can take several minutes. The probe itself does not install dependencies, execute lifecycle scripts or invoke the credential helper.
+
+```powershell
+$probeRoot = Join-Path ([IO.Path]::GetTempPath()) ("maf-delegation-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $probeRoot | Out-Null
+'{"name":"maf-delegation-probe","version":"0.0.0","private":true,"type":"module"}' | Set-Content (Join-Path $probeRoot package.json) -Encoding utf8
+$archive = Join-Path $probeRoot openclaw.tgz
+Invoke-WebRequest https://registry.npmjs.org/openclaw/-/openclaw-2026.10.3.tgz -OutFile $archive
+npm install --prefix $probeRoot --ignore-scripts --omit=optional --no-audit --no-fund --registry=https://registry.npmjs.org $archive
+if ($LASTEXITCODE -ne 0) { throw "OpenClaw installation failed" }
+uv run python scripts/experiments/openclaw_delegation_probe.py --project $probeRoot --archive $archive --output (Join-Path $probeRoot result.json)
+```
+
+Exit zero means the probe completed, including a measured `defer`; it does not mean the adapter is supported. A failed public control, integrity mismatch, unsupported Node engine, observed import side effect or malformed probe output fails the probe instead of being counted as evidence for a missing API. Changed API prose or exports remain `support_not_established` until deliberately qualified. Keep the resulting JSON; preserve the installation separately if the exact transitive lockfile is needed. The pinned artifact must be reassessed deliberately for a different release.
+
+The recorded installation omits bundled-plugin postinstall setup and optional native dependencies because neither SDK import needs them. It therefore makes no full OpenClaw CLI, Gateway registration, third-party plugin lifecycle, native backend, Linux, real-model or production claim. The synthetic owner is a refusal spy, not an emulator proving OpenClaw authorization. Negative tests of the probe establish its reporting/admission behavior only; the conditional runtime matrix remains unqualified.
+
+### Required upstream contract and reopening gate
+
+The missing deliverable is a documented third-party, owner-held delegation API with the following contract. This is a concrete upstream request recorded here, not a submitted upstream issue or PR:
+
+1. Supply authenticated caller/session/agent/call context and approval bound to the exact operation-input digest and policy revision. Reject caller-chosen identity, credential selection and broadened policy; distinguish team credentials from user delegation.
+2. Issue a one-use opaque handle through a protected local channel, bind it to a fresh runtime/gateway generation and exact HTTPS origin/method/path profile, and retain the upstream secret and owner proxy authentication on the owner host. Admission, failed preparation and stale handle/restart behavior must be specified.
+3. Enforce a finite, nonrenewable deadline independently after supervisor loss. Expose idempotent revocation with acknowledgement, cancellation before cleanup, active-stream termination and an honest unconfirmed outcome when the owner cannot be reached. Effects already accepted upstream remain possible.
+4. Preserve resolved-address enforcement at the actual upstream dial, including redirects, reconnects, IPv4/IPv6 and DNS changes. A check at the first relay does not authorize an unchecked final connection.
+5. Provide a supported installed plugin entry and versioned contract tests: allowed request succeeds; wrong authority/policy/destination/method/path, direct routes and stale grants fail; sibling grants remain isolated; logs and guest artifacts contain no upstream credential or owner proxy authentication.
+
+#1952 remains blocked until that public contract or an explicitly accepted alternative satisfies these requirements and passes installed end-to-end qualification. Source exports, raw secret readers, a local fake owner or a passing import alone cannot reopen it. Reuse the already recorded conditional architecture; do not create another authorization store, ship private SDK imports, or relax final-hop/expiry requirements to make the probe green.
+
 ## Status
 
 The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audit.md#consolidated-closure-reconciliation-2026-10-12) covers every original #1676 acceptance row using the separately recorded Gateway, Bicep/MAF and published transport evidence. Both finite follow-ups are merged. Qualification is complete for that supervised, selected baseline; the first-tool design is complete and #1898 delivers the separately qualified installed worker. Historical reports and their `complete_matrix: false` values are unchanged.
@@ -353,8 +407,8 @@ The Bicep workstream has a locally qualified installed worker and its historical
 | First closed-network Bicep validation tool | Design complete; source implementation and finite qualification delivered; installed worker delivered separately in #1898 | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (closed) by [#1901](https://github.com/sokolaidev/maf-extensions/pull/1901) (merged) |
 | MCP service ownership across OpenClaw sessions | Finite acceptance reconciled across recorded Gateway evidence, five Bicep/MAF cases and 43 published transport cases with 109 SDK retirements; qualification complete. Active MAF callers can remain pending until their request timeout after service retirement; broader stress, crash and platform scenarios remain unqualified | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged); [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (closed) by [#1680](https://github.com/sokolaidev/maf-extensions/pull/1680) (merged); [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (closed) by [#1882](https://github.com/sokolaidev/maf-extensions/pull/1882) (merged); [#1850](https://github.com/sokolaidev/maf-extensions/issues/1850) (closed) by [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865) (merged); [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851) (closed) by [#1870](https://github.com/sokolaidev/maf-extensions/pull/1870) (merged) |
 | Additional workload tools and artifact delivery | Open; deferred for now by maintainer priority | [#1639](https://github.com/sokolaidev/maf-extensions/issues/1639) (open) |
-| Enforced egress and credential mediation | Design complete; delegation probe #1951 next, runtime adapter #1952 conditional on supported authority and enforcement | [#1640](https://github.com/sokolaidev/maf-extensions/issues/1640) (closed) by [#1955](https://github.com/sokolaidev/maf-extensions/pull/1955) (merged) |
-| Supported credential delegation probe | Open; first egress follow-up | [#1951](https://github.com/sokolaidev/maf-extensions/issues/1951) (open) |
-| Enforced delegated Docker relay | Open; conditional on supported delegation, revocation and final-dial enforcement | [#1952](https://github.com/sokolaidev/maf-extensions/issues/1952) (open) |
+| Enforced egress and credential mediation | Design complete; #1951 records installed private-API refusal, #1952 remains conditional on supported authority and enforcement | [#1640](https://github.com/sokolaidev/maf-extensions/issues/1640) (closed) by [#1955](https://github.com/sokolaidev/maf-extensions/pull/1955) (merged) |
+| Supported credential delegation probe | Installed probe complete; private API refusal, runtime adapter deferred | [#1951](https://github.com/sokolaidev/maf-extensions/issues/1951) (closed) by [#1960](https://github.com/sokolaidev/maf-extensions/pull/1960) (merged) |
+| Enforced delegated Docker relay | Open; blocked by the installed private-API finding and unqualified authority/revocation/final-dial contract | [#1952](https://github.com/sokolaidev/maf-extensions/issues/1952) (open) |
 | Conformance and installed-package qualification | Open; scenario and harness design required | [#1641](https://github.com/sokolaidev/maf-extensions/issues/1641) (open) |
 | Full sandbox provider | Open; feasibility and supported SDK decision required | [#1642](https://github.com/sokolaidev/maf-extensions/issues/1642) (open) |
