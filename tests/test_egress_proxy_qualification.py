@@ -42,6 +42,10 @@ GUEST = "sha256:" + "b" * 64
         "root",
         "capabilities",
         "privileges",
+        "privileges-false-equals",
+        "privileges-false-colon",
+        "privileges-conflicting",
+        "privileges-lookalike",
     ],
 )
 def test_observation_refuses_identity_and_network_drift(monkeypatch, fault):
@@ -83,6 +87,14 @@ def test_observation_refuses_identity_and_network_drift(monkeypatch, fault):
         sidecar["HostConfig"]["CapDrop"] = []
     if fault == "privileges":
         sidecar["HostConfig"]["SecurityOpt"] = []
+    if fault == "privileges-false-equals":
+        sidecar["HostConfig"]["SecurityOpt"] = ["no-new-privileges=false"]
+    if fault == "privileges-false-colon":
+        sidecar["HostConfig"]["SecurityOpt"] = ["no-new-privileges:false"]
+    if fault == "privileges-conflicting":
+        sidecar["HostConfig"]["SecurityOpt"] = ["no-new-privileges", "no-new-privileges=false"]
+    if fault == "privileges-lookalike":
+        sidecar["HostConfig"]["SecurityOpt"] = ["no-new-privileges-extra"]
     monkeypatch.setattr(
         proxy, "inspect", lambda name: copy.deepcopy(sidecar if name.endswith("-proxy") else guest)
     )
@@ -263,7 +275,9 @@ def test_mutable_proxy_rejected_before_engine_access(monkeypatch):
         asyncio.run(proxy.check("proxy:latest"))
 
 
-@pytest.mark.parametrize("fault", [None, "patch", "compiler", "module", "notice"])
+@pytest.mark.parametrize(
+    "fault", [None, "patch", "compiler", "module", "notice", "grpc-host", "net-host"]
+)
 def test_runtime_checks_notices_and_actual_build_versions(monkeypatch, fault):
     files = {
         "/usr/local/bin/iron-proxy": "c" * 64,
@@ -284,7 +298,22 @@ def test_runtime_checks_notices_and_actual_build_versions(monkeypatch, fault):
     pinned = proxy.re.search(r"FROM golang:([0-9.]+)-", recipe)
     assert pinned is not None
     compiler = pinned[1]
-    modules = proxy.re.findall(r"(google.golang.org/grpc|golang.org/x/net)@(v[0-9.]+)", recipe)
+    modules = proxy.re.findall(r"(google\.golang\.org/grpc|golang\.org/x/net)@(v[0-9.]+)", recipe)
+    if fault in {"grpc-host", "net-host"}:
+        module = "google.golang.org/grpc" if fault == "grpc-host" else "golang.org/x/net"
+        lookalike = module.replace(".", "x")
+        modules = [(lookalike if name == module else name, value) for name, value in modules]
+        recipe = recipe.replace(module, lookalike)
+        read_text = Path.read_text
+        monkeypatch.setattr(
+            Path,
+            "read_text",
+            lambda path, *args, **kwargs: (
+                recipe
+                if path == proxy.PROXY_SOURCE / "Dockerfile"
+                else read_text(path, *args, **kwargs)
+            ),
+        )
     if fault == "patch":
         files["/usr/share/maf-egress-proxy/iron.patch"] = "0" * 64
     if fault == "compiler":

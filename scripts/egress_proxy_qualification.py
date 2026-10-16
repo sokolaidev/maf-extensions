@@ -193,7 +193,7 @@ def observation(name: str, image_id: str, guest_id: str) -> dict[str, Any]:
     require(proxy["Config"]["User"] == "65532:65532", "Proxy is not the unprivileged release user")
     require("ALL" in proxy["HostConfig"]["CapDrop"], "Proxy retains capabilities")
     require(
-        any(value.startswith("no-new-privileges") for value in proxy["HostConfig"]["SecurityOpt"]),
+        proxy["HostConfig"]["SecurityOpt"] == ["no-new-privileges"],
         "Proxy can acquire privileges",
     )
     return {
@@ -247,7 +247,7 @@ def runtime(proxy: str) -> dict[str, Any]:
     require(
         pinned is not None and compiler == "go" + pinned[1], "Proxy compiler differs from build pin"
     )
-    overrides = dict(re.findall(r"(google.golang.org/grpc|golang.org/x/net)@(v[0-9.]+)", recipe))
+    overrides = dict(re.findall(r"(google\.golang\.org/grpc|golang\.org/x/net)@(v[0-9.]+)", recipe))
     require(
         len(overrides) == 2
         and all(modules.get(name) == value for name, value in overrides.items()),
