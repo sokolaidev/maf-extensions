@@ -348,6 +348,109 @@ def test_new_vulnerability_prevents_closure_after_replacement():
     assert not desired(record=record, previous=previous)["resolved"]
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("reason", ["components", "vulnerabilities"])
+def test_requirements_on_replacement_need_another_release(reason, legacy):
+    previous = desired(observed=candidate())
+    record = replacement()
+    released = RELEASED | {"components": candidate()["components"]}
+    observed = None
+    if reason == "components":
+        observed = candidate(version="3", observedAt="2026-01-04T00:00:00Z")
+    else:
+        record = record | {
+            "latestAttempt": {
+                "outcome": "vulnerable",
+                "findings": [FINDING],
+                "evidenceRelease": "monitor/2",
+            }
+        }
+    pending = desired(record=record, released=released, observed=observed, previous=previous)
+    if legacy:
+        pending["reasons"][reason].pop("baselineDigest", None)
+    client = Issues()
+    tracker.reconcile(client, "graphviz", pending, None)
+    clean = record | {"latestAttempt": {"outcome": "clean"}}
+    unchanged = desired(
+        record=clean,
+        released=released,
+        observed=candidate(version="2", observedAt="2026-01-05T00:00:00Z"),
+        previous=pending,
+    )
+    assert not unchanged["resolved"]
+    if not legacy:
+        assert pending["reasons"][reason]["baselineDigest"] == record["registryDigest"]
+    assert unchanged["reasons"] == pending["reasons"]
+    tracker.reconcile(client, "graphviz", unchanged, client.items[0])
+    assert client.items[0]["state"] == "open"
+    assert desired(record=clean, released=released, previous=unchanged) == unchanged
+    next_record = clean | {
+        "version": "0.1.2",
+        "registryDigest": "sha256:" + "e" * 64,
+        "completedAt": "2026-01-06T00:00:00Z",
+    }
+    resolved = desired(
+        record=next_record,
+        released=RELEASED | {"components": candidate(version="3")["components"]},
+        previous=unchanged,
+    )
+    assert resolved["resolved"]
+    tracker.reconcile(client, "graphviz", resolved, client.items[0])
+    assert client.items[0]["state"] == "closed"
+    assert client.items[0]["state_reason"] == "completed"
+
+
+def test_matching_candidate_cannot_dismiss_unfulfilled_exact_component_requirement():
+    previous = desired(observed=candidate())
+    released = RELEASED | {"components": candidate(version="3")["components"]}
+    pending = desired(record=replacement(), released=released, previous=previous)
+    result = desired(
+        record=replacement(),
+        released=released,
+        observed=candidate(version="3", observedAt="2026-01-04T00:00:00Z"),
+        previous=pending,
+    )
+    assert not result["resolved"]
+    assert result["reasons"]["components"] == previous["reasons"]["components"]
+
+
+def test_legacy_component_requirement_can_close_after_inventory_already_advanced():
+    previous = desired(observed=candidate())
+    previous["reasons"]["components"].pop("baselineDigest")
+    previous["currentDigest"] = replacement()["registryDigest"]
+    result = desired(
+        record=replacement(),
+        released=RELEASED | {"components": candidate()["components"]},
+        previous=previous,
+    )
+    assert result["resolved"]
+
+
+@pytest.mark.parametrize("replacement_release", [False, True])
+@pytest.mark.parametrize("outcome", ["clean", "vulnerable"])
+def test_resolved_status_and_body_discard_pending_candidate_details(replacement_release, outcome):
+    previous = desired(
+        changed=["images/graphviz-sandbox/Dockerfile"],
+        observed=candidate(version="1", outcome=outcome),
+    )
+    result = desired(record=replacement() if replacement_release else RECORD, previous=previous)
+    expected = (
+        "Resolved by the completed, verified replacement release"
+        if replacement_release
+        else "No relevant build-input differences; no replacement required"
+    )
+    assert result["resolved"]
+    assert result["status"] == expected
+    assert "candidateEvidence" not in result
+    assert "candidateFindings" not in result
+    assert result["candidateObservedAt"] == previous["candidateObservedAt"]
+    text = tracker.body("graphviz", result)
+    assert expected in text
+    assert "Candidate blockers" not in text
+    assert "Candidate evidence" not in text
+    assert "release gate still required" not in text
+
+
 def test_monitor_reconciliation_keeps_unchanged_last_candidate_evidence():
     observation = {
         "outcome": "vulnerable",
@@ -783,6 +886,47 @@ def test_reporter_clears_source_only_request_and_reuses_it_for_real_changes(repo
     tracker.main()
     assert len(client.items) == 1
     assert client.items[0]["state"] == "open"
+
+
+@pytest.mark.parametrize("replacement_release", [False, True])
+def test_reporter_repairs_closed_request_status_once_and_reopens_with_current_baseline(
+    reporter, replacement_release
+):
+    client, current = reporter
+    previous = desired(changed=["images/graphviz-sandbox/Dockerfile"])
+    if replacement_release:
+        current["record"] = replacement()
+    resolved = desired(record=current["record"], previous=previous)
+    expected = resolved["status"]
+    resolved["status"] = "Awaiting release preparation"
+    resolved["candidateEvidence"] = "run/old"
+    resolved["candidateFindings"] = [FINDING]
+    tracker.reconcile(client, "graphviz", resolved, None)
+    client.items[0]["state"] = "closed"
+    current["record"] = replacement() | {
+        "version": "0.1.2",
+        "registryDigest": "sha256:" + "e" * 64,
+    }
+    current["observed"] = None
+    tracker.main()
+    tracker.main()
+    assert len(client.calls) == 2
+    match = tracker.STATE.search(client.items[0]["body"])
+    assert match is not None
+    repaired = json.loads(match[1])
+    assert repaired["status"] == expected
+    assert repaired["currentDigest"] == resolved["currentDigest"]
+    assert repaired.get("resolution") == resolved.get("resolution")
+    assert "candidateEvidence" not in repaired
+    assert "candidateFindings" not in repaired
+    assert client.items[0]["state"] == "closed"
+    current["observed"] = candidate(version="3", observedAt="2026-01-04T00:00:00Z")
+    tracker.main()
+    match = tracker.STATE.search(client.items[0]["body"])
+    assert match is not None
+    reopened = json.loads(match[1])
+    assert reopened["baseline"] == current["record"]["registryDigest"]
+    assert not reopened["resolved"]
 
 
 @pytest.mark.parametrize("failure", ["baseline", "changed_inputs"])

@@ -309,13 +309,14 @@ def desired(
     pending_components = reasons.get("components")
     inventory = {tuple(row) for row in released["components"]}
     if (
-        replacement
-        and pending_components
+        pending_components
+        and pending_components.get("baselineDigest", state["baseline"]) != record["registryDigest"]
         and {tuple(row) for row in pending_components["added"]} <= inventory
         and inventory.isdisjoint(tuple(row) for row in pending_components["removed"])
     ):
         reasons.pop("components", None)
     observation = record.get("latestAttempt", {})
+    pending_vulnerabilities = reasons.get("vulnerabilities")
     vulnerable = (
         observation
         if observation.get("outcome") == "vulnerable"
@@ -325,12 +326,19 @@ def desired(
     )
     if vulnerable:
         reasons["vulnerabilities"] = {
+            "baselineDigest": record["registryDigest"],
             "findings": sorted(
                 vulnerable["findings"], key=lambda item: json.dumps(item, sort_keys=True)
             ),
             "evidence": f"https://github.com/{REPOSITORY}/releases/tag/{vulnerable['evidenceRelease']}",
         }
-    elif replacement:
+    elif (
+        pending_vulnerabilities
+        and pending_vulnerabilities.get(
+            "baselineDigest", state.get("currentDigest", state["baseline"])
+        )
+        != record["registryDigest"]
+    ):
         reasons.pop("vulnerabilities", None)
     if candidate:
         target_hash = sha256(encode(candidate["components"]))
@@ -338,12 +346,11 @@ def desired(
             old = {tuple(row) for row in released["components"]}
             new = {tuple(row) for row in candidate["components"]}
             reasons["components"] = {
+                "baselineDigest": record["registryDigest"],
                 "inventorySha256": target_hash,
                 "added": [list(row) for row in sorted(new - old)],
                 "removed": [list(row) for row in sorted(old - new)],
             }
-        elif replacement:
-            reasons.pop("components", None)
         state["status"] = (
             "Last candidate scan passed; release gate still required"
             if candidate["assessment"]["outcome"] == "clean"
@@ -368,10 +375,23 @@ def desired(
     state["resolved"] = not reasons
     if state["resolved"] and not replacement:
         state["resolution"] = "source-reconciled"
-        state["status"] = "No relevant build-input differences; no replacement required"
     else:
         state.pop("resolution", None)
-    return state
+    return resolved_state(state) if state["resolved"] else state
+
+
+def resolved_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Normalize closed-request presentation without changing its resolution evidence."""
+    result = state | {
+        "status": (
+            "No relevant build-input differences; no replacement required"
+            if state.get("resolution") == "source-reconciled"
+            else "Resolved by the completed, verified replacement release"
+        )
+    }
+    result.pop("candidateEvidence", None)
+    result.pop("candidateFindings", None)
+    return result
 
 
 def stable(state: dict[str, Any]) -> dict[str, Any]:
@@ -531,12 +551,14 @@ def main() -> None:
                 else (max(matches, key=lambda i: i["number"]) if matches else None)
             )
             previous = None
+            resolved_previous = None
             if issue:
                 match = STATE.search(issue["body"])
                 if match is None:
                     raise ValueError("Release request has no recoverable state")
                 previous = decode(match[1])
                 if previous["resolved"]:
+                    resolved_previous = previous
                     previous = None
             record = snapshot.catalogue["releases"][name]
             released = baseline(client, record, root / profile)
@@ -552,6 +574,8 @@ def main() -> None:
                 else source
             )
             state = desired(record, released, changed, required_source, candidate, previous)
+            if state is None and resolved_previous is not None:
+                state = resolved_state(resolved_previous)
             if state is not None:
                 body(profile, state)
             plans.append((profile, state, issue))
