@@ -9,9 +9,10 @@ case "$1" in
     uv run --locked python scripts/build_bicep_image.py --tag maf-image-scan:base
     uv run --locked python scripts/build_bicep_prepared_image.py --base-image maf-image-scan:base --tag maf-image-scan:target
     ;;
-  sbx-bicep)
+  bicep-docker-sbx)
     uv run --locked python scripts/build_bicep_image.py --tag maf-image-scan:base
-    docker build --platform linux/amd64 --build-arg BASE=maf-image-scan:base -t maf-image-scan:target images/sbx-template
+    docker build --platform linux/amd64 --build-arg BASE=maf-image-scan:base -t maf-image-scan:sbx-base images/sbx-template
+    docker build --platform linux/amd64 --build-context suite=. --build-arg BASE=maf-image-scan:sbx-base -t maf-image-scan:target images/bicep-docker-sbx
     ;;
   graphviz)
     docker build --pull --platform linux/amd64 -t maf-image-scan:target images/graphviz-sandbox

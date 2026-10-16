@@ -161,7 +161,7 @@ def test_hyperlight_release_transition_defers_the_entire_scan_evidence_chain():
     )
     assert qualification["if"] == (
         "steps.identity.outcome == 'success' && "
-        'contains(fromJSON(\'["bicep","bicep-avm","sbx-bicep"]\'), matrix.profile)'
+        'contains(fromJSON(\'["bicep","bicep-avm","bicep-docker-sbx"]\'), matrix.profile)'
     )
     evidence_steps.remove(qualification)
     assert {step["name"] for step in evidence_steps} == {

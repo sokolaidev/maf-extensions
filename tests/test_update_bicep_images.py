@@ -67,7 +67,7 @@ def test_upgrade_keeps_modules_and_binds_updated_policy(image_root, upstream):
     assert set().union(*(set(affected(f"images/bicep-sandbox/{name}")) for name in changes)) == {
         "bicep",
         "bicep-avm",
-        "sbx-bicep",
+        "bicep-docker-sbx",
     }
 
 

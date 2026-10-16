@@ -15,7 +15,7 @@ from typing import Any
 PROFILES = (
     "bicep",
     "bicep-avm",
-    "sbx-bicep",
+    "bicep-docker-sbx",
     "graphviz",
     "drawio",
     "drawio-export",
@@ -29,8 +29,9 @@ PROFILES = (
 )
 IMAGE_INPUTS = {
     "images/egress-proxy/": ("egress-proxy",),
-    "images/bicep-sandbox/": ("bicep", "bicep-avm", "sbx-bicep"),
-    "images/sbx-template/": ("sbx-bicep",),
+    "images/bicep-sandbox/": ("bicep", "bicep-avm", "bicep-docker-sbx"),
+    "images/bicep-docker-sbx/": ("bicep-docker-sbx",),
+    "images/sbx-template/": ("bicep-docker-sbx",),
     "images/graphviz-sandbox/": ("graphviz",),
     "images/drawio-sandbox/": ("drawio",),
     "images/drawio-export/": ("drawio-export",),
@@ -51,6 +52,7 @@ CONSUMER_GUIDES = {
     "images/bicep-sandbox/AVM.md",
     "images/bicep-sandbox/BICEP.md",
     "images/sbx-template/README.md",
+    "images/bicep-docker-sbx/README.md",
     "images/graphviz-sandbox/README.md",
     "images/drawio-sandbox/README.md",
     "images/drawio-export/README.md",
@@ -59,9 +61,9 @@ CONSUMER_GUIDES = {
     "images/hyperlight-sandbox/README.md",
 }
 SCRIPT_INPUTS = {
-    "scripts/build_bicep_image.py": ("bicep", "bicep-avm", "sbx-bicep"),
-    "scripts/bicep_source.py": ("bicep", "bicep-avm", "sbx-bicep"),
-    "LICENSE": ("egress-proxy",),
+    "scripts/build_bicep_image.py": ("bicep", "bicep-avm", "bicep-docker-sbx"),
+    "scripts/bicep_source.py": ("bicep", "bicep-avm", "bicep-docker-sbx"),
+    "LICENSE": ("egress-proxy", "bicep-docker-sbx"),
     "scripts/egress_proxy_qualification.py": ("egress-proxy",),
     "scripts/drawio_qualification.py": ("drawio", "drawio-export"),
     "scripts/drawio_export_qualification.py": ("drawio-export",),
@@ -78,7 +80,9 @@ SCRIPT_INPUTS = {
     "scripts/build_bicep_prepared_image.py": ("bicep-avm",),
     "scripts/bicep_dependencies.py": ("bicep-avm",),
     "scripts/bicep_avm_qualification.py": ("bicep-avm",),
-    "scripts/bicep_qualification.py": ("bicep",),
+    "scripts/bicep_qualification.py": ("bicep", "bicep-docker-sbx"),
+    "scripts/bicep_docker_sbx_qualification.py": ("bicep-docker-sbx",),
+    ".github/actions/setup-sbx/action.yml": ("bicep-docker-sbx",),
     "scripts/build_hyperlight_aks_image.py": ("hyperlight",),
     "scripts/hyperlight_image_smoke.py": ("hyperlight",),
     "scripts/check_hyperlight_image_compatibility.py": ("hyperlight",),
@@ -156,6 +160,8 @@ def affected(path: str) -> tuple[str, ...]:
             return profiles
     if path.startswith(("images/", "scripts/")):
         return PROFILES
+    if path.startswith("packages/maf-sandbox-docker-sbx/src/"):
+        return ("bicep-docker-sbx",)
     parts = path.split("/")
     if len(parts) >= 3 and parts[0] == "packages":
         if parts[2] == "pyproject.toml":

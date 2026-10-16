@@ -9,7 +9,7 @@ on:
         description: Image profile to check (all for full coverage)
         type: choice
         default: all
-        options: [all, bicep, bicep-avm, sbx-bicep, graphviz, drawio, drawio-export, terraform-random, opentofu-random, terraform-avm, terraform-prepared, opentofu-prepared, hyperlight, egress-proxy]
+        options: [all, bicep, bicep-avm, bicep-docker-sbx, graphviz, drawio, drawio-export, terraform-random, opentofu-random, terraform-avm, terraform-prepared, opentofu-prepared, hyperlight, egress-proxy]
       bicep_route:
         description: Bicep compiler acquisition for selected Bicep profiles
         type: choice
@@ -47,7 +47,7 @@ jobs:
     name: Image security (${{ matrix.profile }})
     needs: select
     if: needs.select.outputs.scan == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.profile == 'bicep-docker-sbx' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     timeout-minutes: ${{ matrix.profile == 'terraform-avm' && 150 || 45 }}
     strategy:
       fail-fast: false
@@ -59,6 +59,12 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Prepare Docker Sandboxes consumer host
+        if: matrix.profile == 'bicep-docker-sbx'
+        uses: ./.github/actions/setup-sbx
+        with:
+          docker-username: ${{ secrets.DOCKER_USERNAME }}
+          docker-pat: ${{ secrets.DOCKER_PAT }}
       - name: Make room for the AVM provider toolchain and build cache
         if: matrix.profile == 'terraform-avm'
         run: |
@@ -94,7 +100,7 @@ jobs:
           python3 scripts/image_security_evidence.py "$RUNNER_TEMP/image-security"
           printf '{}\n' > "$RUNNER_TEMP/image-security/grype.yaml"
       - name: Qualify the selected Bicep compiler
-        if: steps.identity.outcome == 'success' && contains(fromJSON('["bicep","bicep-avm","sbx-bicep"]'), matrix.profile)
+        if: steps.identity.outcome == 'success' && contains(fromJSON('["bicep","bicep-avm","bicep-docker-sbx"]'), matrix.profile)
         env:
           PROFILE: ${{ matrix.profile }}
           IMAGE_ID: ${{ steps.identity.outputs.image_id }}

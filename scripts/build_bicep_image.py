@@ -13,7 +13,7 @@ from bicep_source import policy
 ROOT = Path(__file__).resolve().parents[1]
 CONTEXT = ROOT / "images/bicep-sandbox"
 ROUTES = ("upstream", "source")
-PROFILES = {"bicep", "bicep-avm", "sbx-bicep"}
+PROFILES = {"bicep", "bicep-avm", "bicep-docker-sbx"}
 
 
 def validate_route(route: str, profile: str) -> None:

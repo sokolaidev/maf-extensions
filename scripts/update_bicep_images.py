@@ -106,7 +106,7 @@ def updates(root: Path, release: str) -> tuple[dict[str, bytes], str]:
     }
     body = f"""## Summary
 
-Update the compiler used by `bicep`, `bicep-avm` and `sbx-bicep` from `{current}` to `{version}`.
+Update the compiler used by `bicep`, `bicep-avm` and `bicep-docker-sbx` from `{current}` to `{version}`.
 
 ## Changes
 

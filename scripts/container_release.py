@@ -142,9 +142,11 @@ def validate_identity(candidate: dict[str, Any]) -> None:
     for field in OPTIONAL_IDENTITY_FIELDS:
         if field in candidate:
             if field == "bicepRoute":
-                if candidate["profile"] not in {"bicep", "bicep-avm", "sbx-bicep"} or candidate[
-                    field
-                ] not in {"upstream", "source"}:
+                if candidate["profile"] not in {
+                    "bicep",
+                    "bicep-avm",
+                    "bicep-docker-sbx",
+                } or candidate[field] not in {"upstream", "source"}:
                     raise ValueError("Invalid Bicep acquisition route")
             else:
                 require_digest(candidate[field])

@@ -44,7 +44,7 @@ The registry and import steps below apply to either profile.
 
 ### Choose the compiler route
 
-The **Container image release** and **Image security** workflows offer `bicep_route`: `upstream` (default) downloads the checksum-verified upstream executable; `source` compiles the pinned upstream commit with the dependency overrides in [`source.json`](source.json). The selection applies to `bicep`, `bicep-avm` and `sbx-bicep`. A release rejects `source` for an unrelated profile; an all-profile security run applies it only to the Bicep profiles.
+The **Container image release** and **Image security** workflows offer `bicep_route`: `upstream` (default) downloads the checksum-verified upstream executable; `source` compiles the pinned upstream commit with the dependency overrides in [`source.json`](source.json). The selection applies to `bicep`, `bicep-avm` and `bicep-docker-sbx`. A release rejects `source` for an unrelated profile; an all-profile security run applies it only to the Bicep profiles.
 
 For a local Docker build, use the same helper as the GitHub runner:
 
