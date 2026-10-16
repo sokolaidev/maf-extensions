@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import shutil
 import subprocess
 import zipfile
@@ -13,11 +14,12 @@ from typing import Any
 
 from container_release import (
     PREFIX,
-    assessment_status,
     decode,
     digest,
+    empty_catalogue,
     key,
     monitoring_end,
+    monitoring_health,
     now,
     observe,
     read,
@@ -412,16 +414,38 @@ def finish(directory: Path) -> None:
     snapshot = History().append(
         record, operation=f"{run_id}/{attempt}/monitor-finish", source=source, at=at
     )
-    statuses = (
-        [assessment_status(r, at) for r in snapshot.catalogue["releases"].values()]
-        if snapshot
-        else []
-    )
+    catalogue = snapshot.catalogue if snapshot else empty_catalogue()
+    health = monitoring_health(catalogue, at)
+    warnings = {name: state for name, state in health["historical"].items() if state != "clean"}
+    summary = ["## Current release health", ""]
+    for scope, heading in (
+        ("current", "Current releases"),
+        ("historical", "Historical releases (90-day monitoring)"),
+        ("publication", "Incomplete or abandoned publications"),
+    ):
+        summary.extend([f"### {heading}", ""])
+        for name, state in health[scope].items():
+            release_record = catalogue["releases"][name]
+            end = monitoring_end(release_record)
+            replacement = catalogue["current"].get(release_record["profile"])
+            detail = (
+                f"; replacement: {replacement}; monitoring ends: {end.isoformat()}" if end else ""
+            )
+            summary.append(f"- {name}: **{state}**; delivery: {release_record['delivery']}{detail}")
+        if not health[scope]:
+            summary.append("None.")
+        summary.append("")
+    if health["monitoringProblems"]:
+        summary.append(
+            "Monitoring or delivery needs attention: " + ", ".join(health["monitoringProblems"])
+        )
+    if path := os.environ.get("GITHUB_STEP_SUMMARY"):
+        with Path(path).open("a", encoding="utf-8") as stream:
+            stream.write("\n".join(summary) + "\n")
     outputs(
         {
-            "attention": str(
-                any(status in {"vulnerable", "unavailable", "stale"} for status in statuses)
-            ).lower()
+            "attention": str(health["attention"]).lower(),
+            "historical_warnings": str(len(warnings)),
         }
     )
 
