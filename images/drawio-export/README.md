@@ -85,6 +85,16 @@ uv run python scripts/check_drawio_exports.py --image maf-drawio-export:local --
 
 Both checks require clean tool-call reclamation as well as final disposal. The export check observes the renderer's process capability sets.
 
+For the extended acceptance suite, use a new output directory and an immutable local Docker image ID:
+
+```bash
+uv run python scripts/check_drawio_acceptance.py --backend docker --image sha256:IMAGE_ID --output out/drawio-acceptance
+```
+
+The suite repeats the native exports and refusal cases, renders regular/bold/italic/bold-italic labels in all three bundled font families, cancels an observed active Electron renderer, and kills a separate host process during rendering. A fresh backend then recovers only that worker's scope. Owner death requires this explicit recovery; the check does not claim automatic container removal when the host dies. Cancellation has a bounded cleanup grace; the report retains any unclean call-end observation separately from subsequent scope recovery. Both interruption checks require no delivered artifacts and an empty repeated purge. Reports preserve decoded images and self-contained SVGs for viewer checks.
+
+For ACAS, select `--backend acas --env-file /path/to/host.env --image IMPORTED_IMAGE_REFERENCE` instead. The host file supplies `ACAS_SANDBOX_ENDPOINT`, `ACAS_SANDBOX_SUBSCRIPTION_ID`, `ACAS_SANDBOX_RESOURCE_GROUP`, `ACAS_SANDBOX_GROUP` and, where needed, `ACAS_SANDBOX_REGISTRY`. Authentication uses the backend's normal host credential chain. The runtime must already be imported; the verifier does not provision or import images. Every acquired sandbox must return an explicit service policy denial for the egress probe. Running the suite creates billable sandboxes and deletes its own scopes, including after failure. A failed or interrupted run is not qualification evidence; keep the issue open until the relevant backend report passes.
+
 Electron's inner sandbox remains disabled. A qualified outer sandbox must enforce closed networking, CPU/memory/process limits, file confinement and process-tree disposal. Do not expose host credentials, directories or display sockets. The verification script explicitly selects container isolation; the library does not lower the host's isolation floor. Before exercising the tools, it observes the live Electron and renderer processes through /proc, requires uid/gid 10001 and empty supplementary groups when the coordinator is root, and verifies output publication into a private call directory. Rebuild and import the resulting image before using it on ACAS; changing the host's image reference alone does not update an existing imported image.
 
 ## Without a container engine

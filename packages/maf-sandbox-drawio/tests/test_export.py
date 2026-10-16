@@ -207,6 +207,50 @@ def test_partial_sink_failure_is_incomplete(tmp_path):
     assert backend.disposed
 
 
+@pytest.mark.parametrize("stage", ["render", "delivery"])
+def test_export_cancellation_disposes_the_call_and_preserves_partial_delivery(tmp_path, stage):
+    async def check():
+        started = asyncio.Event()
+        delivered = []
+
+        class InterruptedExport(ExportSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                if stage == "render":
+                    started.set()
+                    await asyncio.Future()
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        async def deliver(artifact):
+            if delivered:
+                started.set()
+                await asyncio.Future()
+            delivered.append(artifact.name)
+            return LandedArtifact(name=artifact.name, display=artifact.name)
+
+        tool, backend = attach(
+            InterruptedExport(),
+            tmp_path,
+            sink=OutputSink(deliver),
+            export=DrawioExport(formats=("png", "jpg", "svg")),
+        )
+        task = asyncio.create_task(tool.func(xml="<mxGraphModel/>"))
+        try:
+            await asyncio.wait_for(started.wait(), 5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 5)
+            assert backend.disposed
+            assert delivered == ([] if stage == "render" else ["diagram.drawio"])
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(check())
+
+
 @pytest.mark.parametrize("manifest", [None, b"not json", b'{"pages":1,"files":[]}'])
 def test_bad_export_manifest_reports_export_collection_failure(tmp_path, manifest):
     class BadManifest(ExportSandbox):
