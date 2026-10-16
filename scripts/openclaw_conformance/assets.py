@@ -83,10 +83,16 @@ def wheel(archive: Path, site: Path, root: Path) -> set[str]:
             path = _path(member.filename)
             if member.is_dir() or member.filename.endswith(".dist-info/RECORD"):
                 continue
+            destination = site
             if path.parts[0].endswith(".data"):
-                require(path.parts[1] in ("purelib", "platlib"), "unsupported_wheel_relocation")
+                require(
+                    path.parts[1] in ("purelib", "platlib", "scripts"),
+                    "unsupported_wheel_relocation",
+                )
+                if path.parts[1] == "scripts":
+                    destination = root / "worker/Scripts"
                 path = PurePosixPath(*path.parts[2:])
-            _file(site / str(path), source.read(member), covered, root)
+            _file(destination / str(path), source.read(member), covered, root)
     return covered
 
 
@@ -95,6 +101,23 @@ def npm(archive: Path, package: Path, root: Path) -> set[str]:
     covered: set[str] = set()
     total = 0
     with tarfile.open(archive, "r:gz") as source:
+        metadata = [
+            m
+            for m in source.getmembers()
+            if len(PurePosixPath(m.name).parts) == 2
+            and PurePosixPath(m.name).name == "package.json"
+        ]
+        bins: set[str] = set()
+        if metadata:
+            require(len(metadata) == 1 and metadata[0].size <= LIMITS["summary"], "npm_metadata")
+            stream = source.extractfile(metadata[0])
+            assert stream is not None
+            with stream:
+                declared = json.load(stream).get("bin", {})
+            bins = {
+                str(_path(p))
+                for p in ([declared] if isinstance(declared, str) else declared.values())
+            }
         for member in source:
             path = _path(member.name)
             require(len(path.parts) > 0, "archive_path")
@@ -115,6 +138,10 @@ def npm(archive: Path, package: Path, root: Path) -> set[str]:
                     "lifecycle_marker",
                 )
                 continue
+            if str(relative) in bins and data.startswith(b"#!"):
+                first, separator, rest = data.partition(b"\n")
+                if first.endswith(b"\r"):
+                    data = first[:-1] + separator + rest
             _file(package / str(relative), data, covered, root)
     return covered
 
@@ -124,7 +151,7 @@ def prepare(root: Path, versions: dict[str, str]) -> dict[str, Any]:
     from .install import download
 
     archives = root / "archives"
-    archives.mkdir()
+    archives.mkdir(exist_ok=True)
     site = root / "worker/Lib/site-packages"
     allowed = set(
         re.findall(r"--hash=sha256:([0-9a-f]{64})", (root / "requirements.lock").read_text())
@@ -178,7 +205,8 @@ def prepare(root: Path, versions: dict[str, str]) -> dict[str, Any]:
     def acquire(job: tuple[str, str, str, Path, str]) -> tuple[str, str, set[str]]:
         url, integrity, name, target, kind = job
         archive = archives / name
-        download(url, archive, 500000000)
+        if not archive.exists():
+            download(url, archive, 500000000)
         algorithm, expected = integrity.split("-", 1)
         with archive.open("rb") as stream:
             hashed = hashlib.file_digest(stream, algorithm)

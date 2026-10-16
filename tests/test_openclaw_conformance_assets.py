@@ -78,3 +78,41 @@ def test_full_runtime_inventory_detects_mutations_and_unexpected_files(
         target.unlink()
     with pytest.raises(e.Refused, match="runtime_assets_changed"):
         assets.verify(tmp_path, expected)
+
+
+def test_wheel_data_script_relocation_is_byte_verified(tmp_path):
+    target = tmp_path / "worker/Scripts/postinstall.py"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"print('installed')")
+    archive = tmp_path / "package.whl"
+    with zipfile.ZipFile(archive, "w") as wheel:
+        wheel.writestr("package-1.data/scripts/postinstall.py", target.read_bytes())
+    assert assets.wheel(archive, tmp_path / "worker/Lib/site-packages", tmp_path) == {
+        "worker/Scripts/postinstall.py"
+    }
+    target.write_bytes(b"changed")
+    with pytest.raises(e.Refused, match="locked_archive_bytes"):
+        assets.wheel(archive, tmp_path / "worker/Lib/site-packages", tmp_path)
+
+
+@pytest.mark.parametrize("declared", [False, True])
+def test_npm_allows_only_declared_bin_shebang_normalization(tmp_path, declared):
+    import json
+
+    package = tmp_path / "openclaw/node_modules/dependency"
+    package.mkdir(parents=True)
+    original = b"#!/usr/bin/env node\r\nconsole.log('ok');\r\n"
+    metadata = json.dumps({"bin": {"tool": "bin.js"}} if declared else {}).encode()
+    (package / "package.json").write_bytes(metadata)
+    (package / "bin.js").write_bytes(original.replace(b"node\r\n", b"node\n"))
+    archive = tmp_path / "dependency.tgz"
+    with tarfile.open(archive, "w:gz") as source:
+        for name, data in (("package.json", metadata), ("bin.js", original)):
+            member = tarfile.TarInfo("package/" + name)
+            member.size = len(data)
+            source.addfile(member, io.BytesIO(data))
+    if declared:
+        assets.npm(archive, package, tmp_path)
+        (package / "bin.js").write_bytes(original.replace(b"\r\n", b"\n"))
+    with pytest.raises(e.Refused, match="locked_archive_bytes"):
+        assets.npm(archive, package, tmp_path)
