@@ -59,6 +59,7 @@ from ._toolsummary import (
     build_record_message,
     consolidatable_record_groups,
     find_record_index,
+    record_anchor_index,
     record_bodies,
 )
 from ._usersummary import SUMMARY_MODE_RECOMPACT, UserTurnAnchoredSummarizationCompactionStrategy
@@ -1063,10 +1064,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         clock = _responses(messages)
         anchor = _newest_record_identity(messages)
         if anchor != self._anchor:
-            # The wait itself ends below: nothing holds within one response of an arrival.
-            self._anchor = anchor
-            self._quiet_through = clock + 1
-        elif self._wait_since is not None and clock < self._wait_since:
+            previous = record_anchor_index(messages, self._anchor)
+            newest = find_record_index(messages)
+            if anchor and (
+                not self._anchor
+                or (previous is not None and newest is not None and newest > previous)
+            ):
+                self._anchor = anchor
+                self._quiet_through = clock + 1
+            else:
+                # Losing an anchor or exposing an older one does not complete a pending recall.
+                anchor = self._anchor
+        if self._wait_since is not None and clock < self._wait_since:
             self._wait_since = None
         holding = (
             prompt_tokens > int(self._budget * self.user_trigger_fraction)

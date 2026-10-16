@@ -258,6 +258,43 @@ def test_record_transcript_matches_history_once(monkeypatch, count):
     assert scans == 1
 
 
+@pytest.mark.parametrize("path", ["trigger", "hold", "drop"])
+@pytest.mark.parametrize("count", [8, 32])
+def test_tool_group_walks_match_history_once(monkeypatch, path, count):
+    from maf_compaction import _toolsummary
+
+    messages = []
+    for index in range(count):
+        messages.extend(
+            [
+                call(str(index), name="lookup"),
+                result(str(index), value="ordinary"),
+                Message("user", "Continue"),
+            ]
+        )
+        messages[-2].contents[0].result = "ordinary"
+    messages.extend([call("recall"), result("recall", value="ordinary")])
+    annotate_message_groups(messages)
+    scans = 0
+
+    def counted(history):
+        nonlocal scans
+        scans += 1
+        return function_result_candidates(history)
+
+    monkeypatch.setattr(_toolsummary, "function_result_candidates", counted)
+    if path == "trigger":
+        assert _toolsummary._droppable_groups_after(messages, None) == count
+    elif path == "hold":
+        assert _toolsummary._hold_unrecorded(messages) == count
+    else:
+        strategy = ToolResultAnchoredSummarizationCompactionStrategy(
+            max_input_tokens=1000, tokenizer=CharacterEstimatorTokenizer(), keep_head_groups=0
+        )
+        strategy._drop_before(messages, len(messages) - 1)
+    assert scans == 1
+
+
 def test_framework_shaped_caller_ids_do_not_supply_legacy_occurrence_authority():
     messages = [
         call(None, message_id="msg_7"),

@@ -1143,6 +1143,66 @@ async def test_a_wait_that_ran_out_is_not_begun_again_behind_the_same_record() -
     )
 
 
+@pytest.mark.parametrize("older_record", [False, True])
+@pytest.mark.parametrize("finish", ["expiry", "record"])
+async def test_invalidated_legacy_anchor_does_not_end_a_pending_recall_wait(older_record, finish):
+    summarizer = _Summarizer()
+    strategy = _composed(
+        _NARROW_CEILING, user_turns=_user_phase(_NARROW_CEILING, summarizer=summarizer)
+    )
+    messages = _conversation(record=None)
+    record = [
+        Message(
+            "assistant",
+            [Content.from_function_call(call_id="shared", name=RECALL_TOOL_NAME, arguments="{}")],
+        ),
+        Message(
+            "tool", [Content.from_function_result(call_id="shared", result=f"{RECORD_MARKER} old")]
+        ),
+    ]
+    messages[1:1] = ([build_record_message("older")] if older_record else []) + record
+    strategy._anchor = "call:shared"
+    strategy._wait_since = _responses(messages)
+    strategy._quiet_through = 0
+    assert await strategy(messages) is False
+    started = strategy._wait_since
+    quiet = strategy._quiet_through
+    messages.append(
+        Message(
+            "assistant",
+            [
+                Content.from_function_call(call_id="shared", name="lookup", arguments="{}"),
+                Content.from_function_call(
+                    call_id="fresh", name=RECALL_TOOL_NAME, arguments="{}", id="fresh"
+                ),
+            ],
+        )
+    )
+    assert _newest_record_identity(messages) != "call:shared"
+    assert await strategy(messages) is False
+    assert strategy._wait_since == started
+    assert strategy._quiet_through == quiet
+    assert summarizer.calls == 0
+    if finish == "expiry":
+        messages.append(_later_reply(2))
+    else:
+        messages.append(
+            Message(
+                "tool",
+                [
+                    Content.from_function_result(
+                        call_id="fresh", id="fresh", result=f"{RECORD_MARKER} {_covering_record(4)}"
+                    )
+                ],
+            )
+        )
+    await strategy(messages)
+    assert strategy._wait_since is None
+    assert summarizer.calls == 1
+    if finish == "record":
+        assert strategy._anchor == "occurrence:fresh"
+
+
 async def test_the_record_arriving_ends_the_wait_and_the_user_half_acts_only_on_what_it_left() -> (
     None
 ):
