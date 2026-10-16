@@ -16,6 +16,7 @@ from container_release import (
     monitoring_end,
     now,
     read,
+    release_scope,
     timestamp,
     validate_identity,
 )
@@ -169,7 +170,15 @@ def report(
             publicationFailure="unexpected-registry-digest"
             if record.get("unexpectedDigests")
             else None,
+            releaseScope=release_scope(snapshot.catalogue, key(expected)),
         )
+        if result["releaseScope"] == "historical":
+            replacement = snapshot.catalogue["releases"][
+                snapshot.catalogue["current"][record["profile"]]
+            ]
+            result["replacement"] = {
+                field: replacement[field] for field in ("profile", "version", "registryDigest")
+            }
         end = monitoring_end(record)
         result["monitoringEndsAt"] = end.isoformat() if end else None
         second = latest_monitor(client)

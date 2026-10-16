@@ -522,6 +522,51 @@ def assessment_status(record: dict[str, Any], at: str) -> str:
     return "stale" if age >= timedelta(hours=48) else "clean"
 
 
+def release_scope(catalogue: dict[str, Any], name: str) -> str:
+    """Separate completed release history from current releases and unfinished publications."""
+    record = catalogue["releases"][name]
+    if record["state"] != "completed":
+        return "publication"
+    if catalogue["current"].get(record["profile"]) == name:
+        return "current"
+    if record.get("supersededAt"):
+        return "historical"
+    raise ValueError("Completed release has no current or historical scope")
+
+
+def monitoring_health(catalogue: dict[str, Any], at: str) -> dict[str, Any]:
+    """Keep historical findings visible without masking failed monitoring or publication delivery."""
+    validate_catalogue(catalogue)
+    groups: dict[str, dict[str, str]] = {"current": {}, "historical": {}, "publication": {}}
+    problems = []
+    for name, record in sorted(catalogue["releases"].items()):
+        status = assessment_status(record, at)
+        if status == "no-longer-monitored":
+            continue
+        groups[release_scope(catalogue, name)][name] = (
+            "incomplete" if status == "clean" and record["delivery"] != "complete" else status
+        )
+        attempt = record.get("latestAttempt", {})
+        age = timestamp(at) - timestamp(attempt["assessedAt"]) if attempt else None
+        if (
+            status not in {"clean", "vulnerable"}
+            or age is None
+            or not timedelta(0) <= age < timedelta(hours=48)
+            or record["delivery"] != "complete"
+            or record.get("registryDiscovery", {}).get("outcome") == "unavailable"
+        ):
+            problems.append(name)
+    return {
+        **groups,
+        "monitoringProblems": problems,
+        "attention": bool(
+            problems
+            or groups["publication"]
+            or any(status != "clean" for status in groups["current"].values())
+        ),
+    }
+
+
 def observe(catalogue: dict[str, Any], name: str, assessment: dict[str, Any]) -> dict[str, Any]:
     """Append an assessment outcome without erasing previously known vulnerabilities."""
     at = timestamp(assessment.get("assessedAt"))

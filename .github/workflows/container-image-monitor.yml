@@ -111,6 +111,7 @@ jobs:
       cancel-in-progress: false
     outputs:
       attention: ${{ steps.finish.outputs.attention }}
+      historical_warnings: ${{ steps.finish.outputs.historical_warnings }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -148,7 +149,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fail visibly when assessment or durable delivery needs attention
+      - name: Report historical release warnings
+        if: needs.finish.result == 'success'
+        env:
+          WARNINGS: ${{ needs.finish.outputs.historical_warnings }}
+        run: |
+          if [ "$WARNINGS" != 0 ]; then
+            echo "::warning::$WARNINGS superseded releases need attention. See the finish job summary for replacements and monitoring end dates."
+          fi
+      - name: Require healthy current releases and complete monitoring delivery
         env:
           BEGIN: ${{ needs.begin.result }}
           SCAN: ${{ needs.scan.result }}
@@ -181,6 +190,6 @@ jobs:
           --marker '<!-- container-image-monitor-failure-tracker -->'
           --title 'Published container image monitoring needs attention'
           --reproduce 'Inspect the linked attempt and immutable image-monitor evidence release. Re-run all jobs or dispatch container-image-monitor.yml from main; a failed-jobs-only rerun cannot reuse an earlier scan plan.'
-          --expected 'Every actively monitored exact digest receives a complete fresh assessment with no High or Critical findings, including unfixed findings, and its reports are durably retained before the catalogue records the outcome.'
+          --expected 'Current releases have no High or Critical findings, and every actively monitored digest has complete fresh evidence and durable delivery. Superseded-release findings remain historical warnings throughout their 90-day monitoring window; incomplete or abandoned public candidates still need attention.'
           --context 'Package versions below describe the monitoring checkout, not compatibility with the affected images. Use the catalogue and retained scan evidence for exact image digests, release state, scanner failures and findings.'
           --packages maf-sandbox maf-sandbox-docker maf-sandbox-bicep maf-sandbox-terraform maf-sandbox-drawio maf-sandbox-hyperlight

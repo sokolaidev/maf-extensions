@@ -24,14 +24,16 @@
   <h1>Know which image you use.</h1>
   <p class="intro">This report shows release delivery and known High/Critical vulnerabilities for exact container digests. It checks the deployed catalogue against GitHub's immutable release history and latest monitor attempt when you open or refresh it. A clean scan does not prove the absence of malware, backdoors, or unknown vulnerabilities.</p>
   <div id="summary" role="status">Monitoring status unavailable until current evidence is checked.</div>
+  <p id="historical-summary" role="status">Historical monitoring status unavailable until current evidence is checked.</p>
+  <p id="monitoring-summary" role="status"></p>
   <p id="checked">No live verification yet.</p>
   <button id="refresh" type="button">Refresh evidence</button>
   <noscript><p>JavaScript is required to check current monitoring status. Download and verify the release evidence using the repository's consumer verifier.</p></noscript>
   <div class="table"><table>
-    <thead><tr><th>Image / version</th><th>Release delivery</th><th>Monitoring</th><th>Latest assessment</th><th>Latest attempt</th><th>Database identity</th><th>Monitoring ends</th><th>Known findings and fixes</th></tr></thead>
+    <thead><tr><th>Image / version</th><th>Release delivery</th><th>Monitoring</th><th>Latest assessment</th><th>Latest attempt</th><th>Database identity</th><th>Monitoring ends</th><th>Known findings and fixes</th><th>Release scope / replacement</th></tr></thead>
     <tbody id="releases"></tbody>
   </table></div>
-  <p>Monitoring runs daily, assessments expire after 48 hours, and superseded completed releases remain monitored for 90 days. Incomplete and abandoned public candidates remain visible. Previously known findings remain listed even if a later scan cannot complete.</p>
+  <p>Monitoring runs daily, assessments expire after 48 hours, and superseded completed releases remain monitored for 90 days. Historical findings appear as warnings separately from current-release health. Incomplete or abandoned public candidates and missing monitoring evidence still need attention. Previously known findings remain listed even if a later scan cannot complete.</p>
   <p><a href="https://github.com/sokolaidev/maf-extensions/blob/main/docs/security/container-image-releases.md">Release contract and consumer verification</a> · <a href="https://github.com/sokolaidev/maf-extensions/actions/workflows/container-image-monitor.yml">Monitor runs</a> · <a href="./catalogue.json">Deployed catalogue snapshot</a></p>
   <p>Release identity and current monitoring are separate checks. This page does not verify image signatures or authorize execution.</p>
 </main>

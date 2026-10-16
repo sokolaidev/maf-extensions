@@ -146,15 +146,41 @@ async function verifySnapshot(raw, records) {
   return value;
 }
 
+function releaseScope(catalogue, name, record) {
+  if (record.state !== "completed") return "publication";
+  if (catalogue.current?.[record.profile] === name && !record.supersededAt) return "current";
+  if (record.supersededAt && catalogue.current?.[record.profile] !== name) return "historical";
+  throw new Error("Completed release has no current or historical scope");
+}
+
+function health(catalogue, monitor, at) {
+  const groups = {current: {}, historical: {}, publication: {}, monitoringProblems: []};
+  for (const [profile, name] of Object.entries(catalogue.current || {})) {
+    const record = catalogue.releases[name];
+    assert(record?.profile === profile && record.state === "completed" && !record.supersededAt, "Invalid current release pointer");
+  }
+  for (const [name, record] of Object.entries(catalogue.releases)) {
+    for (const r of [record, ...Object.values(record.unexpectedDigests || {}).map(unexpectedRecord)]) {
+      const state = status(r, monitor, at);
+      if (state === "no-longer-monitored") continue;
+      const scope = releaseScope(catalogue, name, r);
+      const identity = r.state === "unexpected" ? `${name} (${r.registryDigest})` : name;
+      groups[scope][identity] = state === "clean" && r.delivery !== "complete" ? "incomplete" : state;
+      const age = r.latestAttempt ? at - date(r.latestAttempt.assessedAt) : Infinity;
+      if (!["clean", "vulnerable"].includes(state) || age < 0 || age >= 48 * HOUR || r.delivery !== "complete" || r.registryDiscovery?.outcome === "unavailable") groups.monitoringProblems.push(identity);
+    }
+  }
+  return groups;
+}
+
 function render(value, monitor, at) {
   const rows = document.getElementById("releases");
   rows.replaceChildren();
-  const states = [];
+  const groups = health(value.catalogue, monitor, at);
   const entries = Object.entries(value.catalogue.releases).sort().flatMap(([name, r]) => [[name, r], ...Object.values(r.unexpectedDigests || {}).map(entry => [name, unexpectedRecord(entry)])]);
   for (const [name, r] of entries) {
     assert(/^[a-z][a-z0-9-]*\/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(name) && digest(r.registryDigest), "Invalid release identity");
     const state = status(r, monitor, at);
-    states.push(state === "clean" && (r.state !== "completed" || r.delivery !== "complete") ? "incomplete" : state);
     const tr = document.createElement("tr");
     const a = r.latestAttempt;
     const database = a?.database || r.lastKnownVulnerable?.database;
@@ -164,7 +190,9 @@ function render(value, monitor, at) {
     const workflow = monitor ? `Workflow ${monitor.id}, attempt ${monitor.run_attempt}: ${monitor.status} / ${monitor.conclusion || "pending"}${monitor.stateDeliveryVerified === true ? "; assessment delivery verified" : ""}` : "Workflow unavailable";
     const findings = (r.lastKnownVulnerable?.findings || []).map(f => `${f.id} (${f.severity}); fix: ${f.fix?.state || "unknown"}; versions: ${(f.fix?.versions || []).join(", ") || "not reported"}`).join("; ") || "None recorded";
     const publication = r.unexpectedDigests && Object.keys(r.unexpectedDigests).length ? " / failed: unexpected public bytes" : "";
-    const values = [r.state === "unexpected" ? `${name} (unexpected image)` : name, `${r.state} / ${r.delivery}${publication}`, state, a?.assessedAt || "Unavailable", `Outcome: ${a?.outcome || "unavailable"}; ${workflow}`, databaseText, end, findings];
+    const scope = releaseScope(value.catalogue, name, r);
+    const replacement = scope === "historical" ? `; replacement: ${value.catalogue.current?.[r.profile] || "Unavailable"}` : "";
+    const values = [r.state === "unexpected" ? `${name} (unexpected image)` : name, `${r.state} / ${r.delivery}${publication}`, state, a?.assessedAt || "Unavailable", `Outcome: ${a?.outcome || "unavailable"}; ${workflow}`, databaseText, end, findings, scope + replacement];
     for (const [index, text] of values.entries()) {
       const td = document.createElement("td");
       td.textContent = text;
@@ -174,8 +202,13 @@ function render(value, monitor, at) {
     }
     rows.append(tr);
   }
-  const active = states.filter(s => s !== "no-longer-monitored");
-  document.getElementById("summary").textContent = states.length === 0 ? "No image releases recorded under this contract." : active.length === 0 ? "No images currently monitored." : active.every(s => s === "clean") ? "All active images have completed release delivery and fresh scans with no known High/Critical findings at the time checked." : "Security evidence needs attention. Review each image's delivery and monitoring status below.";
+  const current = Object.values(groups.current);
+  const publications = Object.keys(groups.publication).length;
+  document.getElementById("summary").textContent = (current.length === 0 ? "No current completed releases." : current.every(s => s === "clean") ? "Current releases have completed delivery and fresh scans with no known High/Critical findings at the time checked." : "Current release health needs attention. Review delivery and monitoring status below.") + (publications ? ` ${publications} incomplete, abandoned or unexpected publications also need attention.` : "");
+  const historical = Object.values(groups.historical);
+  const warnings = historical.filter(s => s !== "clean").length;
+  document.getElementById("historical-summary").textContent = `Historical releases: ${historical.length} within the 90-day monitoring window; ${warnings} with warnings. Their findings and replacement releases remain listed below.`;
+  document.getElementById("monitoring-summary").textContent = groups.monitoringProblems.length ? `Monitoring or delivery needs attention for ${groups.monitoringProblems.length} images. Historical warnings do not excuse missing evidence.` : "Monitoring and delivery evidence is available for all active images.";
 }
 
 let busy = false;
@@ -185,6 +218,8 @@ async function refresh() {
   busy = true;
   verified = null;
   document.getElementById("summary").textContent = "Checking authoritative GitHub evidence…";
+  document.getElementById("historical-summary").textContent = "Historical monitoring status is being checked…";
+  document.getElementById("monitoring-summary").textContent = "";
   try {
     const started = Date.now();
     const first = await history();
@@ -199,6 +234,8 @@ async function refresh() {
     document.getElementById("checked").textContent = `Live evidence checked ${new Date(at).toISOString()}. Status is as of that check; refresh to detect later attempts.`;
   } catch (error) {
     document.getElementById("summary").textContent = `Monitoring status unavailable: ${error.message}. A cached page cannot establish current status.`;
+    document.getElementById("historical-summary").textContent = "Historical monitoring status unavailable.";
+    document.getElementById("monitoring-summary").textContent = "Monitoring evidence could not be verified.";
     document.getElementById("releases").replaceChildren();
     document.getElementById("checked").textContent = "Current evidence could not be verified. Use GitHub Releases and the consumer verifier to inspect retained findings.";
   } finally { busy = false; }
@@ -209,4 +246,4 @@ if (typeof document !== "undefined") {
   refresh();
   setInterval(() => { if (verified) render(verified.value, verified.monitor, Date.now()); }, 60000);
 }
-if (typeof module !== "undefined") module.exports = {status, verifySnapshot, history, latestMonitor};
+if (typeof module !== "undefined") module.exports = {status, verifySnapshot, history, latestMonitor, health};

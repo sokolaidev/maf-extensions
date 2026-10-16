@@ -1,10 +1,80 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {status, verifySnapshot, history, latestMonitor} = require('../docs/security/status/status.js');
+const {status, verifySnapshot, history, latestMonitor, health} = require('../docs/security/status/status.js');
 const at = Date.parse('2026-01-02T00:00:00Z');
 const digest = 'sha256:' + 'b'.repeat(64);
 const run = {id: 123, run_attempt: 1, status: 'completed', conclusion: 'success', updated_at: '2026-01-01T12:00:00Z'};
 const record = {state: 'completed', registryDigest: digest, latestAttempt: {digest, monitorRunId: '123', monitorRunAttempt: 1, assessedAt: '2026-01-01T00:00:00Z', outcome: 'clean'}};
+
+function healthCatalogue() {
+  const current = {...record, profile: 'bicep', delivery: 'complete'};
+  const old = {...current, supersededAt: '2026-01-01T00:00:00Z', latestAttempt: {...record.latestAttempt, outcome: 'vulnerable'}};
+  return {current: {bicep: 'bicep/0.1.1'}, releases: {'bicep/0.1.0': old, 'bicep/0.1.1': current}};
+}
+
+test('current release health stays clean alongside historical vulnerability warnings', () => {
+  const catalogue = healthCatalogue();
+  const before = JSON.stringify(catalogue);
+  const result = health(catalogue, run, at);
+  assert.deepEqual(result.current, {'bicep/0.1.1': 'clean'});
+  assert.deepEqual(result.historical, {'bicep/0.1.0': 'vulnerable'});
+  assert.deepEqual(result.monitoringProblems, []);
+  assert.equal(JSON.stringify(catalogue), before);
+  assert.equal(status(catalogue.releases['bicep/0.1.0'], run, at), 'vulnerable');
+  catalogue.releases['bicep/0.1.1'].latestAttempt = {...record.latestAttempt, outcome: 'vulnerable'};
+  assert.equal(health(catalogue, run, at).current['bicep/0.1.1'], 'vulnerable');
+});
+
+test('historical failures and stale findings remain monitoring problems', () => {
+  for (const fault of ['unavailable', 'stale', 'delivery']) {
+    const catalogue = healthCatalogue();
+    const old = catalogue.releases['bicep/0.1.0'];
+    if (fault === 'unavailable') old.latestAttempt.outcome = 'unavailable';
+    if (fault === 'stale') old.latestAttempt.assessedAt = '2025-12-31T00:00:00Z';
+    if (fault === 'delivery') old.delivery = 'pending';
+    const result = health(catalogue, run, at);
+    assert.deepEqual(result.monitoringProblems, ['bicep/0.1.0']);
+    assert.equal(result.current['bicep/0.1.1'], 'clean');
+  }
+});
+
+test('every superseded image retains its own full 90-day window', () => {
+  const catalogue = healthCatalogue();
+  const old = catalogue.releases['bicep/0.1.0'];
+  catalogue.releases['bicep/0.0.9'] = {...old, supersededAt: '2025-12-31T00:00:00Z'};
+  const beforeEnd = Date.parse('2026-03-31T23:59:59Z');
+  assert.deepEqual(Object.keys(health(catalogue, run, beforeEnd).historical), ['bicep/0.1.0']);
+  assert.deepEqual(health(catalogue, run, beforeEnd + 1000).historical, {});
+  assert.equal(status(old, run, beforeEnd + 1000), 'no-longer-monitored');
+  assert.equal(old.latestAttempt.outcome, 'vulnerable');
+});
+
+test('unfinished publications cannot be classified as historical even with a superseded time', () => {
+  const catalogue = healthCatalogue();
+  catalogue.releases['bicep/0.1.2'] = {...catalogue.releases['bicep/0.1.0'], state: 'incomplete', delivery: 'pending', latestAttempt: {...record.latestAttempt}};
+  const result = health(catalogue, run, at);
+  assert.equal(result.publication['bicep/0.1.2'], 'incomplete');
+  catalogue.current.bicep = 'bicep/0.1.2';
+  assert.throws(() => health(catalogue, run, at), /current release pointer/);
+});
+
+test('render separates current health and historical warnings and names the replacement', () => {
+  const vm = require('node:vm');
+  const context = vm.createContext({});
+  vm.runInContext(require('node:fs').readFileSync(require.resolve('../docs/security/status/status.js'), 'utf8'), context);
+  const node = () => ({textContent: '', children: [], append(child) { this.children.push(child); }, replaceChildren() { this.children = []; }});
+  const nodes = Object.fromEntries(['releases', 'summary', 'historical-summary', 'monitoring-summary'].map(id => [id, node()]));
+  context.document = {getElementById: id => nodes[id], createElement: node};
+  context.value = {catalogue: healthCatalogue()}; context.run = run; context.at = at;
+  vm.runInContext('render(value, run, at)', context);
+  assert.match(nodes.summary.textContent, /Current releases have completed delivery/);
+  assert.match(nodes['historical-summary'].textContent, /1 within the 90-day monitoring window; 1 with warnings/);
+  assert.equal(nodes.releases.children[0].children[2].textContent, 'vulnerable');
+  assert.match(nodes.releases.children[0].children[8].textContent, /historical; replacement: bicep\/0.1.1/);
+  context.run = {...run, status: 'in_progress'};
+  vm.runInContext('render(value, run, at)', context);
+  assert.match(nodes.summary.textContent, /needs attention/);
+});
 
 test('fresh clean status requires the actual latest successful attempt', () => {
   assert.equal(status(record, run, at), 'clean');

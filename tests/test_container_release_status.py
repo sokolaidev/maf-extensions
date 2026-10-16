@@ -78,6 +78,25 @@ def test_status_is_separate_from_release_verification(current, outcome):
     assert "releaseIdentityVerified" not in result
 
 
+def test_historical_status_keeps_findings_and_names_replacement_digest(current):
+    catalogue = current["snapshot"].catalogue
+    replacement = CANDIDATE | {
+        "version": "0.1.1",
+        "attemptId": "124",
+        "registryDigest": "sha256:" + "d" * 64,
+    }
+    catalogue = complete(reserve(catalogue, replacement, AT), replacement, DIGEST, AT)
+    catalogue["releases"]["bicep/0.1.0"]["latestAttempt"]["outcome"] = "vulnerable"
+    current["snapshot"].catalogue = catalogue
+    result = report(CANDIDATE, at=AT)
+    assert result["monitoringStatus"] == "vulnerable"
+    assert result["releaseScope"] == "historical"
+    assert result["replacement"] == {
+        field: replacement[field] for field in ("profile", "version", "registryDigest")
+    }
+    assert result["monitoringEndsAt"] == "2026-04-01T00:00:00+00:00"
+
+
 def test_status_ages_without_another_monitor_run(current):
     assert report(CANDIDATE, at="2026-01-02T23:59:59Z")["monitoringStatus"] == "clean"
     assert report(CANDIDATE, at="2026-01-03T00:00:00Z")["monitoringStatus"] == "stale"

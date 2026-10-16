@@ -22,6 +22,7 @@ from container_release import (  # noqa: E402
     complete,
     completion_predicate,
     empty_catalogue,
+    monitoring_health,
     observe,
     profiles,
     read,
@@ -53,6 +54,78 @@ def candidate(ver="0.1.0", run="123"):
 def completed():
     selected = candidate()
     return complete(reserve(empty_catalogue(), selected, AT), selected, EVIDENCE, AT)
+
+
+def health_catalogue():
+    catalogue = completed()
+    second = candidate("0.2.0", "124")
+    catalogue = complete(reserve(catalogue, second, LATER), second, EVIDENCE, LATER)
+    for record in catalogue["releases"].values():
+        record["delivery"] = "complete"
+    for name, record in catalogue["releases"].items():
+        catalogue = observe(
+            catalogue,
+            name,
+            {
+                "digest": record["registryDigest"],
+                "assessedAt": LATER,
+                "outcome": "clean" if name == "bicep/0.2.0" else "vulnerable",
+            },
+        )
+    return catalogue
+
+
+def test_current_health_excludes_historical_findings_without_rewriting_them():
+    catalogue = health_catalogue()
+    before = copy.deepcopy(catalogue)
+    health = monitoring_health(catalogue, LATER)
+    assert health["current"] == {"bicep/0.2.0": "clean"}
+    assert health["historical"] == {"bicep/0.1.0": "vulnerable"}
+    assert health["attention"] is False
+    assert catalogue == before
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "current-vulnerable",
+        "historical-missing",
+        "historical-stale",
+        "historical-delivery",
+        "publication",
+    ],
+)
+def test_current_health_keeps_scan_and_publication_failures_blocking(fault):
+    catalogue = health_catalogue()
+    old = catalogue["releases"]["bicep/0.1.0"]
+    if fault == "current-vulnerable":
+        catalogue["releases"]["bicep/0.2.0"]["latestAttempt"]["outcome"] = "vulnerable"
+    elif fault == "historical-missing":
+        old["latestAttempt"]["outcome"] = "unavailable"
+    elif fault == "historical-stale":
+        old["latestAttempt"]["assessedAt"] = "2025-12-31T00:00:00Z"
+    elif fault == "historical-delivery":
+        old["delivery"] = "pending"
+    else:
+        catalogue = reserve(catalogue, candidate("0.3.0", "125"), LATER)
+        catalogue = observe(
+            catalogue, "bicep/0.3.0", {"digest": DIGEST, "assessedAt": LATER, "outcome": "clean"}
+        )
+    assert monitoring_health(catalogue, LATER)["attention"] is True
+
+
+def test_historical_warnings_expire_at_90_days_and_keep_known_findings():
+    catalogue = health_catalogue()
+    current = catalogue["releases"]["bicep/0.2.0"]
+    current["latestAttempt"]["assessedAt"] = "2026-04-01T23:59:59Z"
+    old = catalogue["releases"]["bicep/0.1.0"]
+    old["latestAttempt"]["assessedAt"] = "2026-04-01T23:59:59Z"
+    assert monitoring_health(catalogue, "2026-04-01T23:59:59Z")["historical"] == {
+        "bicep/0.1.0": "vulnerable"
+    }
+    result = monitoring_health(catalogue, "2026-04-02T00:00:00Z")
+    assert result["historical"] == {} and result["attention"] is False
+    assert old["lastKnownVulnerable"]["outcome"] == "vulnerable"
 
 
 def test_release_scope_matches_every_candidate_scan():

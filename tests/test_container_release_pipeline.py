@@ -397,6 +397,80 @@ def test_monitor_commits_running_before_workers_and_missing_worker_is_unavailabl
     assert record["latestAttempt"]["evidenceRelease"] == "image-monitor-456-1"
 
 
+@pytest.mark.parametrize("missing_history", [False, True])
+def test_monitor_keeps_historical_scans_and_warns_without_failing_current_health(
+    monkeypatch, tmp_path, monitor_context, missing_history
+):
+    history = monitor_context
+    history.catalogue = complete(history.catalogue, CANDIDATE, CANDIDATE["imageId"], AT)
+    replacement = CANDIDATE | {"version": "0.1.1", "attemptId": "124"}
+    history.catalogue = complete(
+        reserve(history.catalogue, replacement, LATER), replacement, CANDIDATE["imageId"], LATER
+    )
+    for record in history.catalogue["releases"].values():
+        record["delivery"] = "complete"
+    monkeypatch.setattr(
+        monitor,
+        "Evidence",
+        lambda: SimpleNamespace(
+            ensure=lambda *a: {}, retain=lambda *a: None, publish=lambda *a: None
+        ),
+    )
+    emitted = []
+    monkeypatch.setattr(monitor, "outputs", emitted.append)
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monitor.begin(tmp_path)
+    targets = read(tmp_path / "plan.json")["targets"]
+    assert {t["candidate"]["version"] for t in targets} == {"0.1.0", "0.1.1"}
+    for target in targets:
+        selected = target["candidate"]
+        old = selected["version"] == "0.1.0"
+        if old and missing_history:
+            continue
+        root = tmp_path / "reports" / monitor.target_name(target)
+        raw = scan_report()
+        if old:
+            raw["matches"] = [{"vulnerability": {"id": "CVE-test", "severity": "High"}}]
+        assessment = scan_result(raw, selected["imageId"], DONE)
+        write(root / "grype.json", raw)
+        write(root / "assessment.json", assessment)
+        write(
+            root / "sbom.syft.json",
+            {
+                "artifacts": [{}],
+                "source": {"type": "image", "metadata": {"imageID": selected["imageId"]}},
+            },
+        )
+        write(
+            root / "observation.json",
+            {
+                "candidate": selected,
+                "assessment": assessment
+                | {
+                    "digest": selected["registryDigest"],
+                    "monitorRunId": "456",
+                    "monitorRunAttempt": 1,
+                },
+            },
+        )
+    monkeypatch.setattr(monitor, "now", lambda: DONE)
+    monitor.finish(tmp_path)
+    assert emitted[-1] == {"attention": str(missing_history).lower(), "historical_warnings": "1"}
+    text = summary.read_text()
+    assert "bicep/0.1.1: **clean**" in text
+    assert "replacement: bicep/0.1.1; monitoring ends: 2026-04-02" in text
+    assert history.catalogue["releases"]["bicep/0.1.0"]["latestAttempt"]["outcome"] == (
+        "unavailable" if missing_history else "vulnerable"
+    )
+    old = copy.deepcopy(history.catalogue["releases"]["bicep/0.1.0"])
+    monkeypatch.setattr(monitor, "now", lambda: "2026-04-02T00:00:00Z")
+    monitor.begin(tmp_path / "expired")
+    remaining = read(tmp_path / "expired/plan.json")["targets"]
+    assert [target["candidate"]["version"] for target in remaining] == ["0.1.1"]
+    assert history.catalogue["releases"]["bicep/0.1.0"] == old
+
+
 def test_monitor_delivery_failure_keeps_running_instead_of_clean(
     monkeypatch, tmp_path, monitor_context
 ):
