@@ -30,7 +30,7 @@ IDENTITY_FIELDS = (
     "imageId",
     "attemptId",
 )
-OPTIONAL_IDENTITY_FIELDS = ("buildInputsSha256", "preparationEvidenceSha256")
+OPTIONAL_IDENTITY_FIELDS = ("buildInputsSha256", "preparationEvidenceSha256", "bicepRoute")
 
 
 def decode(raw: str | bytes) -> Any:
@@ -141,7 +141,13 @@ def validate_identity(candidate: dict[str, Any]) -> None:
         require_digest(candidate.get(field))
     for field in OPTIONAL_IDENTITY_FIELDS:
         if field in candidate:
-            require_digest(candidate[field])
+            if field == "bicepRoute":
+                if candidate["profile"] not in {"bicep", "bicep-avm", "sbx-bicep"} or candidate[
+                    field
+                ] not in {"upstream", "source"}:
+                    raise ValueError("Invalid Bicep acquisition route")
+            else:
+                require_digest(candidate[field])
     if not isinstance(candidate.get("attemptId"), str) or not re.fullmatch(
         r"[1-9][0-9]*", candidate["attemptId"]
     ):
@@ -180,9 +186,7 @@ def validate_catalogue(value: Any) -> None:
                 saved.get(field) != record[field] for field in IDENTITY_FIELDS
             ):
                 raise ValueError("Retained candidate differs from its catalogue identity")
-            for field in OPTIONAL_IDENTITY_FIELDS:
-                if field in saved:
-                    require_digest(saved[field])
+            validate_identity(saved)
         if record.get("state") not in {"incomplete", "completed", "abandoned"}:
             raise ValueError("Invalid publication state")
         unexpected = record.get("unexpectedDigests", {})

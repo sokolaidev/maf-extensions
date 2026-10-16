@@ -3,14 +3,14 @@ set -euo pipefail
 
 case "$1" in
   bicep)
-    docker build --pull --platform linux/amd64 -t maf-image-scan:target images/bicep-sandbox
+    uv run --locked python scripts/build_bicep_image.py --tag maf-image-scan:target
     ;;
   bicep-avm)
-    docker build --pull --platform linux/amd64 -t maf-image-scan:base images/bicep-sandbox
+    uv run --locked python scripts/build_bicep_image.py --tag maf-image-scan:base
     uv run --locked python scripts/build_bicep_prepared_image.py --base-image maf-image-scan:base --tag maf-image-scan:target
     ;;
   sbx-bicep)
-    docker build --pull --platform linux/amd64 -t maf-image-scan:base images/bicep-sandbox
+    uv run --locked python scripts/build_bicep_image.py --tag maf-image-scan:base
     docker build --platform linux/amd64 --build-arg BASE=maf-image-scan:base -t maf-image-scan:target images/sbx-template
     ;;
   graphviz)

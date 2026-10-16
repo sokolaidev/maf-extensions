@@ -169,7 +169,7 @@ def application_inventory(
     directory: Path, candidate: dict[str, Any], image_id: str, *, restore: bool = False
 ) -> dict[str, Any] | None:
     """Bind the expected application packages to the approved preparation and image bytes."""
-    if candidate["profile"] != "drawio-export":
+    if candidate["profile"] != "drawio-export" and candidate.get("bicepRoute") != "source":
         return None
     if image_id != candidate["imageId"]:
         raise ValueError("No approved application inventory for this image")
@@ -195,6 +195,10 @@ def application_inventory(
     runtime = read(directory / "runtime.json")
     if runtime.get("profile") != candidate["profile"] or runtime.get("imageId") != image_id:
         raise ValueError("Application inventory identifies another image or profile")
+    if candidate.get("bicepRoute") == "source":
+        build = runtime.get("bicepAvm", runtime.get("bicep", {})).get("build", {})
+        if build.get("route") != "source":
+            raise ValueError("Approved Bicep source inventory is missing")
     return runtime
 
 
@@ -323,7 +327,10 @@ def finish(directory: Path) -> None:
             verify_inventory(read(root / "sbom.syft.json"), image_id)
             runtime = application_inventory(root, candidate, image_id)
             if runtime is not None:
-                from drawio_export_qualification import verify_inventory as verify_application
+                if candidate.get("bicepRoute") == "source":
+                    from bicep_source import verify_inventory as verify_application
+                else:
+                    from drawio_export_qualification import verify_inventory as verify_application
 
                 verify_application(read(root / "sbom.syft.json"), runtime)
             verified = scan_result(read(root / "grype.json"), image_id, assessment["assessedAt"])

@@ -6,6 +6,8 @@ import argparse
 from pathlib import Path
 from typing import Any
 
+from build_bicep_image import PROFILES as BICEP_PROFILES
+from build_bicep_image import ROUTES, validate_route
 from container_release import (
     REPOSITORY,
     decode,
@@ -53,12 +55,20 @@ def retained_available(run_id: str) -> bool:
     return not matches[0]["expired"]
 
 
-def dispatch(profile: str, release_version: str, directory: Path, selection: Path) -> None:
+def dispatch(
+    profile: str,
+    release_version: str,
+    directory: Path,
+    selection: Path,
+    *,
+    bicep_route: str = "upstream",
+) -> None:
     """A completed release can recover delivery even after its temporary OCI artifact expires."""
     source, run_id, attempt = context()
     if profile not in profiles():
         raise ValueError("Unknown release profile")
     version(release_version)
+    validate_route(bicep_route, profile)
     head = History().head()
     record = head.catalogue["releases"].get(f"{profile}/{release_version}") if head else None
     if record and (record["sourceCommit"] != source or record["attemptId"] != run_id):
@@ -97,7 +107,9 @@ def dispatch(profile: str, release_version: str, directory: Path, selection: Pat
             raise ValueError("Recovered OCI bytes differ from the retained identity")
         mode = "retained"
     else:
-        candidate = prepare(profile, release_version, source, run_id, directory)
+        candidate = prepare(
+            profile, release_version, source, run_id, directory, bicep_route=bicep_route
+        )
         mode = "built"
     if (
         candidate["profile"] != profile
@@ -105,6 +117,7 @@ def dispatch(profile: str, release_version: str, directory: Path, selection: Pat
         or candidate["sourceCommit"] != source
         or candidate["attemptId"] != run_id
         or (record and candidate != record["candidate"])
+        or (profile in BICEP_PROFILES and candidate.get("bicepRoute", "upstream") != bicep_route)
     ):
         raise ValueError("Recovered candidate differs from this dispatch's reservation")
     write(selection / "candidate.json", candidate)
@@ -125,8 +138,11 @@ def main() -> None:
     parser.add_argument("--version", required=True)
     parser.add_argument("--directory", type=Path, required=True)
     parser.add_argument("--selection", type=Path, required=True)
+    parser.add_argument("--bicep-route", choices=ROUTES, default="upstream")
     args = parser.parse_args()
-    dispatch(args.profile, args.version, args.directory, args.selection)
+    dispatch(
+        args.profile, args.version, args.directory, args.selection, bicep_route=args.bicep_route
+    )
 
 
 if __name__ == "__main__":

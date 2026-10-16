@@ -8,6 +8,7 @@ import shlex
 from typing import Any
 
 from bicep_image_pin import read_pin
+from bicep_source import receipt_command, verify_receipt
 from container_release import ROOT
 
 CONTEXT = ROOT / "images/bicep-sandbox"
@@ -81,6 +82,7 @@ def command() -> list[str]:
                 f'printf \',"{key}":"%s"\' "${{hash%% *}}"',
             ]
         )
+    lines.append(receipt_command())
     lines.append("printf ',\"checks\":['")
     for index, case in enumerate(cases()):
         name = case["name"]
@@ -113,7 +115,9 @@ def evidence(output: bytes) -> dict[str, Any]:
     version, _ = read_pin(CONTEXT / "Dockerfile")
     if not result["bicepVersion"].startswith(f"Bicep CLI version {version.removeprefix('v')} "):
         raise ValueError("Bicep compiler version differs from the selected source")
-    for key, expected in identities().items():
+    build = verify_receipt(result.get("buildReceipt"), result["compilerSha256"], CONTEXT)
+    expected_identities = identities() | {"compilerSha256": build["compilerSha256"]}
+    for key, expected in expected_identities.items():
         if result[key] != expected:
             raise ValueError(f"Bicep payload differs from the selected source: {key}")
     observed = result["checks"]
@@ -165,7 +169,8 @@ def evidence(output: bytes) -> dict[str, Any]:
         )
     return {
         "bicepVersion": result["bicepVersion"],
-        **identities(),
+        **expected_identities,
+        "build": build,
         "backend": "docker-cli",
         "network": "none",
         "checks": checks,

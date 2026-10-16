@@ -7,6 +7,7 @@ import json
 import shlex
 from typing import Any
 
+from bicep_source import receipt_command, verify_receipt
 from container_release import ROOT, read
 
 CONTEXT = ROOT / "images/bicep-sandbox"
@@ -60,6 +61,9 @@ def command() -> list[str]:
         f"bicep --version | grep -F {shlex.quote('Bicep CLI version ' + version + ' ')} >&2",
         "printf '{\"receipt\":'",
         "cat /opt/maf-bicep/dependencies.json",
+        "hash=$(sha256sum /usr/local/bin/bicep)",
+        'printf \',"compilerSha256":"%s"\' "${hash%% *}"',
+        receipt_command(),
         "printf ',\"checks\":['",
     ]
     for index, case in enumerate(cases()):
@@ -87,6 +91,7 @@ def evidence(output: bytes) -> dict[str, Any]:
     """Refuse missing modules, wrong diagnostics and receipts from another policy."""
     result = json.loads(output)
     receipt = result["receipt"]
+    build = verify_receipt(result.get("buildReceipt"), result["compilerSha256"], CONTEXT)
     manifest_path = CONTEXT / "dependencies.bicep-avm.json"
     policy_path = CONTEXT / "dependencies.bicep-avm.policy.json"
     manifest = read(manifest_path)
@@ -133,6 +138,7 @@ def evidence(output: bytes) -> dict[str, Any]:
         )
     return {
         "bicepVersion": receipt["bicep_version"],
+        "build": build,
         "manifestSha256": receipt["manifest_sha256"],
         "policySha256": receipt["policy_sha256"],
         "modules": receipt["modules"],

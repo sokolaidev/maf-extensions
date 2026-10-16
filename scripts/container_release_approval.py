@@ -219,6 +219,21 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
             ("Prepared Bicep version", runtime["bicepAvm"].get("bicepVersion", UNAVAILABLE))
         )
         rows.append(("Prepared Bicep modules", runtime["bicepAvm"].get("modules", UNAVAILABLE)))
+    if candidate["profile"] in {"bicep", "bicep-avm", "sbx-bicep"}:
+        build = runtime.get("bicepAvm" if candidate["profile"] == "bicep-avm" else "bicep", {}).get(
+            "build", {}
+        )
+        for label, key in (
+            ("Bicep acquisition route", "route"),
+            ("Bicep binary SHA-256", "compilerSha256"),
+            ("Bicep source commit", "sourceCommit"),
+            ("Bicep source SDK image", "sdkImage"),
+            ("Bicep source runtime version", "runtimeVersion"),
+            ("Bicep patched packages", "packages"),
+            ("Bicep source policy SHA-256", "policySha256"),
+            ("Bicep source builder SHA-256", "builderSha256"),
+        ):
+            rows.append((label, build.get(key, UNAVAILABLE)))
     if candidate["profile"] == "terraform-avm":
         avm = runtime.get("terraformAvm", {})
         for check in avm.get("checks", []):

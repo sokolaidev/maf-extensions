@@ -57,6 +57,8 @@ CONSUMER_GUIDES = {
     "images/hyperlight-sandbox/README.md",
 }
 SCRIPT_INPUTS = {
+    "scripts/build_bicep_image.py": ("bicep", "bicep-avm", "sbx-bicep"),
+    "scripts/bicep_source.py": ("bicep", "bicep-avm", "sbx-bicep"),
     "scripts/drawio_qualification.py": ("drawio", "drawio-export"),
     "scripts/drawio_export_qualification.py": ("drawio-export",),
     "scripts/drawio_export_runtime.py": ("drawio-export",),

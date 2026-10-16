@@ -42,6 +42,24 @@ That is sample 02, and it is the whole story there — `wslc` runs what is alrea
 
 The registry and import steps below apply to either profile.
 
+### Choose the compiler route
+
+The **Container image release** and **Image security** workflows offer `bicep_route`: `upstream` (default) downloads the checksum-verified upstream executable; `source` compiles the pinned upstream commit with the dependency overrides in [`source.json`](source.json). The selection applies to `bicep`, `bicep-avm` and `sbx-bicep`. A release rejects `source` for an unrelated profile; an all-profile security run applies it only to the Bicep profiles.
+
+For a local Docker build, use the same helper as the GitHub runner:
+
+```bash
+uv run python scripts/build_bicep_image.py --route upstream --tag bicep-sandbox:upstream
+uv run python scripts/build_bicep_image.py --route source --tag bicep-sandbox:source
+uv run python scripts/build_bicep_prepared_image.py --base-image bicep-sandbox:source --tag bicep-sandbox:source-avm
+```
+
+The source route uses a .NET SDK image pinned by digest and publishes a Linux x64 self-contained CLI. It pins `System.Security.Cryptography.Xml` and `System.Security.Cryptography.Pkcs` to `10.0.13` and checks the resolved dependency graph. Only the compiler, build receipt, license notices and runtime files enter the final image. `/usr/share/maf-bicep/build.json` records the source commit, SDK image, runtime version, package overrides, policy and builder hashes, and compiler SHA-256. Qualification compares that receipt with the reviewed source and actual binary; scanning must inventory the patched application packages.
+
+Updating the upstream compiler does not silently move the source build. Review the source commit, SDK and overrides in `source.json` alongside an upgrade; the source route refuses a version that differs from the upstream recipe and AVM policy. An upstream upgrade can still use the standard route while that review is pending. Build inputs and resolved dependencies are recorded, but the floating Azure Linux base and package repositories mean this is not a promise of byte-for-byte reproducibility.
+
+Every new release candidate builds its selected route once. Retries recover the retained OCI bytes and reject a different route. Changing routes requires a new dispatch and an unused image version. Both routes retain the existing runtime, inventory, vulnerability, approval and signature gates; a successful source compilation alone does not establish remediation or publication.
+
 ## Prepared AVM profile
 
 The public release profile is **`bicep-avm`**. Its [consumer guide](AVM.md) covers the selected module versions, signed release verification, cache configuration, qualification and support. [Release 0.1.0](https://github.com/sokolaidev/maf-extensions/releases/tag/image-bicep-avm-v0.1.0) is publicly available; use the consumer guide's verified digest and [release evidence](AVM.md#release-010-evidence). Local preparation remains separate from the published identity.

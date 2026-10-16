@@ -54,6 +54,13 @@ def main() -> None:
         verify_inventory(
             json.loads((directory / "sbom.syft.json").read_text()), evidence["local_image_id"]
         )
+        if (directory / "runtime.json").exists():
+            from bicep_source import verify_inventory as verify_bicep_inventory
+
+            runtime = json.loads((directory / "runtime.json").read_text())
+            if runtime.get("imageId") != evidence["local_image_id"]:
+                raise ValueError("Bicep runtime evidence identifies another image")
+            verify_bicep_inventory(json.loads((directory / "sbom.syft.json").read_text()), runtime)
         return
     details = json.loads((directory / "image-inspect.json").read_text())
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
