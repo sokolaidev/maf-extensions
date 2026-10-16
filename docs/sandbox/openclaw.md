@@ -25,7 +25,7 @@ The Bicep deployment exposes only the Bicep binding. Two small test bindings wit
 
 The first binding exposes exactly `bicep_validate(files)`. It validates every supplied `.bicep` and `.bicepparam` file as one source set; there is no entry-point selector, auxiliary JSON/text input, formatting, deployment, shell, arbitrary compiler flag or downloadable output. Local modules and parameter references must be included in that set. Discovery and the typed models in [server.py](../../packages/maf-sandbox-mcp/src/maf_sandbox_mcp/server.py) define the wire schemas; the HTTP and stdio bindings share them.
 
-The request object contains only `files`, an array of 1–8 objects containing only string `path` and `content` fields. Names are relative ASCII slash-separated components, at most 200 characters overall and 64 per component. Traversal, absolute/drive paths, device names, duplicate case-folded names and file/directory overlaps are refused. Source must be valid UTF-8 without NUL, at most 64 KiB per file and 256 KiB total. Raw input checks supplement the generated JSON Schema: character counts do not establish UTF-8 byte limits. No rejected source is staged into a sandbox.
+The request object contains only `files`, an array of 1Ã¢â‚¬â€œ8 objects containing only string `path` and `content` fields. Names are relative ASCII slash-separated components, at most 200 characters overall and 64 per component. Traversal, absolute/drive paths, device names, duplicate case-folded names and file/directory overlaps are refused. Source must be valid UTF-8 without NUL, at most 64 KiB per file and 256 KiB total. Raw input checks supplement the generated JSON Schema: character counts do not establish UTF-8 byte limits. No rejected source is staged into a sandbox.
 
 The adapter copies accepted strings into an immutable, sorted snapshot and a fresh in-memory file store for that call. `source_sha256` hashes UTF-8 compact JSON of the sorted `[path, content]` pairs, with non-ASCII content preserved. `config_sha256` hashes the exact UTF-8 operator configuration bytes; `image` carries the selected immutable image identity. These fields identify the submitted snapshot and policy, not a workspace's current contents.
 
@@ -129,6 +129,29 @@ The real workload cases below qualify the Bicep binding. The service-boundary ca
 | MAF compatibility | Two real `MCPStreamableHTTPTool` instances discover and call with static authorization headers, preserve structured-result projection and close independently. Repeat with the exact published dependencies selected for the implementation. |
 
 Acceptance uses a deterministic provider and host-observed results, transport messages and container identities. It makes no claim about LLM reasoning, prompt-injection resistance, information-flow enforcement in OpenClaw or unattended operation. The [research record](research/openclaw-integration.md#multi-session-lifecycle-decision) contains the option comparison and the smaller transport probe that informed this design.
+
+## Installed Bicep conformance runner
+
+The repository-local [runner](../../scripts/openclaw_conformance/__main__.py) qualifies the fixed `installed-bicep-windows-v1` profile against an explicitly selected candidate. It installs OpenClaw 2026.9.7 and the published `maf-sandbox-mcp` 0.1.0 wheel into a fresh external directory, verifies artifact bytes and installed imports, resolves a compatible complete Python dependency set with hashes, and records the npm lock and host/image/configuration identities. The historical MAF 1.20/core 0.48 qualification is a different candidate; the published worker requires core 0.50 and its compatible MAF range.
+
+Use a private external directory, Node compatible with the pinned OpenClaw release, uv, and a reachable Docker daemon running Linux/amd64 guests. Pull the selected immutable prepared Bicep image first. Preparation reaches package indexes; the deterministic campaign needs no model account and does not deploy Azure resources. Linux is deliberately outside this profile.
+
+```powershell
+$prepared = Join-Path $env:TEMP ('oc-install-' + [guid]::NewGuid().ToString('N'))
+$campaign = Join-Path $env:TEMP ('oc-campaign-' + [guid]::NewGuid().ToString('N'))
+$image = 'ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e'
+uv run --no-project --python 3.13 python -m scripts.openclaw_conformance prepare --output $prepared --image $image
+uv run --no-project --python 3.13 python -m scripts.openclaw_conformance run --prepared $prepared --manifest "$prepared/candidate.json" --output $campaign
+uv run --no-project --python 3.13 python -m scripts.openclaw_conformance evaluate --bundle "$campaign/evidence" --plan "$campaign/plan.json" --manifest "$prepared/candidate.json"
+```
+
+Check each command's exit status before continuing. `prepare` refuses an existing installation directory and writes `candidate.json` only after installation checks. `run` requires a new output directory, freezes its plan before observations and writes an atomic summary on failure as well as success. `evaluate` takes the expected plan and candidate separately from the evidence bundle; a report cannot remove required groups or choose its own expected identity. Keep these expected inputs trusted. Hashes bind recorded bytes, not their truth; the runner and independent host observers remain part of the qualification trust boundary.
+
+The finite campaign retains the existing 43 transport cases and 109 SDK retirements, five Bicep/MAF ownership cases, two Gateway sessions each receiving valid/invalid/incomplete results, a prepared-module compiler call, configured/input refusal, worker import guards, paired reachable/closed TCP probes, and independently observed cleanup. Direct ASGI, socket, installed compiler and Gateway observations retain separate attribution. Python audit guards observe selected worker import effects, including delayed/late-exit controls; they are not an OS sandbox or a new OpenClaw credential/non-full-plugin qualification. The Gateway uses a local deterministic provider, with no model-reasoning claim.
+
+Keep the entire preparation and campaign directories private: they contain service credentials, temporary configuration, locks and diagnostics. The bounded `evidence/` records, expected candidate and plan are intended for sanitized retention after inspection; raw logs, dependency-lock command comments and provider state are not public artifacts. Each group has a unique attempt ID and its own bounded artifact. Failed attempts remain in their own directories. Do not retry into an existing directory or relabel a previous report. Missing controls, mismatched artifacts, skips, incomplete cleanup or emergency purges cannot qualify the profile. The supervisor owns only its recorded processes/containers and verifies an unrelated sentinel survives; no daemon-wide pruning occurs.
+
+Changing runner/adapter bytes, dependencies, the host/engine, image or configuration requires a new candidate and campaign. Preparation records both the full dependency versions and hashed locks; preserve those private locks when reproducing an exact resolution. A passing report does not authorize publication, production adoption, unattended recovery, arbitrary filesystem access, native MXC, credentials, or another platform. Bounded owner-loss qualification remains #1973 and conditional Windows/MXC file-boundary qualification remains #1974.
 
 ## Status
 
