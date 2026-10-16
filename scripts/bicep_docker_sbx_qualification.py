@@ -185,7 +185,7 @@ async def check(image_id: str) -> dict[str, Any]:
         require(not any(workspace.iterdir()), "SBX qualification left workspace files")
         workspace.rmdir()
         if loaded:
-            await asyncio.to_thread(command, sbx, "template", "rm", tag)
+            await asyncio.to_thread(command, sbx, "template", "rm", "--force", tag)
         if tagged:
             await asyncio.to_thread(command, "docker", "image", "rm", tag)
     return result | {"sandboxesRemaining": [], "workspaceRemoved": True, "templateRemoved": True}

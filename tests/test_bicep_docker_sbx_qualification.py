@@ -78,6 +78,8 @@ def test_backend_qualification_and_failure_cleanup(monkeypatch, tmp_path, failur
 
     def command(*args, **kw):
         commands.append(args)
+        if args[1:3] == ("template", "rm"):
+            assert args[3] == "--force" and args[4].startswith("maf-bicep-qualification:")
         if args[1:3] == ("template", "load") and failure == "load":
             raise ValueError("load failed")
         return "sbx v0.48.0" if args[1:] == ("version",) else ""
