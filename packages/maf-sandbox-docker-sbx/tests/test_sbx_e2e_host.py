@@ -20,6 +20,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from _sbx_e2e_helpers import listed_rows
 from maf_sandbox import Capability, Egress, SandboxKey, SandboxSpec
 
 from maf_sandbox_docker_sbx import (
@@ -76,7 +77,7 @@ def _spec() -> SandboxSpec:
 
 def _listed(name: str) -> bool:
     out = _checked("ls", "--json")
-    return any(row.get("name") == name for row in json.loads(out).get("sandboxes") or [])
+    return any(row.get("name") == name for row in listed_rows(out, "sandboxes"))
 
 
 @contextlib.contextmanager
@@ -122,8 +123,8 @@ def test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path):
 def test_a_registered_mcp_server_is_refused(tmp_path):
     _needs_host_changes("the test registers an MCP server")
     with _forwarding_set("false"):
-        listed = json.loads(_checked("mcp", "ls", "--json"))
-        if listed.get("servers"):
+        listed = listed_rows(_checked("mcp", "ls", "--json"), "servers")
+        if listed:
             pytest.skip("an MCP server is already registered on this host")
         server = f"maf-e2e-{uuid.uuid4().hex[:8]}"
         # A stdio command is registered without being started, so no network is involved.
