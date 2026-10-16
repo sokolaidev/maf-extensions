@@ -79,6 +79,11 @@ def verify(value: dict[str, Any]) -> None:
             "survivor_result",
         )
         _binding(subset, survivor[-1])
+        if name.startswith("maf_"):
+            retired_a = next(
+                e for e in subset if e.get("event") == "retired" and e.get("session") == a
+            )
+            require(_ordered(retired_a, survivor[-1]), "survivor_before_retirement")
         if name == "maf_ordinary_close":
             require(
                 not any(e.get("event") == "admission_refused" for e in subset), "ordinary_admission"
@@ -92,6 +97,17 @@ def verify(value: dict[str, Any]) -> None:
         start = starts[0]
         if name in ("equal_ids_repeated_cancel", "response_loss"):
             require(start.get("request") == digest(42), "active_request")
+        cancelled = [e for e in subset if e.get("event") == "binding_cancelled"]
+        if name in ("equal_ids_repeated_cancel", "maf_active_close"):
+            require(
+                len(cancelled) == 1
+                and cancelled[0].get("session") == active
+                and cancelled[0].get("request") == start.get("request")
+                and _ordered(start, cancelled[0]),
+                "binding_cancellation",
+            )
+        else:
+            require(not cancelled, "unexpected_binding_cancellation")
         admissions = [e for e in subset if e.get("event") == "admission_refused"]
         require(
             len(admissions) == (5 if name == "equal_ids_repeated_cancel" else 1), "admission_count"

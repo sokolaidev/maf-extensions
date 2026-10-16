@@ -200,6 +200,31 @@ def candidate(value: Any) -> None:
         and re.fullmatch(r"[0-9a-f]{40}", value["runner_commit"]),
         "runner_commit",
     )
+    assets = value["runtime_assets"]
+    keys(
+        assets,
+        {
+            "manifest_sha256",
+            "tree_sha256",
+            "files",
+            "archives",
+            "archive_verified_files",
+            "generated_files",
+        },
+    )
+    require(
+        all(
+            isinstance(assets[k], str) and re.fullmatch(r"[0-9a-f]{64}", assets[k])
+            for k in ("manifest_sha256", "tree_sha256")
+        )
+        and all(
+            type(assets[k]) is int and assets[k] > 0
+            for k in ("files", "archives", "archive_verified_files")
+        )
+        and isinstance(assets["generated_files"], list)
+        and all(isinstance(p, str) for p in assets["generated_files"]),
+        "runtime_asset_identity",
+    )
     require(value["host"]["platform"] == "Windows", "unqualified_platform")
     require(value["versions"].get("maf-sandbox-mcp") == "0.1.0", "worker_version")
     for key in ("python_lock_sha256", "npm_lock_sha256", "config_sha256", "runner_sha256"):
