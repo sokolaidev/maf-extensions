@@ -9,6 +9,7 @@ import json
 import sys
 import uuid
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -65,11 +66,7 @@ def valid_result(verdict="valid"):
 
 
 def observations(m):
-    names = [
-        name + (f"[fixture-{i}]" if count > 1 else "")
-        for name, count in transport.CASES.items()
-        for i in range(count)
-    ]
+    names = list(e.TRANSPORT_CASES)
     retirements = [
         {
             "phase": phase,
@@ -84,14 +81,23 @@ def observations(m):
         for phase, count in (("saturation", 8), ("churn", 100), ("idle", 1))
         for _ in range(count)
     ]
-    ownership = {name: {"survivor": valid_result()} for name in e.OWNERSHIP}
+    ownership: dict[str, dict[str, Any]] = {
+        name: {"survivor": valid_result()} for name in e.OWNERSHIP
+    }
     ownership["equal_ids_repeated_cancel"].update(matching_cancels=4, other_session_cancels=1)
     ownership["response_loss"].update(
-        socket_closed=True, binding_result={"completed": True, "cleanup": "confirmed"}
+        socket_closed=True,
+        session="c" * 64,
+        binding_result={
+            "completed": False,
+            "status": "incomplete",
+            "source_sha256": e.LARGE_SOURCE_SHA256,
+            "cleanup": "confirmed",
+        },
     )
     ownership["maf_active_close"]["delete_observed"] = True
     ownership["maf_idle_close"]["delete_observed"] = True
-    return {
+    values = {
         "installed": {
             "versions": m["versions"],
             "wheel_sha256": e.WHEEL,
@@ -141,6 +147,15 @@ def observations(m):
             "image": m["image"],
             "config_sha256": m["config_sha256"],
             "cases": ownership,
+            "transport": [
+                {"event": "binding_started", "session": "c" * 64},
+                {"event": "request", "method": "tools/call", "session": "c" * 64},
+                {
+                    "event": "binding_result",
+                    "session": "c" * 64,
+                    **ownership["response_loss"]["binding_result"],
+                },
+            ],
             "shutdown": {
                 "sessions": 0,
                 "active": False,
@@ -181,6 +196,9 @@ def observations(m):
             "emergency_cleanup": False,
         },
     }
+
+    values["cleanup"]["installed_after"] = copy.deepcopy(values["installed"])
+    return values
 
 
 @pytest.fixture
@@ -517,3 +535,73 @@ def test_npm_missing_runtime_is_not_an_allowed_installer_mutation(npm_artifact):
     (package / "runtime.js").unlink()
     with pytest.raises(FileNotFoundError):
         install.npm_tree(archive, package)
+
+
+@pytest.mark.parametrize(
+    "group,field", [("cleanup", "sentinel_survived"), ("discovery", "late_guard_control")]
+)
+def test_numeric_boolean_standins_are_rejected(bundle, group, field):
+    change_artifact(bundle, group, lambda v: v["observations"].update({field: 1}))
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
+def test_transport_parameter_identity_cannot_be_replaced(bundle):
+    def change(value):
+        obs = value["observations"]
+        old = next(name for name in obs["cases"] if "[" in name)
+        new = old.split("[")[0] + "[omitted-original]"
+        obs["cases"][obs["cases"].index(old)] = new
+        for row in obs["phases"]:
+            if row["case"] == old:
+                row["case"] = new
+        obs["evidence_classes"][new] = obs["evidence_classes"].pop(old)
+
+    change_artifact(bundle, "transport", change)
+    with pytest.raises(e.Refused, match="transport_case_identity"):
+        e.evaluate(*bundle)
+
+
+def test_after_campaign_worker_mutation_cannot_qualify(bundle):
+    change_artifact(
+        bundle, "cleanup", lambda v: v["observations"]["installed_after"].update(worker_modules={})
+    )
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
+def test_uninventoried_bundle_files_are_rejected(bundle):
+    root, _, _ = bundle
+    (root / "extra-private.log").write_text("not an evidence artifact")
+    with pytest.raises(e.Refused, match="bundle_inventory"):
+        e.evaluate(*bundle)
+
+
+def test_response_loss_allows_an_explicit_incomplete_result(bundle):
+    assert e.evaluate(*bundle)["outcome"] == "qualified_for_profile"
+    change_artifact(
+        bundle,
+        "ownership",
+        lambda v: v["observations"]["cases"]["response_loss"]["binding_result"].update(status="ok"),
+    )
+    with pytest.raises(e.Refused, match="response_loss"):
+        e.evaluate(*bundle)
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"event": "binding_started"},
+        {"event": "request", "method": "tools/call"},
+        {"event": "binding_cancelled"},
+        {"event": "request", "method": "notifications/cancelled"},
+    ],
+)
+def test_response_loss_cannot_hide_replay_or_implicit_cancel(bundle, row):
+    change_artifact(
+        bundle,
+        "ownership",
+        lambda v: v["observations"]["transport"].append({**row, "session": "c" * 64}),
+    )
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)

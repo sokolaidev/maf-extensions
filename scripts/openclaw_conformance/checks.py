@@ -324,6 +324,8 @@ def gateway(root: Path, prepared: Path, manifest: dict[str, Any]) -> dict[str, A
             OPENCLAW_CONFIG_PATH=str(config),
             OPENCLAW_STATE_DIR=str(root / "state"),
             OPENCLAW_HOME=str(root / "home"),
+            HOME=str(root / "home"),
+            USERPROFILE=str(root / "home"),
             OPENCLAW_NO_RESPAWN="1",
             OPENCLAW_SKIP_CHANNELS="1",
         )
