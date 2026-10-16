@@ -605,3 +605,26 @@ def test_response_loss_cannot_hide_replay_or_implicit_cancel(bundle, row):
     )
     with pytest.raises(e.Refused):
         e.evaluate(*bundle)
+
+
+def test_response_loss_identity_matches_the_real_ownership_source():
+    ownership = importlib.import_module("openclaw_bicep_ownership_check")
+    from maf_sandbox_mcp import server
+
+    assert server.snapshot(ownership.LARGE).digest == e.LARGE_SOURCE_SHA256
+
+
+@pytest.mark.parametrize("group", ["installed", "ownership", "gateway"])
+def test_boolean_counts_cannot_qualify(bundle, group):
+    def change(value):
+        obs = value["observations"]
+        if group == "installed":
+            obs["npm_tree"]["files"] = True
+        elif group == "ownership":
+            obs["cases"]["equal_ids_repeated_cancel"]["other_session_cancels"] = True
+        else:
+            obs["sessions"][0]["valid"]["projected_content_items"] = True
+
+    change_artifact(bundle, group, change)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
