@@ -250,7 +250,7 @@ def predicates(group: str, value: dict[str, Any], manifest: dict[str, Any]) -> N
             value["versions"] == manifest["versions"]
             and value["wheel_sha256"] == WHEEL
             and value["worker_modules"] == manifest["worker_modules"]
-            and value["npm_tree"] == manifest["npm_tree"],
+            and _same(value["npm_tree"], manifest["npm_tree"]),
             "installed_candidate_differs",
         )
         require(
@@ -342,7 +342,9 @@ def predicates(group: str, value: dict[str, Any], manifest: dict[str, Any]) -> N
                 "ownership_identity",
             )
         require(
-            value["cases"]["equal_ids_repeated_cancel"]["matching_cancels"] == 4
+            type(value["cases"]["equal_ids_repeated_cancel"]["matching_cancels"]) is int
+            and value["cases"]["equal_ids_repeated_cancel"]["matching_cancels"] == 4
+            and type(value["cases"]["equal_ids_repeated_cancel"]["other_session_cancels"]) is int
             and value["cases"]["equal_ids_repeated_cancel"]["other_session_cancels"] == 1,
             "cancel_correlation",
         )
@@ -430,7 +432,11 @@ def predicates(group: str, value: dict[str, Any], manifest: dict[str, Any]) -> N
                     ).hexdigest(),
                     "gateway_source_identity",
                 )
-                require(row["projected_content_items"] == 1, "duplicate_projection")
+                require(
+                    type(row["projected_content_items"]) is int
+                    and row["projected_content_items"] == 1,
+                    "duplicate_projection",
+                )
         result(value["prepared_module"])
         require(
             value["prepared_module"]["image"] == manifest["image"]
