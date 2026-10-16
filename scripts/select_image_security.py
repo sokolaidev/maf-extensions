@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -223,12 +224,87 @@ def _build_branches(source: str) -> tuple[str, dict[str, str]]:
     raise ValueError("Missing dispatcher ending")
 
 
+def _bicep_profiles(source: str) -> tuple[bytes, set[str], set[str]]:
+    """Recognize a literal profile set used only in the route's membership guard."""
+    tree = ast.parse(source)
+    assignments = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == "PROFILES"
+    ]
+    if len(assignments) != 1 or not isinstance(assignments[0].value, ast.Set):
+        raise ValueError("Unknown Bicep profile declaration")
+    value = assignments[0].value
+    members = ast.literal_eval(value)
+    if (
+        not members
+        or any(not isinstance(p, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", p) for p in members)
+        or len(members) != len(value.elts)
+        or value.lineno != value.end_lineno
+        or value.end_col_offset is None
+    ):
+        raise ValueError("Invalid Bicep profile membership")
+    names = [
+        node for node in ast.walk(tree) if isinstance(node, ast.Name) and node.id == "PROFILES"
+    ]
+    guard = ast.dump(ast.parse("profile not in PROFILES", mode="eval").body)
+    checks = [
+        node for node in ast.walk(tree) if isinstance(node, ast.Compare) and ast.dump(node) == guard
+    ]
+    if len(names) != 2 or len(checks) != 1:
+        raise ValueError("Unknown Bicep profile use")
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "validate_route"
+    ]
+    uses = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and node.id == "validate_route"
+    ]
+    shared: set[str] = set()
+    if not calls or len(calls) != len(uses):
+        raise ValueError("Unknown Bicep route validation use")
+    for call in calls:
+        if (
+            len(call.args) != 2
+            or call.keywords
+            or not isinstance(call.args[1], ast.Constant)
+            or not isinstance(call.args[1].value, str)
+        ):
+            raise ValueError("Unknown Bicep route validation profile")
+        shared.add(call.args[1].value)
+    lines = source.encode("utf-8").split(b"\n")
+    line = lines[value.lineno - 1]
+    lines[value.lineno - 1] = (
+        line[: value.col_offset] + b"{PROFILE_MEMBERS}" + line[value.end_col_offset :]
+    )
+    return b"\n".join(lines), members, shared
+
+
 def changed_profiles(root: Path, base: str, head: str, path: str) -> tuple[str, ...]:
     """Narrow recognized shared-file changes; uncertainty retains every affected profile."""
-    if path not in {"images/release-profiles.json", "scripts/build_scan_image.sh"}:
+    if path not in {
+        "images/release-profiles.json",
+        "scripts/build_scan_image.sh",
+        "scripts/build_bicep_image.py",
+    }:
         return affected(path)
     try:
         before, after = (_git(root, "show", f"{ref}:{path}") for ref in (base, head))
+        if path == "scripts/build_bicep_image.py":
+            common_before, old_profiles, old_shared = _bicep_profiles(before)
+            common_after, new_profiles, new_shared = _bicep_profiles(after)
+            changed = old_profiles ^ new_profiles
+            if common_before != common_after or changed & (old_shared | new_shared):
+                return affected(path)
+            return tuple(p for p in affected(path) if p in changed)
         if path == "scripts/build_scan_image.sh":
             common_before, old = _build_branches(before)
             common_after, new = _build_branches(after)
@@ -259,6 +335,7 @@ def changed_profiles(root: Path, base: str, head: str, path: str) -> tuple[str, 
     except (
         subprocess.CalledProcessError,
         OSError,
+        SyntaxError,
         ValueError,
         KeyError,
         TypeError,

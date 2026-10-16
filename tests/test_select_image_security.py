@@ -61,6 +61,96 @@ def repository(tmp_path):
     return tmp_path, base
 
 
+@pytest.fixture
+def bicep_builder(repository):
+    root, _ = repository
+    path = "scripts/build_bicep_image.py"
+    source = (ROOT / path).read_text(encoding="utf-8")
+    before = source.replace('"bicep-docker-sbx"', '"sbx-bicep"')
+    base = commit(root, {path: before})
+    return root, base, path, source
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_bicep_profile_rename_selects_only_changed_membership(bicep_builder, reverse):
+    root, base, path, source = bicep_builder
+    head = commit(root, {path: source})
+    if reverse:
+        base, head = head, base
+    assert changed_profiles(root, base, head, path) == ("bicep-docker-sbx",)
+    assert select(root, "push", base, head)[0] == ["bicep-docker-sbx"]
+
+
+@pytest.mark.parametrize("profile", ["bicep", "bicep-avm"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_bicep_profile_removal_remains_an_input_change(bicep_builder, profile, reverse):
+    root, base, path, source = bicep_builder
+    source = source.replace(f'"{profile}", ', "", 1)
+    head = commit(root, {path: source})
+    if reverse:
+        base, head = head, base
+    expected = affected(path) if profile == "bicep" else (profile, "bicep-docker-sbx")
+    assert changed_profiles(root, base, head, path) == expected
+
+
+@pytest.mark.parametrize(
+    "validation",
+    [
+        'validate_route(route, "bicep-docker-sbx")',
+        "validate_route(route, profile)",
+        'validate_route(route, profile="bicep")',
+        'validate_route(route, "bicep"); guard = validate_route',
+    ],
+)
+def test_bicep_profile_edit_preserves_shared_route_dependencies(bicep_builder, validation):
+    root, _, path, source = bicep_builder
+    source = source.replace('validate_route(route, "bicep")', validation)
+    base = commit(root, {path: source.replace('"bicep-docker-sbx"}', '"sbx-bicep"}')})
+    head = commit(root, {path: source})
+    assert changed_profiles(root, base, head, path) == affected(path)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "command",
+        "validation",
+        "dynamic",
+        "duplicate",
+        "extra-use",
+        "missing",
+        "syntax",
+        "invalid-member",
+        "multiline",
+        "alias",
+    ],
+)
+def test_bicep_builder_uncertainty_keeps_all_bicep_profiles(bicep_builder, mutation):
+    root, base, path, source = bicep_builder
+    changes = {
+        "command": source.replace('"--pull", ', ""),
+        "validation": source.replace('route != "upstream"', 'route == "source"'),
+        "dynamic": source.replace('"bicep-avm"', 'os.environ["PROFILE"]'),
+        "duplicate": source.replace('"bicep-avm"', '"bicep-avm", "bicep-avm"'),
+        "extra-use": source + "print(len(PROFILES))\n",
+        "missing": None,
+        "syntax": source + "invalid (\n",
+        "invalid-member": source.replace('"bicep-avm"', '"bicep avm"'),
+        "multiline": source.replace('"bicep-avm",', '"bicep-avm",\n'),
+        "alias": source.replace("PROFILES =", "OTHER = PROFILES ="),
+    }
+    head = commit(root, {path: changes[mutation]})
+    assert changed_profiles(root, base, head, path) == affected(path)
+
+
+def test_bicep_profile_edit_with_unrecognized_existing_use_keeps_all_profiles(bicep_builder):
+    root, _, path, source = bicep_builder
+    source += "print(len(PROFILES))\n"
+    base = commit(root, {path: source.replace('"bicep-docker-sbx"', '"sbx-bicep"')})
+    head = commit(root, {path: source})
+    assert changed_profiles(root, base, head, path) == affected(path)
+
+
 def release_changes():
     return {
         f"{PACKAGE}/pyproject.toml": METADATA.replace('version = "0.1.0"', 'version = "0.1.1"'),

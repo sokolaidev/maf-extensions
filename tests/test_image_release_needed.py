@@ -573,6 +573,26 @@ def test_source_diff_ignores_publisher_but_tracks_payload_and_prepared_dependenc
     assert tracker.changed_inputs(tmp_path, payload, prepared, "graphviz") == []
 
 
+def test_bicep_profile_rename_reconciles_avm_source_request(tmp_path):
+    tracker.git(tmp_path, "init")
+    path = "scripts/build_bicep_image.py"
+    builder = (ROOT / path).read_text(encoding="utf-8")
+    base = commit(tmp_path, {path: builder.replace('"bicep-docker-sbx"', '"sbx-bicep"')})
+    head = commit(tmp_path, {path: builder})
+    record = RECORD | {"profile": "bicep-avm", "sourceCommit": base}
+    previous = desired(record=record, changed=[path])
+    changed = tracker.changed_inputs(tmp_path, base, head, "bicep-avm")
+    assert changed == []
+    result = desired(record=record, changed=changed, previous=previous)
+    assert result["resolved"]
+    assert result["resolution"] == "source-reconciled"
+    assert tracker.changed_inputs(tmp_path, base, head, "bicep-docker-sbx") == [path]
+    mixed = commit(tmp_path, {path: builder.replace('"--pull", ', "")})
+    changed = tracker.changed_inputs(tmp_path, base, mixed, "bicep-avm")
+    assert changed == [path]
+    assert not desired(record=record, changed=changed, previous=previous)["resolved"]
+
+
 def test_terraform_profile_addition_reconciles_bicep_source_request(tmp_path):
     tracker.git(tmp_path, "init")
     builder = (ROOT / "scripts/build_scan_image.sh").read_text()
