@@ -19,8 +19,11 @@ See ``docs/compaction/strategies.md`` for defaults, trade-offs and measurements.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import math
 from copy import deepcopy
+from time import monotonic
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 
 from agent_framework import Content, Message
@@ -474,6 +477,13 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             (at least one). Only the oldest whole turns or summaries that fit are replaced;
             when no eligible prefix fits, the oldest item is left untouched. The composition
             shares this limit for record merges and rewrites. Reserve provider overhead separately.
+        summary_timeout_seconds: Positive finite timeout for each user-summary or fold request.
+            None leaves requests unbounded. Cancellation must be honoured by the client.
+        max_consecutive_summary_failures: Positive failure threshold for a cooldown, or None
+            to disable it. Requires ``summary_backoff_seconds``. Accepted fresh summaries
+            reset the streak; cached replays do not. State belongs to this instance only.
+        summary_backoff_seconds: Positive finite cooldown duration, configured with the
+            failure threshold. Cooldown skips requests but permits cached replays.
         summary_mode: What a pass does with the summary the previous pass left behind: one of
             :data:`SUMMARY_MODES`. The recompacting default re-reads and replaces it; the
             boundary mode leaves it standing and compacts only what is newer; the fold mode does
@@ -508,6 +518,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         trigger_fraction: float = DEFAULT_USER_TRIGGER_FRACTION,
         min_band_share: float = DEFAULT_MIN_BAND_SHARE,
         max_summary_input_tokens: int | None = None,
+        summary_timeout_seconds: float | None = None,
+        max_consecutive_summary_failures: int | None = None,
+        summary_backoff_seconds: float | None = None,
         summary_mode: str = DEFAULT_SUMMARY_MODE,
         prompt: str | None = None,
         fold_prompt: str | None = None,
@@ -546,6 +559,29 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         if type(max_summary_input_tokens) is not int or max_summary_input_tokens <= 0:
             raise ValueError("max_summary_input_tokens must be a positive integer.")
         self.max_summary_input_tokens = max_summary_input_tokens
+        for name, seconds in (
+            ("summary_timeout_seconds", summary_timeout_seconds),
+            ("summary_backoff_seconds", summary_backoff_seconds),
+        ):
+            if seconds is not None and (
+                isinstance(seconds, bool) or not math.isfinite(seconds) or seconds <= 0
+            ):
+                raise ValueError(f"{name} must be positive and finite.")
+        if max_consecutive_summary_failures is not None and (
+            type(max_consecutive_summary_failures) is not int
+            or max_consecutive_summary_failures <= 0
+        ):
+            raise ValueError("max_consecutive_summary_failures must be a positive integer.")
+        if (max_consecutive_summary_failures is None) != (summary_backoff_seconds is None):
+            raise ValueError(
+                "max_consecutive_summary_failures and summary_backoff_seconds must be set together."
+            )
+        self.summary_timeout_seconds = summary_timeout_seconds
+        self.max_consecutive_summary_failures = max_consecutive_summary_failures
+        self.summary_backoff_seconds = summary_backoff_seconds
+        self._consecutive_summary_failures = 0
+        self._summary_backoff_until = 0.0
+        self._summary_skips = 0
         self.max_input_tokens = max_input_tokens
         self.tokenizer = tokenizer
         self.client = client
@@ -613,7 +649,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         is the uncompacted control wearing another name -- which is the reading this package has
         twice had to add a counter to rule out -- and which of the three ways it got there is
         said by :attr:`user_passes_below_trigger`, :attr:`user_passes_declined` and
-        :attr:`user_summary_failures`, exactly one of which is non-zero on such a row.
+        :attr:`user_summary_failures`. Configured cooldowns also report
+        :attr:`user_summary_skips`.
 
         Read it against :attr:`user_messages_replaced` rather than alone. One compaction that
         replaced seventy turns and seven that replaced ten each cost very different amounts of
@@ -734,9 +771,15 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         return self._replayed
 
     @property
+    def user_summary_skips(self) -> int:
+        """User-summary or fold requests skipped during this instance's cooldown."""
+        return self._summary_skips
+
+    @property
     def user_summary_failures(self) -> int:
-        """Passes where the summarizer raised, returned nothing, or returned a summary no smaller
-        than what it would replace, and the band was left alone.
+        """Passes where the summarizer raised, timed out, or gave no smaller nonempty summary.
+
+        The band is left alone on these passes.
 
         Non-zero means part of what this row measured is a summarizer that was not answering,
         and the row is then the uncompacted control for those passes -- reported rather than
@@ -766,8 +809,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         pass over a non-empty conversation -- five with :attr:`user_folds`, which is a pass the
         band declined and the standing summaries did not, and six with
         :attr:`user_summaries_replayed`, which is a pass already made on the other view of the
-        same conversation -- so a row where the user half did nothing always has exactly one
-        non-zero number saying why.
+        same conversation. With a cooldown configured, :attr:`user_summary_skips` adds the
+        requests withheld after consecutive failures.
 
         On a composed row this counts two things that are both the design working: a
         conversation that had not grown yet, and one the record phase had already brought under
@@ -943,8 +986,11 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         ]
         if not self._smaller(replaced, band, summary, summary_id=summary_id):
             # Remembered all the same, so the other list replays the refusal instead of asking.
-            self._failures += remembered is None
+            if remembered is None:
+                self._summary_failed()
             return False
+        if remembered is None:
+            self._summary_succeeded()
         if replayed:
             self._replayed += 1
         else:
@@ -1297,13 +1343,17 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         answer = await self._fold_answer(messages, standing)
         if answer is None:
             return False
-        remembered, replayed = answer
+        remembered, replayed, fresh = answer
         summaries: list[Message] = [messages[span["start_index"]] for span in standing]
         if not self._smaller(
             summaries, standing, remembered.text, summary_id=remembered.summary_id
         ):
             self._failures += not replayed
+            if fresh:
+                self._summary_failed(count_failure=False)
             return False
+        if fresh:
+            self._summary_succeeded()
         self._apply_fold(messages, standing, remembered, replayed)
         return True
 
@@ -1339,12 +1389,16 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         answer = await self._fold_answer(messages, standing)
         if answer is None:
             return "failed"
-        remembered, replayed = answer
+        remembered, replayed, fresh = answer
         summaries: list[Message] = [messages[span["start_index"]] for span in standing]
         if not self._smaller(
             summaries, standing, remembered.text, summary_id=remembered.summary_id
         ):
+            if fresh:
+                self._summary_failed(count_failure=False)
             return "rejected"
+        if fresh:
+            self._summary_succeeded()
         self._apply_fold(messages, standing, remembered, replayed)
         self._kept_folds[remembered.summary_id] = remembered
         self._kept_fold_counts[remembered.summary_id] = len(standing)
@@ -1417,8 +1471,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
 
     async def _fold_answer(
         self, messages: list[Message], standing: list[dict[str, Any]]
-    ) -> tuple[_Remembered, bool] | None:
-        """Return the fold's answer and whether it was replayed, or None when there is none.
+    ) -> tuple[_Remembered, bool, bool] | None:
+        """Return the fold's answer, replay flag and fresh-request flag, or None on failure.
 
         Asks the summarizer only when this exact request was not the last one made; the answer
         and the id it will carry are remembered either way, so the other list the live path
@@ -1430,8 +1484,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             standing: The standing summaries' spans, oldest first.
 
         Returns:
-            The remembered answer, and True only for a replay of the same replacement id;
-            None when the summarizer gave nothing.
+            The answer, whether it replays the same replacement id, and whether it required
+            a fresh request; None when the summarizer gave nothing.
         """
         transcript = _format_turns(
             [messages[span["start_index"]] for span in standing], text=_summary_body
@@ -1446,15 +1500,15 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                     )
                 )
                 self._remember(remembered)
-                return remembered, False
-            return remembered, True
+                return remembered, False, False
+            return remembered, True, False
         summary = await self._summarize(transcript, prompt=self.fold_prompt)
         if summary is None:
             return None
         summary_id = _next_summary_id(messages, prefix=FOLD_ID_PREFIX, minimum=self._folds)
         remembered = _Remembered(self.fold_prompt, transcript, summary_id, summary)
         self._remember(remembered)
-        return remembered, False
+        return remembered, False, True
 
     def _smaller(
         self,
@@ -1537,6 +1591,21 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         """
         self._remembered = [*self._remembered, request][-self.remembered_requests :]
 
+    def _summary_failed(self, *, count_failure: bool = True) -> None:
+        if count_failure:
+            self._failures += 1
+        self._consecutive_summary_failures += 1
+        if (
+            self.max_consecutive_summary_failures is not None
+            and self.summary_backoff_seconds is not None
+            and self._consecutive_summary_failures >= self.max_consecutive_summary_failures
+        ):
+            self._summary_backoff_until = monotonic() + self.summary_backoff_seconds
+
+    def _summary_succeeded(self) -> None:
+        self._consecutive_summary_failures = 0
+        self._summary_backoff_until = 0.0
+
     async def _summarize(self, transcript: str, *, prompt: str) -> str | None:
         """Return the summary of ``transcript``, or None when the summarizer did not produce one.
 
@@ -1549,16 +1618,24 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             The summary text, stripped, or None on either failure.
         """
+        if monotonic() < self._summary_backoff_until:
+            self._summary_skips += 1
+            return None
         if not fits_summary_input(
             prompt, transcript, tokenizer=self.tokenizer, limit=self.max_summary_input_tokens
         ):
             logger.warning("Skipping user-turn compaction: summary input exceeds its token limit.")
-            self._failures += 1
+            self._summary_failed()
             return None
         try:
-            response = await self.client.get_response(
+            request = self.client.get_response(
                 summary_request(prompt, transcript),
                 stream=False,
+            )
+            response = (
+                await request
+                if self.summary_timeout_seconds is None
+                else await asyncio.wait_for(request, timeout=self.summary_timeout_seconds)
             )
         except Exception as error:
             # Broad on purpose, and the framework's own summarizing strategy is broad in the
@@ -1566,12 +1643,12 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             # anything this does not catch fails the user's turn -- which trades a conversation
             # that is merely too long for one that does not happen.
             logger.warning("Skipping user-turn compaction: summary generation failed (%s).", error)
-            self._failures += 1
+            self._summary_failed()
             return None
         summary = response.text.strip() if response.text else ""
         if not summary:
             logger.warning("Skipping user-turn compaction: the summarizer returned no text.")
-            self._failures += 1
+            self._summary_failed()
             return None
         return summary
 
