@@ -138,4 +138,4 @@ Inside the context window nothing here beats not compacting: the best strategy c
 | Separating the three user-summary modes by measurement | Not started | untracked |
 | Summarising each tool result individually rather than all in one record | Not started | untracked |
 | Private-API dependency re-read on every core minor | Ongoing | [release-compatibility.md](../release-compatibility.md) |
-| Optional user-summary timeouts and consecutive-failure cooldowns | Implemented | [#1958](https://github.com/sokolaidev/maf-extensions/issues/1958) (open) |
+| Optional user-summary timeouts and consecutive-failure cooldowns | Implemented | [#1958](https://github.com/sokolaidev/maf-extensions/issues/1958) (closed) by [#1984](https://github.com/sokolaidev/maf-extensions/pull/1984) (merged) |
