@@ -36,29 +36,7 @@ from maf_sandbox.maf import COMPLETED_TEXT, list_no_files, make_caller_context
 from maf_sandbox_drawio import DrawioExport, make_drawio_tools
 
 FONTS = ("DejaVu Sans", "DejaVu Serif", "DejaVu Sans Mono")
-STOP_RENDERER = """
-import json, os, signal, time
-from pathlib import Path
-deadline = time.monotonic() + 40
-while time.monotonic() < deadline:
-    for entry in Path('/proc').iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            args = (entry / 'cmdline').read_bytes().split(b'\\0')
-            if not args or args[0] != b'/opt/drawio/drawio':
-                continue
-            if any(arg.startswith(b'--type=') for arg in args):
-                continue
-            pid = int(entry.name)
-            os.kill(pid, signal.SIGSTOP)
-            print(json.dumps({'renderer_pid': pid, 'stopped': True}), flush=True)
-            raise SystemExit(0)
-        except (FileNotFoundError, ProcessLookupError, PermissionError):
-            continue
-    time.sleep(0.02)
-raise SystemExit('No active native renderer observed')
-"""
+STOP_RENDERER = Path(__file__).with_name("drawio_export_interrupt.py").read_text("utf-8")
 EGRESS_PROBE = """
 import http.client, json
 connection = http.client.HTTPSConnection('example.com', timeout=15)
@@ -269,6 +247,11 @@ async def exercise(
         )
         require(probe.exit_code == 0, "Could not interrupt an active renderer: " + probe.stderr)
         report["interrupted"] = json.loads(probe.stdout)
+        require(
+            report["interrupted"].get("pngSignature") == "89504e470d0a1a0a"
+            and report["interrupted"].get("stopped") is True,
+            "Fault injection did not observe native PNG output",
+        )
         require(not task.done(), "Export finished before fault injection")
         if worker:
             output.mkdir(parents=True, exist_ok=True)
@@ -345,7 +328,10 @@ async def owner_death(provider: str, image: str, output: Path) -> dict[str, Any]
                     require(process.returncode is None, "Owner-death worker failed; see worker.log")
                     await asyncio.sleep(0.1)
             observed = json.loads((output / "ready.json").read_text("utf-8"))
-            require(observed["stopped"] is True, "Worker did not observe a native renderer")
+            require(
+                observed["stopped"] is True and observed.get("pngSignature") == "89504e470d0a1a0a",
+                "Worker did not observe native PNG output",
+            )
             process.kill()
             await process.wait()
         purge = await backend.dispose_scope(scope, "acceptance")

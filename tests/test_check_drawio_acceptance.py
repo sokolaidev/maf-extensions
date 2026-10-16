@@ -87,7 +87,7 @@ def test_fault_injection_waits_for_renderer_execution():
 
 
 @pytest.mark.parametrize(
-    "fault", [None, "not-active", "no-recovery", "repeat-removes", "artifacts"]
+    "fault", [None, "not-active", "startup-only", "no-recovery", "repeat-removes", "artifacts"]
 )
 def test_owner_death_requires_active_renderer_and_fresh_backend_recovery(
     tmp_path, monkeypatch, fault
@@ -119,6 +119,7 @@ def test_owner_death_requires_active_renderer_and_fresh_backend_recovery(
                 {
                     "stopped": fault != "not-active",
                     "renderer_pid": 123,
+                    "pngSignature": None if fault == "startup-only" else "89504e470d0a1a0a",
                 }
             ),
             encoding="utf-8",
@@ -160,7 +161,9 @@ def test_cancellation_retains_call_end_failure_separately_from_recovery(
     sandbox = SimpleNamespace(
         exec=AsyncMock(
             return_value=ExecResult(
-                stdout=json.dumps({"renderer_pid": 42, "stopped": True}),
+                stdout=json.dumps(
+                    {"renderer_pid": 42, "stopped": True, "pngSignature": "89504e470d0a1a0a"}
+                ),
                 stderr="",
                 exit_code=0,
             )
@@ -205,3 +208,61 @@ def test_cancellation_retains_call_end_failure_separately_from_recovery(
         assert report["cancellation"]["recoveredSandboxes"] == int(fault == "bounded-cleanup")
         assert report["cancellation"]["artifactsDelivered"] is False
         assert report["cancellation"]["repeatedPurgeEmpty"] is True
+
+
+@pytest.mark.parametrize("worker", [False, True])
+def test_exercise_awaits_pending_task_and_its_cancellation_cleanup(tmp_path, monkeypatch, worker):
+    async def check():
+        running = asyncio.Queue()
+        cleaned = asyncio.Event()
+        backend = SimpleNamespace(
+            isolation=acceptance.Isolation.CONTAINER,
+            dispose_scope=AsyncMock(return_value=ScopePurge()),
+        )
+        sandbox = SimpleNamespace(
+            exec=AsyncMock(
+                return_value=ExecResult(
+                    json.dumps(
+                        {"renderer_pid": 42, "stopped": True, "pngSignature": "89504e470d0a1a0a"}
+                    ),
+                    "",
+                    0 if worker else 1,
+                )
+            )
+        )
+
+        async def convert(**kwargs):
+            running.put_nowait(sandbox)
+            try:
+                await asyncio.Future()
+            finally:
+                await asyncio.sleep(0)
+                cleaned.set()
+
+        monkeypatch.setattr(acceptance, "FONTS", ())
+        monkeypatch.setattr(acceptance, "backend_for", AsyncMock(return_value=backend))
+        monkeypatch.setattr(
+            acceptance, "ObservedBackend", lambda *_: SimpleNamespace(running=running)
+        )
+        monkeypatch.setattr(acceptance, "SandboxRouter", lambda *a, **kw: object())
+        monkeypatch.setattr(
+            acceptance, "make_drawio_tools", lambda *a, **kw: [SimpleNamespace(func=convert)]
+        )
+        task = asyncio.create_task(
+            acceptance.exercise("docker", "image", tmp_path, "scope", worker=worker)
+        )
+        if worker:
+            async with asyncio.timeout(5):
+                while not (tmp_path / "ready.json").exists():
+                    await asyncio.sleep(0.01)
+            assert not task.done() and not cleaned.is_set()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            with pytest.raises(ValueError, match="Could not interrupt"):
+                await task
+        assert cleaned.is_set()
+        backend.dispose_scope.assert_awaited_once()
+
+    asyncio.run(check())
