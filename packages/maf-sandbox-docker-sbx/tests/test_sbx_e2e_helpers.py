@@ -86,3 +86,33 @@ def test_unknown_mcp_listing_stops_before_registration(monkeypatch, tmp_path, pa
     with pytest.raises(AssertionError):
         host.test_a_registered_mcp_server_is_refused(tmp_path)
     assert commands == [("mcp", "ls", "--json")]
+
+
+@pytest.mark.parametrize("flag", ["--force", "--yes"])
+def test_lapsed_login_uses_supported_confirmation_and_restores_login(monkeypatch, tmp_path, flag):
+    commands = []
+
+    def checked(*args, **kwargs):
+        commands.append(args)
+        if args == ("logout", "--help"):
+            return f"  {flag}   Skip confirmation prompt".encode()
+        if args[0] == "logout":
+            assert args == ("logout", flag)
+        return b""
+
+    class LoggedOutBackend:
+        async def acquire(self, key, spec):
+            raise host.SbxLoginRequired("Run `sbx login`")
+
+    monkeypatch.setenv("DOCKER_USERNAME", "test-user")
+    monkeypatch.setenv("DOCKER_PAT", "test-token")
+    monkeypatch.setattr(host, "_MAY_CHANGE_HOST", True)
+    monkeypatch.setattr(host, "_forwarding_set", lambda value: contextlib.nullcontext())
+    monkeypatch.setattr(host, "_checked", checked)
+    monkeypatch.setattr(host, "_backend", lambda path: LoggedOutBackend())
+    host.test_a_lapsed_login_names_sbx_login(tmp_path)
+    assert commands == [
+        ("logout", "--help"),
+        ("logout", flag),
+        ("login", "--username", "test-user", "--password-stdin"),
+    ]

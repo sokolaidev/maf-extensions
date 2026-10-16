@@ -146,7 +146,10 @@ def test_a_lapsed_login_names_sbx_login(tmp_path):
         pytest.skip("logging back in needs DOCKER_USERNAME and DOCKER_PAT")
     with _forwarding_set("false"):
         try:
-            _checked("logout", "--yes")
+            help_text = _checked("logout", "--help")
+            flag = "--force" if b"--force" in help_text else "--yes"
+            assert flag.encode() in help_text, "sbx logout has no known confirmation flag"
+            _checked("logout", flag)
             backend = _backend(tmp_path)
             with pytest.raises(SbxLoginRequired, match="Run `sbx login`") as refused:
                 asyncio.run(backend.acquire(_key("login"), _spec()))
