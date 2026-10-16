@@ -37,6 +37,7 @@ import httpx
 from agent_framework import MCPStreamableHTTPTool
 from openclaw_gateway_http_check import records, require
 from openclaw_http_observer import ObserveHTTP, digest, resolve_image
+from openclaw_sources import LARGE_SOURCE, SIMPLE_SOURCE
 
 BASELINE = {
     "agent-framework-core": "1.19.0",
@@ -47,15 +48,8 @@ BASELINE = {
     "uvicorn": "0.54.0",
     "starlette": "1.7.0",
 }
-SIMPLE = {"files": [{"path": "main.bicep", "content": "output greeting string = 'hello'"}]}
-LARGE = {
-    "files": [
-        {
-            "path": "main.bicep",
-            "content": "\n".join(f"var v{i} = range(0, 1000)" for i in range(1500)),
-        }
-    ]
-}
+SIMPLE = {"files": [{"path": "main.bicep", "content": SIMPLE_SOURCE}]}
+LARGE = {"files": [{"path": "main.bicep", "content": LARGE_SOURCE}]}
 
 
 def environment(installed: bool = False, expected: dict[str, str] | None = None) -> dict[str, str]:
@@ -389,6 +383,7 @@ class Check:
         require(r.status_code == 202, "Cancellation not acknowledged")
 
     async def busy(self, sid: str, container: str) -> None:
+        before = len(self.events())
         r = await self.call(sid)
         require(
             r.status_code == 200
@@ -402,6 +397,24 @@ class Check:
         require(
             self.app.service.active is not None and not self.app.service.active[1].done(),
             "Active supervision did not survive",
+        )
+
+        request = next(
+            e
+            for e in self.events()[before:]
+            if e.get("event") == "request" and e.get("method") == "tools/call"
+        )
+        active = self.app.service.active[0]
+        self.observer.record(
+            event="admission_refused",
+            session=digest(sid.encode().hex()),
+            request=digest(42),
+            exchange=request["exchange"],
+            active_session=digest(active.session_id.encode().hex()),
+            active_request=digest(active.request_id),
+            container=digest(container),
+            owned_count=1,
+            active_pending=True,
         )
 
     async def compiler(self) -> str:
@@ -491,6 +504,8 @@ class Check:
         value = await self.valid(b)
         self.observations["equal_ids_repeated_cancel"] = {
             "container": digest(container),
+            "session_a": digest(a.encode().hex()),
+            "session_b": digest(b.encode().hex()),
             "matching_cancels": 4,
             "other_session_cancels": 1,
             "survivor": value,
@@ -538,6 +553,8 @@ class Check:
             self.observations["response_loss"] = {
                 "session": digest(a.encode().hex()),
                 "container": digest(container),
+                "session_a": digest(a.encode().hex()),
+                "session_b": digest(b.encode().hex()),
                 "socket_closed": writer.is_closing(),
                 "binding_result": binding_result,
                 "survivor": await self.valid(b),
@@ -630,6 +647,8 @@ class Check:
             )
         self.observations["maf_active_close" if active_close else "maf_idle_close"] = {
             "container": digest(container),
+            "session_a": digest(a_sid.encode().hex()),
+            "session_b": digest(b_sid.encode().hex()),
             "delete_observed": True,
             "call_raised": isinstance(outcome, BaseException),
             "call_error_type": type(outcome).__name__
@@ -653,7 +672,11 @@ class Check:
         await a.close()
         await until(lambda: a_sid not in self.app.sessions, "Ordinary MAF close did not retire")
         require(b_sid in self.app.sessions, "Ordinary close lost B")
-        self.observations["maf_ordinary_close"] = {"survivor": await self.valid(b)}
+        self.observations["maf_ordinary_close"] = {
+            "session_a": digest(a_sid.encode().hex()),
+            "session_b": digest(b_sid.encode().hex()),
+            "survivor": await self.valid(b),
+        }
         await b.close()
         await until(lambda: not self.app.sessions, "Ordinary MAF sessions did not drain")
 
@@ -708,8 +731,15 @@ async def check(args: argparse.Namespace) -> dict[str, Any]:
         try:
             await until(lambda: host.started or serving.done(), "Service did not start")
             require(host.started and not serving.done(), "Service startup failed")
+            control = getattr(args, "control", None)
+            planned = (
+                ["--name", control["names"]["ownership"], "--label", control["label"]]
+                if control
+                else []
+            )
             sentinel = await docker(
                 "run",
+                *planned,
                 "-d",
                 "--network",
                 "none",

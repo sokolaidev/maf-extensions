@@ -62,6 +62,9 @@ def check_prepared(prepared: Path, manifest: dict[str, Any]) -> None:
         ("bicepconfig.json", "config_sha256"),
     ):
         require(file_hash(prepared / name) == manifest[field], "prepared_input_changed")
+    from .assets import verify as verify_assets
+
+    verify_assets(prepared, manifest["runtime_assets"])
     observed_host = host(prepared)
     expected_host = {k: v for k, v in manifest["host"].items() if k != "python"}
     require(observed_host == expected_host, "host_changed")
@@ -70,6 +73,22 @@ def check_prepared(prepared: Path, manifest: dict[str, Any]) -> None:
         == manifest["npm_tree"],
         "npm_changed",
     )
+
+
+def check_logs(root: Path, group: str, prepared: Path) -> None:
+    """Bound outer and auxiliary output during execution and after job cleanup."""
+    paths = [root / (group + ".log"), prepared / "setup.log"]
+    directory = root / group
+    if directory.exists():
+        paths.extend(directory.rglob("*.log"))
+        paths.extend(directory.rglob("*.jsonl"))
+    for path in paths:
+        if path.exists():
+            require(not path.is_symlink(), "stage_log_link")
+            require(
+                path.stat().st_size <= LIMITS["events" if path.suffix == ".jsonl" else "log"],
+                "stage_log_limit",
+            )
 
 
 def stage(group: str, root: Path, prepared: Path, manifest_path: Path) -> dict[str, Any]:
@@ -97,70 +116,107 @@ def stage(group: str, root: Path, prepared: Path, manifest_path: Path) -> dict[s
         child = processes.children[0][0]
         while child.poll() is None:
             require(time.monotonic() - started < LIMITS["stage_seconds"], "stage_deadline")
-            require((root / (group + ".log")).stat().st_size <= LIMITS["log"], "stage_log_limit")
+            check_logs(root, group, prepared)
             time.sleep(0.2)
         require(child.returncode == 0, "stage_failed_" + group)
     finally:
         errors = processes.close()
+        check_logs(root, group, prepared)
     require(not errors and processes.stopped, "stage_process_cleanup")
     return read(root / group / "observations.json", LIMITS["events"])
 
 
-def cleanup(root: Path, prepared: Path, sentinel: str, stopped: bool) -> dict[str, Any]:
-    """Observe owned leftovers and distinguish emergency cleanup from product settlement."""
+def cleanup(root: Path, prepared: Path, resources: dict[str, Any], stopped: bool) -> dict[str, Any]:
+    """Attempt every recorded owner independently and retain all observation failures."""
+    from .resources import inventory
+
+    require(resources == inventory(resources["campaign"]), "cleanup_resource_identity")
+    errors: list[str] = []
+    survived = removed = False
+    emergency = False
+    owned_empty = True
+
+    def attempt(args: list[str], reason: str) -> str | None:
+        try:
+            return command(args, prepared, 60)
+        except Exception:
+            errors.append(reason)
+            return None
+
+    sentinel = resources["names"]["sentinel"]
     survived = (
-        command(["docker", "inspect", "--format", "{{.State.Running}}", sentinel], prepared, 30)
+        attempt(
+            ["docker", "inspect", "--format", "{{.State.Running}}", sentinel],
+            "sentinel_observation",
+        )
         == "true"
     )
-    emergency = False
-    for owner_file in (
-        root / "ownership/owner/owner",
-        root / "gateway/owner/owner",
-        root / "policy/refused-owner/owner",
-        root / "policy/input-owner/owner",
+    for relative in (
+        "ownership/owner/owner",
+        "gateway/owner/owner",
+        "policy/refused-owner/owner",
+        "policy/input-owner/owner",
     ):
-        if owner_file.exists():
+        owner_file = root / relative
+        try:
+            if not owner_file.exists():
+                continue
             owner = owner_file.read_text().strip()
             require(
                 len(owner) == 32 and all(c in "0123456789abcdef" for c in owner),
                 "cleanup_owner_identity",
             )
-            owned = command(
-                [
-                    "docker",
-                    "ps",
-                    "-aq",
-                    "--filter",
-                    "label=maf-sandbox.scope=openclaw-bicep-" + owner,
-                ],
-                prepared,
-                30,
-            ).split()
-            if owned:
+            query = [
+                "docker",
+                "ps",
+                "-aq",
+                "--filter",
+                "label=maf-sandbox.scope=openclaw-bicep-" + owner,
+            ]
+            found = attempt(query, relative + ":observe")
+            if found:
                 emergency = True
-                command(["docker", "rm", "-f", *owned], prepared, 60)
-            require(
-                not command(
-                    [
-                        "docker",
-                        "ps",
-                        "-aq",
-                        "--filter",
-                        "label=maf-sandbox.scope=openclaw-bicep-" + owner,
-                    ],
-                    prepared,
-                    30,
-                ),
-                "owned_survivors",
-            )
-    command(["docker", "rm", "-f", sentinel], prepared, 30)
-    removed = not command(["docker", "ps", "-aq", "--filter", "id=" + sentinel], prepared, 30)
+                for container in found.split():
+                    attempt(["docker", "rm", "-f", container], relative + ":remove")
+            after = attempt(query, relative + ":verify")
+            if after is None or after:
+                owned_empty = False
+                errors.append(relative + ":survivors")
+        except Exception:
+            owned_empty = False
+            errors.append(relative + ":owner_identity")
+    for role, name in resources["names"].items():
+        found = attempt(
+            [
+                "docker",
+                "ps",
+                "-aq",
+                "--filter",
+                "name=^/" + name + "$",
+                "--filter",
+                "label=" + resources["label"],
+            ],
+            role + ":observe",
+        )
+        if found:
+            emergency |= role != "sentinel"
+            for container in found.split():
+                attempt(["docker", "rm", "-f", container], role + ":remove")
+        after = attempt(
+            ["docker", "ps", "-aq", "--filter", "name=^/" + name + "$"], role + ":verify"
+        )
+        if after is None or after:
+            errors.append(role + ":survivors")
+            owned_empty = False
+        if role == "sentinel":
+            removed = after == ""
     return {
         "sentinel_survived": survived,
         "sentinel_removed": removed,
         "processes_stopped": stopped,
-        "owned_empty": True,
+        "owned_empty": owned_empty,
         "emergency_cleanup": emergency,
+        "errors": errors,
     }
 
 
@@ -193,7 +249,11 @@ def run(prepared: Path, manifest_path: Path, output: Path) -> dict[str, Any]:
     }
     write(bundle / "summary.json", summary)
     started = time.monotonic()
-    sentinel = ""
+    from .resources import inventory
+
+    resources = inventory(expected["campaign_id"])
+    write(output / "resources.json", resources)
+    resources_started = False
     stopped = True
     failure = ""
     installed_after: dict[str, Any] = {}
@@ -238,11 +298,16 @@ def run(prepared: Path, manifest_path: Path, output: Path) -> dict[str, Any]:
         except Exception as exc:
             retain("installed", {"incomplete": True, "reason": type(exc).__name__}, incomplete=True)
             raise
-        sentinel = command(
+        resources_started = True
+        command(
             [
                 "docker",
                 "run",
                 "-d",
+                "--name",
+                resources["names"]["sentinel"],
+                "--label",
+                resources["label"],
                 "--network",
                 "none",
                 "--label",
@@ -274,12 +339,12 @@ def run(prepared: Path, manifest_path: Path, output: Path) -> dict[str, Any]:
         failure = str(exc) if isinstance(exc, Refused) else type(exc).__name__
         stopped = False
     finally:
-        if sentinel:
+        if resources_started:
             try:
                 retain(
                     "cleanup",
                     {
-                        **cleanup(output, prepared, sentinel, stopped),
+                        **cleanup(output, prepared, resources, stopped),
                         "installed_after": installed_after,
                     },
                 )

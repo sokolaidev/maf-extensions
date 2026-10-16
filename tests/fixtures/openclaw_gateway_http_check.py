@@ -77,7 +77,15 @@ def verify_outcome(
     require(structured["image"] == image, "Wrong image identity")
     return {
         key: structured[key]
-        for key in ("completed", "verdict", "status", "cleanup", "source_sha256")
+        for key in (
+            "completed",
+            "verdict",
+            "status",
+            "cleanup",
+            "source_sha256",
+            "image",
+            "config_sha256",
+        )
     } | {"projected_content_items": 1}
 
 

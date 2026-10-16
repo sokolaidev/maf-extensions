@@ -137,7 +137,7 @@ def transport(root: Path, repo: Path) -> dict[str, Any]:
     }
 
 
-def networking(image: str) -> dict[str, Any]:
+def networking(image: str, control: dict[str, Any] | None = None) -> dict[str, Any]:
     """Compare one HTTP/TCP destination from bridge and closed guests of the same image."""
     nonce = uuid.uuid4().hex.encode()
 
@@ -158,13 +158,14 @@ def networking(image: str) -> dict[str, Any]:
     observations = []
     try:
         for mode in ("bridge", "none"):
-            name = "mcp-network-" + uuid.uuid4().hex
+            name = control["names"][mode] if control else "mcp-network-" + uuid.uuid4().hex
             created.append(name)
             command = [
                 "docker",
                 "run",
                 "--name",
                 name,
+                *(["--label", control["label"]] if control else []),
                 "--network",
                 mode,
                 "--add-host",
@@ -203,14 +204,18 @@ def networking(image: str) -> dict[str, Any]:
                 }
             )
     finally:
+        cleanup_errors = []
         for name in created:
-            subprocess.run(
-                ["docker", "rm", "-f", name], check=True, capture_output=True, timeout=30
-            )
+            try:
+                subprocess.run(
+                    ["docker", "rm", "-f", name], check=True, capture_output=True, timeout=30
+                )
+            except Exception as exc:
+                cleanup_errors.append(type(exc).__name__)
         listener.shutdown()
         listener.server_close()
         thread.join(timeout=5)
-    require(not thread.is_alive(), "Control server did not stop")
+    require(not cleanup_errors and not thread.is_alive(), "Control cleanup did not finish")
     return {
         "protocol": "HTTP over IPv4 TCP",
         "destination": "host-gateway ephemeral listener",
@@ -292,7 +297,9 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
 
     async def prepared():
         server = config["mcp"]["servers"]["bicep"]
-        source = "module network 'br/public:avm/res/network/virtual-network:0.7.2' = {\n name: 'network'\n params: { name: 'example-network'\n addressPrefixes: ['10.0.0.0/16'] }\n}"
+        from openclaw_sources import PREPARED_SOURCE, source_digest
+
+        source = PREPARED_SOURCE
         async with MCPStreamableHTTPTool(
             name="prepared",
             url=server["url"],
@@ -318,7 +325,9 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
                 "Prepared module did not validate",
             )
             require(
-                result["image"] == image and result["config_sha256"] == config_digest,
+                result["image"] == image
+                and result["config_sha256"] == config_digest
+                and result.get("source_sha256") == source_digest(PREPARED_SOURCE),
                 "Prepared identity differs",
             )
             require(empty(), "Prepared call left owned resources")
