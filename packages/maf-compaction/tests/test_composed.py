@@ -1201,6 +1201,49 @@ async def test_invalidated_legacy_anchor_does_not_end_a_pending_recall_wait(olde
         assert strategy._anchor == "occurrence:fresh"
 
 
+@pytest.mark.parametrize("reload", [False, True])
+async def test_completed_recall_in_existing_result_batch_ends_the_pending_wait(reload):
+    summarizer = _Summarizer()
+    strategy = _composed(
+        _NARROW_CEILING, user_turns=_user_phase(_NARROW_CEILING, summarizer=summarizer)
+    )
+    messages = _conversation(record=None)
+    declaration = Message(
+        "assistant",
+        [
+            Content.from_function_call(
+                call_id="shared", id=identity, name=RECALL_TOOL_NAME, arguments="{}"
+            )
+            for identity in ("first", "second")
+        ],
+    )
+    batch = Message(
+        "tool",
+        [
+            Content.from_function_result(
+                call_id="shared", id="first", result=f"{RECORD_MARKER} first"
+            )
+        ],
+    )
+    messages[1:1] = [declaration, batch]
+    strategy._anchor = "occurrence:first"
+    strategy._wait_since = _responses(messages)
+    strategy._quiet_through = 0
+    assert await strategy(messages) is False
+    batch.contents.append(
+        Content.from_function_result(
+            call_id="shared", id="second", result=f"{RECORD_MARKER} second"
+        )
+    )
+    if reload:
+        messages = [Message.from_dict(message.to_dict()) for message in messages]
+    assert _newest_record_identity(messages) == "occurrence:second"
+    assert await strategy(messages) is True
+    assert strategy._anchor == "occurrence:second"
+    assert strategy._wait_since is None
+    assert summarizer.calls == 1
+
+
 async def test_the_record_arriving_ends_the_wait_and_the_user_half_acts_only_on_what_it_left() -> (
     None
 ):
