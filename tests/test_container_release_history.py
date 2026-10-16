@@ -226,6 +226,51 @@ def test_head_does_not_retry_changed_committed_records(monkeypatch, change):
     assert gh.entries[draft["id"]]["draft"] is True
 
 
+@pytest.mark.parametrize("backoff", [1, 2])
+@pytest.mark.parametrize("change", ["remove", "replace-old", "replace-new"])
+def test_head_retains_observed_identities_across_backoff(monkeypatch, backoff, change):
+    gh = FakeGitHub()
+    history = History(gh)
+    gh.create(TAG + "000000000001", SOURCE)
+    for number in range(2, backoff + 3):
+        append_reservation(
+            history,
+            f"{number}/reserve",
+            CANDIDATE | {"version": f"0.1.{number - 2}", "attemptId": str(number)},
+        )
+    for number in range(3, backoff + 3):
+        gh.entries[number]["draft"] = True
+    original = gh.releases
+    reads = 0
+    delays = []
+
+    def releases():
+        nonlocal reads
+        result = original()
+        reads += 1
+        if reads % 2 and reads <= backoff * 2:
+            gh.publish(2 + (reads + 1) // 2)
+        return result
+
+    def sleep(delay):
+        delays.append(delay)
+        if len(delays) != backoff:
+            return
+        if change == "remove":
+            del gh.entries[backoff + 2]
+        else:
+            replaced = 2 if change == "replace-old" else backoff + 2
+            gh.entries[99] = gh.entries.pop(replaced)
+            gh.entries[99]["id"] = 99
+
+    monkeypatch.setattr(gh, "releases", releases)
+    monkeypatch.setattr("container_release_history.time.sleep", sleep)
+    with pytest.raises(ValueError, match="changed during retrieval"):
+        history.head()
+    assert delays == [1, 2][:backoff]
+    assert reads == backoff * 2 + 1
+
+
 @pytest.mark.parametrize("defect", ["bytes", "ancestry", "tag", "mutable"])
 def test_head_revalidates_new_snapshot_after_concurrent_publication(monkeypatch, defect):
     gh = FakeGitHub()
