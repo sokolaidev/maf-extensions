@@ -50,6 +50,7 @@ def environment(root: Path) -> dict[str, str]:
         TMP=str(root / "temp"),
         TMPDIR=str(root / "temp"),
         PYTHONNOUSERSITE="1",
+        PYTHONDONTWRITEBYTECODE="1",
         UV_NO_CONFIG="1",
         NODE_DISABLE_COMPILE_CACHE="1",
     )
@@ -269,6 +270,7 @@ def prepare(root: Path, image: str) -> dict[str, Any]:
             [
                 python,
                 "-I",
+                "-B",
                 "-c",
                 "import importlib.metadata as m,json,platform; print(json.dumps({'python':platform.python_version(),'versions':{d.metadata['Name'].lower().replace('_','-'):d.version for d in m.distributions()}}))",
             ],
@@ -306,8 +308,12 @@ def prepare(root: Path, image: str) -> dict[str, Any]:
     require(tree["tree_sha256"] == before["tree_sha256"], "postinstall_changed_artifact")
     shutil.copyfile(SAMPLE / "bicepconfig.json", root / "bicepconfig.json")
     probe = "import hashlib,json,pathlib,maf_sandbox_mcp; p=pathlib.Path(maf_sandbox_mcp.__file__).parent; print(json.dumps({f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in p.glob('*.py')}))"
-    modules = json.loads(command([python, "-I", "-c", probe], root))
+    modules = json.loads(command([python, "-I", "-B", "-c", probe], root))
+    from .assets import prepare as prepare_assets
+
+    runtime_assets = prepare_assets(root, manifest["versions"])
     value = {
+        "runtime_assets": runtime_assets,
         "schema": 1,
         "profile": PROFILE,
         "openclaw": "2026.9.7",

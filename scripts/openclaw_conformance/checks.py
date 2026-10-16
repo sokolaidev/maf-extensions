@@ -31,6 +31,9 @@ def installed(prepared: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     ).installed_environment
     verify_wheel = importlib.import_module("openclaw_installed_worker_check").verify_wheel
 
+    from .assets import verify as verify_assets
+
+    assets = verify_assets(prepared, manifest["runtime_assets"])
     found = installed_environment(manifest["versions"])
     require(platform.python_version() == manifest["host"]["python"], "python_changed")
     wheel = prepared / "maf_sandbox_mcp-0.1.0-py3-none-any.whl"
@@ -45,6 +48,7 @@ def installed(prepared: Path, manifest: dict[str, Any]) -> dict[str, Any]:
         "npm_tree": tree,
         "origins_verified": True,
         "assets_verified": True,
+        "runtime_assets": assets,
     }
 
 
@@ -396,6 +400,7 @@ def run(group: str, root: Path, prepared: Path, manifest: dict[str, Any]) -> dic
         return asyncio.run(
             check(
                 SimpleNamespace(
+                    control=read(root.parent / "resources.json"),
                     installed=True,
                     expected_versions=manifest["versions"],
                     root=root,
@@ -407,7 +412,7 @@ def run(group: str, root: Path, prepared: Path, manifest: dict[str, Any]) -> dic
     if group == "gateway":
         return gateway(root, prepared, manifest)
     if group == "network":
-        return networking(manifest["image"])
+        return networking(manifest["image"], read(root.parent / "resources.json"))
     raise ValueError("unknown_group")
 
 

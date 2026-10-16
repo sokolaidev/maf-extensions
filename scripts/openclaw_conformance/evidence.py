@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-PROFILE = "installed-bicep-windows-v1"
+PROFILE = "installed-bicep-windows-v2"
 WHEEL = "1228f030135da4e3c5797ec76e19c34275fb7bba20fbc55d3d42d6cc43955529"
 INTEGRITY = "sha512-/8N2LnfTFQPvnZizi8qKSFfnLQaPvSG3Cb4xo1YV7b4JhYiUc43ZNRpXJ01bWghLK0Ezk3HVeo/DGHcIRQwRWA=="
 CLAIMS = (
@@ -177,6 +177,7 @@ def candidate(value: Any) -> None:
             "npm_lock_sha256",
             "npm_tree",
             "worker_modules",
+            "runtime_assets",
             "image",
             "config_sha256",
             "host",
@@ -250,7 +251,8 @@ def predicates(group: str, value: dict[str, Any], manifest: dict[str, Any]) -> N
             value["versions"] == manifest["versions"]
             and value["wheel_sha256"] == WHEEL
             and value["worker_modules"] == manifest["worker_modules"]
-            and _same(value["npm_tree"], manifest["npm_tree"]),
+            and _same(value["npm_tree"], manifest["npm_tree"])
+            and _same(value["runtime_assets"], manifest["runtime_assets"]),
             "installed_candidate_differs",
         )
         require(
@@ -338,7 +340,11 @@ def predicates(group: str, value: dict[str, Any], manifest: dict[str, Any]) -> N
             result(row["survivor"])
             require(
                 row["survivor"]["image"] == manifest["image"]
-                and row["survivor"]["config_sha256"] == manifest["config_sha256"],
+                and row["survivor"]["config_sha256"] == manifest["config_sha256"]
+                and row["survivor"].get("source_sha256")
+                == importlib.import_module("openclaw_sources").source_digest(
+                    importlib.import_module("openclaw_sources").SIMPLE_SOURCE
+                ),
                 "ownership_identity",
             )
         require(
@@ -348,6 +354,9 @@ def predicates(group: str, value: dict[str, Any], manifest: dict[str, Any]) -> N
             and value["cases"]["equal_ids_repeated_cancel"]["other_session_cancels"] == 1,
             "cancel_correlation",
         )
+        from .ownership import verify as verify_ownership
+
+        verify_ownership(value)
         lost = value["cases"]["response_loss"]
         require(
             lost["socket_closed"] is True
@@ -424,6 +433,11 @@ def predicates(group: str, value: dict[str, Any], manifest: dict[str, Any]) -> N
             require(set(session) == {"valid", "invalid", "incomplete"}, "gateway_cases")
             for case, row in session.items():
                 result(row, case)
+                require(
+                    row.get("image") == manifest["image"]
+                    and row.get("config_sha256") == manifest["config_sha256"],
+                    "gateway_identity",
+                )
                 sources = importlib.import_module("openclaw_gateway_provider").SOURCES
                 require(
                     row["source_sha256"]
@@ -438,6 +452,12 @@ def predicates(group: str, value: dict[str, Any], manifest: dict[str, Any]) -> N
                     "duplicate_projection",
                 )
         result(value["prepared_module"])
+        sources = importlib.import_module("openclaw_sources")
+        require(
+            value["prepared_module"].get("source_sha256")
+            == sources.source_digest(sources.PREPARED_SOURCE),
+            "prepared_source_identity",
+        )
         require(
             value["prepared_module"]["image"] == manifest["image"]
             and value["prepared_module"]["config_sha256"] == manifest["config_sha256"],
@@ -459,6 +479,7 @@ def predicates(group: str, value: dict[str, Any], manifest: dict[str, Any]) -> N
                 "owned_empty",
                 "emergency_cleanup",
                 "installed_after",
+                "errors",
             },
             "cleanup_fields",
         )
@@ -472,6 +493,7 @@ def predicates(group: str, value: dict[str, Any], manifest: dict[str, Any]) -> N
                     "processes_stopped": True,
                     "owned_empty": True,
                     "emergency_cleanup": False,
+                    "errors": [],
                 },
             ),
             "campaign_cleanup",

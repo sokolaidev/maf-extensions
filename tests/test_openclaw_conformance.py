@@ -34,6 +34,7 @@ def manifest():
         "npm_lock_sha256": "b" * 64,
         "npm_tree": {"files": 1, "bytes": 1, "tree_sha256": "c" * 64},
         "worker_modules": {"server.py": "d" * 64},
+        "runtime_assets": {"manifest_sha256": "d" * 64},
         "image": "sha256:" + "e" * 64,
         "config_sha256": "f" * 64,
         "host": {"platform": "Windows"},
@@ -65,6 +66,94 @@ def valid_result(verdict="valid"):
     }
 
 
+def control_events(cases):
+    events = []
+
+    def add(**fields):
+        event = {"time_ns": len(events) + 1, **fields}
+        events.append(event)
+        return event
+
+    for name, case in sorted(cases.items()):
+        a = "c" * 64 if name == "response_loss" else e.digest(name + "a")
+        b = e.digest(name + "b")
+        case.update(session_a=a, session_b=b, container=e.digest(name))
+        active = b if name == "maf_idle_close" else a
+        request_id = e.digest(1 if name.startswith("maf_") else 42)
+        if name != "maf_ordinary_close":
+            add(
+                event="request",
+                method="tools/call",
+                session=active,
+                request=request_id,
+                exchange=e.digest(name + "active"),
+            )
+            add(event="binding_started", session=active, request=request_id)
+            for i in range(5 if name == "equal_ids_repeated_cancel" else 1):
+                exchange = e.digest(name + str(i))
+                add(
+                    event="request",
+                    method="tools/call",
+                    session=b,
+                    request=e.digest(42),
+                    exchange=exchange,
+                )
+                add(event="response", session=b, exchange=exchange, status=200)
+                add(
+                    event="admission_refused",
+                    session=b,
+                    request=e.digest(42),
+                    exchange=exchange,
+                    active_session=active,
+                    active_request=request_id,
+                    container=case["container"],
+                    owned_count=1,
+                    active_pending=True,
+                )
+        if name == "equal_ids_repeated_cancel":
+            for sid, count in ((a, 4), (b, 1)):
+                for i in range(count):
+                    exchange = e.digest(sid + str(i))
+                    add(
+                        event="request",
+                        method="notifications/cancelled",
+                        session=sid,
+                        target=e.digest(42),
+                        exchange=exchange,
+                    )
+                    add(event="response", session=sid, exchange=exchange, status=202)
+        if name in ("response_loss", "maf_idle_close"):
+            add(
+                event="binding_result",
+                session=active,
+                request=request_id,
+                completed=False,
+                status="incomplete",
+                cleanup="confirmed",
+                source_sha256=e.LARGE_SOURCE_SHA256,
+            )
+        survivor_request = e.digest(2)
+        add(event="binding_started", session=b, request=survivor_request)
+        add(event="binding_result", session=b, request=survivor_request, **case["survivor"])
+        for sid in (a, b):
+            exchange = e.digest(sid + "delete")
+            add(event="delete_requested", session=sid, exchange=exchange)
+            add(
+                event="retired",
+                session=sid,
+                exchange=exchange,
+                completed=True,
+                sdk_finished=True,
+                sdk_terminated=True,
+                sdk_streams=0,
+                request_ids=0,
+                requests=0,
+                session_registered=False,
+                poisoned=False,
+            )
+    return events
+
+
 def observations(m):
     names = list(e.TRANSPORT_CASES)
     retirements = [
@@ -82,7 +171,15 @@ def observations(m):
         for _ in range(count)
     ]
     ownership: dict[str, dict[str, Any]] = {
-        name: {"survivor": valid_result()} for name in e.OWNERSHIP
+        name: {
+            "survivor": {
+                **valid_result(),
+                "source_sha256": importlib.import_module("openclaw_sources").source_digest(
+                    importlib.import_module("openclaw_sources").SIMPLE_SOURCE
+                ),
+            }
+        }
+        for name in e.OWNERSHIP
     }
     ownership["equal_ids_repeated_cancel"].update(matching_cancels=4, other_session_cancels=1)
     ownership["response_loss"].update(
@@ -96,7 +193,10 @@ def observations(m):
         },
     )
     ownership["maf_active_close"]["delete_observed"] = True
-    ownership["maf_idle_close"]["delete_observed"] = True
+    ownership["maf_idle_close"].update(
+        delete_observed=True, call_raised=False, call_error_type=None, call_error_code=None
+    )
+    ownership_events = control_events(ownership)
     values = {
         "installed": {
             "versions": m["versions"],
@@ -105,6 +205,7 @@ def observations(m):
             "npm_tree": m["npm_tree"],
             "origins_verified": True,
             "assets_verified": True,
+            "runtime_assets": m["runtime_assets"],
         },
         "discovery": {
             "imports": ["maf_sandbox_mcp.server", "maf_sandbox_mcp.workload_http"],
@@ -147,15 +248,7 @@ def observations(m):
             "image": m["image"],
             "config_sha256": m["config_sha256"],
             "cases": ownership,
-            "transport": [
-                {"event": "binding_started", "session": "c" * 64},
-                {"event": "request", "method": "tools/call", "session": "c" * 64},
-                {
-                    "event": "binding_result",
-                    "session": "c" * 64,
-                    **ownership["response_loss"]["binding_result"],
-                },
-            ],
+            "transport": ownership_events,
             "shutdown": {
                 "sessions": 0,
                 "active": False,
@@ -174,6 +267,9 @@ def observations(m):
             "entry_point": "maf-bicep-mcp",
             "prepared_module": {
                 **valid_result(),
+                "source_sha256": importlib.import_module("openclaw_sources").source_digest(
+                    importlib.import_module("openclaw_sources").PREPARED_SOURCE
+                ),
                 "image": m["image"],
                 "config_sha256": m["config_sha256"],
             },
@@ -194,6 +290,7 @@ def observations(m):
             "processes_stopped": True,
             "owned_empty": True,
             "emergency_cleanup": False,
+            "errors": [],
         },
     }
 
@@ -630,9 +727,96 @@ def test_boolean_counts_cannot_qualify(bundle, group):
         e.evaluate(*bundle)
 
 
-def test_retained_windows_campaign_is_complete_and_evaluable_offline():
+def test_retained_v1_campaign_does_not_establish_the_reviewed_profile():
     record = ROOT / "scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows"
-    result = e.evaluate(
-        record / "evidence", e.read(record / "plan.json"), e.read(record / "candidate.json")
+    with pytest.raises(e.Refused):
+        e.evaluate(
+            record / "evidence", e.read(record / "plan.json"), e.read(record / "candidate.json")
+        )
+
+
+@pytest.mark.parametrize("target", ["survivor", "gateway_image", "gateway_config", "prepared"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_review_requires_every_compiler_identity(bundle, target, missing):
+    def change(value):
+        obs = value["observations"]
+        if target == "survivor":
+            row, field = obs["cases"]["maf_ordinary_close"]["survivor"], "source_sha256"
+        elif target == "prepared":
+            row, field = obs["prepared_module"], "source_sha256"
+        else:
+            row = obs["sessions"][1]["incomplete"]
+            field = "image" if target == "gateway_image" else "config_sha256"
+        if missing:
+            row.pop(field, None)
+        else:
+            row[field] = "0" * 64
+
+    change_artifact(bundle, "ownership" if target == "survivor" else "gateway", change)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
+def test_review_idle_close_cannot_interrupt_peer(bundle):
+    change_artifact(
+        bundle,
+        "ownership",
+        lambda v: v["observations"]["cases"]["maf_idle_close"].update(call_raised=True),
     )
-    assert result == e.read(record / "evaluation.json")
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
+def test_review_ownership_cannot_omit_non_loss_controls(bundle):
+    def change(value):
+        obs = value["observations"]
+        loss = obs["cases"]["response_loss"]["session"]
+        obs["transport"] = [x for x in obs["transport"] if x.get("session") == loss]
+
+    change_artifact(bundle, "ownership", change)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
+@pytest.mark.parametrize("event", ["admission_refused", "retired", "delete_requested", "response"])
+def test_review_controls_require_each_correlated_event(bundle, event):
+    change_artifact(
+        bundle,
+        "ownership",
+        lambda v: v["observations"].update(
+            transport=[r for r in v["observations"]["transport"] if r.get("event") != event]
+        ),
+    )
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("active_session", "0" * 64),
+        ("active_request", "0" * 64),
+        ("exchange", "missing"),
+        ("owned_count", True),
+        ("active_pending", False),
+    ],
+)
+def test_review_admission_cannot_substitute_another_call(bundle, field, value):
+    def mutate(record):
+        event = next(
+            r for r in record["observations"]["transport"] if r.get("event") == "admission_refused"
+        )
+        event[field] = value
+
+    change_artifact(bundle, "ownership", mutate)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
+def test_prepared_source_matches_the_real_snapshot():
+    from maf_sandbox_mcp import server
+
+    sources = importlib.import_module("openclaw_sources")
+    assert server.snapshot(
+        {"files": [{"path": "main.bicep", "content": sources.PREPARED_SOURCE}]}
+    ).digest == sources.source_digest(sources.PREPARED_SOURCE)
