@@ -87,6 +87,7 @@ __all__ = [
     "make_recall_tool",
     "record_body",
     "record_bodies",
+    "record_anchor_index",
 ]
 
 #: Name of the tool the agent must call. The strategy looks for this name in the history, so
@@ -316,6 +317,17 @@ RECALL_VALUES_DESCRIPTION: Final[str] = (
 )
 
 
+def _call_identity(message: Message, position: int) -> str:
+    content = message.contents[position]
+    return (
+        f"occurrence:{content.id}"
+        if content.id
+        else f"message:{message.message_id}:{position}"
+        if message.message_id and not re.fullmatch(r"msg_[0-9]+", message.message_id)
+        else f"call:{content.call_id}"
+    )
+
+
 def _recall_results(
     messages: Sequence[Message],
     matches: dict[ContentPosition, tuple[ContentPosition, ...]] | None = None,
@@ -329,13 +341,7 @@ def _recall_results(
             if not content.call_id:
                 continue
             if message.role == "assistant" and content.type == "function_call":
-                identity = (
-                    f"occurrence:{content.id}"
-                    if content.id
-                    else f"message:{message.message_id}:{position}"
-                    if message.message_id and not re.fullmatch(r"msg_[0-9]+", message.message_id)
-                    else f"call:{content.call_id}"
-                )
+                identity = _call_identity(message, position)
                 identities[identity] += 1
                 eligible = (
                     content.name == RECALL_TOOL_NAME
@@ -432,6 +438,34 @@ def _newest_record_identity(messages: list[Message]) -> str:
         if id(content) in recall_results and RECORD_MARKER in str(content.result):
             return recall_results[id(content)]
     return f"text:{message.text}"
+
+
+def record_anchor_index(messages: list[Message], identity: str) -> int | None:
+    """Locate retained anchor content for wait ordering, even if excluded or now ambiguous.
+
+    This grants no recall or removal authority; an invalidated anchor must not make an older
+    record look newly arrived.
+    """
+    positions = [
+        index
+        for index, message in enumerate(messages)
+        if _is_written_record(message) and identity == f"text:{message.text}"
+    ]
+    for (index, position), candidates in function_result_candidates(messages).items():
+        if len(candidates) != 1:
+            continue
+        call_index, call_position = candidates[0]
+        message = messages[call_index]
+        call = message.contents[call_position]
+        if (
+            call.name == RECALL_TOOL_NAME
+            and not call.hosted
+            and not call.informational_only
+            and _call_identity(message, call_position) == identity
+            and RECORD_MARKER in str(messages[index].contents[position].result)
+        ):
+            positions.append(index)
+    return max(positions, default=None)
 
 
 def _is_written_record(message: Message) -> bool:
@@ -981,8 +1015,11 @@ def _hold_unrecorded(messages: list[Message]) -> int:
         earlier pass. Zero means the rule held nothing back this time.
     """
     held = 0
+    recalls = _recall_results(messages)
     for group in group_messages(messages):
-        if group.get("kind") != "tool_call" or _is_recall_group(messages, group):
+        if group.get("kind") != "tool_call" or _is_recall_group(
+            messages, group, recall_results=recalls
+        ):
             continue
         members = messages[group["start_index"] : group["end_index"] + 1]
         if all(message.additional_properties.get(EXCLUDED_KEY, False) for message in members):
@@ -1082,12 +1119,13 @@ def _droppable_groups_after(messages: list[Message], record_index: int | None) -
     """
     boundary = -1 if record_index is None else record_index
     count = 0
+    recalls = _recall_results(messages)
     for group in group_messages(messages):
         if group.get("kind") != "tool_call" or group["start_index"] <= boundary:
             continue
         # A record is not work that needs recording. Counting one would make every record
         # bring the next one closer, and a bound of one would force a record on every call.
-        if _is_recall_group(messages, group):
+        if _is_recall_group(messages, group, recall_results=recalls):
             continue
         members = messages[group["start_index"] : group["end_index"] + 1]
         if all(message.additional_properties.get(EXCLUDED_KEY, False) for message in members):
@@ -1932,7 +1970,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 continue
             if group["end_index"] >= anchor:
                 continue
-            if _is_recall_group(messages, group):
+            if _is_recall_group(messages, group, recall_results=recall_results):
                 # An older record. Deleting it would destroy the only surviving account of the
                 # groups behind *it* -- the same loss this strategy exists to prevent, one
                 # level removed, and quieter, because the newer record looks like coverage.
