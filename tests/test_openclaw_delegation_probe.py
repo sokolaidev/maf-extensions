@@ -157,7 +157,10 @@ def test_external_import_control_is_inert_and_has_no_ambient_secrets(
     assert result["imports"][1]["exports"] == ["withConfiguredModelEgress"]
 
 
-@pytest.mark.parametrize("schedule", ["immediate", "timer", "before_exit"])
+@pytest.mark.parametrize(
+    "schedule",
+    ["immediate", "timer", "before_exit", "exit_from_timer", "exit_from_before_exit"],
+)
 @pytest.mark.parametrize(
     "imports,code,operation",
     [
@@ -174,15 +177,24 @@ def test_import_side_effects_are_visible_and_blocked(
     module, installed_fixture, imports, code, operation, schedule
 ):
     project, package, home = installed_fixture
+    late_exit = schedule.startswith("exit_from_")
+    if late_exit:
+        code = "process.once('exit', () => { try { " + code + " } catch {} });"
     if schedule != "immediate":
         code = "setTimeout(() => { try { " + code + " } catch {} }, 25);"
-    if schedule == "before_exit":
+    if schedule in {"before_exit", "exit_from_before_exit"}:
         code = "process.once('beforeExit', () => { " + code + " });"
     (package / "private.js").write_text(imports + code, encoding="utf-8")
-    result = module.observe_imports(project, node_program(), home)
-    assert result["imports"][0]["status"] == "imported"
-    assert result["imports"][1]["status"] == ("failed" if schedule == "immediate" else "imported")
-    assert result["side_effect_attempts"] == [operation]
+    if late_exit:
+        with pytest.raises(module.ProbeRefused, match="import_process_failed"):
+            module.observe_imports(project, node_program(), home)
+    else:
+        result = module.observe_imports(project, node_program(), home)
+        assert result["imports"][0]["status"] == "imported"
+        assert result["imports"][1]["status"] == (
+            "failed" if schedule == "immediate" else "imported"
+        )
+        assert result["side_effect_attempts"] == [operation]
     assert not (project / "unwanted").exists()
 
 

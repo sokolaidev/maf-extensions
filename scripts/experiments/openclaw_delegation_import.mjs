@@ -6,8 +6,10 @@ import { syncBuiltinESMExports } from "node:module";
 
 // Discovery is observed without calling the credential helper or starting a Gateway.
 const attempts = [];
+let reportEmitted = false;
 const deny = (operation) => () => {
   attempts.push(operation);
+  if (reportEmitted) process.exitCode = 1;
   const error = new Error("probe refused import side effect");
   error.code = "PROBE_SIDE_EFFECT";
   throw error;
@@ -40,5 +42,6 @@ for (const specifier of ["openclaw/plugin-sdk/plugin-entry", "openclaw/plugin-sd
 }
 // Exit runs after timers and beforeExit work; its output must be synchronous.
 process.once("exit", () => {
+  reportEmitted = true;
   fs.writeSync(1, JSON.stringify({ imports, side_effect_attempts: attempts }));
 });
