@@ -288,7 +288,7 @@ The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audi
 
 | Work | State | Tracking |
 |---|---|---|
-| Installed worker | Implemented and locally qualified; not published | [#1898](https://github.com/sokolaidev/maf-extensions/issues/1898) (closed) by [#1920](https://github.com/sokolaidev/maf-extensions/pull/1920) (merged) |
+| Installed worker | Published 0.1.0; historical and fresh fixed-profile qualifications recorded separately below | [#1898](https://github.com/sokolaidev/maf-extensions/issues/1898) (closed) by [#1920](https://github.com/sokolaidev/maf-extensions/pull/1920) (merged) |
 | Bicep host qualification | First-tool design and finite supervised qualification complete; installed worker delivered separately in #1898; actual LLM behavior and full crash recovery remain unqualified | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (closed) by [#1901](https://github.com/sokolaidev/maf-extensions/pull/1901) (merged) |
 | Multiple Gateway sessions | Finite acceptance reconciled across recorded Gateway evidence, five Bicep/MAF cases and 43 published transport cases with 109 SDK retirements; qualification complete. Active MAF callers can remain pending until their request timeout after service retirement; broader stress, crash and platform scenarios remain unqualified | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged); [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (closed) by [#1680](https://github.com/sokolaidev/maf-extensions/pull/1680) (merged); [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (closed) by [#1882](https://github.com/sokolaidev/maf-extensions/pull/1882) (merged); [#1850](https://github.com/sokolaidev/maf-extensions/issues/1850) (closed) by [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865) (merged); [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851) (closed) by [#1870](https://github.com/sokolaidev/maf-extensions/pull/1870) (merged) |
 
@@ -1056,3 +1056,46 @@ The revised installed wheel repeated all 43 transport cases and 109 SDK retireme
 | Installed transport/ownership/network report | `828cd2119b717e12268ade24782056997e53930fe7b6a6eed363960683361add` |
 | Instrumented Gateway report | `055f92f3ee6ad4d20ad65184f2fdc09a7d8a545b7423555f989d4fef8385f187` |
 | Console Gateway report | `66c033748d11fc79f6be87ab1fc5b18b8e3888584e8b60407b333e452827f454` |
+
+
+## Published candidate conformance campaign (2026-10-16)
+
+The repository-local runner for #1972 completed `installed-bicep-windows-v1` on one fresh external installation, with campaign `fce960ecf9f64cb794a4af2a69c03ca4` and candidate SHA-256 `1d2c51882a090bccab8f12ca04a000c65c0ea9dc2386a594d10fa10d836268f8`. Independent evaluation returned `qualified_for_profile` for all eight required groups. This is new evidence for the published worker; none of the historical source or wheel reports above was relabelled or reused.
+
+The retained [expected candidate](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows/candidate.json), [selected plan](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows/plan.json), [complete summary](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows/evidence/summary.json) and [evaluation](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows/evaluation.json) bind the artifact records in the adjacent evidence directory. The summary SHA-256 is `c0f75f4f8673635280babce5ce1c9a0e697cf8935ab4e252363429e778348c35`. The candidate includes every resolved Python distribution, both dependency-lock hashes, installed worker module hashes, npm archive/tree identity and host configuration. Private setup/campaign directories retain the original locks and diagnostics; the public records contain no operator paths, credentials or provider state.
+
+| Candidate dimension | Observed value |
+|---|---|
+| Runner | Commit `75b9819dc35c01aa49e1e31de44e67685827912c`; runner/adapter content SHA-256 `0da7026e013706117d1c4b5eb870aab20da76a9236f504d72ccdbb42c06b2149` |
+| OpenClaw | Installed npm release 2026.9.7; 13,280 runtime files checked against the integrity-pinned archive, before and after the campaign; only the pinned installer's lifecycle-marker removal is allowed |
+| Published worker | `maf-sandbox-mcp` 0.1.0; wheel SHA-256 `1228f030135da4e3c5797ec76e19c34275fb7bba20fbc55d3d42d6cc43955529`; installed module origins and bytes verified |
+| Dependency selection | MAF 1.21.0, core 0.50.0, Bicep 0.23.0, Docker backend 0.28.2, MCP 1.28.1; complete versions and hashed index resolution in the candidate |
+| Host/engine | Windows 11 AMD64, Python 3.13.15, Node 26.8.1, Docker 29.8.2, Linux x86_64 engine with kernel 7.0.14-linuxkit |
+| Compiler image | `sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e` |
+| Compiler configuration | SHA-256 `d3f160d081dcf48e41f0f0cdf006595b380402ac9730f3ee920738ba616d87e1` |
+
+| Evidence group | Accepted observation |
+|---|---|
+| Installed identity | Exact complete dependency manifest, worker wheel/modules and npm runtime bytes; isolated imports from the external installed environment, repeated after runtime execution |
+| Discovery | Worker-module imports caused no observed guarded side effects; a separate late-exit control refused activity after the report was emitted |
+| Policy/input refusal | Missing/oversized configuration, mutable image and malformed authenticated input refused before workload allocation; positive compiler control establishes that work was reachable |
+| Transport | All 43 exact expanded cases passed with setup/call/teardown records; 109 SDK retirements settled; socket and direct-ASGI attribution retained |
+| Bicep/MAF ownership | All five real compiler scenarios passed: equal IDs/repeated cancellation, response-only loss, idle MAF close, active MAF close and ordinary close; surviving sessions completed valid work |
+| Gateway | Two real sessions each projected one valid, invalid and explicitly incomplete result; installed console entry point and prepared AVM module execution passed with the deterministic local provider |
+| Network | The selected image reached the nonce-bearing host TCP control on bridge networking and could not reach it with networking disabled; control resources were removed |
+| Cleanup | Owned process supervision settled, owner scopes were independently empty, an unrelated sentinel survived and was then removed; no emergency cleanup was needed |
+
+Active MAF closure settled the service in 20.53 seconds, while the pending caller settled at its 240.02-second deadline with code 408. Its surviving peer completed valid work. Response-only loss returned one attributed, explicitly incomplete binding result with confirmed cleanup, without replay or implicit cancellation. These are measured limitations and outcomes, not guarantees of prompt client cancellation or successful compilation after a lost response.
+
+The [development-attempt metadata](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows/development-attempts.json) retains two separate failed campaign summaries: an evaluator that incorrectly required response-loss compilation to complete, and a superseded runner rejected when its fingerprint changed. Their full private evidence directories remain separate. The accepted campaign used a fresh installation and fresh output directory after the corrections; it does not combine successful stages from those attempts.
+
+Re-evaluate the retained report from the repository root without Docker or installed OpenClaw:
+
+```powershell
+$record = 'scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows'
+uv run --no-project --python 3.13 python -m scripts.openclaw_conformance evaluate --bundle "$record/evidence" --plan "$record/plan.json" --manifest "$record/candidate.json"
+```
+
+The [operator guide](../openclaw.md#installed-bicep-conformance-runner) describes fresh preparation and execution. Expected inputs must be selected independently and trusted: hashes establish byte correlation, not the truth of a forged observation. The evaluator fixes required groups and case identities and refuses missing, duplicated, transplanted, malformed, narrowed or failed evidence; offline adversarial tests also cover boolean count substitutions, late import effects, changed installed bytes and all-denied network controls. PR CI exercises these offline checks, not the opt-in Docker/Gateway campaign.
+
+This profile is finite, supervised Windows/Docker deterministic evidence. Process supervision confirms stopped processes and released ownership; it does not establish graceful console shutdown, unattended recovery, a model's reasoning, Linux-host support, native MXC/file boundaries, credential delegation, package publication or production acceptance. Worker owner-loss qualification remains #1973; native qualification remains conditional in #1974, credential enforcement remains blocked in #1952, additional tools remain deferred in #1639, and full-backend design remains #1642.

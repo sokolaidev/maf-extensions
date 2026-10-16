@@ -628,3 +628,11 @@ def test_boolean_counts_cannot_qualify(bundle, group):
     change_artifact(bundle, group, change)
     with pytest.raises(e.Refused):
         e.evaluate(*bundle)
+
+
+def test_retained_windows_campaign_is_complete_and_evaluable_offline():
+    record = ROOT / "scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows"
+    result = e.evaluate(
+        record / "evidence", e.read(record / "plan.json"), e.read(record / "candidate.json")
+    )
+    assert result == e.read(record / "evaluation.json")
