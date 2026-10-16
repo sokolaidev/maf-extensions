@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from _sbx_e2e_helpers import listed_rows
 from maf_sandbox import (
     Capability,
     Egress,
@@ -109,7 +110,7 @@ def _spec(kind: str = "e2e", **overrides: object) -> SandboxSpec:
 
 def _listed(name: str) -> bool:
     out = subprocess.run([_SBX, "ls", "--json"], capture_output=True, check=True).stdout
-    return any(row.get("name") == name for row in json.loads(out).get("sandboxes") or [])
+    return any(row.get("name") == name for row in listed_rows(out, "sandboxes"))
 
 
 @dataclass(frozen=True)
