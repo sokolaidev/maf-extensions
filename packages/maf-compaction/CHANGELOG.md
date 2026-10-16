@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.3.0...maf-compaction-v0.4.0) (2026-10-16)
+
+
+### Features
+
+* **compaction:** add user-summary timeouts and failure backoff ([#1984](https://github.com/sokolaidev/maf-extensions/issues/1984)) ([087fc77](https://github.com/sokolaidev/maf-extensions/commit/087fc7798afbb274cb42d962fc3dd4a2bcae7443))
+
 ## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.2.0...maf-compaction-v0.3.0) (2026-10-15)
 
 
