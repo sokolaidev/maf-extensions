@@ -1,0 +1,148 @@
+{
+  "schema": 1,
+  "note": "Superseded development campaigns; full diagnostics and failed artifacts remain in their separate private directories. No observation is reused in the accepted campaign.",
+  "attempts": [
+    {
+      "reason": "response_loss",
+      "summary": {
+        "attempts": [
+          {
+            "attempt_id": "68c703eec55b44459a3e403644f6d38e",
+            "bytes": 1893,
+            "file": "installed.json",
+            "group": "installed",
+            "outcome": "pass",
+            "sha256": "22dd568f61b686f7b41ad70d0f37d31a90f4c2713bea1a8e8e4fba160e3e5f78"
+          },
+          {
+            "attempt_id": "41d83b7aee9a4ffd925fa0db8566fc25",
+            "bytes": 356,
+            "file": "discovery.json",
+            "group": "discovery",
+            "outcome": "pass",
+            "sha256": "b06af1469a12cd7daae7a4fe2445dee17eff02a665f8c7ced70c533dc3979d3a"
+          },
+          {
+            "attempt_id": "6ac58c21afc8462ea1eb52aca94b123b",
+            "bytes": 329,
+            "file": "policy.json",
+            "group": "policy",
+            "outcome": "pass",
+            "sha256": "eb746082ac118284ddfcbb15bd2372c35c45f64059902f54e2a1192eac448a7e"
+          },
+          {
+            "attempt_id": "072785ea5e0c484499985a2ce1933d73",
+            "bytes": 43025,
+            "file": "transport.json",
+            "group": "transport",
+            "outcome": "pass",
+            "sha256": "5527637ee8d4afa5aa02329202c81e26bfd026dfa9c5f15a8b3ff8dcc933032c"
+          },
+          {
+            "attempt_id": "479cbbb20e7d45eba438d7c009530131",
+            "bytes": 74486,
+            "file": "ownership.json",
+            "group": "ownership",
+            "outcome": "fail",
+            "sha256": "78fff012b0288c29f100929dfef16396574fa7d65ce2752047b86f824b34f38f"
+          },
+          {
+            "attempt_id": "da9ffb2f0a0d4d80bf986993501609d3",
+            "bytes": 339,
+            "file": "cleanup.json",
+            "group": "cleanup",
+            "outcome": "fail",
+            "sha256": "9dc2f5616c2913f90a8153c83a0f2e15127febccca878b104c86333b6c09bf40"
+          }
+        ],
+        "campaign_id": "b5a68871024741638788006724c2d625",
+        "candidate_sha256": "982b57dc5e9210de111733128f6eaed489cc4532372dfddc5b039090ee25366b",
+        "duration": 466.7390213999897,
+        "ended": "2026-10-16T19:36:56.925131+00:00",
+        "outcome": "failed",
+        "plan_sha256": "67ab19912731109183957194390fd8966bc0a97c2f16992982bdab30d2459d7c",
+        "schema": 1,
+        "started": "2026-10-16T19:29:10.190342+00:00"
+      }
+    },
+    {
+      "reason": "runner_changed",
+      "summary": {
+        "attempts": [
+          {
+            "attempt_id": "624b46bf3a134b8eb15bc522593a73e4",
+            "bytes": 1893,
+            "file": "installed.json",
+            "group": "installed",
+            "outcome": "pass",
+            "sha256": "619844fa92129347a879a405074e551ee16e2cd4009f553e7e21ff9b6305b0bb"
+          },
+          {
+            "attempt_id": "0a4e207eefa745c7b53c7b473606bc65",
+            "bytes": 356,
+            "file": "discovery.json",
+            "group": "discovery",
+            "outcome": "pass",
+            "sha256": "863a49fffaef527e60d12ac2fe85083d7c3a5ecdf6c1adf586f8af3c4577347a"
+          },
+          {
+            "attempt_id": "61dc773a4184469087fc1f8eae751864",
+            "bytes": 329,
+            "file": "policy.json",
+            "group": "policy",
+            "outcome": "pass",
+            "sha256": "2f342afd8cf204e0ae32195ba27d16f56949ad140e290f9cbfdf2b2b248c8e4d"
+          },
+          {
+            "attempt_id": "17c9a41a3665445e9a43b41fa0a0f2fc",
+            "bytes": 43039,
+            "file": "transport.json",
+            "group": "transport",
+            "outcome": "pass",
+            "sha256": "034b0a2669b594c792ed128ac1f598bd5b2c7e2d6c8b1803ddc505cc7767479e"
+          },
+          {
+            "attempt_id": "1b696f4b2b34404b82de4ed096c600b8",
+            "bytes": 74563,
+            "file": "ownership.json",
+            "group": "ownership",
+            "outcome": "pass",
+            "sha256": "1bfbe6a042b87dbfdef84bad03282267aac505390f92a0b713f0431e2fca8df5"
+          },
+          {
+            "attempt_id": "369893bdbdc44355865026c12daed8b7",
+            "bytes": 2005,
+            "file": "gateway.json",
+            "group": "gateway",
+            "outcome": "pass",
+            "sha256": "e68932d01869c3c6dd31a38939458eb828eabb7f3d84c9365e4fc5790b2d6e38"
+          },
+          {
+            "attempt_id": "980956deaa3a417fbd34827edfc3675d",
+            "bytes": 450,
+            "file": "network.json",
+            "group": "network",
+            "outcome": "pass",
+            "sha256": "b75fa73eae6ea2a646b9627e5a933f4fa371a60bdb2916b5d91432a9f576dbad"
+          },
+          {
+            "attempt_id": "8412c61484c044efbe72bc4a80d11428",
+            "bytes": 360,
+            "file": "cleanup.json",
+            "group": "cleanup",
+            "outcome": "fail",
+            "sha256": "45bf8b80bfa5db0976d7731a09aa187ad3265085a6d734b72edad21040df1e4c"
+          }
+        ],
+        "campaign_id": "07cab203f0334a5498f404ebbd49acd7",
+        "candidate_sha256": "c29ae4969b24e378d99e6e92c8472132d07776fd79f5ed72176b510b04471a1c",
+        "duration": 569.8269797000103,
+        "ended": "2026-10-16T19:55:42.133801+00:00",
+        "outcome": "failed",
+        "plan_sha256": "d76e8a89dba136ea7ab2554e11e3234f00e25e5860761ce4d8f3cf6ba8f409c0",
+        "schema": 1,
+        "started": "2026-10-16T19:46:12.312378+00:00"
+      }
+    }
+  ]
+}
