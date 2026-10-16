@@ -19,6 +19,7 @@ excluded on the strength of a replacement that does not exist.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from copy import deepcopy
 from typing import Any, cast
@@ -622,6 +623,148 @@ async def test_a_summary_no_smaller_than_its_band_is_refused() -> None:
     assert messages == before
     assert strategy.user_summary_failures == 1
     assert strategy.user_compactions == 0
+
+
+@pytest.mark.parametrize("failure", ["exception", "empty", "oversized"])
+async def test_summary_cooldown_retries_and_resets_after_success(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    now = 100.0
+    monkeypatch.setattr(_usersummary, "monotonic", lambda: now)
+    client: Any = _Summarizer("" if failure == "empty" else "x" * 100_000)
+    if failure == "exception":
+        client = _FailingSummarizer()
+    strategy = _strategy(client, max_consecutive_summary_failures=2, summary_backoff_seconds=10)
+
+    for index in range(2):
+        messages = _conversation(8, first_turn=index * 10)
+        before = _rendered(messages)
+        assert await strategy(messages) is False
+        assert _rendered(messages) == before
+    assert strategy.user_summary_failures == 2
+    waiting = _conversation(8, first_turn=20)
+    assert await strategy(waiting) is False
+    assert strategy.user_summary_skips == 1
+    now = 109.999
+    assert await strategy(waiting) is False
+    assert strategy.user_summary_skips == 2
+    assert strategy.user_summary_failures == 2
+
+    now = 110.0
+    assert await strategy(waiting) is False
+    assert strategy.user_summary_failures == 3
+    assert await strategy(_conversation(8, first_turn=30)) is False
+    assert strategy.user_summary_skips == 3
+
+    now = 120.0
+    strategy.client = cast(Any, _Summarizer())
+    assert await strategy(_conversation(8, first_turn=40)) is True
+    strategy.client = cast(Any, _FailingSummarizer())
+    assert await strategy(_conversation(8, first_turn=50)) is False
+    assert await strategy(_conversation(8, first_turn=60)) is False
+    assert strategy.user_summary_failures == 5
+    assert await strategy(_conversation(8, first_turn=70)) is False
+    assert strategy.user_summary_skips == 4
+
+
+async def test_summary_cooldown_is_instance_local_and_disabled_by_default() -> None:
+    client = _FailingSummarizer()
+    limited = _strategy(client, max_consecutive_summary_failures=1, summary_backoff_seconds=60)
+    unlimited = _strategy(client)
+    assert await limited(_conversation(8)) is False
+    assert await limited(_conversation(8)) is False
+    for _ in range(3):
+        assert await unlimited(_conversation(8)) is False
+    assert client.calls == 4
+    assert limited.user_summary_skips == 1
+    assert unlimited.user_summary_failures == 3
+    assert unlimited.user_summary_skips == 0
+
+
+async def test_cached_summary_replays_during_cooldown_without_resetting_it() -> None:
+    strategy = _strategy(max_consecutive_summary_failures=1, summary_backoff_seconds=60)
+    original = _conversation(8)
+    assert await strategy(deepcopy(original)) is True
+    client = _FailingSummarizer()
+    strategy.client = cast(Any, client)
+    assert await strategy(_conversation(8, first_turn=10)) is False
+    assert await strategy(deepcopy(original)) is True
+    assert strategy.user_summaries_replayed == 1
+    assert await strategy(_conversation(8, first_turn=20)) is False
+    assert client.calls == 1
+    assert strategy.user_summary_skips == 1
+
+
+class _WaitingSummarizer:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def get_response(self, *args: Any, **kwargs: Any) -> ChatResponse:
+        self.started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            self.cancelled.set()
+        raise AssertionError("The request must be cancelled")
+
+
+async def test_summary_timeout_cancels_request_and_counts_toward_cooldown() -> None:
+    client = _WaitingSummarizer()
+    strategy = _strategy(
+        client,
+        summary_timeout_seconds=0.01,
+        max_consecutive_summary_failures=1,
+        summary_backoff_seconds=60,
+    )
+    messages = _conversation(8)
+    before = _rendered(messages)
+    assert await asyncio.wait_for(strategy(messages), timeout=5) is False
+    assert client.started.is_set() and client.cancelled.is_set()
+    assert _rendered(messages) == before
+    assert strategy.user_summary_failures == 1
+    assert await strategy(messages) is False
+    assert strategy.user_summary_skips == 1
+
+
+@pytest.mark.parametrize("timeout", [None, 60.0])
+async def test_external_cancellation_propagates_without_starting_cooldown(
+    timeout: float | None,
+) -> None:
+    client = _WaitingSummarizer()
+    strategy = _strategy(
+        client,
+        summary_timeout_seconds=timeout,
+        max_consecutive_summary_failures=1,
+        summary_backoff_seconds=60,
+    )
+    task = asyncio.create_task(strategy(_conversation(8)))
+    await asyncio.wait_for(client.started.wait(), timeout=5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert client.cancelled.is_set()
+    assert strategy.user_summary_failures == strategy.user_summary_skips == 0
+    strategy.client = cast(Any, _Summarizer())
+    assert await strategy(_conversation(8)) is True
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"summary_timeout_seconds": value} for value in (0, -1, float("nan"), float("inf"), True)]
+    + [
+        {"max_consecutive_summary_failures": value, "summary_backoff_seconds": 1}
+        for value in (0, -1, 1.5, True)
+    ]
+    + [
+        {"max_consecutive_summary_failures": 1, "summary_backoff_seconds": value}
+        for value in (0, -1, float("nan"), float("inf"), True)
+    ]
+    + [{"max_consecutive_summary_failures": 1}, {"summary_backoff_seconds": 1}],
+)
+def test_invalid_summary_limits_are_rejected(kwargs: dict[str, Any]) -> None:
+    with pytest.raises(ValueError):
+        _strategy(**kwargs)
 
 
 async def test_the_replacement_carries_the_frameworks_own_supersession_annotations() -> None:
@@ -1787,6 +1930,33 @@ async def test_a_fold_whose_summarizer_fails_leaves_the_standing_summaries_as_th
         1,
         0,
     )
+
+
+@pytest.mark.parametrize("emergency", [False, True])
+async def test_fold_timeout_and_cooldown_preserve_standing_summaries(emergency: bool) -> None:
+    strategy = _fold_scenario(
+        _Summarizer("x" * _LARGE_SUMMARY_CHARS),
+        min_band_share=0.05,
+        summary_timeout_seconds=0.01,
+        max_consecutive_summary_failures=1,
+        summary_backoff_seconds=60,
+    )
+    messages = await _three_standing(strategy)
+    messages += _conversation(1, first_turn=20)
+    before = _rendered(messages)
+    client = _WaitingSummarizer()
+    strategy.client = cast(Any, client)
+    if emergency:
+        _included(messages)
+        assert await strategy.fold_if_smaller(messages) == "failed"
+        assert await strategy.fold_if_smaller(messages) == "failed"
+    else:
+        assert await strategy(messages) is False
+        assert await strategy(messages) is False
+    assert client.cancelled.is_set()
+    assert _rendered(messages) == before
+    assert strategy.user_summary_failures == strategy.user_summary_skips == 1
+    assert strategy.user_folds == 0
 
 
 @pytest.mark.parametrize("mode", SUMMARY_MODES)

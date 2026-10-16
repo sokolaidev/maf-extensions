@@ -1384,6 +1384,35 @@ async def test_an_empty_conversation_is_not_handed_to_either_half() -> None:
     assert (strategy.user_compactions, strategy.records_found) == (0, 0)
 
 
+async def test_user_summary_cooldown_still_allows_composition_to_bound_the_prompt() -> None:
+    client = _FailingSummarizer()
+    ceiling = 16_000
+    strategy = _composed(
+        ceiling,
+        harder_attempts=0,
+        user_turns=_user_phase(
+            ceiling,
+            summarizer=client,
+            max_consecutive_summary_failures=1,
+            summary_backoff_seconds=60,
+        ),
+    )
+    for _ in range(2):
+        messages = _conversation()
+        assert _size(messages) > ceiling
+        assert await strategy(messages) is True
+        assert _size(messages) <= ceiling
+        assert not any(
+            message.additional_properties.get(EXCLUDED_KEY, False)
+            for message in messages
+            if message.role == "user"
+        )
+    assert client.calls == 1
+    assert strategy.user_summary_failures == 1
+    assert strategy.user_summary_skips == strategy.user_turns.user_summary_skips == 1
+    assert strategy.last_resort_fallbacks > 0
+
+
 async def test_every_counter_of_both_halves_is_readable_off_the_composed_row() -> None:
     """A composed row that reports only half its counters is a row nobody can attribute."""
     strategy = _composed()

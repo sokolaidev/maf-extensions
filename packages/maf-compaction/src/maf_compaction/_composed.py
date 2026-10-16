@@ -621,6 +621,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return self.user_turns.user_summaries_replayed
 
     @property
+    def user_summary_skips(self) -> int:
+        """User-summary or fold requests skipped during the user half's cooldown."""
+        return self.user_turns.user_summary_skips
+
+    @property
     def user_summary_failures(self) -> int:
         """:attr:`~._usersummary.UserTurnAnchoredSummarizationCompactionStrategy.user_summary_failures`."""
         return self.user_turns.user_summary_failures
