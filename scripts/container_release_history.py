@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -275,6 +276,10 @@ def catalogue_asset(assets: Any) -> dict[str, Any]:
     return assets[0]
 
 
+class _HistoryAdvanced(ValueError):
+    """New committed records require a fresh, fully validated read."""
+
+
 class History:
     """Read and append immutable snapshots; callers serialize all writes in one Actions group."""
 
@@ -345,6 +350,15 @@ class History:
         return Snapshot(number, hashed, value, release["id"])
 
     def head(self) -> Snapshot | None:
+        """Read a validated head, retrying concurrent publication at most twice."""
+        for delay in (1, 2):
+            try:
+                return self._head_once()
+            except _HistoryAdvanced:
+                time.sleep(delay)
+        return self._head_once()
+
+    def _head_once(self) -> Snapshot | None:
         """Check retained ancestry and current bytes without downloading every old snapshot."""
         records = self.records()
         committed = {n: r for n, r in records.items() if not r["draft"]}
@@ -364,7 +378,12 @@ class History:
         ):
             raise ValueError("Committed history tag identifies another source")
         checked = {n: r["id"] for n, r in self.records().items() if not r["draft"]}
-        if checked != {n: r["id"] for n, r in committed.items()}:
+        original = {n: r["id"] for n, r in committed.items()}
+        if checked != original:
+            if all(checked.get(n) == rid for n, rid in original.items()) and all(
+                n > max(original, default=0) for n in checked.keys() - original.keys()
+            ):
+                raise _HistoryAdvanced("Security history advanced during retrieval")
             raise ValueError("Security history changed during retrieval")
         return current
 
