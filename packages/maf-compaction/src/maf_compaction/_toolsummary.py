@@ -99,7 +99,7 @@ __all__ = [
     "make_recall_tool",
     "record_body",
     "record_bodies",
-    "record_anchor_index",
+    "record_anchor_position",
 ]
 
 #: Name of the tool the agent must call. The strategy looks for this name in the history, so
@@ -456,14 +456,14 @@ def _newest_record_identity(messages: list[Message]) -> str:
     return f"text:{message.text}"
 
 
-def record_anchor_index(messages: list[Message], identity: str) -> int | None:
+def record_anchor_position(messages: list[Message], identity: str) -> ContentPosition | None:
     """Locate retained anchor content for wait ordering, even if excluded or now ambiguous.
 
     This grants no recall or removal authority; an invalidated anchor must not make an older
     record look newly arrived.
     """
     positions = [
-        index
+        (index, len(message.contents) - 1)
         for index, message in enumerate(messages)
         if _is_written_record(message) and identity == f"text:{message.text}"
     ]
@@ -480,7 +480,7 @@ def record_anchor_index(messages: list[Message], identity: str) -> int | None:
             and _call_identity(message, call_position) == identity
             and RECORD_MARKER in str(messages[index].contents[position].result)
         ):
-            positions.append(index)
+            positions.append((index, position))
     return max(positions, default=None)
 
 

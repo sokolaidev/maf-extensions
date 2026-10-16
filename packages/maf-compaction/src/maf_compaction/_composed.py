@@ -59,7 +59,7 @@ from ._toolsummary import (
     build_record_message,
     consolidatable_record_groups,
     find_record_index,
-    record_anchor_index,
+    record_anchor_position,
     record_bodies,
 )
 from ._usersummary import SUMMARY_MODE_RECOMPACT, UserTurnAnchoredSummarizationCompactionStrategy
@@ -1064,8 +1064,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         clock = _responses(messages)
         anchor = _newest_record_identity(messages)
         if anchor != self._anchor:
-            previous = record_anchor_index(messages, self._anchor)
-            newest = find_record_index(messages)
+            previous = record_anchor_position(messages, self._anchor)
+            newest = record_anchor_position(messages, anchor)
             if anchor and (
                 not self._anchor
                 or (previous is not None and newest is not None and newest > previous)
