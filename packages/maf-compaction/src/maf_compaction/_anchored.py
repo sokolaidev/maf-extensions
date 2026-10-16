@@ -65,7 +65,7 @@ from agent_framework._compaction import (
 )
 
 from ._media import annotate_token_counts
-from ._preserve import any_preserved, is_preserved, removable_whole
+from ._preserve import any_preserved, is_preserved, removable_spans
 from ._summary_links import has_summary_links
 from ._tool_result import can_shorten_result, repair_compacted_items
 
@@ -615,6 +615,7 @@ class AnchoredCompactionStrategy:
         """
         spans = group_messages(messages)
         band = self._middle_band(messages, spans)
+        removable = removable_spans(messages, spans)
         dropped: list[dict[str, Any]] = []
         for group in band:
             if group.get("kind") != kind:
@@ -641,7 +642,7 @@ class AnchoredCompactionStrategy:
             # The same rule from the other side: a group whose call and result would not leave
             # together is kept whole, as a preserved one is. See
             # :func:`~._preserve.removable_whole`.
-            if not removable_whole(messages, spans, group):
+            if (group["start_index"], group["end_index"]) not in removable:
                 continue
             for message in members:
                 set_excluded(message, excluded=True, reason=EXCLUDE_REASON)
@@ -685,6 +686,7 @@ class AnchoredCompactionStrategy:
             return False
         annotate_message_groups(messages)
         spans = group_messages(messages)
+        removable = removable_spans(messages, spans)
         dropped: list[dict[str, Any]] = []
         for group in spans:
             kind = group.get("kind")
@@ -695,7 +697,10 @@ class AnchoredCompactionStrategy:
                 continue
             if all(message.additional_properties.get(EXCLUDED_KEY, False) for message in members):
                 continue
-            if any_preserved(members) or not removable_whole(messages, spans, group):
+            if (
+                any_preserved(members)
+                or (group["start_index"], group["end_index"]) not in removable
+            ):
                 continue
             for message in members:
                 set_excluded(message, excluded=True, reason=EXCLUDE_REASON)

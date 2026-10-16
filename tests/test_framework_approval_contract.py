@@ -119,3 +119,38 @@ def test_sandbox_body_requires_approval_bound_to_the_issuing_session(
             assert executed == expected
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("hosted", [False, True])
+def test_persisted_hosted_call_cannot_request_local_sandbox_approval(hosted):
+    async def exercise():
+        executed = []
+        guarded = _guarded_tool(executed)
+        call = Content.from_function_call(
+            call_id="shared",
+            id="occurrence",
+            name="guarded",
+            arguments={"value": "reviewed"},
+            hosted=hosted,
+            server_name="remote",
+        )
+        message = Message.from_dict(Message("assistant", [call]).to_dict())
+        client = ScriptedClient([ChatResponse(messages=message)])
+        response = await client.get_response(
+            [Message("user", "perform the operation")],
+            options={"tools": [guarded]},
+            client_kwargs={"session": AgentSession()},
+        )
+        requests = [
+            c
+            for m in response.messages
+            for c in m.contents
+            if c.type == "function_approval_request"
+        ]
+        assert executed == []
+        assert len(requests) == (0 if hosted else 1)
+        if requests:
+            assert requests[0].function_call.id == "occurrence"
+            assert requests[0].function_call.hosted is False
+
+    asyncio.run(exercise())

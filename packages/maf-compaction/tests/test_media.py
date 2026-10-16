@@ -289,7 +289,7 @@ async def test_snapshot_replay_reuses_descriptions_but_different_images_do_not_a
     stored = deepcopy(messages)
     assert await first.strategy(messages)
     snapshot = json.loads(json.dumps(first.to_dict()))
-    assert snapshot["version"] == 4
+    assert snapshot["version"] == 5
     assert "example.org" not in json.dumps(snapshot)
     restored = stack(client, describe_media=describe)
     restored.restore(snapshot)

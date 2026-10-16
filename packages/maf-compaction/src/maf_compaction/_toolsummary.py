@@ -54,10 +54,11 @@ from agent_framework._compaction import (
 
 from ._anchored import AnchoredCompactionStrategy
 from ._media import annotate_token_counts
+from ._occurrences import ContentPosition, function_result_candidates
 from ._preserve import (
     PRESERVE_REASON_KEY,
     is_preserved,
-    removable_whole,
+    removable_spans,
     set_preserved,
 )
 from ._tool_result import can_shorten_result, repair_compacted_items
@@ -85,6 +86,8 @@ __all__ = [
     "find_record_index",
     "make_recall_tool",
     "record_body",
+    "record_bodies",
+    "record_anchor_position",
 ]
 
 #: Name of the tool the agent must call. The strategy looks for this name in the history, so
@@ -314,6 +317,52 @@ RECALL_VALUES_DESCRIPTION: Final[str] = (
 )
 
 
+def _call_identity(message: Message, position: int) -> str:
+    content = message.contents[position]
+    return (
+        f"occurrence:{content.id}"
+        if content.id
+        else f"message:{message.message_id}:{position}"
+        if message.message_id and not re.fullmatch(r"msg_[0-9]+", message.message_id)
+        else f"call:{content.call_id}"
+    )
+
+
+def _recall_results(
+    messages: Sequence[Message],
+    matches: dict[ContentPosition, tuple[ContentPosition, ...]] | None = None,
+) -> dict[int, str]:
+    """Match local recall results, excluding positional ``msg_N`` IDs from durable identity."""
+    identities: Counter[str] = Counter()
+    matched: dict[int, str] = {}
+    declarations: dict[tuple[int, int], tuple[str, bool]] = {}
+    for message_index, message in enumerate(messages):
+        for position, content in enumerate(message.contents):
+            if not content.call_id:
+                continue
+            if message.role == "assistant" and content.type == "function_call":
+                identity = _call_identity(message, position)
+                identities[identity] += 1
+                eligible = (
+                    content.name == RECALL_TOOL_NAME
+                    and not content.hosted
+                    and not content.informational_only
+                    and not message.additional_properties.get(EXCLUDED_KEY, False)
+                )
+                declarations[(message_index, position)] = (identity, eligible)
+    if matches is None:
+        matches = function_result_candidates(messages)
+    for (message_index, position), candidates in matches.items():
+        if len(candidates) != 1:
+            continue
+        identity, eligible = declarations[candidates[0]]
+        message = messages[message_index]
+        if eligible and not message.additional_properties.get(EXCLUDED_KEY, False):
+            matched[id(message.contents[position])] = identity
+    # Legacy calls without occurrence or message IDs must have unique service IDs.
+    return {key: identity for key, identity in matched.items() if identities[identity] == 1}
+
+
 def find_record_index(messages: Sequence[Message]) -> int | None:
     """Return the index of the newest recall tool result, if one exists.
 
@@ -321,10 +370,8 @@ def find_record_index(messages: Sequence[Message]) -> int | None:
     a record exists -- otherwise one would force a call that was already made, or drop results
     a record never covered.
 
-    The call and its result are matched by ``call_id`` rather than by adjacency, because a
-    provider is free to order or batch them differently. A result whose call is absent does not
-    count: that is the shape a client-synthesised pair produces, and exactly what breaks on
-    routes that track tool calls server-side.
+    Results bind to call occurrences; an id-less result requires one unanswered candidate.
+    Hosted, ambiguous and orphaned results cannot establish a local recall record.
 
     **Two forms are records.** The recall tool's result, as above, and a record this package
     wrote in place of several (:func:`build_record_message`), which is a message of its own with
@@ -345,12 +392,7 @@ def find_record_index(messages: Sequence[Message]) -> int | None:
     Returns:
         The index of the result message, or None when no complete record exists.
     """
-    recall_ids = {
-        content.call_id
-        for message in messages
-        for content in message.contents
-        if content.type == "function_call" and content.name == RECALL_TOOL_NAME and content.call_id
-    }
+    recall_results = _recall_results(messages)
     newest: int | None = None
     for index, message in enumerate(messages):
         if message.additional_properties.get(EXCLUDED_KEY, False):
@@ -358,10 +400,8 @@ def find_record_index(messages: Sequence[Message]) -> int | None:
         if _is_written_record(message):
             newest = index
             continue
-        if not recall_ids:
-            continue
         for content in message.contents:
-            if content.type != "function_result" or content.call_id not in recall_ids:
+            if id(content) not in recall_results:
                 continue
             result = content.result if isinstance(content.result, str) else str(content.result)
             # The marker is what separates a record from a call the model made on its own
@@ -379,7 +419,8 @@ def _newest_record_identity(messages: list[Message]) -> str:
     (:func:`find_record_index`), and named by something the copies sent on a call
     and the store after it both carry -- not a position, which differs between the two lists.
 
-    A record the model made is named by its call id, which the provider issued. A record the
+    A record the model made is named by its call occurrence, falling back to its declaration's
+    message identity or a unique legacy service call id. A record the
     chain wrote has no call id -- it is an ordinary message, see
     :func:`build_record_message` -- so it is named by its text. The two lists agree on that text
     because the chain puts the answer the copies pass was given on the store
@@ -392,10 +433,39 @@ def _newest_record_identity(messages: list[Message]) -> str:
     if index is None:
         return ""
     message = messages[index]
-    for content in message.contents:
-        if content.type == "function_result" and RECORD_MARKER in str(content.result):
-            return f"call:{content.call_id or ''}"
+    recall_results = _recall_results(messages)
+    for content in reversed(message.contents):
+        if id(content) in recall_results and RECORD_MARKER in str(content.result):
+            return recall_results[id(content)]
     return f"text:{message.text}"
+
+
+def record_anchor_position(messages: list[Message], identity: str) -> ContentPosition | None:
+    """Locate retained anchor content for wait ordering, even if excluded or now ambiguous.
+
+    This grants no recall or removal authority; an invalidated anchor must not make an older
+    record look newly arrived.
+    """
+    positions = [
+        (index, len(message.contents) - 1)
+        for index, message in enumerate(messages)
+        if _is_written_record(message) and identity == f"text:{message.text}"
+    ]
+    for (index, position), candidates in function_result_candidates(messages).items():
+        if len(candidates) != 1:
+            continue
+        call_index, call_position = candidates[0]
+        message = messages[call_index]
+        call = message.contents[call_position]
+        if (
+            call.name == RECALL_TOOL_NAME
+            and not call.hosted
+            and not call.informational_only
+            and _call_identity(message, call_position) == identity
+            and RECORD_MARKER in str(messages[index].contents[position].result)
+        ):
+            positions.append((index, position))
+    return max(positions, default=None)
 
 
 def _is_written_record(message: Message) -> bool:
@@ -411,7 +481,7 @@ def _is_written_record(message: Message) -> bool:
     )
 
 
-def record_text(message: Message) -> str:
+def record_text(message: Message, *, history: Sequence[Message] | None = None) -> str:
     """Return the record text a message carries: a recall result, or a record this package wrote.
 
     A written record (:func:`_is_written_record`) is its text, whole. Otherwise only results
@@ -429,7 +499,14 @@ def record_text(message: Message) -> str:
 
     Returns:
         The record, or an empty string when the message carries none.
+
+    Pass ``history`` when using the text to authorize removal; it verifies call occurrences.
     """
+    return _record_text(message, _recall_results(history) if history is not None else None)
+
+
+def _record_text(message: Message, recall_results: dict[int, str] | None) -> str:
+    """Extract record text, optionally restricting it to matched local results."""
     if message.additional_properties.get(EXCLUDED_KEY, False):
         return ""
     if _is_written_record(message):
@@ -437,6 +514,8 @@ def record_text(message: Message) -> str:
     parts: list[str] = []
     for content in message.contents:
         if content.type != "function_result":
+            continue
+        if recall_results is not None and id(content) not in recall_results:
             continue
         result = content.result if isinstance(content.result, str) else str(content.result)
         if RECORD_MARKER in result:
@@ -625,7 +704,12 @@ def _distinctive_tokens(text: str) -> set[str]:
     }
 
 
-def _is_recall_group(messages: Sequence[Message], group: dict[str, Any]) -> bool:
+def _is_recall_group(
+    messages: Sequence[Message],
+    group: dict[str, Any],
+    *,
+    recall_results: dict[int, str] | None = None,
+) -> bool:
     """Return whether a group is itself a record rather than ordinary tool work.
 
     Shared by the strategy and the middleware for the same reason :func:`find_record_index` is:
@@ -644,22 +728,21 @@ def _is_recall_group(messages: Sequence[Message], group: dict[str, Any]) -> bool
         its result can land in separate spans when another message sits between them -- or a
         record this package wrote.
     """
-    if RECALL_TOOL_NAME in _called_function_names(messages, group):
-        return True
     members = messages[group["start_index"] : group["end_index"] + 1]
     if any(_is_written_record(message) for message in members):
         return True
-    result_ids = {
-        content.call_id
+    if recall_results is None:
+        recall_results = _recall_results(messages)
+    return any(
+        id(content) in recall_results
+        or (
+            message.role == "assistant"
+            and content.type == "function_call"
+            and content.name == RECALL_TOOL_NAME
+            and not content.hosted
+            and not content.informational_only
+        )
         for message in members
-        for content in message.contents
-        if content.type == "function_result" and content.call_id
-    }
-    return bool(result_ids) and any(
-        content.type == "function_call"
-        and content.name == RECALL_TOOL_NAME
-        and content.call_id in result_ids
-        for message in messages
         for content in message.contents
     )
 
@@ -715,12 +798,18 @@ def active_record_groups(messages: list[Message]) -> list[dict[str, Any]]:
     Returns:
         One span from :func:`group_messages` per record.
     """
+    return _active_record_groups(messages, group_messages(messages), _recall_results(messages))
+
+
+def _active_record_groups(
+    messages: list[Message], spans: list[dict[str, Any]], recall_results: dict[int, str]
+) -> list[dict[str, Any]]:
     return [
         group
-        for group in group_messages(messages)
-        if _is_recall_group(messages, group)
+        for group in spans
+        if _is_recall_group(messages, group, recall_results=recall_results)
         and any(
-            record_text(message)
+            _record_text(message, recall_results)
             for message in messages[group["start_index"] : group["end_index"] + 1]
         )
     ]
@@ -735,7 +824,8 @@ def consolidatable_record_groups(messages: list[Message]) -> list[dict[str, Any]
     right after the one that wrote it. Replacing it there would store its result as excluded and
     leave its call standing, which a provider refuses. It stays out of this pass's merge
     or rewrite and is in the next one's, once its result has been stored. It remains a record to
-    everything else -- preserved, counted, and the anchor if it is the newest.
+    everything else -- preserved, counted, and the anchor if it is the newest. Spans containing
+    content outside the matched records also stay intact, since the summarizer never sees it.
 
     Args:
         messages: The conversation, already grouped.
@@ -745,9 +835,42 @@ def consolidatable_record_groups(messages: list[Message]) -> list[dict[str, Any]
         may be handed.
     """
     spans = group_messages(messages)
+    matches = function_result_candidates(messages)
+    recalls = _recall_results(messages, matches)
+    removable = removable_spans(messages, spans, matches=matches)
+    record_contents = _record_contents(messages, matches, recalls)
     return [
-        group for group in active_record_groups(messages) if removable_whole(messages, spans, group)
+        group
+        for group in _active_record_groups(messages, spans, recalls)
+        if (group["start_index"], group["end_index"]) in removable
+        and _record_only_group(messages, group, record_contents)
     ]
+
+
+def _record_contents(
+    messages: Sequence[Message],
+    matches: dict[ContentPosition, tuple[ContentPosition, ...]],
+    recalls: dict[int, str],
+) -> set[int]:
+    record_contents: set[int] = set()
+    for (message_index, position), candidates in matches.items():
+        result = messages[message_index].contents[position]
+        if id(result) in recalls and RECORD_MARKER in str(result.result):
+            call_index, call_position = candidates[0]
+            record_contents.update((id(result), id(messages[call_index].contents[call_position])))
+    return record_contents
+
+
+def _record_only_group(
+    messages: Sequence[Message], group: dict[str, Any], record_contents: set[int]
+) -> bool:
+    """Require every removed content item to belong to the records being summarized."""
+    for message in messages[group["start_index"] : group["end_index"] + 1]:
+        if _is_written_record(message) and all(c.type == "text" for c in message.contents):
+            continue
+        if any(id(content) not in record_contents for content in message.contents):
+            return False
+    return True
 
 
 def record_body(messages: list[Message], group: dict[str, Any]) -> str:
@@ -764,9 +887,21 @@ def record_body(messages: list[Message], group: dict[str, Any]) -> str:
     Returns:
         The record's own text, several results in one span joined by newlines.
     """
+    return _record_body(messages, group, _recall_results(messages))
+
+
+def record_bodies(messages: list[Message], groups: list[dict[str, Any]]) -> list[str]:
+    """Render a pass's record bodies using one history match."""
+    recalls = _recall_results(messages)
+    return [_record_body(messages, group, recalls) for group in groups]
+
+
+def _record_body(
+    messages: list[Message], group: dict[str, Any], recall_results: dict[int, str]
+) -> str:
     parts: list[str] = []
     for message in messages[group["start_index"] : group["end_index"] + 1]:
-        text = record_text(message)
+        text = _record_text(message, recall_results)
         for part in text.split(RECORD_MARKER)[1:]:
             parts.append(part.strip().removeprefix(_RECORD_PREAMBLE).strip())
     return "\n".join(part for part in parts if part)
@@ -880,8 +1015,11 @@ def _hold_unrecorded(messages: list[Message]) -> int:
         earlier pass. Zero means the rule held nothing back this time.
     """
     held = 0
+    recalls = _recall_results(messages)
     for group in group_messages(messages):
-        if group.get("kind") != "tool_call" or _is_recall_group(messages, group):
+        if group.get("kind") != "tool_call" or _is_recall_group(
+            messages, group, recall_results=recalls
+        ):
             continue
         members = messages[group["start_index"] : group["end_index"] + 1]
         if all(message.additional_properties.get(EXCLUDED_KEY, False) for message in members):
@@ -981,12 +1119,13 @@ def _droppable_groups_after(messages: list[Message], record_index: int | None) -
     """
     boundary = -1 if record_index is None else record_index
     count = 0
+    recalls = _recall_results(messages)
     for group in group_messages(messages):
         if group.get("kind") != "tool_call" or group["start_index"] <= boundary:
             continue
         # A record is not work that needs recording. Counting one would make every record
         # bring the next one closer, and a bound of one would force a record on every call.
-        if _is_recall_group(messages, group):
+        if _is_recall_group(messages, group, recall_results=recalls):
             continue
         members = messages[group["start_index"] : group["end_index"] + 1]
         if all(message.additional_properties.get(EXCLUDED_KEY, False) for message in members):
@@ -1681,16 +1820,22 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             text: The replacement's own text, without marker or preamble.
 
         Raises:
-            ValueError: When a group is not :func:`~._preserve.removable_whole`: excluding it would
+            ValueError: When a group contains unrelated content, or is not
+                :func:`~._preserve.removable_whole`: excluding it would
                 leave a call standing without its result, or the reverse, which the provider
                 refuses. Refused here as well as by the walk that picks the groups, so no caller
                 can reach the half-removal by handing over a list of its own.
         """
         spans = group_messages(messages)
-        if not all(removable_whole(messages, spans, group) for group in groups):
+        matches = function_result_candidates(messages)
+        removable = removable_spans(messages, spans, matches=matches)
+        if not all((group["start_index"], group["end_index"]) in removable for group in groups):
             raise ValueError(
                 "A record handed to consolidate_records cannot be removed with its call and result."
             )
+        record_contents = _record_contents(messages, matches, _recall_results(messages, matches))
+        if not all(_record_only_group(messages, group, record_contents) for group in groups):
+            raise ValueError("A record handed to consolidate_records contains unrelated content.")
         for group in groups:
             for message in messages[group["start_index"] : group["end_index"] + 1]:
                 # Released before the exclusion, as ``_drop_before`` releases a hold: the promise
@@ -1796,8 +1941,13 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             True if anything was excluded.
         """
         groups = group_messages(messages)
+        matches = function_result_candidates(messages)
+        recall_results = _recall_results(messages, matches)
+        removable = removable_spans(messages, groups, matches=matches)
         record = "\n".join(
-            text for message in messages[: anchor + 1] if (text := record_text(message))
+            text
+            for message in messages[: anchor + 1]
+            if (text := _record_text(message, recall_results))
         )
         # Tokenised once, and kept in both shapes the two rules need: a set for "is this value
         # in the record", a count for "is this name mentioned as often as it was called".
@@ -1820,12 +1970,12 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 continue
             if group["end_index"] >= anchor:
                 continue
-            if _is_recall_group(messages, group):
+            if _is_recall_group(messages, group, recall_results=recall_results):
                 # An older record. Deleting it would destroy the only surviving account of the
                 # groups behind *it* -- the same loss this strategy exists to prevent, one
                 # level removed, and quieter, because the newer record looks like coverage.
                 continue
-            if not removable_whole(messages, groups, group):
+            if (group["start_index"], group["end_index"]) not in removable:
                 # Its call and its result would not leave together -- see
                 # :func:`~._preserve.removable_whole` -- so it is not a candidate on this pass, and
                 # not reported as uncovered either: the record may cover it perfectly well.

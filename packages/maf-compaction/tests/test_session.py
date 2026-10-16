@@ -109,13 +109,97 @@ def test_decisions_are_independent_json_values():
     assert RecordDecisions.from_dict(round_trip(empty.to_dict())) == empty
 
 
+@pytest.mark.parametrize("version", [1, 2, 3, 4])
+@pytest.mark.parametrize("field", ["anchor", "declined_behind"])
+def test_legacy_recall_identity_is_rejected_before_restoring_pending_state(version, field):
+    summarizer = Summarizer()
+    stack = build_stack(summarizer)
+    snapshot = round_trip(stack.to_dict())
+    snapshot["version"] = version
+    decisions = snapshot["strategy"]["decisions"]
+    decisions.pop("record_identity_version", None)
+    decisions[field] = "call:shared"
+    decisions["wait_since"] = 3
+    snapshot["middleware"]["awaiting_record"] = True
+    history = [
+        Message(
+            "assistant",
+            [
+                Content.from_function_call(
+                    call_id="shared", name="recall_values", arguments="{}", id="old"
+                )
+            ],
+            message_id="recall-call",
+        ),
+        Message(
+            "tool",
+            [
+                Content.from_function_result(
+                    call_id="shared", result=f"{RECORD_MARKER} old", id="old"
+                )
+            ],
+        ),
+    ]
+    session = AgentSession()
+    session.state.update({"maf_compaction": snapshot, "history": [m.to_dict() for m in history]})
+    before = round_trip(session.state)
+    registry = SessionCompactionRegistry(lambda: build_stack(summarizer))
+    with pytest.raises(ValueError, match="legacy recall identities"):
+        with registry.activate(session):
+            pytest.fail("An incompatible pending state must not reach compaction")
+    assert session.state == before
+    assert not summarizer.requests
+
+
+def test_legacy_recall_identity_is_rejected_by_direct_decision_restore():
+    stack = build_stack()
+    snapshot = stack.to_dict()["strategy"]["decisions"]
+    snapshot.pop("record_identity_version", None)
+    snapshot["anchor"] = "call:shared"
+    with pytest.raises(ValueError, match="legacy recall identities"):
+        ChainDecisions.from_dict(snapshot)
+
+
+@pytest.mark.parametrize("anchor", ["", "text:written record", "call:shared"])
+def test_current_identity_schema_restores_wait_decisions(anchor):
+    stack = build_stack()
+    snapshot = stack.to_dict()
+    decisions = snapshot["strategy"]["decisions"]
+    decisions.update(anchor=anchor, wait_since=3, declined_behind=anchor)
+    stack.restore(round_trip(snapshot))
+    assert stack.to_dict() == snapshot
+
+
+@pytest.mark.parametrize("anchor", ["", "text:written record"])
+def test_legacy_snapshot_without_recall_identity_remains_readable(anchor):
+    stack = build_stack()
+    snapshot = stack.to_dict()
+    snapshot["version"] = 4
+    decisions = snapshot["strategy"]["decisions"]
+    decisions.pop("record_identity_version")
+    decisions.update(anchor=anchor, wait_since=3, declined_behind=anchor)
+    stack.restore(snapshot)
+    restored = stack.to_dict()["strategy"]["decisions"]
+    assert restored == decisions | {"record_identity_version": 2}
+
+
+def test_unknown_record_identity_schema_is_rejected_before_restore():
+    stack = build_stack()
+    before = round_trip(stack.to_dict())
+    snapshot = round_trip(before)
+    snapshot["strategy"]["decisions"]["record_identity_version"] = 999
+    with pytest.raises(ValueError, match="record identity version"):
+        stack.restore(snapshot)
+    assert stack.to_dict() == before
+
+
 @pytest.mark.parametrize("composed", [False, True])
-def test_stack_writes_v4_snapshots_and_restores_v1(composed):
+def test_stack_writes_v5_snapshots_and_restores_v1(composed):
     stack = build_stack(composed=composed)
     stack.gate.arm()
     stack.middleware._force_next = True
     snapshot = round_trip(stack.to_dict())
-    assert snapshot["version"] == 4
+    assert snapshot["version"] == 5
     legacy = snapshot | {"version": 1}
     restored = build_stack(composed=composed)
     restored.restore(legacy)
@@ -162,7 +246,7 @@ async def test_stack_restores_fold_keys_and_replays_without_a_request(version):
     ]
     assert not restored_users.refold(stored)
     assert len(summarizer.requests) == 1
-    assert restored.to_dict()["version"] == 4
+    assert restored.to_dict()["version"] == 5
 
 
 def test_cache_is_bounded_and_session_state_wins_on_hits_and_resets():
@@ -444,7 +528,10 @@ class Model(FunctionInvocationLayer, ChatMiddlewareLayer, BaseChatClient):
         if required:
             contents = [
                 Content.from_function_call(
-                    call_id="recall", name=required, arguments={"values": "recorded fact123"}
+                    call_id="recall",
+                    name=required,
+                    arguments={"values": "recorded fact123"},
+                    id=f"recall-{len(messages)}",
                 )
             ]
         else:

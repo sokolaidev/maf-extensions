@@ -57,7 +57,8 @@ from ._toolsummary import (
     build_record_message,
     consolidatable_record_groups,
     find_record_index,
-    record_body,
+    record_anchor_position,
+    record_bodies,
 )
 from ._usersummary import SUMMARY_MODE_RECOMPACT, UserTurnAnchoredSummarizationCompactionStrategy
 
@@ -272,7 +273,9 @@ def _responses(messages: list[Message]) -> int:
     )
 
 
-def _transcript(messages: list[Message], groups: list[dict[str, Any]]) -> str:
+def _transcript(
+    messages: list[Message], groups: list[dict[str, Any]], *, bodies: list[str] | None = None
+) -> str:
     """Return the numbered record bodies a merge or rewrite of ``groups`` hands the summarizer.
 
     Also the key a refusal is remembered by. It is the records' content and nothing else -- no
@@ -280,9 +283,11 @@ def _transcript(messages: list[Message], groups: list[dict[str, Any]]) -> str:
     hold the same records at different positions in different objects, give the same key, as
     they must for a kept answer to be put back at all.
     """
-    return "\n".join(
-        f"{number}. {record_body(messages, group)}" for number, group in enumerate(groups, start=1)
-    )
+    return _numbered_records(record_bodies(messages, groups) if bodies is None else bodies)
+
+
+def _numbered_records(bodies: list[str]) -> str:
+    return "\n".join(f"{number}. {body}" for number, body in enumerate(bodies, start=1))
 
 
 def _is_excluded(message: Message) -> bool:
@@ -356,6 +361,7 @@ class ChainDecisions:
     def to_dict(self) -> dict[str, Any]:
         """Return the wait and record decisions as independent JSON-safe values."""
         return {
+            "record_identity_version": 2,
             "wait_since": self.wait_since,
             "anchor": self.anchor,
             "quiet_through": self.quiet_through,
@@ -366,6 +372,16 @@ class ChainDecisions:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ChainDecisions:
         """Restore decisions serialized by :meth:`to_dict`."""
+        identity_version = data.get("record_identity_version", 1)
+        if identity_version not in (1, 2):
+            raise ValueError("Unsupported compaction record identity version.")
+        if identity_version == 1 and any(
+            (data[key] or "").startswith("call:") for key in ("anchor", "declined_behind")
+        ):
+            raise ValueError(
+                "Cannot restore compaction state with legacy recall identities; "
+                "resume with the original reader or explicitly rebuild from retained history."
+            )
         return cls(
             data["wait_since"],
             data["anchor"],
@@ -1007,10 +1023,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         clock = _responses(messages)
         anchor = _newest_record_identity(messages)
         if anchor != self._anchor:
-            # The wait itself ends below: nothing holds within one response of an arrival.
-            self._anchor = anchor
-            self._quiet_through = clock + 1
-        elif self._wait_since is not None and clock < self._wait_since:
+            previous = record_anchor_position(messages, self._anchor)
+            newest = record_anchor_position(messages, anchor)
+            if anchor and (
+                not self._anchor
+                or (previous is not None and newest is not None and newest > previous)
+            ):
+                self._anchor = anchor
+                self._quiet_through = clock + 1
+            else:
+                # Losing an anchor or exposing an older one does not complete a pending recall.
+                anchor = self._anchor
+        if self._wait_since is not None and clock < self._wait_since:
             self._wait_since = None
         holding = (
             prompt_tokens > int(self.max_input_tokens * self.user_trigger_fraction)
@@ -1137,10 +1161,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 if None in source_counts
                 else sorted((count for count in source_counts if count is not None), reverse=True)
             )
+            needed = min(len(groups), max(counts, default=0))
+            bodies = record_bodies(messages, groups[:needed])
             for count in counts:
                 if not 1 <= count <= len(groups):
                     continue
-                transcript = _transcript(messages, groups[:count])
+                transcript = _transcript(messages, groups[:count], bodies=bodies[:count])
                 key = (transcript, count)
                 text = self._kept_records.get(key)
                 if text is None:
@@ -1306,9 +1332,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     def _bounded_records(
         self, messages: list[Message], prompt: str, *, min_items: int = 1
     ) -> list[dict[str, Any]]:
+        groups = consolidatable_record_groups(messages)
+        bodies = record_bodies(messages, groups)
         return bounded_prefix(
-            consolidatable_record_groups(messages),
-            render=lambda groups: _transcript(messages, groups),
+            groups,
+            render=lambda prefix: _transcript(messages, prefix, bodies=bodies[: len(prefix)]),
             prompt=prompt,
             tokenizer=self.tokenizer,
             limit=self.user_turns.max_summary_input_tokens,
@@ -1344,7 +1372,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if text is None:
             return "failed"
         candidate = [build_record_message(text)]
-        replaced = [build_record_message(record_body(messages, group)) for group in groups]
+        replaced = [build_record_message(body) for body in record_bodies(messages, groups)]
         annotate_token_counts(candidate, tokenizer=self.tokenizer, force_retokenize=True)
         annotate_token_counts(replaced, tokenizer=self.tokenizer, force_retokenize=True)
         if included_token_count(candidate) >= included_token_count(replaced):
