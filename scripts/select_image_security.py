@@ -28,6 +28,7 @@ PROFILES = (
     "egress-proxy",
 )
 IMAGE_INPUTS = {
+    "images/egress-proxy/": ("egress-proxy",),
     "images/bicep-sandbox/": ("bicep", "bicep-avm", "sbx-bicep"),
     "images/sbx-template/": ("sbx-bicep",),
     "images/graphviz-sandbox/": ("graphviz",),
@@ -45,6 +46,7 @@ IMAGE_INPUTS = {
 }
 # These exact consumer guides are not consumed by the image recipes or build helpers.
 CONSUMER_GUIDES = {
+    "images/egress-proxy/README.md",
     "images/bicep-sandbox/README.md",
     "images/bicep-sandbox/AVM.md",
     "images/bicep-sandbox/BICEP.md",
@@ -59,6 +61,8 @@ CONSUMER_GUIDES = {
 SCRIPT_INPUTS = {
     "scripts/build_bicep_image.py": ("bicep", "bicep-avm", "sbx-bicep"),
     "scripts/bicep_source.py": ("bicep", "bicep-avm", "sbx-bicep"),
+    "LICENSE": ("egress-proxy",),
+    "scripts/egress_proxy_qualification.py": ("egress-proxy",),
     "scripts/drawio_qualification.py": ("drawio", "drawio-export"),
     "scripts/drawio_export_qualification.py": ("drawio-export",),
     "scripts/drawio_export_runtime.py": ("drawio-export",),

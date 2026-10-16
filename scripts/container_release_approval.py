@@ -78,7 +78,7 @@ PROFILE_GUIDES = {
     ),
     "egress-proxy": (
         "Controlled sandbox egress with iron-proxy, the policy patch and CA certificates.",
-        "docs/sandbox/backends/docker.md",
+        "images/egress-proxy/README.md",
     ),
 }
 
@@ -197,6 +197,18 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
                 ("Required coordinator capabilities", "coordinatorCapabilities"),
             ):
                 rows.append((label, drawio.get(key, UNAVAILABLE)))
+    if candidate["profile"] == "egress-proxy":
+        proxy = runtime.get("egressProxy", {})
+        for label, key in (
+            ("Proxy consumer checks", "checks"),
+            ("Proxy check backend", "backend"),
+            ("Proxy SDK packages (checkout)", "packages"),
+            ("Proxy runtime identity and notices", "runtime"),
+            ("Proxy container and network observations", "observation"),
+            ("Proxy qualification fixture", "fixture"),
+            ("Remaining qualification networks", "networksRemaining"),
+        ):
+            rows.append((label, proxy.get(key, UNAVAILABLE)))
     if candidate["profile"] == "bicep":
         bicep = runtime.get("bicep", {})
         for check in bicep.get("checks", []):

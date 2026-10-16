@@ -38,7 +38,7 @@ The inventory must contain components and identify the exact built image. Lower-
 | `terraform-prepared` | Terraform prepared from `dependencies.terraform.json` |
 | `opentofu-prepared` | OpenTofu prepared from `dependencies.opentofu.json` |
 | `hyperlight` | Hyperlight runtime built from the checkout's wheels and lockfile |
-| `egress-proxy` | Docker backend's patched egress proxy |
+| `egress-proxy` | [Patched egress proxy and consumer guide](../../images/egress-proxy/README.md) |
 
 The scan covers the built runtime filesystem. Build-stage-only packages, other architectures, custom image arguments, externally supplied images, upstream device-plugin images and different prepared dependency manifests are outside this inventory. In particular, the larger Terraform AVM and OpenTofu platform/provider/multiversion variants require separate scans. Applying the `sbx` template to another base also creates an unassessed image. Image scanning does not qualify sandbox confinement or backend lifecycle behavior.
 

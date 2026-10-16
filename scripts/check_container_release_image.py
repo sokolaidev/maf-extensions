@@ -1,4 +1,4 @@
-"""Run offline packaging checks against an immutable release image identity."""
+"""Run profile-specific consumer checks against an immutable release image identity."""
 
 from __future__ import annotations
 
@@ -19,10 +19,24 @@ from container_release import ROOT, now, profiles, read, require_digest, write
 
 
 def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
-    """Qualify packaging without network access; this does not establish live deployment support."""
+    """Qualify the selected profile; controlled fixtures do not establish deployment support."""
     require_digest(image_id)
     if profile not in profiles():
         raise ValueError("Unknown image profile")
+    if profile == "egress-proxy":
+        import egress_proxy_qualification
+
+        result = asyncio.run(egress_proxy_qualification.check(image_id))
+        return {
+            "imageId": image_id,
+            "profile": profile,
+            "checkedAt": now(),
+            "kind": "controlled-docker-consumer",
+            "passed": True,
+            "egressProxy": result,
+            "containersRemaining": result["containersRemaining"],
+            "liveDeploymentVerified": False,
+        }
     if profile in {"drawio", "drawio-export"}:
         import drawio_export_qualification
         import drawio_qualification
@@ -83,11 +97,7 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             (ROOT / "images/terraform-sandbox/test_runner.py").read_text(encoding="utf-8"),
         ]
     else:
-        command = [
-            "sh",
-            "-ec",
-            "test -x /usr/local/bin/iron-proxy; test -x /entrypoint.sh; iron-proxy generate-ca --outdir /tmp; test -s /tmp/ca.crt",
-        ]
+        raise ValueError("No runtime qualification for this profile")
     name = "maf-release-check-" + uuid4().hex
     create = [
         "docker",
