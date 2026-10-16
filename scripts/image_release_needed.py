@@ -481,17 +481,25 @@ def reconcile(
     """Use one issue mutation per change so retries do not duplicate notifications."""
     if state is None:
         return
+    action = "resolved at" if state["resolved"] else "replace"
+    title = f"Image release needed: {profile} ({action} {state['currentVersion']})"
     endpoint = f"repos/{REPOSITORY}/issues"
     if issue:
         match = STATE.search(issue["body"])
         if match is None:
             raise ValueError("Release request has no recoverable state")
         old = decode(match[1])
-        if stable(old) == stable(state) and issue["state"] == (
-            "closed" if state["resolved"] else "open"
+        if (
+            stable(old) == stable(state)
+            and issue["state"] == ("closed" if state["resolved"] else "open")
+            and issue.get("title") == title
         ):
             return
-        payload = {"body": body(profile, state), "state": "closed" if state["resolved"] else "open"}
+        payload = {
+            "title": title,
+            "body": body(profile, state),
+            "state": "closed" if state["resolved"] else "open",
+        }
         if state["resolved"]:
             payload["state_reason"] = (
                 "not_planned" if state.get("resolution") == "source-reconciled" else "completed"
@@ -503,7 +511,7 @@ def reconcile(
             method="POST",
             payload=encode(
                 {
-                    "title": f"Image release needed: {profile}",
+                    "title": title,
                     "body": body(profile, state),
                 }
             ),

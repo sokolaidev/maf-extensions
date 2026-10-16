@@ -506,6 +506,39 @@ def test_retries_and_unchanged_daily_scans_do_not_duplicate_issues_or_comments()
     assert client.calls[-1][1] == "PATCH"
 
 
+@pytest.mark.parametrize("profile", ["graphviz", "bicep", "bicep-avm"])
+def test_new_issue_title_identifies_the_published_version_to_replace(profile):
+    client = Issues()
+    state = desired(observed=candidate())
+    tracker.reconcile(client, profile, state, None)
+    assert client.items[0]["title"] == f"Image release needed: {profile} (replace 0.1.0)"
+
+
+@pytest.mark.parametrize("resolved", [False, True])
+@pytest.mark.parametrize(
+    "old_title",
+    ["Image release needed: graphviz", "Image release needed: graphviz (replace 0.0.9)"],
+)
+def test_existing_issue_title_is_repaired_once_without_state_changes(resolved, old_title):
+    client = Issues()
+    state = desired(changed=["images/graphviz-sandbox/Dockerfile"])
+    tracker.reconcile(client, "graphviz", state, None)
+    if resolved:
+        state = desired(previous=state)
+        tracker.reconcile(client, "graphviz", state, client.items[0])
+    calls_before = len(client.calls)
+    issue = client.items[0]
+    issue["title"] = old_title
+    before = {key: value for key, value in issue.items() if key != "title"}
+    tracker.reconcile(client, "graphviz", state, issue)
+    tracker.reconcile(client, "graphviz", state, issue)
+    action = "resolved at" if resolved else "replace"
+    assert issue["title"] == f"Image release needed: graphviz ({action} 0.1.0)"
+    assert {key: value for key, value in issue.items() if key != "title"} == before
+    assert len(client.calls) == calls_before + 1
+    assert client.calls[-1][1] == "PATCH"
+
+
 def test_closure_and_closed_issue_reuse_are_idempotent():
     client = Issues()
     state = desired(changed=["images/graphviz-sandbox/Dockerfile"])
@@ -516,11 +549,13 @@ def test_closure_and_closed_issue_reuse_are_idempotent():
     assert len(client.calls) == 2
     assert client.items[0]["state"] == "closed"
     assert client.items[0]["state_reason"] == "completed"
+    assert client.items[0]["title"] == "Image release needed: graphviz (resolved at 0.1.1)"
     newer = desired(
         record=replacement(), observed=candidate(version="3", observedAt="2026-01-04T00:00:00Z")
     )
     tracker.reconcile(client, "graphviz", newer, client.items[0])
     assert client.items[0]["state"] == "open"
+    assert client.items[0]["title"] == "Image release needed: graphviz (replace 0.1.1)"
     assert len(client.items) == 1
 
 
