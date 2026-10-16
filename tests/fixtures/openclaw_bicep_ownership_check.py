@@ -404,7 +404,9 @@ class Check:
             for e in self.events()[before:]
             if e.get("event") == "request" and e.get("method") == "tools/call"
         )
-        active = self.app.service.active[0]
+        active_call = self.app.service.active
+        assert active_call is not None
+        active = active_call[0]
         self.observer.record(
             event="admission_refused",
             session=digest(sid.encode().hex()),

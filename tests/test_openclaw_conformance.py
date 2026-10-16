@@ -34,7 +34,14 @@ def manifest():
         "npm_lock_sha256": "b" * 64,
         "npm_tree": {"files": 1, "bytes": 1, "tree_sha256": "c" * 64},
         "worker_modules": {"server.py": "d" * 64},
-        "runtime_assets": {"manifest_sha256": "d" * 64},
+        "runtime_assets": {
+            "manifest_sha256": "d" * 64,
+            "tree_sha256": "d" * 64,
+            "files": 3,
+            "archives": 2,
+            "archive_verified_files": 3,
+            "generated_files": [],
+        },
         "image": "sha256:" + "e" * 64,
         "config_sha256": "f" * 64,
         "host": {"platform": "Windows"},
@@ -132,6 +139,8 @@ def control_events(cases):
                 cleanup="confirmed",
                 source_sha256=e.LARGE_SOURCE_SHA256,
             )
+        if name in ("equal_ids_repeated_cancel", "maf_active_close"):
+            add(event="binding_cancelled", session=active, request=request_id)
         survivor_request = e.digest(2)
         add(event="binding_started", session=b, request=survivor_request)
         add(event="binding_result", session=b, request=survivor_request, **case["survivor"])
@@ -151,6 +160,24 @@ def control_events(cases):
                 session_registered=False,
                 poisoned=False,
             )
+        if name.startswith("maf_"):
+            retirement = [
+                event
+                for event in events
+                if event.get("session") == a and event["event"] in ("delete_requested", "retired")
+            ]
+            for event in retirement:
+                events.remove(event)
+            position = next(
+                i
+                for i, event in enumerate(events)
+                if event.get("session") == b
+                and event.get("request") == survivor_request
+                and event["event"] == "binding_started"
+            )
+            events[position:position] = retirement
+    for index, event in enumerate(events):
+        event["time_ns"] = index + 1
     return events
 
 
@@ -778,7 +805,9 @@ def test_review_ownership_cannot_omit_non_loss_controls(bundle):
         e.evaluate(*bundle)
 
 
-@pytest.mark.parametrize("event", ["admission_refused", "retired", "delete_requested", "response"])
+@pytest.mark.parametrize(
+    "event", ["admission_refused", "retired", "delete_requested", "response", "binding_cancelled"]
+)
 def test_review_controls_require_each_correlated_event(bundle, event):
     change_artifact(
         bundle,
