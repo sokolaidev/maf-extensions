@@ -228,6 +228,81 @@ def test_replacement_must_address_component_and_source_reasons():
     assert resolved["reasons"] == {}
 
 
+@pytest.mark.parametrize("delta", ["upgrade", "addition", "removal"])
+def test_replacement_satisfies_component_delta_with_other_inventory_changes(delta):
+    unrelated = ["dotnet", "library", "1", "pkg:nuget/library@1"]
+    released = RELEASED | {"components": RELEASED["components"] + [unrelated]}
+    observed = candidate()
+    if delta == "addition":
+        observed["components"] += RELEASED["components"]
+    elif delta == "removal":
+        observed["components"] = []
+    observed["components"].append(unrelated)
+    previous = desired(released=released, observed=observed)
+    replacement_components = [row for row in observed["components"] if row != unrelated]
+    replacement_components.append(["dotnet", "library", "2", "pkg:nuget/library@2"])
+    result = desired(
+        record=replacement(),
+        released=RELEASED | {"components": replacement_components},
+        previous=previous,
+    )
+    assert result["resolved"]
+    assert result["reasons"] == {}
+
+
+@pytest.mark.parametrize("field", [0, 1, 2, 3])
+def test_replacement_requires_full_identity_of_each_added_component(field):
+    previous = desired(observed=candidate())
+    inventory = candidate()["components"]
+    inventory[0][field] += "-different"
+    result = desired(
+        record=replacement(), released=RELEASED | {"components": inventory}, previous=previous
+    )
+    assert not result["resolved"]
+    assert result["reasons"]["components"] == previous["reasons"]["components"]
+
+
+def test_replacement_with_added_component_cannot_retain_removed_component():
+    previous = desired(observed=candidate())
+    inventory = candidate()["components"] + RELEASED["components"]
+    result = desired(
+        record=replacement(), released=RELEASED | {"components": inventory}, previous=previous
+    )
+    assert not result["resolved"]
+    assert "components" in result["reasons"]
+
+
+@pytest.mark.parametrize("blocker", ["same-digest", "source", "vulnerability", "newer-candidate"])
+def test_satisfied_component_delta_preserves_independent_release_requirements(blocker):
+    previous = desired(observed=candidate())
+    record = replacement()
+    changed = []
+    observed = None
+    if blocker == "same-digest":
+        record = RECORD
+    elif blocker == "source":
+        changed = ["images/graphviz-sandbox/Dockerfile"]
+    elif blocker == "vulnerability":
+        record["latestAttempt"] = {
+            "outcome": "vulnerable",
+            "findings": [FINDING],
+            "evidenceRelease": "monitor",
+        }
+    else:
+        observed = candidate(version="3", observedAt="2026-01-04T00:00:00Z")
+    inventory = candidate()["components"] + [["dotnet", "library", "2", "pkg:nuget/library@2"]]
+    result = desired(
+        record=record,
+        released=RELEASED | {"components": inventory},
+        changed=changed,
+        observed=observed,
+        previous=previous,
+    )
+    assert not result["resolved"]
+    reason = {"source": "source", "vulnerability": "vulnerabilities"}.get(blocker, "components")
+    assert set(result["reasons"]) == {reason}
+
+
 @pytest.mark.parametrize("observed_at", ["2026-01-02T00:00:00Z", "2026-01-03T00:00:00Z"])
 def test_older_or_tied_candidate_cannot_undo_replacement_resolution(observed_at):
     previous = desired(observed=candidate())
@@ -708,7 +783,8 @@ def test_source_reconciliation_requires_verified_evidence_and_comparison(
     assert client.items[0]["state"] == "open"
 
 
-def test_reporter_creates_updates_closes_and_reuses_one_issue(reporter):
+@pytest.mark.parametrize("extra_component", [False, True])
+def test_reporter_creates_updates_closes_and_reuses_one_issue(reporter, extra_component):
     client, current = reporter
     tracker.main()
     tracker.main()
@@ -718,6 +794,10 @@ def test_reporter_creates_updates_closes_and_reuses_one_issue(reporter):
     assert len(client.calls) == 2
     current["record"] = replacement()
     current["released"] = RELEASED | {"components": current["observed"]["components"]}
+    if extra_component:
+        current["released"]["components"] = current["released"]["components"] + [
+            ["dotnet", "library", "2", "pkg:nuget/library@2"]
+        ]
     tracker.main()
     assert client.items[0]["state"] == "closed"
     tracker.main()

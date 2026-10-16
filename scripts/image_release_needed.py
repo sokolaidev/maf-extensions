@@ -307,10 +307,12 @@ def desired(
     else:
         reasons.pop("source", None)
     pending_components = reasons.get("components")
+    inventory = {tuple(row) for row in released["components"]}
     if (
         replacement
         and pending_components
-        and pending_components["inventorySha256"] == inventory_hash
+        and {tuple(row) for row in pending_components["added"]} <= inventory
+        and inventory.isdisjoint(tuple(row) for row in pending_components["removed"])
     ):
         reasons.pop("components", None)
     observation = record.get("latestAttempt", {})
