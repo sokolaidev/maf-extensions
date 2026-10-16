@@ -6,6 +6,7 @@ import pytest
 from agent_framework import CharacterEstimatorTokenizer, Content, Message
 from agent_framework._compaction import EXCLUDED_KEY, annotate_message_groups, group_messages
 
+from maf_compaction._occurrences import function_result_candidates
 from maf_compaction._preserve import removable_whole
 from maf_compaction._toolsummary import (
     RECALL_TOOL_NAME,
@@ -201,6 +202,60 @@ def test_a_batch_containing_only_matched_recall_results_can_be_consolidated():
     ]
     annotate_message_groups(messages)
     assert len(consolidatable_record_groups(messages)) == 1
+
+
+@pytest.mark.parametrize("count", [8, 32])
+def test_consolidation_matches_history_once_per_pass(monkeypatch, count):
+    from maf_compaction import _preserve, _toolsummary
+
+    messages = []
+    for index in range(count):
+        messages.extend([call(str(index)), result(str(index)), Message("user", "Continue")])
+    annotate_message_groups(messages)
+    original = function_result_candidates
+    scans = 0
+
+    def counted(history):
+        nonlocal scans
+        scans += 1
+        return original(history)
+
+    monkeypatch.setattr(_preserve, "function_result_candidates", counted)
+    monkeypatch.setattr(_toolsummary, "function_result_candidates", counted)
+    groups = consolidatable_record_groups(messages)
+    assert len(groups) == count
+    assert scans == 1
+    scans = 0
+    strategy = ToolResultAnchoredSummarizationCompactionStrategy(
+        max_input_tokens=1000, tokenizer=CharacterEstimatorTokenizer()
+    )
+    strategy.consolidate_records(messages, groups, "CODE-123")
+    # Validation and preservation of the newly mutated history each need one pass.
+    assert scans == 2
+
+
+@pytest.mark.parametrize("count", [8, 32])
+def test_record_transcript_matches_history_once(monkeypatch, count):
+    from maf_compaction import _toolsummary
+    from maf_compaction._composed import _transcript
+
+    messages = []
+    for index in range(count):
+        messages.extend([call(str(index)), result(str(index)), Message("user", "Continue")])
+    groups = consolidatable_record_groups(messages)
+    original = function_result_candidates
+    scans = 0
+
+    def counted(history):
+        nonlocal scans
+        scans += 1
+        return original(history)
+
+    monkeypatch.setattr(_toolsummary, "function_result_candidates", counted)
+    assert _transcript(messages, groups) == "\n".join(
+        f"{index}. CODE-123" for index in range(1, count + 1)
+    )
+    assert scans == 1
 
 
 def test_framework_shaped_caller_ids_do_not_supply_legacy_occurrence_authority():
