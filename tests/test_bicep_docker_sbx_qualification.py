@@ -111,6 +111,7 @@ def test_backend_qualification_and_failure_cleanup(monkeypatch, tmp_path, failur
             return json.dumps(data["checks"][0]["template"]).encode()
 
         async def exec(self, command, **kwargs):
+            assert "release-probe/input.txt" in written
             assert kwargs["working_directory"] == "." and kwargs["timeout"] <= 180
             if command == sbx.bicep.command():
                 raw = payload

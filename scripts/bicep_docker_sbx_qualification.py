@@ -101,6 +101,8 @@ async def check(image_id: str) -> dict[str, Any]:
             len(own) == 1 and own[0].get("workspaces") == [str(sandbox.mount.host)],
             "SBX workspace attachment differs from the backend's workspace",
         )
+        token = uuid4().hex
+        await sandbox.write_file("release-probe/input.txt", token, working_directory=".")
         packaging = await sandbox.exec(
             [
                 "sh",
@@ -118,8 +120,6 @@ async def check(image_id: str) -> dict[str, Any]:
             (bicep.CONTEXT / "bicepconfig.json").read_bytes(),
             working_directory=".",
         )
-        token = uuid4().hex
-        await sandbox.write_file("release-probe/input.txt", token, working_directory=".")
         transfer = await sandbox.exec(
             [
                 "sh",
