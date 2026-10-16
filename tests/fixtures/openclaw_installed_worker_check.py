@@ -48,7 +48,7 @@ def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def installed_environment() -> dict[str, Any]:
+def installed_environment(expected: dict[str, str] | None = None) -> dict[str, Any]:
     """Require index dependencies and one non-editable candidate wheel with installed imports."""
     versions: dict[str, str] = {}
     locations: dict[str, str] = {}
@@ -63,7 +63,9 @@ def installed_environment() -> dict[str, Any]:
             )
         versions[name] = dist.version
     require(
-        all(versions.get(k) == v for k, v in BASELINE.items()),
+        versions == expected
+        if expected is not None
+        else all(versions.get(k) == v for k, v in BASELINE.items()),
         "Requalify changed dependency baseline explicitly",
     )
     for name, module_name in MODULES.items():
@@ -71,7 +73,9 @@ def installed_environment() -> dict[str, Any]:
         location = Path(module.__file__).resolve()
         root = Path(str(importlib.metadata.distribution(name).locate_file(""))).resolve()
         require(
-            location.is_relative_to(root) and "site-packages" in location.parts,
+            location.is_relative_to(root)
+            and root.is_relative_to(Path(sys.prefix).resolve())
+            and "site-packages" in location.parts,
             "Import escaped installed distribution",
         )
         locations[name] = str(location)
@@ -223,7 +227,7 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
     from openclaw_gateway_http_check import projected_result, records, verify_outcome
     from openclaw_http_observer import resolve_image
 
-    installed_environment()
+    installed_environment(getattr(args, "expected_versions", None))
     config = json.loads(args.config.read_text(encoding="utf-8-sig"))
     image = resolve_image(args.image)
     config_digest = sha(args.bicep_config.read_bytes())
@@ -236,11 +240,13 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
 
     report: dict[str, Any] = {
         "sessions": [],
+        "session_ids": [],
         "entry_point": "maf-bicep-mcp",
         "provider": "deterministic-local-fixture",
     }
     for _ in range(2):
         session = uuid.uuid4().hex
+        report["session_ids"].append(session)
         results = {}
         for case in ("valid", "invalid", "incomplete"):
             turn = uuid.uuid4().hex
