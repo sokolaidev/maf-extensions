@@ -883,3 +883,35 @@ def test_each_gateway_outcome_requires_its_own_compiler_identity(
     change_artifact(bundle, "gateway", mutate)
     with pytest.raises(e.Refused):
         e.evaluate(*bundle)
+
+
+@pytest.mark.parametrize("replacement", [None, "unhashed"])
+def test_active_close_cannot_omit_or_malformed_its_request_reference(bundle, replacement):
+    def mutate(record):
+        value = record["observations"]
+        sid = value["cases"]["maf_active_close"]["session_a"]
+        for row in value["transport"]:
+            if row.get("session") == sid and "request" in row:
+                row["request"] = replacement
+            if row.get("active_session") == sid:
+                row["active_request"] = replacement
+
+    change_artifact(bundle, "ownership", mutate)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
+def test_survivor_event_does_not_accept_a_numeric_boolean(bundle):
+    def mutate(record):
+        value = record["observations"]
+        sid = value["cases"]["maf_ordinary_close"]["session_b"]
+        rows = [
+            r
+            for r in value["transport"]
+            if r.get("session") == sid and r.get("event") == "binding_result"
+        ]
+        rows[-1]["completed"] = 1
+
+    change_artifact(bundle, "ownership", mutate)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
