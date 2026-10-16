@@ -849,3 +849,37 @@ def test_prepared_source_matches_the_real_snapshot():
     assert server.snapshot(
         {"files": [{"path": "main.bicep", "content": sources.PREPARED_SOURCE}]}
     ).digest == sources.source_digest(sources.PREPARED_SOURCE)
+
+
+@pytest.mark.parametrize("case", sorted(e.OWNERSHIP))
+@pytest.mark.parametrize("missing", [False, True])
+def test_each_ownership_survivor_requires_the_simple_source(bundle, case, missing):
+    def mutate(record):
+        result = record["observations"]["cases"][case]["survivor"]
+        if missing:
+            result.pop("source_sha256")
+        else:
+            result["source_sha256"] = "0" * 64
+
+    change_artifact(bundle, "ownership", mutate)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
+@pytest.mark.parametrize("session", [0, 1])
+@pytest.mark.parametrize("case", ["valid", "invalid", "incomplete"])
+@pytest.mark.parametrize("field", ["image", "config_sha256"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_each_gateway_outcome_requires_its_own_compiler_identity(
+    bundle, session, case, field, missing
+):
+    def mutate(record):
+        result = record["observations"]["sessions"][session][case]
+        if missing:
+            result.pop(field)
+        else:
+            result[field] = "0" * 64
+
+    change_artifact(bundle, "gateway", mutate)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)

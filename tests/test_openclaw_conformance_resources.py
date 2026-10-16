@@ -26,11 +26,13 @@ def test_auxiliary_output_is_bounded_even_when_child_exits_between_polls(
         stopped = False
 
         def __init__(self, root):
-            self.children = [
-                (SimpleNamespace(poll=lambda: 0 if finished else None, returncode=0), None)
-            ]
+            polls = iter([0] if finished else [None, 0])
+            self.children = [(SimpleNamespace(poll=lambda: next(polls, 0), returncode=0), None)]
 
         def start(self, *args):
+            (tmp_path / "gateway.log").write_bytes(b"")
+            (tmp_path / "gateway").mkdir(exist_ok=True)
+            (tmp_path / "gateway/observations.json").write_text("{}")
             path = tmp_path / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"x" * 33)
