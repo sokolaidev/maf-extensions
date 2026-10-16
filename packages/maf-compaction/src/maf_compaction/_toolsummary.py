@@ -60,11 +60,11 @@ from agent_framework._compaction import (
 
 from ._anchored import AnchoredCompactionStrategy
 from ._media import annotate_token_counts
-from ._occurrences import function_result_candidates
+from ._occurrences import ContentPosition, function_result_candidates
 from ._preserve import (
     PRESERVE_REASON_KEY,
     is_preserved,
-    removable_whole,
+    removable_spans,
     set_preserved,
 )
 from ._request import request_tools
@@ -98,6 +98,7 @@ __all__ = [
     "find_record_index",
     "make_recall_tool",
     "record_body",
+    "record_bodies",
 ]
 
 #: Name of the tool the agent must call. The strategy looks for this name in the history, so
@@ -331,7 +332,10 @@ RECALL_VALUES_DESCRIPTION: Final[str] = (
 )
 
 
-def _recall_results(messages: Sequence[Message]) -> dict[int, str]:
+def _recall_results(
+    messages: Sequence[Message],
+    matches: dict[ContentPosition, tuple[ContentPosition, ...]] | None = None,
+) -> dict[int, str]:
     """Match local recall results, excluding positional ``msg_N`` IDs from durable identity."""
     identities: Counter[str] = Counter()
     matched: dict[int, str] = {}
@@ -356,7 +360,9 @@ def _recall_results(messages: Sequence[Message]) -> dict[int, str]:
                     and not message.additional_properties.get(EXCLUDED_KEY, False)
                 )
                 declarations[(message_index, position)] = (identity, eligible)
-    for (message_index, position), candidates in function_result_candidates(messages).items():
+    if matches is None:
+        matches = function_result_candidates(messages)
+    for (message_index, position), candidates in matches.items():
         if len(candidates) != 1:
             continue
         identity, eligible = declarations[candidates[0]]
@@ -774,10 +780,15 @@ def active_record_groups(messages: list[Message]) -> list[dict[str, Any]]:
     Returns:
         One span from :func:`group_messages` per record.
     """
-    recall_results = _recall_results(messages)
+    return _active_record_groups(messages, group_messages(messages), _recall_results(messages))
+
+
+def _active_record_groups(
+    messages: list[Message], spans: list[dict[str, Any]], recall_results: dict[int, str]
+) -> list[dict[str, Any]]:
     return [
         group
-        for group in group_messages(messages)
+        for group in spans
         if _is_recall_group(messages, group, recall_results=recall_results)
         and any(
             _record_text(message, recall_results)
@@ -806,22 +817,36 @@ def consolidatable_record_groups(messages: list[Message]) -> list[dict[str, Any]
         may be handed.
     """
     spans = group_messages(messages)
+    matches = function_result_candidates(messages)
+    recalls = _recall_results(messages, matches)
+    removable = removable_spans(messages, spans, matches=matches)
+    record_contents = _record_contents(messages, matches, recalls)
     return [
         group
-        for group in active_record_groups(messages)
-        if removable_whole(messages, spans, group) and _record_only_group(messages, group)
+        for group in _active_record_groups(messages, spans, recalls)
+        if (group["start_index"], group["end_index"]) in removable
+        and _record_only_group(messages, group, record_contents)
     ]
 
 
-def _record_only_group(messages: Sequence[Message], group: dict[str, Any]) -> bool:
-    """Require every removed content item to belong to the records being summarized."""
-    recalls = _recall_results(messages)
+def _record_contents(
+    messages: Sequence[Message],
+    matches: dict[ContentPosition, tuple[ContentPosition, ...]],
+    recalls: dict[int, str],
+) -> set[int]:
     record_contents: set[int] = set()
-    for (message_index, position), candidates in function_result_candidates(messages).items():
+    for (message_index, position), candidates in matches.items():
         result = messages[message_index].contents[position]
         if id(result) in recalls and RECORD_MARKER in str(result.result):
             call_index, call_position = candidates[0]
             record_contents.update((id(result), id(messages[call_index].contents[call_position])))
+    return record_contents
+
+
+def _record_only_group(
+    messages: Sequence[Message], group: dict[str, Any], record_contents: set[int]
+) -> bool:
+    """Require every removed content item to belong to the records being summarized."""
     for message in messages[group["start_index"] : group["end_index"] + 1]:
         if _is_written_record(message) and all(c.type == "text" for c in message.contents):
             continue
@@ -844,8 +869,19 @@ def record_body(messages: list[Message], group: dict[str, Any]) -> str:
     Returns:
         The record's own text, several results in one span joined by newlines.
     """
+    return _record_body(messages, group, _recall_results(messages))
+
+
+def record_bodies(messages: list[Message], groups: list[dict[str, Any]]) -> list[str]:
+    """Render a pass's record bodies using one history match."""
+    recalls = _recall_results(messages)
+    return [_record_body(messages, group, recalls) for group in groups]
+
+
+def _record_body(
+    messages: list[Message], group: dict[str, Any], recall_results: dict[int, str]
+) -> str:
     parts: list[str] = []
-    recall_results = _recall_results(messages)
     for message in messages[group["start_index"] : group["end_index"] + 1]:
         text = _record_text(message, recall_results)
         for part in text.split(RECORD_MARKER)[1:]:
@@ -1811,11 +1847,14 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 can reach the half-removal by handing over a list of its own.
         """
         spans = group_messages(messages)
-        if not all(removable_whole(messages, spans, group) for group in groups):
+        matches = function_result_candidates(messages)
+        removable = removable_spans(messages, spans, matches=matches)
+        if not all((group["start_index"], group["end_index"]) in removable for group in groups):
             raise ValueError(
                 "A record handed to consolidate_records cannot be removed with its call and result."
             )
-        if not all(_record_only_group(messages, group) for group in groups):
+        record_contents = _record_contents(messages, matches, _recall_results(messages, matches))
+        if not all(_record_only_group(messages, group, record_contents) for group in groups):
             raise ValueError("A record handed to consolidate_records contains unrelated content.")
         for group in groups:
             for message in messages[group["start_index"] : group["end_index"] + 1]:
@@ -1922,7 +1961,9 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             True if anything was excluded.
         """
         groups = group_messages(messages)
-        recall_results = _recall_results(messages)
+        matches = function_result_candidates(messages)
+        recall_results = _recall_results(messages, matches)
+        removable = removable_spans(messages, groups, matches=matches)
         record = "\n".join(
             text
             for message in messages[: anchor + 1]
@@ -1954,7 +1995,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 # groups behind *it* -- the same loss this strategy exists to prevent, one
                 # level removed, and quieter, because the newer record looks like coverage.
                 continue
-            if not removable_whole(messages, groups, group):
+            if (group["start_index"], group["end_index"]) not in removable:
                 # Its call and its result would not leave together -- see
                 # :func:`~._preserve.removable_whole` -- so it is not a candidate on this pass, and
                 # not reported as uncovered either: the record may cover it perfectly well.
