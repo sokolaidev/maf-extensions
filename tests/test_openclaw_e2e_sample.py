@@ -549,3 +549,32 @@ def test_gateway_temp_is_private(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         creationflags=agent.FLAGS,
     )
     assert Path(resolved.stdout.strip()) == private_temp
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process supervisor")
+def test_supervisor_does_not_add_installed_bytecode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_python = sys.executable
+    environment = tmp_path / "environment"
+    subprocess.run(
+        [original_python, "-I", "-B", "-m", "venv", "--without-pip", str(environment)],
+        check=True,
+        timeout=60,
+    )
+    site = environment / "Lib/site-packages"
+    (site / "bytecode_probe.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (site / "probe.pth").write_text("import bytecode_probe\n", encoding="utf-8")
+    controller = agent.Processes(tmp_path)
+    monkeypatch.setattr(agent.sys, "executable", str(environment / "Scripts/python.exe"))
+    try:
+        controller.start(
+            "probe",
+            [original_python, "-I", "-B", "-c", "pass"],
+            {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        assert controller.children[0][0].wait(timeout=15) == 0
+    finally:
+        errors = controller.close()
+    assert errors == []
+    assert not list(site.rglob("*.pyc"))

@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -41,7 +41,9 @@ def test_auxiliary_output_is_bounded_even_when_child_exits_between_polls(
             self.stopped = True
             return []
 
-    monkeypatch.setattr(importlib.import_module("agent"), "Processes", Processes)
+    fake_agent = ModuleType("agent")
+    setattr(fake_agent, "Processes", Processes)
+    monkeypatch.setitem(sys.modules, "agent", fake_agent)
     monkeypatch.setitem(runner.LIMITS, "log", 32)
     monkeypatch.setitem(runner.LIMITS, "events", 32)
     with pytest.raises(runner.Refused, match="stage_log_limit"):
