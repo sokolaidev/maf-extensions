@@ -302,7 +302,9 @@ def boundary(point):
         os._exit(76)
 grants = {k: Grant(v['host'], v['boot'], frozenset(v['sessions']), frozenset(v['operations'])) for k,v in config['grants'].items()}
 sessions = {'session': Session(config['profile'], Limits(**config['limits']))}
-coordinator = Coordinator(Path(config['root']), grants, sessions, enabled=True, boundary=boundary)
+from scripts.experiments.mxc_session_patch.remote_scratch import Policy
+scratch = Policy(**config['scratch']) if config.get('scratch') else None
+coordinator = Coordinator(Path(config['root']), grants, sessions, enabled=True, boundary=boundary, scratch_policy=scratch)
 try:
     with Server(('127.0.0.1', 0), server_context(certs/'server.pem', certs/'server.key', certs/'ca.pem'), coordinator) as server:
         Path(config['ready']).write_text(str(server.server_address[1]))
@@ -328,6 +330,7 @@ def running(
     limits=LIMITS,
     transfer_timeout=api.TRANSFER_TIMEOUT,
     download_damage=None,
+    scratch=None,
 ):
     import time
 
@@ -355,6 +358,7 @@ def running(
                 "timeout": timeout,
                 "transfer_timeout": transfer_timeout,
                 "download_damage": download_damage,
+                "scratch": asdict(scratch) if scratch else None,
                 "grants": grants,
                 "profile": PROFILE,
                 "limits": asdict(limits),
@@ -1007,3 +1011,374 @@ def test_stream_socket_io_does_not_block_revocation(tmp_path, phase, target):
             with pytest.raises(api.Refused, match="revoked"):
                 with authority.guard(victim):
                     pass
+
+
+SCRATCH = api.remote_scratch.Policy(bytes=4096, entries=8, total_bytes=4096)
+
+
+def scratch_begin(db, call="call", guest="guest-a"):
+    owner = direct(db, "acquire", guest=guest)["owner"]
+    result = direct(db, "begin", owner=owner, call=call, request=encoded(b"code"))
+    assert result["result"] is None
+    receipt = api.remote_scratch.Receipt(**result["scratch"])
+    assert receipt.owner == owner and receipt.call == call
+    assert receipt.request == hashlib.sha256(b"code").hexdigest()
+    return owner, receipt
+
+
+def test_remote_scratch_publication_keeps_charge_until_verified_cleanup(tmp_path):
+    with coordinator(tmp_path / "db", scratch_policy=SCRATCH) as db:
+        owner, receipt = scratch_begin(db)
+        direct(db, "publish", **publication(owner))
+        assert db.pending_scratch() == [receipt]
+        assert direct(db, "retry", owner=owner, call="call", request=encoded(b"code"))[
+            "result"
+        ] == encoded(b"result")
+        with pytest.raises(api.Refused, match="reconciliation"):
+            direct(db, "begin", owner=owner, call="next", request=encoded(b"code"))
+        verified = []
+        db.reconcile_scratch(receipt, lambda value: verified.append(value) or True)
+        assert verified == [receipt] and db.pending_scratch() == []
+        db.reconcile_scratch(receipt, lambda _: pytest.fail("released receipt must be idempotent"))
+        assert direct(db, "restore", owner=owner)["call"] == "call"
+        assert direct(db, "retry", owner=owner, call="call", request=encoded(b"code"))[
+            "result"
+        ] == encoded(b"result")
+        _, second = scratch_begin(db, "next")
+        assert second.token != receipt.token
+        assert db.pending_scratch() == [second]
+        db.stores["session"][1].audit_usage()
+
+
+@pytest.mark.parametrize("proof", [False, None, 1, "yes"])
+def test_remote_cleanup_requires_exact_trusted_confirmation(tmp_path, proof):
+    with coordinator(tmp_path / "db", scratch_policy=SCRATCH) as db:
+        owner, receipt = scratch_begin(db)
+        with pytest.raises(api.Refused, match="not confirmed"):
+            db.reconcile_scratch(receipt, lambda _: proof)
+        assert db.pending_scratch() == [receipt]
+        assert (
+            db.stores["session"][1].db.execute("SELECT count(*) FROM reservations").fetchone()[0]
+            == 1
+        )
+        with pytest.raises(api.Refused, match="no longer authorized"):
+            direct(db, "publish", **publication(owner))
+        db.reconcile_scratch(receipt, lambda _: True)
+        assert db.pending_scratch() == []
+        with pytest.raises(api.Refused, match="explicit recovery"):
+            direct(db, "begin", owner=owner, call="call", request=encoded(b"code"))
+        scratch_begin(db, "next")
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("token", "b" * 32),
+        ("call", "other"),
+        ("owner", "wrong"),
+        ("request", "b" * 64),
+        ("bytes", 1),
+        ("entries", 1),
+    ],
+)
+def test_remote_cleanup_rejects_changed_receipt_before_verifier(tmp_path, field, value):
+    with coordinator(tmp_path / "db", scratch_policy=SCRATCH) as db:
+        _, receipt = scratch_begin(db)
+        with pytest.raises(api.Refused):
+            db.reconcile_scratch(
+                replace(receipt, **{field: value}), lambda _: pytest.fail("unbound proof")
+            )
+        assert db.pending_scratch() == [receipt]
+
+
+def test_remote_cleanup_verifier_does_not_hold_authority_lock(tmp_path):
+    with coordinator(tmp_path / "db", scratch_policy=SCRATCH) as db:
+        owner, receipt = scratch_begin(db)
+
+        def verify(value):
+            assert value == receipt
+            with db.authority() as authority:
+                authority.request_fence(authority._decode_owner(owner), "stop")
+            return True
+
+        db.reconcile_scratch(receipt, verify)
+        assert db.pending_scratch() == []
+        with pytest.raises(api.Refused, match="revoked"):
+            direct(db, "publish", **publication(owner))
+
+
+def test_remote_scratch_survives_host_loss_and_replacement(tmp_path):
+    root = tmp_path / "db"
+    with coordinator(root, scratch_policy=SCRATCH) as db:
+        owner, receipt = scratch_begin(db)
+    with coordinator(root, scratch_policy=SCRATCH) as db:
+        assert db.pending_scratch() == [receipt]
+        with db.authority() as authority:
+            authority.request_fence(authority._decode_owner(owner), "stop")
+            authority.confirm_fence("stop", lambda _: True)
+        replacement = direct(db, "acquire", guest="replacement")["owner"]
+        with pytest.raises(api.Refused, match="reconciliation"):
+            direct(db, "begin", owner=replacement, call="new", request=encoded(b"code"))
+        db.reconcile_scratch(receipt, lambda value: value == receipt)
+        scratch_begin(db, "new", "replacement")
+        with pytest.raises(api.Refused, match="revoked"):
+            direct(db, "publish", **publication(owner))
+
+
+def test_remote_scratch_budget_is_shared_across_sessions(tmp_path):
+    grant = replace(GRANT, sessions=frozenset({"session", "other"}))
+    db = api.Coordinator(
+        tmp_path / "db",
+        {FINGERPRINT: grant},
+        {"session": SESSION, "other": SESSION},
+        enabled=True,
+        scratch_policy=SCRATCH,
+    )
+    try:
+        _, receipt = scratch_begin(db)
+
+        def other(op, **args):
+            return db.dispatch(FINGERPRINT, request(op, **args) | {"session": "other"})
+
+        owner = other("acquire", guest="other")["owner"]
+        with pytest.raises(api.Refused, match="capacity"):
+            other("begin", owner=owner, call="call", request=encoded(b"code"))
+        db.reconcile_scratch(receipt, lambda _: True)
+        assert (
+            other("begin", owner=owner, call="call", request=encoded(b"code"))["scratch"]["bytes"]
+            == 4096
+        )
+    finally:
+        db.close()
+
+
+def test_remote_admission_failure_retains_charge_for_reconciliation(tmp_path):
+    with coordinator(tmp_path / "db", scratch_policy=SCRATCH) as db:
+        owner = direct(db, "acquire", guest="guest-a")["owner"]
+        store = db.stores["session"][1]
+        store.db.execute("UPDATE sessions SET quota=?", (store.usage("session"),))
+        with pytest.raises(api.Refused, match="quota"):
+            direct(db, "begin", owner=owner, call="call", request=encoded(b"code"))
+        (receipt,) = db.pending_scratch()
+        assert store.db.execute("SELECT count(*) FROM calls").fetchone()[0] == 0
+        db.reconcile_scratch(receipt, lambda _: True)
+        assert db.pending_scratch() == []
+        with pytest.raises(api.Refused, match="reconciliation"):
+            direct(db, "begin", owner=owner, call="call", request=encoded(b"code"))
+
+
+@pytest.mark.parametrize("mode", ["disable", "policy", "enable"])
+def test_remote_scratch_mode_and_policy_cannot_change_on_existing_root(tmp_path, mode):
+    root = tmp_path / "db"
+    with coordinator(root, scratch_policy=None if mode == "enable" else SCRATCH):
+        pass
+    policy = {"disable": None, "enable": SCRATCH, "policy": replace(SCRATCH, entries=9)}[mode]
+    with pytest.raises(api.Refused, match="format|policy"):
+        with coordinator(root, scratch_policy=policy):
+            pass
+
+
+@pytest.mark.parametrize("boundary", ["after_remote_scratch_reserve", "after_remote_admission"])
+def test_tls_remote_admission_death_keeps_capacity(tmp_path, certificates, boundary):
+    root = tmp_path / "runner"
+    with running(root, certificates, crash=boundary, scratch=SCRATCH) as (child, address):
+        a = client(certificates, address)
+        owner = a.call("acquire", "session", guest="guest")["owner"]
+        with pytest.raises(api.Refused):
+            a.call("begin", "session", owner=owner, call="call", request=encoded(b"code"))
+        assert child.wait(timeout=10) == 76
+    grants = {fingerprint(certificates, "a"): api.Grant("host-a", "boot-a", frozenset({"session"}))}
+    db = api.Coordinator(
+        root / "service", grants, {"session": SESSION}, enabled=True, scratch_policy=SCRATCH
+    )
+    try:
+        (receipt,) = db.pending_scratch()
+        assert receipt.owner == owner
+        with pytest.raises(api.Refused, match="reconciliation"):
+            db.dispatch(
+                fingerprint(certificates, "a"),
+                request("begin", owner=owner, call="new", request=encoded(b"code")),
+            )
+        db.reconcile_scratch(receipt, lambda _: True)
+        assert db.pending_scratch() == []
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "after_remote_cleanup_intent",
+        "after_remote_cleanup_verification",
+        "before_remote_reservation_release",
+        "after_remote_reservation_release",
+        "before_remote_scratch_release",
+        "after_remote_scratch_release",
+    ],
+)
+def test_remote_cleanup_process_death_is_conservative_and_repeatable(tmp_path, boundary):
+    root = tmp_path / "db"
+    with coordinator(root, scratch_policy=SCRATCH) as db:
+        _, receipt = scratch_begin(db)
+    script = """
+import os, sys
+from pathlib import Path
+from scripts.experiments.mxc_session_patch.remote_api import Coordinator, Grant, Session, Limits
+from scripts.experiments.mxc_session_patch.remote_scratch import Policy
+
+def boundary(point):
+    if point == sys.argv[2]:
+        os._exit(76)
+with_root = Path(sys.argv[1])
+db = Coordinator(with_root, {'a'*64: Grant('host-a','boot-a',frozenset({'session'}))}, {'session': Session({'runtime':'pinned','policy':'closed'}, Limits(200_000,500_000,checkpoint_bytes=1024,result_bytes=128,files=2))}, enabled=True, scratch_policy=Policy(4096,8,4096), boundary=boundary)
+db.reconcile_scratch(db.pending_scratch()[0], lambda _: True)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(root), boundary],
+        cwd=Path(__file__).parents[1],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 76, result.stderr
+    with coordinator(root, scratch_policy=SCRATCH) as db:
+        assert db.pending_scratch() == (
+            [] if boundary == "after_remote_scratch_release" else [receipt]
+        )
+        db.reconcile_scratch(receipt, lambda value: value == receipt)
+        assert db.pending_scratch() == []
+        store = db.stores.get("session")
+        if store:
+            assert store[1].db.execute("SELECT count(*) FROM reservations").fetchone()[0] == 0
+            store[1].audit_usage()
+        scratch_begin(db, "next")
+
+
+def test_tls_remote_scratch_receipt_and_cleanup_are_not_worker_authority(tmp_path, certificates):
+    with running(tmp_path / "runner", certificates, scratch=SCRATCH) as (_, address):
+        a = client(certificates, address)
+        owner = a.call("acquire", "session", guest="guest")["owner"]
+        admitted = a.call("begin", "session", owner=owner, call="call", request=encoded(b"code"))
+        assert admitted["scratch"]["owner"] == owner
+        assert a.call("publish", "session", **publication(owner)) == {"committed": True}
+        with pytest.raises(api.Refused, match="not authorized"):
+            a.call("reconcile_scratch", "session", receipt=admitted["scratch"], verified=True)
+        with pytest.raises(api.Refused, match="reconciliation"):
+            a.call("begin", "session", owner=owner, call="next", request=encoded(b"code"))
+
+
+@pytest.mark.parametrize(
+    "boundary,remaining",
+    [
+        ("before_remote_reservation_release", 1),
+        ("after_remote_reservation_release", 0),
+        ("before_remote_scratch_release", 0),
+    ],
+)
+def test_remote_cleanup_storage_failure_never_refunds_unconfirmed_ledger(
+    tmp_path, boundary, remaining
+):
+    with coordinator(tmp_path / "db", scratch_policy=SCRATCH) as db:
+        _, receipt = scratch_begin(db)
+
+        def fail(point):
+            if point == boundary:
+                raise api.sqlite3.OperationalError("disk full")
+
+        db.boundary = fail
+        with pytest.raises((api.Refused, api.sqlite3.OperationalError)):
+            db.reconcile_scratch(receipt, lambda _: True)
+        assert db.pending_scratch() == [receipt]
+        store = db.stores["session"][1]
+        assert store.db.execute("SELECT count(*) FROM reservations").fetchone()[0] == remaining
+        db.boundary = lambda _: None
+        db.reconcile_scratch(receipt, lambda _: True)
+        store.audit_usage()
+        assert db.pending_scratch() == []
+
+
+def test_remote_cleanup_verifier_outage_preserves_charges(tmp_path):
+    with coordinator(tmp_path / "db", scratch_policy=SCRATCH) as db:
+        _, receipt = scratch_begin(db)
+
+        def unavailable(_):
+            raise OSError("host unavailable")
+
+        with pytest.raises(OSError, match="unavailable"):
+            db.reconcile_scratch(receipt, unavailable)
+        assert db.pending_scratch() == [receipt]
+        assert (
+            db.stores["session"][1].db.execute("SELECT count(*) FROM reservations").fetchone()[0]
+            == 1
+        )
+
+
+def test_remote_scratch_revocation_between_admission_transactions_retains_charge(tmp_path):
+    with coordinator(tmp_path / "db", scratch_policy=SCRATCH) as db:
+        owner = direct(db, "acquire", guest="guest")["owner"]
+
+        def revoke(point):
+            if point == "after_remote_scratch_reserve":
+                with db.authority() as authority:
+                    authority.request_fence(authority._decode_owner(owner), "stop")
+
+        db.boundary = revoke
+        with pytest.raises(api.Refused, match="revoked"):
+            direct(db, "begin", owner=owner, call="call", request=encoded(b"code"))
+        assert len(db.pending_scratch()) == 1
+        assert db.stores["session"][1].db.execute("SELECT count(*) FROM calls").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_remote_cleanup_intent_during_publication_prevents_final_commit(tmp_path, streaming):
+    with coordinator(tmp_path / "db", scratch_policy=SCRATCH) as db:
+        owner, receipt = scratch_begin(db)
+
+        def revoke(point):
+            if point == "before_commit":
+                with db.authority() as authority, authority._transaction():
+                    authority.db.execute(
+                        "UPDATE remote_scratch SET state='cleaning' WHERE token=?", (receipt.token,)
+                    )
+
+        db.boundary = revoke
+
+        class Connection:
+            data = (
+                b"checkpoint"
+                + struct.pack("!I", len(api._json({"complete": True})))
+                + api._json({"complete": True})
+            )
+
+            def settimeout(self, _):
+                pass
+
+            def sendall(self, _):
+                pass
+
+            def recv(self, count):
+                block, self.data = self.data[:count], self.data[count:]
+                return block
+
+        wire = request("publish", **publication(owner))
+        if streaming:
+            wire["version"] = 2
+            wire["arguments"]["files"] = [
+                {
+                    "path": "index.json",
+                    "size": 10,
+                    "sha256": hashlib.sha256(b"checkpoint").hexdigest(),
+                }
+            ]
+        with pytest.raises(api.Refused, match="no longer authorized"):
+            db.dispatch(FINGERPRINT, wire, Connection() if streaming else None)
+        store = db.stores["session"][1]
+        assert store.db.execute("SELECT status FROM calls").fetchone()[0] == "pending"
+        assert store.db.execute("SELECT count(*) FROM reservations").fetchone()[0] == 1
+        assert db.pending_scratch() == [receipt]
+        assert not (db.root / "transfer").exists()
+
+
+@pytest.mark.parametrize("values", [(0, 1, 1), (1, 0, 1), (2, 1, 1), (True, 1, 1), (1, 1, 2**63)])
+def test_remote_scratch_invalid_policy_refuses(values):
+    with pytest.raises(api.Refused):
+        api.remote_scratch.Policy(*values)

@@ -16,10 +16,11 @@ import tempfile
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import cast
 
+from . import remote_scratch
 from . import remote_transfer as transfer
 from .host_store import MAX_CHECKPOINT, MAX_FILES, Refused, _lock, _name, _relative
 from .private_root import check_file, prepare
@@ -135,6 +136,7 @@ class Coordinator:
         sessions: Mapping[str, Session],
         *,
         enabled: bool = False,
+        scratch_policy: remote_scratch.Policy | None = None,
         boundary: Callable[[str], None] = lambda _: None,
     ):
         if enabled is not True:
@@ -152,6 +154,7 @@ class Coordinator:
             for k, v in grants.items()
         }
         self.sessions = {k: Session(dict(v.profile), v.limits) for k, v in sessions.items()}
+        self.scratch_policy = scratch_policy
         self.boundary = boundary
         self.stores: dict[str, tuple[Owner, SharedStore]] = {}
         prepare(root)
@@ -172,7 +175,7 @@ class Coordinator:
 
     def authority(self) -> Authority:
         """Open only the coordinator-local ownership journal."""
-        return Authority(self.root / "ownership", enabled=True)
+        return Authority(self.root / "ownership", enabled=True, scratch_policy=self.scratch_policy)
 
     def close(self) -> None:
         """Release local handles without refunding interrupted reservations."""
@@ -214,6 +217,88 @@ class Coordinator:
         )
         self.stores[owner.session] = owner, store
         return store
+
+    @contextmanager
+    def _publication_guard(
+        self, authority: Authority, owner: Owner, call: str, code: bytes
+    ) -> Iterator[None]:
+        with authority.guard(owner):
+            if self.scratch_policy:
+                remote_scratch.find(authority, owner, call, code)
+            yield
+
+    def pending_scratch(self) -> list[remote_scratch.Receipt]:
+        """List bounded controller work; receipts do not authorize execution or cleanup."""
+        if self.lock.closed or self.scratch_policy is None:
+            raise Refused("remote scratch is not available")
+        with self.authority() as authority, authority._transaction():
+            return [
+                remote_scratch.receipt(authority, row)
+                for row in authority.db.execute(
+                    "SELECT * FROM remote_scratch WHERE state!='released' ORDER BY token"
+                )
+            ]
+
+    def reconcile_scratch(
+        self, receipt: remote_scratch.Receipt, verify: Callable[[remote_scratch.Receipt], bool]
+    ) -> None:
+        """Release only after trusted proof of helper termination, scratch removal and no reuse.
+
+        The deployment verifier binds evidence to the entire receipt and runs outside SQLite.
+        Like dispatch, controllers must call this on the serialized service owner thread.
+        """
+        if self.lock.closed or self.scratch_policy is None:
+            raise Refused("remote scratch is not available")
+        with self.authority() as authority:
+
+            def row():
+                found = authority.db.execute(
+                    "SELECT * FROM remote_scratch WHERE token=?", (receipt.token,)
+                ).fetchone()
+                if remote_scratch.receipt(authority, found) != receipt:
+                    raise Refused("remote scratch receipt differs")
+                return found
+
+            with authority._transaction():
+                current = row()
+                if current["state"] == "released":
+                    return
+                authority.db.execute(
+                    "UPDATE remote_scratch SET state='cleaning' WHERE token=?", (receipt.token,)
+                )
+            self.boundary("after_remote_cleanup_intent")
+            if verify(receipt) is not True:
+                raise Refused("remote termination and scratch removal are not confirmed")
+            self.boundary("after_remote_cleanup_verification")
+            owner = authority._decode_owner(receipt.owner)
+            cached = self.stores.get(owner.session)
+            store = cached[1] if cached is not None else self._store(owner)
+            with authority._transaction():
+                if row()["state"] != "cleaning":
+                    raise Refused("remote scratch cleanup state changed")
+                with store._transaction():
+                    store._owner()
+                    call = store.db.execute(
+                        "SELECT request FROM calls WHERE session=? AND id=?",
+                        (owner.session, receipt.call),
+                    ).fetchone()
+                    if call is not None and call["request"] != receipt.request:
+                        raise Refused("remote cleanup request differs")
+                    store.db.execute(
+                        "UPDATE calls SET status='interrupted' WHERE session=? AND id=? AND status='pending'",
+                        (owner.session, receipt.call),
+                    )
+                    store.db.execute(
+                        "DELETE FROM reservations WHERE session=? AND call=?",
+                        (owner.session, receipt.call),
+                    )
+                    self.boundary("before_remote_reservation_release")
+                self.boundary("after_remote_reservation_release")
+                authority.db.execute(
+                    "UPDATE remote_scratch SET state='released' WHERE token=?", (receipt.token,)
+                )
+                self.boundary("before_remote_scratch_release")
+            self.boundary("after_remote_scratch_release")
 
     def dispatch(
         self, fingerprint: str, request: dict, connection: ssl.SSLSocket | None = None
@@ -269,6 +354,14 @@ class Coordinator:
             if operation in ("begin", "retry"):
                 call = _name(_text(args["call"]))
                 code = _bytes(args["request"], MAX_REQUEST)
+                scratch = None
+                if operation == "begin" and self.scratch_policy:
+                    existing = store.db.execute(
+                        "SELECT status FROM calls WHERE session=? AND id=?", (session, call)
+                    ).fetchone()
+                    if existing is None:
+                        scratch = remote_scratch.reserve(authority, owner, call, code)
+                        self.boundary("after_remote_scratch_reserve")
                 with authority.guard(owner):
                     if (
                         operation == "retry"
@@ -279,6 +372,9 @@ class Coordinator:
                     ):
                         raise Refused("unknown call identity")
                     result = store.begin(call, code)
+                if scratch is not None:
+                    self.boundary("after_remote_admission")
+                    return {"result": None, "scratch": asdict(scratch)}
                 return {"result": None if result is None else _encoded(result)}
             if operation == "publish":
                 call = _name(_text(args["call"]))
@@ -288,6 +384,8 @@ class Coordinator:
                 ).fetchone()
                 if row is None or row[0] != hashlib.sha256(code).hexdigest():
                     raise Refused("call request identity differs")
+                with self._publication_guard(authority, owner, call, code):
+                    pass
                 files = args["files"]
                 if streaming:
                     assert connection is not None
@@ -321,7 +419,9 @@ class Coordinator:
                             destination,
                             result,
                             self.boundary,
-                            commit_guard=lambda: authority.guard(owner),
+                            commit_guard=lambda: self._publication_guard(
+                                authority, owner, call, code
+                            ),
                         )
                     return {"committed": True}
                 if not isinstance(files, dict) or not files or len(files) > config.limits.files:
@@ -342,7 +442,7 @@ class Coordinator:
                         path,
                         result,
                         self.boundary,
-                        commit_guard=lambda: authority.guard(owner),
+                        commit_guard=lambda: self._publication_guard(authority, owner, call, code),
                     )
                 return {"committed": True}
             if operation == "restore":
