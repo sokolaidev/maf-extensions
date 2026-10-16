@@ -798,6 +798,7 @@ jobs:
           path: |
             ${{ runner.temp }}/mxc-v1/*.json
             ${{ runner.temp }}/mxc-v1/*.log
+            ${{ runner.temp }}/mxc-v1/remote-native.xml
             ${{ runner.temp }}/mxc-v1/build/Cargo.lock
             ${{ runner.temp }}/mxc-v1/bounded_probe/result.json
             ${{ runner.temp }}/mxc-v1/baseline/*.log

@@ -331,6 +331,7 @@ def running(
     transfer_timeout=api.TRANSFER_TIMEOUT,
     download_damage=None,
     scratch=None,
+    profile=PROFILE,
 ):
     import time
 
@@ -360,7 +361,7 @@ def running(
                 "download_damage": download_damage,
                 "scratch": asdict(scratch) if scratch else None,
                 "grants": grants,
-                "profile": PROFILE,
+                "profile": profile,
                 "limits": asdict(limits),
             }
         )
@@ -1382,3 +1383,424 @@ def test_remote_cleanup_intent_during_publication_prevents_final_commit(tmp_path
 def test_remote_scratch_invalid_policy_refuses(values):
     with pytest.raises(api.Refused):
         api.remote_scratch.Policy(*values)
+
+
+# These controls use real local processes but substitute the native payload producer.
+@pytest.fixture
+def native_host(tmp_path, monkeypatch):
+    module = importlib.import_module("scripts.experiments.mxc_session_patch.remote_host")
+    startup = tmp_path / "startup"
+    startup.mkdir()
+    (startup / "index.json").write_bytes(b"{}")
+    helper = Path(sys.executable)
+    limits = api.Limits(8_000_000, 16_000_000, checkpoint_bytes=1024, result_bytes=4096, files=2)
+    config = api.Session(
+        {
+            "helper": module.digest(helper),
+            "startup_index": module.digest(startup / "index.json"),
+            "policy": "closed",
+        },
+        limits,
+    )
+    scratch = api.remote_scratch.Policy(3_000_000, 1100, 3_000_000)
+    host = module.Host(
+        tmp_path / "host",
+        "host-a",
+        "boot-a",
+        "session",
+        config,
+        scratch,
+        module.physical.Policy(1024 * 1024, 1024 * 1024, 0),
+    )
+    children = []
+
+    def execute(
+        helper, startup, work, code, output_limit, *, before_spawn, before_start, checkpoint_limits
+    ):
+        assert checkpoint_limits == (limits.checkpoint_bytes, limits.files)
+        before_spawn()
+        with subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stdin.buffer.read()"], stdin=subprocess.PIPE
+        ) as child:
+            children.append(child.pid)
+            try:
+                before_start(child)
+                candidate = work / "candidate"
+                candidate.mkdir()
+                (candidate / "index.json").write_bytes(code)
+            finally:
+                child.kill()
+                child.wait(timeout=10)
+        return b"result"
+
+    monkeypatch.setattr(module, "execute", execute)
+    return host, helper, startup, children
+
+
+def native_coordinator(root, host):
+    return api.Coordinator(
+        root,
+        {FINGERPRINT: GRANT},
+        {"session": host.config},
+        enabled=True,
+        scratch_policy=host.scratch,
+    )
+
+
+def native_admit(db, code=b"code"):
+    owner = direct(db, "acquire", guest="guest-a")["owner"]
+    value = direct(db, "begin", owner=owner, call="call", request=encoded(code))
+    return api.remote_scratch.Receipt(**value["scratch"])
+
+
+class DirectNativeClient:
+    def __init__(self, db):
+        self.db = db
+
+    def restore(self, session, owner, destination, **limits):
+        value = direct(self.db, "restore", owner=owner)
+        if value["call"]:
+            destination.mkdir()
+            for name, data in value["files"].items():
+                (destination / name).write_bytes(base64.b64decode(data))
+        return value["call"]
+
+    def publish(self, session, owner, call, request, checkpoint, result):
+        direct(
+            self.db,
+            "publish",
+            owner=owner,
+            call=call,
+            request=encoded(request),
+            files={p.name: encoded(p.read_bytes()) for p in checkpoint.iterdir()},
+            result=encoded(result),
+        )
+
+
+def test_native_receipt_publication_cleanup_and_delayed_replay(tmp_path, native_host):
+    host, helper, startup, children = native_host
+    db = native_coordinator(tmp_path / "service", host)
+    try:
+        receipt = native_admit(db)
+        transport = DirectNativeClient(db)
+        assert host.execute(transport, receipt, b"code", helper, startup, 128) == b"result"
+        assert len(children) == 1
+        assert db.pending_scratch() == [receipt]
+        with pytest.raises(api.Refused, match="recovery"):
+            host.execute(transport, receipt, b"code", helper, startup, 128)
+        db.reconcile_scratch(receipt, host.reconcile)
+        assert db.pending_scratch() == []
+        assert host.reconcile(receipt) is True
+        assert not list((host.root / "scratch").iterdir())
+        with pytest.raises(api.Refused, match="recovery"):
+            host.execute(transport, receipt, b"code", helper, startup, 128)
+        assert len(children) == 1
+        assert direct(db, "retry", owner=receipt.owner, call="call", request=encoded(b"code")) == {
+            "result": encoded(b"result")
+        }
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("owner", "invalid"),
+        ("call", "other"),
+        ("token", "b" * 32),
+        ("request", "f" * 64),
+        ("bytes", 2_999_999),
+        ("entries", 1099),
+    ],
+)
+def test_native_cleanup_rejects_changed_receipt(tmp_path, native_host, field, value):
+    host, helper, startup, _ = native_host
+    db = native_coordinator(tmp_path / "service", host)
+    try:
+        receipt = native_admit(db)
+        host.execute(DirectNativeClient(db), receipt, b"code", helper, startup, 128)
+        with pytest.raises(api.Refused):
+            host.reconcile(replace(receipt, **{field: value}))
+        assert db.pending_scratch() == [receipt]
+        db.reconcile_scratch(receipt, host.reconcile)
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "point,reclaimable",
+    [
+        ("after_local_admission", True),
+        ("after_remote_restore", True),
+        ("after_spawn_intent", False),
+        ("after_spawn", False),
+        ("after_launch_commit", True),
+        ("after_remote_publication", True),
+    ],
+)
+def test_native_failure_keeps_charges_until_local_proof(tmp_path, native_host, point, reclaimable):
+    host, helper, startup, _ = native_host
+    db = native_coordinator(tmp_path / "service", host)
+
+    def fail(at):
+        if at == point:
+            raise OSError("injected host stop")
+
+    try:
+        receipt = native_admit(db)
+        with pytest.raises(OSError, match="injected"):
+            host.execute(DirectNativeClient(db), receipt, b"code", helper, startup, 128, fail)
+        assert db.pending_scratch() == [receipt]
+        if reclaimable:
+            db.reconcile_scratch(receipt, host.reconcile)
+            assert db.pending_scratch() == []
+        else:
+            with pytest.raises(api.Refused, match="unidentified"):
+                db.reconcile_scratch(receipt, host.reconcile)
+            assert db.pending_scratch() == [receipt]
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "point",
+    [
+        "after_helper_termination",
+        "after_cleanup_intent",
+        "after_scratch_removal",
+        "before_cleanup_release",
+        "after_cleanup_release",
+    ],
+)
+def test_native_cleanup_failure_can_resume_without_refunding_early(tmp_path, native_host, point):
+    host, helper, startup, _ = native_host
+    db = native_coordinator(tmp_path / "service", host)
+
+    def fail(at):
+        if at == point:
+            raise OSError("injected cleanup stop")
+
+    try:
+        receipt = native_admit(db)
+        host.execute(DirectNativeClient(db), receipt, b"code", helper, startup, 128)
+        with pytest.raises(OSError, match="injected"):
+            db.reconcile_scratch(receipt, lambda r: host.reconcile(r, fail))
+        assert db.pending_scratch() == [receipt]
+        db.reconcile_scratch(receipt, host.reconcile)
+        assert db.pending_scratch() == []
+    finally:
+        db.close()
+
+
+def test_native_missing_journal_never_proves_cleanup(tmp_path, native_host):
+    host, _, _, children = native_host
+    db = native_coordinator(tmp_path / "service", host)
+    try:
+        receipt = native_admit(db)
+        with pytest.raises(api.Refused, match="unavailable"):
+            db.reconcile_scratch(receipt, host.reconcile)
+        assert db.pending_scratch() == [receipt]
+        assert not host.root.exists() and children == []
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("change", ["code", "helper", "startup", "budget"])
+def test_native_preflight_refuses_before_launch(tmp_path, native_host, change):
+    host, helper, startup, children = native_host
+    db = native_coordinator(tmp_path / "service", host)
+    try:
+        receipt = native_admit(db)
+        code = b"different" if change == "code" else b"code"
+        if change == "helper":
+            helper = tmp_path / "wrong-helper"
+            helper.write_bytes(b"wrong")
+        if change == "startup":
+            (startup / "index.json").write_bytes(b"wrong")
+        if change == "budget":
+            host.scratch = replace(host.scratch, entries=1)
+            receipt = replace(receipt, entries=1)
+        with pytest.raises(api.Refused):
+            host.execute(DirectNativeClient(db), receipt, code, helper, startup, 128)
+        assert children == [] and not host.root.exists()
+    finally:
+        db.close()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("MXC_REMOTE_HELPER"), reason="requires a built native helper"
+)
+def test_native_host_real_helper_tls_restore_and_cleanup(tmp_path, certificates, record_property):
+    module = importlib.import_module("scripts.experiments.mxc_session_patch.remote_host")
+    helper = Path(os.environ["MXC_REMOTE_HELPER"])
+    startup = Path(os.environ["MXC_REMOTE_STARTUP"])
+    limits = api.Limits(8 * api.MAX_CHECKPOINT, 16 * api.MAX_CHECKPOINT)
+    config = api.Session(
+        {
+            "helper": module.digest(helper),
+            "startup_index": module.digest(startup / "index.json"),
+            "policy": "closed",
+        },
+        limits,
+    )
+    scratch = api.remote_scratch.Policy(
+        2 * api.MAX_CHECKPOINT + 5 * module.CHUNK,
+        2 * limits.files * (module.PATH_BYTES // 2 + 1) + 14,
+        2 * api.MAX_CHECKPOINT + 5 * module.CHUNK,
+    )
+    host = module.Host(
+        tmp_path / "host",
+        "host-a",
+        "boot-a",
+        "session",
+        config,
+        scratch,
+        module.physical.Policy(1024 * 1024, 1024 * 1024, 0),
+    )
+    root = tmp_path / "runner"
+    previous = None
+    for call, code, expected in [
+        ("seed", b"remote_counter = 41; print(remote_counter)", b"41"),
+        ("next", b"assert remote_counter == 41; remote_counter += 1; print(remote_counter)", b"42"),
+    ]:
+        with running(
+            root, certificates, limits=limits, profile=dict(config.profile), scratch=scratch
+        ) as (_, address):
+            transport = client(certificates, address)
+            owner = transport.call("acquire", "session", guest="guest-a")["owner"]
+            result = host.call(transport, owner, call, code, helper, startup, 1024)
+            assert base64.b64decode(json.loads(result)["console_base64"]).strip() == expected
+            assert (
+                host.call(transport, owner, call, code, tmp_path / "absent", startup, 1024)
+                == result
+            )
+        grants = {fingerprint(certificates, "a"): GRANT}
+        db = api.Coordinator(
+            root / "service", grants, {"session": config}, enabled=True, scratch_policy=scratch
+        )
+        try:
+            receipts = db.pending_scratch()
+            assert len(receipts) == 1 and receipts[0].call == call
+            owner_record = remote.Authority._decode_owner(owner)
+            stored = db._store(owner_record)
+            size = stored.db.execute(
+                "SELECT sum(size) FROM files WHERE session=? AND call=?", ("session", call)
+            ).fetchone()[0]
+            assert size > api.MAX_FRAME
+            record_property(f"{call}_checkpoint_bytes", size)
+            db.reconcile_scratch(receipts[0], host.reconcile)
+            assert not db.pending_scratch()
+            assert not list((host.root / "scratch").iterdir())
+            previous = receipts[0]
+        finally:
+            db.close()
+    assert previous is not None
+    with pytest.raises(api.Refused, match="recovery"):
+        host.execute(None, previous, code, helper, startup, 1024)
+
+
+def test_native_cleanup_terminates_recorded_live_helper(tmp_path, native_host):
+    host, _, _, _ = native_host
+    module = importlib.import_module("scripts.experiments.mxc_session_patch.remote_host")
+    db = native_coordinator(tmp_path / "service", host)
+    child = None
+    try:
+        receipt = native_admit(db)
+        with host._store() as store:
+            store.begin(
+                receipt.token,
+                host._binding(receipt),
+                scratch=module.ScratchLimits(
+                    receipt.bytes, receipt.entries, host.scratch.total_bytes
+                ),
+            )
+            journal = module.NativeJournal(store)
+            work = journal.prepare(receipt.token)
+            journal.start(receipt.token)
+            child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+            journal.arm(receipt.token, child)
+            (work / "partial").write_bytes(b"unpublished")
+        assert child.poll() is None
+        db.reconcile_scratch(receipt, host.reconcile)
+        assert child.wait(timeout=10) != 0
+        assert not work.exists() and not db.pending_scratch()
+    finally:
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
+        db.close()
+
+
+def test_native_cleanup_refuses_unowned_files(tmp_path, native_host):
+    host, helper, startup, _ = native_host
+    db = native_coordinator(tmp_path / "service", host)
+    try:
+        receipt = native_admit(db)
+        host.execute(DirectNativeClient(db), receipt, b"code", helper, startup, 128)
+        unknown = host.root / "scratch" / "unowned"
+        unknown.write_bytes(b"keep")
+        with pytest.raises(api.Refused, match="unknown"):
+            db.reconcile_scratch(receipt, host.reconcile)
+        assert unknown.read_bytes() == b"keep" and db.pending_scratch() == [receipt]
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "point,reclaimable",
+    [("after_local_admission", True), ("after_spawn_intent", False), ("after_launch_commit", True)],
+)
+def test_native_host_process_death_retains_durable_proof(tmp_path, native_host, point, reclaimable):
+    host, helper, startup, _ = native_host
+    db = native_coordinator(tmp_path / "service", host)
+    try:
+        receipt = native_admit(db)
+        config = tmp_path / "native-config.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "root": str(host.root),
+                    "profile": dict(host.config.profile),
+                    "limits": asdict(host.config.limits),
+                    "scratch": asdict(host.scratch),
+                    "storage": asdict(host.storage),
+                    "receipt": asdict(receipt),
+                    "point": point,
+                }
+            ),
+            encoding="utf-8",
+        )
+        script = r"""
+import json, os, subprocess, sys
+from pathlib import Path
+from scripts.experiments.mxc_session_patch.remote_host import Host, Session, physical, remote_scratch, ScratchLimits, NativeJournal
+from scripts.experiments.mxc_session_patch.shared_store import Limits
+v = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+host = Host(Path(v['root']), 'host-a', 'boot-a', 'session', Session(v['profile'], Limits(**v['limits'])), remote_scratch.Policy(**v['scratch']), physical.Policy(**v['storage']))
+r = remote_scratch.Receipt(**v['receipt'])
+def boundary(point):
+    if point == v['point']:
+        os._exit(76)
+with host._store() as store:
+    store.begin(r.token, host._binding(r), scratch=ScratchLimits(r.bytes,r.entries,host.scratch.total_bytes))
+    boundary('after_local_admission')
+    journal = NativeJournal(store)
+    work = journal.prepare(r.token)
+    (work/'partial').write_bytes(b'partial')
+    journal.start(r.token, boundary)
+    child = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.buffer.read()'], stdin=subprocess.PIPE)
+    journal.arm(r.token, child, boundary)
+"""
+        child = subprocess.run([sys.executable, "-c", script, str(config)], timeout=20)
+        assert child.returncode == 76
+        if reclaimable:
+            db.reconcile_scratch(receipt, host.reconcile)
+            assert not db.pending_scratch()
+            with pytest.raises(api.Refused, match="recovery"):
+                host.execute(DirectNativeClient(db), receipt, b"code", helper, startup, 128)
+        else:
+            with pytest.raises(api.Refused, match="unidentified"):
+                db.reconcile_scratch(receipt, host.reconcile)
+            assert db.pending_scratch() == [receipt]
+    finally:
+        db.close()
