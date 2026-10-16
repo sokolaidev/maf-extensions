@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.28.1...maf-sandbox-docker-v0.28.2) (2026-10-16)
+
+
+### Fixes
+
+* patch Go vulnerabilities in Docker and WSLC proxies ([#1964](https://github.com/sokolaidev/maf-extensions/issues/1964)) ([640cb34](https://github.com/sokolaidev/maf-extensions/commit/640cb34bc7cb1e7336970f59bdc87a0e021ac284))
+
 ## [0.28.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.28.0...maf-sandbox-docker-v0.28.1) (2026-10-14)
 
 
