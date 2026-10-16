@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from . import remote_scratch
 from .host_store import Refused, _check_rollback_format, _lock, _name
 from .private_root import check_file, prepare
 
@@ -88,11 +89,13 @@ class Authority:
         enabled: bool = False,
         policy: Policy = Policy(),
         capacity: int = 4096,
+        scratch_policy: remote_scratch.Policy | None = None,
     ):
         if enabled is not True:
             raise Refused("remote coordinator requires explicit opt-in")
         if type(capacity) is not int or not 1 <= capacity <= 100_000:
             raise Refused("invalid coordinator metadata capacity")
+        self.scratch_policy = scratch_policy
         self.policy = policy
         self.capacity = capacity
         try:
@@ -129,9 +132,20 @@ class Authority:
                     raise Refused("coordinator database ceiling unavailable")
                 with self._transaction():
                     if self.db.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchone() is None:
-                        for statement in _SCHEMA.values():
+                        for statement in {
+                            **_SCHEMA,
+                            **(remote_scratch.SCHEMA if self.scratch_policy else {}),
+                        }.values():
                             self.db.execute(statement)
-                        self.db.execute("INSERT INTO settings VALUES(1,?)", (self.capacity,))
+                        self.db.execute(
+                            "INSERT INTO settings VALUES(?,?)",
+                            (2 if self.scratch_policy else 1, self.capacity),
+                        )
+                        if self.scratch_policy:
+                            self.db.execute(
+                                "INSERT INTO remote_scratch_settings VALUES(?,?,?)",
+                                tuple(asdict(self.scratch_policy).values()),
+                            )
                     schema = {
                         row["name"]: row["sql"]
                         for row in self.db.execute(
@@ -141,8 +155,23 @@ class Authority:
                     if any(schema.get(name) != statement for name, statement in _SCHEMA.items()):
                         raise Refused("unsupported coordinator schema")
                     settings = self.db.execute("SELECT version,capacity FROM settings").fetchall()
-                    if [tuple(row) for row in settings] != [(1, self.capacity)]:
+                    if [tuple(row) for row in settings] != [
+                        (2 if self.scratch_policy else 1, self.capacity)
+                    ]:
                         raise Refused("coordinator format or capacity differs")
+                    if self.scratch_policy:
+                        if any(
+                            schema.get(name) != statement
+                            for name, statement in remote_scratch.SCHEMA.items()
+                        ):
+                            raise Refused("unsupported remote scratch schema")
+                        if [
+                            tuple(row)
+                            for row in self.db.execute("SELECT * FROM remote_scratch_settings")
+                        ] != [tuple(asdict(self.scratch_policy).values())]:
+                            raise Refused("remote scratch policy differs")
+                        for row in self.db.execute("SELECT * FROM remote_scratch"):
+                            remote_scratch.receipt(self, row)
                     if self.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                         raise Refused("coordinator integrity check failed")
             except BaseException:
