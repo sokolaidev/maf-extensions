@@ -264,7 +264,7 @@ def certificates(tmp_path_factory):
 
     ca = make("ca")
     make("server", ca, server=True)
-    for name in ("a", "b", "unknown"):
+    for name in ("a", "b", "unknown", "controller"):
         make(name, ca)
     make("expired", ca, expired=True)
     other = make("other-ca")
@@ -307,7 +307,8 @@ scratch = Policy(**config['scratch']) if config.get('scratch') else None
 coordinator = Coordinator(Path(config['root']), grants, sessions, enabled=True, boundary=boundary, scratch_policy=scratch)
 try:
     with Server(('127.0.0.1', 0), server_context(certs/'server.pem', certs/'server.key', certs/'ca.pem'), coordinator) as server:
-        Path(config['ready']).write_text(str(server.server_address[1]))
+        Path(config['ready'] + '.tmp').write_text(str(server.server_address[1]))
+        Path(config['ready'] + '.tmp').replace(config['ready'])
         server.serve_forever(poll_interval=0.05)
 finally:
     coordinator.close()
@@ -1802,5 +1803,540 @@ with host._store() as store:
             with pytest.raises(api.Refused, match="unidentified"):
                 db.reconcile_scratch(receipt, host.reconcile)
             assert db.pending_scratch() == [receipt]
+    finally:
+        db.close()
+
+
+def generation_host(host, owner, root=None):
+    return type(host)(
+        root or host.root,
+        host.host,
+        host.boot,
+        host.session,
+        host.config,
+        host.scratch,
+        host.storage,
+        owner=owner,
+    )
+
+
+CONTROL_SERVER = r"""
+import json, os, sys
+from pathlib import Path
+from scripts.experiments.mxc_session_patch import remote_api as api, remote_control as control
+from scripts.experiments.mxc_session_patch import remote_host, physical
+config = json.loads(Path(sys.argv[1]).read_text())
+certs = Path(config['certificates'])
+owner = control.Authority._decode_owner(config['owner'])
+host = remote_host.Host(Path(config['root']), owner.resource.host, owner.resource.boot,
+    owner.session, api.Session(config['profile'], api.Limits(**config['limits'])),
+    api.remote_scratch.Policy(**config['scratch']), physical.Policy(**config['storage']), owner=owner)
+def boundary(point):
+    if point == config.get('crash'):
+        os._exit(76)
+controller = control.Controller({owner.token: host},
+    {config['fingerprint']: frozenset({owner.token})}, enabled=True,
+    automatic_shutdown=config['automatic'], boundary=boundary)
+with api.Server(('127.0.0.1', 0), api.server_context(certs/'server.pem', certs/'server.key', certs/'ca.pem'), controller) as server:
+    Path(config['ready'] + '.tmp').write_text(str(server.server_address[1]))
+    Path(config['ready'] + '.tmp').replace(config['ready'])
+    server.serve_forever(poll_interval=0.05)
+"""
+
+
+@contextmanager
+def control_running(root, certs, host, *, crash=None, automatic=False):
+    import time
+
+    root.mkdir(exist_ok=True)
+    ready = root / "ready"
+    ready.unlink(missing_ok=True)
+    config = root / "config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "root": str(host.root),
+                "certificates": str(certs),
+                "ready": str(ready),
+                "owner": remote.Authority._encode(host.owner),
+                "profile": dict(host.config.profile),
+                "limits": asdict(host.config.limits),
+                "scratch": asdict(host.scratch),
+                "storage": asdict(host.storage),
+                "fingerprint": fingerprint(certs, "controller"),
+                "crash": crash,
+                "automatic": automatic,
+            }
+        ),
+        encoding="utf-8",
+    )
+    with subprocess.Popen(
+        [sys.executable, "-c", CONTROL_SERVER, str(config)],
+        cwd=Path(__file__).parents[1],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ) as child:
+        try:
+            deadline = time.monotonic() + 15
+            while not ready.exists():
+                if child.poll() is not None:
+                    raise AssertionError(child.communicate()[1].decode())
+                if time.monotonic() > deadline:
+                    raise TimeoutError("controller did not become ready")
+                time.sleep(0.01)
+            yield child, ("127.0.0.1", int(ready.read_text()))
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=10)
+
+
+def control_verifier(certs, address, owner, name="controller"):
+    control = importlib.import_module("scripts.experiments.mxc_session_patch.remote_control")
+    context = api.client_context(certs / f"{name}.pem", certs / f"{name}.key", certs / "ca.pem")
+    return control.Verifier(api.Client(address, context, "localhost"), owner)
+
+
+def armed_generation(host, receipt):
+    module = importlib.import_module("scripts.experiments.mxc_session_patch.remote_host")
+    with host._store() as store:
+        store.begin(
+            receipt.token,
+            host._binding(receipt),
+            scratch=module.ScratchLimits(receipt.bytes, receipt.entries, host.scratch.total_bytes),
+        )
+        journal = module.NativeJournal(store)
+        work = journal.prepare(receipt.token)
+        journal.start(receipt.token)
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        try:
+            journal.arm(receipt.token, child)
+            (work / "partial").write_bytes(b"unpublished")
+        except BaseException:
+            child.kill()
+            child.wait(timeout=10)
+            raise
+    return child, work
+
+
+def test_controller_tls_fences_generation_before_replacement(tmp_path, certificates, native_host):
+    host, helper, startup, children = native_host
+    db = native_coordinator(tmp_path / "service", host)
+    child = unrelated = None
+    try:
+        receipt = native_admit(db)
+        owner = remote.Authority._decode_owner(receipt.owner)
+        host = generation_host(host, owner)
+        host.provision()
+        child, work = armed_generation(host, receipt)
+        unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        with control_running(tmp_path / "controller", certificates, host) as (_, address):
+            verifier = control_verifier(certificates, address, owner)
+            request = db.fence(owner, "stop", verifier)
+            assert child.wait(timeout=10) != 0 and not work.exists()
+            assert unrelated.poll() is None
+            assert db.fence(owner, "stop", verifier) == request
+        assert db.pending_scratch() == [receipt]
+        db.reconcile_scratch(receipt, host.reconcile)
+        assert db.pending_scratch() == []
+        with db.authority() as authority:
+            replacement = authority.acquire(
+                "session", host.config.digest, remote.Resource("host-b", "boot-b", "replacement")
+            )
+            assert replacement.generation > owner.generation
+            with pytest.raises(api.Refused, match="revoked"):
+                with authority.guard(owner):
+                    pass
+        delayed = replace(receipt, token="f" * 32, call="delayed")
+        with pytest.raises(api.Refused, match="retired"):
+            host.execute(None, delayed, b"code", helper, startup, 128)
+        assert children == []
+    finally:
+        for process in (child, unrelated):
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "point",
+    [
+        "before_retire_commit",
+        "after_retire_commit",
+        "after_helper_termination",
+        "after_cleanup_intent",
+        "after_scratch_removal",
+        "after_cleanup_release",
+    ],
+)
+def test_controller_crash_keeps_takeover_blocked_until_retry(
+    tmp_path, certificates, native_host, point
+):
+    host, _, _, _ = native_host
+    db = native_coordinator(tmp_path / "service", host)
+    child = None
+    try:
+        receipt = native_admit(db)
+        owner = remote.Authority._decode_owner(receipt.owner)
+        host = generation_host(host, owner)
+        host.provision()
+        child, _ = armed_generation(host, receipt)
+        with control_running(tmp_path / "controller", certificates, host, crash=point) as (
+            server,
+            address,
+        ):
+            with pytest.raises(api.Refused):
+                db.fence(owner, "stop", control_verifier(certificates, address, owner))
+            assert server.wait(timeout=10) == 76
+        with db.authority() as authority:
+            with pytest.raises(api.Refused, match="not confirmed"):
+                authority.acquire(
+                    "session",
+                    host.config.digest,
+                    remote.Resource("host-b", "boot-b", "replacement"),
+                )
+        db.close()
+        db = native_coordinator(tmp_path / "service", host)
+        with control_running(tmp_path / "controller", certificates, host) as (_, address):
+            db.fence(owner, "stop", control_verifier(certificates, address, owner))
+        assert child.wait(timeout=10) != 0
+        assert db.pending_scratch() == [receipt]
+    finally:
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
+        db.close()
+
+
+@pytest.mark.parametrize("failure", ["missing", "busy", "unknown", "unidentified", "wrong-owner"])
+def test_controller_missing_or_ambiguous_evidence_refuses(tmp_path, native_host, failure):
+    host, _, _, _ = native_host
+    module = importlib.import_module("scripts.experiments.mxc_session_patch.remote_host")
+    db = native_coordinator(tmp_path / "service", host)
+    held = None
+    try:
+        receipt = native_admit(db)
+        owner = remote.Authority._decode_owner(receipt.owner)
+        host = generation_host(host, owner)
+        if failure != "missing":
+            host.provision()
+        if failure == "busy":
+            held = host._store()
+        elif failure == "unknown":
+            (host.root / "scratch").mkdir()
+            (host.root / "scratch" / "unknown").write_bytes(b"keep")
+        elif failure == "unidentified":
+            with host._store() as store:
+                store.begin(
+                    receipt.token,
+                    host._binding(receipt),
+                    scratch=module.ScratchLimits(
+                        receipt.bytes, receipt.entries, host.scratch.total_bytes
+                    ),
+                )
+                journal = module.NativeJournal(store)
+                journal.prepare(receipt.token)
+                journal.start(receipt.token)
+        elif failure == "wrong-owner":
+            host = generation_host(host, replace(owner, token="e" * 32))
+        with pytest.raises(api.Refused):
+            db.fence(owner, "stop", host.fence)
+        with db.authority() as authority:
+            with pytest.raises(api.Refused, match="not confirmed"):
+                authority.acquire(
+                    "session",
+                    host.config.digest,
+                    remote.Resource("host-b", "boot-b", "replacement"),
+                )
+        assert db.pending_scratch() == [receipt]
+    finally:
+        if held is not None:
+            held.close()
+        db.close()
+
+
+def test_controller_retirement_covers_receipt_not_yet_journaled(tmp_path, native_host):
+    host, helper, startup, children = native_host
+    db = native_coordinator(tmp_path / "service", host)
+    try:
+        receipt = native_admit(db)
+        owner = remote.Authority._decode_owner(receipt.owner)
+        host = generation_host(host, owner)
+        host.provision()
+        db.fence(owner, "stop", host.fence)
+        with pytest.raises(api.Refused, match="retired"):
+            host.execute(None, receipt, b"code", helper, startup, 128)
+        with pytest.raises(api.Refused, match="not recorded"):
+            db.reconcile_scratch(receipt, host.reconcile)
+        assert db.pending_scratch() == [receipt] and children == []
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("certificate", ["a", "b", "unknown", "expired", "untrusted"])
+def test_controller_tls_worker_certificates_cannot_fence(
+    tmp_path, certificates, native_host, certificate
+):
+    host, _, _, _ = native_host
+    db = native_coordinator(tmp_path / "service", host)
+    try:
+        receipt = native_admit(db)
+        owner = remote.Authority._decode_owner(receipt.owner)
+        host = generation_host(host, owner)
+        host.provision()
+        with db.authority() as authority:
+            request = authority.request_fence(owner, "stop")
+        with control_running(tmp_path / "controller", certificates, host) as (_, address):
+            with pytest.raises(api.Refused):
+                control_verifier(certificates, address, owner, certificate)(request)
+        with host._store() as store:
+            assert store._owner()["state"] == "active"
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "owner",
+        "boot",
+        "resource",
+        "sessions",
+        "machine",
+        "automatic",
+        "version",
+        "operation",
+        "extra",
+    ],
+)
+def test_controller_rejects_changed_authority_before_retirement(tmp_path, native_host, change):
+    host, _, _, _ = native_host
+    control = importlib.import_module("scripts.experiments.mxc_session_patch.remote_control")
+    db = native_coordinator(tmp_path / "service", host)
+    try:
+        receipt = native_admit(db)
+        owner = remote.Authority._decode_owner(receipt.owner)
+        host = generation_host(host, owner)
+        host.provision()
+        endpoint = control.Controller(
+            {owner.token: host}, {FINGERPRINT: frozenset({owner.token})}, enabled=True
+        )
+        with db.authority() as authority:
+            fence = authority.request_fence(owner, "stop")
+        changed_owner = owner
+        if change == "owner":
+            changed_owner = replace(owner, generation=owner.generation + 1)
+        elif change == "boot":
+            changed_owner = replace(owner, resource=replace(owner.resource, boot="other"))
+        elif change == "resource":
+            fence = replace(fence, resource=replace(fence.resource, guest="other"))
+        elif change == "sessions":
+            fence = replace(fence, sessions=("other",))
+        elif change == "machine":
+            fence = replace(fence, scope="machine")
+        elif change == "automatic":
+            fence = replace(fence, automatic=True)
+        payload = request(
+            "fence",
+            owner=remote.Authority._encode(changed_owner),
+            fence=remote.Authority._encode(fence),
+        )
+        if change == "version":
+            payload["version"] = True
+        elif change == "operation":
+            payload["operation"] = "publish"
+        elif change == "extra":
+            payload["arguments"]["path"] = str(host.root)
+        with pytest.raises(api.Refused):
+            endpoint.dispatch(FINGERPRINT, payload)
+        with host._store() as store:
+            assert store._owner()["state"] == "active"
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "coordinator_opt_in,controller_opt_in",
+    [(False, False), (True, False), (False, True), (True, True)],
+)
+def test_controller_automatic_shutdown_requires_both_opt_ins(
+    tmp_path, native_host, coordinator_opt_in, controller_opt_in
+):
+    host, _, _, _ = native_host
+    control = importlib.import_module("scripts.experiments.mxc_session_patch.remote_control")
+    db = native_coordinator(tmp_path / "service", host)
+    db.fencing_policy = remote.Policy(automatic_shutdown=coordinator_opt_in)
+    try:
+        receipt = native_admit(db)
+        owner = remote.Authority._decode_owner(receipt.owner)
+        host = generation_host(host, owner)
+        host.provision()
+        endpoint = control.Controller(
+            {owner.token: host},
+            {FINGERPRINT: frozenset({owner.token})},
+            enabled=True,
+            automatic_shutdown=controller_opt_in,
+        )
+
+        def verify(fence):
+            endpoint.dispatch(
+                FINGERPRINT,
+                request(
+                    "fence",
+                    owner=remote.Authority._encode(owner),
+                    fence=remote.Authority._encode(fence),
+                ),
+            )
+            return True
+
+        if coordinator_opt_in and controller_opt_in:
+            db.fence(owner, "stop", verify, automatic=True)
+        else:
+            with pytest.raises(api.Refused, match="automatic shutdown"):
+                db.fence(owner, "stop", verify, automatic=True)
+        with host._store() as store:
+            assert (store._owner()["state"] == "retired") == (
+                coordinator_opt_in and controller_opt_in
+            )
+    finally:
+        db.close()
+
+
+def test_controller_response_must_match_request_and_owner(tmp_path, native_host):
+    host, _, _, _ = native_host
+    control = importlib.import_module("scripts.experiments.mxc_session_patch.remote_control")
+    db = native_coordinator(tmp_path / "service", host)
+    try:
+        receipt = native_admit(db)
+        owner = remote.Authority._decode_owner(receipt.owner)
+        with db.authority() as authority:
+            fence = authority.request_fence(owner, "stop")
+
+        class WrongResponse:
+            def call(self, *args, **kwargs):
+                return {
+                    "owner": receipt.owner,
+                    "fence": remote.Authority._encode(replace(fence, id="old")),
+                }
+
+        with pytest.raises(api.Refused, match="response binding"):
+            db.fence(owner, "stop", control.Verifier(WrongResponse(), owner))
+        with db.authority() as authority:
+            assert authority.db.execute("SELECT state FROM sessions").fetchone()[0] == "fencing"
+    finally:
+        db.close()
+
+
+def test_controller_refuses_unbound_legacy_or_nonclosed_roots(tmp_path, native_host):
+    host, helper, startup, _ = native_host
+    control = importlib.import_module("scripts.experiments.mxc_session_patch.remote_control")
+    db = native_coordinator(tmp_path / "service", host)
+    try:
+        receipt = native_admit(db)
+        owner = remote.Authority._decode_owner(receipt.owner)
+        with pytest.raises(api.Refused, match="generation-bound"):
+            control.Controller(
+                {owner.token: host}, {FINGERPRINT: frozenset({owner.token})}, enabled=True
+            )
+        bound = generation_host(host, owner)
+        with pytest.raises(api.Refused, match="provisioned"):
+            bound.execute(None, receipt, b"code", helper, startup, 128)
+        with host._store():
+            pass
+        with pytest.raises(api.Refused, match="profile"):
+            bound.provision()
+        config = api.Session(
+            dict(host.config.profile) | {"policy": "allowlist"}, host.config.limits
+        )
+        with pytest.raises(api.Refused, match="closed-network"):
+            type(host)(
+                tmp_path / "other",
+                host.host,
+                host.boot,
+                host.session,
+                config,
+                host.scratch,
+                host.storage,
+                owner=replace(owner, profile=config.digest),
+            )
+    finally:
+        db.close()
+
+
+def test_controller_storage_failure_before_retirement_never_confirms(
+    tmp_path, native_host, monkeypatch
+):
+    host, _, _, _ = native_host
+    module = importlib.import_module("scripts.experiments.mxc_session_patch.remote_host")
+    db = native_coordinator(tmp_path / "service", host)
+    try:
+        receipt = native_admit(db)
+        owner = remote.Authority._decode_owner(receipt.owner)
+        host = generation_host(host, owner)
+        host.provision()
+
+        def fail(*args, **kwargs):
+            raise api.Refused("storage unavailable")
+
+        monkeypatch.setattr(module.NativeJournal, "delete", fail)
+        with pytest.raises(api.Refused, match="storage unavailable"):
+            db.fence(owner, "stop", host.fence)
+        with db.authority() as authority:
+            assert authority.db.execute("SELECT state FROM fences").fetchone()[0] == "pending"
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("damage", ["zero", "empty-schema", "missing-session"])
+def test_controller_empty_journal_never_becomes_termination_proof(tmp_path, native_host, damage):
+    import sqlite3
+
+    host, helper, startup, _ = native_host
+    db = native_coordinator(tmp_path / "service", host)
+    try:
+        receipt = native_admit(db)
+        owner = remote.Authority._decode_owner(receipt.owner)
+        host = generation_host(host, owner)
+        host.provision()
+        path = host.root / "shared.sqlite"
+        if damage in ("zero", "empty-schema"):
+            path.write_bytes(b"")
+            if damage == "empty-schema":
+                with sqlite3.connect(path) as connection:
+                    connection.execute("PRAGMA user_version=1")
+        else:
+            with sqlite3.connect(path) as connection:
+                connection.execute("DELETE FROM sessions")
+        with pytest.raises(api.Refused):
+            db.fence(owner, "stop", host.fence)
+        with pytest.raises(api.Refused):
+            host.execute(None, receipt, b"code", helper, startup, 128)
+        with db.authority() as authority:
+            assert authority.db.execute("SELECT state FROM fences").fetchone()[0] == "pending"
+    finally:
+        db.close()
+
+
+def test_controller_fencing_preserves_committed_checkpoint_and_retry(tmp_path, native_host):
+    host, helper, startup, children = native_host
+    db = native_coordinator(tmp_path / "service", host)
+    try:
+        receipt = native_admit(db)
+        owner = remote.Authority._decode_owner(receipt.owner)
+        host = generation_host(host, owner)
+        host.provision()
+        assert (
+            host.execute(DirectNativeClient(db), receipt, b"code", helper, startup, 128)
+            == b"result"
+        )
+        db.fence(owner, "stop", host.fence)
+        db.reconcile_scratch(receipt, host.reconcile)
+        replacement = direct(db, "acquire", guest="replacement")["owner"]
+        assert direct(db, "retry", owner=replacement, call="call", request=encoded(b"code")) == {
+            "result": encoded(b"result")
+        }
+        assert direct(db, "restore", owner=replacement)["files"] == {"index.json": encoded(b"code")}
+        assert len(children) == 1
     finally:
         db.close()

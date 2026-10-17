@@ -15,7 +15,7 @@ from .host_store import CHUNK, Refused, _name
 from .native_journal import NativeJournal, audit_root
 from .process_identity import Identity, terminate
 from .remote_api import Client, Session, _bytes, _encoded
-from .remote_authority import Authority
+from .remote_authority import Authority, Fence, Owner
 from .shared_store import PATH_BYTES, ScratchLimits, SharedStore
 
 
@@ -31,16 +31,29 @@ class Host:
         config: Session,
         scratch: remote_scratch.Policy,
         storage: physical.Policy,
+        *,
+        owner: Owner | None = None,
     ):
         self.root = root
         self.host, self.boot, self.session = (_name(v) for v in (host, boot, session))
         self.config, self.scratch, self.storage = config, scratch, storage
+        self.owner = owner
+        if owner is not None:
+            Authority._decode_owner(Authority._encode(owner))
+            if (owner.session, owner.resource.host, owner.resource.boot, owner.profile) != (
+                self.session,
+                self.host,
+                self.boot,
+                config.digest,
+            ) or config.profile.get("policy") != "closed":
+                raise Refused("generation journal requires a matching closed-network owner")
 
-    def _store(self) -> SharedStore:
+    def _store(self, *, provision: bool = False) -> SharedStore:
         return SharedStore(
             self.root,
             self.session,
             {
+                **({"owner": Authority._encode(self.owner)} if self.owner is not None else {}),
                 "adapter": "remote-native-v1",
                 "host": self.host,
                 "boot": self.boot,
@@ -50,6 +63,7 @@ class Host:
             self.config.limits,
             physical_policy=self.storage,
             prelaunch_recovery=True,
+            existing_only=self.owner is not None and not provision,
         )
 
     def _binding(self, receipt: remote_scratch.Receipt) -> bytes:
@@ -58,6 +72,7 @@ class Host:
         if (
             (owner.session, owner.resource.host, owner.resource.boot, owner.profile)
             != (self.session, self.host, self.boot, self.config.digest)
+            or (self.owner is not None and owner != self.owner)
             or not re.fullmatch(r"[0-9a-f]{32}", receipt.token)
             or not re.fullmatch(r"[0-9a-f]{64}", receipt.request)
             or type(receipt.bytes) is not int
@@ -125,6 +140,8 @@ class Host:
             startup / "index.json"
         ) != self.config.profile.get("startup_index"):
             raise Refused("native runtime differs from pinned profile")
+        if self.owner is not None and not (self.root / "shared.sqlite").is_file():
+            raise Refused("generation journal must be provisioned before execution")
         with self._store() as store:
             store.begin(
                 receipt.token,
@@ -187,6 +204,31 @@ class Host:
                 NativeJournal(store).reclaim(receipt.token, boundary)
             elif row["status"] != "interrupted":
                 raise Refused("native cleanup lacks a terminal identity")
+            with store._transaction():
+                audit_root(store)
+            return True
+
+    def provision(self) -> None:
+        """Provision a private generation root before admitting work; never replace a lost root."""
+        if self.owner is None:
+            raise Refused("generation ownership is not configured")
+        with self._store(provision=True):
+            pass
+
+    def fence(self, request: Fence, boundary: Callable[[str], None] = lambda _: None) -> bool:
+        """Retire this complete generation before cleanup; a busy or lost journal refuses proof."""
+        owner = self.owner
+        if (
+            owner is None
+            or request.scope != "guest"
+            or request.resource != owner.resource
+            or request.sessions != (self.session,)
+        ):
+            raise Refused("fence does not cover this generation journal")
+        if not (self.root / "shared.sqlite").is_file():
+            raise Refused("generation journal is unavailable")
+        with self._store() as store:
+            NativeJournal(store).delete(boundary)
             with store._transaction():
                 audit_root(store)
             return True
