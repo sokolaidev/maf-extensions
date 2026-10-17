@@ -10,6 +10,7 @@ import socket
 import subprocess
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +40,13 @@ def verify_dispatch_count(evidence: list[dict[str, Any]], expected: int) -> int:
     return count
 
 
-def projected_result(evidence: list[dict[str, Any]], turn: str, case: str) -> dict[str, Any]:
+def projected_result(
+    evidence: list[dict[str, Any]],
+    turn: str,
+    case: str,
+    *,
+    loads: Callable[[str], Any] = json.loads,
+) -> dict[str, Any]:
     matching = [
         record for record in evidence if record.get("turn") == turn and "tool_result" in record
     ]
@@ -47,7 +54,7 @@ def projected_result(evidence: list[dict[str, Any]], turn: str, case: str) -> di
     record = matching[0]
     require(record.get("scenario") == case, "Provider result belongs to another scenario")
     text = record["tool_result"]
-    return json.loads(text[text.index("{") : text.rindex("}") + 1])
+    return loads(text[text.index("{") : text.rindex("}") + 1])
 
 
 def verify_outcome(

@@ -141,9 +141,21 @@ def control_events(cases):
             )
         if name in ("equal_ids_repeated_cancel", "maf_active_close"):
             add(event="binding_cancelled", session=active, request=request_id)
-        survivor_request = e.digest(2)
+        if name == "maf_idle_close":
+            add(event="response", session=active, exchange=e.digest(name + "active"), status=200)
+        survivor_request = e.digest(
+            42 if name in ("equal_ids_repeated_cancel", "response_loss") else 2
+        )
+        add(
+            event="request",
+            method="tools/call",
+            session=b,
+            request=survivor_request,
+            exchange=e.digest(name + "survivor"),
+        )
         add(event="binding_started", session=b, request=survivor_request)
         add(event="binding_result", session=b, request=survivor_request, **case["survivor"])
+        add(event="response", session=b, exchange=e.digest(name + "survivor"), status=200)
         for sid in (a, b):
             exchange = e.digest(sid + "delete")
             add(event="delete_requested", session=sid, exchange=exchange)
@@ -1093,9 +1105,131 @@ def test_finalize_accounts_for_the_larger_qualified_summary(bundle, monkeypatch)
     assert e.read(root / "summary.json")["outcome"] == "unqualified"
 
 
-def test_retained_reviewed_v3_campaign_evaluates_offline():
+def test_retained_v3_campaign_does_not_establish_the_reviewed_profile():
     record = ROOT / "scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v3"
-    result = e.evaluate(
-        record / "evidence", e.read(record / "plan.json"), e.read(record / "candidate.json")
-    )
-    assert result == e.read(record / "evaluation.json")
+    with pytest.raises(e.Refused, match="unsupported_profile"):
+        e.evaluate(
+            record / "evidence", e.read(record / "plan.json"), e.read(record / "candidate.json")
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '"unused":1,"unused":2',
+        '"unused":NaN',
+        '"unused":Infinity',
+        '"unused":-Infinity',
+        '"unused":1e400',
+        '"unused":-1e400',
+    ],
+)
+def test_gateway_refuses_malformed_embedded_json(bundle, payload):
+    def mutate(record):
+        row = next(r for r in record["observations"]["provider_observations"] if "tool_result" in r)
+        text = row["tool_result"]
+        start = text.index("{")
+        row["tool_result"] = text[: start + 1] + payload + "," + text[start + 1 :]
+
+    change_artifact(bundle, "gateway", mutate)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
+@pytest.mark.parametrize("case", sorted(e.OWNERSHIP - {"maf_ordinary_close"}))
+def test_active_binding_requires_its_transport_request(bundle, case):
+    def mutate(record):
+        obs = record["observations"]
+        sid = obs["cases"][case]["session_b" if case == "maf_idle_close" else "session_a"]
+        start = next(
+            r for r in obs["transport"] if r["event"] == "binding_started" and r["session"] == sid
+        )
+        obs["transport"] = [
+            r
+            for r in obs["transport"]
+            if not (
+                r["event"] == "request"
+                and r.get("method") == "tools/call"
+                and r["session"] == sid
+                and r.get("request") == start["request"]
+                and r["time_ns"] <= start["time_ns"]
+            )
+        ]
+
+    change_artifact(bundle, "ownership", mutate)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
+@pytest.mark.parametrize("case", sorted(e.OWNERSHIP))
+@pytest.mark.parametrize("missing", ["request", "response"])
+def test_survivor_requires_its_transport_exchange(bundle, case, missing):
+    def mutate(record):
+        obs = record["observations"]
+        sid = obs["cases"][case]["session_b"]
+        result = next(
+            r
+            for r in reversed(obs["transport"])
+            if r["event"] == "binding_result" and r["session"] == sid
+        )
+        requests = [
+            r
+            for r in obs["transport"]
+            if r["event"] == "request"
+            and r.get("method") == "tools/call"
+            and r["session"] == sid
+            and r.get("request") == result["request"]
+        ]
+        exchanges = {max(requests, key=lambda r: r["time_ns"])["exchange"]} if requests else set()
+        obs["transport"] = [
+            r
+            for r in obs["transport"]
+            if not (r["event"] == missing and r.get("exchange") in exchanges)
+        ]
+
+    change_artifact(bundle, "ownership", mutate)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "response_before_result",
+        "wrong_exchange",
+        "duplicate_response",
+        "request_after_start",
+        "duplicate_start",
+    ],
+)
+def test_reused_request_id_cannot_borrow_an_earlier_exchange(bundle, mutation):
+    def mutate(record):
+        obs = record["observations"]
+        sid = obs["cases"]["equal_ids_repeated_cancel"]["session_b"]
+        events = obs["transport"]
+        start = next(r for r in events if r["event"] == "binding_started" and r["session"] == sid)
+        request = next(
+            r
+            for r in events
+            if r["event"] == "request"
+            and r.get("exchange") == e.digest("equal_ids_repeated_cancelsurvivor")
+        )
+        response = next(
+            r
+            for r in events
+            if r["event"] == "response" and r.get("exchange") == request["exchange"]
+        )
+        if mutation == "response_before_result":
+            response["time_ns"] = start["time_ns"]
+        elif mutation == "wrong_exchange":
+            response["exchange"] = e.digest("other")
+        elif mutation == "duplicate_response":
+            events.append(dict(response, status=500))
+        elif mutation == "request_after_start":
+            request["time_ns"] = start["time_ns"] + 1
+        else:
+            events.append(copy.deepcopy(start))
+
+    change_artifact(bundle, "ownership", mutate)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)

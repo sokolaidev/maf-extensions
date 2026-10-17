@@ -6,7 +6,7 @@ import importlib
 import re
 from typing import Any
 
-from .evidence import encode, require
+from .evidence import decode, encode, require
 
 
 def verify(value: dict[str, Any], manifest: dict[str, Any]) -> None:
@@ -36,7 +36,7 @@ def verify(value: dict[str, Any], manifest: dict[str, Any]) -> None:
                 and sum("tool_result" in r for r in observed) == 1,
                 "gateway_turn_observations",
             )
-            projected = checker.projected_result(observed, turn, case)
+            projected = checker.projected_result(observed, turn, case, loads=decode)
             result = checker.verify_outcome(
                 projected, case, manifest["config_sha256"], manifest["image"]
             )

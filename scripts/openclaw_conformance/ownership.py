@@ -98,6 +98,7 @@ def verify(value: dict[str, Any]) -> None:
         ]
         require(bool(starts), "active_binding")
         start = starts[0]
+        _request(subset, start)
         require(
             isinstance(start.get("request"), str)
             and re.fullmatch(r"[0-9a-f]{64}", start["request"]),
@@ -185,32 +186,87 @@ def _ordered(first: dict[str, Any], last: dict[str, Any]) -> bool:
 
 
 def _response(events: list[dict[str, Any]], request: dict[str, Any], status: int) -> None:
+    matches = [
+        e
+        for e in events
+        if e.get("event") == "response"
+        and e.get("exchange") == request.get("exchange")
+        and e.get("session") == request.get("session")
+    ]
+    require(bool(request.get("exchange")) and len(matches) == 1, "control_response")
+    response = matches[0]
     require(
-        bool(request.get("exchange"))
-        and sum(
-            e.get("event") == "response"
-            and e.get("exchange") == request["exchange"]
-            and e.get("session") == request["session"]
-            and type(e.get("status")) is int
-            and e["status"] == status
-            and _ordered(request, e)
-            for e in events
-        )
-        == 1,
+        type(response.get("status")) is int
+        and response["status"] == status
+        and _ordered(request, response),
         "control_response",
     )
 
 
+def _request(events: list[dict[str, Any]], start: dict[str, Any]) -> dict[str, Any]:
+    matches = [
+        e
+        for e in events
+        if e.get("event") == "request"
+        and e.get("method") == "tools/call"
+        and e.get("session") == start.get("session")
+        and e.get("request") == start.get("request")
+        and _ordered(e, start)
+    ]
+    require(bool(matches), "binding_transport_request")
+    latest = max(e["time_ns"] for e in matches)
+    matches = [e for e in matches if e["time_ns"] == latest]
+    require(len(matches) == 1, "binding_ambiguous_request")
+    request = matches[0]
+    require(
+        not any(
+            e.get("event") == "response"
+            and e.get("exchange") == request["exchange"]
+            and _ordered(e, start)
+            for e in events
+        ),
+        "binding_completed_exchange",
+    )
+    return request
+
+
 def _binding(events: list[dict[str, Any]], result: dict[str, Any]) -> None:
     require(
-        isinstance(result.get("request"), str)
-        and re.fullmatch(r"[0-9a-f]{64}", result["request"])
-        and any(
-            e.get("event") == "binding_started"
+        isinstance(result.get("request"), str) and re.fullmatch(r"[0-9a-f]{64}", result["request"]),
+        "binding_result_request",
+    )
+    starts = [
+        e
+        for e in events
+        if e.get("event") == "binding_started"
+        and e.get("session") == result["session"]
+        and e.get("request") == result["request"]
+        and _ordered(e, result)
+    ]
+    require(bool(starts), "binding_result_request")
+    latest = max(e["time_ns"] for e in starts)
+    starts = [e for e in starts if e["time_ns"] == latest]
+    require(len(starts) == 1, "binding_ambiguous_start")
+    request = _request(events, starts[0])
+    _response(events, request, 200)
+    response = next(
+        e
+        for e in events
+        if e.get("event") == "response"
+        and e.get("exchange") == request["exchange"]
+        and e.get("session") == request["session"]
+    )
+    require(_ordered(result, response), "binding_response_order")
+    require(
+        not any(
+            e.get("event") == "request"
+            and e.get("method") == "tools/call"
             and e.get("session") == result["session"]
             and e.get("request") == result["request"]
+            and e is not request
+            and _ordered(request, e)
             and _ordered(e, result)
             for e in events
         ),
-        "binding_result_request",
+        "binding_reused_request",
     )
