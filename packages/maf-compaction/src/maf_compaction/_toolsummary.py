@@ -59,7 +59,12 @@ from ._preserve import (
     removable_whole,
     set_preserved,
 )
-from ._tool_result import ResultTextRewriter, plan_result_items, repair_compacted_items
+from ._tool_result import (
+    ResultTextRewriter,
+    can_shorten_result,
+    plan_result_items,
+    repair_compacted_items,
+)
 
 if TYPE_CHECKING:
     from agent_framework import TokenizerProtocol
@@ -1912,7 +1917,11 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         changed = repair_compacted_items(members, lambda text: text.startswith(_ROWS_OMITTED))
         for message in members:
             for content in message.contents:
-                if content.type != "function_result" or not isinstance(content.result, str):
+                if (
+                    content.type != "function_result"
+                    or not isinstance(content.result, str)
+                    or (self.rewrite_result_text is None and not can_shorten_result(content))
+                ):
                     continue
                 original = content.result
                 lines = original.splitlines(keepends=True)

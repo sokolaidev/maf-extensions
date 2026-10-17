@@ -1,10 +1,15 @@
 """Host-directed rewrites preserve labels, media and dry-run isolation."""
 
 from copy import deepcopy
+from unittest.mock import patch
 
 import pytest
 from agent_framework import CharacterEstimatorTokenizer, Content, Message
-from agent_framework._compaction import included_token_count
+from agent_framework._compaction import (
+    annotate_message_groups,
+    group_messages,
+    included_token_count,
+)
 
 from maf_compaction import (
     AnchoredCompactionStrategy,
@@ -84,6 +89,52 @@ def _messages(content: Content) -> list[Message]:
         ),
         Message("tool", [content]),
     ]
+
+
+@pytest.mark.parametrize("shape", ["single", "raw", "media"])
+@pytest.mark.parametrize("kind", ["anchored", "minimum_gain", "recorded_rows"])
+def test_unconfigured_rewrites_skip_processing_ineligible_results(shape, kind):
+    class UnparsedText(str):
+        def splitlines(self, keepends: bool = False) -> list[str]:
+            raise AssertionError("ineligible result was split into rows")
+
+    content = _result(shape)
+    content.result = UnparsedText(content.result)
+    if shape != "single":
+        for item in content.items or []:
+            item.additional_properties.clear()
+    messages = _messages(content)
+    original = content.to_dict()
+    original_items = content.items
+    annotate_message_groups(messages)
+    groups = group_messages(messages)
+    quoted = set(_table_rows(HEADER + "".join(ROWS[:90])).values())
+    with (
+        patch.object(
+            TOKENIZER, "count_tokens", side_effect=AssertionError("ineligible text counted")
+        ),
+        patch(
+            "maf_compaction._toolsummary._table_rows",
+            side_effect=AssertionError("ineligible table parsed"),
+        ),
+    ):
+        if kind == "recorded_rows":
+            record = ToolResultAnchoredSummarizationCompactionStrategy(
+                max_input_tokens=100_000, tokenizer=TOKENIZER
+            )
+            for _ in range(2):
+                assert not record._release_recorded_rows(messages, quoted)
+        else:
+            strategy_type = (
+                AnchoredCompactionStrategy
+                if kind == "anchored"
+                else MinimumGainAnchoredCompactionStrategy
+            )
+            strategy = strategy_type(max_input_tokens=100_000, tokenizer=TOKENIZER, keep_tokens=100)
+            for _ in range(2):
+                assert strategy._plan_shortenings(messages, groups) == []
+    assert content.to_dict() == original
+    assert content.items is original_items
 
 
 @pytest.mark.anyio

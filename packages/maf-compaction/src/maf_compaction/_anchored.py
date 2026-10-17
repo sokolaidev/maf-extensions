@@ -67,7 +67,12 @@ from agent_framework._compaction import (
 from ._media import annotate_token_counts
 from ._preserve import any_preserved, is_preserved, removable_whole
 from ._summary_links import has_summary_links
-from ._tool_result import ResultTextRewriter, plan_result_items, repair_compacted_items
+from ._tool_result import (
+    ResultTextRewriter,
+    can_shorten_result,
+    plan_result_items,
+    repair_compacted_items,
+)
 
 if TYPE_CHECKING:
     from agent_framework import TokenizerProtocol
@@ -455,7 +460,9 @@ class AnchoredCompactionStrategy:
                 if is_preserved(message):
                     continue
                 for content in message.contents:
-                    if content.type != "function_result":
+                    if content.type != "function_result" or (
+                        self.rewrite_result_text is None and not can_shorten_result(content)
+                    ):
                         continue
                     text = (
                         content.result if isinstance(content.result, str) else str(content.result)
