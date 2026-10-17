@@ -42,7 +42,8 @@ PY
     uv run --locked python images/terraform-sandbox/build_image.py --engine terraform --profile random --tag maf-image-scan:target
     ;;
   opentofu-random)
-    uv run --locked python images/terraform-sandbox/build_image.py --engine opentofu --profile random --tag maf-image-scan:target
+    uv run --locked python images/terraform-sandbox/build_image.py --engine opentofu --profile builtin --tag maf-image-scan:base
+    docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-image-scan:base --build-arg MANIFEST=dependencies.opentofu.json --label org.opencontainers.image.documentation=https://github.com/sokolaidev/maf-extensions/blob/main/images/terraform-sandbox/OPENTOFU.md -f images/terraform-sandbox/prepared.Dockerfile -t maf-image-scan:target images/terraform-sandbox
     ;;
   terraform-avm)
     uv run --locked python images/terraform-sandbox/build_image.py --engine terraform --profile builtin --tag maf-image-scan:base
@@ -51,10 +52,6 @@ PY
   terraform-prepared)
     uv run --locked python images/terraform-sandbox/build_image.py --engine terraform --profile builtin --tag maf-image-scan:base
     docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-image-scan:base --build-arg MANIFEST=dependencies.terraform.json -f images/terraform-sandbox/prepared.Dockerfile -t maf-image-scan:target images/terraform-sandbox
-    ;;
-  opentofu-prepared)
-    uv run --locked python images/terraform-sandbox/build_image.py --engine opentofu --profile builtin --tag maf-image-scan:base
-    docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-image-scan:base --build-arg MANIFEST=dependencies.opentofu.json -f images/terraform-sandbox/prepared.Dockerfile -t maf-image-scan:target images/terraform-sandbox
     ;;
   hyperlight)
     uv run --locked python scripts/build_hyperlight_aks_image.py --require-clean --output "$RUNNER_TEMP/hyperlight-image" --tag maf-image-scan:target

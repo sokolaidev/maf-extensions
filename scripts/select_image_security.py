@@ -24,7 +24,6 @@ PROFILES = (
     "opentofu-random",
     "terraform-avm",
     "terraform-prepared",
-    "opentofu-prepared",
     "hyperlight",
     "egress-proxy",
 )
@@ -41,7 +40,6 @@ IMAGE_INPUTS = {
         "opentofu-random",
         "terraform-avm",
         "terraform-prepared",
-        "opentofu-prepared",
     ),
     "images/hyperlight-sandbox/": ("hyperlight",),
     "packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/": ("egress-proxy",),
@@ -59,6 +57,7 @@ CONSUMER_GUIDES = {
     "images/drawio-export/README.md",
     "images/terraform-sandbox/README.md",
     "images/terraform-sandbox/AVM.md",
+    "images/terraform-sandbox/OPENTOFU.md",
     "images/hyperlight-sandbox/README.md",
 }
 SCRIPT_INPUTS = {
@@ -75,9 +74,10 @@ SCRIPT_INPUTS = {
     "scripts/terraform_dependencies.py": (
         "terraform-avm",
         "terraform-prepared",
-        "opentofu-prepared",
+        "opentofu-random",
     ),
-    "scripts/terraform_avm_qualification.py": ("terraform-avm",),
+    "scripts/terraform_avm_qualification.py": ("terraform-avm", "opentofu-random"),
+    "scripts/opentofu_random_qualification.py": ("opentofu-random",),
     "scripts/build_bicep_prepared_image.py": ("bicep-avm",),
     "scripts/bicep_dependencies.py": ("bicep-avm",),
     "scripts/bicep_avm_qualification.py": ("bicep-avm",),
