@@ -208,7 +208,12 @@ def newer_profiles(client: GitHub, run: dict[str, Any], observed_at: dict[str, s
         if bicep:
             with tempfile.TemporaryDirectory(prefix="maf-scan-ordering-") as temporary:
                 evidence = candidates(
-                    client, str(other["id"]), Path(temporary), historical=True, profiles=bicep
+                    client,
+                    str(other["id"]),
+                    Path(temporary),
+                    historical=True,
+                    profiles=bicep,
+                    route_only=True,
                 )
             diagnostics = {
                 profile
@@ -233,8 +238,11 @@ def candidates(
     *,
     historical: bool = False,
     profiles: tuple[str, ...] = PROFILES,
+    route_only: bool = False,
 ) -> dict[str, Any]:
     """Read artifacts only from completed main-branch scans in this repository."""
+    if route_only and (not historical or not set(profiles) <= BICEP_ROUTES.keys()):
+        raise ValueError("Route-only evidence is restricted to historical Bicep ordering")
     if not run_id:
         return {}
     if not re.fullmatch(r"[1-9][0-9]*", run_id):
@@ -305,12 +313,8 @@ def candidates(
                 continue
             sbom = read(target / "sbom.syft.json")
             inventory = components(sbom, build["local_image_id"])
-            assessment = scan_result(
-                read(target / "grype.json"), build["local_image_id"], producer["completed_at"]
-            )
             result[profile] = {
                 "components": inventory,
-                "assessment": assessment,
                 "source": run["head_sha"],
                 "observedAt": producer["completed_at"],
                 "evidence": f"https://github.com/{REPOSITORY}/actions/runs/{run_id}/attempts/{producer['run_attempt']}",
@@ -318,6 +322,10 @@ def candidates(
             if profile in BICEP_ROUTES:
                 result[profile]["bicepRoute"] = evidence_route(
                     profile, build["local_image_id"], read(target / "runtime.json"), sbom
+                )
+            if not route_only:
+                result[profile]["assessment"] = scan_result(
+                    read(target / "grype.json"), build["local_image_id"], producer["completed_at"]
                 )
         except (OSError, ValueError, KeyError, TypeError) as error:
             result.pop(profile, None)
@@ -423,6 +431,13 @@ def desired(
     reasons = state["reasons"]
     expected_route = BICEP_ROUTES.get(record["profile"])
     if expected_route:
+        if pending := reasons.get("components"):
+            for field, fallback in (
+                ("evidence", "candidateEvidence"),
+                ("observedAt", "candidateObservedAt"),
+            ):
+                if fallback in state:
+                    pending.setdefault(field, state[fallback])
         if released["bicepRoute"] != expected_route:
             reasons["route"] = {"published": released["bicepRoute"], "replacement": expected_route}
         else:
@@ -514,10 +529,13 @@ def desired(
     state["currentDigest"] = record["registryDigest"]
     state["releaseEvidence"] = released["evidence"]
     state["resolved"] = not reasons
-    if state["resolved"] and not replacement:
-        state["resolution"] = (
-            "route-reconciled" if state.get("routeReconciliation") else "source-reconciled"
-        )
+    if (
+        state["resolved"]
+        and state.get("routeReconciliation", {}).get("baselineDigest") == record["registryDigest"]
+    ):
+        state["resolution"] = "route-reconciled"
+    elif state["resolved"] and not replacement:
+        state["resolution"] = "source-reconciled"
     else:
         state.pop("resolution", None)
     return resolved_state(state) if state["resolved"] else state

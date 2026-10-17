@@ -225,6 +225,74 @@ def test_legacy_valid_requirement_gains_route_provenance_and_remains_pending(
     assert result["reasons"]["components"] == repaired["reasons"]["components"]
 
 
+@pytest.mark.parametrize("update", ["candidate", "release"])
+def test_legacy_provenance_survives_outage_and_metadata_updates(
+    bicep_request, monkeypatch, tmp_path, update
+):
+    record, released, observed, previous = bicep_request
+
+    def unavailable(*_, **__):
+        raise OSError("Temporary download failure")
+
+    monkeypatch.setattr(tracker, "candidates", unavailable)
+    retained = tracker.reconcile_component_route(GitHub(), record, released, previous, tmp_path)
+    assert retained == previous
+    if update == "release":
+        previous["baseline"] = "sha256:" + "e" * 64
+        previous["currentDigest"] = previous["baseline"]
+    latest = candidate(
+        components=released["components"],
+        bicepRoute="source",
+        evidence=f"https://github.com/{tracker.REPOSITORY}/actions/runs/124/attempts/1",
+        observedAt="2026-01-03T00:00:00Z",
+    )
+    result = desired(
+        record=record,
+        released=released,
+        previous=retained,
+        observed=latest if update == "candidate" else None,
+    )
+    reason = result["reasons"]["components"]
+    assert reason["evidence"] == observed["evidence"]
+    assert reason["observedAt"] == observed["observedAt"]
+    assert "bicepRoute" not in reason
+    assert "evidence" not in previous["reasons"]["components"]
+    assert result.get("candidateEvidence") == (
+        latest["evidence"] if update == "candidate" else None
+    )
+
+    def recovered(_client, run_id, *_args, **_kwargs):
+        assert run_id == "123"
+        return {record["profile"]: observed}
+
+    monkeypatch.setattr(tracker, "candidates", recovered)
+    repaired = tracker.reconcile_component_route(GitHub(), record, released, result, tmp_path)
+    assert repaired is not None and "components" not in repaired["reasons"]
+    assert desired(record=record, released=released, previous=repaired)["resolved"]
+
+
+def test_route_withdrawal_after_release_uses_current_digest_proof(
+    bicep_request, monkeypatch, tmp_path
+):
+    record, released, observed, previous = bicep_request
+    previous["baseline"] = "sha256:" + "e" * 64
+    monkeypatch.setattr(tracker, "candidates", lambda *_, **__: {record["profile"]: observed})
+    repaired = tracker.reconcile_component_route(GitHub(), record, released, previous, tmp_path)
+    assert repaired is not None and "components" not in repaired["reasons"]
+    result = desired(record=record, released=released, previous=repaired)
+    assert result["resolution"] == "route-reconciled"
+    assert "No replacement release is required" in tracker.body(record["profile"], result)
+    assert "Resolved by the completed" not in tracker.body(record["profile"], result)
+    client = Issues()
+    tracker.reconcile(client, record["profile"], previous, None)
+    tracker.reconcile(client, record["profile"], result, client.items[0])
+    assert client.items[0]["state_reason"] == "not_planned"
+    later = replacement() | {"profile": record["profile"]}
+    stale = desired(record=later, released=released, previous=repaired)
+    assert "resolution" not in stale
+    assert stale["status"] == "Resolved by the completed, verified replacement release"
+
+
 def test_scan_timestamps_and_catalogue_ids_do_not_change_component_identity():
     first = {
         "source": {"type": "image", "metadata": {"imageID": RECORD["imageId"]}},
@@ -1442,6 +1510,16 @@ def test_candidate_route_is_bound_to_retained_evidence(bicep_scan, tmp_path, rou
     assert original[profile]["bicepRoute"] == route
 
 
+@pytest.mark.parametrize("historical,profiles", [(False, ("bicep",)), (True, ("graphviz",))])
+def test_route_only_evidence_cannot_be_used_as_replacement_candidate(
+    tmp_path, historical, profiles
+):
+    with pytest.raises(ValueError, match="restricted to historical Bicep ordering"):
+        tracker.candidates(
+            GitHub(), "123", tmp_path, historical=historical, profiles=profiles, route_only=True
+        )
+
+
 @pytest.mark.parametrize("failure", ["missing", "image", "profile", "route", "packages"])
 def test_unverified_route_cannot_become_a_candidate(bicep_scan, tmp_path, failure):
     profile, run, files = bicep_scan
@@ -1478,14 +1556,55 @@ def test_diagnostic_scan_does_not_supersede_a_replacement_scan(monkeypatch, tmp_
             else [profile_job(newer, name=f"Image security ({profile})")]
         )
 
-    def evidence(_client, run_id, _directory, *, historical, profiles):
-        assert historical and profiles == (profile,) and run_id == "124"
+    def evidence(_client, run_id, _directory, *, historical, profiles, route_only):
+        assert historical and route_only and profiles == (profile,) and run_id == "124"
         return {profile: {"bicepRoute": route}} if route else {}
 
     monkeypatch.setattr(tracker, "action_listing", listing)
     monkeypatch.setattr(tracker, "candidates", evidence)
     superseded = tracker.newer_profiles(GitHub(), run, {profile: run["updated_at"]})
     assert superseded == (set() if route == "upstream" else {profile})
+
+
+@pytest.mark.parametrize("newer_scan", [False, True])
+@pytest.mark.parametrize("route", ["upstream", "source"])
+@pytest.mark.parametrize("missing", ["grype.json", "runtime.json", "sbom.syft.json", "build.json"])
+def test_scan_ordering_uses_route_evidence_during_scanner_outage(
+    bicep_scan, monkeypatch, tmp_path, newer_scan, route, missing
+):
+    profile, run, files = bicep_scan
+    run["conclusion"] = "failure"
+    files["runtime.json"]["bicep"]["build"]["route"] = route
+    files.pop(missing)
+    earlier = run | {"id": 122, "updated_at": "2026-01-01T00:00:00Z"}
+    original = GitHub.request
+
+    def history(self, endpoint):
+        if "/workflows/" in endpoint:
+            return encode({"total_count": 2, "workflow_runs": [earlier, run]})
+        if newer_scan and "/jobs?" in endpoint:
+            return encode(
+                {
+                    "total_count": 2,
+                    "jobs": [
+                        profile_job(run, name=f"Image security ({profile})"),
+                        profile_job(run, id=999, run_attempt=2, name=f"Image security ({profile})"),
+                    ],
+                }
+            )
+        return original(self, endpoint)
+
+    monkeypatch.setattr(GitHub, "request", history)
+    superseded = tracker.newer_profiles(GitHub(), earlier, {profile: earlier["updated_at"]})
+    diagnostic = route == "upstream" and missing == "grype.json" and not newer_scan
+    assert superseded == (set() if diagnostic else {profile})
+    assert tracker.candidates(GitHub(), "123", tmp_path / "candidate", profiles=(profile,)) == {}
+    assert (
+        tracker.candidates(
+            GitHub(), "123", tmp_path / "legacy", historical=True, profiles=(profile,)
+        )
+        == {}
+    )
 
 
 @pytest.mark.parametrize("newer_scan", [False, True])
