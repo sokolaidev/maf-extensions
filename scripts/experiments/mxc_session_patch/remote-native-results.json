@@ -1,0 +1,196 @@
+{
+  "schema": 1,
+  "scope": "Native checkpoint publication, coordinator restart, same-machine restore and verified local scratch cleanup. Not native recovery between distinct machines or cross-OS portability.",
+  "implementation_commit": "266daedf00e00983222b037dec52bdf6d41b0755",
+  "native_run_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/38970794986/attempts/1",
+  "native_hosts": [
+    {
+      "platform": "Linux",
+      "hypervisor": "KVM",
+      "source_commit": "266daedf00e00983222b037dec52bdf6d41b0755",
+      "run_id": "38970794986",
+      "run_attempt": "1",
+      "helper_sha256": "d1f2b52251e90390ae5d289a0633b11a9cc8bc456467154944527c19613aab15",
+      "lock_sha256": "c654fdccde30517b4e0a2da20afe7b7f92e4147ea9faa9f1467ef3e3e966655f",
+      "python": "3.12.3",
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "seconds": 80.993,
+      "checkpoint_bytes": {
+        "seed_checkpoint_bytes": 862272720,
+        "next_checkpoint_bytes": 862293200
+      },
+      "junit_sha256": "6e3987c94f0595fab4098aa775aac7e5b50aa92b5843fd17687dbf17b49e88da",
+      "runner_report_sha256": "901b45500a29a2a5cfa6114f0bfa229b7555d46514ba31b88ee597fe46dd8ad7",
+      "native_log_sha256": "6138469035f87fa4337c68399e688458c9c17ab865a8334d3f95c9ed75a340c9",
+      "control": "test_native_host_real_helper_tls_restore_and_cleanup"
+    },
+    {
+      "platform": "Windows",
+      "hypervisor": "WHP",
+      "source_commit": "266daedf00e00983222b037dec52bdf6d41b0755",
+      "run_id": "38970794986",
+      "run_attempt": "1",
+      "helper_sha256": "32a3ae8117bc52956a9b875e665c416a43a5102344c94be8a4039e52715dfecc",
+      "lock_sha256": "c654fdccde30517b4e0a2da20afe7b7f92e4147ea9faa9f1467ef3e3e966655f",
+      "python": "3.12.10",
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "seconds": 109.112,
+      "checkpoint_bytes": {
+        "seed_checkpoint_bytes": 862231810,
+        "next_checkpoint_bytes": 862252290
+      },
+      "junit_sha256": "0c31ea9a1bcd721f0ad53bbda0af240368543f96932a108595f1b881c40b4677",
+      "runner_report_sha256": "271f04460cefc29e439748250ab9e93416d983d4a320073745aa2f9ae1f4b831",
+      "native_log_sha256": "57896db6b9067eae0ffe30966090b96792f70b8237dec4bfef9c8229cfaec5eb",
+      "control": "test_native_host_real_helper_tls_restore_and_cleanup"
+    }
+  ],
+  "process_run_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/38970777428/attempts/1",
+  "process_hosts": [
+    {
+      "runtime": {
+        "platform": "Linux",
+        "python": "3.12.3",
+        "sqlite": "3.45.1",
+        "source_commit": "8d8988a2ffd582677edfe2b04de9d22424b6d43e",
+        "run_id": "38970777428",
+        "run_attempt": "1"
+      },
+      "passed": 199,
+      "failed": 0,
+      "skipped": 1,
+      "skipped_control": "test_native_host_real_helper_tls_restore_and_cleanup",
+      "synthetic_checkpoint_bytes": 1073741826,
+      "junit_sha256": "9fe21878044801ac892f2800a83ddbcb8095b0452e7ec88f30f50d34c9392436"
+    },
+    {
+      "runtime": {
+        "platform": "Windows",
+        "python": "3.12.10",
+        "sqlite": "3.49.1",
+        "source_commit": "8d8988a2ffd582677edfe2b04de9d22424b6d43e",
+        "run_id": "38970777428",
+        "run_attempt": "1"
+      },
+      "passed": 199,
+      "failed": 0,
+      "skipped": 1,
+      "skipped_control": "test_native_host_real_helper_tls_restore_and_cleanup",
+      "synthetic_checkpoint_bytes": 1073741826,
+      "junit_sha256": "2ae1822d97b55c2ed6c8ca90bf993ac78d05f48c2b6cc818bc530dce78054d7c"
+    }
+  ],
+  "rootfs": {
+    "tag": "initrd-v0.17.0",
+    "index_sha256": "8b62fded8d97426f2d5aea6f97837df0b9efc8f61b6acd7047aeaabea4071fca",
+    "manifest_sha256": "72a081149f3d7543a8ff00b6838606671b4476f6f255463e59350c1ed3f447c7",
+    "layer_sha256": "881b2eadff98a2cbedc4965a19b06a32069fb97fc1df199d2048706fd5dbf183",
+    "initrd_sha256": "0fe48a092e5d7810ad883c204786270ba49e15058451e0871d5d1075102a80cd",
+    "initrd_bytes": 419319296
+  },
+  "pins": {
+    "mxc_base": "7bf210247986cb73b1b314df60c2f1109c479c0b",
+    "runtime_base": "8f636e00cdf29e6c33ba0f578482c595d7827cf6",
+    "host_base": "388ea8ebd88639a062f7a87f477db2930605a307",
+    "layers": {
+      "session": {
+        "session": {
+          "sha256": "a0618e04a2437c451f807abb4c0b0e77d2ee945b4e015872c2971cd34174356c",
+          "files": {
+            "src/mxc-sdk/Cargo.toml": {
+              "before": "9c9e8bf67eabb855046cb3377ff350b6bd02120be83ce52cd69fd006345a6746",
+              "after": "99e91dcda3dc3c48cd5c923b820d22e8b16a31aa47fba39995fb03559cccb47d"
+            },
+            "src/mxc-sdk/src/backends/hyperlight/common/mod.rs": {
+              "before": "28790c392bddbb4ccfda4e959c77b04928887f58b9f2b2e0d7f9910f6b0bfdab",
+              "after": "f5ff7b1b16d9f8afb252d1ab8d87fb95a4b40c869e7ff0790b95b780e9af3351"
+            },
+            "src/mxc-sdk/src/backends/hyperlight/common/session_preview.rs": {
+              "before": null,
+              "after": "fefc65deb76bae12f1ac195b0c65c749b7c4dc48a451b87e91335e50d1d60466"
+            }
+          }
+        }
+      },
+      "output": {
+        "session": {
+          "sha256": "3b23f07875d6a12a573ab9dfc090e480ef525f6f748a4ff27587866ab08bb96e",
+          "files": {
+            "src/mxc-sdk/Cargo.toml": {
+              "before": "99e91dcda3dc3c48cd5c923b820d22e8b16a31aa47fba39995fb03559cccb47d",
+              "after": "fa99bd7f78ce516edb8a4e2dc26e6f99ae8e62d24d2e0a967d03fe59aaa29978"
+            },
+            "src/mxc-sdk/src/backends/hyperlight/common/session_preview.rs": {
+              "before": "fefc65deb76bae12f1ac195b0c65c749b7c4dc48a451b87e91335e50d1d60466",
+              "after": "f014bf5de86616681fae6ed26c3932e64637e83d8734bee07c36846ad6d46117"
+            }
+          }
+        },
+        "runtime": {
+          "sha256": "b1f0b9a6bd9dd84cc243ccddf1807770ab8849f9be6713254a7e914cc39956af",
+          "files": {
+            "src/lib.rs": {
+              "before": "c1f659ca3f1b453a01393e0691e45dec01af1e2130d170e0c78a89ed3ae3f2d4",
+              "after": "b9ca8f064a0985c0f92d69877b0db9b3307dd8a00b37ee16636a4d0e2c04b43c"
+            },
+            "src/output_capture.rs": {
+              "before": null,
+              "after": "d0c9e07e41b63cb19d30b3c811d3b8e332c6a0c5e31f1311151105fbe89f1b40"
+            }
+          }
+        }
+      },
+      "storage": {
+        "session": {
+          "sha256": "413941aede0f32af6885788d4434c2f6e87a4c85197b83a068d440551b04ac46",
+          "files": {
+            "src/mxc-sdk/src/backends/hyperlight/common/session_preview.rs": {
+              "before": "f014bf5de86616681fae6ed26c3932e64637e83d8734bee07c36846ad6d46117",
+              "after": "b3999252ce171f00de4319ff9c34fcf90c760f8fea8880d83e6069ee09042887"
+            }
+          }
+        },
+        "runtime": {
+          "sha256": "93c07eb324a13d49f2dc2d4c40d23e45e30766f6a563803423ed56398a494de1",
+          "files": {
+            "src/lib.rs": {
+              "before": "b9ca8f064a0985c0f92d69877b0db9b3307dd8a00b37ee16636a4d0e2c04b43c",
+              "after": "7edd1c09b453d6492c6909f83906e8fdfd45062a108bd17f7f66d5e28830bf2a"
+            }
+          }
+        },
+        "host": {
+          "sha256": "e3974994ceddaf165b2b52460fd1158e3bb9fd202d8706cf195525fd2ad485f6",
+          "files": {
+            "src/hyperlight_host/src/sandbox/snapshot/file/write_budget.rs": {
+              "before": null,
+              "after": "832148dbdc096b86b04929aeae920ab5eab6c44d8e712bfc4703206956a786d0"
+            },
+            "src/hyperlight_host/src/sandbox/snapshot/file/fsutil.rs": {
+              "before": "1bdbf4d53bea8b401846131b77af4223db87d006ba888de2e92fa452bc410b9f",
+              "after": "cd692f6a08d0ebd7f079f5c285dbde93682632a00a48e4753ecad3bf7ebb7dea"
+            },
+            "src/hyperlight_host/src/sandbox/snapshot/file/mod.rs": {
+              "before": "39f4518444d126ae49b108f0bd2608532adf2e51fc51899624e266721aefc261",
+              "after": "12179bfe468716067177f25f84716f1e4e98adbd23635a8922d4e4bd68bb4761"
+            }
+          }
+        }
+      }
+    }
+  },
+  "limits": [
+    "Trusted execution-machine controller; no worker cleanup RPC or deployment controller transport.",
+    "No deployment-wide fencing or network-authority revocation.",
+    "No cross-machine or cross-OS native recovery, coordinator-database-loss recovery, power-loss durability, or production-serving claim.",
+    "Windows emitted the repository 90-second diagnostic stack dump during the 109-second two-call test; the test and native job passed. Both native tests emitted the existing xunit2 record_property warning; payload properties are present in the retained XML."
+  ],
+  "process_merge_parents": [
+    "01d823e549bb175cf0438b961d7886ada94a9155",
+    "266daedf00e00983222b037dec52bdf6d41b0755"
+  ]
+}

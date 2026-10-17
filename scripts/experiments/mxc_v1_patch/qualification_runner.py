@@ -207,6 +207,22 @@ def qualify(root: Path, report: dict, mode: str) -> None:
             str(root / module),
         )
         report[module] = json.loads((root / module / "result.json").read_text(encoding="utf-8"))
+    os.environ["MXC_REMOTE_HELPER"] = str(helper(root))
+    os.environ["MXC_REMOTE_STARTUP"] = str(startup)
+    run(
+        root,
+        "remote-native",
+        "uv",
+        "run",
+        "--locked",
+        "pytest",
+        "-q",
+        "tests/test_mxc_remote_api.py",
+        "-k",
+        "native_host_real_helper",
+        f"--junitxml={root / 'remote-native.xml'}",
+    )
+    report["remote_native"] = "TLS publication, restore, replay and verified local cleanup passed"
     old = root / "baseline"
     old_helper = baseline(old)
     checkpoint = old / "native/checkpoint"
