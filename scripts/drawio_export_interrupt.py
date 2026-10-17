@@ -48,6 +48,7 @@ def interrupt(entry: Path, destination: Path, deadline: float) -> dict[str, obje
             try:
                 signature.extend(os.read(descriptor, len(PNG_SIGNATURE) - len(signature)))
             except BlockingIOError:
+                # No bytes are ready yet; retain the polling delay below.
                 pass
             if len(signature) == len(PNG_SIGNATURE):
                 if signature != PNG_SIGNATURE:
@@ -61,6 +62,7 @@ def interrupt(entry: Path, destination: Path, deadline: float) -> dict[str, obje
         try:
             os.kill(pid, signal.SIGCONT)
         except ProcessLookupError:
+            # An exited renderer no longer needs to be resumed.
             pass
         raise
     finally:
