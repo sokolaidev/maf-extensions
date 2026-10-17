@@ -29,7 +29,7 @@ dependencies = [
     # read; the same minor as maf-compaction pins, for the same reason.
     "agent-framework-core>=1.22.0,<1.23",
     # The record strategy must accept the same target as the recall tool.
-    "maf-compaction>=0.4.0,<0.5",
+    "maf-compaction>=0.5.0,<0.6",
     # Model prices are fetched from OpenRouter for the advisor's cost table.
     "httpx>=0.27,<1",
 ]
