@@ -1055,15 +1055,19 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         for span in band:
             message = messages[int(span["start_index"])]
             if any(part.type in MEDIA_TYPES for part in message.contents):
-                # Stop spending on descriptions once the accumulated prefix is over budget.
-                if prepared and not fits_summary_input(
-                    self.prompt,
-                    _format_turns(
-                        [messages[int(item["start_index"])] for item in prepared],
-                        text=lambda turn: bodies.get(id(turn), turn.text),
-                    ),
-                    tokenizer=self.tokenizer,
-                    limit=self.max_summary_input_tokens,
+                # Skip mode only uses a prefix; chunk mode needs descriptions for every chunk.
+                if (
+                    self.summary_input_policy == "skip"
+                    and prepared
+                    and not fits_summary_input(
+                        self.prompt,
+                        _format_turns(
+                            [messages[int(item["start_index"])] for item in prepared],
+                            text=lambda turn: bodies.get(id(turn), turn.text),
+                        ),
+                        tokenizer=self.tokenizer,
+                        limit=self.max_summary_input_tokens,
+                    )
                 ):
                     break
                 body = await self._describe_turn(message)

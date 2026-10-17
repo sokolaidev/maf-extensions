@@ -942,6 +942,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             prompt_tokens=entry_tokens,
             trigger_tokens=int(self._budget * self.tool_results.trigger_fraction),
             fallback_after_record=False,
+            ceiling=self._request_budget.get(),
         )
         if changed:
             # Forced, because the give-up fallback the record phase may still take rewrites tool

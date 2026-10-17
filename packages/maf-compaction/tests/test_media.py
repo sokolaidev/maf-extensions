@@ -143,19 +143,48 @@ async def test_descriptions_keep_part_order_and_replace_only_the_band(mode):
 
 
 @pytest.mark.parametrize("answer", [None, "", "  ", RuntimeError("failed"), "x" * 10000])
-async def test_failed_or_oversized_description_retains_the_original(answer):
+@pytest.mark.parametrize("policy", ["skip", "chunk"])
+async def test_failed_or_oversized_description_retains_the_original(answer, policy):
     async def describe(part, turn):
         if isinstance(answer, Exception):
             raise answer
         return answer
 
     client = Summarizer()
-    strategy = users(client, describe_media=describe)
+    strategy = users(client, describe_media=describe, summary_input_policy=policy)
     messages = history()
     assert not await strategy(messages)
     assert not messages[1].additional_properties.get(EXCLUDED_KEY)
     assert messages[1].contents[-1].type == "uri"
     assert not client.requests
+
+
+async def test_chunking_describes_every_individually_fitting_media_turn():
+    described = []
+
+    async def describe(part, turn):
+        described.append(part.uri)
+        return f"diagram {part.uri} " + "detail " * 100
+
+    client = Summarizer()
+    strategy = users(
+        client,
+        describe_media=describe,
+        summary_input_policy="chunk",
+        max_summary_input_tokens=650,
+    )
+    turns = [Message("user", [image(str(i))], message_id=str(i)) for i in range(20)]
+    messages = [Message("user", ["head"]), *turns, Message("user", ["tail"])]
+    assert await strategy(messages)
+    assert len(described) == len(turns)
+    assert all(turn.additional_properties.get(EXCLUDED_KEY) for turn in turns)
+    assert len(client.requests) > 2
+    assert all(
+        fits_summary_input(request[0].text, request[1].text, tokenizer=BASE, limit=650)
+        for request in client.requests
+    )
+    transcripts = "\n".join(request[1].text for request in client.requests)
+    assert all(transcripts.count(f"diagram https://example.org/{i}.png") == 1 for i in range(20))
 
 
 async def test_cancellation_propagates_without_losing_media():

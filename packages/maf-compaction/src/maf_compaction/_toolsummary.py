@@ -1569,15 +1569,12 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         prompt_tokens: int,
         trigger_tokens: int,
         fallback_after_record: bool = True,
+        ceiling: int | None = None,
     ) -> bool:
         """Run one pass, judged against a size and a line the caller read rather than this pass.
 
-        The seam a composition needs and a row does not. What it moves is the *trigger* only:
-        the give-up line below is still this strategy's own ``fallback_fraction`` of its own
-        ceiling, because that line is not a question about when to start compacting but about
-        how long a record may be waited for, and nothing a composition does changes how long
-        that is. The ceiling the fallback is reached for is likewise read live, since it is a
-        statement about whether the prompt now fits.
+        An explicit ceiling bounds both the wait for a record and the fallback's target.
+        Without one, the strategy and its fallback retain their configured budgets.
 
         Args:
             messages: The conversation, mutated in place. Already grouped and token-annotated
@@ -1586,6 +1583,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             trigger_tokens: Included tokens the prompt must exceed for a pass to run.
 
         Keyword Args:
+            ceiling: Sending budget after request overhead, or None for configured budgets.
             fallback_after_record: Run :meth:`fall_back_after_record` here when a record has
                 not freed enough. True, the default, is what this strategy's own row does and
                 what :meth:`__call__` passes. The composed row passes False and calls that
@@ -1597,6 +1595,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         Returns:
             True if the outgoing messages changed.
         """
+        budget = self.max_input_tokens if ceiling is None else ceiling
         repaired = repair_compacted_items(messages, lambda text: text.startswith(_ROWS_OMITTED))
         if repaired:
             annotate_token_counts(messages, tokenizer=self.tokenizer, force_retokenize=True)
@@ -1622,11 +1621,11 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             self._reforce_or_settle(records)
             # Even a good record may not be enough on its own: the groups after it are
             # untouched by design, and they can exceed the ceiling by themselves.
-            if fallback_after_record and included_token_count(messages) > self.max_input_tokens:
-                changed = await self.fall_back_after_record(messages) or changed
+            if fallback_after_record and included_token_count(messages) > budget:
+                changed = await self.fall_back_after_record(messages, ceiling=ceiling) or changed
             return changed
 
-        if prompt_tokens < int(self.max_input_tokens * self.fallback_fraction):
+        if prompt_tokens < int(budget * self.fallback_fraction):
             # Still waiting for the middleware's forced call to come back. Nothing may be
             # dropped yet: the record is the only thing that would replace it.
             return repaired
@@ -1635,6 +1634,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         # and the alternative to compacting without a record is a provider error. The tool
         # results are lost either way at this point; at least the conversation survives.
         self._fallbacks += 1
+        if ceiling is not None:
+            return await self.fallback.compact_to(messages, ceiling=ceiling) or repaired
         return await self.fallback(messages) or repaired
 
     async def fall_back_after_record(
@@ -1663,10 +1664,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         is left as it is, over the ceiling, and the row reads ``DQ`` rather than a shortened
         result. See :attr:`fallbacks_held_after_record`.
 
-        ``ceiling`` is the composed row's: its chain compacts to a target below the input budget
-        rather than to the budget, and hands the target down here, to the fallback's
-        :meth:`~._anchored.AnchoredCompactionStrategy.compact_to`. None, the default, is the
-        fallback's own ceiling, which is every caller but that chain.
+        ``ceiling`` overrides the fallback's configured budget, either for a sending limit
+        or for the composed chain's lower target. None retains the fallback's own ceiling.
 
         Args:
             messages: The conversation, mutated in place, with a record in it.

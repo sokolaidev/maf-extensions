@@ -15,8 +15,10 @@ from agent_framework import (
     Message,
     ResponseStream,
 )
+from agent_framework._compaction import EXCLUDED_KEY, included_token_count
 
 from maf_compaction import (
+    AnchoredCompactionStrategy,
     CompactionBudgetExceeded,
     RecallGate,
     ToolResultAnchoredSummarizationCompactionStrategy,
@@ -25,6 +27,7 @@ from maf_compaction import (
     UserTurnAnchoredSummarizationCompactionStrategy,
     make_recall_tool,
 )
+from maf_compaction._media import annotate_token_counts
 from maf_compaction._request import RequestOverhead
 
 pytestmark = pytest.mark.anyio
@@ -61,6 +64,44 @@ async def test_call_overhead_and_margin_do_not_change_history_budget():
     assert strategy.max_input_tokens == 1000
     assert not await strategy(deepcopy(messages))
     assert not await strategy.compact_before(deepcopy(messages), options={})
+
+
+@pytest.mark.parametrize("policy", ["raise", "shed"])
+async def test_no_record_fallback_shortens_to_the_sending_ceiling(policy):
+    ceilings = []
+
+    class Fallback(AnchoredCompactionStrategy):
+        async def compact_to(self, messages, *, ceiling):
+            ceilings.append(ceiling)
+            return await super().compact_to(messages, ceiling=ceiling)
+
+    strategy = composition()
+    strategy.overflow_policy = policy
+    strategy.tool_results.fallback = Fallback(
+        max_input_tokens=1000,
+        tokenizer=TOKENIZER,
+        keep_head_groups=1,
+        keep_tail_groups=1,
+        keep_tokens=100,
+    )
+    messages = [
+        Message("user", ["head"]),
+        Message(
+            "assistant", [Content.from_function_call(call_id="call", name="lookup", arguments={})]
+        ),
+        Message("tool", [Content.from_function_result(call_id="call", result="x" * 2400)]),
+        Message("user", ["tail"]),
+    ]
+    annotate_token_counts(messages, tokenizer=TOKENIZER)
+    assert 600 < included_token_count(messages) < 800
+    assert not await strategy(deepcopy(messages))
+    original = messages[2]
+    assert await strategy.compact_before(messages, options={"instructions": "x" * 1600})
+    assert ceilings == [600]
+    assert included_token_count(messages) <= 600
+    assert not original.additional_properties.get(EXCLUDED_KEY)
+    assert len(original.contents[0].result) < 2400
+    assert strategy.max_input_tokens == strategy.tool_results.max_input_tokens == 1000
 
 
 async def test_middleware_applies_live_options_to_composed_callback():
