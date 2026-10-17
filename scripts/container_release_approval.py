@@ -57,8 +57,8 @@ PROFILE_GUIDES = {
         "images/terraform-sandbox/USAGE.md",
     ),
     "opentofu-random": (
-        "Offline OpenTofu validation/planning with Python, the bounded runner and the random provider.",
-        "images/terraform-sandbox/USAGE.md",
+        "Offline OpenTofu initialization and validation with the verified random provider and example module.",
+        "images/terraform-sandbox/OPENTOFU.md",
     ),
     "terraform-avm": (
         "Offline Terraform initialization and validation with the pinned Azure Verified Modules catalogue and provider mirror.",
@@ -66,10 +66,6 @@ PROFILE_GUIDES = {
     ),
     "terraform-prepared": (
         "Terraform with Python, the bounded runner and the reviewed provider/module cache.",
-        "images/terraform-sandbox/USAGE.md",
-    ),
-    "opentofu-prepared": (
-        "OpenTofu with Python, the bounded runner and the reviewed provider/module cache.",
         "images/terraform-sandbox/USAGE.md",
     ),
     "hyperlight": (
@@ -268,6 +264,16 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
             rows.append(("Terraform AVM check", UNAVAILABLE))
         rows.append(("Prepared Terraform version", avm.get("terraformVersion", UNAVAILABLE)))
         rows.append(("Prepared Terraform receipt", avm.get("receipt", UNAVAILABLE)))
+    if candidate["profile"] == "opentofu-random":
+        tofu = runtime.get("opentofuRandom", {})
+        rows.append(("Prepared OpenTofu version", tofu.get("opentofuVersion", UNAVAILABLE)))
+        rows.append(("Prepared OpenTofu receipt", tofu.get("receipt", UNAVAILABLE)))
+        rows.append(("OpenTofu source build", tofu.get("build", UNAVAILABLE)))
+        rows.append(("OpenTofu provider build", tofu.get("providerBuild", UNAVAILABLE)))
+        for check in tofu.get("checks", []):
+            rows.append(("OpenTofu random check", check))
+        if not tofu.get("checks"):
+            rows.append(("OpenTofu random check", UNAVAILABLE))
     if "result" in runtime:
         rows.append(("Runtime packaging evidence", runtime["result"]))
     if database.get("built") and assessment.get("assessedAt"):

@@ -26,13 +26,13 @@ def fingerprint(value: Any) -> str:
     ).hexdigest()
 
 
-def expected_receipt() -> dict[str, Any]:
+def expected_receipt(manifest_name: str = "dependencies.terraform-avm.json") -> dict[str, Any]:
     """Bind the candidate to the reviewed catalogue and effective preparation policy."""
-    manifest = read(CONTEXT / "dependencies.terraform-avm.json")
+    manifest = read(CONTEXT / manifest_name)
     manifest_sha = fingerprint(manifest)
     return {
         "schema": 1,
-        "engine": "terraform",
+        "engine": manifest["engine"],
         "manifest_sha256": manifest_sha,
         "policy_sha256": fingerprint(
             {"manifest_sha256": manifest_sha, "contract": policy_contract()}

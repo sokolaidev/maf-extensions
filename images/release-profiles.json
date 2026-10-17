@@ -13,7 +13,6 @@
     "opentofu-random",
     "terraform-avm",
     "terraform-prepared",
-    "opentofu-prepared",
     "hyperlight",
     "egress-proxy"
   ]

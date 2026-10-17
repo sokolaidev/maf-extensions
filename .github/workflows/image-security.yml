@@ -9,7 +9,7 @@ on:
         description: Image profile to check (all for full coverage)
         type: choice
         default: all
-        options: [all, bicep, bicep-avm, bicep-docker-sbx, graphviz, drawio, drawio-export, terraform-random, opentofu-random, terraform-avm, terraform-prepared, opentofu-prepared, hyperlight, egress-proxy]
+        options: [all, bicep, bicep-avm, bicep-docker-sbx, graphviz, drawio, drawio-export, terraform-random, opentofu-random, terraform-avm, terraform-prepared, hyperlight, egress-proxy]
       bicep_route:
         description: Bicep replacement policy or an explicit diagnostic compiler route
         type: choice
@@ -125,6 +125,21 @@ jobs:
           if build["route"] != os.environ["BICEP_ROUTE"]:
               raise ValueError("Bicep route differs from the selection")
           write(directory / "runtime.json", runtime)
+          PY
+      - name: Qualify the prepared OpenTofu consumer
+        if: steps.identity.outcome == 'success' && matrix.profile == 'opentofu-random'
+        env:
+          IMAGE_ID: ${{ steps.identity.outputs.image_id }}
+        run: |
+          uv run --locked python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          from check_container_release_image import check
+          from container_release import write
+          directory = Path(os.environ["RUNNER_TEMP"]) / "image-security"
+          write(directory / "runtime.json", check("opentofu-random", os.environ["IMAGE_ID"], directory))
           PY
       - name: Inventory the exact built image
         if: steps.build.outcome == 'success'

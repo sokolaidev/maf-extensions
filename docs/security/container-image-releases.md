@@ -49,10 +49,9 @@ The first publishing workflow covers all thirteen currently scanned profiles on 
 | `drawio` | [Editable Draw.io authoring with Python and Graphviz](../../images/drawio-sandbox/README.md) |
 | `drawio-export` | Draw.io Desktop export runtime |
 | `terraform-random` | Terraform with the approved random-provider manifest |
-| `opentofu-random` | OpenTofu with the approved random-provider manifest |
+| `opentofu-random` | [OpenTofu with the approved random-provider preparation and local module bundle](../../images/terraform-sandbox/OPENTOFU.md) |
 | `terraform-avm` | Terraform with the pinned AVM catalogue and provider mirror; [consumer guide](../../images/terraform-sandbox/AVM.md) |
 | `terraform-prepared` | Terraform with the approved prepared dependency manifest |
-| `opentofu-prepared` | OpenTofu with the approved prepared dependency manifest |
 | `hyperlight` | The repository's Hyperlight runtime and verification application |
 | `egress-proxy` | [Patched proxy infrastructure for Docker/WSLC, with Docker consumer qualification](../../images/egress-proxy/README.md) |
 
