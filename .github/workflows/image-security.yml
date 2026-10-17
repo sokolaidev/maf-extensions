@@ -11,10 +11,10 @@ on:
         default: all
         options: [all, bicep, bicep-avm, bicep-docker-sbx, graphviz, drawio, drawio-export, terraform-random, opentofu-random, terraform-avm, terraform-prepared, opentofu-prepared, hyperlight, egress-proxy]
       bicep_route:
-        description: Bicep compiler acquisition for selected Bicep profiles
+        description: Bicep replacement policy or an explicit diagnostic compiler route
         type: choice
-        default: upstream
-        options: [upstream, source]
+        default: policy
+        options: [policy, upstream, source]
 
 permissions:
   contents: read
@@ -80,12 +80,18 @@ jobs:
         run: |
           echo "::notice::Hyperlight image build and security scan deferred until core release ranges align."
           printf '\nHyperlight security scan deferred: no image, inventory, vulnerability scan or security evidence artifact was produced. Other image profiles remain enabled.\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Select the scan route
+        id: route
+        env:
+          PROFILE: ${{ matrix.profile }}
+          REQUESTED_BICEP_ROUTE: ${{ inputs.bicep_route || 'policy' }}
+        run: python3 scripts/image_scan_policy.py
       - name: Build the selected image
         id: build
         if: matrix.profile != 'hyperlight' || steps.hyperlight-image.outputs.build == 'true'
         env:
           PROFILE: ${{ matrix.profile }}
-          BICEP_ROUTE: ${{ inputs.bicep_route || 'upstream' }}
+          BICEP_ROUTE: ${{ steps.route.outputs.bicep_route }}
         run: bash scripts/build_scan_image.sh "$PROFILE"
       - name: Record the immutable local image identity
         if: steps.build.outcome == 'success'
@@ -104,7 +110,7 @@ jobs:
         env:
           PROFILE: ${{ matrix.profile }}
           IMAGE_ID: ${{ steps.identity.outputs.image_id }}
-          BICEP_ROUTE: ${{ inputs.bicep_route || 'upstream' }}
+          BICEP_ROUTE: ${{ steps.route.outputs.bicep_route }}
         run: |
           uv run --locked python - <<'PY'
           import os
