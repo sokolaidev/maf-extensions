@@ -15,6 +15,7 @@ CASES = (
     "wrong-lock",
     "missing-module",
     "wrong-registry",
+    "upstream-lock",
 )
 SUCCESS = {"pinned", "correct-lock"}
 
@@ -26,6 +27,8 @@ def expected_refusal(name: str, diagnostics: str) -> bool:
         return "no available releases match" in text
     if name == "wrong-lock":
         return "Failed to install provider" in text and "doesn't match any of the checksums" in text
+    if name == "upstream-lock":
+        return "SOKOLAI provider lock verification failed: expected baked h1 checksum." in text
     if name == "missing-module":
         return "Unreadable module directory" in text
     if name == "wrong-registry":
@@ -96,8 +99,10 @@ for case in CASES:
             '  }\n}\nmodule "approved" {\n'
             f'  source = "./modules/{module_path}"\n}}\n'
         )
-        if case in ("correct-lock", "wrong-lock"):
+        if case in ("correct-lock", "wrong-lock", "upstream-lock"):
             digest = "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" if case == "wrong-lock" else provider["h1"]
+            if case == "upstream-lock":
+                digest = "zh:" + provider["upstream_artifact"]["sha256"]
             lock = project / ".terraform.lock.hcl"
             lock.write_text(f'provider "{source}" {{\n  version = "{version}"\n  hashes = ["{digest}"]\n}}\n')
             lock.chmod(0o444)
@@ -137,7 +142,7 @@ for case in CASES:
             })
         finally:
             os.chdir("/tmp")
-print(json.dumps({"receipt": summary, "build": build, "moduleFilesVerified": True, "checks": checks}))
+print(json.dumps({"receipt": summary, "build": build, "providerBuild": provider["source_build"], "moduleFilesVerified": True, "checks": checks}))
 """
 
 
@@ -158,9 +163,14 @@ def evidence(output: bytes) -> dict[str, Any]:
     engine = read(CONTEXT / "image.json")["engines"]["opentofu"]
     if (
         result["build"]["source"] != engine["source_build"]
+        or result["build"].get("go_version")
+        != "go version " + engine["source_build"]["go_version"] + " linux/amd64"
         or result["moduleFilesVerified"] is not True
     ):
         raise ValueError("OpenTofu build or module identity differs from the selected release")
+    provider = read(CONTEXT / "dependencies.opentofu.json")["providers"][0]
+    if result["providerBuild"] != provider["source_build"]:
+        raise ValueError("OpenTofu provider build identity differs from the selected release")
     checks = result["checks"]
     if not isinstance(checks, list) or len(checks) != len(CASES):
         raise ValueError("OpenTofu qualification cases are incomplete")

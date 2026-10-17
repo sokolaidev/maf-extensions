@@ -21,8 +21,16 @@ def report():
     return {
         "receipt": tofu.expected_receipt("dependencies.opentofu.json"),
         "build": {
-            "source": tofu.read(tofu.CONTEXT / "image.json")["engines"]["opentofu"]["source_build"]
+            "go_version": "go version "
+            + tofu.read(tofu.CONTEXT / "image.json")["engines"]["opentofu"]["source_build"][
+                "go_version"
+            ]
+            + " linux/amd64",
+            "source": tofu.read(tofu.CONTEXT / "image.json")["engines"]["opentofu"]["source_build"],
         },
+        "providerBuild": tofu.read(tofu.CONTEXT / "dependencies.opentofu.json")["providers"][0][
+            "source_build"
+        ],
         "moduleFilesVerified": True,
         "checks": [
             {
@@ -94,6 +102,8 @@ def test_artifact_inventory_drift_is_refused(kind):
         (4, "sourceUnchanged", False),
         (5, "initExitCode", 0),
         (5, "expectedRefusal", False),
+        (6, "expectedRefusal", False),
+        (6, "initExitCode", 0),
     ],
 )
 def test_false_success_is_refused(index, field, value):
@@ -134,7 +144,7 @@ def test_runtime_checks_identity_and_observes_cleanup(monkeypatch, tmp_path, fai
             runtime.check("opentofu-random", "sha256:" + "a" * 64, tmp_path)
     else:
         result = runtime.check("opentofu-random", "sha256:" + "a" * 64, tmp_path)
-        assert len(result["opentofuRandom"]["checks"]) == 6
+        assert len(result["opentofuRandom"]["checks"]) == 7
         assert result["containersRemaining"] == []
         assert result["liveDeploymentVerified"] is False
     name = commands[0][commands[0].index("--name") + 1]
@@ -160,7 +170,7 @@ def test_public_profile_uses_preparation_and_its_consumer_guide():
     assert affected("images/terraform-sandbox/OPENTOFU.md") == ()
 
 
-@pytest.mark.parametrize("field", ["build", "moduleFilesVerified"])
+@pytest.mark.parametrize("field", ["build", "moduleFilesVerified", "providerBuild"])
 def test_build_and_module_identity_drift_is_refused(field):
     data = report()
     data[field] = {"source": {}} if field == "build" else False

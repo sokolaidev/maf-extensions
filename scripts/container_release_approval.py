@@ -269,6 +269,7 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
         rows.append(("Prepared OpenTofu version", tofu.get("opentofuVersion", UNAVAILABLE)))
         rows.append(("Prepared OpenTofu receipt", tofu.get("receipt", UNAVAILABLE)))
         rows.append(("OpenTofu source build", tofu.get("build", UNAVAILABLE)))
+        rows.append(("OpenTofu provider build", tofu.get("providerBuild", UNAVAILABLE)))
         for check in tofu.get("checks", []):
             rows.append(("OpenTofu random check", check))
         if not tofu.get("checks"):

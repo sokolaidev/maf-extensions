@@ -13,6 +13,11 @@ def main() -> None:
     recipe = Path(__file__).resolve().parent
     plan = json.loads((recipe / "image.json").read_text())["engines"]["opentofu"]
     source = plan["source_build"]
+    if (
+        subprocess.check_output(["go", "env", "GOVERSION"], text=True).strip()
+        != source["go_version"]
+    ):
+        raise ValueError("OpenTofu build toolchain mismatch")
     checkout, output = Path("/src/opentofu"), Path("/out")
     subprocess.run(
         [
