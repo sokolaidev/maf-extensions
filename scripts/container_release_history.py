@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -275,6 +276,10 @@ def catalogue_asset(assets: Any) -> dict[str, Any]:
     return assets[0]
 
 
+class _HistoryAdvanced(ValueError):
+    """New committed records require a fresh, fully validated read."""
+
+
 class History:
     """Read and append immutable snapshots; callers serialize all writes in one Actions group."""
 
@@ -345,9 +350,30 @@ class History:
         return Snapshot(number, hashed, value, release["id"])
 
     def head(self) -> Snapshot | None:
+        """Read a validated head, retrying concurrent publication at most twice."""
+        observed: dict[int, int] = {}
+        for delay in (1, 2):
+            try:
+                return self._head_once(observed)
+            except _HistoryAdvanced:
+                time.sleep(delay)
+        return self._head_once(observed)
+
+    def _committed(self, observed: dict[int, int]) -> dict[int, dict[str, Any]]:
+        """Keep every committed identity seen during one head read, including its retries."""
+        committed = {n: r for n, r in self.records().items() if not r["draft"]}
+        identities = {n: r["id"] for n, r in committed.items()}
+        latest = max(observed, default=0)
+        if any(identities.get(n) != rid for n, rid in observed.items()) or any(
+            n <= latest for n in identities.keys() - observed.keys()
+        ):
+            raise ValueError("Security history changed during retrieval")
+        observed.update(identities)
+        return committed
+
+    def _head_once(self, observed: dict[int, int]) -> Snapshot | None:
         """Check retained ancestry and current bytes without downloading every old snapshot."""
-        records = self.records()
-        committed = {n: r for n, r in records.items() if not r["draft"]}
+        committed = self._committed(observed)
         references = []
         for number, release in sorted(committed.items()):
             if release.get("immutable") is not True:
@@ -363,9 +389,9 @@ class History:
             != current.document["sourceCommit"]
         ):
             raise ValueError("Committed history tag identifies another source")
-        checked = {n: r["id"] for n, r in self.records().items() if not r["draft"]}
-        if checked != {n: r["id"] for n, r in committed.items()}:
-            raise ValueError("Security history changed during retrieval")
+        checked = self._committed(observed)
+        if checked.keys() != committed.keys():
+            raise _HistoryAdvanced("Security history advanced during retrieval")
         return current
 
     def append(

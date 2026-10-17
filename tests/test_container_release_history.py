@@ -152,6 +152,170 @@ def test_reservation_is_durable_and_retry_does_not_create_another_release():
     assert len(gh.entries) == 1
 
 
+@pytest.mark.parametrize("initial", [0, 1], ids=["empty", "existing"])
+@pytest.mark.parametrize("advances", [1, 2, 3])
+def test_head_retries_concurrent_publication_with_a_bound(monkeypatch, initial, advances):
+    gh = FakeGitHub()
+    history = History(gh)
+    for number in range(1, initial + advances + 1):
+        append_reservation(
+            history,
+            f"{number}/reserve",
+            CANDIDATE | {"version": f"0.1.{number - 1}", "attemptId": str(number)},
+        )
+    for number in range(initial + 1, initial + advances + 1):
+        gh.entries[number]["draft"] = True
+    original = gh.releases
+    reads = 0
+    delays = []
+    gh.downloads = 0
+
+    def releases():
+        nonlocal reads
+        result = original()
+        reads += 1
+        if reads % 2 and reads <= advances * 2:
+            gh.publish(initial + (reads + 1) // 2)
+        return result
+
+    monkeypatch.setattr(gh, "releases", releases)
+    monkeypatch.setattr("container_release_history.time.sleep", delays.append)
+    if advances == 3:
+        with pytest.raises(ValueError, match="advanced during retrieval"):
+            history.head()
+    else:
+        head = history.head()
+        assert head.number == initial + advances
+        assert len(head.catalogue["releases"]) == initial + advances
+    attempts = min(advances + 1, 3)
+    assert reads == attempts * 2
+    assert gh.downloads == attempts - (initial == 0)
+    assert delays == [1, 2][:advances]
+    assert len(gh.entries) == initial + advances
+
+
+@pytest.mark.parametrize("change", ["remove", "replace", "backfill"])
+def test_head_does_not_retry_changed_committed_records(monkeypatch, change):
+    gh = FakeGitHub()
+    history = History(gh)
+    draft = gh.create(TAG + "000000000001", SOURCE)
+    append_reservation(history)
+    original = gh.releases
+    reads = 0
+    delays = []
+
+    def releases():
+        nonlocal reads
+        result = original()
+        reads += 1
+        if reads == 2:
+            if change == "remove":
+                result = [r for r in result if r["draft"]]
+            elif change == "replace":
+                result[-1]["id"] = 99
+            else:
+                result[0]["draft"] = False
+        return result
+
+    monkeypatch.setattr(gh, "releases", releases)
+    monkeypatch.setattr("container_release_history.time.sleep", delays.append)
+    with pytest.raises(ValueError, match="changed during retrieval"):
+        history.head()
+    assert reads == 2
+    assert delays == []
+    assert gh.entries[draft["id"]]["draft"] is True
+
+
+@pytest.mark.parametrize("backoff", [1, 2])
+@pytest.mark.parametrize("change", ["remove", "replace-old", "replace-new"])
+def test_head_retains_observed_identities_across_backoff(monkeypatch, backoff, change):
+    gh = FakeGitHub()
+    history = History(gh)
+    gh.create(TAG + "000000000001", SOURCE)
+    for number in range(2, backoff + 3):
+        append_reservation(
+            history,
+            f"{number}/reserve",
+            CANDIDATE | {"version": f"0.1.{number - 2}", "attemptId": str(number)},
+        )
+    for number in range(3, backoff + 3):
+        gh.entries[number]["draft"] = True
+    original = gh.releases
+    reads = 0
+    delays = []
+
+    def releases():
+        nonlocal reads
+        result = original()
+        reads += 1
+        if reads % 2 and reads <= backoff * 2:
+            gh.publish(2 + (reads + 1) // 2)
+        return result
+
+    def sleep(delay):
+        delays.append(delay)
+        if len(delays) != backoff:
+            return
+        if change == "remove":
+            del gh.entries[backoff + 2]
+        else:
+            replaced = 2 if change == "replace-old" else backoff + 2
+            gh.entries[99] = gh.entries.pop(replaced)
+            gh.entries[99]["id"] = 99
+
+    monkeypatch.setattr(gh, "releases", releases)
+    monkeypatch.setattr("container_release_history.time.sleep", sleep)
+    with pytest.raises(ValueError, match="changed during retrieval"):
+        history.head()
+    assert delays == [1, 2][:backoff]
+    assert reads == backoff * 2 + 1
+
+
+@pytest.mark.parametrize("defect", ["bytes", "ancestry", "tag", "mutable"])
+def test_head_revalidates_new_snapshot_after_concurrent_publication(monkeypatch, defect):
+    gh = FakeGitHub()
+    history = History(gh)
+    append_reservation(history)
+    newest = append_reservation(history, "124/reserve", CANDIDATE | {"profile": "graphviz"})
+    gh.entries[newest.release_id]["draft"] = True
+    if defect == "bytes":
+        gh.blobs[newest.release_id] += b"corruption"
+    elif defect == "ancestry":
+        document = copy.deepcopy(newest.document)
+        document.update(ancestors=[], previous=None)
+        gh.replace(newest.release_id, document)
+    elif defect == "tag":
+        original_tag = gh.tag_commit
+        monkeypatch.setattr(
+            gh, "tag_commit", lambda tag: "d" * 40 if tag.endswith("002") else original_tag(tag)
+        )
+    else:
+        gh.entries[newest.release_id]["immutable"] = False
+    original = gh.releases
+    reads = 0
+    delays = []
+
+    def releases():
+        nonlocal reads
+        result = original()
+        reads += 1
+        gh.entries[newest.release_id]["draft"] = False
+        return result
+
+    monkeypatch.setattr(gh, "releases", releases)
+    monkeypatch.setattr("container_release_history.time.sleep", delays.append)
+    messages = {
+        "bytes": "bytes differ",
+        "ancestry": "fork",
+        "tag": "tag identifies another source",
+        "mutable": "must be immutable",
+    }
+    with pytest.raises(ValueError, match=messages[defect]):
+        history.head()
+    assert reads == 3
+    assert delays == [1]
+
+
 def test_unfinished_upload_in_a_draft_does_not_block_a_new_writer():
     gh = FakeGitHub()
     draft = gh.create(TAG + "000000000001", SOURCE)
