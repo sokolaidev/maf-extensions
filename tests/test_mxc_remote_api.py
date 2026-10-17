@@ -388,6 +388,44 @@ def running(
             child.communicate(timeout=15)
 
 
+def test_ready_file_is_not_visible_until_port_is_complete(tmp_path, certificates, monkeypatch):
+    root = tmp_path / "runner"
+    observed = []
+    original_exists = Path.exists
+
+    def exists(path):
+        if (
+            path == root / "ready"
+            and (root / "publishing").is_file()
+            and not (root / "observed").is_file()
+        ):
+            observed.append(original_exists(path))
+            (root / "observed").touch()
+        return original_exists(path)
+
+    delayed = r"""
+from pathlib import Path
+import time
+write_text = Path.write_text
+def delayed_write(path, data, *args, **kwargs):
+    if path.name in {'ready', 'ready.pending'}:
+        write_text(path, '')
+        write_text(path.parent / 'publishing', '')
+        deadline = time.monotonic() + 10
+        while not (path.parent / 'observed').is_file():
+            if time.monotonic() > deadline:
+                raise TimeoutError('readiness observer did not run')
+            time.sleep(.01)
+    return write_text(path, data, *args, **kwargs)
+Path.write_text = delayed_write
+"""
+    monkeypatch.setattr(Path, "exists", exists)
+    monkeypatch.setattr(sys.modules[__name__], "SERVER", delayed + SERVER)
+    with running(root, certificates) as (_, address):
+        assert address[1] > 0
+    assert observed == [False]
+
+
 def client(certs, address, name="a", hostname="localhost"):
     context = api.client_context(certs / f"{name}.pem", certs / f"{name}.key", certs / "ca.pem")
     return api.Client(address, context, hostname)
