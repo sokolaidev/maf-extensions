@@ -1634,11 +1634,8 @@ def test_deleted_turn_requires_pinned_gateway_abort_projection():
 
 @pytest.mark.parametrize("method", ["DELETE", "GET", "POST"])
 @pytest.mark.parametrize("authenticated", [False, True])
-def test_observer_preserves_non_ascii_session_rejection(
-    tmp_path, monkeypatch, method, authenticated
-):
-    monkeypatch.syspath_prepend(str(FIXTURES.parents[1] / "samples/experimental/openclaw_bicep"))
-    workload_http = importlib.import_module("workload_http")
+def test_observer_preserves_non_ascii_session_rejection(tmp_path, method, authenticated):
+    workload_http = importlib.import_module("maf_sandbox_mcp.workload_http")
 
     service = SimpleNamespace(ready=True, poisoned=False, active=None)
     token = "a" * 64

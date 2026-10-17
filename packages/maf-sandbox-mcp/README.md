@@ -4,7 +4,7 @@
 
 > **Experimental.** The API may change without notice. Importing the package emits `MafSandboxMcpExperimentalWarning`.
 
-Experimental supervised MCP worker for closed-network Bicep validation. The installable distribution owns the reusable service (`workload_service`, `workload_http`) and the fixed Bicep/Docker composition (`server`). The reusable service modules import no concrete kind or backend. The composition uses SDK-bundled FastMCP (`mcp==1.28.1`), the existing MAF Bicep callable and Docker; it does not run a model or install the separate `fastmcp` distribution.
+Experimental supervised MCP worker for closed-network Bicep validation. The installable distribution owns the reusable service (`workload_service`, `workload_http`) and the fixed Bicep/Docker composition (`server`). The reusable service modules import no concrete kind or backend. The composition uses SDK-bundled FastMCP (`mcp==1.30.0`), the existing MAF Bicep callable and Docker; it does not run a model or install the separate `fastmcp` distribution.
 
 ## Install and start
 
@@ -50,7 +50,7 @@ Trusted composition explicitly admits container isolation and call scope, `Egres
 
 ## Compatibility and qualification
 
-The installed-worker qualification baseline is deliberately MAF core 1.20.0, sandbox 0.48.0, Bicep 0.22.2, Docker backend 0.27.0, MCP 1.28.1, Starlette 1.7.0 and Uvicorn 0.54.0. Capture the full resolved manifest for every qualification; declared ranges do not pin all transitives. The earlier source-only evidence used MAF 1.19.0 and different suite versions and is not evidence for this wheel. Python metadata permits 3.12–3.14; a recorded runtime execution establishes only its named interpreter/platform.
+The recorded installed-worker qualification baseline is MAF core 1.20.0, sandbox 0.48.0, Bicep 0.22.2, Docker backend 0.27.0, MCP 1.28.1, Starlette 1.7.0 and Uvicorn 0.54.0. That record does not qualify MCP 1.30.0; rerun affected installed-worker and Docker/OpenClaw acceptance before relying on the new SDK in those environments. Capture the full resolved manifest for every qualification; declared ranges do not pin all transitives. The earlier source-only evidence used MAF 1.19.0 and different suite versions and is not evidence for this wheel. Python metadata permits 3.12–3.14; a recorded runtime execution establishes only its named interpreter/platform.
 
 Private FastMCP session access and Uvicorn protocol hooks are deliberate pinned compatibility boundaries. MCP and Uvicorn version changes fail closed; changing them or the MAF projection, dependencies or image requires affected acceptance to be rerun. The [qualification record](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/research/openclaw-gateway-qualification.md) distinguishes installed artifact, deterministic Gateway fixture, real compiler and synthetic transport evidence. No actual-model, remote multi-tenant, all-platform, complete-crash or unattended-operation claim is made.
 

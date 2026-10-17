@@ -127,10 +127,10 @@ class Harness:
         return core.WorkloadService([a, b], [resource])
 
 
-@pytest.mark.parametrize("sdk_version", ["1.26.0", "1.28.0", "2.0.0"])
+@pytest.mark.parametrize("sdk_version", ["1.26.0", "1.28.0", "1.28.1", "1.29.1", "2.0.0"])
 def test_http_adapter_rejects_unqualified_sdk_versions(monkeypatch, sdk_version):
     monkeypatch.setattr(http, "version", lambda _: sdk_version)
-    with pytest.raises(RuntimeError, match=r"requires mcp==1\.28\.1"):
+    with pytest.raises(RuntimeError, match=r"requires mcp==1\.30\.0"):
         http.WorkloadHTTP(Harness().service(), TOKEN, 8765)
 
 

@@ -61,7 +61,7 @@ dev = [
     "opentelemetry-sdk>=1.44,<2",
     "cryptography>=50,<51",
     # Experimental MCP workload service and its transport tests.
-    "mcp==1.28.1",
+    "mcp==1.30.0",
     "uvicorn==0.54.0",
     "starlette==1.7.0",
     "anyio>=4.5,<5",
