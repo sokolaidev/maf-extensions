@@ -1,5 +1,7 @@
 # Terraform and OpenTofu validation images
 
+For the public `opentofu-random` profile, start with the [OpenTofu consumer guide](OPENTOFU.md). It uses strict dependency preparation and includes the verified local module bundle; the archive-only `random` builder profile below is a development fixture.
+
 > **To build, try, check or deploy an image, see [USAGE.md](USAGE.md).**
 
 For the planned public Terraform AVM catalogue image, see the [consumer guide](AVM.md).

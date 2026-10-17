@@ -37,10 +37,9 @@ The inventory must contain components and identify the exact built image. Lower-
 | `drawio` | [Editable Draw.io authoring with Python and Graphviz](../../images/drawio-sandbox/README.md) |
 | `drawio-export` | Draw.io Desktop export runtime |
 | `terraform-random` | Terraform with its random-provider profile |
-| `opentofu-random` | OpenTofu with its random-provider profile |
+| `opentofu-random` | [OpenTofu with its verified random-provider preparation and local module bundle](../../images/terraform-sandbox/OPENTOFU.md) |
 | `terraform-avm` | Terraform with the pinned AVM catalogue and provider mirror; [consumer guide](../../images/terraform-sandbox/AVM.md) |
 | `terraform-prepared` | Terraform prepared from `dependencies.terraform.json` |
-| `opentofu-prepared` | OpenTofu prepared from `dependencies.opentofu.json` |
 | `hyperlight` | Hyperlight runtime built from the checkout's wheels and lockfile |
 | `egress-proxy` | [Patched egress proxy and consumer guide](../../images/egress-proxy/README.md) |
 

@@ -95,6 +95,7 @@ PY
 FROM ${BASE_IMAGE}
 RUN --network=none python3 -I -c 'from pathlib import Path; assert not any(Path("/opt/maf-terraform/mirror").rglob("*")), "base mirror must be empty"'
 COPY --from=unpack /opt/maf-terraform/unpacked/ /opt/maf-terraform/mirror/
+COPY --from=prepared /modules/ /opt/maf-terraform/modules/
 COPY --from=prepared /registry/ /opt/maf-terraform/registry/
 COPY --from=prepared /receipt.json /opt/maf-terraform/dependencies.json
 RUN --network=none python3 -I - <<'PY'
