@@ -307,7 +307,10 @@ scratch = Policy(**config['scratch']) if config.get('scratch') else None
 coordinator = Coordinator(Path(config['root']), grants, sessions, enabled=True, boundary=boundary, scratch_policy=scratch)
 try:
     with Server(('127.0.0.1', 0), server_context(certs/'server.pem', certs/'server.key', certs/'ca.pem'), coordinator) as server:
-        Path(config['ready']).write_text(str(server.server_address[1]))
+        ready = Path(config['ready'])
+        pending = ready.with_suffix('.pending')
+        pending.write_text(str(server.server_address[1]))
+        pending.replace(ready)
         server.serve_forever(poll_interval=0.05)
 finally:
     coordinator.close()
@@ -385,6 +388,44 @@ def running(
             if child.poll() is None:
                 child.terminate()
             child.communicate(timeout=15)
+
+
+def test_ready_file_is_not_visible_until_port_is_complete(tmp_path, certificates, monkeypatch):
+    root = tmp_path / "runner"
+    observed = []
+    original_exists = Path.exists
+
+    def exists(path):
+        if (
+            path == root / "ready"
+            and (root / "publishing").is_file()
+            and not (root / "observed").is_file()
+        ):
+            observed.append(original_exists(path))
+            (root / "observed").touch()
+        return original_exists(path)
+
+    delayed = r"""
+from pathlib import Path
+import time
+write_text = Path.write_text
+def delayed_write(path, data, *args, **kwargs):
+    if path.name in {'ready', 'ready.pending'}:
+        write_text(path, '')
+        write_text(path.parent / 'publishing', '')
+        deadline = time.monotonic() + 10
+        while not (path.parent / 'observed').is_file():
+            if time.monotonic() > deadline:
+                raise TimeoutError('readiness observer did not run')
+            time.sleep(.01)
+    return write_text(path, data, *args, **kwargs)
+Path.write_text = delayed_write
+"""
+    monkeypatch.setattr(Path, "exists", exists)
+    monkeypatch.setattr(sys.modules[__name__], "SERVER", delayed + SERVER)
+    with running(root, certificates) as (_, address):
+        assert address[1] > 0
+    assert observed == [False]
 
 
 def client(certs, address, name="a", hostname="localhost"):
