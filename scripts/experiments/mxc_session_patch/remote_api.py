@@ -18,13 +18,13 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
 from . import remote_scratch
 from . import remote_transfer as transfer
 from .host_store import MAX_CHECKPOINT, MAX_FILES, Refused, _lock, _name, _relative
 from .private_root import check_file, prepare
-from .remote_authority import Authority, Owner, Resource
+from .remote_authority import Authority, Fence, Owner, Policy, Resource
 from .shared_store import Limits, SharedStore
 
 MAX_FRAME = 8 * 1024**2
@@ -137,6 +137,7 @@ class Coordinator:
         *,
         enabled: bool = False,
         scratch_policy: remote_scratch.Policy | None = None,
+        fencing_policy: Policy = Policy(),
         boundary: Callable[[str], None] = lambda _: None,
     ):
         if enabled is not True:
@@ -155,6 +156,7 @@ class Coordinator:
         }
         self.sessions = {k: Session(dict(v.profile), v.limits) for k, v in sessions.items()}
         self.scratch_policy = scratch_policy
+        self.fencing_policy = fencing_policy
         self.boundary = boundary
         self.stores: dict[str, tuple[Owner, SharedStore]] = {}
         prepare(root)
@@ -175,7 +177,28 @@ class Coordinator:
 
     def authority(self) -> Authority:
         """Open only the coordinator-local ownership journal."""
-        return Authority(self.root / "ownership", enabled=True, scratch_policy=self.scratch_policy)
+        return Authority(
+            self.root / "ownership",
+            enabled=True,
+            scratch_policy=self.scratch_policy,
+            policy=self.fencing_policy,
+        )
+
+    def fence(
+        self,
+        owner: Owner,
+        request_id: str,
+        verify: Callable[[Fence], bool],
+        *,
+        automatic: bool = False,
+    ) -> Fence:
+        """Fence on the service owner thread using a trusted deployment verifier, never worker input."""
+        if self.lock.closed:
+            raise Refused("coordinator is closed")
+        with self.authority() as authority:
+            request = authority.request_fence(owner, request_id, automatic=automatic)
+            authority.confirm_fence(request_id, verify)
+            return request
 
     def close(self) -> None:
         """Release local handles without refunding interrupted reservations."""
@@ -553,12 +576,23 @@ def _reply(connection: ssl.SSLSocket, deadline: float) -> dict:
     return response["value"]
 
 
+class Endpoint(Protocol):
+    """Authenticated dispatch shared by separate worker and controller listeners."""
+
+    @property
+    def grants(self) -> Mapping[str, object]: ...
+
+    def dispatch(
+        self, fingerprint: str, request: dict, connection: ssl.SSLSocket | None = None
+    ) -> dict: ...
+
+
 class Server(socketserver.TCPServer):
     """Single-request TLS connections; serialized, bounded experimental service."""
 
     allow_reuse_address = True
 
-    def __init__(self, address: tuple[str, int], context: ssl.SSLContext, coordinator: Coordinator):
+    def __init__(self, address: tuple[str, int], context: ssl.SSLContext, coordinator: Endpoint):
         if (
             context.verify_mode != ssl.CERT_REQUIRED
             or context.minimum_version < ssl.TLSVersion.TLSv1_2
