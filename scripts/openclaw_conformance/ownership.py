@@ -162,6 +162,11 @@ def verify(value: dict[str, Any]) -> None:
                 not any(e.get("event") == "admission_refused" for e in subset), "ordinary_admission"
             )
             continue
+        container = case.get("container")
+        require(
+            isinstance(container, str) and re.fullmatch(r"[0-9a-f]{64}", container),
+            "ownership_container_identity",
+        )
         active = b if name == "maf_idle_close" else a
         starts = [
             e for e in subset if e.get("event") == "binding_started" and e.get("session") == active
@@ -220,7 +225,7 @@ def verify(value: dict[str, Any]) -> None:
                 and admission.get("request") == digest(42)
                 and admission.get("active_session") == active
                 and admission.get("active_request") == start.get("request")
-                and admission.get("container") == case.get("container")
+                and admission.get("container") == container
                 and type(admission.get("owned_count")) is int
                 and admission["owned_count"] == 1
                 and admission.get("active_pending") is True
@@ -243,6 +248,8 @@ def verify(value: dict[str, Any]) -> None:
             if name in ("maf_active_close", "maf_idle_close"):
                 before = deletes[a] if name == "maf_active_close" else retirements[a]
                 require(_ordered(before, requests[0]), "close_admission_order")
+        if name == "equal_ids_repeated_cancel":
+            _cancel_probes(subset, admissions, a, b, terminal[0])
         if name == "maf_idle_close":
             require(
                 case.get("call_raised") is False
@@ -283,6 +290,49 @@ def verify(value: dict[str, Any]) -> None:
             )
         ),
         "ownership_event_session",
+    )
+
+
+def _cancel_probes(
+    events: list[dict[str, Any]],
+    admissions: list[dict[str, Any]],
+    active: str,
+    peer: str,
+    terminal: dict[str, Any],
+) -> None:
+    """Require peer isolation before cancellation and admission probes during repeated cleanup."""
+    probes = []
+    for admission in sorted(admissions, key=lambda e: e["time_ns"]):
+        request = next(
+            e
+            for e in events
+            if e.get("event") == "request" and e.get("exchange") == admission["exchange"]
+        )
+        probes.append([request, admission])
+    cancellations = {
+        sid: [
+            [request, _response(events, request, 202)]
+            for request in sorted(
+                (
+                    e
+                    for e in events
+                    if e.get("event") == "request"
+                    and e.get("method") == "notifications/cancelled"
+                    and e.get("session") == sid
+                ),
+                key=lambda e: e["time_ns"],
+            )
+        ]
+        for sid in (active, peer)
+    }
+    first, *repeats = cancellations[active]
+    sequence = probes[0] + cancellations[peer][0] + probes[1] + first
+    for cancellation, probe in zip(repeats, probes[2:], strict=True):
+        sequence += cancellation + probe
+    sequence.append(terminal)
+    require(
+        all(_ordered(left, right) for left, right in zip(sequence, sequence[1:])),
+        "cancel_probe_sequence",
     )
 
 

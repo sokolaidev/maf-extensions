@@ -110,6 +110,20 @@ def control_events(cases):
             )
             add(event="binding_started", session=active, request=request_id)
             for i in range(5 if name == "equal_ids_repeated_cancel" else 1):
+                for sid, index in (
+                    {1: [(b, 0)], 2: [(a, 0), (a, 1)], 3: [(a, 2)], 4: [(a, 3)]}.get(i, [])
+                    if name == "equal_ids_repeated_cancel"
+                    else []
+                ):
+                    cancellation = e.digest(sid + str(index))
+                    add(
+                        event="request",
+                        method="notifications/cancelled",
+                        session=sid,
+                        target=e.digest(42),
+                        exchange=cancellation,
+                    )
+                    add(event="response", session=sid, exchange=cancellation, status=202)
                 exchange = e.digest(name + str(i))
                 add(
                     event="request",
@@ -130,18 +144,6 @@ def control_events(cases):
                     owned_count=1,
                     active_pending=True,
                 )
-        if name == "equal_ids_repeated_cancel":
-            for sid, count in ((a, 4), (b, 1)):
-                for i in range(count):
-                    exchange = e.digest(sid + str(i))
-                    add(
-                        event="request",
-                        method="notifications/cancelled",
-                        session=sid,
-                        target=e.digest(42),
-                        exchange=exchange,
-                    )
-                    add(event="response", session=sid, exchange=exchange, status=202)
         if name in ("response_loss", "maf_idle_close"):
             add(
                 event="binding_result",
@@ -1841,4 +1843,120 @@ def test_retirement_events_cannot_belong_to_unrecognized_sessions(ownership_obse
     extra.update(session="0" * 64, exchange="orphan-exchange")
     obs["transport"].append(extra)
     with pytest.raises(e.Refused, match="ownership_event_session"):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("case", sorted(e.OWNERSHIP - {"maf_ordinary_close"}))
+@pytest.mark.parametrize("alias", [None, "", "a" * 63, "a" * 65, "g" * 64, 7])
+def test_active_case_requires_valid_container_alias(ownership_observations, case, alias):
+    obs = ownership_observations
+    summary = obs["cases"][case]
+    rows = [summary] + [
+        r
+        for r in obs["transport"]
+        if r["event"] == "admission_refused" and r["session"] == summary["session_b"]
+    ]
+    for row in rows:
+        if alias is None:
+            row.pop("container", None)
+        else:
+            row["container"] = alias
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "all_busy_first",
+        "b_after_a",
+        "probe_before_repeat",
+        "grouped_repeats",
+        "late_ack",
+        "missing_initial_probe",
+    ],
+)
+def test_repeated_cancellation_requires_interleaved_probes(ownership_observations, mutation):
+    obs = ownership_observations
+    case = obs["cases"]["equal_ids_repeated_cancel"]
+    events = [
+        r for r in obs["transport"] if r.get("session") in (case["session_a"], case["session_b"])
+    ]
+    admissions = sorted(
+        (r for r in events if r["event"] == "admission_refused"), key=lambda r: r["time_ns"]
+    )
+
+    def block(request):
+        return sorted(
+            (
+                r
+                for r in events
+                if r.get("exchange") == request["exchange"]
+                and r["event"] in ("request", "response", "admission_refused")
+            ),
+            key=lambda r: r["time_ns"],
+        )
+
+    busy = [block(r) for r in admissions]
+    cancels = {
+        side: [
+            block(r)
+            for r in sorted(
+                (
+                    r
+                    for r in events
+                    if r.get("method") == "notifications/cancelled" and r["session"] == case[side]
+                ),
+                key=lambda r: r["time_ns"],
+            )
+        ]
+        for side in ("session_a", "session_b")
+    }
+    a, b = cancels["session_a"], cancels["session_b"][0]
+    sequences = {
+        "all_busy_first": [*busy, b, *a],
+        "b_after_a": [busy[0], a[0], b, busy[1], a[1], busy[2], a[2], busy[3], a[3], busy[4]],
+        "probe_before_repeat": [
+            busy[0],
+            b,
+            busy[1],
+            a[0],
+            busy[2],
+            a[1],
+            a[2],
+            busy[3],
+            a[3],
+            busy[4],
+        ],
+        "grouped_repeats": [busy[0], b, busy[1], *a, *busy[2:]],
+        "late_ack": [
+            busy[0],
+            b[:1],
+            busy[1],
+            b[1:],
+            a[0],
+            a[1],
+            busy[2],
+            a[2],
+            busy[3],
+            a[3],
+            busy[4],
+        ],
+        "missing_initial_probe": [
+            b,
+            busy[0],
+            busy[1],
+            a[0],
+            a[1],
+            busy[2],
+            a[2],
+            busy[3],
+            a[3],
+            busy[4],
+        ],
+    }
+    rows = [r for group in sequences[mutation] for r in group]
+    for row, stamp in zip(rows, sorted(r["time_ns"] for r in rows), strict=True):
+        row["time_ns"] = stamp
+    with pytest.raises(e.Refused):
         importlib.import_module("openclaw_conformance.ownership").verify(obs)
