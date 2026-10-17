@@ -1156,4 +1156,17 @@ The `installed-bicep-windows-v4` contract supervises discovery and policy probes
 
 Every credited active binding must follow its matching transport request. A surviving result must follow the latest matching binding start and precede the unique successful response on that request's exchange. Request IDs may be reused after completed exchanges; the evaluator rejects stale, missing, ambiguous and mismatched exchanges. The process-tree regression publishes its child PID atomically before the parent can signal completion.
 
-A fresh installed campaign is required for this revised profile; historical v3 success does not qualify v4. The current validation record will be appended after independent evaluation and cleanup complete.
+Fresh candidate `2e02925fe204842f5809e9eaf9ac094ca0c8747d5a8e84cdfcecdbc1075a6c33` was prepared from frozen runner `749c60048cee19a48f9d2ca41a65d0c7d08c9b9c` with fingerprint `b4775bdffba41481e53245a46d30e4b485d47f14926bc073b8360d710d3e491d`. The inventory contains 43,868 files: 43,603 archive-verified files from 388 locked archives and 265 explicitly listed installer outputs. Published versions remain OpenClaw 2026.9.7, worker 0.1.0, core 0.50.0, Bicep 0.23.0, Docker backend 0.28.2, MAF 1.21.0 and MCP 1.28.1.
+
+Independent evaluation returned `qualified_for_profile` for campaign `6bdc5a6ece204ffc9cdbf36df99870ac` across all eight groups. The [candidate](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v4/candidate.json), [plan](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v4/plan.json), [evaluation](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v4/evaluation.json) and complete bounded observations are retained together. All 43 transport cases and 109 SDK retirements, five real ownership scenarios, six correlated Gateway turns across two sessions, prepared-module execution and both image-bound network controls passed. Postflight inventory matched the candidate; final cleanup found empty owner scopes, stopped processes, preserved then removed the sentinel, and required no emergency reclamation. No earlier campaign stage was reused.
+
+Active MAF close settled the service in 20.89 seconds and the caller in 240.18 seconds, with recorded error `ToolExecutionException` and code `408`; the peer completed valid work. This remains deterministic Windows/Docker evidence for one installed candidate. Real-model behavior, Linux, unattended owner loss (#1973), conditional native qualification (#1974), credential enforcement (#1952) and production acceptance remain outside this result. Additional tools remain deferred in #1639 and broader backend design remains #1642.
+
+The [separate v4 live diagnostics control](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v4/diagnostics-cleanup-control.json) began with an 8,388,609-byte setup log against an 8,388,608-byte limit. Cleanup reclaimed all four recorded resources, preserved the unrelated container and retained the diagnostics error and emergency-cleanup flag. The control verified final removal of its resources and unrelated container; it remains explicitly unqualified.
+
+Re-evaluate the retained v4 report without Docker or installed OpenClaw:
+
+```powershell
+$record = 'scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v4'
+uv run --no-project --python 3.13 python -m scripts.openclaw_conformance evaluate --bundle "$record/evidence" --plan "$record/plan.json" --manifest "$record/candidate.json"
+```
