@@ -74,6 +74,7 @@ from ._session import (
     SessionToolResultRecallMiddleware,
     make_session_recall_tool,
 )
+from ._tool_result import ResultTextRewriter
 from ._toolsummary import (
     DEFAULT_COVERAGE_SHARE,
     DEFAULT_FALLBACK_FRACTION,
@@ -152,6 +153,7 @@ __all__ = [
     "MediaTokenEstimator",
     "RecallGate",
     "RecordDecisions",
+    "ResultTextRewriter",
     "SessionCompactionProvider",
     "SessionCompactionRegistry",
     "SessionToolResultRecallMiddleware",

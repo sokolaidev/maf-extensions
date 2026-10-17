@@ -252,6 +252,36 @@ The following observations were reported in [#1876](https://github.com/sokolaide
 | GPT 6 Luna | Honoured the named tool choice in those probes. |
 | Tencent Hy3 | Honoured the pin in initial probes, but streamed reasoning at about 65k prompt tokens errored on two of three forced requests; unpinned requests passed eight of eight. |
 
+## Shortening labelled tool results
+
+Anchored strategies and recorded-row removal skip results with metadata or non-text items by default. Pass `rewrite_result_text` to opt in using a host policy. This example handles one text item, including a labelled item alongside media:
+
+```python
+from agent_framework import CharacterEstimatorTokenizer, Content
+from maf_compaction import AnchoredCompactionStrategy
+
+
+def rewrite_single_text(content: Content, text: str) -> bool:
+    items = [item for item in content.items or [] if item.type == "text"]
+    if len(items) != 1 or items[0].raw_representation is not None:
+        return False
+    items[0].text = text
+    return True
+
+
+strategy = AnchoredCompactionStrategy(
+    max_input_tokens=100_000,
+    tokenizer=CharacterEstimatorTokenizer(),
+    rewrite_result_text=rewrite_single_text,
+)
+```
+
+The synchronous hook receives a copy of the result and the proposed shortened text. Return `True` after rewriting its text items, or `False` to skip shortening; only `items` are adopted, and the library sets `result` to the shortened text. Their nonempty text values joined with newlines must equal that text, or the rewrite raises `ValueError`. Retain the supplied non-text objects in their original order; dropping, replacing or reordering them raises `ValueError`. The library reuses the original non-text objects, so media payloads, metadata and provider state remain intact and retain their configured media token estimates. Changes to the copy's outer fields are ignored.
+
+The host owns the meaning of text metadata. Keep each item's `additional_properties`, annotations and other fields, or merge them conservatively when replacing several text items with one stand-in. For security labels, that means the weakest integrity and highest confidentiality among all replaced items; the library imposes no label schema. A hook that supports provider `raw_representation` must keep it consistent with the new text. The example declines such items because it has no provider-specific rewrite rule. The copy includes raw state; an object that cannot be copied raises before that result is changed. Hook exceptions propagate as well.
+
+Hooks must be deterministic and have no external effects. Minimum-gain compaction evaluates them on copies during planning and may discard the entire plan. Rejected hooks leave the source result untouched; existing whole-group shedding and preservation rules still apply. The record strategy accepts the same hook for partial table-row removal and passes it to its default anchored fallback; configure an explicitly supplied fallback separately. Bare-text results use the built-in rewrite without calling the hook. Reload repair of older mismatched `result`/`items` remains limited to bare text; a newly rewritten labelled result already has both fields synchronized. Reconfigure the hook when rebuilding a session stack; it is not serialized into session state.
+
 ## When to use it
 
 Below the context window, not compacting is cheaper than any strategy here: the whole conversation stays cached. These strategies pay off once a conversation outgrows its window, where the framework's own strategies either lose the facts in the tool results or re-bill the prompt on every turn. The measurements behind that, and what each strategy does at the edges, are in the [compaction documentation](https://github.com/sokolaidev/maf-extensions/blob/main/docs/compaction/README.md).

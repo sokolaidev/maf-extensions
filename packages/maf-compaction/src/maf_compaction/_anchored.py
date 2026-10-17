@@ -67,7 +67,12 @@ from agent_framework._compaction import (
 from ._media import annotate_token_counts
 from ._preserve import any_preserved, is_preserved, removable_whole
 from ._summary_links import has_summary_links
-from ._tool_result import can_shorten_result, repair_compacted_items
+from ._tool_result import (
+    ResultTextRewriter,
+    can_shorten_result,
+    plan_result_items,
+    repair_compacted_items,
+)
 
 if TYPE_CHECKING:
     from agent_framework import TokenizerProtocol
@@ -201,6 +206,7 @@ class _Shortening:
 
     content: Content
     text: str
+    items: list[Content]
     saved_tokens: int
     message_index: int
 
@@ -233,6 +239,12 @@ class AnchoredCompactionStrategy:
             the ``n``-th getting an ``n``-th of it. Raising it keeps more of each result and
             saves less. See :meth:`_keep_tokens_for` for why the divisor is the result's own
             position and not the band's width.
+        rewrite_result_text: Optional synchronous hook for results with metadata or media.
+            Receives a deep copy and replacement text; change its text items and return True,
+            or return False to skip. Only items are adopted; result is synchronized here.
+            Preserve text metadata, merge labels conservatively, and retain non-text items
+            in order. Non-text items are reused from the source. Hooks must be deterministic
+            and have no external effects: a minimum-gain projection can be declined.
         collapse_assistant_text: Allow assistant narration in the middle band to be dropped
             when tool shedding is not enough. Last resort, because narration is often where
             a tool's values ended up after the model restated them.
@@ -248,6 +260,7 @@ class AnchoredCompactionStrategy:
         keep_tokens: int | None = None,
         band_share: float = DEFAULT_BAND_SHARE,
         collapse_assistant_text: bool = True,
+        rewrite_result_text: ResultTextRewriter | None = None,
     ) -> None:
         """Validate and store the configuration.
 
@@ -269,6 +282,7 @@ class AnchoredCompactionStrategy:
         self.keep_tokens = keep_tokens
         self.band_share = band_share
         self.collapse_assistant_text = collapse_assistant_text
+        self.rewrite_result_text = rewrite_result_text
 
     async def __call__(self, messages: list[Message]) -> bool:
         """Compact in place down to :attr:`max_input_tokens`, and report whether anything changed.
@@ -446,7 +460,9 @@ class AnchoredCompactionStrategy:
                 if is_preserved(message):
                     continue
                 for content in message.contents:
-                    if content.type != "function_result" or not can_shorten_result(content):
+                    if content.type != "function_result" or (
+                        self.rewrite_result_text is None and not can_shorten_result(content)
+                    ):
                         continue
                     text = (
                         content.result if isinstance(content.result, str) else str(content.result)
@@ -454,12 +470,19 @@ class AnchoredCompactionStrategy:
                     shortened = self._shorten(text, budget)
                     if shortened == text:
                         continue
+                    items = plan_result_items(content, shortened, self.rewrite_result_text)
+                    if items is None:
+                        continue
                     saved = self.tokenizer.count_tokens(text) - self.tokenizer.count_tokens(
                         shortened
                     )
                     plan.append(
                         _Shortening(
-                            content=content, text=shortened, saved_tokens=saved, message_index=index
+                            content=content,
+                            text=shortened,
+                            items=items,
+                            saved_tokens=saved,
+                            message_index=index,
                         )
                     )
         return plan
@@ -477,7 +500,7 @@ class AnchoredCompactionStrategy:
         for item in plan:
             item.content.result = item.text
             # Providers may read items instead of the compatibility result field.
-            item.content.items = [Content.from_text(item.text)]
+            item.content.items = item.items
         return bool(plan)
 
     def _keep_tokens_for(self, band_position: int) -> int:
@@ -804,6 +827,7 @@ class MinimumGainAnchoredCompactionStrategy(AnchoredCompactionStrategy):
         keep_tokens: int | None = None,
         band_share: float = DEFAULT_BAND_SHARE,
         collapse_assistant_text: bool = True,
+        rewrite_result_text: ResultTextRewriter | None = None,
         min_gain_fraction: float = DEFAULT_MIN_GAIN_FRACTION,
     ) -> None:
         """Validate and store the configuration.
@@ -821,6 +845,7 @@ class MinimumGainAnchoredCompactionStrategy(AnchoredCompactionStrategy):
             keep_tokens=keep_tokens,
             band_share=band_share,
             collapse_assistant_text=collapse_assistant_text,
+            rewrite_result_text=rewrite_result_text,
         )
         if not 0.0 <= min_gain_fraction < 1.0:
             raise ValueError("min_gain_fraction must be in [0.0, 1.0).")
