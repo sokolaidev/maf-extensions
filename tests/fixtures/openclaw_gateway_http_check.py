@@ -47,12 +47,15 @@ def projected_result(
     *,
     loads: Callable[[str], Any] = json.loads,
 ) -> dict[str, Any]:
-    matching = [
-        record for record in evidence if record.get("turn") == turn and "tool_result" in record
-    ]
-    require(len(matching) == 1, "Expected exactly one provider tool result for this turn")
-    record = matching[0]
-    require(record.get("scenario") == case, "Provider result belongs to another scenario")
+    observed = [r for r in evidence if r.get("turn") == turn]
+    require(
+        len(observed) == 2
+        and all(r.get("scenario") == case for r in observed)
+        and "tool_result" not in observed[0]
+        and "tool_result" in observed[1],
+        "Wrong provider request/result order or scenario",
+    )
+    record = observed[1]
     text = record["tool_result"]
     return loads(text[text.index("{") : text.rindex("}") + 1])
 
@@ -72,6 +75,14 @@ def verify_outcome(
             "Unauthorized tool was not refused",
         )
         return {"rejected": True}
+    tool = projected.get("tool")
+    require(
+        isinstance(tool, dict)
+        and tool.get("id") == "mcp:bicep:bicep__bicep_validate"
+        and tool.get("name") == "bicep__bicep_validate"
+        and tool.get("source") == "mcp",
+        "Gateway projected the wrong tool identity",
+    )
     require(projected.get("status") != "error", "Gateway returned an error projection")
     result = projected.get("result")
     require(isinstance(result, dict), "Gateway result must be an object")
@@ -79,6 +90,10 @@ def verify_outcome(
     details = result.get("details")
     require(isinstance(details, dict), "Gateway result details must be an object")
     require(details.get("status") != "error", "Gateway returned error details")
+    require(
+        details.get("mcpServer") == "bicep" and details.get("mcpTool") == "bicep_validate",
+        "Gateway projected the wrong MCP route",
+    )
     content = result.get("content")
     require(isinstance(content, list), "Gateway content must be a list")
     require(len(content) == 1, "Gateway duplicated the projected result")
@@ -101,6 +116,15 @@ def verify_outcome(
     except (TypeError, ValueError, RecursionError) as exc:
         raise RuntimeError("Gateway text contains malformed JSON") from exc
     require(same, "Gateway text contradicts structuredContent")
+    return verify_binding_result(structured, case, config_digest, image) | {
+        "projected_content_items": 1
+    }
+
+
+def verify_binding_result(
+    structured: dict[str, Any], case: str, config_digest: str, image: str
+) -> dict[str, Any]:
+    """Validate the Bicep outcome independently of its Gateway envelope."""
     require(structured["cleanup"] == "confirmed", "Cleanup was not confirmed")
     require(structured["completed"] is (case != "incomplete"), "Wrong completion state")
     require(structured["verdict"] == (None if case == "incomplete" else case), "Wrong verdict")
@@ -125,7 +149,7 @@ def verify_outcome(
             "image",
             "config_sha256",
         )
-    } | {"projected_content_items": 1}
+    }
 
 
 def verify_busy(projected: dict[str, Any]) -> None:

@@ -379,6 +379,11 @@ def observations(m):
                         **observation,
                         "tool_result": json.dumps(
                             {
+                                "tool": {
+                                    "id": "mcp:bicep:bicep__bicep_validate",
+                                    "name": "bicep__bicep_validate",
+                                    "source": "mcp",
+                                },
                                 "result": {
                                     "content": [
                                         {
@@ -386,8 +391,12 @@ def observations(m):
                                             "text": "structuredContent:\n" + json.dumps(row),
                                         }
                                     ],
-                                    "details": {"structuredContent": row.copy()},
-                                }
+                                    "details": {
+                                        "mcpServer": "bicep",
+                                        "mcpTool": "bicep_validate",
+                                        "structuredContent": row.copy(),
+                                    },
+                                },
                             }
                         ),
                     },
@@ -1960,3 +1969,64 @@ def test_repeated_cancellation_requires_interleaved_probes(ownership_observation
         row["time_ns"] = stamp
     with pytest.raises(e.Refused):
         importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.fixture(params=["synthetic", "retained"])
+def gateway_observations(request):
+    if request.param == "synthetic":
+        return observations(manifest())["gateway"], manifest()
+    record = ROOT / "scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v4"
+    return e.read(record / "evidence/gateway.json")["observations"], e.read(
+        record / "candidate.json"
+    )
+
+
+@pytest.mark.parametrize("mutation", ["all", "one_turn"])
+def test_gateway_requires_provider_request_before_result(gateway_observations, mutation):
+    obs, m = gateway_observations
+    rows = obs["provider_observations"]
+    if mutation == "all":
+        rows.reverse()
+    else:
+        turn = rows[0]["turn"]
+        indexes = [i for i, row in enumerate(rows) if row["turn"] == turn]
+        a, b = indexes
+        rows[a], rows[b] = rows[b], rows[a]
+    with pytest.raises((e.Refused, RuntimeError)):
+        importlib.import_module("openclaw_conformance.gateway").verify(obs, m)
+
+
+def test_gateway_allows_independent_turn_interleaving(gateway_observations):
+    obs, m = gateway_observations
+    rows = obs["provider_observations"]
+    obs["provider_observations"] = [r for r in rows if "tool_result" not in r] + [
+        r for r in rows if "tool_result" in r
+    ]
+    importlib.import_module("openclaw_conformance.gateway").verify(obs, m)
+
+
+@pytest.mark.parametrize("turn_index", range(6))
+@pytest.mark.parametrize("field", ["tool", "id", "name", "source", "mcpServer", "mcpTool"])
+@pytest.mark.parametrize("mutation", ["missing", "substituted"])
+def test_gateway_requires_pinned_routing_identity(
+    gateway_observations, turn_index, field, mutation
+):
+    obs, m = gateway_observations
+    row = [r for r in obs["provider_observations"] if "tool_result" in r][turn_index]
+    text = row["tool_result"]
+    start, end = text.index("{"), text.rindex("}") + 1
+    value = json.loads(text[start:end])
+    target = (
+        value
+        if field == "tool"
+        else value["tool"]
+        if field in ("id", "name", "source")
+        else value["result"]["details"]
+    )
+    if mutation == "missing":
+        del target[field]
+    else:
+        target[field] = "unrelated"
+    row["tool_result"] = text[:start] + json.dumps(value) + text[end:]
+    with pytest.raises(RuntimeError):
+        importlib.import_module("openclaw_conformance.gateway").verify(obs, m)

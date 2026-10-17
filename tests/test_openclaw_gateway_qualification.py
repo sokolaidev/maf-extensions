@@ -38,9 +38,16 @@ observer = load("openclaw_http_observer")
 def projected(case="valid"):
     canonical = json.dumps([["main.bicep", provider.SOURCES[case]]], separators=(",", ":")).encode()
     value = {
+        "tool": {
+            "id": "mcp:bicep:bicep__bicep_validate",
+            "name": "bicep__bicep_validate",
+            "source": "mcp",
+        },
         "result": {
             "content": [{"type": "text", "text": "result"}],
             "details": {
+                "mcpServer": "bicep",
+                "mcpTool": "bicep_validate",
                 "structuredContent": {
                     "completed": case != "incomplete",
                     "verdict": None if case == "incomplete" else case,
@@ -49,9 +56,9 @@ def projected(case="valid"):
                     "source_sha256": hashlib.sha256(canonical).hexdigest(),
                     "config_sha256": "config",
                     "image": "image",
-                }
+                },
             },
-        }
+        },
     }
 
     value["result"]["content"][0]["text"] = "structuredContent:\n" + json.dumps(
@@ -144,8 +151,14 @@ def test_results_are_correlated_to_one_turn_and_scenario():
         "tool_result": "untrusted wrapper\n" + json.dumps(projected()) + "\nend",
     }
     stale = dict(record, turn="stale")
-    assert checker.projected_result([stale, record], "current", "valid") == projected()
-    for evidence, case in [([stale], "valid"), ([record, record], "valid"), ([record], "invalid")]:
+    request = {"turn": "current", "scenario": "valid"}
+    assert checker.projected_result([stale, request, record], "current", "valid") == projected()
+    for evidence, case in [
+        ([stale], "valid"),
+        ([request, record, record], "valid"),
+        ([record, request], "valid"),
+        ([request, record], "invalid"),
+    ]:
         with pytest.raises(RuntimeError):
             checker.projected_result(evidence, "current", case)
 

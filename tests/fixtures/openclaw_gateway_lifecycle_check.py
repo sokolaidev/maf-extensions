@@ -28,6 +28,7 @@ from openclaw_gateway_http_check import (
     projected_result,
     records,
     require,
+    verify_binding_result,
     verify_busy,
     verify_dispatch_count,
     verify_environment,
@@ -322,19 +323,7 @@ def verify_completed_cleanup(
         "Completed cleanup evidence has wrong identity or ordering",
     )
     completed, fault, response, settled = selected[2:]
-    verify_outcome(
-        {
-            "result": {
-                "content": [
-                    {"type": "text", "text": "structuredContent:\n" + json.dumps(completed)}
-                ],
-                "details": {"structuredContent": completed},
-            }
-        },
-        "valid",
-        config_digest,
-        image,
-    )
+    verify_binding_result(completed, "valid", config_digest, image)
     require(
         fault.get("resource") == "bicep-docker"
         and fault.get("owner_empty") is True
