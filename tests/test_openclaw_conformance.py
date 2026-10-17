@@ -1091,3 +1091,11 @@ def test_finalize_accounts_for_the_larger_qualified_summary(bundle, monkeypatch)
     with pytest.raises(e.Refused, match="bundle_limit"):
         e.finalize(root, expected, m)
     assert e.read(root / "summary.json")["outcome"] == "unqualified"
+
+
+def test_retained_reviewed_v3_campaign_evaluates_offline():
+    record = ROOT / "scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v3"
+    result = e.evaluate(
+        record / "evidence", e.read(record / "plan.json"), e.read(record / "candidate.json")
+    )
+    assert result == e.read(record / "evaluation.json")

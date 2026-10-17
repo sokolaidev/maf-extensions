@@ -1091,7 +1091,7 @@ Active MAF closure settled the service in 20.53 seconds, while the pending calle
 
 The [development-attempt metadata](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows/development-attempts.json) retains two separate failed campaign summaries: an evaluator that incorrectly required response-loss compilation to complete, and a superseded runner rejected when its fingerprint changed. Their full private evidence directories remain separate. The accepted campaign used a fresh installation and fresh output directory after the corrections; it does not combine successful stages from those attempts.
 
-The historical bundle remains inspectable, but re-evaluation requires its recorded runner revision. It does not satisfy the current v2 contract.
+The historical bundle remains inspectable, but re-evaluation requires its recorded runner revision. It does not satisfy the current v3 contract.
 
 The [operator guide](../openclaw.md#installed-bicep-conformance-runner) describes fresh preparation and execution. Expected inputs must be selected independently and trusted: hashes establish byte correlation, not the truth of a forged observation. The evaluator fixes required groups and case identities and refuses missing, duplicated, transplanted, malformed, narrowed or failed evidence; offline adversarial tests also cover boolean count substitutions, late import effects, changed installed bytes and all-denied network controls. PR CI exercises these offline checks, not the opt-in Docker/Gateway campaign.
 
@@ -1099,6 +1099,8 @@ This profile is finite, supervised Windows/Docker deterministic evidence. Proces
 
 
 ## Reviewed v2 conformance campaign (2026-10-16)
+
+**Historical v2 evidence, superseded by the v3 contract below.** The next review identified missing retained network image identity, unbound Gateway session/turn records, duplicate exchange counting, nonfinite float parsing, premature summary success and preparation/cleanup output-limit gaps. These records remain unchanged; the current evaluator refuses the v2 profile.
 
 The reviewed `installed-bicep-windows-v2` contract requires archive-backed dependency and native assets plus a complete preflight/postflight inventory. Each ownership survivor identifies the fixed simple source; each of six Gateway outcomes retains its image, configuration and source digest; prepared-module qualification requires the fixed AVM source digest shared with the live probe. Ownership checks correlate session/request IDs, accepted cancellation responses, binding cancellation, busy admission, DELETE retirement and survivor ordering. Idle close must preserve the original peer call without an exception.
 
@@ -1114,11 +1116,33 @@ Active MAF close settled the service in 19.84 seconds and the caller in 240.02 s
 
 The [separate live interruption control](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows-v2/interruption-control.json) killed a supervised child after resource creation and injected a sentinel-observation failure. All four recorded controls were reclaimed while an unrelated container survived; the observation error and emergency-cleanup flag remained, so this control cannot qualify as a successful campaign. The [development-attempt metadata](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows-v2/development-attempts.json) retains the refused installer-layout checks, a superseded campaign rejected by its runner fingerprint, and a campaign refused after its isolated supervisor added startup bytecode. Full private diagnostics remain separate, and no earlier stage is reused in the accepted campaign.
 
-Re-evaluate the retained v2 report without Docker or installed OpenClaw:
+Historical v2 evaluation requires its recorded runner revision. The following offline command applies only at that revision; the current evaluator refuses v2:
 
 ```powershell
 $record = 'scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows-v2'
 uv run --no-project --python 3.13 python -m scripts.openclaw_conformance evaluate --bundle "$record/evidence" --plan "$record/plan.json" --manifest "$record/candidate.json"
 ```
 
-This qualifies the selected supervised Windows/Docker candidate with a deterministic provider. Unattended parent/owner loss remains #1973, native qualification remains conditional in #1974, credential enforcement remains blocked in #1952, additional tools remain deferred in #1639, and broader backend design remains #1642.
+That historical campaign qualified its supervised Windows/Docker candidate under v2 with a deterministic provider. Unattended parent/owner loss remains #1973, native qualification remains conditional in #1974, credential enforcement remains blocked in #1952, additional tools remain deferred in #1639, and broader backend design remains #1642.
+
+
+## Reviewed v3 conformance campaign (2026-10-17)
+
+The `installed-bicep-windows-v3` contract retains the inspected candidate image for both network controls. Each of six Gateway outcomes carries a distinct turn and its session, linked to the outgoing request and both original provider observations; the evaluator reconstructs the result from the provider record. Cancellation requests and admission observations must identify distinct exchanges. The shared JSON reader refuses overflow numbers as well as literal nonfinite values, including in otherwise unused fields.
+
+Preparation counts stdout and stderr while the owned process tree runs. Overflow or deadline stops that tree; a normal parent exit also reclaims remaining descendants. Cleanup uses independently bounded command diagnostics, so an exhausted setup log cannot hide a successful Docker observation or prevent removal. The original diagnostics failure remains recorded. A saved summary stays unqualified until complete evaluation succeeds, including the aggregate byte budget for the final success summary.
+
+The [separate live diagnostics control](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v3/diagnostics-cleanup-control.json) began with an 8,388,609-byte setup log against the 8,388,608-byte limit. Cleanup reclaimed all four recorded Docker resources, preserved an unrelated container and left the oversized log unchanged. The retained `setup_log_limit` error and emergency-cleanup flag keep that control unqualified. Offline regressions also exercise noisy stdout/stderr, deadlines and descendant reclamation while preserving an unrelated process.
+
+Fresh candidate `0c58788bb3e455a5f668e1a96e8fafe5f914d81e790b83b0808e8607db1ba769` was prepared from frozen runner `e96c6878d80c0c3ffe3c10feeeb0dc2588340efd` with fingerprint `6a30c1954db6578447ca512e99e09a8a92a904e8ca9ac7a72f039a2a85a03a81`. The inventory contains 43,862 files, including 43,597 archive-verified files from 388 locked archives and 265 explicitly listed installer outputs. Published versions remain OpenClaw 2026.9.7, worker 0.1.0, core 0.50.0, Bicep 0.23.0, Docker backend 0.28.2, MAF 1.21.0 and MCP 1.28.1.
+
+Independent evaluation returned `qualified_for_profile` for campaign `dd75630a7a8f4a6b8b04ea06b2953a4b` across all eight groups. The [candidate](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v3/candidate.json), [plan](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v3/plan.json), [evaluation](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v3/evaluation.json) and complete bounded observations are retained together. All 43 transport cases and 109 SDK retirements, five real ownership scenarios, six correlated Gateway turns across two sessions, prepared-module execution and both image-bound network controls passed. Postflight inventory matched the original candidate; final cleanup found empty owner scopes, stopped processes, preserved then removed the sentinel, and required no emergency reclamation. No earlier campaign stage was reused.
+
+Active MAF close settled the service in 20.50 seconds and the caller in 240.02 seconds, with error code 408; the peer completed valid work. This remains deterministic Windows/Docker evidence for one installed candidate. Real-model behavior, Linux, unattended owner loss (#1973), conditional native qualification (#1974), credential enforcement (#1952) and production acceptance remain outside this result. Additional tools remain deferred in #1639 and broader backend design remains #1642.
+
+Re-evaluate the retained v3 report without Docker or installed OpenClaw:
+
+```powershell
+$record = 'scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v3'
+uv run --no-project --python 3.13 python -m scripts.openclaw_conformance evaluate --bundle "$record/evidence" --plan "$record/plan.json" --manifest "$record/candidate.json"
+```
