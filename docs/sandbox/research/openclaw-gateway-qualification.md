@@ -1172,3 +1172,5 @@ Re-evaluate the retained v4 report without Docker or installed OpenClaw:
 $record = 'scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v4'
 uv run --no-project --python 3.13 python -m scripts.openclaw_conformance evaluate --bundle "$record/evidence" --plan "$record/plan.json" --manifest "$record/candidate.json"
 ```
+
+The shared Gateway checker rejects error-marked envelopes, MCP results and details before normalizing a successful workload outcome, and requires exactly one text content item. Synthetic and retained-observation mutations cover each error signal independently. The command supervisor reclaims its owned descendants as soon as the parent exits, then drains its bounded pipes; a standard-library process control verifies successful exit with inherited pipes, captured output and survival of an unrelated process. These checks strengthen offline validation and process supervision without changing the recorded v4 campaign.

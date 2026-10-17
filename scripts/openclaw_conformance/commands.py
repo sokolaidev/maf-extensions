@@ -105,7 +105,7 @@ def capture(
         for reader in readers:
             reader.start()
         end = time.monotonic() + timeout
-        while process.poll() is None or any(reader.is_alive() for reader in readers):
+        while process.poll() is None:
             if failure:
                 break
             if time.monotonic() >= end:

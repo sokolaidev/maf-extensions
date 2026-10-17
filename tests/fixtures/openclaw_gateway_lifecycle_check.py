@@ -323,7 +323,12 @@ def verify_completed_cleanup(
     )
     completed, fault, response, settled = selected[2:]
     verify_outcome(
-        {"result": {"content": [{}], "details": {"structuredContent": completed}}},
+        {
+            "result": {
+                "content": [{"type": "text", "text": "result"}],
+                "details": {"structuredContent": completed},
+            }
+        },
         "valid",
         config_digest,
         image,

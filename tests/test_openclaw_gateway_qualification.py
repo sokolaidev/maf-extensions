@@ -87,6 +87,51 @@ def test_check_rejects_duplicate_projection():
         checker.verify_outcome(result, "valid", "config", "image")
 
 
+@pytest.mark.parametrize("case", ["valid", "invalid", "incomplete"])
+@pytest.mark.parametrize(
+    "content",
+    [
+        "x",
+        {"x": 1},
+        [],
+        [None],
+        [{}],
+        [{"type": "image", "text": "x"}],
+        [{"type": "text"}],
+        [{"type": "text", "text": 1}],
+    ],
+)
+def test_check_rejects_malformed_projection(case, content):
+    value = projected(case)
+    value["result"]["content"] = content
+    with pytest.raises(RuntimeError):
+        checker.verify_outcome(value, case, "config", "image")
+
+
+@pytest.mark.parametrize("case", ["valid", "invalid", "incomplete"])
+@pytest.mark.parametrize(
+    "level,field,value",
+    [
+        ("envelope", "status", "error"),
+        ("result", "isError", True),
+        ("result", "isError", "false"),
+        ("details", "status", "error"),
+    ],
+)
+def test_check_rejects_error_projection(case, level, field, value):
+    result = projected(case)
+    target = (
+        result
+        if level == "envelope"
+        else result["result"]
+        if level == "result"
+        else result["result"]["details"]
+    )
+    target[field] = value
+    with pytest.raises(RuntimeError):
+        checker.verify_outcome(result, case, "config", "image")
+
+
 def test_results_are_correlated_to_one_turn_and_scenario():
     record = {
         "turn": "current",

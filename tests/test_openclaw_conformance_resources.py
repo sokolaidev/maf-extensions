@@ -176,7 +176,7 @@ def test_cleanup_commands_work_after_setup_diagnostics_overflow(tmp_path, monkey
     assert (tmp_path / "setup.log").read_bytes() == b"x" * 33
 
 
-@pytest.mark.parametrize("mode", ["stdout", "stderr", "timeout", "exit"])
+@pytest.mark.parametrize("mode", ["stdout", "stderr", "timeout", "exit", "inherited_exit"])
 def test_setup_stops_descendants_and_preserves_unrelated_process(tmp_path, monkeypatch, mode):
     import subprocess
     import time
@@ -193,19 +193,26 @@ def test_setup_stops_descendants_and_preserves_unrelated_process(tmp_path, monke
         if mode in {"stdout", "stderr"}
         else "time.sleep(120)"
         if mode == "timeout"
-        else "pass"
+        else "print('completed'); sys.stderr.write('diagnostic\\n'); sys.stderr.flush()"
+    )
+    streams = (
+        "" if mode == "inherited_exit" else ", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL"
     )
     code = (
         "import subprocess,sys,time; from pathlib import Path; "
-        f"subprocess.Popen([sys.executable,'-I','-B','-c',{child!r}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+        f"subprocess.Popen([sys.executable,'-I','-B','-c',{child!r}]{streams}); "
         f"p=Path({str(pidfile)!r}); "
         "exec('while not p.exists(): time.sleep(.01)'); " + action
     )
     sentinel = subprocess.Popen([sys.executable, "-I", "-B", "-c", "import time; time.sleep(120)"])
     descendant = None
     try:
-        if mode == "exit":
-            assert install.command([sys.executable, "-I", "-B", "-c", code], tmp_path, 10) == ""
+        if mode in {"exit", "inherited_exit"}:
+            assert (
+                install.command([sys.executable, "-I", "-B", "-c", code], tmp_path, 10)
+                == "completed"
+            )
+            assert "diagnostic" in (tmp_path / "setup.log").read_text()
         else:
             reason = "setup_command_timeout" if mode == "timeout" else "setup_(output|log)_limit"
             with pytest.raises(runner.Refused, match=reason):

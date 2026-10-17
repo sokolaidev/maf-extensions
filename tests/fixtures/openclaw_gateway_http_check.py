@@ -66,9 +66,24 @@ def verify_outcome(
             "Unauthorized tool was not refused",
         )
         return {"rejected": True}
-    result = projected["result"]
-    structured = result["details"]["structuredContent"]
-    require(len(result["content"]) == 1, "Gateway duplicated the projected result")
+    require(projected.get("status") != "error", "Gateway returned an error projection")
+    result = projected.get("result")
+    require(isinstance(result, dict), "Gateway result must be an object")
+    require(result.get("isError", False) is False, "Gateway returned a tool error")
+    details = result.get("details")
+    require(isinstance(details, dict), "Gateway result details must be an object")
+    require(details.get("status") != "error", "Gateway returned error details")
+    content = result.get("content")
+    require(isinstance(content, list), "Gateway content must be a list")
+    require(len(content) == 1, "Gateway duplicated the projected result")
+    require(
+        isinstance(content[0], dict)
+        and content[0].get("type") == "text"
+        and isinstance(content[0].get("text"), str),
+        "Gateway must project one text item",
+    )
+    structured = details.get("structuredContent")
+    require(isinstance(structured, dict), "Gateway structured content must be an object")
     require(structured["cleanup"] == "confirmed", "Cleanup was not confirmed")
     require(structured["completed"] is (case != "incomplete"), "Wrong completion state")
     require(structured["verdict"] == (None if case == "incomplete" else case), "Wrong verdict")

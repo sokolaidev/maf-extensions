@@ -374,7 +374,7 @@ def observations(m):
                         "tool_result": json.dumps(
                             {
                                 "result": {
-                                    "content": [{}],
+                                    "content": [{"type": "text", "text": "result"}],
                                     "details": {"structuredContent": row.copy()},
                                 }
                             }
@@ -1106,6 +1106,52 @@ def test_gateway_correlates_retained_provider_records(bundle, mutation):
     change_artifact(bundle, "gateway", mutate)
     with pytest.raises(e.Refused):
         e.evaluate(*bundle)
+
+
+@pytest.mark.parametrize("mutation", ["content", "envelope_error", "result_error", "details_error"])
+def test_gateway_refuses_malformed_or_error_projection(bundle, mutation):
+    def mutate(record):
+        row = next(r for r in record["observations"]["provider_observations"] if "tool_result" in r)
+        value = json.loads(row["tool_result"])
+        if mutation == "content":
+            value["result"]["content"] = "x"
+        elif mutation == "envelope_error":
+            value["status"] = "error"
+        elif mutation == "result_error":
+            value["result"]["isError"] = True
+        else:
+            value["result"]["details"]["status"] = "error"
+        row["tool_result"] = json.dumps(value)
+
+    change_artifact(bundle, "gateway", mutate)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
+@pytest.mark.parametrize("case", ["valid", "invalid", "incomplete"])
+@pytest.mark.parametrize("mutation", ["content", "envelope_error", "result_error", "details_error"])
+def test_retained_gateway_rejects_malformed_or_error_projection(case, mutation):
+    record = ROOT / "scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v4"
+    obs = e.read(record / "evidence/gateway.json")["observations"]
+    row = next(
+        r for r in obs["provider_observations"] if "tool_result" in r and r["scenario"] == case
+    )
+    text = row["tool_result"]
+    start, end = text.index("{"), text.rindex("}") + 1
+    value = json.loads(text[start:end])
+    if mutation == "content":
+        value["result"]["content"] = "x"
+    elif mutation == "envelope_error":
+        value["status"] = "error"
+    elif mutation == "result_error":
+        value["result"]["isError"] = True
+    else:
+        value["result"]["details"]["status"] = "error"
+    row["tool_result"] = text[:start] + json.dumps(value) + text[end:]
+    with pytest.raises(RuntimeError):
+        importlib.import_module("openclaw_conformance.gateway").verify(
+            obs, e.read(record / "candidate.json")
+        )
 
 
 def test_finalize_publishes_only_a_fully_evaluated_bundle(bundle):
