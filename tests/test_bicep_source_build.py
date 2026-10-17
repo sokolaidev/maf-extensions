@@ -226,8 +226,12 @@ def test_release_and_security_workflows_offer_both_routes():
     for name in ("container-image-release", "image-security"):
         workflow = yaml.safe_load((ROOT / f".github/workflows/{name}.yml").read_text())
         options = workflow[True]["workflow_dispatch"]["inputs"]["bicep_route"]
-        assert options["options"] == ["upstream", "source"]
-        assert options["default"] == "upstream"
+        if name == "image-security":
+            assert options["options"] == ["policy", "upstream", "source"]
+            assert options["default"] == "policy"
+        else:
+            assert options["options"] == ["upstream", "source"]
+            assert options["default"] == "upstream"
     release = yaml.safe_load((ROOT / ".github/workflows/container-image-release.yml").read_text())
     step = next(
         step for step in release["jobs"]["prepare"]["steps"] if step.get("id") == "candidate"
