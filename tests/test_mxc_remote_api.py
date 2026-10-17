@@ -408,7 +408,7 @@ from pathlib import Path
 import time
 write_text = Path.write_text
 def delayed_write(path, data, *args, **kwargs):
-    if path.name in {'ready', 'ready.pending'}:
+    if path.name == 'ready' or path.name.startswith('ready.'):
         write_text(path, '')
         write_text(path.parent / 'publishing', '')
         deadline = time.monotonic() + 10
