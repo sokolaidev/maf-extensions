@@ -33,9 +33,7 @@ def built(tmp_path, engine):
         (root / name).write_bytes(content)
     record = {
         "source": plan["source_build"],
-        "go_version": "go version "
-        + plan.get("source_build", {}).get("go_version", "go1.27.1")
-        + " linux/amd64",
+        "go_version": "go version " + plan["source_build"]["go_version"] + " linux/amd64",
         "files": {name: hashlib.sha256(content).hexdigest() for name, content in files.items()},
     }
     (root / "build.json").write_text(json.dumps(record))
@@ -101,9 +99,7 @@ def test_installed_binary_retains_source_and_module_provenance(
     assert (output / "licenses/LICENSE").read_bytes() == b"license"
 
 
-def test_terraform_install_refuses_an_unapproved_toolchain(tmp_path, built, monkeypatch, engine):
-    if engine != "terraform":
-        pytest.skip("OpenTofu retains its existing source build contract")
+def test_install_refuses_an_unapproved_toolchain(tmp_path, built, monkeypatch, engine):
     root, record = built
     record["go_version"] = "go version go1.26.8 linux/amd64"
     (root / "build.json").write_text(json.dumps(record))

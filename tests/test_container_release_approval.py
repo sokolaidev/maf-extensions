@@ -407,3 +407,45 @@ def test_terraform_avm_missing_evidence_stays_unavailable(prepared, missing):
         "checks": "Terraform AVM check",
     }[missing]
     assert rows[label] == approval.UNAVAILABLE
+
+
+@pytest.mark.parametrize("action", ["release", "recover"])
+def test_opentofu_random_summary_renders_cases_receipt_and_version(prepared, action):
+    prepared.candidate["profile"] = "opentofu-random"
+    runtime = prepared.reports["runtime.json"]
+    runtime["profile"] = "opentofu-random"
+    del runtime["bicepAvm"]
+    names = [
+        "pinned",
+        "constraint",
+        "correct-lock",
+        "uncached-version",
+        "wrong-lock",
+        "upstream-lock",
+    ]
+    receipt = {
+        "manifest_sha256": "d" * 64,
+        "policy_sha256": "e" * 64,
+        "artifacts": {"providers": "f" * 64, "registry_modules": "1" * 64},
+    }
+    checks = [
+        {"name": name, "passed": index != 4, "sourceUnchanged": True, "providerCopies": 0}
+        for index, name in enumerate(names)
+    ]
+    runtime["opentofuRandom"] = {
+        "opentofuVersion": "1.13.1",
+        "receipt": receipt,
+        "checks": checks,
+    }
+    prepared.save()
+    result = approval.render(
+        prepared.candidate, prepared.directory, action, "evidence", stage="complete"
+    )
+    assert result.count("| OpenTofu random check |") == 6
+    retained = approval.read(prepared.directory / "runtime.json")["opentofuRandom"]
+    for check in retained["checks"]:
+        assert approval.literal(check) in result
+    assert "| Prepared OpenTofu version | <code>1.13.1</code>" in result
+    assert f"| Prepared OpenTofu receipt | {approval.literal(retained['receipt'])}" in result
+    assert f"/blob/{'a' * 40}/images/terraform-sandbox/OPENTOFU.md" in result
+    assert "Bicep AVM check" not in result

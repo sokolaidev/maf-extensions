@@ -33,8 +33,10 @@
         "revision": "233700b795b6d2372f1c56ed57a4abaec9d36475",
         "modules": {
           "google.golang.org/grpc": "v1.83.2",
-          "golang.org/x/mod": "v0.40.0"
-        }
+          "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.60.0"
+        },
+        "go_version": "go1.27.2"
       },
       "profiles": {
         "builtin": null,
