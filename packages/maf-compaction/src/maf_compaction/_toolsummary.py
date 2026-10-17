@@ -38,7 +38,6 @@ from agent_framework import (
     ChatMiddleware,
     ChatResponse,
     ChatResponseUpdate,
-    Content,
     Message,
     MiddlewareFailure,
     MiddlewareTermination,
@@ -60,7 +59,12 @@ from ._preserve import (
     removable_whole,
     set_preserved,
 )
-from ._tool_result import can_shorten_result, repair_compacted_items
+from ._tool_result import (
+    ResultTextRewriter,
+    can_shorten_result,
+    plan_result_items,
+    repair_compacted_items,
+)
 
 if TYPE_CHECKING:
     from agent_framework import TokenizerProtocol
@@ -1148,6 +1152,10 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             Larger results can release exactly quoted table rows while retaining the remainder.
             Also used to estimate whether whole-group value coverage can fit. None disables
             partial removal and the target-based diagnostic.
+        rewrite_result_text: Host hook for shortening metadata-bearing or mixed result items,
+            with the contract of :class:`~._anchored.AnchoredCompactionStrategy`. Used for
+            recorded-row removal and passed to the default fallback. A supplied fallback
+            keeps its own hook configuration.
         fallback: What runs when no record arrives in time, or one does not free enough. It
             must be an :class:`~._anchored.AnchoredCompactionStrategy`, or a subclass: those
             honour :mod:`._preserve`, which is what keeps the record and the groups it did not
@@ -1166,6 +1174,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         coverage_share: float = DEFAULT_COVERAGE_SHARE,
         record_target_tokens: int | None = DEFAULT_RECORD_TARGET_TOKENS,
         fallback: AnchoredCompactionStrategy | None = None,
+        rewrite_result_text: ResultTextRewriter | None = None,
     ) -> None:
         """Validate and store the configuration.
 
@@ -1198,6 +1207,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         self.trigger_fraction = trigger_fraction
         self.fallback_fraction = fallback_fraction
         self.coverage_share = coverage_share
+        self.rewrite_result_text = rewrite_result_text
         if record_target_tokens is not None and record_target_tokens <= 0:
             raise ValueError("record_target_tokens must be positive or None.")
         self.record_target_tokens = record_target_tokens
@@ -1213,6 +1223,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             tokenizer=tokenizer,
             keep_head_groups=keep_head_groups,
             keep_tail_groups=keep_tail_groups,
+            rewrite_result_text=rewrite_result_text,
         )
         self._records = 0
         self._records_in_conversation = 0
@@ -1909,7 +1920,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 if (
                     content.type != "function_result"
                     or not isinstance(content.result, str)
-                    or not can_shorten_result(content)
+                    or (self.rewrite_result_text is None and not can_shorten_result(content))
                 ):
                     continue
                 original = content.result
@@ -1927,8 +1938,11 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                     shortened = _ROWS_OMITTED + shortened
                 if self.tokenizer.count_tokens(shortened) >= self.tokenizer.count_tokens(original):
                     continue
+                items = plan_result_items(content, shortened, self.rewrite_result_text)
+                if items is None:
+                    continue
                 content.result = shortened
-                content.items = [Content.from_text(shortened)]
+                content.items = items
                 changed = True
         return changed
 
