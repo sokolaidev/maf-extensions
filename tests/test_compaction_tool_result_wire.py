@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from agent_framework import CharacterEstimatorTokenizer, Content, Message
 from agent_framework._compaction import included_token_count, project_included_messages
@@ -14,6 +16,66 @@ from maf_compaction._toolsummary import (
 
 pytestmark = pytest.mark.anyio
 TOKENIZER = CharacterEstimatorTokenizer()
+
+
+@pytest.mark.parametrize("media", [False, True])
+@pytest.mark.parametrize("kind", ["anchored", "minimum_gain", "recorded_rows"])
+async def test_host_rewrite_reaches_provider_requests_with_media_and_labels(media, kind):
+    header = "| Quota | Limit | Usage |\n| --- | --- | --- |\n"
+    rows = [f"| quota-{i:04d} | limit-{i:04d}-1000 | usage-{i:04d}-2000 |\n" for i in range(100)]
+    item = Content.from_text(header + "".join(rows))
+    item.additional_properties["security_label"] = {"integrity": "untrusted"}
+    items = [item]
+    if media:
+        items.append(Content.from_uri("https://example.com/result.png", media_type="image/png"))
+    content = Content.from_function_result(call_id="lookup-1", result=items)
+    messages = [
+        Message(
+            "assistant",
+            [Content.from_function_call(call_id="lookup-1", name="lookup", arguments="{}")],
+        ),
+        Message("tool", [content]),
+    ]
+
+    def rewrite(candidate: Content, text: str) -> bool:
+        assert candidate.items
+        candidate.items[0].text = text
+        return True
+
+    if kind == "recorded_rows":
+        record = ToolResultAnchoredSummarizationCompactionStrategy(
+            max_input_tokens=100_000, tokenizer=TOKENIZER, rewrite_result_text=rewrite
+        )
+        assert record._release_recorded_rows(
+            messages, set(_table_rows(header + "".join(rows[:90])).values())
+        )
+    else:
+        strategy_type = (
+            AnchoredCompactionStrategy
+            if kind == "anchored"
+            else MinimumGainAnchoredCompactionStrategy
+        )
+        strategy = strategy_type(
+            max_input_tokens=100_000,
+            tokenizer=TOKENIZER,
+            keep_head_groups=0,
+            keep_tail_groups=0,
+            keep_tokens=100,
+            rewrite_result_text=rewrite,
+        )
+        assert await strategy(messages)
+    for history in [messages, [Message.from_dict(message.to_dict()) for message in messages]]:
+        for client_type in [OpenAIChatClient, OpenAIChatCompletionClient]:
+            client = client_type(model="test-model", api_key="unused")
+            request = json.dumps(client._prepare_messages_for_openai(history))
+            assert json.dumps(content.result)[1:-1] in request
+            assert "quota-0050" not in request
+            if media and client_type is OpenAIChatClient:
+                assert "https://example.com/result.png" in request
+        assert history[1].contents[0].items
+        assert history[1].contents[0].items[0].additional_properties == {
+            "security_label": {"integrity": "untrusted"}
+        }
 
 
 @pytest.mark.parametrize("shape", ["legacy", "empty_items", "text", "multiple_text"])
