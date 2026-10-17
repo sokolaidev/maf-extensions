@@ -629,6 +629,7 @@ def _evaluate(
         (root / "summary.json").stat().st_size,
         len(encode({**summary, "outcome": "qualified_for_profile"})) + 1,
     )
+    event_bytes = 0
     for attempt, group in zip(summary["attempts"], GROUPS, strict=True):
         keys(attempt, {"group", "attempt_id", "file", "bytes", "sha256", "outcome"})
         require(
@@ -653,6 +654,8 @@ def _evaluate(
             "artifact_identity",
         )
         total += attempt["bytes"]
+        event_bytes += attempt["bytes"]
+        require(event_bytes <= LIMITS["events"], "events_limit")
         artifact = read(path, LIMITS["events"])
         keys(artifact, {"campaign_id", "attempt_id", "candidate_sha256", "group", "observations"})
         require(

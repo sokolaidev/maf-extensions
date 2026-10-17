@@ -325,7 +325,9 @@ def verify_completed_cleanup(
     verify_outcome(
         {
             "result": {
-                "content": [{"type": "text", "text": "result"}],
+                "content": [
+                    {"type": "text", "text": "structuredContent:\n" + json.dumps(completed)}
+                ],
                 "details": {"structuredContent": completed},
             }
         },

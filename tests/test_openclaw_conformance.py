@@ -184,6 +184,9 @@ def control_events(cases):
                 requests=0,
                 session_registered=False,
                 poisoned=False,
+                sessions=1 if sid == a else 0,
+                active=name == "maf_idle_close" and sid == a,
+                active_session=b if name == "maf_idle_close" and sid == a else None,
             )
         if name.startswith("maf_"):
             retirement = [
@@ -374,7 +377,12 @@ def observations(m):
                         "tool_result": json.dumps(
                             {
                                 "result": {
-                                    "content": [{"type": "text", "text": "result"}],
+                                    "content": [
+                                        {
+                                            "type": "text",
+                                            "text": "structuredContent:\n" + json.dumps(row),
+                                        }
+                                    ],
                                     "details": {"structuredContent": row.copy()},
                                 }
                             }
@@ -1603,4 +1611,128 @@ def test_ordinary_peer_preclose_work_is_also_verified(ownership_observations, mu
             )
         ]
     with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("publish", [False, True])
+@pytest.mark.parametrize("overflow", [False, True])
+def test_cumulative_event_budget_includes_every_artifact(bundle, monkeypatch, publish, overflow):
+    root, plan, m = bundle
+    sizes = [(root / (group + ".json")).stat().st_size for group in e.GROUPS]
+    limit = sum(sizes) - int(overflow)
+    assert max(sizes) < limit < e.LIMITS["bundle"]
+    monkeypatch.setitem(e.LIMITS, "events", limit)
+    summary = e.read(root / "summary.json")
+    summary["plan_sha256"] = e.digest(plan)
+    if publish:
+        summary["outcome"] = "unqualified"
+    e.write(root / "summary.json", summary)
+    evaluate = e.finalize if publish else e.evaluate
+    if overflow:
+        with pytest.raises(e.Refused, match="events_limit"):
+            evaluate(root, plan, m)
+        assert e.read(root / "summary.json")["outcome"] == summary["outcome"]
+    else:
+        assert evaluate(root, plan, m)["outcome"] == "qualified_for_profile"
+
+
+@pytest.mark.parametrize("case", sorted(e.OWNERSHIP))
+@pytest.mark.parametrize("side", ["session_a", "session_b"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_sessions",
+        "wrong_sessions",
+        "bool_sessions",
+        "missing_active",
+        "wrong_active",
+        "int_active",
+        "missing_active_session",
+        "wrong_active_session",
+    ],
+)
+def test_retirement_rejects_contradictory_peer_state(ownership_observations, case, side, mutation):
+    obs = ownership_observations
+    row = next(
+        r
+        for r in obs["transport"]
+        if r["event"] == "retired" and r["session"] == obs["cases"][case][side]
+    )
+    if mutation.startswith("missing_"):
+        row.pop(mutation.removeprefix("missing_"), None)
+    elif mutation == "wrong_sessions":
+        row["sessions"] = 0 if side == "session_a" else 1
+    elif mutation == "bool_sessions":
+        row["sessions"] = side == "session_a"
+    elif mutation == "wrong_active":
+        row["active"] = not (side == "session_a" and case == "maf_idle_close")
+    elif mutation == "int_active":
+        row["active"] = int(side == "session_a" and case == "maf_idle_close")
+    else:
+        row["active_session"] = obs["cases"][case]["session_a"]
+    with pytest.raises(e.Refused, match="retirement_state"):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("case", ["valid", "invalid", "incomplete"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "verdict",
+        "cleanup",
+        "identity",
+        "missing",
+        "prefix",
+        "duplicate",
+        "nonfinite",
+        "overflow",
+        "trailing",
+        "type",
+    ],
+)
+def test_retained_gateway_rejects_contradictory_text(case, mutation):
+    record = ROOT / "scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v4"
+    obs = e.read(record / "evidence/gateway.json")["observations"]
+    row = next(
+        r for r in obs["provider_observations"] if "tool_result" in r and r["scenario"] == case
+    )
+    text = row["tool_result"]
+    start, end = text.index("{"), text.rindex("}") + 1
+    value = json.loads(text[start:end])
+    mirrored = copy.deepcopy(value["result"]["details"]["structuredContent"])
+    if mutation == "verdict":
+        mirrored["verdict"] = "invalid" if case == "valid" else "valid"
+    elif mutation == "cleanup":
+        mirrored["cleanup"] = "failed"
+    elif mutation == "identity":
+        mirrored["source_sha256"] = "other"
+    elif mutation == "type":
+        mirrored["completed"] = int(mirrored["completed"])
+    elif mutation == "missing":
+        del mirrored["diagnostics"]
+    body = json.dumps(mirrored)
+    if mutation == "duplicate":
+        body = '{"cleanup":"failed",' + body[1:]
+    elif mutation in ("nonfinite", "overflow"):
+        number = "NaN" if mutation == "nonfinite" else "1e400"
+        body = '{"unused":' + number + "," + body[1:]
+    elif mutation == "trailing":
+        body += " trailing"
+    value["result"]["content"][0]["text"] = (
+        "other:" if mutation == "prefix" else "structuredContent:\n"
+    ) + body
+    row["tool_result"] = text[:start] + json.dumps(value) + text[end:]
+    with pytest.raises(RuntimeError):
+        importlib.import_module("openclaw_conformance.gateway").verify(
+            obs, e.read(record / "candidate.json")
+        )
+
+
+@pytest.mark.parametrize("case", ["equal_ids_repeated_cancel", "response_loss"])
+def test_retirements_preserve_peer_count_order(ownership_observations, case):
+    obs = ownership_observations
+    snapshots = {r["session"]: r for r in obs["transport"] if r["event"] == "retired"}
+    a, b = (snapshots[obs["cases"][case][key]] for key in ("session_a", "session_b"))
+    a["time_ns"] = b["time_ns"] + 1
+    with pytest.raises(e.Refused, match="retirement_order"):
         importlib.import_module("openclaw_conformance.ownership").verify(obs)

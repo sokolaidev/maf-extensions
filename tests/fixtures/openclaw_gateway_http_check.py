@@ -57,6 +57,12 @@ def projected_result(
     return loads(text[text.index("{") : text.rindex("}") + 1])
 
 
+def _projection_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value = dict(pairs)
+    require(len(value) == len(pairs), "Gateway text contains duplicate JSON keys")
+    return value
+
+
 def verify_outcome(
     projected: dict[str, Any], case: str, config_digest: str, image: str
 ) -> dict[str, Any]:
@@ -84,6 +90,17 @@ def verify_outcome(
     )
     structured = details.get("structuredContent")
     require(isinstance(structured, dict), "Gateway structured content must be an object")
+    text = content[0]["text"]
+    prefix = "structuredContent:\n"
+    require(text.startswith(prefix), "Gateway text lacks the structuredContent projection")
+    try:
+        mirrored = json.loads(text[len(prefix) :], object_pairs_hook=_projection_pairs)
+        same = json.dumps(mirrored, sort_keys=True, allow_nan=False) == json.dumps(
+            structured, sort_keys=True, allow_nan=False
+        )
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise RuntimeError("Gateway text contains malformed JSON") from exc
+    require(same, "Gateway text contradicts structuredContent")
     require(structured["cleanup"] == "confirmed", "Cleanup was not confirmed")
     require(structured["completed"] is (case != "incomplete"), "Wrong completion state")
     require(structured["verdict"] == (None if case == "incomplete" else case), "Wrong verdict")

@@ -82,6 +82,7 @@ def verify(value: dict[str, Any]) -> None:
             retired = [e for e in subset if e.get("event") == "retired" and e.get("session") == sid]
             require(len(retired) == 1, "retirement_count")
             r = retired[0]
+            peer_active = name == "maf_idle_close" and sid == a
             require(
                 all(r.get(k) is True for k in ("completed", "sdk_finished", "sdk_terminated"))
                 and all(
@@ -89,7 +90,12 @@ def verify(value: dict[str, Any]) -> None:
                     for k in ("sdk_streams", "request_ids", "requests")
                 )
                 and r.get("session_registered") is False
-                and r.get("poisoned") is False,
+                and r.get("poisoned") is False
+                and type(r.get("sessions")) is int
+                and r["sessions"] == (1 if sid == a else 0)
+                and r.get("active") is peer_active
+                and "active_session" in r
+                and r["active_session"] == (b if peer_active else None),
                 "retirement_state",
             )
             requested = [
@@ -110,6 +116,7 @@ def verify(value: dict[str, Any]) -> None:
                 ),
                 "binding_after_delete",
             )
+        require(_ordered(retirements[a], retirements[b]), "retirement_order")
         survivor = [
             e
             for e in subset

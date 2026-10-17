@@ -37,7 +37,7 @@ observer = load("openclaw_http_observer")
 
 def projected(case="valid"):
     canonical = json.dumps([["main.bicep", provider.SOURCES[case]]], separators=(",", ":")).encode()
-    return {
+    value = {
         "result": {
             "content": [{"type": "text", "text": "result"}],
             "details": {
@@ -53,6 +53,11 @@ def projected(case="valid"):
             },
         }
     }
+
+    value["result"]["content"][0]["text"] = "structuredContent:\n" + json.dumps(
+        value["result"]["details"]["structuredContent"]
+    )
+    return value
 
 
 @pytest.mark.parametrize("case", ["valid", "invalid", "incomplete"])
