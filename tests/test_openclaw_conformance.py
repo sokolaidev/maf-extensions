@@ -1428,3 +1428,133 @@ def test_maf_admission_probes_follow_close_transition(ownership_observations, ca
     transition["time_ns"] = request["time_ns"] + 1
     with pytest.raises(e.Refused):
         importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("case", sorted(e.OWNERSHIP))
+@pytest.mark.parametrize("binding", ["first", "survivor"])
+@pytest.mark.parametrize(
+    "mutation",
+    ["duplicate", "conflicting", "other_kind", "other_source", "orphan_request", "orphan_session"],
+)
+def test_each_binding_has_one_correlated_terminal(ownership_observations, case, binding, mutation):
+    obs = ownership_observations
+    for row in obs["transport"]:
+        row["time_ns"] *= 10
+    values = obs["cases"][case]
+    sid = values["session_b" if binding == "survivor" or case == "maf_idle_close" else "session_a"]
+    terminals = [
+        r
+        for r in obs["transport"]
+        if r["event"] in ("binding_result", "binding_cancelled") and r.get("session") == sid
+    ]
+    terminal = terminals[-1] if binding == "survivor" else terminals[0]
+    extra = dict(terminal, time_ns=terminal["time_ns"] - 1)
+    if mutation == "conflicting":
+        extra.update(
+            event="binding_result", completed=False, status="incomplete", cleanup="unconfirmed"
+        )
+    elif mutation == "other_kind":
+        extra["event"] = (
+            "binding_cancelled" if terminal["event"] == "binding_result" else "binding_result"
+        )
+    elif mutation == "other_source":
+        extra.update(event="binding_result", source_sha256="0" * 64)
+    elif mutation == "orphan_request":
+        extra["request"] = "0" * 64
+    elif mutation == "orphan_session":
+        extra["session"] = "0" * 64
+    index = obs["transport"].index(terminal)
+    obs["transport"].insert(index, extra)
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("case", sorted(e.OWNERSHIP - {"maf_ordinary_close"}))
+@pytest.mark.parametrize("terminal_kind", [None, "binding_result", "binding_cancelled"])
+def test_refused_admission_cannot_execute_a_binding(ownership_observations, case, terminal_kind):
+    obs = ownership_observations
+    for row in obs["transport"]:
+        row["time_ns"] *= 10
+    values = obs["cases"][case]
+    refusal = next(
+        r
+        for r in obs["transport"]
+        if r["event"] == "admission_refused" and r.get("session") == values["session_b"]
+    )
+    request = next(
+        r
+        for r in obs["transport"]
+        if r["event"] == "request" and r.get("exchange") == refusal["exchange"]
+    )
+    fields = {"session": request["session"], "request": request["request"]}
+    injected = [dict(fields, event="binding_started", time_ns=request["time_ns"] + 1)]
+    if terminal_kind:
+        injected.append(
+            dict(values["survivor"], **fields, event=terminal_kind, time_ns=request["time_ns"] + 2)
+        )
+    index = obs["transport"].index(request) + 1
+    obs["transport"][index:index] = injected
+    with pytest.raises(e.Refused, match="refused_binding_execution" if terminal_kind else None):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("case", sorted(e.OWNERSHIP))
+@pytest.mark.parametrize("binding", ["first", "survivor"])
+def test_no_started_binding_can_omit_its_terminal(ownership_observations, case, binding):
+    obs = ownership_observations
+    values = obs["cases"][case]
+    sid = values["session_b" if binding == "survivor" or case == "maf_idle_close" else "session_a"]
+    terminals = [
+        r
+        for r in obs["transport"]
+        if r["event"] in ("binding_result", "binding_cancelled") and r.get("session") == sid
+    ]
+    obs["transport"].remove(terminals[-1] if binding == "survivor" else terminals[0])
+    with pytest.raises(e.Refused, match="binding_terminal_count"):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize(
+    "mutation", ["incomplete", "cleanup", "source", "late", "missing_exchange"]
+)
+def test_ordinary_peer_preclose_work_is_also_verified(ownership_observations, mutation):
+    obs = ownership_observations
+    values = obs["cases"]["maf_ordinary_close"]
+    sid = values["session_b"]
+    result = next(
+        r for r in obs["transport"] if r["event"] == "binding_result" and r.get("session") == sid
+    )
+    if mutation == "incomplete":
+        result.update(completed=False, status="incomplete")
+    elif mutation == "cleanup":
+        result["cleanup"] = "unconfirmed"
+    elif mutation == "source":
+        result["source_sha256"] = "0" * 64
+    elif mutation == "late":
+        delete = next(
+            r
+            for r in obs["transport"]
+            if r["event"] == "delete_requested" and r.get("session") == values["session_a"]
+        )
+        result["time_ns"] = delete["time_ns"] + 1
+    else:
+        request = next(
+            r
+            for r in obs["transport"]
+            if r["event"] == "request"
+            and r.get("session") == sid
+            and r.get("request") == result["request"]
+        )
+        obs["transport"] = [
+            r
+            for r in obs["transport"]
+            if not (
+                r.get("session") == sid
+                and (
+                    r.get("request") == result["request"]
+                    or r.get("exchange") == request["exchange"]
+                )
+            )
+        ]
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)

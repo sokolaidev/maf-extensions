@@ -28,7 +28,40 @@ def verify(value: dict[str, Any]) -> None:
             [e for e in subset if e.get("event") == "request"], "ownership_request_exchanges"
         )
         starts = [e for e in subset if e.get("event") == "binding_started"]
-        _exchanges([_request(subset, start) for start in starts], "binding_ambiguous_start")
+        bound = [_request(subset, start) for start in starts]
+        _exchanges(bound, "binding_ambiguous_start")
+        terminals = [
+            _terminal_request(subset, event)
+            for event in subset
+            if event.get("event") in ("binding_result", "binding_cancelled")
+        ]
+        _exchanges(terminals, "binding_ambiguous_terminal")
+        exchanges = {request["exchange"] for request in bound}
+        require(
+            exchanges == {request["exchange"] for request in terminals}, "binding_terminal_count"
+        )
+        require(
+            not any(
+                event.get("exchange") in exchanges
+                for event in subset
+                if event.get("event") == "admission_refused"
+            ),
+            "refused_binding_execution",
+        )
+        counts = (
+            (1, 2)
+            if name == "maf_ordinary_close"
+            else (0, 2)
+            if name == "maf_idle_close"
+            else (1, 1)
+        )
+        require(
+            all(
+                sum(start.get("session") == sid for start in starts) == count
+                for sid, count in zip((a, b), counts, strict=True)
+            ),
+            "binding_count",
+        )
         deletes: dict[str, dict[str, Any]] = {}
         retirements: dict[str, dict[str, Any]] = {}
         for sid, count in ((a, 4), (b, 1)):
@@ -97,19 +130,24 @@ def verify(value: dict[str, Any]) -> None:
         if name.startswith("maf_"):
             require(_ordered(retirements[a], survivor_request), "survivor_before_retirement")
         if name == "maf_ordinary_close":
-            results = [
-                e for e in subset if e.get("event") == "binding_result" and e.get("session") == a
-            ]
-            require(len(results) == 1, "ordinary_preclose_result")
-            require(
-                all(
-                    encode(results[0].get(k)) == encode(case["survivor"][k])
-                    for k in ("completed", "status", "cleanup", "source_sha256")
-                ),
-                "ordinary_preclose_result",
-            )
-            _, response = _binding(subset, results[0])
-            require(_ordered(response, deletes[a]), "ordinary_preclose_order")
+            for sid in (a, b):
+                results = [
+                    e
+                    for e in subset
+                    if e.get("event") == "binding_result"
+                    and e.get("session") == sid
+                    and e is not survivor[-1]
+                ]
+                require(len(results) == 1, "ordinary_preclose_result")
+                require(
+                    all(
+                        encode(results[0].get(k)) == encode(case["survivor"][k])
+                        for k in ("completed", "status", "cleanup", "source_sha256")
+                    ),
+                    "ordinary_preclose_result",
+                )
+                _, response = _binding(subset, results[0])
+                require(_ordered(response, deletes[a]), "ordinary_preclose_order")
             require(
                 not any(e.get("event") == "admission_refused" for e in subset), "ordinary_admission"
             )
@@ -219,6 +257,16 @@ def verify(value: dict[str, Any]) -> None:
             )
             _binding(subset, results[0])
 
+    require(
+        all(
+            event.get("session") in seen
+            for event in events
+            if event.get("event")
+            in ("binding_started", "binding_result", "binding_cancelled", "admission_refused")
+        ),
+        "ownership_event_session",
+    )
+
 
 def _exchanges(events: list[dict[str, Any]], reason: str) -> None:
     ids = [e.get("exchange") for e in events]
@@ -279,9 +327,7 @@ def _request(events: list[dict[str, Any]], start: dict[str, Any]) -> dict[str, A
     return request
 
 
-def _binding(
-    events: list[dict[str, Any]], result: dict[str, Any]
-) -> tuple[dict[str, Any], dict[str, Any]]:
+def _terminal_request(events: list[dict[str, Any]], result: dict[str, Any]) -> dict[str, Any]:
     require(
         isinstance(result.get("request"), str) and re.fullmatch(r"[0-9a-f]{64}", result["request"]),
         "binding_result_request",
@@ -299,15 +345,6 @@ def _binding(
     starts = [e for e in starts if e["time_ns"] == latest]
     require(len(starts) == 1, "binding_ambiguous_start")
     request = _request(events, starts[0])
-    _response(events, request, 200)
-    response = next(
-        e
-        for e in events
-        if e.get("event") == "response"
-        and e.get("exchange") == request["exchange"]
-        and e.get("session") == request["session"]
-    )
-    require(_ordered(result, response), "binding_response_order")
     require(
         not any(
             e.get("event") == "request"
@@ -321,4 +358,20 @@ def _binding(
         ),
         "binding_reused_request",
     )
+    return request
+
+
+def _binding(
+    events: list[dict[str, Any]], result: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    request = _terminal_request(events, result)
+    _response(events, request, 200)
+    response = next(
+        e
+        for e in events
+        if e.get("event") == "response"
+        and e.get("exchange") == request["exchange"]
+        and e.get("session") == request["session"]
+    )
+    require(_ordered(result, response), "binding_response_order")
     return request, response
