@@ -15,6 +15,7 @@ from typing import Any
 from container_release import REPOSITORY, ROOT, read, scan_result, timestamp
 from container_release_assets import Evidence, image_tag
 from container_release_history import GitHub, History, decode, encode, sha256
+from image_scan_policy import BICEP_ROUTES, evidence_route
 from image_security_evidence import verify_inventory
 from report_stuck_releases import as_code
 from select_image_security import PROFILES, SCRIPT_INPUTS, changed_profiles, metadata_only
@@ -104,10 +105,31 @@ def baseline(client: GitHub, record: dict[str, Any], directory: Path) -> dict[st
     )
     if verified != assessment or verified["outcome"] != "clean":
         raise ValueError("Published assessment does not satisfy the release gate")
-    return {
+    result = {
         "components": components(read(directory / "sbom.syft.json"), record["imageId"]),
         "evidence": f"https://github.com/{REPOSITORY}/releases/tag/{release['tag_name']}",
     }
+    if record["profile"] in BICEP_ROUTES:
+        route = candidate.get("bicepRoute", "upstream")
+        if route not in {"source", "upstream"}:
+            raise ValueError("Published Bicep route is invalid")
+        runtime = read(directory / "runtime.json")
+        build = runtime.get("bicepAvm", runtime.get("bicep", {})).get("build")
+        if route == "source" or build is not None:
+            if (
+                evidence_route(
+                    record["profile"],
+                    record["imageId"],
+                    runtime,
+                    read(directory / "sbom.syft.json"),
+                )
+                != route
+            ):
+                raise ValueError(
+                    "Published Bicep route differs from authenticated runtime evidence"
+                )
+        result["bicepRoute"] = route
+    return result
 
 
 def run_artifacts(client: GitHub, run_id: str) -> list[dict[str, Any]]:
@@ -172,16 +194,46 @@ def newer_profiles(client: GitHub, run: dict[str, Any], observed_at: dict[str, s
         )
         if not jobs:
             raise ValueError("Completed scan has no job history")
+        bicep = tuple(
+            profile
+            for profile in observed_at
+            if profile in BICEP_ROUTES
+            and any(
+                job["name"] == f"Image security ({profile})"
+                and timestamp(job["completed_at"]) >= timestamp(observed_at[profile])
+                for job in jobs
+            )
+        )
+        diagnostics = set()
+        if bicep:
+            with tempfile.TemporaryDirectory(prefix="maf-scan-ordering-") as temporary:
+                evidence = candidates(
+                    client, str(other["id"]), Path(temporary), historical=True, profiles=bicep
+                )
+            diagnostics = {
+                profile
+                for profile, value in evidence.items()
+                if value.get("bicepRoute") != BICEP_ROUTES[profile]
+            }
         for job in jobs:
             for profile, at in observed_at.items():
-                if job["name"] == f"Image security ({profile})" and timestamp(
-                    job["completed_at"]
-                ) >= timestamp(at):
+                if (
+                    profile not in diagnostics
+                    and job["name"] == f"Image security ({profile})"
+                    and timestamp(job["completed_at"]) >= timestamp(at)
+                ):
                     result.add(profile)
     return result
 
 
-def candidates(client: GitHub, run_id: str, directory: Path) -> dict[str, Any]:
+def candidates(
+    client: GitHub,
+    run_id: str,
+    directory: Path,
+    *,
+    historical: bool = False,
+    profiles: tuple[str, ...] = PROFILES,
+) -> dict[str, Any]:
     """Read artifacts only from completed main-branch scans in this repository."""
     if not run_id:
         return {}
@@ -202,7 +254,7 @@ def candidates(client: GitHub, run_id: str, directory: Path) -> dict[str, Any]:
     jobs = action_listing(
         client, f"repos/{REPOSITORY}/actions/runs/{run_id}/jobs?filter=all", "jobs"
     )
-    for profile in PROFILES:
+    for profile in profiles:
         matches = [a for a in artifacts if a["name"] == f"image-security-{profile}"]
         if not matches:
             continue
@@ -251,7 +303,8 @@ def candidates(client: GitHub, run_id: str, directory: Path) -> dict[str, Any]:
                 raise ValueError("Candidate evidence was not collected during its producing job")
             if any(job["run_attempt"] > producer["run_attempt"] for job in profile_jobs):
                 continue
-            inventory = components(read(target / "sbom.syft.json"), build["local_image_id"])
+            sbom = read(target / "sbom.syft.json")
+            inventory = components(sbom, build["local_image_id"])
             assessment = scan_result(
                 read(target / "grype.json"), build["local_image_id"], producer["completed_at"]
             )
@@ -262,17 +315,91 @@ def candidates(client: GitHub, run_id: str, directory: Path) -> dict[str, Any]:
                 "observedAt": producer["completed_at"],
                 "evidence": f"https://github.com/{REPOSITORY}/actions/runs/{run_id}/attempts/{producer['run_attempt']}",
             }
+            if profile in BICEP_ROUTES:
+                result[profile]["bicepRoute"] = evidence_route(
+                    profile, build["local_image_id"], read(target / "runtime.json"), sbom
+                )
         except (OSError, ValueError, KeyError, TypeError) as error:
+            result.pop(profile, None)
             if run.get("conclusion") == "success":
                 raise ValueError(
                     "Successful scan did not deliver valid candidate evidence"
                 ) from error
             # A failed scan is handled by its workflow's operational failure tracker.
             print(f"{profile}: candidate evidence unavailable: {error}")
+    if historical:
+        return result
+    result = {
+        profile: value
+        for profile, value in result.items()
+        if profile not in BICEP_ROUTES or value["bicepRoute"] == BICEP_ROUTES[profile]
+    }
     superseded = newer_profiles(
         client, run, {profile: value["observedAt"] for profile, value in result.items()}
     )
     return {profile: value for profile, value in result.items() if profile not in superseded}
+
+
+def reconcile_component_route(
+    client: GitHub,
+    record: dict[str, Any],
+    released: dict[str, Any],
+    previous: dict[str, Any] | None,
+    directory: Path,
+) -> dict[str, Any] | None:
+    """Withdraw only a component requirement disproven by its original scan evidence."""
+    profile = record["profile"]
+    if profile not in BICEP_ROUTES or not previous:
+        return previous
+    reason = previous["reasons"].get("components")
+    if not reason or reason.get("bicepRoute") == BICEP_ROUTES[profile]:
+        return previous
+    if reason.get("baselineDigest", previous["baseline"]) != record["registryDigest"]:
+        return previous
+    evidence = reason.get("evidence", previous.get("candidateEvidence", ""))
+    match = re.fullmatch(
+        rf"https://github\.com/{re.escape(REPOSITORY)}/actions/runs/([1-9][0-9]*)/attempts/([1-9][0-9]*)",
+        evidence,
+    )
+    if not match:
+        return previous
+    try:
+        observed = candidates(
+            client, match[1], directory, historical=True, profiles=(profile,)
+        ).get(profile)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        print(f"{profile}: saved component route could not be verified: {error}")
+        return previous
+    if not observed or observed["evidence"] != evidence:
+        return previous
+    old = {tuple(row) for row in released["components"]}
+    new = {tuple(row) for row in observed["components"]}
+    if (
+        observed["observedAt"] != reason.get("observedAt", previous.get("candidateObservedAt"))
+        or timestamp(observed["observedAt"]) <= timestamp(record["completedAt"])
+        or sha256(encode(observed["components"])) != reason["inventorySha256"]
+        or [list(row) for row in sorted(new - old)] != reason["added"]
+        or [list(row) for row in sorted(old - new)] != reason["removed"]
+    ):
+        return previous
+    result = copy.deepcopy(previous)
+    if observed["bicepRoute"] == BICEP_ROUTES[profile]:
+        result["reasons"]["components"].update(
+            bicepRoute=observed["bicepRoute"], evidence=evidence, observedAt=observed["observedAt"]
+        )
+        return result
+    del result["reasons"]["components"]
+    result["routeReconciliation"] = {
+        "evidence": evidence,
+        "candidateRoute": observed["bicepRoute"],
+        "replacementRoute": BICEP_ROUTES[profile],
+        "baselineDigest": record["registryDigest"],
+    }
+    if result.get("candidateEvidence") == evidence:
+        for key in ("candidateEvidence", "candidateFindings", "candidateObservedAt"):
+            result.pop(key, None)
+        result["status"] = "Awaiting release preparation"
+    return result
 
 
 def desired(
@@ -294,6 +421,14 @@ def desired(
         }
     )
     reasons = state["reasons"]
+    expected_route = BICEP_ROUTES.get(record["profile"])
+    if expected_route:
+        if released["bicepRoute"] != expected_route:
+            reasons["route"] = {"published": released["bicepRoute"], "replacement": expected_route}
+        else:
+            reasons.pop("route", None)
+        if candidate and candidate.get("bicepRoute") != expected_route:
+            candidate = None
     if candidate and timestamp(candidate["observedAt"]) <= max(
         timestamp(record["completedAt"]),
         timestamp(state.get("candidateObservedAt", record["completedAt"])),
@@ -351,6 +486,12 @@ def desired(
                 "added": [list(row) for row in sorted(new - old)],
                 "removed": [list(row) for row in sorted(old - new)],
             }
+            if expected_route:
+                reasons["components"].update(
+                    bicepRoute=candidate["bicepRoute"],
+                    evidence=candidate["evidence"],
+                    observedAt=candidate["observedAt"],
+                )
         state["status"] = (
             "Last candidate scan passed; release gate still required"
             if candidate["assessment"]["outcome"] == "clean"
@@ -374,7 +515,9 @@ def desired(
     state["releaseEvidence"] = released["evidence"]
     state["resolved"] = not reasons
     if state["resolved"] and not replacement:
-        state["resolution"] = "source-reconciled"
+        state["resolution"] = (
+            "route-reconciled" if state.get("routeReconciliation") else "source-reconciled"
+        )
     else:
         state.pop("resolution", None)
     return resolved_state(state) if state["resolved"] else state
@@ -384,7 +527,9 @@ def resolved_state(state: dict[str, Any]) -> dict[str, Any]:
     """Normalize closed-request presentation without changing its resolution evidence."""
     result = state | {
         "status": (
-            "No relevant build-input differences; no replacement required"
+            "Incompatible candidate route excluded; no replacement required"
+            if state.get("resolution") == "route-reconciled"
+            else "No relevant build-input differences; no replacement required"
             if state.get("resolution") == "source-reconciled"
             else "Resolved by the completed, verified replacement release"
         )
@@ -407,6 +552,18 @@ def body(profile: str, state: dict[str, Any]) -> str:
     """Keep machine-owned request state reviewable and bounded by GitHub's issue limit."""
     reasons = state["reasons"]
     details = []
+    if "route" in reasons:
+        route = reasons["route"]
+        details.append(
+            f"Bicep replacement route policy: {as_code(route['replacement'])}; "
+            f"published route: {as_code(route['published'])}."
+        )
+    if proof := state.get("routeReconciliation"):
+        details.append(
+            f"Excluded component requirement from {as_code(proof['candidateRoute'])} "
+            f"diagnostic evidence; replacement policy selects {as_code(proof['replacementRoute'])}. "
+            f"[Verified candidate evidence]({proof['evidence']})."
+        )
     if "source" in reasons:
         source = reasons["source"]
         details.append(
@@ -450,7 +607,9 @@ def body(profile: str, state: dict[str, Any]) -> str:
         + "\n\n".join(details)
         + "\n\n**Describe the solution you'd like**\n\n"
         + (
-            "Verified source comparison found no relevant build-input differences. No replacement release is required."
+            "Verified evidence excluded an incompatible diagnostic candidate. No replacement release is required."
+            if state.get("resolution") == "route-reconciled"
+            else "Verified source comparison found no relevant build-input differences. No replacement release is required."
             if state.get("resolution") == "source-reconciled"
             else (
                 "Resolved by the completed, verified replacement release."
@@ -502,7 +661,9 @@ def reconcile(
         }
         if state["resolved"]:
             payload["state_reason"] = (
-                "not_planned" if state.get("resolution") == "source-reconciled" else "completed"
+                "not_planned"
+                if state.get("resolution") in {"source-reconciled", "route-reconciled"}
+                else "completed"
             )
         client.request(f"{endpoint}/{issue['number']}", method="PATCH", payload=encode(payload))
     else:
@@ -570,6 +731,9 @@ def main() -> None:
                     previous = None
             record = snapshot.catalogue["releases"][name]
             released = baseline(client, record, root / profile)
+            previous = reconcile_component_route(
+                client, record, released, previous, root / "saved-candidates" / profile
+            )
             changed = changed_inputs(ROOT, record["sourceCommit"], source, profile)
             candidate = observed.get(profile)
             if candidate and changed_inputs(ROOT, candidate["source"], source, profile):
