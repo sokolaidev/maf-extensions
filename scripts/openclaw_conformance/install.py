@@ -57,23 +57,12 @@ def environment(root: Path) -> dict[str, str]:
     return env
 
 
-def command(args: list[str], root: Path, timeout: int = 1200) -> str:
-    """Run a setup or observer command with a finite deadline and private diagnostics."""
+def command(args: list[str], root: Path, timeout: int = 1200, *, diagnostics: bool = True) -> str:
+    """Run a bounded setup or observer command in an owned process tree."""
+    from .commands import run
+
     resolved = shutil.which(args[0]) or args[0]
-    with (root / "setup.log").open("ab") as log:
-        completed = subprocess.run(
-            [resolved, *args[1:]],
-            cwd=root,
-            env=environment(root),
-            stdout=subprocess.PIPE,
-            stderr=log,
-            timeout=timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    require((root / "setup.log").stat().st_size <= LIMITS["log"], "setup_log_limit")
-    require(completed.returncode == 0, "setup_command_failed")
-    require(len(completed.stdout) <= LIMITS["events"], "setup_output_limit")
-    return completed.stdout.decode("utf-8").strip()
+    return run([resolved, *args[1:]], root, environment(root), timeout, diagnostics=diagnostics)
 
 
 def download(url: str, target: Path, limit: int) -> None:

@@ -72,7 +72,7 @@ def test_cleanup_keeps_attempting_all_scopes_and_control_resources(tmp_path, mon
     unrelated = "unrelated-container"
     live.add(unrelated)
 
-    def command(args, *rest):
+    def command(args, *rest, **kwargs):
         calls.append(args)
         if args[1] == "inspect":
             if failure == "sentinel":
@@ -114,7 +114,7 @@ def test_control_inventory_is_persisted_before_docker_creation(tmp_path, monkeyp
     monkeypatch.setattr(runner, "check_prepared", lambda *args: None)
     observed = []
 
-    def command(args, *rest):
+    def command(args, *rest, **kwargs):
         if args[1] == "run":
             saved = runner.read(output / "resources.json")
             assert args[args.index("--name") + 1] == saved["names"]["sentinel"]
@@ -126,3 +126,103 @@ def test_control_inventory_is_persisted_before_docker_creation(tmp_path, monkeyp
     assert len(observed) == 1
     summary = runner.read(output / "evidence/summary.json")
     assert [r["group"] for r in summary["attempts"]] == ["cleanup"]
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_setup_output_limit_terminates_early(tmp_path, monkeypatch, stream):
+    install = importlib.import_module("openclaw_conformance.install")
+    marker = tmp_path / "continued"
+    monkeypatch.setitem(install.LIMITS, "log", 4096)
+    monkeypatch.setitem(install.LIMITS, "events", 4096)
+    code = (
+        f"import sys,time; from pathlib import Path; sys.{stream}.write('x'*8192); "
+        f"sys.{stream}.flush(); time.sleep(2); Path({str(marker)!r}).touch()"
+    )
+    with pytest.raises(runner.Refused, match="setup_(output|log)_limit"):
+        install.command([sys.executable, "-I", "-B", "-c", code], tmp_path, 10)
+    assert not marker.exists()
+    assert (tmp_path / "setup.log").stat().st_size <= 4096
+
+
+def test_cleanup_commands_work_after_setup_diagnostics_overflow(tmp_path, monkeypatch):
+    install = importlib.import_module("openclaw_conformance.install")
+    monkeypatch.setitem(install.LIMITS, "log", 32)
+    (tmp_path / "temp").mkdir()
+    (tmp_path / "setup.log").write_bytes(b"x" * 33)
+    expected = resources.inventory("a" * 32)
+    unrelated = "unrelated-container"
+    live = set(expected["names"].values()) | {unrelated}
+
+    def observe(args, root, timeout, **kwargs):
+        if args[1] == "inspect":
+            output = "true"
+        elif args[1:3] == ["rm", "-f"]:
+            live.remove(args[-1])
+            output = ""
+        else:
+            target = next(a for a in args if a.startswith("name=^/"))[7:-1]
+            output = target if target in live else ""
+        return install.command(
+            [sys.executable, "-I", "-B", "-c", f"print({output!r})"], root, timeout, **kwargs
+        )
+
+    monkeypatch.setattr(runner, "command", observe)
+    value = runner.cleanup(tmp_path, tmp_path, expected, True)
+    assert live == {unrelated}
+    assert value["owned_empty"] is True
+    assert value["sentinel_survived"] is True
+    assert value["sentinel_removed"] is True
+    assert value["errors"] == ["setup_log_limit"]
+    assert (tmp_path / "setup.log").read_bytes() == b"x" * 33
+
+
+@pytest.mark.parametrize("mode", ["stdout", "stderr", "timeout", "exit"])
+def test_setup_stops_descendants_and_preserves_unrelated_process(tmp_path, monkeypatch, mode):
+    import subprocess
+
+    install = importlib.import_module("openclaw_conformance.install")
+    alive = importlib.import_module("test_openclaw_e2e_sample").alive
+    (tmp_path / "temp").mkdir()
+    monkeypatch.setitem(install.LIMITS, "log", 4096)
+    monkeypatch.setitem(install.LIMITS, "events", 4096)
+    pidfile = tmp_path / "descendant.pid"
+    child = f"import os,time; from pathlib import Path; Path({str(pidfile)!r}).write_text(str(os.getpid())); time.sleep(120)"
+    action = (
+        f"sys.{mode}.write('x'*8192); sys.{mode}.flush(); time.sleep(120)"
+        if mode in {"stdout", "stderr"}
+        else "time.sleep(120)"
+        if mode == "timeout"
+        else "pass"
+    )
+    code = (
+        "import subprocess,sys,time; from pathlib import Path; "
+        f"subprocess.Popen([sys.executable,'-I','-B','-c',{child!r}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+        f"p=Path({str(pidfile)!r}); "
+        "exec('while not p.exists(): time.sleep(.01)'); " + action
+    )
+    sentinel = subprocess.Popen([sys.executable, "-I", "-B", "-c", "import time; time.sleep(120)"])
+    descendant = None
+    try:
+        if mode == "exit":
+            assert install.command([sys.executable, "-I", "-B", "-c", code], tmp_path, 10) == ""
+        else:
+            reason = "setup_command_timeout" if mode == "timeout" else "setup_(output|log)_limit"
+            with pytest.raises(runner.Refused, match=reason):
+                install.command(
+                    [sys.executable, "-I", "-B", "-c", code],
+                    tmp_path,
+                    2 if mode == "timeout" else 10,
+                )
+        descendant = int(pidfile.read_text())
+        assert not alive(descendant)
+        assert sentinel.poll() is None
+    finally:
+        sentinel.terminate()
+        sentinel.wait(timeout=10)
+        if descendant is None and pidfile.exists():
+            descendant = int(pidfile.read_text())
+        if descendant is not None and alive(descendant):
+            import os
+            import signal
+
+            os.kill(descendant, signal.SIGTERM)

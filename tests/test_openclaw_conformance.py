@@ -321,6 +321,33 @@ def observations(m):
         },
     }
 
+    gateway = values["gateway"]
+    gateway["requests"] = []
+    gateway["provider_observations"] = []
+    for session, outcomes in zip(gateway["session_ids"], gateway["sessions"], strict=True):
+        for case, row in outcomes.items():
+            turn = e.digest(session + case)[:32]
+            observation = {"session": session, "turn": turn, "scenario": case}
+            gateway["requests"].append(observation.copy())
+            gateway["provider_observations"].extend(
+                [
+                    observation.copy(),
+                    {
+                        **observation,
+                        "tool_result": json.dumps(
+                            {
+                                "result": {
+                                    "content": [{}],
+                                    "details": {"structuredContent": row.copy()},
+                                }
+                            }
+                        ),
+                    },
+                ]
+            )
+            row.update(session=session, turn=turn)
+    for row in values["network"]["observations"]:
+        row["image"] = m["image"]
     values["cleanup"]["installed_after"] = copy.deepcopy(values["installed"])
     return values
 
@@ -917,9 +944,150 @@ def test_survivor_event_does_not_accept_a_numeric_boolean(bundle):
         e.evaluate(*bundle)
 
 
-def test_retained_reviewed_v2_campaign_evaluates_offline():
+def test_retained_v2_campaign_does_not_establish_the_reviewed_profile():
     record = ROOT / "scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows-v2"
-    result = e.evaluate(
-        record / "evidence", e.read(record / "plan.json"), e.read(record / "candidate.json")
-    )
-    assert result == e.read(record / "evaluation.json")
+    with pytest.raises(e.Refused, match="unsupported_profile"):
+        e.evaluate(
+            record / "evidence", e.read(record / "plan.json"), e.read(record / "candidate.json")
+        )
+
+
+@pytest.mark.parametrize("mode", ["bridge", "none"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_network_controls_require_candidate_image(bundle, mode, missing):
+    def mutate(v):
+        row = next(r for r in v["observations"]["observations"] if r["mode"] == mode)
+        if missing:
+            row.pop("image", None)
+        else:
+            row["image"] = "sha256:" + "0" * 64
+
+    change_artifact(bundle, "network", mutate)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
+@pytest.mark.parametrize("mutation", ["sessions", "results"])
+def test_gateway_cannot_substitute_sessions_or_reuse_results(bundle, mutation):
+    def mutate(v):
+        value = v["observations"]
+        if mutation == "sessions":
+            value["session_ids"] = ["c" * 32, "d" * 32]
+        else:
+            value["sessions"][1] = copy.deepcopy(value["sessions"][0])
+
+    change_artifact(bundle, "gateway", mutate)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
+@pytest.mark.parametrize("event", ["cancel", "admission_refused"])
+def test_repeated_controls_require_distinct_exchanges(bundle, event):
+    def mutate(v):
+        obs = v["observations"]
+        case = obs["cases"]["equal_ids_repeated_cancel"]
+        matches = (
+            [
+                r
+                for r in obs["transport"]
+                if (
+                    r.get("event") == "request"
+                    and r.get("method") == "notifications/cancelled"
+                    and r.get("session") == case["session_a"]
+                )
+            ]
+            if event == "cancel"
+            else [
+                r
+                for r in obs["transport"]
+                if r.get("event") == event and r.get("session") == case["session_b"]
+            ]
+        )
+        for row in matches[1:]:
+            row.clear()
+            row.update(copy.deepcopy(matches[0]))
+
+    change_artifact(bundle, "ownership", mutate)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
+@pytest.mark.parametrize("number", ["1e400", "-1e400"])
+def test_json_overflow_is_refused_even_in_unused_observations(tmp_path, number):
+    path = tmp_path / "record.json"
+    path.write_text('{"unused":[' + number + "]}", encoding="utf-8")
+    with pytest.raises(e.Refused, match="nonfinite_json"):
+        e.read(path)
+
+
+def test_final_evaluation_failure_never_persists_qualification(tmp_path, monkeypatch):
+    runner = importlib.import_module("openclaw_conformance.__main__")
+    m = manifest()
+    candidate_path = tmp_path / "candidate.json"
+    e.write(candidate_path, m)
+    values = observations(m)
+    monkeypatch.setattr(runner, "check_prepared", lambda *a: None)
+    monkeypatch.setattr(runner, "command", lambda *a, **kw: "")
+    monkeypatch.setattr(runner, "stage", lambda group, *a: copy.deepcopy(values[group]))
+    monkeypatch.setattr(runner, "cleanup", lambda *a: copy.deepcopy(values["cleanup"]))
+    monkeypatch.setitem(e.LIMITS, "bundle", 1)
+    output = tmp_path / "campaign"
+    with pytest.raises(e.Refused, match="bundle_limit"):
+        runner.run(tmp_path / "prepared", candidate_path, output)
+    assert e.read(output / "evidence/summary.json")["outcome"] == "unqualified"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_turn",
+        "duplicate_turn",
+        "session",
+        "scenario",
+        "duplicate_provider",
+        "request",
+        "projection",
+    ],
+)
+def test_gateway_correlates_retained_provider_records(bundle, mutation):
+    def mutate(record):
+        value = record["observations"]
+        row = value["sessions"][0]["valid"]
+        if mutation == "missing_turn":
+            row.pop("turn")
+        elif mutation == "duplicate_turn":
+            value["sessions"][1]["valid"]["turn"] = row["turn"]
+        elif mutation in {"session", "scenario"}:
+            value["provider_observations"][0][mutation] = "different"
+        elif mutation == "duplicate_provider":
+            value["provider_observations"][1] = copy.deepcopy(value["provider_observations"][0])
+        elif mutation == "request":
+            value["requests"][0]["session"] = "different"
+        else:
+            value["provider_observations"][1]["tool_result"] = "{}"
+
+    change_artifact(bundle, "gateway", mutate)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
+def test_finalize_publishes_only_a_fully_evaluated_bundle(bundle):
+    root, expected, m = bundle
+    summary = e.read(root / "summary.json")
+    summary["outcome"] = "unqualified"
+    e.write(root / "summary.json", summary)
+    assert e.finalize(root, expected, m) == e.evaluate(root, expected, m)
+    assert e.read(root / "summary.json")["outcome"] == "qualified_for_profile"
+
+
+def test_finalize_accounts_for_the_larger_qualified_summary(bundle, monkeypatch):
+    root, expected, m = bundle
+    summary = e.read(root / "summary.json")
+    summary["outcome"] = "unqualified"
+    e.write(root / "summary.json", summary)
+    monkeypatch.setitem(e.LIMITS, "bundle", sum(p.stat().st_size for p in root.iterdir()))
+    summary["plan_sha256"] = e.digest(expected)
+    e.write(root / "summary.json", summary)
+    with pytest.raises(e.Refused, match="bundle_limit"):
+        e.finalize(root, expected, m)
+    assert e.read(root / "summary.json")["outcome"] == "unqualified"
