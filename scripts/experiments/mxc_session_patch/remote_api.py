@@ -580,11 +580,13 @@ class Endpoint(Protocol):
     """Authenticated dispatch shared by separate worker and controller listeners."""
 
     @property
-    def grants(self) -> Mapping[str, object]: ...
+    def grants(self) -> Mapping[str, object]:
+        raise NotImplementedError
 
     def dispatch(
         self, fingerprint: str, request: dict, connection: ssl.SSLSocket | None = None
-    ) -> dict: ...
+    ) -> dict:
+        raise NotImplementedError
 
 
 class Server(socketserver.TCPServer):
