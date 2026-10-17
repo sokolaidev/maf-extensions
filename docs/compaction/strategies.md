@@ -148,7 +148,7 @@ Inside the context window nothing here beats not compacting: the best strategy c
 | Summarising each tool result individually rather than all in one record | Not started | untracked |
 | Private-API dependency re-read on every core minor | Ongoing | [release-compatibility.md](../release-compatibility.md) |
 | Optional user-summary timeouts and consecutive-failure cooldowns | Implemented | [#1958](https://github.com/sokolaidev/maf-extensions/issues/1958) (closed) by [#1984](https://github.com/sokolaidev/maf-extensions/pull/1984) (merged) |
-| Per-call sending budgets for instructions, schemas and estimate headroom | In progress | [#1995](https://github.com/sokolaidev/maf-extensions/issues/1995) (open) |
-| Deferred tools-disabled recall, validated arguments and forced deadlines | In progress | [#1996](https://github.com/sokolaidev/maf-extensions/issues/1996) (open) |
-| Stable chunked user summaries and optional summary-options recovery | In progress | [#1997](https://github.com/sokolaidev/maf-extensions/issues/1997) (open) |
-| Private record guidance, targeted re-asks and value-free record diagnostics | In progress | [#2005](https://github.com/sokolaidev/maf-extensions/issues/2005) (open) |
+| Per-call sending budgets for instructions, schemas and estimate headroom | Implemented | [#1995](https://github.com/sokolaidev/maf-extensions/issues/1995) (closed) by [#2008](https://github.com/sokolaidev/maf-extensions/pull/2008) (merged) |
+| Deferred tools-disabled recall, validated arguments and forced deadlines | Implemented | [#1996](https://github.com/sokolaidev/maf-extensions/issues/1996) (closed) by [#2008](https://github.com/sokolaidev/maf-extensions/pull/2008) (merged) |
+| Stable chunked user summaries and optional summary-options recovery | Implemented | [#1997](https://github.com/sokolaidev/maf-extensions/issues/1997) (closed) by [#2008](https://github.com/sokolaidev/maf-extensions/pull/2008) (merged) |
+| Private record guidance, targeted re-asks and value-free record diagnostics | Implemented | [#2005](https://github.com/sokolaidev/maf-extensions/issues/2005) (closed) by [#2008](https://github.com/sokolaidev/maf-extensions/pull/2008) (merged) |
