@@ -114,7 +114,7 @@ def run(
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
-                    pass
+                    pass  # The owned group may already have exited.
         finally:
             if process is not None:
                 if process.poll() is None:
