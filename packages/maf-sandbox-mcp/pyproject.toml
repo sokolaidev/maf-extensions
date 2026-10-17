@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Supervised local MCP service with a closed-network Bicep worker."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
