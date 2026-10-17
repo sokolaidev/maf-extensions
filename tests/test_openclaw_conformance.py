@@ -87,7 +87,20 @@ def control_events(cases):
         case.update(session_a=a, session_b=b, container=e.digest(name))
         active = b if name == "maf_idle_close" else a
         request_id = e.digest(1 if name.startswith("maf_") else 42)
-        if name != "maf_ordinary_close":
+        if name == "maf_ordinary_close":
+            for sid in (a, b):
+                exchange = e.digest(name + sid + "preclose")
+                add(
+                    event="request",
+                    method="tools/call",
+                    session=sid,
+                    request=request_id,
+                    exchange=exchange,
+                )
+                add(event="binding_started", session=sid, request=request_id)
+                add(event="binding_result", session=sid, request=request_id, **case["survivor"])
+                add(event="response", session=sid, exchange=exchange, status=200)
+        else:
             add(
                 event="request",
                 method="tools/call",
@@ -185,9 +198,21 @@ def control_events(cases):
                 for i, event in enumerate(events)
                 if event.get("session") == b
                 and event.get("request") == survivor_request
-                and event["event"] == "binding_started"
+                and event["event"] == "request"
             )
             events[position:position] = retirement
+            if name in ("maf_active_close", "maf_idle_close"):
+                early = retirement if name == "maf_idle_close" else retirement[:1]
+                for event in early:
+                    events.remove(event)
+                position = next(
+                    i
+                    for i, event in enumerate(events)
+                    if event["event"] == "request"
+                    and event.get("session") == b
+                    and event.get("exchange") == e.digest(name + "0")
+                )
+                events[position:position] = early
     for index, event in enumerate(events):
         event["time_ns"] = index + 1
     return events
@@ -1241,3 +1266,165 @@ def test_retained_reviewed_v4_campaign_evaluates_offline():
         record / "evidence", e.read(record / "plan.json"), e.read(record / "candidate.json")
     )
     assert result == e.read(record / "evaluation.json")
+
+
+@pytest.fixture(params=["synthetic", "retained"])
+def ownership_observations(request):
+    if request.param == "synthetic":
+        return observations(manifest())["ownership"]
+    record = ROOT / "scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v4"
+    return e.read(record / "evidence/ownership.json")["observations"]
+
+
+def test_ownership_lifecycle_control_is_valid(ownership_observations):
+    importlib.import_module("openclaw_conformance.ownership").verify(ownership_observations)
+
+
+@pytest.mark.parametrize("case", sorted(e.OWNERSHIP - {"maf_ordinary_close"}))
+@pytest.mark.parametrize("mutation", ["early_delete", "early_retirement", "late_admission"])
+def test_ownership_rejects_reversed_lifecycle(ownership_observations, case, mutation):
+    obs = ownership_observations
+    values = obs["cases"][case]
+    active = values["session_b" if case == "maf_idle_close" else "session_a"]
+    rows = [
+        r
+        for r in obs["transport"]
+        if r.get("session") in (values["session_a"], values["session_b"])
+    ]
+    start = next(r for r in rows if r["event"] == "binding_started" and r["session"] == active)
+    delete = next(
+        r for r in rows if r["event"] == "delete_requested" and r["session"] == values["session_a"]
+    )
+    retired = next(r for r in rows if r["event"] == "retired" and r["session"] == active)
+    if mutation == "early_delete":
+        delete["time_ns"] = start["time_ns"] - 1
+        if active == values["session_a"]:
+            retired["time_ns"] = start["time_ns"] - 1
+    elif mutation == "early_retirement":
+        retired["time_ns"] = start["time_ns"] + 1
+        if active == values["session_a"]:
+            delete["time_ns"] = retired["time_ns"]
+    else:
+        for row in rows:
+            if row["event"] == "admission_refused":
+                row["time_ns"] = retired["time_ns"] + 1
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("case", ["equal_ids_repeated_cancel", "maf_active_close"])
+def test_ownership_cancellation_precedes_retirement(ownership_observations, case):
+    obs = ownership_observations
+    sid = obs["cases"][case]["session_a"]
+    rows = [r for r in obs["transport"] if r.get("session") == sid]
+    retired = next(r for r in rows if r["event"] == "retired")
+    cancelled = next(r for r in rows if r["event"] == "binding_cancelled")
+    cancelled["time_ns"] = retired["time_ns"] + 1
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "all_work",
+        "request",
+        "binding_started",
+        "binding_result",
+        "response",
+        "late_result",
+        "late_response",
+        "incomplete",
+        "wrong_source",
+    ],
+)
+def test_ordinary_close_requires_successful_preclose_exchange(ownership_observations, mutation):
+    obs = ownership_observations
+    sid = obs["cases"]["maf_ordinary_close"]["session_a"]
+    rows = [r for r in obs["transport"] if r.get("session") == sid]
+    result = next(r for r in rows if r["event"] == "binding_result")
+    request = next(r for r in rows if r["event"] == "request" and r.get("method") == "tools/call")
+    response = next(
+        r for r in rows if r["event"] == "response" and r["exchange"] == request["exchange"]
+    )
+    delete = next(r for r in rows if r["event"] == "delete_requested")
+    if mutation.startswith("late_"):
+        (result if mutation == "late_result" else response)["time_ns"] = delete["time_ns"] + 1
+    elif mutation == "incomplete":
+        result.update(completed=False, status="incomplete")
+    elif mutation == "wrong_source":
+        result["source_sha256"] = e.LARGE_SOURCE_SHA256
+    else:
+        work = [request, response, result, next(r for r in rows if r["event"] == "binding_started")]
+        remove = work if mutation == "all_work" else [r for r in work if r["event"] == mutation]
+        obs["transport"] = [r for r in obs["transport"] if r not in remove]
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("case", sorted(e.OWNERSHIP))
+@pytest.mark.parametrize("binding", ["first", "survivor"])
+@pytest.mark.parametrize("offset", [0, 1])
+def test_ownership_rejects_multiple_starts_per_exchange(
+    ownership_observations, case, binding, offset
+):
+    obs = ownership_observations
+    values = obs["cases"][case]
+    sid = values["session_b" if binding == "survivor" or case == "maf_idle_close" else "session_a"]
+    starts = [
+        r for r in obs["transport"] if r["event"] == "binding_started" and r.get("session") == sid
+    ]
+    start = starts[-1] if binding == "survivor" else starts[0]
+    obs["transport"].append(dict(start, time_ns=start["time_ns"] + offset))
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("case", ["maf_idle_close", "maf_ordinary_close"])
+def test_completed_binding_allows_request_id_reuse(ownership_observations, case):
+    obs = ownership_observations
+    sid = obs["cases"][case]["session_b"]
+    starts = [
+        r for r in obs["transport"] if r["event"] == "binding_started" and r.get("session") == sid
+    ]
+    assert len(starts) == 2
+    first, last = starts[0], starts[-1]
+    survivor_request = last["request"]
+    for row in obs["transport"]:
+        if row.get("session") == sid and row.get("request") == survivor_request:
+            row["request"] = first["request"]
+    importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("case", ["maf_active_close", "maf_idle_close", "maf_ordinary_close"])
+def test_survivor_exchange_starts_after_closed_session_retires(ownership_observations, case):
+    obs = ownership_observations
+    a, b = (obs["cases"][case][key] for key in ("session_a", "session_b"))
+    retired = next(r for r in obs["transport"] if r["event"] == "retired" and r.get("session") == a)
+    request = next(
+        r
+        for r in reversed(obs["transport"])
+        if r["event"] == "request" and r.get("method") == "tools/call" and r.get("session") == b
+    )
+    request["time_ns"] = retired["time_ns"] - 1
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("case", ["maf_active_close", "maf_idle_close"])
+def test_maf_admission_probes_follow_close_transition(ownership_observations, case):
+    obs = ownership_observations
+    a, b = (obs["cases"][case][key] for key in ("session_a", "session_b"))
+    kind = "delete_requested" if case == "maf_active_close" else "retired"
+    transition = next(r for r in obs["transport"] if r["event"] == kind and r.get("session") == a)
+    admission = next(
+        r for r in obs["transport"] if r["event"] == "admission_refused" and r.get("session") == b
+    )
+    request = next(
+        r
+        for r in obs["transport"]
+        if r["event"] == "request" and r.get("exchange") == admission["exchange"]
+    )
+    transition["time_ns"] = request["time_ns"] + 1
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)

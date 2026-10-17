@@ -27,6 +27,10 @@ def verify(value: dict[str, Any]) -> None:
         _exchanges(
             [e for e in subset if e.get("event") == "request"], "ownership_request_exchanges"
         )
+        starts = [e for e in subset if e.get("event") == "binding_started"]
+        _exchanges([_request(subset, start) for start in starts], "binding_ambiguous_start")
+        deletes: dict[str, dict[str, Any]] = {}
+        retirements: dict[str, dict[str, Any]] = {}
         for sid, count in ((a, 4), (b, 1)):
             requests = [
                 e
@@ -55,16 +59,23 @@ def verify(value: dict[str, Any]) -> None:
                 and r.get("poisoned") is False,
                 "retirement_state",
             )
+            requested = [
+                e
+                for e in subset
+                if e.get("event") == "delete_requested" and e.get("session") == sid
+            ]
             require(
-                sum(
-                    e.get("event") == "delete_requested"
-                    and e.get("exchange") == r.get("exchange")
-                    and e.get("session") == sid
-                    and _ordered(e, r)
-                    for e in subset
-                )
-                == 1,
+                len(requested) == 1
+                and requested[0].get("exchange") == r.get("exchange")
+                and _ordered(requested[0], r),
                 "retirement_delete",
+            )
+            deletes[sid], retirements[sid] = requested[0], r
+            require(
+                all(
+                    _ordered(start, requested[0]) for start in starts if start.get("session") == sid
+                ),
+                "binding_after_delete",
             )
         survivor = [
             e
@@ -81,13 +92,24 @@ def verify(value: dict[str, Any]) -> None:
             ),
             "survivor_result",
         )
-        _binding(subset, survivor[-1])
+        survivor_request, survivor_response = _binding(subset, survivor[-1])
+        require(_ordered(survivor_response, deletes[b]), "survivor_after_delete")
         if name.startswith("maf_"):
-            retired_a = next(
-                e for e in subset if e.get("event") == "retired" and e.get("session") == a
-            )
-            require(_ordered(retired_a, survivor[-1]), "survivor_before_retirement")
+            require(_ordered(retirements[a], survivor_request), "survivor_before_retirement")
         if name == "maf_ordinary_close":
+            results = [
+                e for e in subset if e.get("event") == "binding_result" and e.get("session") == a
+            ]
+            require(len(results) == 1, "ordinary_preclose_result")
+            require(
+                all(
+                    encode(results[0].get(k)) == encode(case["survivor"][k])
+                    for k in ("completed", "status", "cleanup", "source_sha256")
+                ),
+                "ordinary_preclose_result",
+            )
+            _, response = _binding(subset, results[0])
+            require(_ordered(response, deletes[a]), "ordinary_preclose_order")
             require(
                 not any(e.get("event") == "admission_refused" for e in subset), "ordinary_admission"
             )
@@ -98,7 +120,7 @@ def verify(value: dict[str, Any]) -> None:
         ]
         require(bool(starts), "active_binding")
         start = starts[0]
-        _request(subset, start)
+        require(_ordered(start, deletes[a]), "active_before_delete")
         require(
             isinstance(start.get("request"), str)
             and re.fullmatch(r"[0-9a-f]{64}", start["request"]),
@@ -117,6 +139,28 @@ def verify(value: dict[str, Any]) -> None:
             )
         else:
             require(not cancelled, "unexpected_binding_cancellation")
+        terminal = cancelled or [
+            e
+            for e in subset
+            if e.get("event") == "binding_result"
+            and e.get("session") == active
+            and e.get("request") == start.get("request")
+            and _ordered(e, survivor_request)
+        ]
+        require(
+            len(terminal) == 1
+            and _ordered(start, terminal[0])
+            and _ordered(terminal[0], retirements[active]),
+            "active_retirement_order",
+        )
+        require(_ordered(terminal[0], survivor_request), "survivor_before_active_settled")
+        if name == "maf_active_close":
+            require(_ordered(deletes[a], terminal[0]), "active_close_order")
+        elif name != "maf_idle_close":
+            require(_ordered(terminal[0], deletes[a]), "raw_close_order")
+        for event in subset:
+            if event.get("event") == "request" and event.get("method") == "notifications/cancelled":
+                require(_ordered(start, event) and _ordered(event, terminal[0]), "cancel_order")
         admissions = [e for e in subset if e.get("event") == "admission_refused"]
         require(
             len(admissions) == (5 if name == "equal_ids_repeated_cancel" else 1), "admission_count"
@@ -132,7 +176,8 @@ def verify(value: dict[str, Any]) -> None:
                 and type(admission.get("owned_count")) is int
                 and admission["owned_count"] == 1
                 and admission.get("active_pending") is True
-                and _ordered(start, admission),
+                and _ordered(start, admission)
+                and _ordered(admission, terminal[0]),
                 "admission_identity",
             )
             requests = [
@@ -146,6 +191,9 @@ def verify(value: dict[str, Any]) -> None:
             ]
             require(len(requests) == 1 and _ordered(requests[0], admission), "admission_request")
             _response(subset, requests[0], 200)
+            if name in ("maf_active_close", "maf_idle_close"):
+                before = deletes[a] if name == "maf_active_close" else retirements[a]
+                require(_ordered(before, requests[0]), "close_admission_order")
         if name == "maf_idle_close":
             require(
                 case.get("call_raised") is False
@@ -159,6 +207,7 @@ def verify(value: dict[str, Any]) -> None:
                 if e.get("event") == "binding_result"
                 and e.get("session") == active
                 and e.get("request") == start.get("request")
+                and _ordered(e, survivor_request)
             ]
             require(
                 len(results) == 1
@@ -230,7 +279,9 @@ def _request(events: list[dict[str, Any]], start: dict[str, Any]) -> dict[str, A
     return request
 
 
-def _binding(events: list[dict[str, Any]], result: dict[str, Any]) -> None:
+def _binding(
+    events: list[dict[str, Any]], result: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
     require(
         isinstance(result.get("request"), str) and re.fullmatch(r"[0-9a-f]{64}", result["request"]),
         "binding_result_request",
@@ -270,3 +321,4 @@ def _binding(events: list[dict[str, Any]], result: dict[str, Any]) -> None:
         ),
         "binding_reused_request",
     )
+    return request, response
