@@ -920,7 +920,7 @@ def test_source_diff_ignores_publisher_but_tracks_payload_and_prepared_dependenc
     assert tracker.changed_inputs(tmp_path, base, payload, "bicep") == []
     prepared = commit(tmp_path, {"scripts/terraform_dependencies.py": "v2"})
     assert "scripts/terraform_dependencies.py" in tracker.changed_inputs(
-        tmp_path, payload, prepared, "terraform-prepared"
+        tmp_path, payload, prepared, "terraform-random"
     )
     assert tracker.changed_inputs(tmp_path, payload, prepared, "graphviz") == []
 

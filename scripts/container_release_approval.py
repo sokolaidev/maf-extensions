@@ -53,8 +53,8 @@ PROFILE_GUIDES = {
         "images/drawio-export/README.md",
     ),
     "terraform-random": (
-        "Offline Terraform validation/planning with Python, the bounded runner and the random provider.",
-        "images/terraform-sandbox/USAGE.md",
+        "Offline Terraform initialization and validation with the verified random provider and example module.",
+        "images/terraform-sandbox/TERRAFORM.md",
     ),
     "opentofu-random": (
         "Offline OpenTofu initialization and validation with the verified random provider and example module.",
@@ -63,10 +63,6 @@ PROFILE_GUIDES = {
     "terraform-avm": (
         "Offline Terraform initialization and validation with the pinned Azure Verified Modules catalogue and provider mirror.",
         "images/terraform-sandbox/AVM.md",
-    ),
-    "terraform-prepared": (
-        "Terraform with Python, the bounded runner and the reviewed provider/module cache.",
-        "images/terraform-sandbox/USAGE.md",
     ),
     "hyperlight": (
         "Hyperlight AKS runtime with Python, workspace wheels, locked dependencies and the supervisor/probe.",
@@ -274,6 +270,16 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
             rows.append(("OpenTofu random check", check))
         if not tofu.get("checks"):
             rows.append(("OpenTofu random check", UNAVAILABLE))
+    if candidate["profile"] == "terraform-random":
+        terraform = runtime.get("terraformRandom", {})
+        rows.append(("Prepared Terraform version", terraform.get("terraformVersion", UNAVAILABLE)))
+        rows.append(("Prepared Terraform receipt", terraform.get("receipt", UNAVAILABLE)))
+        rows.append(("Terraform source build", terraform.get("build", UNAVAILABLE)))
+        rows.append(("Terraform provider build", terraform.get("providerBuild", UNAVAILABLE)))
+        for check in terraform.get("checks", []):
+            rows.append(("Terraform random check", check))
+        if not terraform.get("checks"):
+            rows.append(("Terraform random check", UNAVAILABLE))
     if "result" in runtime:
         rows.append(("Runtime packaging evidence", runtime["result"]))
     if database.get("built") and assessment.get("assessedAt"):

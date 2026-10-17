@@ -1,6 +1,6 @@
 # Terraform and OpenTofu validation images
 
-For the public `opentofu-random` profile, start with the [OpenTofu consumer guide](OPENTOFU.md). It uses strict dependency preparation and includes the verified local module bundle; the archive-only `random` builder profile below is a development fixture.
+For the public `terraform-random` profile, start with the [Terraform consumer guide](TERRAFORM.md). For the public `opentofu-random` profile, start with the [OpenTofu consumer guide](OPENTOFU.md). Both use strict dependency preparation and include the verified local module bundle; the archive-only `random` builder profile below is a development fixture.
 
 > **To build, try, check or deploy an image, see [USAGE.md](USAGE.md).**
 
@@ -26,7 +26,7 @@ The launcher also accepts the fixed `format` mode used by the kind's opt-in `ter
 
 | Component | Version | Source | Archive SHA-256 |
 |---|---|---|---|
-| Terraform | 1.16.5 | [HashiCorp releases](https://releases.hashicorp.com/terraform/1.16.5/) | `2bc2fcfff033265c9e02ca0351f01794eb122f62a9b2a49a3294b9e49eaab5e4` |
+| Terraform | 1.16.6 | [HashiCorp releases](https://releases.hashicorp.com/terraform/1.16.6/) | `38034b38d03096399a7a1264a14561a8029b2b496fd1f169452656e53968f1b7` |
 | OpenTofu | 1.13.1 | [OpenTofu release](https://github.com/opentofu/opentofu/releases/tag/v1.13.1) | `8ccbc6f8ee21d2827715f3c6e08a9b3e0209b1e62057c05067ef117e047c1a80` |
 | Terraform random provider | 3.9.1 | [HashiCorp releases](https://releases.hashicorp.com/terraform-provider-random/3.9.1/) | `60b4f8a8ef18f52bf8e19215229dae408bee732825964092db7c989fd2de4097` |
 | OpenTofu random provider | 3.9.1 | [OpenTofu registry release](https://github.com/opentofu/terraform-provider-random/releases/tag/v3.9.1) | `624fb6ed552abc34a5aaac41e76a373da65ac08e524b09b672f29c60e6ac896a` |

@@ -1,8 +1,8 @@
 # Container image security checks
 
-The [Image security workflow](https://github.com/sokolaidev/maf-extensions/actions/workflows/image-security.yml) builds the eligible profiles from the thirteen below on Linux/amd64, inventories each built image with Syft, and scans that retained inventory with Grype. It runs daily at 06:35 UTC and by manual dispatch, with a choice of all profiles or one profile. Pull requests and main-branch pushes retain code, workflow, lint, type and CodeQL checks without starting this image-build matrix. Daily builds refresh moving base tags and package-manager inputs; they are new candidates, not rescans of an earlier release's exact bytes.
+The [Image security workflow](https://github.com/sokolaidev/maf-extensions/actions/workflows/image-security.yml) builds the eligible profiles from the eleven below on Linux/amd64, inventories each built image with Syft, and scans that retained inventory with Grype. It runs daily at 06:35 UTC and by manual dispatch, with a choice of all profiles or one profile. Pull requests and main-branch pushes retain code, workflow, lint, type and CodeQL checks without starting this image-build matrix. Daily builds refresh moving base tags and package-manager inputs; they are new candidates, not rescans of an earlier release's exact bytes.
 
-Failures outside pull requests open or update the workflow's tracking issue through the repository's existing reporter. The scanner jobs have read-only repository permissions; separate failure and recovery reporters have issue-write permission and never run on pull requests. A scheduled or manual all-profile run on the default branch automatically closes the tracking issue with a recovery link after all thirteen profiles complete their scans successfully in the same attempt. Single-profile runs, branch runs, scans superseded by a newer default-branch commit and deferred Hyperlight scans cannot close it. A tracker updated after the successful attempt started stays open for a later full run, so earlier recovery cannot dismiss a newer failure.
+Failures outside pull requests open or update the workflow's tracking issue through the repository's existing reporter. The scanner jobs have read-only repository permissions; separate failure and recovery reporters have issue-write permission and never run on pull requests. A scheduled or manual all-profile run on the default branch automatically closes the tracking issue with a recovery link after all eleven profiles complete their scans successfully in the same attempt. Single-profile runs, branch runs, scans superseded by a newer default-branch commit and deferred Hyperlight scans cannot close it. A tracker updated after the successful attempt started stays open for a later full run, so earlier recovery cannot dismiss a newer failure.
 
 The README badge shows the latest scheduled workflow status on `main`. Passing means every eligible profile in that scheduled run built, its inventory and scan completed, and Grype reported no High or Critical findings in that inventory. Manual scans do not update this badge; it does not establish scan freshness or the status of an already published image.
 
@@ -36,10 +36,9 @@ The inventory must contain components and identify the exact built image. Lower-
 | `graphviz` | Graphviz DOT rendering sandbox |
 | `drawio` | [Editable Draw.io authoring with Python and Graphviz](../../images/drawio-sandbox/README.md) |
 | `drawio-export` | Draw.io Desktop export runtime |
-| `terraform-random` | Terraform with its random-provider profile |
+| `terraform-random` | [Terraform with its verified random-provider preparation and local module bundle](../../images/terraform-sandbox/TERRAFORM.md) |
 | `opentofu-random` | [OpenTofu with its verified random-provider preparation and local module bundle](../../images/terraform-sandbox/OPENTOFU.md) |
 | `terraform-avm` | Terraform with the pinned AVM catalogue and provider mirror; [consumer guide](../../images/terraform-sandbox/AVM.md) |
-| `terraform-prepared` | Terraform prepared from `dependencies.terraform.json` |
 | `hyperlight` | Hyperlight runtime built from the checkout's wheels and lockfile |
 | `egress-proxy` | [Patched egress proxy and consumer guide](../../images/egress-proxy/README.md) |
 
@@ -63,7 +62,7 @@ The local image ID identifies the image configuration and its content-addressed 
 
 ## Planned distribution
 
-The agreed registry is GitHub Container Registry, under `ghcr.io/sokolaidev/maf-extensions/`, with packages linked to this repository. The [accepted image release contract](container-image-releases.md) defines names and independent versions for all thirteen Linux/amd64 profiles, maintainer-approved publication of the exact assessed bytes, signed provenance and SBOMs, and daily monitoring of released digests. It requires a release scan no more than 24 hours old, stale status after 48 hours, and 90 days of continued monitoring after a release is superseded.
+The agreed registry is GitHub Container Registry, under `ghcr.io/sokolaidev/maf-extensions/`, with packages linked to this repository. The [accepted image release contract](container-image-releases.md) defines names and independent versions for all eleven Linux/amd64 profiles, maintainer-approved publication of the exact assessed bytes, signed provenance and SBOMs, and daily monitoring of released digests. It requires a release scan no more than 24 hours old, stale status after 48 hours, and 90 days of continued monitoring after a release is superseded.
 
 Interrupted publications are registered before the registry write. Incomplete or abandoned candidates remain visibly blocked and monitored for as long as they remain public, even if no release completes. Consumers require an authenticated completed catalogue record for the selected profile, version and digest, even when image attestations pass. Abandonment permanently retires the version; it does not delete the image automatically or start the completed-release 90-day window.
 

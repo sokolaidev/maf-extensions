@@ -26,7 +26,6 @@ on:
           - terraform-random
           - opentofu-random
           - terraform-avm
-          - terraform-prepared
           - hyperlight
           - egress-proxy
         required: true
