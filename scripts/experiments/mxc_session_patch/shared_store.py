@@ -154,6 +154,7 @@ class SharedStore:
         idle_policy: idle.Policy | None = None,
         physical_policy: physical.Policy | None = None,
         prelaunch_recovery: bool = False,
+        existing_only: bool = False,
     ):
         if (
             limits.session_quota < SESSION_METADATA
@@ -207,6 +208,8 @@ class SharedStore:
             for suffix in ("", "-journal", "-wal", "-shm"):
                 check_file(self.root / ("shared.sqlite" + suffix))
             existed = path.exists()
+            if existing_only and not existed:
+                raise Refused("existing session journal is unavailable")
             if (self.root / "state.sqlite").exists() and not existed:
                 raise Refused("legacy store requires explicit migration")
             _check_rollback_format(path)
@@ -220,6 +223,8 @@ class SharedStore:
                     empty = (
                         self.db.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchone() is None
                     )
+                    if empty and existing_only:
+                        raise Refused("existing session journal is empty")
                     if empty and (self.root / "state.sqlite").exists():
                         raise Refused("legacy store requires explicit migration")
                     upgrading = False
@@ -284,6 +289,8 @@ class SharedStore:
                         "SELECT * FROM sessions WHERE id=?", (session,)
                     ).fetchone()
                     if row is None:
+                        if existing_only:
+                            raise Refused("existing session journal lacks this session")
                         physical.check_headroom(self)
                         if (
                             SESSION_METADATA > limits.session_quota
