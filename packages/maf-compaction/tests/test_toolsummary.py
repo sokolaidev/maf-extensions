@@ -17,7 +17,14 @@ from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
 import pytest
-from agent_framework import AgentSession, CharacterEstimatorTokenizer, ChatContext, Content, Message
+from agent_framework import (
+    AgentSession,
+    CharacterEstimatorTokenizer,
+    ChatContext,
+    ChatResponse,
+    Content,
+    Message,
+)
 from agent_framework._compaction import included_token_count, project_included_messages
 
 from maf_compaction._anchored import REMOVAL_MARKER, AnchoredCompactionStrategy
@@ -80,7 +87,7 @@ def _record_messages(values: str, *, call_id: str = "rec") -> list[Message]:
                     "type": "function_call",
                     "call_id": call_id,
                     "name": RECALL_TOOL_NAME,
-                    "arguments": "{}",
+                    "arguments": {"values": values},
                 }
             ],
             message_id=f"{call_id}_call",
@@ -1641,7 +1648,7 @@ async def _run(
     context = ChatContext(
         client=None,
         messages=[Message(role="user", contents=["q"])],
-        options={"temperature": 0},
+        options={"temperature": 0, "tools": [make_recall_tool()]},
         session=session,
     )
     recorder = _Recorder(context, messages, finish_reason)
@@ -1743,7 +1750,11 @@ async def test_a_failed_unpinned_retry_propagates_and_leaves_the_tool_disarmed()
     async def failing() -> None:
         raise ConnectionError("provider unavailable")
 
-    context = ChatContext(client=None, messages=[Message(role="user", contents=["q"])], options={})
+    context = ChatContext(
+        client=None,
+        messages=[Message(role="user", contents=["q"])],
+        options={"tools": [make_recall_tool()]},
+    )
     with pytest.raises(ConnectionError):
         await middleware.process(context, failing)
 
@@ -2945,3 +2956,70 @@ async def test_partial_row_release_leaves_non_text_results_unchanged(
     assert not await strategy(messages)
     assert content.to_dict() == original
     assert is_preserved(messages[5])
+
+
+@pytest.mark.parametrize("tool_form", ["callable", "function", "nested_dict", "flat_dict"])
+@pytest.mark.parametrize("wrapped", [False, True])
+async def test_value_free_records_receive_targeted_private_reask(tool_form, wrapped):
+    from agent_framework import FunctionTool
+    from agent_framework import tool as function_tool
+
+    strategy = _strategy(max_input_tokens=100_000, trigger_fraction=0.001)
+    messages = _conversation(3, record="Only the page titles were requested.")
+    messages[1].contents = [Content.from_text("Do not quote results. Reply with titles only.")]
+    await strategy(messages)
+    assert strategy.records_without_values == 1
+    await strategy(messages)
+    assert strategy.records_without_values == 1, "re-reading a record is not a new record"
+    gate = RecallGate()
+    middleware = ToolResultRecallMiddleware(
+        max_input_tokens=100_000,
+        tokenizer=TOKENIZER,
+        arm=gate.arm,
+        reforce=(lambda: strategy.take_reforce()) if wrapped else strategy.take_reforce,
+    )
+    if wrapped:
+        strategy.bind_recall(middleware)
+    tool = make_recall_tool(gate)
+    if tool_form != "callable":
+        tool = function_tool(tool)
+        if tool_form.endswith("dict"):
+            tool = tool.to_json_schema_spec()
+            if tool_form == "flat_dict":
+                tool = tool["function"]
+    original = str(tool) if isinstance(tool, dict) else getattr(tool, "description", tool.__doc__)
+    options = {"tools": [tool]}
+    context = ChatContext(None, messages, options)
+    seen = []
+
+    async def respond():
+        seen.append(dict(context.options or {}))
+        context.result = ChatResponse(messages=Message("assistant", ["answer"]))
+
+    await middleware.process(context, respond)
+    saved = middleware.session_state()
+    assert saved["feedback"]
+    middleware.restore_session_state(saved)
+    await middleware.process(context, respond)
+    advertised = seen[-1]["tools"][0]
+    spec = advertised.to_json_schema_spec() if isinstance(advertised, FunctionTool) else advertised
+    description = spec.get("function", spec)["description"]
+    assert "not a reply shown to the user" in description
+    assert "do not apply to this record" in description
+    assert "lookup_0" in description and "lookup_1" in description and "lookup_2" in description
+    assert "distinctive values verbatim" in description
+    assert context.options is options
+    assert (
+        str(tool) if isinstance(tool, dict) else getattr(tool, "description", tool.__doc__)
+    ) == original
+    assert messages[1].text == "Do not quote results. Reply with titles only."
+
+
+async def test_records_with_any_target_value_are_not_counted_as_value_free():
+    strategy = _strategy(max_input_tokens=100_000, trigger_fraction=0.001)
+    messages = _conversation(3, record="CODE-0")
+    await strategy(messages)
+    assert strategy.records_without_values == 0
+    messages.extend(_record_messages("Only titles.", call_id="second"))
+    await strategy(messages)
+    assert strategy.records_without_values == 1

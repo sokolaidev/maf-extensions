@@ -116,6 +116,12 @@ Preserved media remains part of the budget. If protected material cannot fit, th
 
 The [live image verification record](research/media-live-1878.md) measures description, compaction, session replay and provider usage on synthetic images; its scope does not extend to other media or providers.
 
+## Request resilience
+
+The composition reserves outgoing instructions and tool schemas per call and can leave an additional `estimate_margin` for tokenizer error. Its history-storage phase keeps the configured budget. Recall waits through tools-disabled calls, validates forced arguments before returning them to the framework, and can bound a complete forced response with `forced_call_timeout_seconds`. Internal records explicitly retain values regardless of user-facing reply-format instructions; re-asks name missed results in a temporary tool description, and `records_without_values` reports records that quoted no distinctive target value.
+
+User-summary `summary_input_policy="chunk"` covers an oversized eligible band through stable whole-turn chunks and bounded merges. Completed chunk answers survive in the session snapshot; one deadline and failure-cooldown event cover the whole pass. Optional summary chat options can be retired after one failed attempt and an unconfigured retry. These mechanisms are exercised by scripted clients; they do not establish live provider recall quality or tokenizer accuracy. The [package configuration guide](../../packages/maf-compaction/README.md#per-call-request-budgets-and-chunked-summaries) specifies defaults, wiring and limits.
+
 ## What none of them do
 
 Inside the context window nothing here beats not compacting: the best strategy costs within 3-8% of the control, inside the seed spread, and the whole conversation stays cached. Past the window the composition keeps every fact and is cheaper than an unlimited model, except on gpt-5.6-luna at three times the window, where it costs more and overflows on one seed of five; the rest either lose facts or overflow. None of them measures what a user-turn summary kept of the turns. All of them call `agent_framework._compaction`, the framework's private compaction helpers, for grouping, token annotation and the exclusion flags, so the dependency is pinned to one minor and re-read before the pin moves.
@@ -142,3 +148,7 @@ Inside the context window nothing here beats not compacting: the best strategy c
 | Summarising each tool result individually rather than all in one record | Not started | untracked |
 | Private-API dependency re-read on every core minor | Ongoing | [release-compatibility.md](../release-compatibility.md) |
 | Optional user-summary timeouts and consecutive-failure cooldowns | Implemented | [#1958](https://github.com/sokolaidev/maf-extensions/issues/1958) (closed) by [#1984](https://github.com/sokolaidev/maf-extensions/pull/1984) (merged) |
+| Per-call sending budgets for instructions, schemas and estimate headroom | In progress | [#1995](https://github.com/sokolaidev/maf-extensions/issues/1995) (open) |
+| Deferred tools-disabled recall, validated arguments and forced deadlines | In progress | [#1996](https://github.com/sokolaidev/maf-extensions/issues/1996) (open) |
+| Stable chunked user summaries and optional summary-options recovery | In progress | [#1997](https://github.com/sokolaidev/maf-extensions/issues/1997) (open) |
+| Private record guidance, targeted re-asks and value-free record diagnostics | In progress | [#2005](https://github.com/sokolaidev/maf-extensions/issues/2005) (open) |

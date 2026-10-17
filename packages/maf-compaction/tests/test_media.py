@@ -220,7 +220,11 @@ async def test_recall_trigger_uses_media_cost_from_loaded_history():
     options = []
 
     async def run():
-        context = ChatContext(client=None, messages=[], options={})
+        context = ChatContext(
+            client=None,
+            messages=[],
+            options={"tools": [{"type": "function", "name": "recall_earlier_tool_results"}]},
+        )
 
         async def next_call():
             options.append(dict(context.options or {}))

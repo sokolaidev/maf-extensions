@@ -1,5 +1,6 @@
 """Whole-unit request budgets, partial replacement, and replay."""
 
+import asyncio
 import json
 from copy import deepcopy
 
@@ -661,3 +662,141 @@ async def test_refusal_does_not_cross_colliding_record_counts(operation, legacy)
     assert len(client.requests) == 1 + int(legacy)
     assert await attempt(restored, more)
     assert len(client.requests) == 2 + int(legacy)
+
+
+async def test_chunked_band_covers_every_eligible_turn_and_replays():
+    client = BoundedClient(1000)
+    strategy = users(client, summary_input_policy="chunk", max_summary_input_tokens=1000)
+    messages = conversation()
+    stored = deepcopy(messages)
+    originals = list(messages)
+    assert await strategy(messages)
+    maps = [request[-1].text for request in client.requests if request[0].text == strategy.prompt]
+    for index in range(1, 6):
+        assert sum(f"Turn {index}:" in text for text in maps) == 1
+        assert originals[index].additional_properties[EXCLUDED_KEY]
+    assert len(client.requests) > len(maps), "partials are merged"
+    count = len(client.requests)
+    assert await strategy(stored)
+    assert len(client.requests) == count
+    assert visible(messages) == visible(stored)
+
+
+async def test_growing_band_reuses_closed_chunks_even_after_restore():
+    client = BoundedClient(1000)
+    strategy = users(client, summary_input_policy="chunk", max_summary_input_tokens=1000)
+    assert await strategy(conversation())
+    first_maps = [r[-1].text for r in client.requests if r[0].text == strategy.prompt]
+    state = json.loads(json.dumps(strategy.session_state()))
+    next_client = BoundedClient(1000)
+    restored = users(next_client, summary_input_policy="chunk", max_summary_input_tokens=1000)
+    restored.restore_session_state(state)
+    growing = conversation() + [Message("user", ["new turn " + "u" * 1500], message_id="u8")]
+    assert await restored(growing)
+    next_maps = [r[-1].text for r in next_client.requests if r[0].text == restored.prompt]
+    assert all(text not in next_maps for text in first_maps[:-1])
+    assert len(next_maps) == 1
+
+
+async def test_chunking_refuses_an_oversized_single_turn_without_truncation():
+    client = BoundedClient(500)
+    strategy = users(client, summary_input_policy="chunk", max_summary_input_tokens=500)
+    messages = conversation()
+    before = visible(messages)
+    assert not await strategy(messages)
+    assert not client.requests
+    assert visible(messages) == before
+    assert strategy.user_summary_failures == 1
+
+
+async def test_chunk_merge_makes_bounded_progress_through_multiple_levels():
+    client = BoundedClient(140, answer="fact123 " * 12)
+    strategy = users(
+        client,
+        summary_input_policy="chunk",
+        max_summary_input_tokens=140,
+        prompt="Summarize.",
+        fold_prompt="Merge.",
+    )
+    units = [f"{i}. " + "x" * 240 for i in range(12)]
+    answer = await strategy._summarize("\n".join(units), prompt=strategy.prompt, units=units)
+    assert answer == client.answer.strip()
+    maps = [r for r in client.requests if r[0].text == "Summarize."]
+    merges = [r for r in client.requests if r[0].text == "Merge."]
+    assert len(maps) == 12
+    assert len(merges) >= 3
+
+
+async def test_unmergeable_partials_leave_the_source_intact_and_fail_once():
+    client = BoundedClient(140, answer="x" * 240)
+    strategy = users(
+        client,
+        summary_input_policy="chunk",
+        max_summary_input_tokens=140,
+        prompt="Summarize.",
+        fold_prompt="Merge.",
+    )
+    units = [f"{i}. " + "u" * 300 for i in range(3)]
+    assert await strategy._summarize("\n".join(units), prompt=strategy.prompt, units=units) is None
+    assert strategy.user_summary_failures == 1
+    assert len(client.requests) == 3
+
+
+async def test_chunk_deadline_and_cooldown_cover_the_whole_pass():
+    class HangingClient(BoundedClient):
+        async def get_response(self, messages, **kwargs):
+            if self.requests:
+                await asyncio.Event().wait()
+            return await super().get_response(messages, **kwargs)
+
+    client = HangingClient(1000)
+    strategy = users(
+        client,
+        summary_input_policy="chunk",
+        max_summary_input_tokens=1000,
+        summary_timeout_seconds=0.01,
+        max_consecutive_summary_failures=1,
+        summary_backoff_seconds=60,
+    )
+    messages = conversation()
+    before = visible(messages)
+    assert not await strategy(messages)
+    assert visible(messages) == before
+    assert strategy.user_summary_failures == 1
+    assert not await strategy(messages)
+    assert strategy.user_summary_failures == 1
+    assert strategy.user_summary_skips == 1
+
+
+@pytest.mark.parametrize("failure", ["empty", "exception"])
+async def test_summary_options_retry_once_and_stay_disabled(failure):
+    class OptionsClient(BoundedClient):
+        def __init__(self):
+            super().__init__(1000)
+            self.options = []
+
+        async def get_response(self, messages, **kwargs):
+            options = kwargs.get("options", {})
+            self.options.append(dict(options))
+            if options:
+                if failure == "exception":
+                    raise ValueError("unsupported options")
+                return ChatResponse(messages=Message("assistant", [""]))
+            return await super().get_response(messages, **kwargs)
+
+    client = OptionsClient()
+    strategy = users(client, summary_options={"max_tokens": 10}, retry_without_summary_options=True)
+    assert await strategy._summarize("user text", prompt="Summarize.")
+    assert await strategy._summarize("more text", prompt="Summarize.")
+    assert client.options == [{"max_tokens": 10}, {}, {}]
+    assert strategy.user_summary_failures == 0
+
+
+async def test_summary_options_failure_without_retry_is_one_failure():
+    class RefusingClient:
+        async def get_response(self, messages, **kwargs):
+            raise ValueError("unsupported")
+
+    strategy = users(RefusingClient(), summary_options={"max_tokens": 10})
+    assert await strategy._summarize("text", prompt="Summarize.") is None
+    assert strategy.user_summary_failures == 1

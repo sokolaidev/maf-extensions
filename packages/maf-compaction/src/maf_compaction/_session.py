@@ -215,11 +215,28 @@ class SessionToolResultRecallMiddleware(ChatMiddleware):
 
             async def compact(messages: list[Message]) -> bool:
                 with self.registry.activate(session) as stack:
+                    if isinstance(
+                        stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+                    ):
+                        return await stack.strategy.compact_before(
+                            messages, options=context.options or {}
+                        )
                     return await stack.strategy(messages)
 
             context.kwargs = {**context.kwargs, "compaction_strategy": compact}
         with self.registry.activate(session) as stack:
-            await stack.middleware.process(context, call_next)
+            strategy = stack.strategy
+            request_budget = None
+            if self.compact_before and isinstance(
+                strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+            ):
+
+                def sending_budget() -> int:
+                    return strategy.sending_budget(context.options or {})
+
+                request_budget = sending_budget
+
+            await stack.middleware.process(context, call_next, request_budget=request_budget)
 
 
 def make_session_recall_tool(
