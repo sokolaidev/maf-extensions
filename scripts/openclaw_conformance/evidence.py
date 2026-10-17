@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-PROFILE = "installed-bicep-windows-v3"
+PROFILE = "installed-bicep-windows-v4"
 WHEEL = "1228f030135da4e3c5797ec76e19c34275fb7bba20fbc55d3d42d6cc43955529"
 INTEGRITY = "sha512-/8N2LnfTFQPvnZizi8qKSFfnLQaPvSG3Cb4xo1YV7b4JhYiUc43ZNRpXJ01bWghLK0Ezk3HVeo/DGHcIRQwRWA=="
 CLAIMS = (
@@ -146,6 +146,11 @@ def read(path: Path, limit: int = LIMITS["summary"]) -> Any:
     with path.open("rb") as stream:
         raw = stream.read(limit + 1)
     require(len(raw) <= limit, "oversized_record")
+    return decode(raw)
+
+
+def decode(raw: str | bytes) -> Any:
+    """Reject duplicate keys and nonfinite values at every JSON boundary."""
     try:
         return json.loads(
             raw,

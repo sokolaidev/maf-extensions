@@ -16,9 +16,15 @@ from typing import Any
 from .evidence import LIMITS, require
 
 
-def run(
-    args: list[str], root: Path, env: dict[str, str], timeout: int, *, diagnostics: bool
-) -> str:
+def capture(
+    args: list[str],
+    root: Path,
+    env: dict[str, str],
+    timeout: int,
+    *,
+    diagnostics: bool,
+    stdout_limit: int | None = None,
+) -> subprocess.CompletedProcess[bytes]:
     """Stop the owned tree on deadline or overflow; cleanup may discard diagnostics."""
     log = (root / "setup.log").open("ab") if diagnostics else None
     stdout = bytearray()
@@ -35,7 +41,11 @@ def run(
 
     def drain(stream: io.BufferedReader, output: bool) -> None:
         size = 0 if output or log is None else log.tell()
-        limit = LIMITS["events" if output else "log"]
+        limit = (
+            (LIMITS["events"] if stdout_limit is None else min(stdout_limit, LIMITS["events"]))
+            if output
+            else LIMITS["log"]
+        )
         try:
             while chunk := stream.read1(65536):
                 available = max(0, limit - size)
@@ -131,5 +141,13 @@ def run(
     require(not any(reader.is_alive() for reader in readers), "setup_process_cleanup")
     require(not failure, failure[0] if failure else "setup_output_read")
     assert process is not None
-    require(process.returncode == 0, "setup_command_failed")
-    return stdout.decode("utf-8").strip()
+    return subprocess.CompletedProcess(args, process.returncode, bytes(stdout))
+
+
+def run(
+    args: list[str], root: Path, env: dict[str, str], timeout: int, *, diagnostics: bool
+) -> str:
+    """Require success from a supervised command with bounded output."""
+    result = capture(args, root, env, timeout, diagnostics=diagnostics)
+    require(result.returncode == 0, "setup_command_failed")
+    return result.stdout.decode("utf-8").strip()

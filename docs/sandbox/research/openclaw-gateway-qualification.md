@@ -1091,7 +1091,7 @@ Active MAF closure settled the service in 20.53 seconds, while the pending calle
 
 The [development-attempt metadata](../../../scripts/experiments/openclaw_conformance_evidence/2026-10-16-windows/development-attempts.json) retains two separate failed campaign summaries: an evaluator that incorrectly required response-loss compilation to complete, and a superseded runner rejected when its fingerprint changed. Their full private evidence directories remain separate. The accepted campaign used a fresh installation and fresh output directory after the corrections; it does not combine successful stages from those attempts.
 
-The historical bundle remains inspectable, but re-evaluation requires its recorded runner revision. It does not satisfy the current v3 contract.
+The historical bundle remains inspectable, but re-evaluation requires its recorded runner revision. It does not satisfy the current contract.
 
 The [operator guide](../openclaw.md#installed-bicep-conformance-runner) describes fresh preparation and execution. Expected inputs must be selected independently and trusted: hashes establish byte correlation, not the truth of a forged observation. The evaluator fixes required groups and case identities and refuses missing, duplicated, transplanted, malformed, narrowed or failed evidence; offline adversarial tests also cover boolean count substitutions, late import effects, changed installed bytes and all-denied network controls. PR CI exercises these offline checks, not the opt-in Docker/Gateway campaign.
 
@@ -1128,6 +1128,8 @@ That historical campaign qualified its supervised Windows/Docker candidate under
 
 ## Reviewed v3 conformance campaign (2026-10-17)
 
+**Historical v3 evidence, superseded by v4 below.** Review found unbounded discovery/policy subprocess capture, permissive parsing inside the provider tool-result string, and missing request/response correlation for active and surviving bindings. These records remain unchanged and require their recorded runner revision; the current evaluator refuses the v3 profile.
+
 The `installed-bicep-windows-v3` contract retains the inspected candidate image for both network controls. Each of six Gateway outcomes carries a distinct turn and its session, linked to the outgoing request and both original provider observations; the evaluator reconstructs the result from the provider record. Cancellation requests and admission observations must identify distinct exchanges. The shared JSON reader refuses overflow numbers as well as literal nonfinite values, including in otherwise unused fields.
 
 Preparation counts stdout and stderr while the owned process tree runs. Overflow or deadline stops that tree; a normal parent exit also reclaims remaining descendants. Cleanup uses independently bounded command diagnostics, so an exhausted setup log cannot hide a successful Docker observation or prevent removal. The original diagnostics failure remains recorded. A saved summary stays unqualified until complete evaluation succeeds, including the aggregate byte budget for the final success summary.
@@ -1140,9 +1142,18 @@ Independent evaluation returned `qualified_for_profile` for campaign `dd75630a7a
 
 Active MAF close settled the service in 20.50 seconds and the caller in 240.02 seconds, with error code 408; the peer completed valid work. This remains deterministic Windows/Docker evidence for one installed candidate. Real-model behavior, Linux, unattended owner loss (#1973), conditional native qualification (#1974), credential enforcement (#1952) and production acceptance remain outside this result. Additional tools remain deferred in #1639 and broader backend design remains #1642.
 
-Re-evaluate the retained v3 report without Docker or installed OpenClaw:
+Re-evaluate the historical v3 report at its recorded runner revision without Docker or installed OpenClaw:
 
 ```powershell
 $record = 'scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v3'
 uv run --no-project --python 3.13 python -m scripts.openclaw_conformance evaluate --bundle "$record/evidence" --plan "$record/plan.json" --manifest "$record/candidate.json"
 ```
+
+
+## Reviewed v4 conformance campaign (2026-10-17)
+
+The `installed-bicep-windows-v4` contract supervises discovery and policy probes with streaming stdout/stderr limits while preserving their expected exit statuses. Docker inventory observations inside those stages use the same bounded command supervisor. Embedded Gateway tool-result JSON uses the same duplicate-key and finite-number checks as outer evidence before projection discards fields.
+
+Every credited active binding must follow its matching transport request. A surviving result must follow the latest matching binding start and precede the unique successful response on that request's exchange. Request IDs may be reused after completed exchanges; the evaluator rejects stale, missing, ambiguous and mismatched exchanges. The process-tree regression publishes its child PID atomically before the parent can signal completion.
+
+A fresh installed campaign is required for this revised profile; historical v3 success does not qualify v4. The current validation record will be appended after independent evaluation and cleanup complete.

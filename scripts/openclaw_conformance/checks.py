@@ -9,7 +9,6 @@ import json
 import os
 import platform
 import secrets
-import subprocess
 import sys
 import threading
 from http.server import ThreadingHTTPServer
@@ -17,8 +16,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from .evidence import LIMITS, WHEEL, file_hash, read, require
-from .install import FIXTURES, SAMPLE, environment, npm_tree
+from .commands import capture
+from .evidence import LIMITS, WHEEL, decode, file_hash, read, require
+from .install import FIXTURES, SAMPLE, command, environment, npm_tree
 
 sys.path.insert(0, str(FIXTURES))
 sys.path.insert(0, str(SAMPLE))
@@ -89,15 +89,16 @@ def discovery(root: Path) -> dict[str, Any]:
     """Observe import effects and prove late guard refusal in a separate control."""
     results = []
     for extra in ([], ["late-control"]):
-        completed = subprocess.run(
+        completed = capture(
             [sys.executable, "-I", "-B", "-c", DISCOVERY, *extra],
-            cwd=root,
-            env=environment(root),
-            capture_output=True,
-            timeout=60,
+            root,
+            environment(root),
+            60,
+            diagnostics=True,
+            stdout_limit=LIMITS["summary"] - 1,
         )
         require(len(completed.stdout) < LIMITS["summary"], "discovery_output_limit")
-        value = json.loads(completed.stdout)
+        value = decode(completed.stdout)
         require(value["side_effect_attempts"] == [], "import_side_effect")
         results.append((completed.returncode, value))
     require(results[0][0] == 0 and results[1][0] == 3, "late_guard_control")
@@ -217,9 +218,12 @@ async def _input_refusals(root: Path, prepared: Path, manifest: dict[str, Any]) 
             await asyncio.wait_for(task, 60)
             sock.close()
         require(
-            not subprocess.check_output(
-                ["docker", "ps", "-aq", "--filter", "label=maf-sandbox.scope=" + scope], timeout=30
-            ).strip(),
+            not command(
+                ["docker", "ps", "-aq", "--filter", "label=maf-sandbox.scope=" + scope],
+                root,
+                30,
+                diagnostics=False,
+            ),
             "input_cleanup",
         )
     return True
@@ -239,12 +243,12 @@ def policy(root: Path, prepared: Path, manifest: dict[str, Any]) -> dict[str, An
         ("oversized_config", manifest["image"], config),
         ("mutable_image", "mutable:tag", prepared / "bicepconfig.json"),
     ):
-        value = subprocess.run(
+        value = capture(
             [str(console), "--image", image, "--config", str(path), "--state-dir", str(owner)],
-            cwd=root,
-            env=environment(root),
-            capture_output=True,
-            timeout=30,
+            root,
+            environment(root),
+            30,
+            diagnostics=True,
         )
         observations[name] = value.returncode != 0 and not owner.exists()
     observations["malformed_input"] = asyncio.run(_input_refusals(root, prepared, manifest))
@@ -353,7 +357,7 @@ def gateway(root: Path, prepared: Path, manifest: dict[str, Any]) -> dict[str, A
         owner = (args.owner / "owner").read_text().strip()
         require(len(owner) == 32 and all(c in "0123456789abcdef" for c in owner), "owner_identity")
         require(
-            not subprocess.check_output(
+            not command(
                 [
                     "docker",
                     "ps",
@@ -361,8 +365,10 @@ def gateway(root: Path, prepared: Path, manifest: dict[str, Any]) -> dict[str, A
                     "--filter",
                     "label=maf-sandbox.scope=openclaw-bicep-" + owner,
                 ],
-                timeout=30,
-            ).strip(),
+                root,
+                30,
+                diagnostics=False,
+            ),
             "gateway_owned_survivors",
         )
     return value

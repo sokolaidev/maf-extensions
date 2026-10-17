@@ -187,7 +187,7 @@ def test_setup_stops_descendants_and_preserves_unrelated_process(tmp_path, monke
     monkeypatch.setitem(install.LIMITS, "log", 4096)
     monkeypatch.setitem(install.LIMITS, "events", 4096)
     pidfile = tmp_path / "descendant.pid"
-    child = f"import os,time; from pathlib import Path; Path({str(pidfile)!r}).write_text(str(os.getpid())); time.sleep(120)"
+    child = f"import os,time; from pathlib import Path; p=Path({str(pidfile)!r}); pending=p.with_suffix('.pending'); pending.touch(); time.sleep(.05); pending.write_text(str(os.getpid())); pending.replace(p); time.sleep(120)"
     action = (
         f"sys.{mode}.write('x'*8192); sys.{mode}.flush(); time.sleep(120)"
         if mode in {"stdout", "stderr"}
@@ -230,3 +230,91 @@ def test_setup_stops_descendants_and_preserves_unrelated_process(tmp_path, monke
             import signal
 
             os.kill(descendant, signal.SIGTERM)
+
+
+@pytest.mark.parametrize("probe", ["discovery", "policy"])
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_probe_output_is_bounded_before_exit(tmp_path, monkeypatch, probe, stream):
+    import subprocess
+
+    checks = importlib.import_module("openclaw_conformance.checks")
+    marker = tmp_path / "continued"
+    monkeypatch.setitem(runner.LIMITS, "events", 4096)
+    monkeypatch.setitem(runner.LIMITS, "log", 4096)
+    code = (
+        f"import sys,time; from pathlib import Path; sys.{stream}.write(' '*8192); "
+        f"sys.{stream}.flush(); time.sleep(2); Path({str(marker)!r}).touch(); "
+        "print('{\"side_effect_attempts\":[]}'); sys.exit(3 if len(sys.argv)>1 else 0)"
+    )
+    if probe == "discovery":
+        monkeypatch.setattr(checks, "DISCOVERY", code)
+    else:
+        original = subprocess.Popen
+
+        def launch(args, *a, **kw):
+            args = list(args)
+            index = next(
+                (
+                    i
+                    for i, arg in enumerate(args)
+                    if str(arg).endswith(("maf-bicep-mcp.exe", "maf-bicep-mcp"))
+                ),
+                None,
+            )
+            if index is not None:
+                args[index:] = [sys.executable, "-I", "-B", "-c", code, "refuse"]
+            return original(args, *a, **kw)
+
+        monkeypatch.setattr(subprocess, "Popen", launch)
+
+        async def inputs(*args):
+            return True
+
+        monkeypatch.setattr(checks, "_input_refusals", inputs)
+    with pytest.raises(runner.Refused, match="setup_(output|log)_limit"):
+        if probe == "discovery":
+            checks.discovery(tmp_path)
+        else:
+            checks.policy(tmp_path, tmp_path, {"image": "sha256:" + "a" * 64})
+    assert not marker.exists()
+    assert (tmp_path / "setup.log").stat().st_size <= 4096
+
+
+@pytest.mark.parametrize("codes,accepted", [([0, 3], True), ([0, 0], False), ([3, 3], False)])
+def test_discovery_preserves_expected_exit_statuses(tmp_path, monkeypatch, codes, accepted):
+    import subprocess
+
+    checks = importlib.import_module("openclaw_conformance.checks")
+    statuses = iter(codes)
+    monkeypatch.setattr(
+        checks,
+        "capture",
+        lambda args, *a, **kw: subprocess.CompletedProcess(
+            args, next(statuses), b'{"side_effect_attempts":[]}'
+        ),
+    )
+    if accepted:
+        assert checks.discovery(tmp_path)["late_guard_control"] is True
+    else:
+        with pytest.raises(runner.Refused, match="late_guard_control"):
+            checks.discovery(tmp_path)
+
+
+@pytest.mark.parametrize("status", [0, 1, 2, 3])
+def test_policy_credits_only_nonzero_refusals(tmp_path, monkeypatch, status):
+    import subprocess
+
+    checks = importlib.import_module("openclaw_conformance.checks")
+    monkeypatch.setattr(
+        checks, "capture", lambda args, *a, **kw: subprocess.CompletedProcess(args, status, b"")
+    )
+
+    async def inputs(*args):
+        return True
+
+    monkeypatch.setattr(checks, "_input_refusals", inputs)
+    result = checks.policy(tmp_path, tmp_path, {"image": "sha256:" + "a" * 64})
+    assert all(
+        result[name] is (status != 0)
+        for name in ("missing_config", "oversized_config", "mutable_image")
+    )
