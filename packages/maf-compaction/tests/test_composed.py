@@ -988,6 +988,7 @@ async def test_the_record_phase_runs_before_the_user_phase_and_without_its_fallb
             prompt_tokens: int,
             trigger_tokens: int,
             fallback_after_record: bool = True,
+            ceiling: int | None = None,
         ) -> bool:
             order.append("record")
             fallback_flags.append(fallback_after_record)
@@ -996,6 +997,7 @@ async def test_the_record_phase_runs_before_the_user_phase_and_without_its_fallb
                 prompt_tokens=prompt_tokens,
                 trigger_tokens=trigger_tokens,
                 fallback_after_record=fallback_after_record,
+                ceiling=ceiling,
             )
 
     class _UserSpy(UserTurnAnchoredSummarizationCompactionStrategy):

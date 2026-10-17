@@ -168,7 +168,9 @@ async def test_shed_groups_do_not_rearm_recall(group_bound):
     )
 
     async def call():
-        context = ChatContext(None, messages, {})
+        context = ChatContext(
+            None, messages, {"tools": [{"type": "function", "name": "recall_earlier_tool_results"}]}
+        )
 
         seen = {}
 

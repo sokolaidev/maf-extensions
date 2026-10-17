@@ -2542,7 +2542,7 @@ async def test_the_composed_rows_user_half_waits_for_the_record_through_the_live
     across model calls and the middleware, which a list-driven test does not have.
 
     Here each half alone would get the prompt back under the line. With the wait, the user half
-    holds on the crossing turn's two passes and on the pinned call's own pass; the middleware
+    holds on the outgoing crossing pass and the pinned call's pass; the middleware
     pins the next call; the model writes the record; the follow-up call's pass drops every
     lookup it covers; the prompt is under the line, so the user half never acts and the cached
     prefix it would have broken survives. On the code before the wait this read no pinned call,
@@ -2565,20 +2565,20 @@ async def test_the_composed_rows_user_half_waits_for_the_record_through_the_live
     )
     assert not run.log, "no pass reached the user half over the line"
     assert included_token_count(run.stored) <= run.line, "under the line on the record alone"
-    assert strategy.user_passes_waited == 3, (
-        "the crossing turn's copies and store, and the pinned call's pass"
+    assert strategy.user_passes_waited == 2, (
+        "the outgoing crossing and pinned passes; the store has no request overhead"
     )
-    assert "USERWAIT:3" in _strategy_notes(strategy)
+    assert "USERWAIT:2" in _strategy_notes(strategy)
 
 
 async def test_when_the_record_is_not_enough_the_user_half_acts_on_what_it_left() -> None:
     """The other half of the layering: the user half acts, and only behind the record.
 
-    Smaller lookups, so dropping them leaves the prompt over the line. Here the crossing is first
-    seen on a store pass -- the middleware, reading the call's own prompt, had not yet seen it
-    over -- and the wait, counted in responses, still lasts until the pinned call's record is in.
+    Smaller lookups, so dropping them leaves the outgoing prompt over its line. The store
+    has no request overhead and remains below its own line. The wait, counted in responses,
+    lasts until the pinned call's record is in.
     """
-    run = await _run_wait_fixture(tool_tokens=400, filler_turns=11)
+    run = await _run_wait_fixture(tool_tokens=400, filler_turns=9)
     strategy = run.strategy
 
     assert (run.client.pinned_calls, strategy.records_in_conversation) == (1, 1)
@@ -2587,10 +2587,8 @@ async def test_when_the_record_is_not_enough_the_user_half_acts_on_what_it_left(
     )
     assert strategy.user_compactions == 1, "the record was not enough, so the user half acted"
     compacting = [standing for standing, compacted in run.log if compacted]
-    assert compacting == [True, True], (
-        "once the record stood: the copies, then the store replaying them"
-    )
-    assert strategy.user_passes_waited == 4
+    assert compacting == [True], "the outgoing pass compacts only after the record stands"
+    assert strategy.user_passes_waited == 3
 
 
 async def test_a_model_that_never_records_leaves_the_user_half_waiting_only_two_responses() -> None:
@@ -2607,7 +2605,7 @@ async def test_a_model_that_never_records_leaves_the_user_half_waiting_only_two_
     )
     assert strategy.records_in_conversation == 0
     assert strategy.user_compactions == 1, "the user half acted once the wait ran out"
-    assert strategy.user_passes_waited == 3
+    assert strategy.user_passes_waited == 4
     assert included_token_count(run.stored) <= run.line
 
 

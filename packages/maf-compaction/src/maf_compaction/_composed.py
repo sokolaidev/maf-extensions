@@ -25,8 +25,9 @@ See ``docs/compaction/strategies.md`` for defaults, replay and design rationale.
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from math import ceil
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
@@ -46,6 +47,7 @@ from ._anchored import (
 )
 from ._media import annotate_token_counts
 from ._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
+from ._request import RequestOverhead
 from ._summary_input import bounded_prefix, fits_summary_input, summary_request
 from ._toolsummary import (
     PRESERVE_REASON_UNCOVERED,
@@ -407,7 +409,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             ``"raise"`` retains those groups. Both raise :class:`CompactionBudgetExceeded`
             if the prompt still exceeds the budget; anchors, records and external holds
             are never released. The budget measures messages with the supplied tokenizer;
-            hosts must reserve space for tool schemas and other provider overhead.
+            :meth:`compact_before` also reserves the call's instructions and tool schemas.
+        estimate_margin: Fraction of the sending budget left unused for tokenizer estimate
+            error, in ``[0.0, 1.0)``. Direct history-storage passes do not apply this margin.
         chain_gain_fraction: Share of the tokens behind the chain's earliest edit on a pass that
             the chain, once started, goes on removing until it has removed -- past the budget
             if need be. See :data:`DEFAULT_CHAIN_GAIN_FRACTION`; zero stops the chain at the
@@ -438,6 +442,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         merge_prompt: str | None = None,
         chain_gain_fraction: float = DEFAULT_CHAIN_GAIN_FRACTION,
         overflow_policy: Literal["shed", "raise"] = "shed",
+        estimate_margin: float = 0.0,
     ) -> None:
         """Validate the pair and store it."""
         if tool_results.max_input_tokens != user_turns.max_input_tokens:
@@ -469,6 +474,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             raise ValueError("chain_gain_fraction must be in [0.0, 1.0).")
         if overflow_policy not in {"shed", "raise"}:
             raise ValueError("overflow_policy must be 'shed' or 'raise'.")
+        if isinstance(estimate_margin, bool) or not 0.0 <= estimate_margin < 1.0:
+            raise ValueError("estimate_margin must be in [0.0, 1.0).")
+        self.estimate_margin = estimate_margin
+        self._request_overhead = RequestOverhead(tokenizer)
+        self._request_budget: ContextVar[int | None] = ContextVar("request_budget", default=None)
         self.overflow_policy = overflow_policy
         self.tokenizer = tokenizer
         self.tool_results = tool_results
@@ -569,6 +579,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     def fallbacks_held_after_record(self) -> int:
         """:attr:`~._toolsummary.ToolResultAnchoredSummarizationCompactionStrategy.fallbacks_held_after_record`."""
         return self.tool_results.fallbacks_held_after_record
+
+    @property
+    def records_without_values(self) -> int:
+        """Observed records quoting no distinctive value from eligible targets."""
+        return self.tool_results.records_without_values
 
     @property
     def groups_held_unreachable_coverage(self) -> int:
@@ -874,6 +889,28 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """
         return self._decisions_kept
 
+    @property
+    def _budget(self) -> int:
+        budget = self._request_budget.get()
+        return self.max_input_tokens if budget is None else budget
+
+    def sending_budget(self, options: Mapping[str, Any]) -> int:
+        """Return the message ceiling after reserving this call's overhead and headroom."""
+        available = int(self.max_input_tokens * (1.0 - self.estimate_margin))
+        overhead = self._request_overhead.count(options)
+        if overhead > available:
+            raise CompactionBudgetExceeded(overhead, available)
+        return available - overhead
+
+    async def compact_before(self, messages: list[Message], *, options: Mapping[str, Any]) -> bool:
+        """Compact outgoing messages; direct calls retain the history-storage budget."""
+        budget = self.sending_budget(options)
+        token = self._request_budget.set(budget)
+        try:
+            return await self(messages)
+        finally:
+            self._request_budget.reset(token)
+
     async def __call__(self, messages: list[Message]) -> bool:
         """Run the record phase, then the user phase on what it left, then the chain if still over.
 
@@ -903,8 +940,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         changed = await self.tool_results.compact_against(
             messages,
             prompt_tokens=entry_tokens,
-            trigger_tokens=int(self.max_input_tokens * self.tool_results.trigger_fraction),
+            trigger_tokens=int(self._budget * self.tool_results.trigger_fraction),
             fallback_after_record=False,
+            ceiling=self._request_budget.get(),
         )
         if changed:
             # Forced, because the give-up fallback the record phase may still take rewrites tool
@@ -922,7 +960,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             compacted = await self.user_turns.compact_against(
                 messages,
                 prompt_tokens=prompt_tokens,
-                trigger_tokens=int(self.max_input_tokens * self.user_trigger_fraction),
+                trigger_tokens=int(self._budget * self.user_trigger_fraction),
             )
         chained = await self._last_resort(messages)
         fitted = self._enforce_budget(messages)
@@ -934,20 +972,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if self._over(messages) and self.overflow_policy == "shed":
             included = [message for message in messages if not _is_excluded(message)]
             with _release_record_holds(messages):
-                changed = self.tool_results.fallback.shed_to(
-                    messages, ceiling=self.max_input_tokens
-                )
+                changed = self.tool_results.fallback.shed_to(messages, ceiling=self._budget)
             lost = [message for message in included if _is_excluded(message)]
             self._shed_ids.update(message.message_id for message in lost if message.message_id)
             if lost:
                 logger.warning(
                     "Compaction shed unrecorded history to fit max_input_tokens=%s; "
                     "lost message IDs: %s",
-                    self.max_input_tokens,
+                    self._budget,
                     [message.message_id for message in lost],
                 )
         if self._over(messages):
-            raise CompactionBudgetExceeded(included_token_count(messages), self.max_input_tokens)
+            raise CompactionBudgetExceeded(included_token_count(messages), self._budget)
         return changed
 
     def _holds_for_record(
@@ -1018,11 +1054,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         elif self._wait_since is not None and clock < self._wait_since:
             self._wait_since = None
         holding = (
-            prompt_tokens > int(self.max_input_tokens * self.user_trigger_fraction)
-            and entry_tokens < int(self.max_input_tokens * self.tool_results.fallback_fraction)
+            prompt_tokens > int(self._budget * self.user_trigger_fraction)
+            and entry_tokens < int(self._budget * self.tool_results.fallback_fraction)
             and clock > self._quiet_through
             and anchor != self._declined_behind
-            and self.tool_results.record_pending(messages)
+            and self.tool_results.record_pending(messages, max_input_tokens=self._budget)
         )
         if not holding:
             self._wait_since = None
@@ -1164,7 +1200,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """Return whether the prompt, as it now stands, is over the input budget."""
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
-        return included_token_count(messages) > self.max_input_tokens
+        return included_token_count(messages) > self._budget
 
     def _target(self, messages: list[Message], start: _ChainStart) -> int:
         """Return the included tokens the chain is working down to on this pass.
@@ -1177,8 +1213,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """
         behind = start.tokens_behind_first_edit(messages)
         if behind is None or not self.chain_gain_fraction:
-            return self.max_input_tokens
-        return min(self.max_input_tokens, start.tokens - ceil(self.chain_gain_fraction * behind))
+            return self._budget
+        return min(self._budget, start.tokens - ceil(self.chain_gain_fraction * behind))
 
     def _short_of_target(self, messages: list[Message], start: _ChainStart) -> bool:
         """Return whether the prompt, as it now stands, is over the chain's target."""

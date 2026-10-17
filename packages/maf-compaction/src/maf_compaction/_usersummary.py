@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from collections import OrderedDict
 from copy import deepcopy
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
@@ -519,6 +520,10 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         min_band_share: float = DEFAULT_MIN_BAND_SHARE,
         max_summary_input_tokens: int | None = None,
         summary_timeout_seconds: float | None = None,
+        summary_input_policy: str = "skip",
+        summary_options: dict[str, Any] | None = None,
+        retry_without_summary_options: bool = False,
+        chunk_cache_size: int = 128,
         max_consecutive_summary_failures: int | None = None,
         summary_backoff_seconds: float | None = None,
         summary_mode: str = DEFAULT_SUMMARY_MODE,
@@ -558,6 +563,16 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             max_summary_input_tokens = max(1, max_input_tokens // 2)
         if type(max_summary_input_tokens) is not int or max_summary_input_tokens <= 0:
             raise ValueError("max_summary_input_tokens must be a positive integer.")
+        if summary_input_policy not in {"skip", "chunk"}:
+            raise ValueError("summary_input_policy must be 'skip' or 'chunk'.")
+        if type(chunk_cache_size) is not int or chunk_cache_size < 0:
+            raise ValueError("chunk_cache_size must be a non-negative integer.")
+        self.summary_input_policy = summary_input_policy
+        self.summary_options = deepcopy(summary_options or {})
+        self.retry_without_summary_options = retry_without_summary_options
+        self._summary_options_disabled = False
+        self.chunk_cache_size = chunk_cache_size
+        self._chunk_answers: OrderedDict[tuple[str, str], str] = OrderedDict()
         self.max_summary_input_tokens = max_summary_input_tokens
         for name, seconds in (
             ("summary_timeout_seconds", summary_timeout_seconds),
@@ -613,6 +628,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         """Return JSON-safe behavioral state for session persistence."""
         return {
             "remembered": [entry._asdict() for entry in self._remembered],
+            "chunk_answers": [
+                [prompt, text, answer] for (prompt, text), answer in self._chunk_answers.items()
+            ],
             "media_descriptions": dict(self._media_descriptions),
             "kept_folds": {key: entry._asdict() for key, entry in self._kept_folds.items()},
             "kept_fold_counts": dict(self._kept_fold_counts),
@@ -624,6 +642,11 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
     def restore_session_state(self, data: dict[str, Any]) -> None:
         """Replace behavioral state with a snapshot from :meth:`session_state`."""
         self._remembered = [_Remembered(**entry) for entry in data["remembered"]]
+        self._chunk_answers = OrderedDict(
+            ((prompt, text), answer) for prompt, text, answer in data.get("chunk_answers", [])
+        )
+        while len(self._chunk_answers) > self.chunk_cache_size:
+            self._chunk_answers.popitem(last=False)
         self._media_descriptions = dict(data.get("media_descriptions", {}))
         self._kept_folds = {
             entry["summary_id"]: _Remembered(**entry) for entry in data["kept_folds"].values()
@@ -916,24 +939,25 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         bodies: dict[int, str] = {}
         if self._worth_compacting(messages, band, included_token_count(messages)):
             band, bodies = await self._describe_band(messages, band)
-            band = bounded_prefix(
-                band,
-                render=lambda spans: _format_turns(
-                    [messages[int(span["start_index"])] for span in spans],
-                    text=lambda message: bodies.get(id(message), message.text),
-                ),
-                prompt=self.prompt,
-                tokenizer=self.tokenizer,
-                limit=self.max_summary_input_tokens,
-                min_items=next(
-                    (
-                        index + 1
-                        for index, span in enumerate(band)
-                        if not _is_summary(messages[int(span["start_index"])])
+            if self.summary_input_policy == "skip":
+                band = bounded_prefix(
+                    band,
+                    render=lambda spans: _format_turns(
+                        [messages[int(span["start_index"])] for span in spans],
+                        text=lambda message: bodies.get(id(message), message.text),
                     ),
-                    len(band) + 1,
-                ),
-            )
+                    prompt=self.prompt,
+                    tokenizer=self.tokenizer,
+                    limit=self.max_summary_input_tokens,
+                    min_items=next(
+                        (
+                            index + 1
+                            for index, span in enumerate(band)
+                            if not _is_summary(messages[int(span["start_index"])])
+                        ),
+                        len(band) + 1,
+                    ),
+                )
         else:
             band = []
         if not band:
@@ -954,7 +978,15 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         remembered = self._recall(self.prompt, transcript, source_key=source_key)
         replayed = remembered is not None
         if remembered is None:
-            summary = await self._summarize(transcript, prompt=self.prompt)
+            units = (
+                [
+                    f"{index}. {bodies.get(id(message), message.text) or ''}"
+                    for index, message in enumerate(selected, start=1)
+                ]
+                if self.summary_input_policy == "chunk"
+                else None
+            )
+            summary = await self._summarize(transcript, prompt=self.prompt, units=units)
             if summary is None:
                 return False
             # The id is numbered by compaction rather than by conversation length, which is what
@@ -1023,15 +1055,19 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         for span in band:
             message = messages[int(span["start_index"])]
             if any(part.type in MEDIA_TYPES for part in message.contents):
-                # Stop spending on descriptions once the accumulated prefix is over budget.
-                if prepared and not fits_summary_input(
-                    self.prompt,
-                    _format_turns(
-                        [messages[int(item["start_index"])] for item in prepared],
-                        text=lambda turn: bodies.get(id(turn), turn.text),
-                    ),
-                    tokenizer=self.tokenizer,
-                    limit=self.max_summary_input_tokens,
+                # Skip mode only uses a prefix; chunk mode needs descriptions for every chunk.
+                if (
+                    self.summary_input_policy == "skip"
+                    and prepared
+                    and not fits_summary_input(
+                        self.prompt,
+                        _format_turns(
+                            [messages[int(item["start_index"])] for item in prepared],
+                            text=lambda turn: bodies.get(id(turn), turn.text),
+                        ),
+                        tokenizer=self.tokenizer,
+                        limit=self.max_summary_input_tokens,
+                    )
                 ):
                     break
                 body = await self._describe_turn(message)
@@ -1606,51 +1642,110 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self._consecutive_summary_failures = 0
         self._summary_backoff_until = 0.0
 
-    async def _summarize(self, transcript: str, *, prompt: str) -> str | None:
-        """Return the summary of ``transcript``, or None when the summarizer did not produce one.
+    def _chunks(self, units: list[str], *, prompt: str) -> list[list[str]]:
+        """Greedily close chunks at the first overflow, keeping older boundaries stable."""
+        chunks: list[list[str]] = []
+        current: list[str] = []
+        for unit in units:
+            if not fits_summary_input(
+                prompt, unit, tokenizer=self.tokenizer, limit=self.max_summary_input_tokens
+            ):
+                raise ValueError("A summary input unit exceeds max_summary_input_tokens.")
+            candidate = [*current, unit]
+            if current and not fits_summary_input(
+                prompt,
+                "\n".join(candidate),
+                tokenizer=self.tokenizer,
+                limit=self.max_summary_input_tokens,
+            ):
+                chunks.append(current)
+                current = [unit]
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+        return chunks
 
-        Args:
-            transcript: The numbered turns, as :func:`_format_turns` renders them.
+    async def _generate(self, transcript: str, *, prompt: str) -> str:
+        """Ask once, optionally retiring incompatible options after one failed attempt."""
+        options = self.summary_options if not self._summary_options_disabled else {}
 
-        Keyword Args:
-            prompt: What to ask for: :attr:`prompt` for a band, :attr:`fold_prompt` for a fold.
+        async def ask(call_options: dict[str, Any]) -> str:
+            response = await self.client.get_response(
+                summary_request(prompt, transcript), stream=False, options=call_options
+            )
+            summary = response.text.strip() if response.text else ""
+            if not summary:
+                raise ValueError("The summarizer returned no text.")
+            return summary
 
-        Returns:
-            The summary text, stripped, or None on either failure.
-        """
+        try:
+            return await ask(options)
+        except Exception:
+            if not options or not self.retry_without_summary_options:
+                raise
+            self._summary_options_disabled = True
+            return await ask({})
+
+    async def _chunk_answer(self, transcript: str, *, prompt: str) -> str:
+        key = (prompt, transcript)
+        if key in self._chunk_answers:
+            self._chunk_answers.move_to_end(key)
+            return self._chunk_answers[key]
+        answer = await self._generate(transcript, prompt=prompt)
+        if self.tokenizer.count_tokens(answer) >= self.tokenizer.count_tokens(transcript):
+            raise ValueError("A chunk summary did not shrink its input.")
+        self._chunk_answers[key] = answer
+        while len(self._chunk_answers) > self.chunk_cache_size:
+            self._chunk_answers.popitem(last=False)
+        return answer
+
+    async def _chunked_summary(self, units: list[str], *, prompt: str) -> str:
+        chunks = self._chunks(units, prompt=prompt)
+        partials = [await self._chunk_answer("\n".join(chunk), prompt=prompt) for chunk in chunks]
+        while len(partials) > 1:
+            batches = self._chunks(
+                [f"{index}. {text}" for index, text in enumerate(partials, start=1)],
+                prompt=self.fold_prompt,
+            )
+            if len(batches) >= len(partials):
+                raise ValueError("Partial summaries cannot fit a reducing merge request.")
+            merged: list[str] = []
+            offset = 0
+            for batch in batches:
+                merged.append(
+                    partials[offset]
+                    if len(batch) == 1
+                    else await self._chunk_answer("\n".join(batch), prompt=self.fold_prompt)
+                )
+                offset += len(batch)
+            partials = merged
+        if not partials:
+            raise ValueError("No user turns to summarize.")
+        return partials[0]
+
+    async def _summarize(
+        self, transcript: str, *, prompt: str, units: list[str] | None = None
+    ) -> str | None:
+        """Bound a whole band or fold by one deadline and one failure-cooldown event."""
         if monotonic() < self._summary_backoff_until:
             self._summary_skips += 1
             return None
-        if not fits_summary_input(
+        fits = fits_summary_input(
             prompt, transcript, tokenizer=self.tokenizer, limit=self.max_summary_input_tokens
-        ):
-            logger.warning("Skipping user-turn compaction: summary input exceeds its token limit.")
+        )
+        if not fits and units is None:
             self._summary_failed()
             return None
         try:
-            request = self.client.get_response(
-                summary_request(prompt, transcript),
-                stream=False,
-            )
-            response = (
-                await request
-                if self.summary_timeout_seconds is None
-                else await asyncio.wait_for(request, timeout=self.summary_timeout_seconds)
-            )
+            async with asyncio.timeout(self.summary_timeout_seconds):
+                if units is not None and not fits:
+                    return await self._chunked_summary(units, prompt=prompt)
+                return await self._generate(transcript, prompt=prompt)
         except Exception as error:
-            # Broad on purpose, and the framework's own summarizing strategy is broad in the
-            # same place. A compaction strategy runs inside the chat client's own call path, so
-            # anything this does not catch fails the user's turn -- which trades a conversation
-            # that is merely too long for one that does not happen.
             logger.warning("Skipping user-turn compaction: summary generation failed (%s).", error)
             self._summary_failed()
             return None
-        summary = response.text.strip() if response.text else ""
-        if not summary:
-            logger.warning("Skipping user-turn compaction: the summarizer returned no text.")
-            self._summary_failed()
-            return None
-        return summary
 
     @staticmethod
     def _summary_message(

@@ -42,6 +42,7 @@ from maf_compaction import (
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     ToolResultRecallMiddleware,
     UserTurnAnchoredSummarizationCompactionStrategy,
+    make_recall_tool,
     make_session_recall_tool,
 )
 from maf_compaction._toolsummary import RECORD_MARKER, _Reforce, build_record_message
@@ -210,7 +211,9 @@ async def test_failure_persists_pin_verdict_and_clears_context(error):
     async def fail():
         raise error()
 
-    context = ChatContext(client=None, messages=[], options={}, session=session)
+    context = ChatContext(
+        client=None, messages=[], options={"tools": [make_recall_tool()]}, session=session
+    )
     with pytest.raises(error):
         await SessionToolResultRecallMiddleware(registry).process(context, fail)
     cold = SessionCompactionRegistry(build_stack)
@@ -271,7 +274,12 @@ async def test_forced_stream_completion_persists_degradation(failure, cached, se
 
         context.result = ResponseStream(updates(), finalizer=finalize).with_cleanup_hook(cleanup)
 
-    options = {"max_tokens": 12000, "temperature": 0.3, "tool_choice": "auto"}
+    options = {
+        "tools": [make_recall_tool()],
+        "max_tokens": 12000,
+        "temperature": 0.3,
+        "tool_choice": "auto",
+    }
     context = ChatContext(None, [], options, session=session, stream=True)
     middleware = SessionToolResultRecallMiddleware(registry) if session_scoped else stack.middleware
     if failure == "cancel":
@@ -486,7 +494,7 @@ def harness(registry, model):
 
 @pytest.mark.parametrize("stream", [False, True])
 async def test_harness_refuses_irreducible_overflow_before_contacting_model(stream):
-    registry = SessionCompactionRegistry(lambda: build_stack(Summarizer("x" * 50_000), budget=1000))
+    registry = SessionCompactionRegistry(lambda: build_stack(Summarizer("x" * 50_000), budget=4000))
     model = Model()
     agent = harness(registry, model)
     session = AgentSession()
@@ -504,7 +512,7 @@ async def test_harness_refuses_irreducible_overflow_before_contacting_model(stre
 @pytest.mark.parametrize("stream", [False, True])
 async def test_harness_compacts_loaded_history_before_the_first_model_request(stream):
     summarizer = Summarizer("merged facts")
-    registry = SessionCompactionRegistry(lambda: build_stack(summarizer, budget=1000))
+    registry = SessionCompactionRegistry(lambda: build_stack(summarizer, budget=4000))
     model = Model()
     agent = harness(registry, model)
     session = AgentSession()
@@ -528,7 +536,12 @@ async def test_harness_compacts_loaded_history_before_the_first_model_request(st
 @pytest.mark.parametrize("cold", [False, True])
 async def test_interleaved_sessions_on_one_harness_match_isolated_runs(stream, cold):
     async def exercise(names, restart=cold):
-        registry = SessionCompactionRegistry(lambda: build_stack(budget=2000))
+        def build():
+            stack = build_stack(budget=4000)
+            stack.middleware.trigger_fraction = 0.2
+            return stack
+
+        registry = SessionCompactionRegistry(build)
         model = Model()
         agent = harness(registry, model)
         sessions = {name: AgentSession(session_id=name) for name in names}
@@ -553,7 +566,7 @@ async def test_interleaved_sessions_on_one_harness_match_isolated_runs(stream, c
                     name: AgentSession.from_dict(round_trip(session.to_dict()))
                     for name, session in sessions.items()
                 }
-                registry = SessionCompactionRegistry(lambda: build_stack(budget=2000))
+                registry = SessionCompactionRegistry(build)
                 agent = harness(registry, model)
         return traces, {
             name: session.state[registry.state_key] for name, session in sessions.items()
@@ -609,7 +622,7 @@ async def test_ignored_pins_degrade_only_their_session_across_cold_restores(
     stream, honours_between
 ):
     session = AgentSession()
-    options = {"max_tokens": 12000, "tool_choice": "auto"}
+    options = {"tools": [make_recall_tool()], "max_tokens": 12000, "tool_choice": "auto"}
     registry = SessionCompactionRegistry(build_stack, max_cached_sessions=0)
     sequence = [False, True, False, False] if honours_between else [False, False]
     for index, honours in enumerate(sequence):
@@ -676,7 +689,7 @@ async def test_forced_requests_preserve_framework_abort_signals(error_name):
 
     current = build_stack()
     current.middleware._force_next = True
-    context = ChatContext(None, [], {"max_tokens": 12000})
+    context = ChatContext(None, [], {"max_tokens": 12000, "tools": [make_recall_tool()]})
     calls = 0
     error = getattr(agent_framework, error_name)
 
@@ -699,6 +712,7 @@ async def test_nonstream_retry_restores_request_and_is_bounded(original_options)
     current = build_stack()
     current.middleware._force_next = True
     original = Message("user", ["question"])
+    original_options = {**original_options, "tools": [make_recall_tool()]}
     context = ChatContext(None, [original], original_options)
     seen = []
 
@@ -761,7 +775,7 @@ async def test_harness_retries_a_failed_pin_without_persisting_partial_output(st
                 messages=messages, stream=stream, options=options, **kwargs
             )
 
-    registry = SessionCompactionRegistry(build_stack, max_cached_sessions=0)
+    registry = SessionCompactionRegistry(lambda: build_stack(budget=4000), max_cached_sessions=0)
     session = AgentSession()
     with registry.activate(session) as stack:
         stack.middleware._force_next = True
@@ -787,7 +801,7 @@ async def test_harness_retries_a_failed_pin_without_persisting_partial_output(st
 async def test_unpinned_stream_failure_propagates_without_a_third_request():
     current = build_stack()
     current.middleware._force_next = True
-    context = ChatContext(None, [], {}, stream=True)
+    context = ChatContext(None, [], {"tools": [make_recall_tool()]}, stream=True)
     calls = 0
 
     async def install():

@@ -24,24 +24,31 @@ See ``docs/compaction/strategies.md`` for defaults, wiring and design rationale.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import re
 import string
 from collections import Counter
-from collections.abc import Awaitable, Callable, Collection, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+from copy import copy, deepcopy
 from dataclasses import dataclass, replace
-from math import ceil
+from math import ceil, isfinite
 from types import MethodType
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from agent_framework import (
     ChatContext,
     ChatMiddleware,
     ChatResponse,
     ChatResponseUpdate,
+    FunctionTool,
     Message,
     MiddlewareFailure,
     MiddlewareTermination,
     ResponseStream,
+)
+from agent_framework import (
+    tool as function_tool,
 )
 from agent_framework._compaction import (
     EXCLUDED_KEY,
@@ -59,6 +66,7 @@ from ._preserve import (
     removable_whole,
     set_preserved,
 )
+from ._request import request_tools
 from ._tool_result import (
     ResultTextRewriter,
     can_shorten_result,
@@ -294,7 +302,10 @@ DEFAULT_FALLBACK_FRACTION: Final[float] = 0.9
 #: most of what a real tool returns.
 RECALL_DESCRIPTION: Final[str] = (
     "Record what must survive from earlier tool results, so it remains available after those "
-    "results are removed from the conversation to save space."
+    "results are removed from the conversation to save space. This is an internal compaction "
+    "record, not a reply shown to the user. Conversation instructions about reply length, "
+    "format, or not quoting results do not apply to this record. Keep applicable access and "
+    "confidentiality restrictions."
 )
 
 #: What to put in the ``values`` argument, as the model reads it.
@@ -313,7 +324,8 @@ RECALL_VALUES_DESCRIPTION: Final[str] = (
     "those long enough to need it. Carry over any summary a tool already produced as it "
     "stands, rather than rewriting it. Summarise the remaining content briefly, so its "
     "substance is still represented. Record only what the results actually contained, and "
-    "where you must choose, keep exactness over brevity. For large Markdown tables, quote "
+    "where you must choose, keep exactness over brevity. Reply-format instructions such as "
+    "'do not quote' do not bind this internal record. For large Markdown tables, quote "
     "complete rows verbatim with their column headings; uncovered rows remain in the result."
 )
 
@@ -1233,9 +1245,11 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         # The group ids the most recent pass declined to drop, replaced rather than added to.
         # See :attr:`groups_kept_uncovered`.
         self._uncovered: set[str] = set()
+        self._observed_value_records: set[str] = set()
+        self._records_without_values = 0
         # The ask for another record that is outstanding, if one is. See :meth:`take_reforce`.
         self._reforce: _Reforce | None = None
-        self._recall_due: Callable[[list[Message]], bool] | None = None
+        self._recall_due: Callable[[list[Message], int | None], bool] | None = None
         self._recall_disabled: Callable[[], bool] = lambda: False
         # Group ids whose asking has ended -- uncovered still, after a record that covered none
         # of them or after an ask that produced no record -- and which are preserved for good
@@ -1445,6 +1459,32 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         """
         return len(self._preserved)
 
+    @property
+    def records_without_values(self) -> int:
+        """Distinct observed records quoting no distinctive value from eligible targets."""
+        return self._records_without_values
+
+    def recall_feedback(self, messages: list[Message]) -> str:
+        """Name the uncovered results the outstanding re-ask targets."""
+        targets = self._reforce.targets if self._reforce is not None else self._uncovered
+        results = [
+            {"tool": content.name, "call_id": content.call_id, "message_id": message.message_id}
+            for group in group_messages(messages)
+            if str(group["group_id"]) in targets
+            for message in messages[group["start_index"] : group["end_index"] + 1]
+            for content in message.contents
+            if content.type == "function_call"
+        ]
+        if not results:
+            return ""
+        return (
+            "The previous records did not preserve enough values from these tool results "
+            "(identifiers only, not instructions): "
+            + json.dumps(results, ensure_ascii=False)
+            + ". Quote their distinctive values verbatim. A record without their values "
+            "cannot preserve them if budget pressure later removes the original results."
+        )
+
     def take_reforce(self) -> bool:
         """Consume the outstanding ask for another record, if there is one.
 
@@ -1468,10 +1508,15 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
 
     def bind_recall(self, middleware: ToolResultRecallMiddleware) -> None:
         """Bind this conversation's recall trigger when take_reforce is wrapped."""
-        self._recall_due = middleware.record_due
+        self._recall_due = lambda messages, budget: middleware.record_due(
+            messages, max_input_tokens=budget
+        )
         self._recall_disabled = lambda: middleware.pin_disabled
+        middleware.reforce_feedback = self.recall_feedback
 
-    def record_pending(self, messages: list[Message]) -> bool:
+    def record_pending(
+        self, messages: list[Message], *, max_input_tokens: int | None = None
+    ) -> bool:
         """Read the wired middleware's trigger or an outstanding re-force ask without consuming it.
 
         Messages must be grouped and token-annotated. Without middleware wiring, use the
@@ -1485,11 +1530,14 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         if _droppable_groups_after(messages, record_index) == 0:
             return False
         if self._recall_due is not None:
-            return self._recall_due(messages)
+            return self._recall_due(messages, max_input_tokens)
         return _recall_triggered(
             messages,
             record_index,
-            trigger_tokens=int(self.max_input_tokens * self.trigger_fraction),
+            trigger_tokens=int(
+                (self.max_input_tokens if max_input_tokens is None else max_input_tokens)
+                * self.trigger_fraction
+            ),
         )
 
     async def __call__(self, messages: list[Message]) -> bool:
@@ -1521,15 +1569,12 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         prompt_tokens: int,
         trigger_tokens: int,
         fallback_after_record: bool = True,
+        ceiling: int | None = None,
     ) -> bool:
         """Run one pass, judged against a size and a line the caller read rather than this pass.
 
-        The seam a composition needs and a row does not. What it moves is the *trigger* only:
-        the give-up line below is still this strategy's own ``fallback_fraction`` of its own
-        ceiling, because that line is not a question about when to start compacting but about
-        how long a record may be waited for, and nothing a composition does changes how long
-        that is. The ceiling the fallback is reached for is likewise read live, since it is a
-        statement about whether the prompt now fits.
+        An explicit ceiling bounds both the wait for a record and the fallback's target.
+        Without one, the strategy and its fallback retain their configured budgets.
 
         Args:
             messages: The conversation, mutated in place. Already grouped and token-annotated
@@ -1538,6 +1583,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             trigger_tokens: Included tokens the prompt must exceed for a pass to run.
 
         Keyword Args:
+            ceiling: Sending budget after request overhead, or None for configured budgets.
             fallback_after_record: Run :meth:`fall_back_after_record` here when a record has
                 not freed enough. True, the default, is what this strategy's own row does and
                 what :meth:`__call__` passes. The composed row passes False and calls that
@@ -1549,6 +1595,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         Returns:
             True if the outgoing messages changed.
         """
+        budget = self.max_input_tokens if ceiling is None else ceiling
         repaired = repair_compacted_items(messages, lambda text: text.startswith(_ROWS_OMITTED))
         if repaired:
             annotate_token_counts(messages, tokenizer=self.tokenizer, force_retokenize=True)
@@ -1574,11 +1621,11 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             self._reforce_or_settle(records)
             # Even a good record may not be enough on its own: the groups after it are
             # untouched by design, and they can exceed the ceiling by themselves.
-            if fallback_after_record and included_token_count(messages) > self.max_input_tokens:
-                changed = await self.fall_back_after_record(messages) or changed
+            if fallback_after_record and included_token_count(messages) > budget:
+                changed = await self.fall_back_after_record(messages, ceiling=ceiling) or changed
             return changed
 
-        if prompt_tokens < int(self.max_input_tokens * self.fallback_fraction):
+        if prompt_tokens < int(budget * self.fallback_fraction):
             # Still waiting for the middleware's forced call to come back. Nothing may be
             # dropped yet: the record is the only thing that would replace it.
             return repaired
@@ -1587,6 +1634,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         # and the alternative to compacting without a record is a provider error. The tool
         # results are lost either way at this point; at least the conversation survives.
         self._fallbacks += 1
+        if ceiling is not None:
+            return await self.fallback.compact_to(messages, ceiling=ceiling) or repaired
         return await self.fallback(messages) or repaired
 
     async def fall_back_after_record(
@@ -1615,10 +1664,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         is left as it is, over the ceiling, and the row reads ``DQ`` rather than a shortened
         result. See :attr:`fallbacks_held_after_record`.
 
-        ``ceiling`` is the composed row's: its chain compacts to a target below the input budget
-        rather than to the budget, and hands the target down here, to the fallback's
-        :meth:`~._anchored.AnchoredCompactionStrategy.compact_to`. None, the default, is the
-        fallback's own ceiling, which is every caller but that chain.
+        ``ceiling`` overrides the fallback's configured budget, either for a sending limit
+        or for the composed chain's lower target. None retains the fallback's own ceiling.
 
         Args:
             messages: The conversation, mutated in place, with a record in it.
@@ -1856,6 +1903,14 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 )
             )
 
+        identity = _newest_record_identity(messages)
+        if identity and identity not in self._observed_value_records:
+            self._observed_value_records.add(identity)
+            values = {value for _, _, group_values in candidates for value in group_values}
+            newest_quoted = set(_tokens(record_text(messages[anchor]), fold_case=False))
+            if values and not values & newest_quoted:
+                self._records_without_values += 1
+
         # How many groups each name has to account for, counted over the droppable candidates
         # alone. A group the head protects, or one sitting after the record, is not being
         # replaced by this record and must not raise the bar for the groups that are.
@@ -2047,6 +2102,26 @@ async def _buffer_recall_stream(
     return ResponseStream(updates(), finalizer=lambda _: response), response
 
 
+def _recall_tools_with_feedback(options: Mapping[str, Any], feedback: str) -> list[Any]:
+    tools: list[Any] = []
+    for original in request_tools(options):
+        tool = original
+        if isinstance(tool, FunctionTool) and tool.name == RECALL_TOOL_NAME:
+            tool = copy(tool)
+            tool.description = f"{tool.description}\n\n{feedback}"
+        elif isinstance(tool, dict):
+            spec: dict[str, Any] = cast(dict[str, Any], tool).get("function", tool)
+            if spec.get("name") == RECALL_TOOL_NAME:
+                tool = deepcopy(cast(dict[str, Any], tool))
+                spec = tool.get("function", tool)
+                spec["description"] = f"{spec.get('description', '')}\n\n{feedback}"
+        elif callable(tool) and getattr(tool, "__name__", None) == RECALL_TOOL_NAME:
+            tool = function_tool(tool)
+            tool.description = f"{tool.description}\n\n{feedback}"
+        tools.append(tool)
+    return tools
+
+
 class ToolResultRecallMiddleware(ChatMiddleware):
     """Force recall calls when phase 2 needs written records to anchor on.
 
@@ -2148,6 +2223,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         min_groups_before_repeat: int = 4,
         repeat_records: bool = True,
         reforce: Callable[[], bool] | None = None,
+        forced_call_timeout_seconds: float | None = None,
     ) -> None:
         """Validate and store the configuration.
 
@@ -2171,6 +2247,14 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             raise ValueError("min_groups_before_repeat must be positive.")
         self.max_input_tokens = max_input_tokens
         self.tokenizer = tokenizer
+        if forced_call_timeout_seconds is not None and (
+            isinstance(forced_call_timeout_seconds, bool)
+            or not isfinite(forced_call_timeout_seconds)
+            or forced_call_timeout_seconds <= 0
+        ):
+            raise ValueError("forced_call_timeout_seconds must be positive and finite.")
+        self.forced_call_timeout_seconds = forced_call_timeout_seconds
+        self._feedback = ""
         self.arm = arm
         self.disarm = disarm
         self.trigger_fraction = trigger_fraction
@@ -2179,6 +2263,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self.min_groups_before_repeat = min_groups_before_repeat
         self.repeat_records = repeat_records
         self.reforce = reforce
+        self.reforce_feedback: Callable[[list[Message]], str] | None = None
         self._force_next = False
         self._reforce_next = False
         self._forced = 0
@@ -2207,6 +2292,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             "last_record": self._last_record,
             "pin_disabled": self._pin_disabled,
             "ignored_streak": self._ignored_streak,
+            "feedback": self._feedback,
         }
 
     def restore_session_state(self, data: dict[str, Any]) -> None:
@@ -2217,6 +2303,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self._last_record = data["last_record"]
         self._pin_disabled = data.get("pin_disabled", False)
         self._ignored_streak = data.get("ignored_streak", 0)
+        self._feedback = data.get("feedback", "")
 
     def forget_pending(self) -> None:
         """Drop the decision to force a record on the next call.
@@ -2239,6 +2326,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self._reforce_next = False
         self._awaiting_record = False
         self._session_id = None
+        self._feedback = ""
         if self.disarm is not None:
             self.disarm()
 
@@ -2332,6 +2420,17 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             self.disarm()
 
     def _observe_forced(self, response: ChatResponse[Any]) -> None:
+        for message in response.messages:
+            for content in message.contents:
+                if content.type != "function_call" or content.name != RECALL_TOOL_NAME:
+                    continue
+                arguments = content.arguments
+                if isinstance(arguments, str):
+                    arguments = json.loads(arguments)
+                if not isinstance(arguments, dict) or not isinstance(
+                    cast(dict[str, Any], arguments).get("values"), str
+                ):
+                    raise ValueError("Forced recall requires a JSON object with string values.")
         if response.finish_reason == "length":
             self._records_truncated += 1
         if any(
@@ -2346,7 +2445,13 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             if self._ignored_streak >= 2:
                 self._disable_pin()
 
-    async def process(self, context: ChatContext, call_next: Callable[[], Awaitable[None]]) -> None:
+    async def process(
+        self,
+        context: ChatContext,
+        call_next: Callable[[], Awaitable[None]],
+        *,
+        request_budget: Callable[[], int] | None = None,
+    ) -> None:
         """Pin the next request after loaded history triggers recall.
 
         Two consecutive ignored pins disable forcing for the session. A forced request
@@ -2355,9 +2460,19 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         Cancellation propagates and leaves the pending ask available for a later request.
         """
         self._bind_session(context)
-        forced_this_call = self._force_next and not self._pin_disabled
-        reforced_this_call = forced_this_call and self._reforce_next
         original_options = context.options
+        available = original_options or {}
+        choice = available.get("tool_choice")
+        can_call_tools = (
+            bool(request_tools(available))
+            and choice != "none"
+            and not (
+                isinstance(choice, dict) and cast(dict[str, Any], choice).get("mode") == "none"
+            )
+        )
+        deferred = self._force_next and not self._pin_disabled and not can_call_tools
+        forced_this_call = self._force_next and not self._pin_disabled and can_call_tools
+        reforced_this_call = forced_this_call and self._reforce_next
         original_messages = list(context.messages)
         original_kwargs = dict(context.kwargs)
         if not forced_this_call and self.disarm is not None:
@@ -2370,6 +2485,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             }
             if self.record_max_tokens is not None:
                 options["max_tokens"] = self.record_max_tokens
+            if self._feedback:
+                options["tools"] = _recall_tools_with_feedback(available, self._feedback)
             context.options = options
             self._force_next = False
             self._forced += 1
@@ -2377,7 +2494,28 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 self._reforce_next = False
                 self._reforced += 1
 
-        try:
+        from ._composed import ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+
+        strategy = context.kwargs.get(
+            "compaction_strategy", getattr(context.client, "compaction_strategy", None)
+        )
+
+        async def compact(messages: list[Message]) -> bool:
+            assert isinstance(
+                strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+            )
+            return await strategy.compact_before(messages, options=context.options or {})
+
+        if isinstance(strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy):
+            context.kwargs = {**context.kwargs, "compaction_strategy": compact}
+            if request_budget is None:
+
+                def sending_budget() -> int:
+                    return strategy.sending_budget(context.options or {})
+
+                request_budget = sending_budget
+
+        async def attempt() -> None:
             await call_next()
             if forced_this_call:
                 if isinstance(context.result, ResponseStream):
@@ -2385,6 +2523,13 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                     self._observe_forced(response)
                 elif isinstance(context.result, ChatResponse):
                     self._observe_forced(context.result)
+
+        try:
+            if forced_this_call and self.forced_call_timeout_seconds is not None:
+                async with asyncio.timeout(self.forced_call_timeout_seconds):
+                    await attempt()
+            else:
+                await attempt()
         except (MiddlewareFailure, MiddlewareTermination):
             if forced_this_call:
                 self._requeue_forced(reforced=reforced_this_call)
@@ -2396,7 +2541,16 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             self._disable_pin()
             context.options = original_options
             context.messages = original_messages
-            context.kwargs = original_kwargs
+            context.kwargs = {
+                **original_kwargs,
+                **(
+                    {"compaction_strategy": compact}
+                    if isinstance(
+                        strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+                    )
+                    else {}
+                ),
+            }
             context.result = None
             await call_next()
         except BaseException:
@@ -2426,13 +2580,22 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 self._records_volunteered += 1
         # One trigger event, one record. A forced call's own history predates the record it
         # asked for, so there is nothing here to decide on; see :meth:`process`.
+        if deferred:
+            return
         self._awaiting_record = forced_this_call and not self._pin_disabled
         if forced_this_call or not messages or self._pin_disabled:
             self._force_next = False
             return
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
-        self._force_next = self._record_due(messages, record_index)
+        self._force_next = self._record_due(
+            messages,
+            record_index,
+            max_input_tokens=request_budget() if request_budget is not None else None,
+        )
+        self._feedback = ""
+        if self._reforce_next and self.reforce_feedback is not None:
+            self._feedback = self.reforce_feedback(messages)
 
     def _requeue_forced(self, *, reforced: bool) -> None:
         """Undo a forced call that failed, so the next call is pinned in its place."""
@@ -2444,7 +2607,13 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         if self.disarm is not None:
             self.disarm()
 
-    def _record_due(self, messages: list[Message], record_index: int | None) -> bool:
+    def _record_due(
+        self,
+        messages: list[Message],
+        record_index: int | None,
+        *,
+        max_input_tokens: int | None = None,
+    ) -> bool:
         """Return whether the next call should be pinned to the recall tool.
 
         **The rule, written once so nobody has to derive it from three booleans.** Write
@@ -2481,19 +2650,28 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         if self.reforce is not None and self.reforce():
             self._reforce_next = True
             return True
-        return self._trigger_due(messages, record_index)
+        return self._trigger_due(messages, record_index, max_input_tokens=max_input_tokens)
 
-    def _trigger_due(self, messages: list[Message], record_index: int | None) -> bool:
+    def _trigger_due(
+        self,
+        messages: list[Message],
+        record_index: int | None,
+        *,
+        max_input_tokens: int | None = None,
+    ) -> bool:
         return _recall_triggered(
             messages,
             record_index,
-            trigger_tokens=int(self.max_input_tokens * self.trigger_fraction),
+            trigger_tokens=int(
+                (self.max_input_tokens if max_input_tokens is None else max_input_tokens)
+                * self.trigger_fraction
+            ),
             min_groups_before_repeat=self.min_groups_before_repeat,
             max_groups_before_record=self.max_groups_before_record,
             repeat_records=self.repeat_records,
         )
 
-    def record_due(self, messages: list[Message]) -> bool:
+    def record_due(self, messages: list[Message], *, max_input_tokens: int | None = None) -> bool:
         """Preview a trigger or outstanding request without consuming the re-force callback.
 
         Messages must be grouped and token-annotated. The strategy checks its own re-force
@@ -2502,5 +2680,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         return not self._pin_disabled and (
             self._force_next
             or self._awaiting_record
-            or self._trigger_due(messages, find_record_index(messages))
+            or self._trigger_due(
+                messages, find_record_index(messages), max_input_tokens=max_input_tokens
+            )
         )
