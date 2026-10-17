@@ -24,6 +24,9 @@ def verify(value: dict[str, Any]) -> None:
         )
         seen.update((a, b))
         subset = [e for e in events if e.get("session") in (a, b)]
+        _exchanges(
+            [e for e in subset if e.get("event") == "request"], "ownership_request_exchanges"
+        )
         for sid, count in ((a, 4), (b, 1)):
             requests = [
                 e
@@ -117,6 +120,7 @@ def verify(value: dict[str, Any]) -> None:
         require(
             len(admissions) == (5 if name == "equal_ids_repeated_cancel" else 1), "admission_count"
         )
+        _exchanges(admissions, "admission_exchanges")
         for admission in admissions:
             require(
                 admission.get("session") == b
@@ -164,6 +168,12 @@ def verify(value: dict[str, Any]) -> None:
                 "idle_peer_result",
             )
             _binding(subset, results[0])
+
+
+def _exchanges(events: list[dict[str, Any]], reason: str) -> None:
+    ids = [e.get("exchange") for e in events]
+    require(all(isinstance(v, str) and 0 < len(v) <= 128 for v in ids), reason)
+    require(len(set(ids)) == len(ids), reason)
 
 
 def _ordered(first: dict[str, Any], last: dict[str, Any]) -> bool:

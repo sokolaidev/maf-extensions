@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-PROFILE = "installed-bicep-windows-v2"
+PROFILE = "installed-bicep-windows-v3"
 WHEEL = "1228f030135da4e3c5797ec76e19c34275fb7bba20fbc55d3d42d6cc43955529"
 INTEGRITY = "sha512-/8N2LnfTFQPvnZizi8qKSFfnLQaPvSG3Cb4xo1YV7b4JhYiUc43ZNRpXJ01bWghLK0Ezk3HVeo/DGHcIRQwRWA=="
 CLAIMS = (
@@ -134,6 +134,12 @@ def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _float(value: str) -> float:
+    result = float(value)
+    require(math.isfinite(result), "nonfinite_json")
+    return result
+
+
 def read(path: Path, limit: int = LIMITS["summary"]) -> Any:
     """Read bounded JSON while rejecting duplicate keys and nonfinite values."""
     require(path.is_file() and path.stat().st_size <= limit, "missing_or_oversized_record")
@@ -142,7 +148,10 @@ def read(path: Path, limit: int = LIMITS["summary"]) -> Any:
     require(len(raw) <= limit, "oversized_record")
     try:
         return json.loads(
-            raw, object_pairs_hook=_pairs, parse_constant=lambda _: require(False, "nonfinite_json")
+            raw,
+            object_pairs_hook=_pairs,
+            parse_float=_float,
+            parse_constant=lambda _: require(False, "nonfinite_json"),
         )
     except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         raise Refused("malformed_record") from exc
@@ -315,11 +324,20 @@ def predicates(group: str, value: dict[str, Any], manifest: dict[str, Any]) -> N
         rows = value["observations"]
         require(
             len(rows) == 2
-            and _same(rows[0], {"mode": "bridge", "exit_code": 0, "control_body_matches": True}),
+            and _same(
+                rows[0],
+                {
+                    "mode": "bridge",
+                    "exit_code": 0,
+                    "control_body_matches": True,
+                    "image": manifest["image"],
+                },
+            ),
             "unreachable_control",
         )
         require(
             rows[1]["mode"] == "none"
+            and rows[1].get("image") == manifest["image"]
             and type(rows[1]["exit_code"]) is int
             and rows[1]["exit_code"] in (7, 28)
             and rows[1]["control_body_matches"] is False,
@@ -476,6 +494,9 @@ def predicates(group: str, value: dict[str, Any], manifest: dict[str, Any]) -> N
                     and row["projected_content_items"] == 1,
                     "duplicate_projection",
                 )
+        from .gateway import verify
+
+        verify(value, manifest)
         result(value["prepared_module"])
         sources = importlib.import_module("openclaw_sources")
         require(
@@ -527,6 +548,21 @@ def predicates(group: str, value: dict[str, Any], manifest: dict[str, Any]) -> N
 
 def evaluate(root: Path, expected: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
     """Reject incomplete or transplanted bundles; never select claims from their reports."""
+    return _evaluate(root, expected, manifest, "qualified_for_profile")
+
+
+def finalize(root: Path, expected: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    """Publish qualification only after the entire pending bundle passes evaluation."""
+    result = _evaluate(root, expected, manifest, "unqualified")
+    summary = read(root / "summary.json")
+    summary["outcome"] = "qualified_for_profile"
+    write(root / "summary.json", summary)
+    return result
+
+
+def _evaluate(
+    root: Path, expected: dict[str, Any], manifest: dict[str, Any], outcome: str
+) -> dict[str, Any]:
     require(_same(expected, plan(manifest, expected["campaign_id"])), "plan_narrowed")
     require(
         not (root / "summary.json").is_symlink()
@@ -584,7 +620,10 @@ def evaluate(root: Path, expected: dict[str, Any], manifest: dict[str, Any]) -> 
         "case_inventory",
     )
     seen: set[str] = set()
-    total = (root / "summary.json").stat().st_size
+    total = max(
+        (root / "summary.json").stat().st_size,
+        len(encode({**summary, "outcome": "qualified_for_profile"})) + 1,
+    )
     for attempt, group in zip(summary["attempts"], GROUPS, strict=True):
         keys(attempt, {"group", "attempt_id", "file", "bytes", "sha256", "outcome"})
         require(
@@ -623,7 +662,7 @@ def evaluate(root: Path, expected: dict[str, Any], manifest: dict[str, Any]) -> 
         except (KeyError, TypeError, RuntimeError) as exc:
             raise Refused("invalid_observations_" + group) from exc
     require(total <= LIMITS["bundle"], "bundle_limit")
-    require(summary["outcome"] == "qualified_for_profile", "incomplete_summary")
+    require(summary["outcome"] == outcome, "incomplete_summary")
     return {
         "outcome": "qualified_for_profile",
         "profile": PROFILE,

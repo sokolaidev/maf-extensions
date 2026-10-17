@@ -220,7 +220,8 @@ def test_observer_preserves_chunked_messages_and_redacts(tmp_path, payload):
         assert evidence[0]["target"] == observer.digest(7)
 
 
-def test_provider_concurrent_turns_do_not_mix_evidence(tmp_path):
+@pytest.mark.parametrize("with_session", [False, True])
+def test_provider_concurrent_turns_do_not_mix_evidence(tmp_path, with_session):
     evidence = tmp_path / "provider.jsonl"
     with ThreadingHTTPServer(("127.0.0.1", 0), provider.handler(evidence)) as server:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -238,7 +239,8 @@ def test_provider_concurrent_turns_do_not_mix_evidence(tmp_path):
                             "messages": [
                                 {
                                     "role": "user",
-                                    "content": f"qualification valid qualification-turn={turn}",
+                                    "content": f"qualification valid qualification-turn={turn}"
+                                    + (f" qualification-session={turn}" if with_session else ""),
                                 },
                                 {"role": "tool", "content": turn},
                             ],
@@ -263,6 +265,7 @@ def test_provider_concurrent_turns_do_not_mix_evidence(tmp_path):
     assert len(records) == 16
     assert len({record["turn"] for record in records}) == 16
     assert all(record["tool_result"] == record["turn"] for record in records)
+    assert all((record.get("session") == record["turn"]) == with_session for record in records)
 
 
 def test_partial_evidence_line_is_not_a_result(tmp_path):

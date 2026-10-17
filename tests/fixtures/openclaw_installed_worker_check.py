@@ -201,6 +201,7 @@ def networking(image: str, control: dict[str, Any] | None = None) -> dict[str, A
                     "mode": mode,
                     "exit_code": result.returncode,
                     "control_body_matches": result.stdout == nonce,
+                    "image": config["Image"],
                 }
             )
     finally:
@@ -246,6 +247,7 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
     report: dict[str, Any] = {
         "sessions": [],
         "session_ids": [],
+        "requests": [],
         "entry_point": "maf-bicep-mcp",
         "provider": "deterministic-local-fixture",
     }
@@ -255,6 +257,7 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
         results = {}
         for case in ("valid", "invalid", "incomplete"):
             turn = uuid.uuid4().hex
+            report["requests"].append({"session": session, "turn": turn, "scenario": case})
             connection = http.client.HTTPConnection(
                 "127.0.0.1", config["gateway"]["port"], timeout=180
             )
@@ -269,7 +272,7 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
                             "messages": [
                                 {
                                     "role": "user",
-                                    "content": f"qualification {case} qualification-turn={turn}",
+                                    "content": f"qualification {case} qualification-turn={turn} qualification-session={session}",
                                 }
                             ],
                         }
@@ -292,6 +295,7 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
             results[case] = verify_outcome(
                 projected_result(records(args.evidence), turn, case), case, config_digest, image
             )
+            results[case].update(session=session, turn=turn)
             require(empty(), "Console call left owned resources")
         report["sessions"].append(results)
 
@@ -344,6 +348,7 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
                 )
             }
 
+    report["provider_observations"] = records(args.evidence)
     report["prepared_module"] = asyncio.run(prepared())
     report["owned_empty"] = empty()
     return report

@@ -22,6 +22,7 @@ from .evidence import (
     encode,
     evaluate,
     file_hash,
+    finalize,
     plan,
     predicates,
     read,
@@ -132,13 +133,17 @@ def cleanup(root: Path, prepared: Path, resources: dict[str, Any], stopped: bool
 
     require(resources == inventory(resources["campaign"]), "cleanup_resource_identity")
     errors: list[str] = []
+    if (prepared / "setup.log").exists() and (prepared / "setup.log").stat().st_size > LIMITS[
+        "log"
+    ]:
+        errors.append("setup_log_limit")
     survived = removed = False
     emergency = False
     owned_empty = True
 
     def attempt(args: list[str], reason: str) -> str | None:
         try:
-            return command(args, prepared, 60)
+            return command(args, prepared, 60, diagnostics=False)
         except Exception:
             errors.append(reason)
             return None
@@ -352,12 +357,12 @@ def run(prepared: Path, manifest_path: Path, output: Path) -> dict[str, Any]:
                 failure = failure or type(exc).__name__
         summary["ended"] = utc()
         summary["duration"] = time.monotonic() - started
-        summary["outcome"] = "failed" if failure else "qualified_for_profile"
+        summary["outcome"] = "failed" if failure else "unqualified"
         write(bundle / "summary.json", summary)
     if failure:
         print("Campaign failed: " + failure, file=sys.stderr)
         return {"outcome": "failed", "reason": failure, "campaign_id": expected["campaign_id"]}
-    return evaluate(bundle, expected, manifest)
+    return finalize(bundle, expected, manifest)
 
 
 def main() -> int:
