@@ -141,10 +141,10 @@ async def test_tools_disabled_leave_the_ask_pending_without_ignored_pin(options)
     context.options = {"tools": [make_recall_tool()]}
 
     async def record():
-        assert (
-            context.options["tool_choice"]["required_function_name"]
-            == "recall_earlier_tool_results"
-        )
+        assert context.options is not None
+        choice = context.options["tool_choice"]
+        assert isinstance(choice, dict)
+        assert choice["required_function_name"] == "recall_earlier_tool_results"
         context.result = ChatResponse(
             messages=Message(
                 "assistant",
@@ -199,7 +199,12 @@ async def test_malformed_recall_is_discarded_before_one_unpinned_retry(stream, a
             context.result = response
 
     await middleware.process(context, send)
-    result = await context.result.get_final_response() if stream else context.result
+    if stream:
+        assert isinstance(context.result, ResponseStream)
+        result = await context.result.get_final_response()
+    else:
+        assert isinstance(context.result, ChatResponse)
+        result = context.result
     assert result.text == "answer"
     assert calls == 2
     assert middleware.failed_forced_calls == 1
@@ -244,6 +249,7 @@ async def test_forced_deadline_cancels_before_retry(stream):
 
     await middleware.process(context, send)
     assert calls == 2
+    assert isinstance(context.result, ChatResponse)
     assert context.result.text == "answer"
     assert middleware.failed_forced_calls == 1
 
