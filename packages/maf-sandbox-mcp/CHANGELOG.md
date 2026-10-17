@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-mcp-v0.1.0...maf-sandbox-mcp-v0.1.1) (2026-10-17)
+
+
+### Fixes
+
+* **mcp:** support MCP SDK 1.30.0 in the bounded HTTP worker ([#1999](https://github.com/sokolaidev/maf-extensions/issues/1999)) ([9b7e0ce](https://github.com/sokolaidev/maf-extensions/commit/9b7e0ce11230ae300ded5eccfa3ec3a49ee789c0))
+
 ## 0.1.0 (2026-10-15)
 
 
