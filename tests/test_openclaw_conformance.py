@@ -172,6 +172,7 @@ def control_events(cases):
         for sid in (a, b):
             exchange = e.digest(sid + "delete")
             add(event="delete_requested", session=sid, exchange=exchange)
+            add(event="response", session=sid, exchange=exchange, status=200)
             add(
                 event="retired",
                 session=sid,
@@ -192,7 +193,7 @@ def control_events(cases):
             retirement = [
                 event
                 for event in events
-                if event.get("session") == a and event["event"] in ("delete_requested", "retired")
+                if event.get("session") == a and event.get("exchange") == e.digest(a + "delete")
             ]
             for event in retirement:
                 events.remove(event)
@@ -1735,4 +1736,109 @@ def test_retirements_preserve_peer_count_order(ownership_observations, case):
     a, b = (snapshots[obs["cases"][case][key]] for key in ("session_a", "session_b"))
     a["time_ns"] = b["time_ns"] + 1
     with pytest.raises(e.Refused, match="retirement_order"):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("case", sorted(e.OWNERSHIP))
+@pytest.mark.parametrize("side", ["session_a", "session_b"])
+@pytest.mark.parametrize(
+    "mutation", ["missing", "empty", "oversized", "nonstr", "peer", "other_case", "request"]
+)
+def test_delete_exchanges_are_bounded_and_campaign_unique(
+    ownership_observations, case, side, mutation
+):
+    obs = ownership_observations
+    sid = obs["cases"][case][side]
+    delete = next(
+        r for r in obs["transport"] if r["event"] == "delete_requested" and r["session"] == sid
+    )
+    old = delete["exchange"]
+    if mutation == "peer":
+        peer = obs["cases"][case]["session_b" if side == "session_a" else "session_a"]
+        value = next(
+            r["exchange"]
+            for r in obs["transport"]
+            if r["event"] == "delete_requested" and r["session"] == peer
+        )
+    elif mutation == "other_case":
+        value = next(
+            r["exchange"]
+            for r in obs["transport"]
+            if r["event"] == "delete_requested"
+            and r["session"]
+            not in (obs["cases"][case]["session_a"], obs["cases"][case]["session_b"])
+        )
+    elif mutation == "request":
+        value = next(r["exchange"] for r in obs["transport"] if r["event"] == "request")
+    else:
+        value = {"missing": None, "empty": "", "oversized": "x" * 129, "nonstr": 7}[mutation]
+    for row in obs["transport"]:
+        if row.get("exchange") == old:
+            if mutation == "missing":
+                del row["exchange"]
+            else:
+                row["exchange"] = value
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("case", sorted(e.OWNERSHIP))
+@pytest.mark.parametrize("side", ["session_a", "session_b"])
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "status", "late"])
+def test_delete_requires_one_successful_response_before_retirement(
+    ownership_observations, case, side, mutation
+):
+    obs = ownership_observations
+    sid = obs["cases"][case][side]
+    retired = next(r for r in obs["transport"] if r["event"] == "retired" and r["session"] == sid)
+    response = next(
+        r
+        for r in obs["transport"]
+        if r["event"] == "response" and r.get("exchange") == retired["exchange"]
+    )
+    if mutation == "missing":
+        obs["transport"].remove(response)
+    elif mutation == "duplicate":
+        obs["transport"].append(response.copy())
+    elif mutation == "status":
+        response["status"] = 500
+    else:
+        response["time_ns"] = retired["time_ns"] + 1
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize(
+    "case,index",
+    [(name, 0) for name in sorted(e.OWNERSHIP - {"maf_ordinary_close"})]
+    + [("equal_ids_repeated_cancel", 4)],
+)
+@pytest.mark.parametrize("late", ["admission", "terminal"])
+def test_busy_response_precedes_its_observation(ownership_observations, case, index, late):
+    obs = ownership_observations
+    peer = obs["cases"][case]["session_b"]
+    admissions = [
+        r for r in obs["transport"] if r["event"] == "admission_refused" and r["session"] == peer
+    ]
+    admission = admissions[index]
+    response = next(
+        r
+        for r in obs["transport"]
+        if r["event"] == "response" and r.get("exchange") == admission["exchange"]
+    )
+    end = (
+        admission["time_ns"] if late == "admission" else max(r["time_ns"] for r in obs["transport"])
+    )
+    response["time_ns"] = end + 1
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("event", ["delete_requested", "retired"])
+def test_retirement_events_cannot_belong_to_unrecognized_sessions(ownership_observations, event):
+    obs = ownership_observations
+    extra = next(r.copy() for r in obs["transport"] if r["event"] == event)
+    extra.update(session="0" * 64, exchange="orphan-exchange")
+    obs["transport"].append(extra)
+    with pytest.raises(e.Refused, match="ownership_event_session"):
         importlib.import_module("openclaw_conformance.ownership").verify(obs)

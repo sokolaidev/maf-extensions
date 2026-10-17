@@ -11,6 +11,10 @@ from .evidence import LARGE_SOURCE_SHA256, digest, encode, require
 def verify(value: dict[str, Any]) -> None:
     """Require independent request, admission and retirement evidence for every case."""
     events = value["transport"]
+    _exchanges(
+        [e for e in events if e.get("event") in ("request", "delete_requested")],
+        "ownership_request_exchanges",
+    )
     seen: set[str] = set()
     for name, case in value["cases"].items():
         a, b = case.get("session_a"), case.get("session_b")
@@ -24,9 +28,6 @@ def verify(value: dict[str, Any]) -> None:
         )
         seen.update((a, b))
         subset = [e for e in events if e.get("session") in (a, b)]
-        _exchanges(
-            [e for e in subset if e.get("event") == "request"], "ownership_request_exchanges"
-        )
         starts = [e for e in subset if e.get("event") == "binding_started"]
         bound = [_request(subset, start) for start in starts]
         _exchanges(bound, "binding_ambiguous_start")
@@ -109,6 +110,8 @@ def verify(value: dict[str, Any]) -> None:
                 and _ordered(requested[0], r),
                 "retirement_delete",
             )
+            response = _response(subset, requested[0], 200)
+            require(_ordered(response, r), "retirement_response_order")
             deletes[sid], retirements[sid] = requested[0], r
             require(
                 all(
@@ -235,7 +238,8 @@ def verify(value: dict[str, Any]) -> None:
                 and e.get("request") == digest(42)
             ]
             require(len(requests) == 1 and _ordered(requests[0], admission), "admission_request")
-            _response(subset, requests[0], 200)
+            response = _response(subset, requests[0], 200)
+            require(_ordered(response, admission), "admission_response_order")
             if name in ("maf_active_close", "maf_idle_close"):
                 before = deletes[a] if name == "maf_active_close" else retirements[a]
                 require(_ordered(before, requests[0]), "close_admission_order")
@@ -269,7 +273,14 @@ def verify(value: dict[str, Any]) -> None:
             event.get("session") in seen
             for event in events
             if event.get("event")
-            in ("binding_started", "binding_result", "binding_cancelled", "admission_refused")
+            in (
+                "binding_started",
+                "binding_result",
+                "binding_cancelled",
+                "admission_refused",
+                "delete_requested",
+                "retired",
+            )
         ),
         "ownership_event_session",
     )
@@ -289,7 +300,7 @@ def _ordered(first: dict[str, Any], last: dict[str, Any]) -> bool:
     )
 
 
-def _response(events: list[dict[str, Any]], request: dict[str, Any], status: int) -> None:
+def _response(events: list[dict[str, Any]], request: dict[str, Any], status: int) -> dict[str, Any]:
     matches = [
         e
         for e in events
@@ -305,6 +316,8 @@ def _response(events: list[dict[str, Any]], request: dict[str, Any], status: int
         and _ordered(request, response),
         "control_response",
     )
+
+    return response
 
 
 def _request(events: list[dict[str, Any]], start: dict[str, Any]) -> dict[str, Any]:
@@ -372,13 +385,6 @@ def _binding(
     events: list[dict[str, Any]], result: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     request = _terminal_request(events, result)
-    _response(events, request, 200)
-    response = next(
-        e
-        for e in events
-        if e.get("event") == "response"
-        and e.get("exchange") == request["exchange"]
-        and e.get("session") == request["session"]
-    )
+    response = _response(events, request, 200)
     require(_ordered(result, response), "binding_response_order")
     return request, response
