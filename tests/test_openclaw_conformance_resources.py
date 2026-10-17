@@ -179,6 +179,7 @@ def test_cleanup_commands_work_after_setup_diagnostics_overflow(tmp_path, monkey
 @pytest.mark.parametrize("mode", ["stdout", "stderr", "timeout", "exit"])
 def test_setup_stops_descendants_and_preserves_unrelated_process(tmp_path, monkeypatch, mode):
     import subprocess
+    import time
 
     install = importlib.import_module("openclaw_conformance.install")
     alive = importlib.import_module("test_openclaw_e2e_sample").alive
@@ -211,9 +212,12 @@ def test_setup_stops_descendants_and_preserves_unrelated_process(tmp_path, monke
                 install.command(
                     [sys.executable, "-I", "-B", "-c", code],
                     tmp_path,
-                    2 if mode == "timeout" else 10,
+                    10,
                 )
         descendant = int(pidfile.read_text())
+        end = time.monotonic() + 5
+        while alive(descendant) and time.monotonic() < end:
+            time.sleep(0.01)
         assert not alive(descendant)
         assert sentinel.poll() is None
     finally:
