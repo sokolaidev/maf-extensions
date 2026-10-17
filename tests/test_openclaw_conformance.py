@@ -77,7 +77,7 @@ def control_events(cases):
     events = []
 
     def add(**fields):
-        event = {"time_ns": len(events) + 1, **fields}
+        event = {"time_ns": len(events) + 1, "boot": "1" * 32, **fields}
         events.append(event)
         return event
 
@@ -809,7 +809,9 @@ def test_response_loss_cannot_hide_replay_or_implicit_cancel(bundle, row):
     change_artifact(
         bundle,
         "ownership",
-        lambda v: v["observations"]["transport"].append({**row, "session": "c" * 64}),
+        lambda v: v["observations"]["transport"].append(
+            {**row, "session": "c" * 64, "boot": v["observations"]["transport"][0]["boot"]}
+        ),
     )
     with pytest.raises(e.Refused):
         e.evaluate(*bundle)
@@ -1552,7 +1554,7 @@ def test_refused_admission_cannot_execute_a_binding(ownership_observations, case
         for r in obs["transport"]
         if r["event"] == "request" and r.get("exchange") == refusal["exchange"]
     )
-    fields = {"session": request["session"], "request": request["request"]}
+    fields = {"session": request["session"], "request": request["request"], "boot": request["boot"]}
     injected = [dict(fields, event="binding_started", time_ns=request["time_ns"] + 1)]
     if terminal_kind:
         injected.append(
@@ -2030,3 +2032,74 @@ def test_gateway_requires_pinned_routing_identity(
     row["tool_result"] = text[:start] + json.dumps(value) + text[end:]
     with pytest.raises(RuntimeError):
         importlib.import_module("openclaw_conformance.gateway").verify(obs, m)
+
+
+@pytest.mark.parametrize("boot", [None, "", "a" * 31, "a" * 33, "g" * 32, "A" * 32, 7])
+def test_ownership_requires_well_formed_boot_identity(ownership_observations, boot):
+    obs = ownership_observations
+    for row in obs["transport"]:
+        if boot is None:
+            row.pop("boot", None)
+        else:
+            row["boot"] = boot
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("case", sorted(e.OWNERSHIP))
+@pytest.mark.parametrize("missing", [False, True])
+def test_survivor_cannot_change_runtime_identity(ownership_observations, case, missing):
+    obs = ownership_observations
+    summary = obs["cases"][case]
+    row = [
+        r
+        for r in obs["transport"]
+        if r["event"] == "binding_result" and r["session"] == summary["session_b"]
+    ][-1]
+    if missing:
+        row.pop("boot", None)
+    else:
+        row["boot"] = "0" * 32
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        "request",
+        "response",
+        "binding_started",
+        "binding_cancelled",
+        "admission_refused",
+        "delete_requested",
+        "retired",
+    ],
+)
+@pytest.mark.parametrize("missing", [False, True])
+def test_ownership_event_cannot_change_runtime_identity(ownership_observations, event, missing):
+    obs = ownership_observations
+    row = next(r for r in obs["transport"] if r["event"] == event)
+    if missing:
+        row.pop("boot", None)
+    else:
+        row["boot"] = "0" * 32
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("event", ["settled", "startup_ready"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_retained_observer_records_share_the_service_boot(event, missing):
+    record = (
+        ROOT
+        / "scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v4/evidence/ownership.json"
+    )
+    obs = e.read(record)["observations"]
+    row = next(r for r in obs["transport"] if r["event"] == event)
+    if missing:
+        row.pop("boot", None)
+    else:
+        row["boot"] = "0" * 32
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)

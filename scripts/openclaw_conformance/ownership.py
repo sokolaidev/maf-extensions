@@ -11,6 +11,14 @@ from .evidence import LARGE_SOURCE_SHA256, digest, encode, require
 def verify(value: dict[str, Any]) -> None:
     """Require independent request, admission and retirement evidence for every case."""
     events = value["transport"]
+    require(isinstance(events, list) and bool(events), "ownership_boot_identity")
+    boot = events[0].get("boot") if isinstance(events[0], dict) else None
+    require(
+        isinstance(boot, str)
+        and re.fullmatch(r"[0-9a-f]{32}", boot)
+        and all(isinstance(event, dict) and event.get("boot") == boot for event in events),
+        "ownership_boot_identity",
+    )
     _exchanges(
         [e for e in events if e.get("event") in ("request", "delete_requested")],
         "ownership_request_exchanges",
