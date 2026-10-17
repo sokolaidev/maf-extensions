@@ -11,6 +11,24 @@
         "github_repository_id": "691499456",
         "sha256": "624fb6ed552abc34a5aaac41e76a373da65ac08e524b09b672f29c60e6ac896a",
         "provenance": "OpenTofu random 3.9.1 release SHA256SUMS - verified 2026-10-05"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-random",
+        "revision": "b59b1791a688fe2737b5b70ab05fdd0a4190190e",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-random/zip/b59b1791a688fe2737b5b70ab05fdd0a4190190e",
+          "sha256": "fa98baac39c33bec2999ee02de8693fa1e36b2fe10c57e378ba22ee44351c6f1",
+          "provenance": "OpenTofu v3.9.1 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0"
+        },
+        "module_files": {
+          "go.mod": "7d301455b35ec877fad536605cc70736ce870e08022b2248cbf4f9666c3ae3f5",
+          "go.sum": "b43a372a0504fcb3a49fad3cf4f428510dc7c9959c2638fcfc627afba3899935"
+        },
+        "sha256": "da096e763cf4f01c88ac5a77b28cb0f04665f277ed5d09875ccc025ecca4d408"
       }
     }
   ],
