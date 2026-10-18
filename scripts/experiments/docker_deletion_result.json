@@ -1,10 +1,10 @@
 {
-  "measured_at": "2026-10-18T20:53:44.213421+00:00",
-  "source_commit": "ee92a1ae583fd290244f623267a4db29d8803406",
+  "measured_at": "2026-10-18T21:20:11.699360+00:00",
+  "source_commit": "a07ed6d221566cf7fbe66f0f3fb31319723e5fe2",
   "source_sha256": {
-    "packages/maf-sandbox-docker/src/maf_sandbox_docker/_backend.py": "b003ac90d0c52e0727857230083f79ef885f8f985602760bcdfe17d913631f19",
+    "packages/maf-sandbox-docker/src/maf_sandbox_docker/_backend.py": "79bfac0ee1e22385115b038edf22d66e5067843bfe6c522193f8963e6e6d0c6f",
     "packages/maf-sandbox/src/maf_sandbox/_protocol.py": "998bc0cc9f207e0dfc594435834efe61e7452a17e9ca8e931f1ba6b1310829bc",
-    "scripts/experiments/docker_deletion_probe.py": "97aa37b66613b9299685e5351568bfa6f22cef971478fe341b1243ac107eb48c"
+    "scripts/experiments/docker_deletion_probe.py": "d2a4b1777212d6169febb4f5e7473d8f604e110eb1ae6d5079fd1243f3bae294"
   },
   "host_os": "Windows",
   "python": "3.13.12",
@@ -86,8 +86,8 @@
   },
   "fixture_dockerfile": "FROM {base}\nRUN mkdir -p /guest-bin /protected /outside /maf-sandbox/work/call/parent && chmod 777 /guest-bin && chmod 700 /protected && echo sentinel > /protected/sentinel && echo sentinel > /outside/sentinel && echo target > /maf-sandbox/work/call/parent/sentinel\nENV PATH=/guest-bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin\nUSER {user}\n",
   "fixture_images": {
-    "0": "sha256:2069ff5ae847f33a5f8bfa851a1f9ef1dfa7840a3e51fe3539308c1b5458d80d",
-    "1000:1000": "sha256:8e0f68769807f9a53f17e01ef2613ce794e6fce9e866033130a005a9204326b4"
+    "0": "sha256:b95dafa70fd0c3a024deb793b2ce97f17baf5222d3eb748ae1aceadfbe28140f",
+    "1000:1000": "sha256:61efc7f538545b57d87d9cc4b3929c6e7aba9dc3f0ae405128c4e645313dd867"
   },
   "results": [
     {
@@ -1885,7 +1885,7 @@
         "reclaim"
       ],
       "guest_can_delete_outside": true,
-      "outcome": "outside_deleted_within_guest_authority",
+      "outcome": "outside_deleted_within_guest_authority_completion_refused",
       "independent_disposal_check": "absent"
     },
     {
@@ -1911,7 +1911,111 @@
         "reclaim"
       ],
       "guest_can_delete_outside": true,
-      "outcome": "outside_deleted_within_guest_authority",
+      "outcome": "outside_deleted_within_guest_authority_completion_refused",
+      "independent_disposal_check": "absent"
+    },
+    {
+      "case": "private_parent_present",
+      "method": "remove",
+      "grants": [],
+      "guest_status": {
+        "Uid": "1000\t1000\t1000\t1000",
+        "Gid": "1000\t1000\t1000\t1000",
+        "CapInh": "0000000000000000",
+        "CapPrm": "0000000000000000",
+        "CapEff": "0000000000000000",
+        "CapBnd": "0000000000000000",
+        "CapAmb": "0000000000000000",
+        "NoNewPrivs": "1"
+      },
+      "declarations": [
+        "exec",
+        "files_delete",
+        "files_in",
+        "files_out",
+        "host_tools",
+        "reclaim"
+      ],
+      "guest_stat_control": "denied",
+      "outcome": "private_parent_refused",
+      "independent_disposal_check": "absent"
+    },
+    {
+      "case": "private_parent_present",
+      "method": "reclaim",
+      "grants": [],
+      "guest_status": {
+        "Uid": "1000\t1000\t1000\t1000",
+        "Gid": "1000\t1000\t1000\t1000",
+        "CapInh": "0000000000000000",
+        "CapPrm": "0000000000000000",
+        "CapEff": "0000000000000000",
+        "CapBnd": "0000000000000000",
+        "CapAmb": "0000000000000000",
+        "NoNewPrivs": "1"
+      },
+      "declarations": [
+        "exec",
+        "files_delete",
+        "files_in",
+        "files_out",
+        "host_tools",
+        "reclaim"
+      ],
+      "guest_stat_control": "denied",
+      "outcome": "private_parent_refused",
+      "independent_disposal_check": "absent"
+    },
+    {
+      "case": "private_parent_missing",
+      "method": "remove",
+      "grants": [],
+      "guest_status": {
+        "Uid": "1000\t1000\t1000\t1000",
+        "Gid": "1000\t1000\t1000\t1000",
+        "CapInh": "0000000000000000",
+        "CapPrm": "0000000000000000",
+        "CapEff": "0000000000000000",
+        "CapBnd": "0000000000000000",
+        "CapAmb": "0000000000000000",
+        "NoNewPrivs": "1"
+      },
+      "declarations": [
+        "exec",
+        "files_delete",
+        "files_in",
+        "files_out",
+        "host_tools",
+        "reclaim"
+      ],
+      "guest_stat_control": "denied",
+      "outcome": "private_parent_refused",
+      "independent_disposal_check": "absent"
+    },
+    {
+      "case": "private_parent_missing",
+      "method": "reclaim",
+      "grants": [],
+      "guest_status": {
+        "Uid": "1000\t1000\t1000\t1000",
+        "Gid": "1000\t1000\t1000\t1000",
+        "CapInh": "0000000000000000",
+        "CapPrm": "0000000000000000",
+        "CapEff": "0000000000000000",
+        "CapBnd": "0000000000000000",
+        "CapAmb": "0000000000000000",
+        "NoNewPrivs": "1"
+      },
+      "declarations": [
+        "exec",
+        "files_delete",
+        "files_in",
+        "files_out",
+        "host_tools",
+        "reclaim"
+      ],
+      "guest_stat_control": "denied",
+      "outcome": "private_parent_refused",
       "independent_disposal_check": "absent"
     },
     {
@@ -2222,7 +2326,7 @@
     }
   ],
   "complete": true,
-  "source_note": "source_commit identifies the checkout before the probe correction; source_sha256 identifies the measured working-tree files.",
+  "source_note": "source_commit identifies the checkout before the ancestor-validation correction; source_sha256 identifies the measured working-tree files.",
   "diagnostics": [],
   "prior_run_notes": {
     "measured_at": "2026-10-18T18:20:34.646295+00:00",
@@ -2307,72 +2411,29 @@
         "TestFilesDeleteAgainstARealEngine",
         "TestReclaimAgainstARealEngine",
         "TestAWorkDirTheImageGaveItsOwnUser"
-      ]
+      ],
+      "source_sha256": {
+        "packages/maf-sandbox-docker/src/maf_sandbox_docker/_backend.py": "79bfac0ee1e22385115b038edf22d66e5067843bfe6c522193f8963e6e6d0c6f",
+        "packages/maf-sandbox/src/maf_sandbox/_protocol.py": "998bc0cc9f207e0dfc594435834efe61e7452a17e9ca8e931f1ba6b1310829bc",
+        "scripts/experiments/docker_deletion_probe.py": "d2a4b1777212d6169febb4f5e7473d8f604e110eb1ae6d5079fd1243f3bae294"
+      }
     }
   },
-  "cancellation_propagation_recheck": {
-    "measured_at": "2026-10-18T21:04:53.790441+00:00",
-    "source_commit": "215e9737eebe4417c41d09cff914501b03a7b9a6",
-    "source_sha256": {
-      "packages/maf-sandbox-docker/src/maf_sandbox_docker/_backend.py": "b003ac90d0c52e0727857230083f79ef885f8f985602760bcdfe17d913631f19",
-      "packages/maf-sandbox/src/maf_sandbox/_protocol.py": "998bc0cc9f207e0dfc594435834efe61e7452a17e9ca8e931f1ba6b1310829bc",
-      "scripts/experiments/docker_deletion_probe.py": "503ea8882921726ba1752de73387b490001704e57b83731a85c8297693f7b9c5"
-    },
-    "source_note": "Working-tree probe adds an explicit assertion that cancellation propagates; the backend is unchanged from the full 76-case run.",
-    "results": [
-      {
-        "case": "cancellation",
-        "method": "remove",
-        "grants": [],
-        "guest_status": {
-          "Uid": "0\t0\t0\t0",
-          "Gid": "0\t0\t0\t0",
-          "CapInh": "0000000000000000",
-          "CapPrm": "0000000000000000",
-          "CapEff": "0000000000000000",
-          "CapBnd": "0000000000000000",
-          "CapAmb": "0000000000000000",
-          "NoNewPrivs": "1"
-        },
-        "declarations": [
-          "exec",
-          "files_delete",
-          "files_in",
-          "files_out",
-          "host_tools",
-          "reclaim"
-        ],
-        "outcome": "CancelledError",
-        "container_present_after_operation": true,
-        "independent_disposal_check": "absent"
-      },
-      {
-        "case": "cancellation",
-        "method": "reclaim",
-        "grants": [],
-        "guest_status": {
-          "Uid": "0\t0\t0\t0",
-          "Gid": "0\t0\t0\t0",
-          "CapInh": "0000000000000000",
-          "CapPrm": "0000000000000000",
-          "CapEff": "0000000000000000",
-          "CapBnd": "0000000000000000",
-          "CapAmb": "0000000000000000",
-          "NoNewPrivs": "1"
-        },
-        "declarations": [
-          "exec",
-          "files_delete",
-          "files_in",
-          "files_out",
-          "host_tools",
-          "reclaim"
-        ],
-        "outcome": "CancelledError",
-        "container_present_after_operation": true,
-        "independent_disposal_check": "absent"
-      }
+  "additional_conformance": {
+    "passed": 6,
+    "skipped": 0,
+    "python": "3.13.12",
+    "root_image": "mcr.microsoft.com/azurelinux/base/core:3.0",
+    "guest_owned_image_id": "sha256:29863d630750d487e70d8bd5f85ed963ef0df2370d247e1e9b8c2b15e6029882",
+    "suites": [
+      "TestFilesDeleteAgainstARealEngine",
+      "TestReclaimAgainstARealEngine",
+      "TestAWorkDirTheImageGaveItsOwnUser"
     ],
-    "event_loop_diagnostics": []
+    "source_sha256": {
+      "packages/maf-sandbox-docker/src/maf_sandbox_docker/_backend.py": "79bfac0ee1e22385115b038edf22d66e5067843bfe6c522193f8963e6e6d0c6f",
+      "packages/maf-sandbox/src/maf_sandbox/_protocol.py": "998bc0cc9f207e0dfc594435834efe61e7452a17e9ca8e931f1ba6b1310829bc",
+      "scripts/experiments/docker_deletion_probe.py": "d2a4b1777212d6169febb4f5e7473d8f604e110eb1ae6d5079fd1243f3bae294"
+    }
   }
 }

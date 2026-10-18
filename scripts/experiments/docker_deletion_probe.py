@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import json
 import platform
+import shlex
 import subprocess
 import uuid
 from collections.abc import Sequence
@@ -169,10 +170,42 @@ async def _measure(
                 return await original_removal(*args, **kwargs)
 
             sandbox._exec = swapped
-            await _operation(sandbox, method)
+            try:
+                await _operation(sandbox, method)
+            except ValueError as exc:
+                assert "link rather than a real directory" in str(exc)
+            else:
+                raise AssertionError("completion accepted a swapped ancestor")
             assert not _exists(name, "/outside/sentinel")
             assert result["guest_can_delete_outside"]
-            result["outcome"] = "outside_deleted_within_guest_authority"
+            result["outcome"] = "outside_deleted_within_guest_authority_completion_refused"
+        elif label in {"private_parent_present", "private_parent_missing"}:
+            leaf = "sentinel" if label == "private_parent_present" else "missing"
+            control = _guest(
+                name,
+                f"import os\ntry: os.stat('/protected/{leaf}')\nexcept PermissionError: print('denied')\nelse: print('visible')",
+            )
+            assert control == "denied"
+            _guest(
+                name,
+                f"import os; os.mkdir('/guest-bin/parent'); open('/guest-bin/parent/{leaf}','w').close()",
+            )
+            swap = f"import os; os.unlink('/guest-bin/parent/{leaf}'); os.rmdir('/guest-bin/parent'); os.symlink('/protected','/guest-bin/parent')"
+            _command(name, f"/usr/local/bin/python3 -c {shlex.quote(swap)}")
+            try:
+                if method == "remove":
+                    await sandbox.remove(f"parent/{leaf}", working_directory="/guest-bin")
+                else:
+                    await sandbox.reclaim(
+                        f"parent/{leaf}", working_directory="/guest-bin", timeout=30
+                    )
+            except ValueError as exc:
+                assert "link rather than a real directory" in str(exc)
+            else:
+                raise AssertionError("completion exposed a root-private target")
+            assert _exists(name, "/protected/sentinel")
+            result["guest_stat_control"] = control
+            result["outcome"] = "private_parent_refused"
         elif label == "command_authority":
             control = _guest(
                 name,
@@ -232,9 +265,18 @@ async def _measure(
                 )
                 assert not result["container_present_after_operation"]
             else:
+                executing = asyncio.Event()
+                original_exec = sandbox._exec
+
+                async def entered_exec(*args: Any, **kwargs: Any) -> Any:
+                    executing.set()
+                    return await original_exec(*args, **kwargs)
+
+                sandbox._exec = entered_exec
                 task = asyncio.create_task(_operation(sandbox, method, timeout=60))
                 try:
                     async with asyncio.timeout(20):
+                        await executing.wait()
                         while not _exists(name, "/tmp/deletion-started"):
                             await asyncio.sleep(0.05)
                 finally:
@@ -300,6 +342,8 @@ async def _main() -> None:
             cases.append((images["0"], "refusal", method, grants))
     for label in (
         "parent_swap",
+        "private_parent_present",
+        "private_parent_missing",
         "command_authority",
         "false_success",
         "failure",
@@ -311,7 +355,13 @@ async def _main() -> None:
             cases.append(
                 (
                     images["1000:1000"]
-                    if label in {"command_authority", "guest_owned"}
+                    if label
+                    in {
+                        "command_authority",
+                        "guest_owned",
+                        "private_parent_present",
+                        "private_parent_missing",
+                    }
                     else images["0"],
                     label,
                     method,

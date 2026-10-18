@@ -1719,7 +1719,7 @@ class TestRemove:
 
 
 class TestReclaim:
-    """`reclaim` is `remove`'s mechanism without its confinement duty: no walk, straight to `rm`."""
+    """Framework cleanup runs as the guest and verifies completion through the engine."""
 
     def _sandbox(self, overrides=None):
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
@@ -1810,6 +1810,61 @@ class TestDeletionAuthorityAndCompletion:
             await sandbox.remove("target", working_directory=_WORK, recursive=True)
         else:
             await sandbox.reclaim("target", working_directory=_WORK, timeout=30)
+
+    def test_remove_metadata_reads_are_frozen_but_the_command_is_not(self):
+        armed = False
+        paused = False
+        base = _machine(running=[_NAME], overrides=_WORK_IS_A_DIRECTORY)
+
+        def respond(args):
+            nonlocal paused
+            if args[0] == "pause":
+                paused = True
+            elif args[0] == "unpause":
+                paused = False
+            if armed and args[0] == "cp":
+                assert paused
+            if armed and args[0] == "exec":
+                assert not paused
+            return base(args)
+
+        backend, _fake = _backend_with(respond)
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        armed = True
+        asyncio.run(sandbox.remove("target", working_directory=_WORK))
+        assert not paused
+
+    @pytest.mark.parametrize("method", ["remove", "reclaim"])
+    @pytest.mark.parametrize("linked", ["/maf-sandbox", _WORK, f"{_WORK}/parent"])
+    def test_completion_refuses_swapped_ancestors_before_reading_the_target(self, method, linked):
+        removed = False
+        base = _machine(
+            running=[_NAME],
+            overrides={
+                **_WORK_IS_A_DIRECTORY,
+                _cp(f"{_WORK}/parent"): _DockerResult(0, _directory_tar("parent"), ""),
+            },
+        )
+
+        def respond(args):
+            nonlocal removed
+            if args[0] == "exec" and "rm" in args:
+                removed = True
+            if removed and args[:2] == _cp(linked):
+                return _DockerResult(0, _symlink_tar(linked.rsplit("/", 1)[-1], "/private"), "")
+            if removed and args[:2] == _cp(f"{_WORK}/parent/target"):
+                raise AssertionError("read through swapped ancestor")
+            return base(args)
+
+        backend, fake = _backend_with(respond)
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
+        with pytest.raises(ValueError, match="link rather than a real directory"):
+            if method == "remove":
+                asyncio.run(sandbox.remove("parent/target", working_directory=_WORK))
+            else:
+                asyncio.run(sandbox.reclaim("parent/target", working_directory=_WORK, timeout=30))
+        assert fake.matching("unpause", _NAME)
 
     @pytest.mark.parametrize("method", ["remove", "reclaim"])
     def test_permission_failure_is_not_retried_as_root(self, method):

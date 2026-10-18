@@ -82,11 +82,11 @@ Missing directories at or below the working directory receive guest ownership. E
 
 The backend resolves `Config.User` from numeric IDs, account files or a bounded guest `id` check. Empty user means root. An unresolved identity refuses `FILES_OUT` and `HOST_TOOLS`; other workloads may receive root-owned inputs with a warning. Unresolved facts are retried.
 
-`remove` uses guest execution with `rm -f` or `rm -rf`. It rejects the working directory itself and requires `recursive=True` for directories. Missing paths succeed. A final link is unlinked. This operation is not part of the paused archive sequence.
+`remove` uses guest execution with `rm -f` or `rm -rf`. It rejects the working directory itself and requires `recursive=True` for directories. Missing paths succeed. A final link is unlinked. Initial path validation is paused; the guest command runs after resume.
 
 Deletion and reclamation always execute as the image's configured user, with no UID 0 override or privileged retry. Root-owned ancestry cannot establish that a guest-selected command is safe to execute with greater authority. A replaced command can act only with the guest's existing permissions.
 
-After a successful command, the backend pauses the guest and checks the target through the engine's archive metadata. A surviving target or an unreadable postcondition fails the operation. The check shares the removal deadline and covers the same root-filesystem view as other archive operations; guest mounts remain outside that view. The guest can change state again after resume, so this is a completion observation, not durable absence or a clean-state guarantee.
+After a successful command, the backend pauses the guest, revalidates every ancestor and checks the target through the engine's archive metadata. A symlink parent is refused before any descendant metadata is read, including for framework reclamation. A surviving target or an unreadable postcondition fails the operation. The check shares the removal deadline and covers the same root-filesystem view as other archive operations; guest mounts remain outside that view. The guest can change state again after resume, so this is a completion observation, not durable absence or a clean-state guarantee.
 
 `reclaim` rejects shallow targets and requires relative targets to be children of the working directory. It runs from `/` so a missing target parent does not prevent cleanup. It does not use cached ancestry to grant additional authority.
 

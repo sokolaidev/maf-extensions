@@ -1164,6 +1164,9 @@ class _DockerSandbox:
         """Check completion through the engine because guest commands can report false success."""
         async with asyncio.timeout(max(0.0, deadline - time.monotonic())):
             async with self._freeze():
+                guest = await confine_resolve_guest_read_path(
+                    lambda p: self._stat_guest(p, p), guest, "/"
+                )
                 if await self._stat_guest(guest, guest) is not None:
                     raise OSError(f"removal left {guest} present")
 
@@ -1212,9 +1215,10 @@ class _DockerSandbox:
         if not self._deletion_allowed:
             raise NotImplementedError("FILES_DELETE is unavailable with nonempty cap_add")
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
-        guest = await confine_resolve_guest_delete_path(
-            lambda p: self._stat_guest(p, p), path, working_directory
-        )
+        async with self._freeze():
+            guest = await confine_resolve_guest_delete_path(
+                lambda p: self._stat_guest(p, p), path, working_directory
+            )
         deadline = time.monotonic() + self._command_timeout
         removed = await self._exec(
             ["rm", "-rf" if recursive else "-f", "--", guest],

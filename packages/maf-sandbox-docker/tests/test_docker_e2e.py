@@ -95,7 +95,7 @@ _NONROOT_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_NONROOT_IMAGE")
 #: root cannot empty once the container's capabilities are dropped.
 _GUEST_OWNED_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_GUEST_OWNED_IMAGE")
 #: The same again, but with the directory *above* `work_dir` given to that user — which is
-#: what `reclaim` checks at acquire, because it owes no walk of its own.
+#: another ancestry shape for guest-authority reclamation.
 _LOOSE_PARENT_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_LOOSE_PARENT_IMAGE")
 #: An image whose `USER` is a *name* rather than a numeric pair, so uid and gid come from the
 #: container's own `/etc/passwd`. Its gid is not its uid, which is what lets a gid that was read

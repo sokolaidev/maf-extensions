@@ -90,10 +90,15 @@ def test_cancellation_requires_propagation_and_disposes(monkeypatch, method, swa
             declarations=SimpleNamespace(capabilities=frozenset()),
         )
 
-    async def operation(*args, **kwargs):
+    async def execute(*args, **kwargs):
         started.set()
+        await asyncio.Event().wait()
+
+    sandbox._exec = execute
+
+    async def operation(*args, **kwargs):
         try:
-            await asyncio.Event().wait()
+            await sandbox._exec()
         except asyncio.CancelledError:
             if not swallowed:
                 raise
