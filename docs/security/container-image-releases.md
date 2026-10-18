@@ -13,7 +13,7 @@ A consumer can select a released image, pull its immutable registry digest, veri
 | Registry | Public packages under `ghcr.io/sokolaidev/maf-extensions/`, linked to this repository | Accepted |
 | Vulnerability gate | Refuse every High/Critical finding, including unfixed findings; no exclusions | Accepted |
 | Release version | Independent SemVer for each image profile, separate from Python and upstream tool versions | Accepted, decision 1 |
-| Initial scope and names | The thirteen currently scanned Linux/amd64 profiles, each in its own image repository | Accepted, decision 2 |
+| Initial scope and names | The eleven currently scanned Linux/amd64 profiles, each in its own image repository | Accepted, decision 2 |
 | Release control | Maintainer-triggered release; build/test/scan before one protected publication approval | Accepted, decision 3 |
 | Signatures | GitHub artifact attestations for provenance and SPDX SBOM, bound to the registry digest | Accepted, decision 4 |
 | Consumer execution | Require verified release identity and completion; report current monitoring status separately | Accepted, decision 4 |
@@ -38,7 +38,7 @@ Release rules:
 
 ## Decision 2: profile names and boundaries
 
-The first publishing workflow covers all thirteen currently scanned profiles on Linux/amd64. Every row uses the prefix `ghcr.io/sokolaidev/maf-extensions/`. The suffix deliberately matches the existing scan profile so that a release record does not need a second naming translation. Profiles can release independently; this scope does not require every publication to release all thirteen together.
+The first publishing workflow covers all eleven currently scanned profiles on Linux/amd64. Every row uses the prefix `ghcr.io/sokolaidev/maf-extensions/`. The suffix deliberately matches the existing scan profile so that a release record does not need a second naming translation. Profiles can release independently; this scope does not require every publication to release all eleven together.
 
 | Image suffix | Payload |
 |---|---|
@@ -48,10 +48,9 @@ The first publishing workflow covers all thirteen currently scanned profiles on 
 | `diagram` | Graphviz diagram sandbox |
 | `drawio` | [Editable Draw.io authoring with Python and Graphviz](../../images/drawio-sandbox/README.md) |
 | `drawio-export` | Draw.io Desktop export runtime |
-| `terraform-random` | Terraform with the approved random-provider manifest |
+| `terraform-random` | [Terraform with its verified random-provider preparation and local module bundle](../../images/terraform-sandbox/TERRAFORM.md) |
 | `opentofu-random` | [OpenTofu with the approved random-provider preparation and local module bundle](../../images/terraform-sandbox/OPENTOFU.md) |
 | `terraform-avm` | Terraform with the pinned AVM catalogue and provider mirror; [consumer guide](../../images/terraform-sandbox/AVM.md) |
-| `terraform-prepared` | Terraform with the approved prepared dependency manifest |
 | `hyperlight` | The repository's Hyperlight runtime and verification application |
 | `egress-proxy` | [Patched proxy infrastructure for Docker/WSLC, with Docker consumer qualification](../../images/egress-proxy/README.md) |
 
@@ -210,7 +209,7 @@ GitHub checks a Release's target commit against the current default branch's wor
 3. Establish public visibility and repository access for each GHCR package before release acceptance. New GHCR packages default to private; the read-only qualification stage requires an anonymous pull and fails until public access works. A retry uses the original candidate bytes. Do not bootstrap this by publishing an unrelated image under a reserved release version.
 4. Configure this repository's GitHub Pages source as **GitHub Actions**, with the `github-pages` deployment environment. This report occupies the repository's Pages site. Confirm that it will not replace another site before enabling it.
 5. After reviewing these prerequisites, enable `CONTAINER_IMAGE_RELEASES_ENABLED`, `CONTAINER_IMAGE_MONITOR_ENABLED` and `CONTAINER_IMAGE_PAGES_ENABLED` with the string value `true` when their respective workflows are ready for maintainer-operated qualification. These variables default to disabled. Dispatch the image release from `main`, initially with version `0.1.0`, inspect its retained evidence and approve the protected environment. Actual dispatch, approval and irreversible publication remain maintainer actions.
-6. Complete the acceptance scenarios below before advertising published releases. The checked-in tests cover local state transitions and simulated API failures; they do not establish GitHub's hosted signing, registry visibility, writer concurrency, release immutability, Pages deployment or all thirteen profiles' live behavior.
+6. Complete the acceptance scenarios below before advertising published releases. The checked-in tests cover local state transitions and simulated API failures; they do not establish GitHub's hosted signing, registry visibility, writer concurrency, release immutability, Pages deployment or all eleven profiles' live behavior.
 
 ### Recovery and monitoring operations
 

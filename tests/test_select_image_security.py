@@ -223,7 +223,7 @@ def test_release_with_image_change_selects_that_image(repository):
         ("images/drawio-export/export.py", ["drawio-export"]),
         (
             "images/terraform-sandbox/install.py",
-            ["terraform-random", "opentofu-random", "terraform-avm", "terraform-prepared"],
+            ["terraform-random", "opentofu-random", "terraform-avm"],
         ),
         ("images/hyperlight-sandbox/Dockerfile", ["hyperlight"]),
         ("samples/experimental/hyperlight-aks/probe.py", ["hyperlight"]),
@@ -246,7 +246,10 @@ def test_release_with_image_change_selects_that_image(repository):
         ("scripts/check_drawio_docker.py", ["drawio", "drawio-export"]),
         ("images/drawio-sandbox/README.md", []),
         ("images/bicep-sandbox/BICEP.md", []),
-        ("scripts/terraform_avm_qualification.py", ["terraform-avm", "opentofu-random"]),
+        (
+            "scripts/terraform_avm_qualification.py",
+            ["terraform-avm", "opentofu-random", "terraform-random"],
+        ),
         ("scripts/build_scan_image.sh", list(PROFILES)),
         ("scripts/image_security_evidence.py", list(PROFILES)),
         ("scripts/select_image_security.py", list(PROFILES)),

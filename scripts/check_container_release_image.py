@@ -14,6 +14,7 @@ import bicep_avm_qualification
 import bicep_qualification
 import opentofu_random_qualification
 import terraform_avm_qualification
+import terraform_random_qualification
 from build_hyperlight_aks_image import _smoke_output, verify_image
 from container_release import ROOT, now, profiles, read, require_digest, write
 
@@ -93,6 +94,8 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
         ]
     elif profile == "terraform-avm":
         command = terraform_avm_qualification.command()
+    elif profile == "terraform-random":
+        command = terraform_random_qualification.command()
     elif profile == "opentofu-random":
         command = opentofu_random_qualification.command()
     elif profile.startswith(("terraform-", "opentofu-")):
@@ -143,7 +146,7 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
         start = ["docker", "start", "--attach", name]
         output = asyncio.run(
             _smoke_output(start, timeout=360)
-            if profile in {"terraform-avm", "opentofu-random"}
+            if profile in {"terraform-avm", "opentofu-random", "terraform-random"}
             else _smoke_output(start)
         )
         result = None
@@ -155,6 +158,9 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             result = bicep_avm_qualification.evidence(output)
         elif profile == "terraform-avm":
             result = terraform_avm_qualification.evidence(output)
+        elif profile == "terraform-random":
+            evidence_key = "terraformRandom"
+            result = terraform_random_qualification.evidence(output)
         elif profile == "opentofu-random":
             evidence_key = "opentofuRandom"
             result = opentofu_random_qualification.evidence(output)
@@ -162,7 +168,7 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
         subprocess.run(
             ["docker", "rm", "--force", name], check=True, capture_output=True, timeout=30
         )
-    if profile in {"bicep", "bicep-avm", "terraform-avm", "opentofu-random"}:
+    if profile in {"bicep", "bicep-avm", "terraform-avm", "opentofu-random", "terraform-random"}:
         remaining = subprocess.run(
             ["docker", "ps", "--all", "--quiet", "--filter", f"name=^/{name}$"],
             check=True,

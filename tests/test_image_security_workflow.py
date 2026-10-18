@@ -128,7 +128,7 @@ def test_every_scan_profile_is_named_in_the_documented_scope():
         "profile": "${{ fromJSON(needs.select.outputs.profiles) }}"
     }
     names = PROFILES
-    assert len(names) == len(set(names)) == 12
+    assert len(names) == len(set(names)) == 11
     scope = (ROOT / "docs/security/container-images.md").read_text()
     for profile in names:
         assert f"| `{profile}` |" in scope
@@ -171,6 +171,15 @@ def test_hyperlight_release_transition_defers_the_entire_scan_evidence_chain():
         tofu["if"] == "steps.identity.outcome == 'success' && matrix.profile == 'opentofu-random'"
     )
     assert 'check("opentofu-random", os.environ["IMAGE_ID"], directory)' in tofu["run"]
+    assert 'write(directory / "runtime.json"' in tofu["run"]
+    evidence_steps.remove(tofu)
+    tofu = next(
+        step for step in evidence_steps if step["name"] == "Qualify the prepared Terraform consumer"
+    )
+    assert (
+        tofu["if"] == "steps.identity.outcome == 'success' && matrix.profile == 'terraform-random'"
+    )
+    assert 'check("terraform-random", os.environ["IMAGE_ID"], directory)' in tofu["run"]
     assert 'write(directory / "runtime.json"' in tofu["run"]
     evidence_steps.remove(tofu)
     assert {step["name"] for step in evidence_steps} == {

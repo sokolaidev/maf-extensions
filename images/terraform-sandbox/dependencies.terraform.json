@@ -9,7 +9,25 @@
       "artifact": {
         "url": "https://releases.hashicorp.com/terraform-provider-random/3.9.1/terraform-provider-random_3.9.1_linux_amd64.zip",
         "sha256": "60b4f8a8ef18f52bf8e19215229dae408bee732825964092db7c989fd2de4097",
-        "provenance": "HashiCorp random 3.9.1 release SHA256SUMS - verified 2026-10-05"
+        "provenance": "HashiCorp random 3.9.1 release SHA256SUMS matching registry download metadata"
+      },
+      "source_build": {
+        "repository": "https://github.com/hashicorp/terraform-provider-random",
+        "revision": "b59b1791a688fe2737b5b70ab05fdd0a4190190e",
+        "artifact": {
+          "url": "https://codeload.github.com/hashicorp/terraform-provider-random/zip/b59b1791a688fe2737b5b70ab05fdd0a4190190e",
+          "sha256": "fa98baac39c33bec2999ee02de8693fa1e36b2fe10c57e378ba22ee44351c6f1",
+          "provenance": "Upstream v3.9.1 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.60.0"
+        },
+        "module_files": {
+          "go.mod": "7d301455b35ec877fad536605cc70736ce870e08022b2248cbf4f9666c3ae3f5",
+          "go.sum": "b43a372a0504fcb3a49fad3cf4f428510dc7c9959c2638fcfc627afba3899935"
+        },
+        "sha256": "50dfd0933a5ef517d35de6fcb240caf43d3df536a4230edabfd714448c7a6dd2"
       }
     }
   ],
@@ -18,7 +36,9 @@
       "name": "random-string",
       "revision": "bc2ddb552b4676d16997987a9bf2875c7b98d342",
       "subdir": "terraform-provider-random-bc2ddb552b4676d16997987a9bf2875c7b98d342/examples/resources/random_string",
-      "graph": {".": {}},
+      "graph": {
+        ".": {}
+      },
       "artifact": {
         "url": "https://codeload.github.com/hashicorp/terraform-provider-random/zip/bc2ddb552b4676d16997987a9bf2875c7b98d342",
         "sha256": "a1ce2bca7712f6b295644135486fee8fe45de66acc00c3ba3556eea82c12c8b3",
