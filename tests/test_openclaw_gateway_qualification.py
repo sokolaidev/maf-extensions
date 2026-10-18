@@ -579,7 +579,11 @@ def test_observer_fault_withholds_one_complete_result_and_leaves_next_call_trans
     fault = tmp_path / "drop"
     fault.touch()
     payload = json.dumps(
-        {"result": {"structuredContent": {"completed": True, "cleanup": "confirmed"}}}
+        {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "result": {"structuredContent": {"completed": True, "cleanup": "confirmed"}},
+        }
     ).encode()
 
     class App:
@@ -4219,7 +4223,7 @@ def test_ownership_results_decode_strictly_before_normalization(route, malformed
     )
     raw = "{" + (malformed or "") + json.dumps(expected)[1:]
     envelope = (
-        '{"result":{"isError":false,"content":[{"type":"text","text":'
+        '{"jsonrpc":"2.0","id":42,"result":{"isError":false,"content":[{"type":"text","text":'
         + json.dumps(raw)
         + '}],"structuredContent":'
         + raw
@@ -4250,7 +4254,11 @@ def test_ownership_results_decode_strictly_before_normalization(route, malformed
 def test_ownership_busy_response_uses_strict_decoding(malformed):
     import httpx
 
-    raw = '{"result":{' + malformed + '"isError":true,"content":[{"type":"text","text":"busy"}]}}'
+    raw = (
+        '{"jsonrpc":"2.0","id":42,"result":{'
+        + malformed
+        + '"isError":true,"content":[{"type":"text","text":"busy"}]}}'
+    )
 
     async def call(*args):
         return httpx.Response(200, content=raw.encode())
@@ -4328,7 +4336,7 @@ def test_ownership_raw_result_requires_exact_text_mirror(mutation):
         result["content"] = {"0": content}
 
     async def call(*args):
-        return httpx.Response(200, json={"result": result})
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 42, "result": result})
 
     probe = SimpleNamespace(
         call=call,
@@ -4338,3 +4346,163 @@ def test_ownership_raw_result_requires_exact_text_mirror(mutation):
     )
     with pytest.raises(RuntimeError):
         asyncio.run(ownership.Check.valid(probe, "session"))
+
+
+@pytest.mark.parametrize("route", ["valid", "busy", "initialize", "withheld"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "error",
+        "null_error",
+        "false_error",
+        "empty_error",
+        "version",
+        "missing_version",
+        "missing_id",
+        "null_id",
+        "bool_id",
+        "float_id",
+        "string_id",
+        "wrong_id",
+    ],
+)
+def test_raw_rpc_envelopes_are_validated_before_projection(route, mutation):
+    import httpx
+
+    config = "configuration"
+    value = dict(
+        completed=True,
+        verdict="valid",
+        status="ok",
+        cleanup="confirmed",
+        image="image",
+        config_sha256=hashlib.sha256(config.encode()).hexdigest(),
+        source_sha256="source",
+    )
+    result = {
+        "isError": route == "busy",
+        "content": [{"type": "text", "text": "busy" if route == "busy" else json.dumps(value)}],
+        "structuredContent": value,
+    }
+    request_id = 1 if route == "initialize" else 42
+    envelope = {"jsonrpc": "2.0", "id": request_id, "result": result}
+    if mutation in ("error", "null_error", "false_error", "empty_error"):
+        envelope["error"] = {
+            "error": {"code": -32603, "message": "internal error"},
+            "null_error": None,
+            "false_error": False,
+            "empty_error": {},
+        }[mutation]
+    elif mutation == "version":
+        envelope["jsonrpc"] = "1.0"
+    elif mutation == "missing_version":
+        envelope.pop("jsonrpc")
+    elif mutation == "missing_id":
+        envelope.pop("id")
+    else:
+        envelope["id"] = {
+            "null_id": None,
+            "bool_id": True,
+            "float_id": float(request_id),
+            "string_id": str(request_id),
+            "wrong_id": request_id + 1,
+        }[mutation]
+
+    async def call(*args, **kwargs):
+        if kwargs.get("json", {}).get("method") == "notifications/initialized":
+            return httpx.Response(202)
+        return httpx.Response(200, json=envelope, headers={"mcp-session-id": "session"})
+
+    async def owned():
+        raise AssertionError("Malformed envelope reached resource verification")
+
+    probe = SimpleNamespace(
+        call=call,
+        client=SimpleNamespace(post=call),
+        events=lambda: [],
+        owned=owned,
+        prototype=SimpleNamespace(snapshot=lambda _: SimpleNamespace(digest="source")),
+        image="image",
+        config=config,
+    )
+    with pytest.raises(RuntimeError, match="JSON"):
+        if route == "valid":
+            asyncio.run(ownership.Check.valid(probe, "session"))
+        elif route == "busy":
+            asyncio.run(ownership.Check.busy(probe, "session", "container"))
+        elif route == "initialize":
+            asyncio.run(ownership.Check.initialize(probe))
+        else:
+            observer.decode_withheld(json.dumps(envelope).encode(), request_id)
+
+
+@pytest.mark.parametrize("request_id", [1, 42, "42", ""])
+def test_rpc_result_preserves_valid_wire_ids_and_extensions(request_id):
+    result = {"content": [], "extension": "preserved"}
+    raw = json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result, "extension": True})
+    assert checker.rpc_result(raw, request_id) == result
+
+
+@pytest.mark.parametrize("flag", [True, 0, "", None])
+def test_withheld_response_rejects_tool_error_before_projection(flag):
+    raw = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "result": {
+                "isError": flag,
+                "structuredContent": {"completed": True, "cleanup": "confirmed"},
+            },
+        }
+    ).encode()
+    with pytest.raises(RuntimeError):
+        observer.decode_withheld(raw)
+
+
+@pytest.mark.parametrize(
+    "request_id,response_id",
+    [(7, 8), (7, "7"), (7, 7.0), (7, True), (None, 7), (False, 7), (7.0, 7)],
+)
+def test_withheld_response_requires_original_request_identity(tmp_path, request_id, response_id):
+    marker = tmp_path / "drop"
+    marker.touch()
+    emitted = []
+
+    class App:
+        sessions = {}
+        service = SimpleNamespace(active=None, poisoned=False)
+
+        async def __call__(self, scope, receive, send):
+            await receive()
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": response_id,
+                            "result": {
+                                "structuredContent": {"completed": True, "cleanup": "confirmed"}
+                            },
+                        }
+                    ).encode(),
+                }
+            )
+
+    async def receive():
+        return {
+            "type": "http.request",
+            "body": json.dumps(
+                {"jsonrpc": "2.0", "method": "tools/call", "id": request_id}
+            ).encode(),
+        }
+
+    async def send(message):
+        emitted.append(message)
+
+    observed = observer.ObserveHTTP(App(), tmp_path / "evidence.jsonl", marker)
+    with pytest.raises(RuntimeError, match="JSON"):
+        asyncio.run(observed({"type": "http", "method": "POST", "headers": []}, receive, send))
+    assert not emitted
+    assert not any(row["event"] == "result_withheld" for row in checker.records(observed.evidence))

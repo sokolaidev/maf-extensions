@@ -35,7 +35,7 @@ from typing import Any
 
 import httpx
 from agent_framework import MCPStreamableHTTPTool
-from openclaw_gateway_http_check import records, require, strict_json
+from openclaw_gateway_http_check import records, require, rpc_result, strict_json
 from openclaw_http_observer import ObserveHTTP, digest, resolve_image
 from openclaw_sources import LARGE_SOURCE, SIMPLE_SOURCE
 
@@ -345,6 +345,7 @@ class Check:
             },
         )
         require(r.status_code == 200, "Initialization refused")
+        rpc_result(r.content, 1)
         sid = r.headers["mcp-session-id"]
         r = await self.client.post(
             "/mcp",
@@ -386,7 +387,7 @@ class Check:
         before = len(self.events())
         r = await self.call(sid)
         require(r.status_code == 200, "Admission released before cleanup")
-        result = strict_json(r.content)["result"]
+        result = rpc_result(r.content, 42)
         require(
             result.get("isError") is True and "busy" in result["content"][0]["text"].lower(),
             "Admission released before cleanup",
@@ -455,7 +456,7 @@ class Check:
         if isinstance(client, str):
             r = await self.call(client)
             require(r.status_code == 200, "Surviving session not usable")
-            result = strict_json(r.content)["result"]
+            result = rpc_result(r.content, 42)
             require(
                 isinstance(result, dict) and result.get("isError", False) is False,
                 "Invalid raw result projection",

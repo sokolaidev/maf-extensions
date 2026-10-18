@@ -113,7 +113,7 @@ async def _input_refusals(root: Path, prepared: Path, manifest: dict[str, Any]) 
     from maf_sandbox_docker import DockerSandboxBackend
     from maf_sandbox_mcp import server, workload_http
 
-    strict_json = importlib.import_module("openclaw_gateway_http_check").strict_json
+    rpc_result = importlib.import_module("openclaw_gateway_http_check").rpc_result
     creations = 0
     original = DockerSandboxBackend._invoke
 
@@ -162,6 +162,7 @@ async def _input_refusals(root: Path, prepared: Path, manifest: dict[str, Any]) 
                     },
                 )
                 require(init.status_code == 200, "input_initialize")
+                rpc_result(init.content, 1)
                 client.headers["mcp-session-id"] = init.headers["mcp-session-id"]
                 ack = await client.post(
                     "/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"}
@@ -184,7 +185,7 @@ async def _input_refusals(root: Path, prepared: Path, manifest: dict[str, Any]) 
                     )
                     require(
                         response.status_code == 200
-                        and strict_json(response.content)["result"].get("isError") is True
+                        and rpc_result(response.content, 2).get("isError") is True
                         and creations == 0,
                         "input_allocated_or_accepted",
                     )
@@ -204,7 +205,10 @@ async def _input_refusals(root: Path, prepared: Path, manifest: dict[str, Any]) 
                         },
                     },
                 )
-                result = strict_json(positive.content)["result"]["structuredContent"]
+                require(positive.status_code == 200, "input_positive_control")
+                call_result = rpc_result(positive.content, 3)
+                require(call_result.get("isError", False) is False, "input_positive_control")
+                result = call_result["structuredContent"]
                 require(
                     result["completed"] is True
                     and result["verdict"] == "valid"

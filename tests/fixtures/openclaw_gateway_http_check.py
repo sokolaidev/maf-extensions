@@ -96,6 +96,25 @@ def strict_json(raw: str | bytes | bytearray) -> Any:
         raise RuntimeError("Gateway evidence contains malformed JSON") from exc
 
 
+def rpc_result(raw: str | bytes | bytearray, request_id: int | str | None = None) -> dict[str, Any]:
+    """Validate a successful JSON-RPC envelope before projecting its result."""
+    value = strict_json(raw)
+    require(
+        isinstance(value, dict)
+        and value.get("jsonrpc") == "2.0"
+        and "error" not in value
+        and type(value.get("id")) in (int, str)
+        and isinstance(value.get("result"), dict),
+        "Invalid successful JSON-RPC response envelope",
+    )
+    if request_id is not None:
+        require(
+            type(value["id"]) is type(request_id) and value["id"] == request_id,
+            "JSON-RPC response does not match the request ID",
+        )
+    return value["result"]
+
+
 def verify_outcome(
     projected: dict[str, Any], case: str, config_digest: str, image: str
 ) -> dict[str, Any]:

@@ -429,8 +429,31 @@ def test_ownership_final_snapshot_after_check_returns(tmp_path, monkeypatch, tai
     assert evidence.read_bytes() == raw
 
 
-@pytest.mark.parametrize("phase", ["refusal", "positive"])
-@pytest.mark.parametrize("malformed", [None, "duplicate", "NaN", "Infinity", "1e400"])
+@pytest.mark.parametrize(
+    ("phase", "malformed"),
+    [
+        (phase, malformed)
+        for phase in ("initialize", "refusal", "positive")
+        for malformed in (
+            None,
+            "duplicate",
+            "NaN",
+            "Infinity",
+            "1e400",
+            "rpc_error",
+            "null_error",
+            "wrong_version",
+            "missing_version",
+            "missing_id",
+            "wrong_id",
+            "float_id",
+            "string_id",
+            "boolean_id",
+            "http_error",
+        )
+    ]
+    + [("positive", flag) for flag in ("tool_error", "null_flag", "zero_flag")],
+)
 def test_policy_input_responses_require_strict_json(tmp_path, monkeypatch, phase, malformed):
     import asyncio
     from contextlib import nullcontext
@@ -472,25 +495,51 @@ def test_policy_input_responses_require_strict_json(tmp_path, monkeypatch, phase
             return httpx.Response(200)
 
         async def post(self, path, *, json):
-            if json["method"] == "initialize":
-                return httpx.Response(200, headers={"mcp-session-id": "session"})
             if json["method"] == "notifications/initialized":
                 return httpx.Response(202)
-            positive = json["id"] == 3
-            if positive:
+            request_id = json["id"]
+            current = {1: "initialize", 2: "refusal", 3: "positive"}[request_id]
+            if current == "positive":
                 await DockerSandboxBackend._invoke(object.__new__(DockerSandboxBackend), "create")
-                raw = '{"result":{"structuredContent":{"completed":true,"verdict":"valid","cleanup":"confirmed"}}}'
+                result = '{"isError":false,"structuredContent":{"completed":true,"verdict":"valid","cleanup":"confirmed"}}'
             else:
-                raw = '{"result":{"isError":true}}'
-            if positive == (phase == "positive") and malformed:
+                result = "{}" if current == "initialize" else '{"isError":true}'
+            raw = '{"jsonrpc":"2.0","id":' + str(request_id) + ',"result":' + result + "}"
+            status = 200
+            if current == phase and malformed:
                 if malformed == "duplicate":
-                    if positive:
-                        raw = raw.replace('"completed":true', '"completed":false,"completed":true')
-                    else:
-                        raw = raw.replace('"isError":true', '"isError":false,"isError":true')
-                else:
+                    raw = raw.replace('"jsonrpc":"2.0"', '"jsonrpc":"1.0","jsonrpc":"2.0"')
+                elif malformed in ("NaN", "Infinity", "1e400"):
                     raw = raw[:-1] + ',"ignored":' + malformed + "}"
-            return httpx.Response(200, content=raw.encode())
+                elif malformed in ("rpc_error", "null_error"):
+                    error = (
+                        "null"
+                        if malformed == "null_error"
+                        else '{"code":-32603,"message":"failed"}'
+                    )
+                    raw = raw[:-1] + ',"error":' + error + "}"
+                elif malformed == "wrong_version":
+                    raw = raw.replace('"jsonrpc":"2.0"', '"jsonrpc":"1.0"')
+                elif malformed == "missing_version":
+                    raw = raw.replace('"jsonrpc":"2.0",', "")
+                elif malformed == "missing_id":
+                    raw = raw.replace('"id":' + str(request_id) + ",", "")
+                elif malformed in ("wrong_id", "float_id", "string_id", "boolean_id"):
+                    changed = {
+                        "wrong_id": "99",
+                        "float_id": str(request_id) + ".0",
+                        "string_id": '"' + str(request_id) + '"',
+                        "boolean_id": "true",
+                    }[malformed]
+                    raw = raw.replace('"id":' + str(request_id), '"id":' + changed)
+                elif malformed == "http_error":
+                    status = 500
+                else:
+                    flag = {"tool_error": "true", "null_flag": "null", "zero_flag": "0"}[malformed]
+                    raw = raw.replace('"isError":false', '"isError":' + flag)
+            return httpx.Response(
+                status, headers={"mcp-session-id": "session"}, content=raw.encode()
+            )
 
     monkeypatch.setattr(server, "ownership", lambda *args: nullcontext("test-scope"))
     monkeypatch.setattr(server, "http_application", application)
@@ -502,6 +551,6 @@ def test_policy_input_responses_require_strict_json(tmp_path, monkeypatch, phase
     if malformed is None:
         assert asyncio.run(probe) is True
     else:
-        with pytest.raises(RuntimeError, match="JSON"):
+        with pytest.raises((RuntimeError, ValueError)):
             asyncio.run(probe)
     assert host.should_exit is True
