@@ -448,12 +448,17 @@ def _newest_record_identity(messages: list[Message]) -> str:
     index = find_record_index(messages)
     if index is None:
         return ""
-    message = messages[index]
-    recall_results = _recall_results(messages)
+    return _record_identity(messages[index], _recall_results(messages))
+
+
+def _record_identity(message: Message, recall_results: dict[int, str]) -> str:
+    """Identify a record using matches already established for its history."""
+    if message.additional_properties.get(EXCLUDED_KEY, False):
+        return ""
     for content in reversed(message.contents):
         if id(content) in recall_results and RECORD_MARKER in str(content.result):
             return recall_results[id(content)]
-    return f"text:{message.text}"
+    return f"text:{message.text}" if _is_written_record(message) else ""
 
 
 def record_anchor_position(messages: list[Message], identity: str) -> ContentPosition | None:
@@ -2053,11 +2058,13 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 )
             )
 
-        identity = _newest_record_identity(messages)
+        identity = _record_identity(messages[anchor], recall_results)
         if identity and identity not in self._observed_value_records:
             self._observed_value_records.add(identity)
             values = {value for _, _, group_values in candidates for value in group_values}
-            newest_quoted = set(_tokens(record_text(messages[anchor]), fold_case=False))
+            newest_quoted = set(
+                _tokens(_record_text(messages[anchor], recall_results), fold_case=False)
+            )
             if values and not values & newest_quoted:
                 self._records_without_values += 1
 

@@ -385,3 +385,34 @@ async def test_unrelated_batched_marker_cannot_authorize_dropping_unrecorded_wor
     assert not messages[2].additional_properties.get(EXCLUDED_KEY, False)
     assert "payload " * 1000 in messages[2].contents[0].result
     assert strategy.groups_kept_uncovered >= 1
+
+
+@pytest.mark.parametrize("reload", [False, True])
+def test_value_diagnostic_ignores_unrelated_marked_results_in_record_batch(reload):
+    target = result("target", value="CODE-123")
+    target.contents[0].result = "CODE-123"
+    messages = [
+        call("target", name="lookup"),
+        target,
+        Message("user", "Continue"),
+        call("other", name="lookup"),
+        call("recall"),
+        Message(
+            "tool",
+            [
+                result("other", value="CODE-123").contents[0],
+                result("recall", value="ordinary").contents[0],
+            ],
+        ),
+    ]
+    if reload:
+        messages = [Message.from_dict(message.to_dict()) for message in messages]
+    annotate_message_groups(messages)
+    strategy = ToolResultAnchoredSummarizationCompactionStrategy(
+        max_input_tokens=1000, tokenizer=CharacterEstimatorTokenizer(), keep_head_groups=0
+    )
+    strategy._drop_before(messages, len(messages) - 1)
+    assert strategy.records_without_values == 1
+    strategy._drop_before(messages, len(messages) - 1)
+    assert strategy.records_without_values == 1
+    assert not messages[1].additional_properties.get(EXCLUDED_KEY, False)
