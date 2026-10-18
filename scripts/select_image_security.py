@@ -23,7 +23,7 @@ PROFILES = (
     "terraform-random",
     "opentofu-random",
     "terraform-avm",
-    "hyperlight",
+    "hyperlight-aks-probe",
     "egress-proxy",
 )
 IMAGE_INPUTS = {
@@ -39,7 +39,7 @@ IMAGE_INPUTS = {
         "opentofu-random",
         "terraform-avm",
     ),
-    "images/hyperlight-sandbox/": ("hyperlight",),
+    "images/hyperlight-sandbox/": ("hyperlight-aks-probe",),
     "packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/": ("egress-proxy",),
 }
 # These exact consumer guides are not consumed by the image recipes or build helpers.
@@ -88,10 +88,10 @@ SCRIPT_INPUTS = {
     "scripts/bicep_qualification.py": ("bicep", "bicep-docker-sbx"),
     "scripts/bicep_docker_sbx_qualification.py": ("bicep-docker-sbx",),
     ".github/actions/setup-sbx/action.yml": ("bicep-docker-sbx",),
-    "scripts/build_hyperlight_aks_image.py": ("hyperlight",),
-    "scripts/hyperlight_image_smoke.py": ("hyperlight",),
-    "scripts/check_hyperlight_image_compatibility.py": ("hyperlight",),
-    "samples/experimental/hyperlight-aks/probe.py": ("hyperlight",),
+    "scripts/build_hyperlight_aks_image.py": ("hyperlight-aks-probe",),
+    "scripts/hyperlight_image_smoke.py": ("hyperlight-aks-probe",),
+    "scripts/check_hyperlight_image_compatibility.py": ("hyperlight-aks-probe",),
+    "samples/experimental/hyperlight-aks/probe.py": ("hyperlight-aks-probe",),
 }
 WHEEL_PACKAGES = {"maf-sandbox", "maf-sandbox-codeact", "maf-sandbox-hyperlight"}
 SHARED_INPUTS = {
@@ -172,7 +172,7 @@ def affected(path: str) -> tuple[str, ...]:
         if parts[2] == "pyproject.toml":
             return PROFILES
         if parts[2] not in {"tests", "CHANGELOG.md"} and parts[1] in WHEEL_PACKAGES:
-            return ("hyperlight",)
+            return ("hyperlight-aks-probe",)
     return ()
 
 

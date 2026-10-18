@@ -58,7 +58,7 @@ def evidence(root, profile="bicep"):
     }
     for filename in files - {"manifest.json", "sbom.spdx.json"}:
         write(root / filename, {})
-    if profile == "hyperlight":
+    if profile == "hyperlight-aks-probe":
         write(root / "hyperlight-build-inputs.json", {"wheels/runtime.whl": "a" * 64})
         files.add("hyperlight-build-inputs.json")
         expected["buildInputsSha256"] = digest(root / "hyperlight-build-inputs.json")
@@ -171,7 +171,7 @@ def test_registry_retrieval_pins_the_same_digest_and_all_three_predicates(tmp_pa
 
 
 def test_hyperlight_payload_runs_only_after_all_three_attestations(tmp_path, monkeypatch):
-    expected, results = evidence(tmp_path, "hyperlight")
+    expected, results = evidence(tmp_path, "hyperlight-aks-probe")
     calls = mock_verifier(monkeypatch, results)
 
     def payload(policy, directory):
@@ -185,7 +185,7 @@ def test_hyperlight_payload_runs_only_after_all_three_attestations(tmp_path, mon
 
 @pytest.mark.parametrize("failed", [PROVENANCE, SPDX, COMPLETION])
 def test_failed_signature_never_runs_hyperlight_payload(tmp_path, monkeypatch, failed):
-    expected, results = evidence(tmp_path, "hyperlight")
+    expected, results = evidence(tmp_path, "hyperlight-aks-probe")
     mock_verifier(monkeypatch, results, failed)
     monkeypatch.setattr(
         "verify_container_release.hyperlight_payload",
@@ -195,11 +195,11 @@ def test_failed_signature_never_runs_hyperlight_payload(tmp_path, monkeypatch, f
         verify(expected, tmp_path)
 
 
-@pytest.mark.parametrize("change", ["source", "dirty", "image", "inputs"])
+@pytest.mark.parametrize("change", [None, "source", "dirty", "image", "inputs"])
 def test_hyperlight_payload_keeps_source_and_build_input_checks(tmp_path, monkeypatch, change):
     from verify_container_release import hyperlight_payload
 
-    expected, _ = evidence(tmp_path, "hyperlight")
+    expected, _ = evidence(tmp_path, "hyperlight-aks-probe")
     source = {
         "repository": "https://github.com/sokolaidev/maf-extensions",
         "revision": expected["sourceCommit"],
@@ -214,13 +214,19 @@ def test_hyperlight_payload_keeps_source_and_build_input_checks(tmp_path, monkey
 
     def run(command, **kwargs):
         assert command[0] == "docker"
+        assert command[-1] == (
+            "ghcr.io/sokolaidev/maf-extensions/hyperlight-aks-probe@" + expected["registryDigest"]
+        )
         image_id = expected["imageId"] if change != "image" else "sha256:" + "f" * 64
         return subprocess.CompletedProcess(command, 0, stdout=image_id)
 
     monkeypatch.setattr("verify_container_release.subprocess.run", run)
     monkeypatch.setattr("verify_container_release.verify_image", lambda *_: {"source": source})
-    with pytest.raises(ValueError):
-        hyperlight_payload(expected, tmp_path)
+    if change is None:
+        assert hyperlight_payload(expected, tmp_path) == {"source": source}
+    else:
+        with pytest.raises(ValueError):
+            hyperlight_payload(expected, tmp_path)
 
 
 @pytest.mark.parametrize("failed", [PROVENANCE, SPDX, COMPLETION])
@@ -477,3 +483,42 @@ def test_explicit_retrieval_never_queries_github_predicate_filter(tmp_path, monk
 
     monkeypatch.setattr("verify_container_release.subprocess.run", run)
     assert verify(expected, tmp_path, **{retrieval: True})["releaseIdentityVerified"] is True
+
+
+def test_hyperlight_release_runtime_keeps_packaging_and_kvm_evidence_separate(
+    tmp_path, monkeypatch
+):
+    import check_container_release_image as runtime
+
+    inputs = tmp_path / "hyperlight-build-inputs.json"
+    inputs.write_text("{}")
+    expected_hash = digest(inputs).removeprefix("sha256:")
+    image_id = "sha256:" + "c" * 64
+    calls = []
+
+    def packaging(selected_id, inputs_hash):
+        calls.append((selected_id, inputs_hash))
+        return {"hypervisor_execution_verified": False}
+
+    monkeypatch.setattr(runtime, "verify_image", packaging)
+    result = runtime.check("hyperlight-aks-probe", image_id, tmp_path)
+    assert calls == [(image_id, expected_hash)]
+    assert result["passed"] is True
+    assert result["containersRemaining"] == []
+    assert result["hypervisorExecutionVerified"] is False
+    assert result["liveDeploymentVerified"] is False
+    with pytest.raises(ValueError, match="Unknown image profile"):
+        runtime.check("hyperlight", image_id, tmp_path)
+
+
+def test_hyperlight_failed_packaging_never_records_qualification(tmp_path, monkeypatch):
+    import check_container_release_image as runtime
+
+    (tmp_path / "hyperlight-build-inputs.json").write_text("{}")
+
+    def refuse(*args):
+        raise ValueError("cleanup failed")
+
+    monkeypatch.setattr(runtime, "verify_image", refuse)
+    with pytest.raises(ValueError, match="cleanup failed"):
+        runtime.check("hyperlight-aks-probe", "sha256:" + "c" * 64, tmp_path)

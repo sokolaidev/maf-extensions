@@ -39,7 +39,7 @@ The inventory must contain components and identify the exact built image. Lower-
 | `terraform-random` | [Terraform with its verified random-provider preparation and local module bundle](../../images/terraform-sandbox/TERRAFORM.md) |
 | `opentofu-random` | [OpenTofu with its verified random-provider preparation and local module bundle](../../images/terraform-sandbox/OPENTOFU.md) |
 | `terraform-avm` | Terraform with the pinned AVM catalogue and provider mirror; [consumer guide](../../images/terraform-sandbox/AVM.md) |
-| `hyperlight` | Hyperlight runtime built from the checkout's wheels and lockfile |
+| `hyperlight-aks-probe` | [Scoped AKS probe built from the checkout's wheels and lockfile](../../images/hyperlight-sandbox/README.md) |
 | `egress-proxy` | [Patched egress proxy and consumer guide](../../images/egress-proxy/README.md) |
 
 The scan covers the built runtime filesystem. Build-stage-only packages, other architectures, custom image arguments, externally supplied images, upstream device-plugin images and different prepared dependency manifests are outside this inventory. In particular, the larger Terraform AVM and OpenTofu platform/provider/multiversion variants require separate scans. Applying the `sbx` template to another base also creates an unassessed image. Image scanning does not qualify sandbox confinement or backend lifecycle behavior.

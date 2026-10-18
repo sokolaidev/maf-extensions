@@ -281,6 +281,15 @@ def verify_image(image_id: str, expected_inputs_sha256: str) -> dict[str, object
             stdout=subprocess.DEVNULL,
             timeout=DOCKER_TIMEOUT,
         )
+    remaining = subprocess.run(
+        ["docker", "ps", "--all", "--quiet", "--filter", f"name=^/{name}$"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=DOCKER_TIMEOUT,
+    ).stdout.strip()
+    if remaining:
+        raise ValueError("Hyperlight packaging check left its container behind")
     smoke = json.loads(output)
     if smoke["build_inputs_sha256"] != expected_inputs_sha256:
         raise ValueError("image build inputs do not match the prepared context")

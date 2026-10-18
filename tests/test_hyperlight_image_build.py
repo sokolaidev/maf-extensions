@@ -102,7 +102,20 @@ def test_source_record_rejects_dirty_release_and_does_not_export_local_paths(tmp
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "smoke", "inspect", "digest", "root", "platform", "command", "entrypoint"]
+    "failure",
+    [
+        None,
+        "smoke",
+        "inspect",
+        "digest",
+        "root",
+        "platform",
+        "command",
+        "entrypoint",
+        "survivor",
+        "cleanup",
+        "listing",
+    ],
 )
 def test_build_verifies_exact_image_and_never_keeps_stale_success(
     tmp_path, monkeypatch, capfd, failure
@@ -147,6 +160,13 @@ def test_build_verifies_exact_image_and_never_keeps_stale_success(
                         }
                     ]
                 ),
+            )
+        if (failure, command[1]) in {("cleanup", "rm"), ("listing", "ps")}:
+            raise subprocess.CalledProcessError(1, command)
+        if command[1] == "ps":
+            assert command[-1].startswith("name=^/maf-hyperlight-smoke-")
+            return subprocess.CompletedProcess(
+                command, 0, "remaining" if failure == "survivor" else ""
             )
         if command[1] in {"create", "rm"}:
             return subprocess.CompletedProcess(command, 0)

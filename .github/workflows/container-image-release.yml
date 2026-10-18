@@ -26,7 +26,7 @@ on:
           - terraform-random
           - opentofu-random
           - terraform-avm
-          - hyperlight
+          - hyperlight-aks-probe
           - egress-proxy
         required: true
       version:

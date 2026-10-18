@@ -123,7 +123,9 @@ def test_no_profile_can_be_missing_or_incomplete(actions, name, result):
     "steps", [[], [{"name": "Scan the retained inventory", "conclusion": "skipped"}]]
 )
 def test_green_hyperlight_deferral_does_not_close_tracker(actions, steps):
-    job = next(job for job in actions["jobs"] if job["name"] == "Image security (hyperlight)")
+    job = next(
+        job for job in actions["jobs"] if job["name"] == "Image security (hyperlight-aks-probe)"
+    )
     job["steps"] = steps
     recovery.main()
     assert len(actions["calls"]) == 2
