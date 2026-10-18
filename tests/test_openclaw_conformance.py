@@ -754,6 +754,29 @@ def test_numeric_boolean_standins_are_rejected(bundle, group, field):
         e.evaluate(*bundle)
 
 
+@pytest.mark.parametrize("phase", ["setup", "call", "teardown"])
+@pytest.mark.parametrize("xfail", [None, 0, 0.0, "", [], {}, True])
+def test_transport_phases_require_literal_false_xfail(bundle, phase, xfail):
+    def change(value):
+        row = next(r for r in value["observations"]["phases"] if r["phase"] == phase)
+        row["xfail"] = xfail
+
+    change_artifact(bundle, "transport", change)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
+@pytest.mark.parametrize("phase", ["setup", "call", "teardown"])
+def test_transport_phases_require_xfail_field(bundle, phase):
+    def change(value):
+        row = next(r for r in value["observations"]["phases"] if r["phase"] == phase)
+        del row["xfail"]
+
+    change_artifact(bundle, "transport", change)
+    with pytest.raises(e.Refused):
+        e.evaluate(*bundle)
+
+
 def test_transport_parameter_identity_cannot_be_replaced(bundle):
     def change(value):
         obs = value["observations"]

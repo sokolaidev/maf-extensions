@@ -3940,6 +3940,16 @@ def passing_transport_evidence():
     return evidence
 
 
+@pytest.mark.parametrize("phase", ["setup", "call", "teardown"])
+@pytest.mark.parametrize("xfail", [None, 0, 0.0, "", [], {}, True])
+def test_published_transport_requires_literal_false_xfail(phase, xfail):
+    evidence = passing_transport_evidence()
+    row = next(r for r in evidence.reports if r["phase"] == phase)
+    row["xfail"] = xfail
+    with pytest.raises(RuntimeError, match="cannot satisfy acceptance"):
+        evidence.verify(0)
+
+
 def test_published_transport_accepts_complete_evidence():
     passing_transport_evidence().verify(0)
 
