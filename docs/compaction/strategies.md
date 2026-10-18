@@ -148,6 +148,7 @@ Inside the context window nothing here beats not compacting: the best strategy c
 | Summarising each tool result individually rather than all in one record | Not started | untracked |
 | Private-API dependency re-read on every core minor | Ongoing | [release-compatibility.md](../release-compatibility.md) |
 | Optional user-summary timeouts and consecutive-failure cooldowns | Implemented | [#1958](https://github.com/sokolaidev/maf-extensions/issues/1958) (closed) by [#1984](https://github.com/sokolaidev/maf-extensions/pull/1984) (merged) |
+| User-summary cooldowns retained across replica changes, restarts and stack-cache eviction | Implemented | [#2009](https://github.com/sokolaidev/maf-extensions/issues/2009) (closed) by [#2012](https://github.com/sokolaidev/maf-extensions/pull/2012) (merged) |
 | Per-call sending budgets for instructions, schemas and estimate headroom | Implemented | [#1995](https://github.com/sokolaidev/maf-extensions/issues/1995) (closed) by [#2008](https://github.com/sokolaidev/maf-extensions/pull/2008) (merged) |
 | Deferred tools-disabled recall, validated arguments and forced deadlines | Implemented | [#1996](https://github.com/sokolaidev/maf-extensions/issues/1996) (closed) by [#2008](https://github.com/sokolaidev/maf-extensions/pull/2008) (merged) |
 | Stable chunked user summaries and optional summary-options recovery | Implemented | [#1997](https://github.com/sokolaidev/maf-extensions/issues/1997) (closed) by [#2008](https://github.com/sokolaidev/maf-extensions/pull/2008) (merged) |
