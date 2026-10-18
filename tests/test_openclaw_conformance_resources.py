@@ -325,3 +325,70 @@ def test_policy_credits_only_nonzero_refusals(tmp_path, monkeypatch, status):
         result[name] is (status != 0)
         for name in ("missing_config", "oversized_config", "mutable_image")
     )
+
+
+@pytest.mark.parametrize(
+    "late", [b'{"late":true}\n', b'{"scenario":"wrong","scenario":"valid"}\n', b'{"partial":']
+)
+def test_gateway_final_snapshot_follows_provider_shutdown(tmp_path, monkeypatch, late):
+    from contextlib import nullcontext
+
+    checks = importlib.import_module("openclaw_conformance.checks")
+    worker = importlib.import_module("openclaw_installed_worker_check")
+    server = importlib.import_module("maf_sandbox_mcp.server")
+    agent = importlib.import_module("agent")
+    evidence = tmp_path / "provider.jsonl"
+    evidence.write_bytes(b'{"initial":true}\n')
+    (tmp_path / "owner").mkdir()
+    (tmp_path / "owner/owner").write_text("a" * 32)
+
+    class Processes:
+        stopped = False
+
+        def __init__(self, root):
+            pass
+
+        def start(self, *args):
+            pass
+
+        def ready(self, *args):
+            pass
+
+        def close(self):
+            self.stopped = True
+            return []
+
+    class Provider:
+        server_port = 1234
+        daemon_threads = True
+
+        def __init__(self, *args):
+            pass
+
+        def serve_forever(self):
+            pass
+
+        def shutdown(self):
+            pass
+
+        def server_close(self):
+            assert self.daemon_threads is False
+            with evidence.open("ab") as stream:
+                stream.write(late)
+
+    ports = iter([1235, 1236])
+    monkeypatch.setattr(agent, "Processes", Processes)
+    monkeypatch.setattr(agent, "free_port", lambda: next(ports))
+    monkeypatch.setattr(checks, "ThreadingHTTPServer", Provider)
+    monkeypatch.setattr(checks, "command", lambda *args, **kwargs: "")
+    monkeypatch.setattr(server, "ownership", lambda *args: nullcontext())
+    monkeypatch.setattr(
+        worker, "console_gateway", lambda args: {"provider_observations": [{"initial": True}]}
+    )
+    manifest = {"image": "sha256:" + "b" * 64, "versions": {}}
+    if late == b'{"late":true}\n':
+        value = checks.gateway(tmp_path, tmp_path, manifest)
+        assert value["provider_observations"] == [{"initial": True}, {"late": True}]
+    else:
+        with pytest.raises((RuntimeError, ValueError)):
+            checks.gateway(tmp_path, tmp_path, manifest)

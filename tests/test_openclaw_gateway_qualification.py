@@ -331,6 +331,47 @@ def test_provider_concurrent_turns_do_not_mix_evidence(tmp_path, with_session):
     assert all((record.get("session") == record["turn"]) == with_session for record in records)
 
 
+@pytest.mark.parametrize(
+    "tail",
+    [
+        b'{"scenario":"wrong","scenario":"valid"}\n',
+        b'{"scenario":',
+        b'{"x":NaN}\n',
+        b'{"x":Infinity}\n',
+        b'{"x":1e400}\n',
+        b'{"x":{"a":1,"a":2}}\n',
+        b"[]\n",
+        b"\xff\n",
+    ],
+)
+def test_final_provider_snapshot_rejects_malformed_records(tmp_path, tail):
+    path = tmp_path / "provider.jsonl"
+    prefix = b'{"scenario":"valid"}\n' * 12
+    path.write_bytes(prefix + tail)
+    with pytest.raises((RuntimeError, ValueError)):
+        checker.records(path, final=True)
+    assert path.read_bytes() == prefix + tail
+
+
+def test_final_provider_snapshot_preserves_all_complete_records(tmp_path):
+    path = tmp_path / "provider.jsonl"
+    path.write_bytes(b'{"scenario":"valid"}\n' * 13)
+    assert checker.records(path, final=True) == [{"scenario": "valid"}] * 13
+
+
+@pytest.mark.parametrize("overflow", [False, True])
+def test_final_provider_snapshot_enforces_read_budget(tmp_path, monkeypatch, overflow):
+    path = tmp_path / "provider.jsonl"
+    raw = b'{"scenario":"valid"}\n'
+    monkeypatch.setattr(checker, "MAX_EVIDENCE_BYTES", len(raw), raising=False)
+    path.write_bytes(raw + (b" " if overflow else b""))
+    if overflow:
+        with pytest.raises(RuntimeError, match="Evidence exceeds"):
+            checker.records(path, final=True)
+    else:
+        assert checker.records(path, final=True) == [{"scenario": "valid"}]
+
+
 def test_partial_evidence_line_is_not_a_result(tmp_path):
     path = tmp_path / "evidence.jsonl"
     path.write_bytes(b'{"complete": true}\n{"partial":')

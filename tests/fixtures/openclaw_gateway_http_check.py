@@ -18,6 +18,7 @@ from openclaw_gateway_check import docker
 from openclaw_gateway_provider import SOURCES
 
 BASELINE_DISPATCHES = 9
+MAX_EVIDENCE_BYTES = 16 * 1024 * 1024
 
 
 def require(condition: Any, message: str) -> None:
@@ -25,13 +26,23 @@ def require(condition: Any, message: str) -> None:
         raise RuntimeError(message)
 
 
-def records(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
+def records(path: Path, *, final: bool = False) -> list[dict[str, Any]]:
+    if not path.exists() and not final:
         return []
-    data = path.read_bytes()
-    require(len(data) <= 16 * 1024 * 1024, "Evidence exceeds 16 MiB; rotate before a new check")
+    with path.open("rb") as stream:
+        data = stream.read(MAX_EVIDENCE_BYTES + 1)
+    require(len(data) <= MAX_EVIDENCE_BYTES, "Evidence exceeds 16 MiB; rotate before a new check")
+    lines = data.split(b"\n")[:-1]
+    if final:
+        require(not data or data.endswith(b"\n"), "Provider evidence has an unfinished record")
+        require(all(lines), "Provider evidence has an empty record")
+        values = [strict_json(line) for line in lines]
+        require(
+            all(isinstance(value, dict) for value in values), "Provider records must be objects"
+        )
+        return values
     # A concurrent writer may not have finished the last line yet.
-    return [json.loads(line) for line in data.split(b"\n")[:-1] if line]
+    return [json.loads(line) for line in lines if line]
 
 
 def verify_dispatch_count(evidence: list[dict[str, Any]], expected: int) -> int:
@@ -60,10 +71,20 @@ def projected_result(
     return loads(text[text.index("{") : text.rindex("}") + 1])
 
 
-def _projection_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+def _json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     value = dict(pairs)
-    require(len(value) == len(pairs), "Gateway text contains duplicate JSON keys")
+    require(len(value) == len(pairs), "Gateway evidence contains duplicate JSON keys")
     return value
+
+
+def strict_json(raw: str | bytes) -> Any:
+    """Decode complete JSON without duplicate keys or nonfinite numbers."""
+    try:
+        value = json.loads(raw, object_pairs_hook=_json_pairs)
+        json.dumps(value, allow_nan=False)
+        return value
+    except (UnicodeError, TypeError, ValueError, RecursionError) as exc:
+        raise RuntimeError("Gateway evidence contains malformed JSON") from exc
 
 
 def verify_outcome(
@@ -109,7 +130,7 @@ def verify_outcome(
     prefix = "structuredContent:\n"
     require(text.startswith(prefix), "Gateway text lacks the structuredContent projection")
     try:
-        mirrored = json.loads(text[len(prefix) :], object_pairs_hook=_projection_pairs)
+        mirrored = strict_json(text[len(prefix) :])
         same = json.dumps(mirrored, sort_keys=True, allow_nan=False) == json.dumps(
             structured, sort_keys=True, allow_nan=False
         )

@@ -269,6 +269,7 @@ def gateway(root: Path, prepared: Path, manifest: dict[str, Any]) -> dict[str, A
     (root / "home/AppData/Local/OpenClaw/locks/openclaw-state-owners").mkdir(parents=True)
     evidence = root / "provider.jsonl"
     provider = ThreadingHTTPServer(("127.0.0.1", 0), handler(evidence))
+    provider.daemon_threads = False
     thread = threading.Thread(target=provider.serve_forever, daemon=True)
     thread.start()
     processes = Processes(root)
@@ -371,6 +372,9 @@ def gateway(root: Path, prepared: Path, manifest: dict[str, Any]) -> dict[str, A
             ),
             "gateway_owned_survivors",
         )
+    value["provider_observations"] = importlib.import_module("openclaw_gateway_http_check").records(
+        evidence, final=True
+    )
     return value
 
 

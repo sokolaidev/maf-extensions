@@ -230,7 +230,7 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
     import http.client
 
     from agent_framework import Content, MCPStreamableHTTPTool
-    from openclaw_gateway_http_check import projected_result, records, verify_outcome
+    from openclaw_gateway_http_check import projected_result, records, strict_json, verify_outcome
     from openclaw_http_observer import resolve_image
 
     installed_environment(getattr(args, "expected_versions", None))
@@ -283,7 +283,7 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
                     },
                 )
                 response = connection.getresponse()
-                payload = json.loads(response.read())
+                payload = strict_json(response.read())
                 require(
                     response.status == 200
                     and payload["choices"][0]["message"]["content"]
@@ -321,7 +321,7 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
                 or not isinstance(content[0].text, str)
             ):
                 raise RuntimeError("Unexpected MAF result projection")
-            result = json.loads(content[0].text)
+            result = strict_json(content[0].text)
             require(
                 result["completed"] is True
                 and result["verdict"] == "valid"
@@ -348,7 +348,7 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
                 )
             }
 
-    report["provider_observations"] = records(args.evidence)
+    report["provider_observations"] = records(args.evidence, final=True)
     report["prepared_module"] = asyncio.run(prepared())
     report["owned_empty"] = empty()
     return report
