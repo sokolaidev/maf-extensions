@@ -65,7 +65,7 @@ def store_key(path: str) -> str:
     one failure this whole record exists to prevent: the lookup misses, the path falls to the
     host's floor, and a trusted floor answers for bytes the model wrote.
 
-    **It mirrors behaviour rather than a published contract**, as ``_reduced_form`` does: the
+    **It mirrors behaviour rather than a published contract**: the
     rule lives in ``agent_framework._harness._file_access._normalize_relative_path``, which is
     private and promises nothing.  A spelling this stops matching is a path whose entry a read
     cannot find, so the suite checks the two against each other rather than assuming.  Only the

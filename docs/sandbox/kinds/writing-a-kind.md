@@ -133,7 +133,7 @@ Resolve names with `session.list_files`, then pass the original `ListedFile` to 
 
 Core records successful reads, including empty files. Missing or refused reads contribute nothing. The kind needs no separate accumulator and must not copy a read's metadata into a result label.
 
-The example never echoes the input name. If a kind displays names, call `positions_holding_hidden_content` before host code can change the hidden-content store. Use `echoed_name` to show a safe name or argument position. See [rewritten arguments](../information-flow.md#the-call-arguments-have-already-been-rewritten).
+The example never echoes the input name. If a kind displays names, call `positions_holding_hidden_content` with the parameter name and its complete current value. For generated names, snapshot `hidden_content_candidates()` before host work and pass it as `candidates` to retain the conservative refusal decision. Use `echoed_name` to show a safe name or argument position. See [rewritten arguments](../information-flow.md#the-call-arguments-have-already-been-rewritten).
 
 Use fixed guest basenames and argument lists. Keep model values out of shell commands. The example's byte check bounds transfer into the guest; the store must enforce any limit on loading the file into host memory.
 
