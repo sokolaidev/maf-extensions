@@ -51,10 +51,12 @@ def resolve_image(reference: str) -> str:
 
 def decode_withheld(body: bytes | bytearray) -> dict[str, Any]:
     """Reject malformed workload responses without exposing their contents."""
+    from openclaw_gateway_http_check import strict_json
+
     identity = hashlib.sha256(body).hexdigest()
     try:
-        value = json.loads(body)
-    except (ValueError, UnicodeError):
+        value = strict_json(body)
+    except RuntimeError:
         raise RuntimeError(f"Withheld response is not valid JSON (sha256:{identity})") from None
     result = value.get("result") if isinstance(value, dict) else None
     structured = result.get("structuredContent") if isinstance(result, dict) else None

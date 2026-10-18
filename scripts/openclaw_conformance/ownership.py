@@ -19,6 +19,10 @@ def verify(value: dict[str, Any]) -> None:
         and all(isinstance(event, dict) and event.get("boot") == boot for event in events),
         "ownership_boot_identity",
     )
+    require(
+        all(event.get("poisoned") is False for event in events if event.get("event") == "settled"),
+        "ownership_settled_state",
+    )
     _exchanges(
         [e for e in events if e.get("event") in ("request", "delete_requested")],
         "ownership_request_exchanges",

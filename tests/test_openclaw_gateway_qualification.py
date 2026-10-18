@@ -4190,3 +4190,151 @@ def test_gateway_response_refuses_truncated_content_length(missing):
             checker.read_response(response)
     finally:
         response.close()
+
+
+@pytest.mark.parametrize("route", ["http", "maf"])
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        None,
+        '"completed":false,',
+        '"ignored":1e400,',
+        '"ignored":NaN,',
+        '"ignored":Infinity,',
+        '"ignored":{"x":1,"x":2},',
+    ],
+)
+def test_ownership_results_decode_strictly_before_normalization(route, malformed):
+    import httpx
+
+    config = "configuration"
+    expected = dict(
+        completed=True,
+        verdict="valid",
+        status="ok",
+        cleanup="confirmed",
+        image="image",
+        config_sha256=hashlib.sha256(config.encode()).hexdigest(),
+        source_sha256="source",
+    )
+    raw = "{" + (malformed or "") + json.dumps(expected)[1:]
+    envelope = (
+        '{"result":{"isError":false,"content":[{"type":"text","text":'
+        + json.dumps(raw)
+        + '}],"structuredContent":'
+        + raw
+        + "}}"
+    )
+
+    async def call(*args, **kwargs):
+        return httpx.Response(200, content=envelope.encode())
+
+    async def call_tool(*args, **kwargs):
+        return [SimpleNamespace(text=raw)]
+
+    probe = SimpleNamespace(
+        call=call,
+        prototype=SimpleNamespace(snapshot=lambda _: SimpleNamespace(digest="source")),
+        image="image",
+        config=config,
+    )
+    client = "session" if route == "http" else SimpleNamespace(call_tool=call_tool)
+    if malformed is None:
+        assert asyncio.run(ownership.Check.valid(probe, client)) == expected
+    else:
+        with pytest.raises(RuntimeError, match="JSON"):
+            asyncio.run(ownership.Check.valid(probe, client))
+
+
+@pytest.mark.parametrize("malformed", ['"isError":false,', '"ignored":1e400,'])
+def test_ownership_busy_response_uses_strict_decoding(malformed):
+    import httpx
+
+    raw = '{"result":{' + malformed + '"isError":true,"content":[{"type":"text","text":"busy"}]}}'
+
+    async def call(*args):
+        return httpx.Response(200, content=raw.encode())
+
+    async def owned():
+        raise AssertionError("Malformed busy response was accepted")
+
+    probe = SimpleNamespace(call=call, events=lambda: [], owned=owned)
+    with pytest.raises(RuntimeError, match="JSON"):
+        asyncio.run(ownership.Check.busy(probe, "session", "container"))
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        '"completed":false,"completed":true',
+        '"ignored":1e400',
+        '"ignored":NaN',
+        '"ignored":{"x":1,"x":2}',
+    ],
+)
+def test_withheld_result_uses_strict_decoding(malformed):
+    raw = ('{"result":{"structuredContent":{' + malformed + "}}}").encode()
+    with pytest.raises(RuntimeError, match="valid JSON"):
+        observer.decode_withheld(raw)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "mismatch",
+        "numeric_boolean",
+        "duplicate_text",
+        "nonfinite_text",
+        "image",
+        "missing_text",
+        "zero_flag",
+        "empty_flag",
+        "missing_content",
+        "non_list_content",
+    ],
+)
+def test_ownership_raw_result_requires_exact_text_mirror(mutation):
+    import httpx
+
+    config = "configuration"
+    value = dict(
+        completed=True,
+        verdict="valid",
+        status="ok",
+        cleanup="confirmed",
+        image="image",
+        config_sha256=hashlib.sha256(config.encode()).hexdigest(),
+        source_sha256="source",
+    )
+    content = {"type": "text", "text": json.dumps(value)}
+    result = {"isError": False, "content": [content], "structuredContent": value}
+    if mutation == "mismatch":
+        content["text"] = json.dumps(dict(value, completed=False))
+    elif mutation == "numeric_boolean":
+        content["text"] = json.dumps(dict(value, completed=1))
+    elif mutation == "duplicate_text":
+        content["text"] = '{"completed":false,' + json.dumps(value)[1:]
+    elif mutation == "nonfinite_text":
+        content["text"] = '{"extra":1e400,' + json.dumps(value)[1:]
+    elif mutation == "image":
+        content["type"] = "image"
+    elif mutation == "missing_text":
+        content.pop("text")
+    elif mutation in ("zero_flag", "empty_flag"):
+        result["isError"] = 0 if mutation == "zero_flag" else ""
+    elif mutation == "missing_content":
+        result.pop("content")
+    else:
+        result["content"] = {"0": content}
+
+    async def call(*args):
+        return httpx.Response(200, json={"result": result})
+
+    probe = SimpleNamespace(
+        call=call,
+        prototype=SimpleNamespace(snapshot=lambda _: SimpleNamespace(digest="source")),
+        image="image",
+        config=config,
+    )
+    with pytest.raises(RuntimeError):
+        asyncio.run(ownership.Check.valid(probe, "session"))

@@ -35,7 +35,7 @@ from typing import Any
 
 import httpx
 from agent_framework import MCPStreamableHTTPTool
-from openclaw_gateway_http_check import records, require
+from openclaw_gateway_http_check import records, require, strict_json
 from openclaw_http_observer import ObserveHTTP, digest, resolve_image
 from openclaw_sources import LARGE_SOURCE, SIMPLE_SOURCE
 
@@ -59,7 +59,7 @@ def environment(installed: bool = False, expected: dict[str, str] | None = None)
         return installed_environment(expected)["versions"]
     versions = {}
     for dist in importlib.metadata.distributions():
-        direct = json.loads(dist.read_text("direct_url.json") or "{}")
+        direct = strict_json(dist.read_text("direct_url.json") or "{}")
         require(not direct, "Qualification requires published distributions without local fallback")
         versions[dist.metadata["Name"]] = dist.version
     require(
@@ -274,7 +274,7 @@ class RemovalGate:
 
     async def arm(self, container: str) -> None:
         require(self.target is None, "Removal gate already armed")
-        info = json.loads(await docker("inspect", container))[0]
+        info = strict_json(await docker("inspect", container))[0]
         require(
             info["Id"] == container
             and info["Config"]["Labels"].get("maf-sandbox.scope") == self.scope,
@@ -385,10 +385,10 @@ class Check:
     async def busy(self, sid: str, container: str) -> None:
         before = len(self.events())
         r = await self.call(sid)
+        require(r.status_code == 200, "Admission released before cleanup")
+        result = strict_json(r.content)["result"]
         require(
-            r.status_code == 200
-            and r.json()["result"].get("isError") is True
-            and "busy" in r.json()["result"]["content"][0]["text"].lower(),
+            result.get("isError") is True and "busy" in result["content"][0]["text"].lower(),
             "Admission released before cleanup",
         )
         require(
@@ -427,7 +427,7 @@ class Check:
                 if owned and compiler_running(await docker("top", owned[0], "-eo", "pid,args")):
                     container = owned[0]
                     await docker("pause", container)
-                    info = json.loads(await docker("inspect", container))[0]
+                    info = strict_json(await docker("inspect", container))[0]
                     require(
                         info["State"]["Paused"] is True
                         and info["HostConfig"]["NetworkMode"] == "none"
@@ -455,12 +455,27 @@ class Check:
         if isinstance(client, str):
             r = await self.call(client)
             require(r.status_code == 200, "Surviving session not usable")
-            result = r.json()["result"]
+            result = strict_json(r.content)["result"]
             require(
-                len(result["content"]) == 1 and not result.get("isError"),
+                isinstance(result, dict) and result.get("isError", False) is False,
                 "Invalid raw result projection",
             )
-            value = result["structuredContent"]
+            content = result.get("content")
+            require(
+                isinstance(content, list)
+                and len(content) == 1
+                and isinstance(content[0], dict)
+                and content[0].get("type") == "text"
+                and isinstance(content[0].get("text"), str),
+                "Invalid raw result projection",
+            )
+            assert isinstance(content, list)
+            value = result.get("structuredContent")
+            require(
+                json.dumps(strict_json(content[0]["text"]), sort_keys=True, allow_nan=False)
+                == json.dumps(value, sort_keys=True, allow_nan=False),
+                "Raw result text differs from structured content",
+            )
         else:
             result = await client.call_tool("bicep_validate", **SIMPLE)
             require(
@@ -468,7 +483,7 @@ class Check:
                 "Invalid MAF projection",
             )
             assert isinstance(result, list) and result[0].text is not None
-            value = json.loads(result[0].text)
+            value = strict_json(result[0].text)
         return verify_result(value, self.prototype, self.image, self.config)
 
     def events(self) -> list[dict[str, Any]]:
@@ -685,7 +700,7 @@ class Check:
     async def finish(self) -> None:
         self.gate.release.set()
         for container in await self.owned():
-            info = json.loads(await docker("inspect", container))[0]
+            info = strict_json(await docker("inspect", container))[0]
             if info["State"]["Paused"]:
                 await docker("unpause", container)
         for client in self.clients:

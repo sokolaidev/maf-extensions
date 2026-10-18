@@ -113,6 +113,7 @@ async def _input_refusals(root: Path, prepared: Path, manifest: dict[str, Any]) 
     from maf_sandbox_docker import DockerSandboxBackend
     from maf_sandbox_mcp import server, workload_http
 
+    strict_json = importlib.import_module("openclaw_gateway_http_check").strict_json
     creations = 0
     original = DockerSandboxBackend._invoke
 
@@ -183,7 +184,7 @@ async def _input_refusals(root: Path, prepared: Path, manifest: dict[str, Any]) 
                     )
                     require(
                         response.status_code == 200
-                        and response.json()["result"].get("isError") is True
+                        and strict_json(response.content)["result"].get("isError") is True
                         and creations == 0,
                         "input_allocated_or_accepted",
                     )
@@ -203,7 +204,7 @@ async def _input_refusals(root: Path, prepared: Path, manifest: dict[str, Any]) 
                         },
                     },
                 )
-                result = positive.json()["result"]["structuredContent"]
+                result = strict_json(positive.content)["result"]["structuredContent"]
                 require(
                     result["completed"] is True
                     and result["verdict"] == "valid"

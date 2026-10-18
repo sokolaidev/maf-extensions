@@ -86,7 +86,7 @@ def _json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
-def strict_json(raw: str | bytes) -> Any:
+def strict_json(raw: str | bytes | bytearray) -> Any:
     """Decode complete JSON without duplicate keys or nonfinite numbers."""
     try:
         value = json.loads(raw, object_pairs_hook=_json_pairs)

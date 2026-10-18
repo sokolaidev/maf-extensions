@@ -427,3 +427,81 @@ def test_ownership_final_snapshot_after_check_returns(tmp_path, monkeypatch, tai
         with pytest.raises(RuntimeError):
             checks.run("ownership", tmp_path, tmp_path, manifest)
     assert evidence.read_bytes() == raw
+
+
+@pytest.mark.parametrize("phase", ["refusal", "positive"])
+@pytest.mark.parametrize("malformed", [None, "duplicate", "NaN", "Infinity", "1e400"])
+def test_policy_input_responses_require_strict_json(tmp_path, monkeypatch, phase, malformed):
+    import asyncio
+    from contextlib import nullcontext
+
+    import httpx
+    from maf_sandbox_docker import DockerSandboxBackend
+    from maf_sandbox_mcp import server, workload_http
+
+    checks = importlib.import_module("openclaw_conformance.checks")
+    (tmp_path / "bicepconfig.json").write_text("{}")
+
+    class Host:
+        started = True
+        should_exit = False
+
+        async def serve(self, **kwargs):
+            while not self.should_exit:
+                await asyncio.sleep(0)
+
+    host = Host()
+
+    async def application(*args):
+        return object()
+
+    async def invoke(*args, **kwargs):
+        return None
+
+    class Client:
+        def __init__(self, **kwargs):
+            self.headers = kwargs["headers"]
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def delete(self, *args):
+            return httpx.Response(200)
+
+        async def post(self, path, *, json):
+            if json["method"] == "initialize":
+                return httpx.Response(200, headers={"mcp-session-id": "session"})
+            if json["method"] == "notifications/initialized":
+                return httpx.Response(202)
+            positive = json["id"] == 3
+            if positive:
+                await DockerSandboxBackend._invoke(object.__new__(DockerSandboxBackend), "create")
+                raw = '{"result":{"structuredContent":{"completed":true,"verdict":"valid","cleanup":"confirmed"}}}'
+            else:
+                raw = '{"result":{"isError":true}}'
+            if positive == (phase == "positive") and malformed:
+                if malformed == "duplicate":
+                    if positive:
+                        raw = raw.replace('"completed":true', '"completed":false,"completed":true')
+                    else:
+                        raw = raw.replace('"isError":true', '"isError":false,"isError":true')
+                else:
+                    raw = raw[:-1] + ',"ignored":' + malformed + "}"
+            return httpx.Response(200, content=raw.encode())
+
+    monkeypatch.setattr(server, "ownership", lambda *args: nullcontext("test-scope"))
+    monkeypatch.setattr(server, "http_application", application)
+    monkeypatch.setattr(workload_http, "server", lambda app: host)
+    monkeypatch.setattr(DockerSandboxBackend, "_invoke", invoke)
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
+    monkeypatch.setattr(checks, "command", lambda *args, **kwargs: "")
+    probe = checks._input_refusals(tmp_path, tmp_path, {"image": "sha256:" + "a" * 64})
+    if malformed is None:
+        assert asyncio.run(probe) is True
+    else:
+        with pytest.raises(RuntimeError, match="JSON"):
+            asyncio.run(probe)
+    assert host.should_exit is True

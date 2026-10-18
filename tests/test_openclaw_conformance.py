@@ -2227,3 +2227,20 @@ def test_boot_binding_intervals_allow_case_mapping_reordering(ownership_observat
     obs = ownership_observations
     obs["cases"] = dict(reversed(list(obs["cases"].items())))
     importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("poisoned", [True, None, 0, 1, "false", "", [], {}, "missing"])
+def test_settled_snapshots_require_literal_unpoisoned_state(ownership_observations, poisoned):
+    obs = ownership_observations
+    snapshots = [event for event in obs["transport"] if event.get("event") == "settled"]
+    if not snapshots:
+        snapshot = dict(obs["transport"][-1], event="settled", poisoned=False)
+        obs["transport"].append(snapshot)
+        snapshots = [snapshot]
+    snapshot = snapshots[-1]
+    if poisoned == "missing":
+        snapshot.pop("poisoned", None)
+    else:
+        snapshot["poisoned"] = poisoned
+    with pytest.raises(e.Refused, match="ownership_settled_state"):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
