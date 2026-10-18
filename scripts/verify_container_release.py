@@ -6,6 +6,7 @@ import argparse
 import json
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -180,6 +181,57 @@ def hyperlight_payload(expected: dict[str, Any], directory: Path) -> dict[str, A
     return smoke
 
 
+def verify_github_predicate(
+    expected: dict[str, Any], manifest: Path, predicate: str
+) -> subprocess.CompletedProcess[str]:
+    """Retrieve without URI filtering, then authenticate the exact predicate locally."""
+    response = subprocess.run(
+        [
+            "gh",
+            "api",
+            "--hostname",
+            "github.com",
+            "--paginate",
+            "--slurp",
+            f"/repos/{REPOSITORY}/attestations/{expected['registryDigest']}",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="strict",
+        timeout=120,
+    )
+    pages = json.loads(response.stdout)
+    if not isinstance(pages, list) or not pages:
+        raise ValueError("No attestation pages were returned")
+    with tempfile.TemporaryDirectory() as temporary:
+        bundle = Path(temporary) / "attestations.jsonl"
+        with bundle.open("w", encoding="utf-8") as stream:
+            for page in pages:
+                for attestation in page["attestations"]:
+                    stream.write(json.dumps(attestation["bundle"]) + "\n")
+        if not bundle.stat().st_size:
+            raise ValueError("No attestation bundles were returned")
+        return subprocess.run(
+            [
+                "gh",
+                "attestation",
+                "verify",
+                str(manifest),
+                *policy_flags(expected, predicate),
+                "--bundle",
+                str(bundle),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="strict",
+            timeout=120,
+        )
+
+
 def _verify(
     expected: dict[str, Any],
     directory: Path,
@@ -225,15 +277,18 @@ def _verify(
             if bundle.is_symlink() or not bundle.is_file() or not bundle.stat().st_size:
                 raise ValueError("Missing original attestation bundle")
             command.extend(["--bundle", str(bundle)])
-        result = subprocess.run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="strict",
-            timeout=120,
-        )
+        if not bundles and not registry and "#" in predicate:
+            result = verify_github_predicate(expected, manifest, predicate)
+        else:
+            result = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="strict",
+                timeout=120,
+            )
         selected = None
         if not bundles and predicate in {PROVENANCE, SPDX}:
             bundle = directory / filename
