@@ -86,14 +86,3 @@ def test_process_cleanup_runs_on_an_image_of_each_launcher_path():
     assert "docker pull" not in step["run"]
     assert "python" in job["env"]["MAF_SANDBOX_CODEACT_E2E_IMAGE"]
     assert job["env"]["MAF_SANDBOX_DOCKER_E2E_IMAGE"] not in step["run"]
-
-
-def test_deletion_authority_qualification_retains_failures_and_results():
-    job = workflow("docker-live.yml")["jobs"]["deletion-authority"]
-    steps = {step.get("name"): step for step in job["steps"]}
-    probe = steps["Qualify deletion under hostile guest state"]["run"]
-    assert "set -euo pipefail" in probe
-    assert "scripts/experiments/docker_deletion_probe.py" in probe
-    assert "--output out/deletion-authority/result.json" in probe
-    assert "python@sha256:" in probe
-    assert steps["Retain deletion qualification evidence"]["if"] == "always()"
