@@ -230,7 +230,13 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
     import http.client
 
     from agent_framework import Content, MCPStreamableHTTPTool
-    from openclaw_gateway_http_check import projected_result, records, strict_json, verify_outcome
+    from openclaw_gateway_http_check import (
+        projected_result,
+        read_response,
+        records,
+        strict_json,
+        verify_outcome,
+    )
     from openclaw_http_observer import resolve_image
 
     installed_environment(getattr(args, "expected_versions", None))
@@ -283,7 +289,7 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
                     },
                 )
                 response = connection.getresponse()
-                payload = strict_json(response.read())
+                payload = strict_json(read_response(response))
                 require(
                     response.status == 200
                     and payload["choices"][0]["message"]["content"]

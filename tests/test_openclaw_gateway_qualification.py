@@ -4095,3 +4095,78 @@ def test_published_transport_clears_stale_success_before_refusing_reuse(monkeypa
     with pytest.raises(RuntimeError, match="fresh private evidence"):
         published_transport.main()
     assert not (tmp_path / "transport-report.json").exists()
+
+
+@pytest.mark.parametrize("framing", ["length", "chunked", "eof"])
+@pytest.mark.parametrize("overflow", [False, True])
+def test_gateway_response_budget_before_decoding(monkeypatch, framing, overflow):
+    from io import BytesIO
+
+    raw = json.dumps(
+        {
+            "choices": [{"message": {"content": "QUALIFICATION_TOOL_RESULT_RECEIVED"}}],
+            "padding": "x" * 1024,
+        }
+    ).encode()
+    monkeypatch.setattr(checker, "MAX_RESPONSE_BYTES", len(raw) - int(overflow))
+    body = raw
+    headers = b""
+    if framing == "length":
+        headers = f"Content-Length: {len(raw)}\r\n".encode()
+    elif framing == "chunked":
+        headers = b"Transfer-Encoding: chunked\r\n"
+        body = f"{len(raw):x}\r\n".encode() + raw + b"\r\n0\r\n\r\n"
+    wire = BytesIO(b"HTTP/1.1 200 OK\r\n" + headers + b"\r\n" + body)
+    response = http.client.HTTPResponse(SimpleNamespace(makefile=lambda *args: wire))
+    response.begin()
+    try:
+        if overflow:
+            with pytest.raises(RuntimeError, match="Gateway response exceeds"):
+                checker.read_response(response)
+        else:
+            assert checker.read_response(response) == raw
+    finally:
+        response.close()
+
+
+def test_installed_gateway_refuses_padding_before_projection(tmp_path, monkeypatch):
+    from io import BytesIO
+
+    worker = __import__("openclaw_installed_worker_check")
+    monkeypatch.setattr(worker, "installed_environment", lambda *args: None)
+    monkeypatch.setattr(observer, "resolve_image", lambda image: image)
+    monkeypatch.setattr(checker, "MAX_RESPONSE_BYTES", 128)
+    monkeypatch.setattr(checker, "records", lambda *args, **kwargs: [])
+    monkeypatch.setattr(checker, "projected_result", lambda *args: {})
+
+    def projected(*args):
+        raise AssertionError("Oversized response reached projection")
+
+    monkeypatch.setattr(checker, "verify_outcome", projected)
+    raw = json.dumps(
+        {
+            "choices": [{"message": {"content": "QUALIFICATION_TOOL_RESULT_RECEIVED"}}],
+            "padding": "x" * 1024,
+        }
+    ).encode()
+    response = BytesIO(raw)
+    response.status = 200
+    closed = []
+    connection = SimpleNamespace(
+        request=lambda *args: None, getresponse=lambda: response, close=lambda: closed.append(True)
+    )
+    monkeypatch.setattr(http.client, "HTTPConnection", lambda *args, **kwargs: connection)
+    config = tmp_path / "gateway.json"
+    config.write_text(json.dumps({"gateway": {"port": 1234, "auth": {"token": "test"}}}))
+    (tmp_path / "owner").write_text("a" * 32)
+    args = SimpleNamespace(
+        config=config,
+        bicep_config=config,
+        image="image",
+        owner=tmp_path,
+        evidence=tmp_path / "provider.jsonl",
+    )
+    with pytest.raises(RuntimeError, match="Gateway response exceeds"):
+        worker.console_gateway(args)
+    assert response.tell() == 129
+    assert closed == [True]

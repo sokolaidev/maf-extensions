@@ -24,6 +24,7 @@ def verify(value: dict[str, Any]) -> None:
         "ownership_request_exchanges",
     )
     seen: set[str] = set()
+    bindings: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for name, case in value["cases"].items():
         a, b = case.get("session_a"), case.get("session_b")
         require(
@@ -39,15 +40,24 @@ def verify(value: dict[str, Any]) -> None:
         starts = [e for e in subset if e.get("event") == "binding_started"]
         bound = [_request(subset, start) for start in starts]
         _exchanges(bound, "binding_ambiguous_start")
-        terminals = [
-            _terminal_request(subset, event)
+        terminal_events = [
+            event
             for event in subset
             if event.get("event") in ("binding_result", "binding_cancelled")
         ]
+        terminals = [_terminal_request(subset, event) for event in terminal_events]
         _exchanges(terminals, "binding_ambiguous_terminal")
         exchanges = {request["exchange"] for request in bound}
         require(
             exchanges == {request["exchange"] for request in terminals}, "binding_terminal_count"
+        )
+        terminal_by_exchange = {
+            request["exchange"]: event
+            for request, event in zip(terminals, terminal_events, strict=True)
+        }
+        bindings.extend(
+            (start, terminal_by_exchange[request["exchange"]])
+            for start, request in zip(starts, bound, strict=True)
         )
         require(
             not any(
@@ -302,6 +312,13 @@ def verify(value: dict[str, Any]) -> None:
             )
         ),
         "ownership_event_session",
+    )
+
+    require(all(_ordered(start, end) for start, end in bindings), "ownership_binding_interval")
+    bindings.sort(key=lambda pair: pair[0]["time_ns"])
+    require(
+        all(_ordered(left[1], right[0]) for left, right in zip(bindings, bindings[1:])),
+        "ownership_binding_overlap",
     )
 
 

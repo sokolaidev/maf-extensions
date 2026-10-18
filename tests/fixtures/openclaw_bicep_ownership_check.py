@@ -797,7 +797,7 @@ async def check(args: argparse.Namespace) -> dict[str, Any]:
                 "owned_empty": True,
                 "unrelated_preserved": True,
             }
-            report["transport"] = records(observer.evidence)
+            report["transport"] = records(observer.evidence, final=True)
         finally:
             gate.release.set()
             host.should_exit = True

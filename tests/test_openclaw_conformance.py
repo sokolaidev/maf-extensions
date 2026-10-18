@@ -2194,3 +2194,36 @@ def test_retained_observer_records_share_the_service_boot(event, missing):
         row["boot"] = "0" * 32
     with pytest.raises(e.Refused):
         importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("other", sorted(e.OWNERSHIP - {"equal_ids_repeated_cancel"}))
+@pytest.mark.parametrize("offset", [0, 1])
+def test_boot_binding_intervals_reject_cross_case_overlap(ownership_observations, other, offset):
+    obs = ownership_observations
+    for event in obs["transport"]:
+        event["time_ns"] = event["time_ns"] * 10 + 10**15
+    cases = obs["cases"]
+
+    def starts(name):
+        sessions = {cases[name]["session_a"], cases[name]["session_b"]}
+        return [
+            r
+            for r in obs["transport"]
+            if r.get("session") in sessions and r["event"] == "binding_started"
+        ]
+
+    target = min(r["time_ns"] for r in starts("equal_ids_repeated_cancel")) + offset
+    shift = target - min(r["time_ns"] for r in starts(other))
+    sessions = {cases[other]["session_a"], cases[other]["session_b"]}
+    for event in obs["transport"]:
+        if event.get("session") in sessions:
+            event["time_ns"] += shift
+    obs["transport"].sort(key=lambda event: event["time_ns"])
+    with pytest.raises(e.Refused, match="ownership_binding_overlap"):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+def test_boot_binding_intervals_allow_case_mapping_reordering(ownership_observations):
+    obs = ownership_observations
+    obs["cases"] = dict(reversed(list(obs["cases"].items())))
+    importlib.import_module("openclaw_conformance.ownership").verify(obs)

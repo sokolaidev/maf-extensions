@@ -392,3 +392,38 @@ def test_gateway_final_snapshot_follows_provider_shutdown(tmp_path, monkeypatch,
     else:
         with pytest.raises((RuntimeError, ValueError)):
             checks.gateway(tmp_path, tmp_path, manifest)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        b'{"late":true}\n',
+        b'{"event":"wrong","event":"retired"}\n',
+        b'{"partial":',
+        b'{"time_ns":NaN}\n',
+    ],
+)
+def test_ownership_final_snapshot_after_check_returns(tmp_path, monkeypatch, tail):
+    checks = importlib.import_module("openclaw_conformance.checks")
+    worker = importlib.import_module("openclaw_installed_worker_check")
+    ownership = importlib.import_module("openclaw_bicep_ownership_check")
+    (tmp_path.parent / "resources.json").write_text("{}")
+    evidence = tmp_path / "transport.jsonl"
+    raw = b'{"initial":true}\n' + tail
+
+    async def check(args):
+        evidence.write_bytes(raw)
+        return {"transport": [{"initial": True}]}
+
+    monkeypatch.setattr(ownership, "check", check)
+    monkeypatch.setattr(worker, "installed_environment", lambda *args: None)
+    manifest = {"image": "sha256:" + "b" * 64, "versions": {}}
+    if tail == b'{"late":true}\n':
+        assert checks.run("ownership", tmp_path, tmp_path, manifest)["transport"] == [
+            {"initial": True},
+            {"late": True},
+        ]
+    else:
+        with pytest.raises(RuntimeError):
+            checks.run("ownership", tmp_path, tmp_path, manifest)
+    assert evidence.read_bytes() == raw

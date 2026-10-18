@@ -407,7 +407,7 @@ def run(group: str, root: Path, prepared: Path, manifest: dict[str, Any]) -> dic
     if group == "ownership":
         check = importlib.import_module("openclaw_bicep_ownership_check").check
 
-        return asyncio.run(
+        value = asyncio.run(
             check(
                 SimpleNamespace(
                     control=read(root.parent / "resources.json"),
@@ -419,6 +419,10 @@ def run(group: str, root: Path, prepared: Path, manifest: dict[str, Any]) -> dic
                 )
             )
         )
+        value["transport"] = importlib.import_module("openclaw_gateway_http_check").records(
+            root / "transport.jsonl", final=True
+        )
+        return value
     if group == "gateway":
         return gateway(root, prepared, manifest)
     if group == "network":

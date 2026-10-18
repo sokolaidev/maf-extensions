@@ -21,7 +21,7 @@ def docker(*args: str) -> str:
 
 
 def check(args: argparse.Namespace) -> dict[str, Any]:
-    from openclaw_gateway_http_check import verify_outcome
+    from openclaw_gateway_http_check import read_response, verify_outcome
 
     config = json.loads(args.config.read_text(encoding="utf-8-sig"))
     assert config["gateway"]["bind"] == "loopback"
@@ -62,7 +62,7 @@ def check(args: argparse.Namespace) -> dict[str, Any]:
         connection = request(case)
         try:
             response = connection.getresponse()
-            payload = json.loads(response.read())
+            payload = json.loads(read_response(response))
             assert response.status == 200, payload
             assert (
                 payload["choices"][0]["message"]["content"] == "QUALIFICATION_TOOL_RESULT_RECEIVED"

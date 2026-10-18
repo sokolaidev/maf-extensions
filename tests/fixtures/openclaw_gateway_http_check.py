@@ -19,11 +19,19 @@ from openclaw_gateway_provider import SOURCES
 
 BASELINE_DISPATCHES = 9
 MAX_EVIDENCE_BYTES = 16 * 1024 * 1024
+MAX_RESPONSE_BYTES = 1024 * 1024
 
 
 def require(condition: Any, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
+
+
+def read_response(response: http.client.HTTPResponse) -> bytes:
+    """Read a Gateway response within the decoded-body byte budget."""
+    raw = response.read(MAX_RESPONSE_BYTES + 1)
+    require(len(raw) <= MAX_RESPONSE_BYTES, "Gateway response exceeds 1 MiB")
+    return raw
 
 
 def records(path: Path, *, final: bool = False) -> list[dict[str, Any]]:
@@ -305,7 +313,7 @@ def check(args: argparse.Namespace) -> dict[str, Any]:
         connection, turn = request(case, index)
         try:
             response = connection.getresponse()
-            payload = json.loads(response.read())
+            payload = json.loads(read_response(response))
             require(response.status == 200, "Gateway turn failed")
             require(
                 payload["choices"][0]["message"]["content"] == "QUALIFICATION_TOOL_RESULT_RECEIVED",
