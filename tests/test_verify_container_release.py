@@ -110,10 +110,21 @@ def evidence(root, profile="bicep"):
     return expected, result
 
 
+def mock_download(command):
+    assert command[:2] == ["gh", "api"]
+    assert "--paginate" in command and "--slurp" in command
+    assert "predicate_type" not in " ".join(command)
+    return subprocess.CompletedProcess(
+        command, 0, json.dumps([{"attestations": [{"bundle": {"downloaded": True}}]}])
+    )
+
+
 def mock_verifier(monkeypatch, results, failed=None):
     calls = []
 
     def run(command, **kwargs):
+        if command[:2] == ["gh", "api"]:
+            return mock_download(command)
         assert command[:3] == ["gh", "attestation", "verify"]
         assert kwargs["check"] is True
         assert "--deny-self-hosted-runners" in command
@@ -143,6 +154,8 @@ def test_registry_retrieval_pins_the_same_digest_and_all_three_predicates(tmp_pa
     targets = []
 
     def run(command, **kwargs):
+        if command[:2] == ["gh", "api"]:
+            return mock_download(command)
         if "--bundle" not in command:
             targets.append(command[3])
             assert "--bundle-from-oci" in command
@@ -326,6 +339,8 @@ def test_rerun_attestations_select_authenticated_retained_evidence(tmp_path, mon
     calls = []
 
     def run(command, **kwargs):
+        if command[:2] == ["gh", "api"]:
+            return mock_download(command)
         calls.append(command)
         predicate = command[command.index("--predicate-type") + 1]
         results = retained if "--bundle" in command else remote
@@ -333,7 +348,7 @@ def test_rerun_attestations_select_authenticated_retained_evidence(tmp_path, mon
 
     monkeypatch.setattr("verify_container_release.subprocess.run", run)
     assert verify(expected, tmp_path, registry=registry)["releaseIdentityVerified"]
-    assert sum("--bundle" in command for command in calls) == 2
+    assert sum("--bundle" in command for command in calls) == (2 if registry else 3)
 
 
 def test_conflicting_completions_still_fail(tmp_path, monkeypatch):
@@ -364,6 +379,8 @@ def test_retained_selection_cannot_bypass_authentication_or_completion(
         remote[PROVENANCE].append(duplicate)
 
     def run(command, **kwargs):
+        if command[:2] == ["gh", "api"]:
+            return mock_download(command)
         predicate = command[command.index("--predicate-type") + 1]
         if fault == "signature" and "--bundle" in command:
             raise subprocess.CalledProcessError(1, command)
@@ -373,3 +390,90 @@ def test_retained_selection_cannot_bypass_authentication_or_completion(
     monkeypatch.setattr("verify_container_release.subprocess.run", run)
     with pytest.raises((ValueError, subprocess.CalledProcessError)):
         verify(expected, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [None, "wrong-fragment", "signature", "conflict", "api", "empty", "missing-bundle"],
+)
+def test_fragment_predicate_uses_paginated_download_and_exact_local_verification(
+    tmp_path, monkeypatch, fault
+):
+    expected, results = evidence(tmp_path)
+    completion = copy.deepcopy(results[COMPLETION])
+    if fault == "wrong-fragment":
+        completion[0]["verificationResult"]["statement"]["predicateType"] = (
+            COMPLETION.rsplit("#", 1)[0] + "#other"
+        )
+    elif fault == "conflict":
+        duplicate = copy.deepcopy(completion[0])
+        duplicate["verificationResult"]["statement"]["predicate"]["evidenceIndexSha256"] = (
+            "sha256:" + "e" * 64
+        )
+        completion.append(duplicate)
+    pages = [
+        {"attestations": [{"bundle": item} for item in results[PROVENANCE]]},
+        {"attestations": [{"bundle": item} for item in completion]},
+    ]
+    if fault == "empty":
+        pages = [{"attestations": []}]
+    elif fault == "missing-bundle":
+        pages = [{"attestations": [{}]}]
+    downloads = []
+    bundles = []
+
+    def run(command, **kwargs):
+        assert kwargs["check"] is True
+        if command[:2] == ["gh", "api"]:
+            downloads.append(command)
+            assert "--paginate" in command and "--slurp" in command
+            assert command[command.index("--hostname") + 1] == "github.com"
+            assert command[-1] == (
+                "/repos/sokolaidev/maf-extensions/attestations/" + expected["registryDigest"]
+            )
+            if fault == "api":
+                raise subprocess.CalledProcessError(1, command)
+            return subprocess.CompletedProcess(command, 0, json.dumps(pages))
+        predicate = command[command.index("--predicate-type") + 1]
+        if predicate != COMPLETION:
+            return subprocess.CompletedProcess(command, 0, json.dumps(results[predicate]))
+        assert command[3] == str(tmp_path / "manifest.json")
+        assert "--bundle" in command and "--bundle-from-oci" not in command
+        assert command[4 : command.index("--bundle")] == policy_flags(expected, COMPLETION)
+        bundle = Path(command[command.index("--bundle") + 1])
+        bundles.append(bundle)
+        assert bundle.parent != tmp_path
+        downloaded = [json.loads(line) for line in bundle.read_text().splitlines()]
+        assert downloaded == results[PROVENANCE] + completion
+        if fault == "signature":
+            raise subprocess.CalledProcessError(1, command)
+        verified = [
+            item
+            for item in downloaded
+            if item["verificationResult"]["statement"]["predicateType"] == predicate
+        ]
+        return subprocess.CompletedProcess(command, 0, json.dumps(verified))
+
+    monkeypatch.setattr("verify_container_release.subprocess.run", run)
+    if fault is None:
+        assert verify(expected, tmp_path)["releaseIdentityVerified"] is True
+    else:
+        with pytest.raises((ValueError, KeyError, subprocess.CalledProcessError)):
+            verify(expected, tmp_path)
+    assert len(downloads) == 1
+    assert all(not bundle.parent.exists() for bundle in bundles)
+
+
+@pytest.mark.parametrize("retrieval", ["bundles", "registry"])
+def test_explicit_retrieval_never_queries_github_predicate_filter(tmp_path, monkeypatch, retrieval):
+    expected, results = evidence(tmp_path)
+    write(tmp_path / "completion.jsonl", {})
+
+    def run(command, **kwargs):
+        assert command[:3] == ["gh", "attestation", "verify"]
+        assert "--bundle" in command or "--bundle-from-oci" in command
+        predicate = command[command.index("--predicate-type") + 1]
+        return subprocess.CompletedProcess(command, 0, json.dumps(results[predicate]))
+
+    monkeypatch.setattr("verify_container_release.subprocess.run", run)
+    assert verify(expected, tmp_path, **{retrieval: True})["releaseIdentityVerified"] is True
