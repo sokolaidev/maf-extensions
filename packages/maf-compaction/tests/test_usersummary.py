@@ -625,12 +625,57 @@ async def test_a_summary_no_smaller_than_its_band_is_refused() -> None:
     assert strategy.user_compactions == 0
 
 
+@pytest.mark.parametrize("remaining", [-1, 0, 10, 10.001, float("inf"), float("nan")])
+async def test_restored_summary_cooldown_bounds_wall_clock_deadline(monkeypatch, remaining):
+    now = 1_700_000_000.0
+    monkeypatch.setattr(_usersummary, "time", lambda: now)
+    client = _FailingSummarizer()
+    strategy = _strategy(client, max_consecutive_summary_failures=1, summary_backoff_seconds=10)
+    snapshot = strategy.session_state() | {
+        "summary_failures": 1,
+        "summary_backoff_until": now + remaining,
+    }
+    strategy.restore_session_state(snapshot)
+    cooling = remaining == 10
+    assert strategy.session_state()["summary_backoff_until"] == (now + 10 if cooling else 0.0)
+    assert not await strategy(_conversation(8))
+    assert client.calls == (0 if cooling else 1)
+    assert strategy.user_summary_skips == int(cooling)
+
+
+async def test_legacy_summary_state_clears_cached_cooldown(monkeypatch):
+    monkeypatch.setattr(_usersummary, "time", lambda: 1_700_000_000.0)
+    client = _FailingSummarizer()
+    strategy = _strategy(client, max_consecutive_summary_failures=1, summary_backoff_seconds=10)
+    legacy = strategy.session_state()
+    legacy.pop("summary_failures", None)
+    legacy.pop("summary_backoff_until", None)
+    assert not await strategy(_conversation(8))
+    strategy.restore_session_state(legacy)
+    assert not await strategy(_conversation(8))
+    assert client.calls == 2
+    assert strategy.session_state()["summary_failures"] == 1
+
+
+@pytest.mark.parametrize("jump", [-1, 10])
+async def test_live_clock_jump_does_not_extend_summary_cooldown(monkeypatch, jump):
+    now = 1_700_000_000.0
+    monkeypatch.setattr(_usersummary, "time", lambda: now)
+    client = _FailingSummarizer()
+    strategy = _strategy(client, max_consecutive_summary_failures=1, summary_backoff_seconds=10)
+    assert not await strategy(_conversation(8))
+    now += jump
+    assert not await strategy(_conversation(8))
+    assert client.calls == 2
+    assert strategy.session_state()["summary_backoff_until"] == now + 10
+
+
 @pytest.mark.parametrize("failure", ["exception", "empty", "oversized"])
 async def test_summary_cooldown_retries_and_resets_after_success(
     monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     now = 100.0
-    monkeypatch.setattr(_usersummary, "monotonic", lambda: now)
+    monkeypatch.setattr(_usersummary, "time", lambda: now)
     client: Any = _Summarizer("" if failure == "empty" else "x" * 100_000)
     if failure == "exception":
         client = _FailingSummarizer()
@@ -659,6 +704,8 @@ async def test_summary_cooldown_retries_and_resets_after_success(
     now = 120.0
     strategy.client = cast(Any, _Summarizer())
     assert await strategy(_conversation(8, first_turn=40)) is True
+    assert strategy.session_state()["summary_failures"] == 0
+    assert strategy.session_state()["summary_backoff_until"] == 0.0
     strategy.client = cast(Any, _FailingSummarizer())
     assert await strategy(_conversation(8, first_turn=50)) is False
     assert await strategy(_conversation(8, first_turn=60)) is False
@@ -667,7 +714,7 @@ async def test_summary_cooldown_retries_and_resets_after_success(
     assert strategy.user_summary_skips == 4
 
 
-async def test_summary_cooldown_is_instance_local_and_disabled_by_default() -> None:
+async def test_summary_cooldown_is_disabled_by_default_and_not_shared_without_restore() -> None:
     client = _FailingSummarizer()
     limited = _strategy(client, max_consecutive_summary_failures=1, summary_backoff_seconds=60)
     unlimited = _strategy(client)
