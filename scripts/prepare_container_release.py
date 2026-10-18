@@ -253,7 +253,7 @@ def prepare(
         if path.is_file() and (path.name == "Dockerfile" or path.suffix == ".json"):
             inputs[path.relative_to(ROOT).as_posix()] = digest(path)
     write(output / "build-inputs.json", inputs)
-    if profile == "hyperlight":
+    if profile == "hyperlight-aks-probe":
         for name in ("source.json", "build-inputs.json", "image-verification.json"):
             shutil.copyfile(
                 Path(os.environ["RUNNER_TEMP"]) / "hyperlight-image" / name,

@@ -92,6 +92,8 @@ def scenario(tmp_path, monkeypatch):
                     ]
                 ),
             )
+        if command[1] == "ps":
+            return subprocess.CompletedProcess(command, 0, "")
         if command[1] in {"create", "rm"}:
             assert kwargs["timeout"] == builder.DOCKER_TIMEOUT
             return subprocess.CompletedProcess(command, 0)
@@ -143,9 +145,10 @@ def test_verified_digest_and_payload_record_preserves_proof_and_policy(scenario)
     smoke_command = next(command for command in commands if command[1] == "create")
     assert smoke_command[-4:] == [IMAGE_ID, "-I", "-B", "/opt/verify.py"]
     name = smoke_command[smoke_command.index("--name") + 1]
-    assert commands[-2:] == [
+    assert commands[-3:] == [
         ["docker", "start", "--attach", name],
         ["docker", "rm", "--force", name],
+        ["docker", "ps", "--all", "--quiet", "--filter", f"name=^/{name}$"],
     ]
     assert "--pull=never" in smoke_command
     assert "--read-only" in smoke_command

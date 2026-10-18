@@ -51,7 +51,7 @@ The first publishing workflow covers all eleven currently scanned profiles on Li
 | `terraform-random` | [Terraform with its verified random-provider preparation and local module bundle](../../images/terraform-sandbox/TERRAFORM.md) |
 | `opentofu-random` | [OpenTofu with the approved random-provider preparation and local module bundle](../../images/terraform-sandbox/OPENTOFU.md) |
 | `terraform-avm` | Terraform with the pinned AVM catalogue and provider mirror; [consumer guide](../../images/terraform-sandbox/AVM.md) |
-| `hyperlight` | The repository's Hyperlight runtime and verification application |
+| `hyperlight-aks-probe` | [Scoped Hyperlight verification application and AKS consumer guide](../../images/hyperlight-sandbox/README.md) |
 | `egress-proxy` | [Patched proxy infrastructure for Docker/WSLC, with Docker consumer qualification](../../images/egress-proxy/README.md) |
 
 The initial platform is `linux/amd64`. Custom provider manifests, the larger AVM/platform variants, other architectures and the upstream Hyperlight device plugin require their own release scope and evidence. Publishing the Hyperlight verification application does not qualify an embedding application's payload or prove live KVM/AKS behavior. Each profile records its intended consumers and actual compatibility checks before its first publication.

@@ -121,7 +121,7 @@ def qualify(directory: Path) -> None:
     identity = verify_candidate(candidate, directory)
     image_id = anonymous_pull(candidate)
     runtime = check(candidate["profile"], image_id, directory)
-    if candidate["profile"] == "hyperlight":
+    if candidate["profile"] == "hyperlight-aks-probe":
         source = runtime.get("result", {}).get("source")
         if (
             not isinstance(source, dict)

@@ -64,7 +64,7 @@ PROFILE_GUIDES = {
         "Offline Terraform initialization and validation with the pinned Azure Verified Modules catalogue and provider mirror.",
         "images/terraform-sandbox/AVM.md",
     ),
-    "hyperlight": (
+    "hyperlight-aks-probe": (
         "Hyperlight AKS runtime with Python, workspace wheels, locked dependencies and the supervisor/probe.",
         "images/hyperlight-sandbox/README.md",
     ),

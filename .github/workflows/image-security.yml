@@ -9,7 +9,7 @@ on:
         description: Image profile to check (all for full coverage)
         type: choice
         default: all
-        options: [all, bicep, bicep-avm, bicep-docker-sbx, graphviz, drawio, drawio-export, terraform-random, opentofu-random, terraform-avm, hyperlight, egress-proxy]
+        options: [all, bicep, bicep-avm, bicep-docker-sbx, graphviz, drawio, drawio-export, terraform-random, opentofu-random, terraform-avm, hyperlight-aks-probe, egress-proxy]
       bicep_route:
         description: Bicep replacement policy or an explicit diagnostic compiler route
         type: choice
@@ -73,10 +73,10 @@ jobs:
           df -h /
       - name: Check Hyperlight image dependency compatibility
         id: hyperlight-image
-        if: matrix.profile == 'hyperlight'
+        if: matrix.profile == 'hyperlight-aks-probe'
         run: python3 scripts/check_hyperlight_image_compatibility.py >> "$GITHUB_OUTPUT"
       - name: Report deferred Hyperlight scan
-        if: matrix.profile == 'hyperlight' && steps.hyperlight-image.outputs.build == 'false'
+        if: matrix.profile == 'hyperlight-aks-probe' && steps.hyperlight-image.outputs.build == 'false'
         run: |
           echo "::notice::Hyperlight image build and security scan deferred until core release ranges align."
           printf '\nHyperlight security scan deferred: no image, inventory, vulnerability scan or security evidence artifact was produced. Other image profiles remain enabled.\n' >> "$GITHUB_STEP_SUMMARY"
@@ -88,7 +88,7 @@ jobs:
         run: python3 scripts/image_scan_policy.py
       - name: Build the selected image
         id: build
-        if: matrix.profile != 'hyperlight' || steps.hyperlight-image.outputs.build == 'true'
+        if: matrix.profile != 'hyperlight-aks-probe' || steps.hyperlight-image.outputs.build == 'true'
         env:
           PROFILE: ${{ matrix.profile }}
           BICEP_ROUTE: ${{ steps.route.outputs.bicep_route }}

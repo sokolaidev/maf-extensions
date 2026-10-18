@@ -157,7 +157,7 @@ def hyperlight_payload(expected: dict[str, Any], directory: Path) -> dict[str, A
     index = read(directory / "evidence-index.json")
     if index.get("hyperlight-build-inputs.json") != inputs_hash:
         raise ValueError("Hyperlight build inputs differ from the independently selected policy")
-    image = f"{PREFIX}/hyperlight@{expected['registryDigest']}"
+    image = f"{PREFIX}/hyperlight-aks-probe@{expected['registryDigest']}"
     subprocess.run(["docker", "pull", "--platform", "linux/amd64", image], check=True, timeout=600)
     image_id = subprocess.run(
         ["docker", "image", "inspect", "--format", "{{.Id}}", image],
@@ -244,7 +244,7 @@ def _verify(
     validate_identity(expected)
     if bundles and registry:
         raise ValueError("Select one attestation retrieval source")
-    if expected["profile"] == "hyperlight":
+    if expected["profile"] == "hyperlight-aks-probe":
         require_digest(expected.get("buildInputsSha256"))
     manifest = directory / "manifest.json"
     if manifest.is_symlink() or digest(manifest) != expected["registryDigest"]:
@@ -369,7 +369,7 @@ def verify(
 ) -> dict[str, Any]:
     """Verify release identity and preserve Hyperlight's additional payload qualification."""
     result = verify_identity(expected, directory, bundles=bundles, registry=registry)
-    if expected["profile"] == "hyperlight":
+    if expected["profile"] == "hyperlight-aks-probe":
         result["hyperlightPayloadVerification"] = hyperlight_payload(expected, directory)
     return result
 
