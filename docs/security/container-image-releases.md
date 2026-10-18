@@ -317,7 +317,7 @@ Builds use profile `graphviz`, source path `images/graphviz-sandbox`, and regist
 | Decision | State | Tracking |
 |---|---|---|
 | Approval context and Mobile usability | Presentation implemented; maintainer confirmed actual Mobile approval and requested closure; separate web observation not recorded | [#1854](https://github.com/sokolaidev/maf-extensions/issues/1854) (closed) by [#1856](https://github.com/sokolaidev/maf-extensions/pull/1856) (merged) |
-| Remaining approval UI observations | Web-screen, Mobile browser fallback and per-flow observations pending | [#1904](https://github.com/sokolaidev/maf-extensions/issues/1904) (open) |
+| Remaining approval UI observations | Closed by maintainer acceptance of the recorded publication views; browser/Mobile versions, browser fallback, full scrolling, freshness-policy rendering, recovery and abandonment remain unverified | [#1904](https://github.com/sokolaidev/maf-extensions/issues/1904) (closed); [maintainer acceptance](https://github.com/sokolaidev/maf-extensions/issues/1904#issuecomment-6256275245) |
 | Public GHCR destination and repository linkage | Graphviz 0.1.2 and Bicep AVM 0.1.0 public pull and immutable evidence delivery passed | untracked |
 | Strict High/Critical gate for publication | Graphviz and Bicep AVM publication and first monitoring assessment passed; remaining profiles pending | untracked |
 | 1: Independent per-profile versions and immutable release identities | Graphviz 0.1.2 and Bicep AVM 0.1.0 identities published and verified; remaining profiles pending | untracked |
