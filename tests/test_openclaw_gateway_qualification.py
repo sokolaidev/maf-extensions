@@ -4173,3 +4173,20 @@ def test_installed_gateway_refuses_padding_before_projection(tmp_path, monkeypat
         worker.console_gateway(args)
     assert response.tell() == 129
     assert closed == [True]
+
+
+@pytest.mark.parametrize("missing", [1, 1024])
+def test_gateway_response_refuses_truncated_content_length(missing):
+    from io import BytesIO
+
+    raw = b'{"choices":[{"message":{"content":"QUALIFICATION_TOOL_RESULT_RECEIVED"}}]}'
+    wire = BytesIO(
+        f"HTTP/1.1 200 OK\r\nContent-Length: {len(raw) + missing}\r\n\r\n".encode() + raw
+    )
+    response = http.client.HTTPResponse(SimpleNamespace(makefile=lambda *args: wire))
+    response.begin()
+    try:
+        with pytest.raises(RuntimeError, match="Gateway response is incomplete"):
+            checker.read_response(response)
+    finally:
+        response.close()

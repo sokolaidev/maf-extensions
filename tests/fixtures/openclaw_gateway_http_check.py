@@ -31,6 +31,7 @@ def read_response(response: http.client.HTTPResponse) -> bytes:
     """Read a Gateway response within the decoded-body byte budget."""
     raw = response.read(MAX_RESPONSE_BYTES + 1)
     require(len(raw) <= MAX_RESPONSE_BYTES, "Gateway response exceeds 1 MiB")
+    require(getattr(response, "length", None) in (None, 0), "Gateway response is incomplete")
     return raw
 
 
