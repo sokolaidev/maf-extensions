@@ -48,7 +48,7 @@ from ._anchored import (
 from ._media import annotate_token_counts
 from ._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
 from ._request import RequestOverhead
-from ._summary_input import bounded_prefix, fits_summary_input, summary_request
+from ._summary_input import bounded_prefix, fits_summary_input
 from ._toolsummary import (
     PRESERVE_REASON_UNCOVERED,
     PRESERVE_REASON_UNRECORDED,
@@ -1454,19 +1454,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._record_summary_failures += 1
             return None
         try:
-            response = await self.user_turns.client.get_response(
-                summary_request(prompt, transcript),
-                stream=False,
-            )
+            return await self.user_turns._generate(transcript, prompt=prompt)  # pyright: ignore[reportPrivateUsage]
         except Exception as error:
             # Broad on purpose, as the user half's is: this runs inside the chat client's own
             # call path, so anything not caught here fails the user's turn.
             logger.warning("Skipping record consolidation: summary generation failed (%s).", error)
             self._record_summary_failures += 1
             return None
-        text = response.text.strip() if response.text else ""
-        if not text:
-            logger.warning("Skipping record consolidation: the summarizer returned no text.")
-            self._record_summary_failures += 1
-            return None
-        return text

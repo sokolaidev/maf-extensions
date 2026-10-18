@@ -299,3 +299,18 @@ async def test_forced_deadline_cancels_before_retry(stream):
 def test_invalid_forced_deadline(seconds):
     with pytest.raises(ValueError, match="forced_call_timeout_seconds"):
         recall(forced_call_timeout_seconds=seconds)
+
+
+async def test_post_call_budget_callback_does_not_hide_unrelated_errors():
+    middleware, _ = recall()
+    middleware.forget_pending()
+    context = ChatContext(None, [Message("user", ["question"])], {})
+
+    async def respond():
+        context.result = ChatResponse(messages=Message("assistant", ["answer"]))
+
+    def broken_budget():
+        raise RuntimeError("callback bug")
+
+    with pytest.raises(RuntimeError, match="callback bug"):
+        await middleware.process(context, respond, request_budget=broken_budget)

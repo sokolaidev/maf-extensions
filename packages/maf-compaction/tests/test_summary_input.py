@@ -800,3 +800,57 @@ async def test_summary_options_failure_without_retry_is_one_failure():
     strategy = users(RefusingClient(), summary_options={"max_tokens": 10})
     assert await strategy._summarize("text", prompt="Summarize.") is None
     assert strategy.user_summary_failures == 1
+
+
+@pytest.mark.parametrize("operation", ["merge", "rewrite"])
+@pytest.mark.parametrize("failure", [None, "empty", "exception", "cancel"])
+@pytest.mark.parametrize("retry", [False, True])
+async def test_consolidation_shares_summary_options_and_retirement(operation, failure, retry):
+    class OptionsClient(BoundedClient):
+        def __init__(self):
+            super().__init__(1000 if operation == "merge" else 650)
+            self.options = []
+
+        async def get_response(self, messages, **kwargs):
+            options = kwargs.get("options", {})
+            self.options.append(dict(options))
+            if options and failure:
+                if failure == "cancel":
+                    raise asyncio.CancelledError
+                if failure == "exception":
+                    raise ValueError("unsupported options")
+                return ChatResponse(messages=Message("assistant", [""]))
+            return await super().get_response(messages, **kwargs)
+
+    client = OptionsClient()
+    strategy = composed(client, harder_attempts=1)
+    strategy.user_turns.summary_options = {"max_tokens": 64, "reasoning_effort": "low"}
+    strategy.user_turns.retry_without_summary_options = retry
+    messages = records()
+    original = visible(messages)
+
+    async def consolidate():
+        if operation == "merge":
+            return await strategy._merge_records(messages)
+        return await strategy._rewrite_records(messages, composed_module._ChainStart.take(messages))
+
+    configured = dict(strategy.user_turns.summary_options)
+    if failure == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await consolidate()
+        assert client.options == [configured]
+        assert not strategy.user_turns._summary_options_disabled
+        assert visible(messages) == original
+        return
+    succeeds = failure is None or retry
+    assert await consolidate() == succeeds
+    assert strategy.record_summary_failures == (0 if succeeds else 1)
+    if not succeeds:
+        assert client.options == [configured]
+        assert visible(messages) == original
+        return
+    assert await strategy.user_turns._summarize("More user material.", prompt="Summarize.")
+    if failure:
+        assert client.options == [configured, {}, {}]
+    else:
+        assert client.options == [configured, configured]
