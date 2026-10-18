@@ -4149,8 +4149,11 @@ def test_installed_gateway_refuses_padding_before_projection(tmp_path, monkeypat
             "padding": "x" * 1024,
         }
     ).encode()
-    response = BytesIO(raw)
-    response.status = 200
+
+    class Response(BytesIO):
+        status = 200
+
+    response = Response(raw)
     closed = []
     connection = SimpleNamespace(
         request=lambda *args: None, getresponse=lambda: response, close=lambda: closed.append(True)
