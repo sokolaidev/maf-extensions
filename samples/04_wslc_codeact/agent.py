@@ -31,7 +31,7 @@ before running this.
 #     "azure-identity",
 #     "maf-sandbox-codeact",
 #     "maf-sandbox-wslc",
-#     "maf-sandbox>=0.50",
+#     "maf-sandbox>=0.51",
 # ]
 # ///
 
