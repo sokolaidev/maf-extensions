@@ -49,19 +49,24 @@ def _guest(name: str, code: str) -> str:
 
 
 def _exists(name: str, path: str) -> bool:
-    return (
-        _docker(
-            "exec",
-            "--user",
-            "0",
-            name,
-            "/usr/local/bin/python3",
-            "-c",
-            f"import os,sys; sys.exit(not os.path.lexists({path!r}))",
-            check=False,
-        ).returncode
-        == 0
+    result = _docker(
+        "exec",
+        "--user",
+        "0",
+        name,
+        "/usr/local/bin/python3",
+        "-c",
+        f"import json,os\ntry: os.lstat({path!r})\nexcept FileNotFoundError: exists=False\nelse: exists=True\nprint(json.dumps(exists))",
     )
+    exists = json.loads(result.stdout)
+    if not isinstance(exists, bool):
+        raise ValueError("file observation did not return a boolean")
+    return exists
+
+
+def _container_present(instance_id: str) -> bool:
+    inventory = _docker("ps", "-a", "--no-trunc", "--format", "{{.ID}}").stdout.splitlines()
+    return instance_id in inventory
 
 
 def _status(name: str) -> dict[str, str]:
@@ -222,8 +227,8 @@ async def _measure(
                     result["outcome"] = "TimeoutError"
                 else:
                     raise AssertionError("blocked command did not time out")
-                result["container_present_after_operation"] = (
-                    _docker("inspect", name, check=False).returncode == 0
+                result["container_present_after_operation"] = _container_present(
+                    sandbox.instance_id
                 )
                 assert not result["container_present_after_operation"]
             else:
@@ -238,16 +243,15 @@ async def _measure(
                         await task
                     except asyncio.CancelledError:
                         result["outcome"] = "CancelledError"
-                result["container_present_after_operation"] = (
-                    _docker("inspect", name, check=False).returncode == 0
+                result["container_present_after_operation"] = _container_present(
+                    sandbox.instance_id
                 )
                 assert result["container_present_after_operation"]
         else:
             raise ValueError(label)
     finally:
         assert await backend.dispose(key, kind=spec.kind, instance_id=sandbox.instance_id) is None
-        inventory = _docker("ps", "-a", "--no-trunc", "--format", "{{.ID}}").stdout.splitlines()
-        assert sandbox.instance_id not in inventory
+        assert not _container_present(sandbox.instance_id)
         result["independent_disposal_check"] = "absent"
     print(json.dumps(result), flush=True)
     return result
