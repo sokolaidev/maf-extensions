@@ -78,6 +78,32 @@ jobs:
           path: out/capability-policy/
           if-no-files-found: error
 
+  deletion-authority:
+    name: Docker deletion authority and completion
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Qualify deletion under hostile guest state
+        run: |
+          set -euo pipefail
+          uv sync --locked
+          image=python@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f
+          docker pull "$image"
+          mkdir -p out/deletion-authority
+          uv run python scripts/experiments/docker_deletion_probe.py --base-image "$image" \
+            --output out/deletion-authority/result.json | tee out/deletion-authority/probe.log
+      - name: Retain deletion qualification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docker-deletion-authority-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/deletion-authority/
+          if-no-files-found: error
+
   docker-e2e:
     name: Docker backend live tests
     runs-on: ubuntu-latest
@@ -91,8 +117,7 @@ jobs:
       # Five non-root guests, built below, varying along two axes. **Who owns what around
       # `work_dir`**: the image's build (as `images/bicep-sandbox/Dockerfile` leaves it), the
       # image's user (as the hardening advice that produces a non-root `USER` also asks for),
-      # or that user all the way up to `/maf-sandbox` — which is the shape `reclaim` checks
-      # for, since a guest that can write *above* `work_dir` can swap it. **How `USER` is
+      # or that user all the way up to `/maf-sandbox`, allowing guest parent replacement. **How `USER` is
       # spelled**: a numeric pair is taken from `Config.User` as-is, while a name has to be
       # resolved against the container's own account files. The last carries no `work_dir` at
       # all, so the write has to send it. Their own column because every other image this

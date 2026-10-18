@@ -68,7 +68,7 @@ Docker's directory archive walks the whole subtree and transfers file bodies. It
 
 `DockerSandboxConfig.cap_drop_all` defaults to `True` and refuses any other value. `cap_add` accepts only subsets of `CHOWN`, `DAC_OVERRIDE`, `SETUID`, `SETGID` and `KILL`, normalized without the optional `CAP_` prefix. Empty means zero grants; Docker defaults cannot supplement the list. Additions apply only to workload containers. The egress proxy continues to drop every capability.
 
-Every nonempty grant requires effective `CALL` scope, a unique call ID and mandatory disposal. Backend declarations omit `CONVERSATION`, `FILES_DELETE` and `RECLAIM`, and acquisition independently refuses a missing call ID or a workload requiring deletion. Direct `remove` and `reclaim` refuse before executing guest commands. Call isolation prevents sharing; it does not establish deletion confinement. Re-enablement requires the separate investigation in [#1732](https://github.com/sokolaidev/maf-extensions/issues/1732). Empty grants retain existing scope rules without asserting that reuse is safe.
+Every nonempty grant requires effective `CALL` scope, a unique call ID and mandatory disposal. Backend declarations omit `CONVERSATION`, `FILES_DELETE` and `RECLAIM`, and acquisition independently refuses a missing call ID or a workload requiring deletion. Direct `remove` and `reclaim` refuse before executing guest commands. Call isolation prevents sharing; it does not establish deletion confinement. The [deletion investigation](../research/docker-backend.md#deletion-and-reclamation-decision-for-1732-2026-10-18) retains both restrictions; re-enablement requires a separately approved and qualified mechanism. Empty grants retain existing scope rules without asserting that reuse is safe.
 
 Migrate callers that depended on Docker's implicit grants to explicit supported additions and call isolation, or adapt their images for zero grants. Rebuild older Draw.io export images whose shared working directory belongs to the renderer before zero-grant editable creation. Dispose existing containers with a different policy before reacquiring them.
 
@@ -84,11 +84,13 @@ The backend resolves `Config.User` from numeric IDs, account files or a bounded 
 
 `remove` uses guest execution with `rm -f` or `rm -rf`. It rejects the working directory itself and requires `recursive=True` for directories. Missing paths succeed. A final link is unlinked. This operation is not part of the paused archive sequence.
 
-Root removal is allowed only when engine metadata establishes that every relevant ancestor, including `/`, is root-owned and not writable by others. Otherwise removal runs as the image's user. A root refusal is retried as that user only when the actual container lacks `CAP_DAC_OVERRIDE` or its presence is unknown.
+Deletion and reclamation always execute as the image's configured user, with no UID 0 override or privileged retry. Root-owned ancestry cannot establish that a guest-selected command is safe to execute with greater authority. A replaced command can act only with the guest's existing permissions.
 
-`reclaim` uses the acquisition-time ownership check and rejects unsafe placement, including shallow targets. Relative targets must be children of the working directory. Resolved facts are cached by container, image and working directory. Unknown ownership cannot authorize a raised recursive delete.
+After a successful command, the backend pauses the guest and checks the target through the engine's archive metadata. A surviving target or an unreadable postcondition fails the operation. The check shares the removal deadline and covers the same root-filesystem view as other archive operations; guest mounts remain outside that view. The guest can change state again after resume, so this is a completion observation, not durable absence or a clean-state guarantee.
 
-With zero grants, root cannot bypass a guest-private directory's permissions. For reclaim on non-root images, make the work directory guest-owned and keep its ancestors root-owned and not guest-writable. A guest-private call directory under a root-owned, non-writable work directory can leave neither principal able to remove the whole tree; reclaim raises `OSError` and cleanup must escalate to disposal. Acquisition preserves existing directory ownership, so this migration belongs in the image. A nonempty grant cannot restore reclaim because the capability policy withholds it.
+`reclaim` rejects shallow targets and requires relative targets to be children of the working directory. It runs from `/` so a missing target parent does not prevent cleanup. It does not use cached ancestry to grant additional authority.
+
+For non-root images using reclaim, make the work directory and call-directory contents removable by the image's user. Permission failures raise `OSError`; cleanup must escalate to disposal. Existing directory ownership is preserved, so adapt the image rather than expecting acquisition to change it. Nonempty grants continue to withhold deletion and reclamation.
 
 ## Network policy
 
@@ -135,4 +137,5 @@ The live Docker suite exercises real transfers, hostile paths, pause recovery, n
 | Operator retention | Implemented; externally scheduled | [Operations](../operations.md) |
 | Explicit workload Linux capabilities and policy-matched reuse | Implemented | [#1716](https://github.com/sokolaidev/maf-extensions/issues/1716) (closed) by [#1717](https://github.com/sokolaidev/maf-extensions/pull/1717) (merged) |
 | Supported capability combinations and call-only grants | Implemented; live qualification recorded in delivering PR | [#1730](https://github.com/sokolaidev/maf-extensions/issues/1730) (closed) by [#1737](https://github.com/sokolaidev/maf-extensions/pull/1737) (merged) |
-| Confined deletion with nonempty grants | Withheld pending investigation | [#1732](https://github.com/sokolaidev/maf-extensions/issues/1732) (open) |
+| Confined deletion and reclamation with nonempty grants | Withheld; investigation retains the restriction | [#1732](https://github.com/sokolaidev/maf-extensions/issues/1732) (closed) |
+| Empty-grant deletion authority and completion | Implemented; image-user execution and engine-verified absence | [#1732](https://github.com/sokolaidev/maf-extensions/issues/1732) (closed) |

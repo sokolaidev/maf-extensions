@@ -487,14 +487,7 @@ class TestAGuestNamedRatherThanNumbered:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
     def test_the_guest_can_delete_what_the_host_wrote_beside_it(self):
-        """The ownership, exercised by the principal it names rather than by `reclaim`.
-
-        `reclaim` would raise authority here — this image leaves `/maf-sandbox` root's, so the
-        acquire-time check clears a root removal and the assertion would hold however the
-        entries were stamped.  Unlinking the call directory itself needs write on `work_dir`,
-        which is the image's build and root's (measured), so what the ownership buys on *this*
-        shape is the guest emptying the directory's contents.  That is what is asked of it.
-        """
+        """Guest-owned contents are removable even when the root-owned parent prevents unlinking the call directory."""
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
 
@@ -564,14 +557,7 @@ class TestAnImageThatDoesNotCarryItsWorkDir:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
     def test_the_guest_removes_the_call_directory_the_write_created(self):
-        """The consequence of the entry above, and the removal `reclaim` would be asked for —
-        run as the image's user rather than through `reclaim`, which would raise authority here
-        and pass whatever the entries said.
-
-        Unlinking the call directory needs write on `work_dir`, and on this shape `work_dir` is
-        not the image's build but the write's own explicit entry, so it is the guest's.  That
-        is the difference from the image that carries `work_dir` already.
-        """
+        """A newly created work directory and its contents are removable by their guest owner."""
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
 
@@ -604,7 +590,7 @@ class TestAnImageThatDoesNotCarryItsWorkDir:
     reason="needs MAF_SANDBOX_DOCKER_E2E_GUEST_OWNED_IMAGE naming a non-root image owning work_dir",
 )
 class TestAWorkDirTheImageGaveItsOwnUser:
-    """``work_dir`` owned by the image's own user: the retry's case, and the walk's."""
+    """``work_dir`` owned by the image's own user."""
 
     def _spec(self) -> SandboxSpec:
         return SandboxSpec(kind="e2e-nocaps", image=_GUEST_OWNED_IMAGE, work_dir=_WORK)
@@ -654,7 +640,7 @@ class TestAWorkDirTheImageGaveItsOwnUser:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
-    def test_reclaim_falls_back_to_the_image_user_when_root_is_refused(self):
+    def test_reclaim_runs_as_the_image_user(self):
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig(cap_drop_all=True))
 
@@ -677,9 +663,7 @@ class TestAWorkDirTheImageGaveItsOwnUser:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
     def test_remove_runs_at_the_guest_authority_and_still_deletes(self):
-        """`work_dir` is the guest's, so the reach rule keeps the removal there — and root is
-        never asked, so no fallback is involved.
-        """
+        """The guest can remove the file uploaded with its own ownership."""
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig(cap_drop_all=True))
 
@@ -731,12 +715,8 @@ class TestAnImageThatGivesAwayADirectoryAboveWorkDir:
     def _spec(self) -> SandboxSpec:
         return SandboxSpec(kind="e2e-loose", image=_LOOSE_PARENT_IMAGE, work_dir=_WORK)
 
-    def test_reclaim_drops_to_the_guest_authority_and_succeeds(self):
-        """The chain above `work_dir` is the guest's, so root is never asked over this path
-        — that is the boundary the acquire-time check exists to hold (pinned by the swap
-        test below).  The guest's `rm` still empties the call directory, because
-        `write_file` made it and its parents guest-owned.
-        """
+    def test_reclaim_at_guest_authority_succeeds(self):
+        """Reclamation removes guest-owned files without raising the command authority."""
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
 

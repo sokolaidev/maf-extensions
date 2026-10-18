@@ -24,9 +24,9 @@ The tar-plane members — ``prepare_work_dir``, ``write_file``, ``read_file`` an
 on it.  ``docker cp`` has no no-follow form and the daemon extracts through a symlinked parent
 as root, so a guest that could still run between those two calls could redirect one.  The
 freezer is the engine's, unbypassable from inside the container, and the file plane keeps
-working while it is held.  ``exec`` is the one thing a frozen container refuses, which is why
-the removals are not frozen. An ``exec`` refusal is re-issued only if this process held its
-container frozen throughout the attempt; a refusal that outlives the freeze is returned.
+working while it is held. Removal commands run unfrozen; their completion checks run frozen.
+An ``exec`` refusal is re-issued only if this process held its container frozen throughout the
+attempt; a refusal that outlives the freeze is returned.
 
 The ``os_families`` field of its :class:`~maf_sandbox.BackendDeclarations` is read from the
 daemon, by :meth:`DockerSandboxBackend.create` and only there: a daemon running ``linux``
@@ -96,7 +96,6 @@ from maf_sandbox.paths import (
     confine_resolve_guest_write_path,
     ensure_guest_work_dir,
     guest_path_and_ancestors,
-    path_ancestors_are_host_owned,
     posix_work_dir_ancestors,
     resolve_guest_working_directory,
     sandbox_entry_from_tar_header,
@@ -787,16 +786,6 @@ def _image_reference(spec: SandboxSpec) -> str:
     return spec.image_id or spec.image or ""
 
 
-def _reach_answer(walked: Mapping[str, tuple[int, int]]) -> bool:
-    """The removal-authority verdict the walks answer, and it refuses without the root.
-
-    Replacing the topmost checked component needs write on ``/``, so a ``walked`` that never
-    read the root has only verified the directories below it — nothing there may license
-    running the removal as root.
-    """
-    return "/" in walked and path_ancestors_are_host_owned(walked, empty_means_host_owned=False)
-
-
 @dataclass(frozen=True)
 class _ContainerFacts:
     """What a running container says about itself, as against what this backend asked for.
@@ -805,10 +794,6 @@ class _ContainerFacts:
     predate a change to either and this backend's config is not evidence about it.
     """
 
-    #: Every directory above ``work_dir`` is root's and writable by nobody else.
-    host_owned_ancestors: bool
-    #: The inspected capability policy withholds ``CAP_DAC_OVERRIDE``.
-    capabilities_dropped: bool
     identity_resolved: bool
     #: The default user UID, or 0 when unknown.
     guest_uid: int = 0
@@ -927,8 +912,6 @@ class _DockerSandbox:
         run: _DockerRunner,
         name: str,
         command_timeout: float,
-        cap_drop_all: bool = False,
-        reclaim_as_root: bool = True,
         guest_uid: int = 0,
         guest_gid: int = 0,
         *,
@@ -941,9 +924,6 @@ class _DockerSandbox:
         self._freeze = freeze
         self._name = name
         self._command_timeout = command_timeout
-        # Both read from the container at acquire, not taken from this backend's config.
-        self._reclaim_as_root = reclaim_as_root
-        self._cap_drop_all = cap_drop_all
         self._guest_uid = guest_uid
         self._guest_gid = guest_gid
         self._work_dir = "/maf-sandbox/work"
@@ -1147,22 +1127,12 @@ class _DockerSandbox:
         *,
         working_directory: str,
         timeout: float,
-        as_root: bool = False,
         max_output_bytes: int | None = None,
     ) -> ExecResult:
-        """One ``docker exec``, as the image's user or as ``--user 0``.
-
-        :meth:`remove` and :meth:`reclaim` ask for root; :meth:`exec` and :meth:`run_code` are
-        the guest program's own and name no user.  See ``docs/sandbox/backends/docker.md``.
-
-        ``max_output_bytes`` is a caller's own budget, and its overflow keeps the container;
-        left ``None``, the backend's bound applies and an overflow discards it.
-        """
-        privilege = ("--user", "0") if as_root else ()
+        """Execute as the image's user; output overflow without a caller budget discards it."""
         try:
             result = await self._run(
                 "exec",
-                *privilege,
                 "-w",
                 working_directory,
                 self._name,
@@ -1190,63 +1160,12 @@ class _DockerSandbox:
             exit_code=result.returncode,
         )
 
-    async def ancestors_are_the_hosts(self, work_dir: str) -> bool:
-        """Is every directory *above* ``work_dir`` — the root included — one the guest cannot
-        write?
-
-        One tar header per component, ``/`` first: swapping the topmost checked component
-        needs write on the root, so a chain that stopped there would license root on an image
-        whose root the guest can write.  Raises whatever the stat raises; the caller decides
-        what an unreadable component means.
-        """
-        walked: dict[str, tuple[int, int]] = {}
-        for directory in ("/", *guest_path_and_ancestors(posixpath.dirname(work_dir), "/")):
-            await self._stat_guest(directory, directory, walked)
-        return _reach_answer(walked)
-
-    async def _removal(
-        self,
-        argv: Sequence[str],
-        *,
-        working_directory: str,
-        timeout: float,
-        raise_authority: bool,
-    ) -> ExecResult:
-        """Run a removal, as root where ``raise_authority`` says the reach rule allows it.
-
-        A root refusal is retried as the image's user where this container holds no
-        ``CAP_DAC_OVERRIDE``, and both attempts' messages reach the caller.  ``timeout`` is one
-        deadline across both, not one each.  See ``docs/sandbox/backends/docker.md``.
-        """
-        if not raise_authority:
-            return await self._exec(argv, working_directory=working_directory, timeout=timeout)
-        started = time.monotonic()
-        removed = await self._exec(
-            argv, working_directory=working_directory, timeout=timeout, as_root=True
-        )
-        if removed.exit_code == 0 or not self._cap_drop_all:
-            return removed
-        left = timeout - (time.monotonic() - started)
-        if left <= 0:
-            return removed
-        logger.debug(
-            "docker: %s refused a removal as root (exit %d: %s), retrying as the image's user "
-            "with %.1fs left",
-            self._name,
-            removed.exit_code,
-            removed.stderr.strip() or "no output",
-            left,
-        )
-        retried = await self._exec(argv, working_directory=working_directory, timeout=left)
-        if retried.exit_code == 0 or not removed.stderr.strip():
-            return retried
-        return replace(
-            retried,
-            stderr_bytes=retried.stderr_bytes.strip()
-            + b" (as root: "
-            + removed.stderr_bytes.strip()
-            + b")",
-        )
+    async def _verify_removed(self, guest: str, *, deadline: float) -> None:
+        """Check completion through the engine because guest commands can report false success."""
+        async with asyncio.timeout(max(0.0, deadline - time.monotonic())):
+            async with self._freeze():
+                if await self._stat_guest(guest, guest) is not None:
+                    raise OSError(f"removal left {guest} present")
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
         """Describe ``path``, or return ``None`` when nothing is there.
@@ -1289,51 +1208,26 @@ class _DockerSandbox:
         )
 
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
-        """Delete ``path`` through ``rm``, since the engine has no delete primitive.
-
-        ``rm``'s exit codes are the contract rather than a re-implementation of it: ``-f``
-        makes a missing path succeed and refuses a directory without ``-r``. The image
-        dependency is the one :attr:`capabilities` already names for ``EXEC``.
-
-        Runs as root only where no component of the path was the guest's, which the check this
-        already owes answers — read together with ``/``, whose write is what swapping the
-        topmost checked component takes.  Nothing verified, nothing licensed: a removal whose
-        walk could not read even the root stays at the guest's authority.
-        See ``docs/sandbox/backends/docker.md``.
-
-        Not frozen, unlike the tar-plane members: the daemon refuses ``exec`` on a frozen
-        guest, so this could not run under one, and the reach rule bounds what a won swap
-        reaches instead.
-        """
+        """Delete a confined path as the image's user and verify absence through the engine."""
         if not self._deletion_allowed:
             raise NotImplementedError("FILES_DELETE is unavailable with nonempty cap_add")
-        # Ahead of the root probe below, so a path resolving outside is refused without
-        # spending a subprocess on it. The bundle checks it again, which is string work.
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
-        confine_resolve_guest_path(path, working_directory)
-        walked: dict[str, tuple[int, int]] = {}
-        try:
-            await self._stat_guest("/", "/", walked)
-        except Exception as unreadable:  # noqa: BLE001 — the removal still runs, at the guest's
-            logger.debug(  # authority; only its principal is decided here
-                "docker: could not read / in %s (%s); removals stay at the guest's authority",
-                self._name,
-                unreadable,
-            )
         guest = await confine_resolve_guest_delete_path(
-            lambda p: self._stat_guest(p, p, walked), path, working_directory
+            lambda p: self._stat_guest(p, p), path, working_directory
         )
-        removed = await self._removal(
+        deadline = time.monotonic() + self._command_timeout
+        removed = await self._exec(
             ["rm", "-rf" if recursive else "-f", "--", guest],
             working_directory=working_directory,
             timeout=self._command_timeout,
-            raise_authority=_reach_answer(walked),
         )
         if removed.exit_code != 0:
             raise OSError(
                 f"could not remove {path}: rm exited {removed.exit_code}"
                 f"{f' — {removed.stderr.strip()}' if removed.stderr else ''}"
             )
+
+        await self._verify_removed(guest, deadline=deadline)
 
     async def reset(self, *, timeout: float) -> None:
         """Unsupported: this backend does not declare Capability.SNAPSHOT."""
@@ -1342,15 +1236,10 @@ class _DockerSandbox:
         )
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
-        """Remove ``directory`` with ``rm -rf``, through :meth:`_removal`.
+        """Remove a framework directory as the image's user and verify engine-visible absence.
 
-        Relative targets must resolve to a child of ``working_directory``. Every resolved
-        target, including a legacy absolute one, must be at least two components from root.
-        Runs from ``/`` because the target's parent may be absent; permission to raise authority
-        is established at acquire, as described in ``docs/sandbox/backends/docker.md``.
-
-        Not frozen, for the reason :meth:`remove` is not: this is an ``exec``, and the daemon
-        refuses one on a frozen guest.
+        Relative targets must be children of the working directory; all targets must be at
+        least two components from root. A failure requires escalation to container disposal.
         """
         if not self._deletion_allowed:
             raise NotImplementedError("RECLAIM is unavailable with nonempty cap_add")
@@ -1363,17 +1252,19 @@ class _DockerSandbox:
             raise ValueError(f"refusing to reclaim a path that is not absolute: {directory}")
         if len([part for part in posixpath.normpath(directory).split("/") if part]) < 2:
             raise ValueError(f"refusing to reclaim recursively that close to the root: {directory}")
-        removed = await self._removal(
+        deadline = time.monotonic() + timeout
+        removed = await self._exec(
             ["rm", "-rf", "--", directory],
             working_directory="/",
             timeout=timeout,
-            raise_authority=self._reclaim_as_root,
         )
         if removed.exit_code != 0:
             raise OSError(
                 f"could not reclaim {directory}: rm exited {removed.exit_code}"
                 f"{f' — {removed.stderr.strip()}' if removed.stderr else ''}"
             )
+
+        await self._verify_removed(directory, deadline=deadline)
 
     async def _copy_entry(
         self, guest: str, *, max_bytes: int = 0
@@ -2034,8 +1925,6 @@ class DockerSandboxBackend:
                 self._docker,
                 name,
                 self._config.command_timeout_seconds,
-                facts.capabilities_dropped,
-                facts.host_owned_ancestors,
                 facts.guest_uid,
                 facts.guest_gid,
                 instance_id=instance_id,
@@ -2249,14 +2138,6 @@ class DockerSandboxBackend:
                 "dispose it before acquiring with this configuration"
             )
 
-    async def _capabilities_dropped(self, name: str) -> bool:
-        """Whether inspection establishes no DAC override; unknown keeps removal conservative."""
-        try:
-            dropped, added = await self._capability_policy(name)
-        except RuntimeError:
-            return True
-        return bool({"ALL", "DAC_OVERRIDE"} & dropped) and not bool({"ALL", "DAC_OVERRIDE"} & added)
-
     async def _guest_identity(self, name: str, probe: _DockerSandbox) -> tuple[int, int] | None:
         """Resolve the default user's uid/gid from config, account files, then ``id``.
 
@@ -2437,13 +2318,7 @@ class DockerSandboxBackend:
     async def _container_facts(
         self, name: str, spec: SandboxSpec, *, instance_id: str
     ) -> _ContainerFacts:
-        """Read container facts, caching resolved identities and retrying unresolved ones.
-
-        Here rather than in :meth:`_DockerSandbox.reclaim` because the ancestors above
-        ``work_dir`` are fixed before any guest runs: one answer per container, not one check
-        per call.  **Fails closed** — an unreadable component leaves removals at the guest's
-        authority.  See ``docs/sandbox/backends/docker.md``.
-        """
+        """Cache resolved guest identities and retry unresolved identities on acquisition."""
         work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         key = (name, _image_reference(spec), work_dir)
         cached = self._facts.get(key)
@@ -2456,18 +2331,6 @@ class DockerSandboxBackend:
             instance_id=instance_id,
             freeze=self._freeze(name),
         )
-        try:
-            answer = await probe.ancestors_are_the_hosts(work_dir)
-        except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
-            logger.debug("docker: could not read %s's work dir ancestors (%s)", name, unreadable)
-            answer = False
-        if not answer:
-            logger.info(
-                "docker: %s has a directory above %s the guest may write, so removals run as "
-                "the guest rather than as root",
-                name,
-                work_dir,
-            )
         try:
             identity = await self._guest_identity(name, probe)
         except TimeoutError:
@@ -2486,8 +2349,6 @@ class DockerSandboxBackend:
             )
         guest_uid, guest_gid = identity if identity is not None else (0, 0)
         facts = _ContainerFacts(
-            host_owned_ancestors=answer,
-            capabilities_dropped=await self._capabilities_dropped(name),
             identity_resolved=identity is not None,
             guest_uid=guest_uid,
             guest_gid=guest_gid,
