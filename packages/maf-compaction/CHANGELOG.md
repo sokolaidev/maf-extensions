@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.4.0...maf-compaction-v0.5.0) (2026-10-18)
+
+
+### Features
+
+* **compaction:** allow host-controlled shortening of labelled and mixed tool results ([#2001](https://github.com/sokolaidev/maf-extensions/issues/2001)) ([c61b2cd](https://github.com/sokolaidev/maf-extensions/commit/c61b2cdc6f7e75258f3b2cbf20fef08fe468ac33))
+* **compaction:** budget request overhead, chunk summaries and retry malformed recall ([#2008](https://github.com/sokolaidev/maf-extensions/issues/2008)) ([240e0dd](https://github.com/sokolaidev/maf-extensions/commit/240e0ddbd8e0b3517762a9484d8d8a27d948a991))
+
+
+### Fixes
+
+* **compaction:** persist summary cooldowns across session restores ([#2012](https://github.com/sokolaidev/maf-extensions/issues/2012)) ([7beef82](https://github.com/sokolaidev/maf-extensions/commit/7beef826d2c8e9567ccb000b5cf204f02bad4120))
+
 ## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.3.0...maf-compaction-v0.4.0) (2026-10-16)
 
 
