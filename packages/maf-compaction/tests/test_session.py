@@ -42,6 +42,7 @@ from maf_compaction import (
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     ToolResultRecallMiddleware,
     UserTurnAnchoredSummarizationCompactionStrategy,
+    _usersummary,
     make_recall_tool,
     make_session_recall_tool,
 )
@@ -61,7 +62,7 @@ class Summarizer:
         return ChatResponse(messages=Message("assistant", [self.text]))
 
 
-def build_stack(summarizer=None, *, budget=2000, composed=True):
+def build_stack(summarizer=None, *, budget=2000, composed=True, **user_options):
     record = ToolResultAnchoredSummarizationCompactionStrategy(
         max_input_tokens=budget, tokenizer=TOKENIZER, keep_head_groups=1
     )
@@ -74,6 +75,7 @@ def build_stack(summarizer=None, *, budget=2000, composed=True):
             max_summary_input_tokens=100_000,
             summary_mode="boundary",
             remembered_requests=2,
+            **user_options,
         )
         strategy = ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
             tokenizer=TOKENIZER, tool_results=record, user_turns=users
@@ -198,6 +200,68 @@ def test_cache_is_bounded_and_session_state_wins_on_hits_and_resets():
     assert len(builds) == 4
     with pytest.raises(RuntimeError, match="No active"):
         registry.current_stack()
+
+
+@pytest.mark.parametrize("cache", ["cached", "disabled", "evicted", "replica"])
+@pytest.mark.parametrize("threshold", [1, 2])
+async def test_summary_cooldown_follows_session_between_phases(monkeypatch, cache, threshold):
+    now = 1_700_000_000.0
+    monkeypatch.setattr(_usersummary, "time", lambda: now)
+
+    class FailingSummarizer:
+        calls = 0
+
+        async def get_response(self, *args, **kwargs):
+            self.calls += 1
+            raise RuntimeError("summary unavailable")
+
+    client = FailingSummarizer()
+
+    def build():
+        stack = build_stack(
+            client,
+            budget=10_000,
+            summary_timeout_seconds=10,
+            max_consecutive_summary_failures=threshold,
+            summary_backoff_seconds=60,
+        )
+        assert isinstance(
+            stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+        )
+        stack.strategy.user_trigger_fraction = 0.01
+        return stack
+
+    registry = SessionCompactionRegistry(build, max_cached_sessions=0 if cache == "disabled" else 1)
+    session = AgentSession(session_id="cooling")
+
+    async def phase():
+        nonlocal registry, session
+        with registry.activate(session) as stack:
+            messages = [Message("user", [f"turn {i} " * 100]) for i in range(8)]
+            assert not await stack.strategy(messages)
+        if cache == "replica":
+            stored = round_trip(session.state)
+            session = AgentSession(session_id="cooling")
+            session.state = stored
+            registry = SessionCompactionRegistry(build)
+        elif cache == "evicted":
+            with registry.activate(AgentSession(session_id="other")):
+                pass
+
+    for _ in range(threshold):
+        await phase()
+    assert client.calls == threshold
+    now += 59
+    await phase()
+    assert client.calls == threshold
+    saved = session.state[registry.state_key]["strategy"]["user_turns"]
+    assert saved["summary_failures"] == threshold
+    assert saved["summary_backoff_until"] == 1_700_000_060.0
+    now += 1
+    await phase()
+    assert client.calls == threshold + 1
+    await phase()
+    assert client.calls == threshold + 1
 
 
 @pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])

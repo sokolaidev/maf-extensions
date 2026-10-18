@@ -24,7 +24,7 @@ import logging
 import math
 from collections import OrderedDict
 from copy import deepcopy
-from time import monotonic
+from time import time
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 
 from agent_framework import Content, Message
@@ -482,7 +482,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             None leaves requests unbounded. Cancellation must be honoured by the client.
         max_consecutive_summary_failures: Positive failure threshold for a cooldown, or None
             to disable it. Requires ``summary_backoff_seconds``. Accepted fresh summaries
-            reset the streak; cached replays do not. State belongs to this instance only.
+            reset the streak; cached replays do not. Session snapshots retain the cooldown.
         summary_backoff_seconds: Positive finite cooldown duration, configured with the
             failure threshold. Cooldown skips requests but permits cached replays.
         summary_mode: What a pass does with the summary the previous pass left behind: one of
@@ -632,6 +632,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 [prompt, text, answer] for (prompt, text), answer in self._chunk_answers.items()
             ],
             "media_descriptions": dict(self._media_descriptions),
+            "summary_failures": self._consecutive_summary_failures,
+            "summary_backoff_until": self._summary_backoff_until,
             "kept_folds": {key: entry._asdict() for key, entry in self._kept_folds.items()},
             "kept_fold_counts": dict(self._kept_fold_counts),
             # These counts also set the minimum generated summary IDs.
@@ -648,6 +650,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         while len(self._chunk_answers) > self.chunk_cache_size:
             self._chunk_answers.popitem(last=False)
         self._media_descriptions = dict(data.get("media_descriptions", {}))
+        self._consecutive_summary_failures = data.get("summary_failures", 0)
+        self._summary_backoff_until = data.get("summary_backoff_until", 0.0)
+        self._summary_cooling_down()
         self._kept_folds = {
             entry["summary_id"]: _Remembered(**entry) for entry in data["kept_folds"].values()
         }
@@ -795,7 +800,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
 
     @property
     def user_summary_skips(self) -> int:
-        """User-summary or fold requests skipped during this instance's cooldown."""
+        """User-summary or fold requests this instance skipped during the session's cooldown."""
         return self._summary_skips
 
     @property
@@ -1636,7 +1641,17 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             and self.summary_backoff_seconds is not None
             and self._consecutive_summary_failures >= self.max_consecutive_summary_failures
         ):
-            self._summary_backoff_until = monotonic() + self.summary_backoff_seconds
+            self._summary_backoff_until = time() + self.summary_backoff_seconds
+
+    def _summary_cooling_down(self) -> bool:
+        """Discard expired deadlines and clock shifts that exceed the configured backoff."""
+        if (
+            self.summary_backoff_seconds is not None
+            and 0 < self._summary_backoff_until - time() <= self.summary_backoff_seconds
+        ):
+            return True
+        self._summary_backoff_until = 0.0
+        return False
 
     def _summary_succeeded(self) -> None:
         self._consecutive_summary_failures = 0
@@ -1728,7 +1743,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self, transcript: str, *, prompt: str, units: list[str] | None = None
     ) -> str | None:
         """Bound a whole band or fold by one deadline and one failure-cooldown event."""
-        if monotonic() < self._summary_backoff_until:
+        if self._summary_cooling_down():
             self._summary_skips += 1
             return None
         fits = fits_summary_input(
