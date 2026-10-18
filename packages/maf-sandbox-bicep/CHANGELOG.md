@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.24.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.23.0...maf-sandbox-bicep-v0.24.0) (2026-10-18)
+
+
+### Features
+
+* support MAF 1.22 and distinguish recall call occurrences ([#1963](https://github.com/sokolaidev/maf-extensions/issues/1963)) ([7c0194c](https://github.com/sokolaidev/maf-extensions/commit/7c0194c293bef15753b952e10318dbb7e122181b))
+
 ## [0.23.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.22.2...maf-sandbox-bicep-v0.23.0) (2026-10-14)
 
 
