@@ -148,6 +148,7 @@ def verify(value: dict[str, Any]) -> None:
         if name.startswith("maf_"):
             require(_ordered(retirements[a], survivor_request), "survivor_before_retirement")
         if name == "maf_ordinary_close":
+            previous_response: dict[str, Any] | None = None
             for sid in (a, b):
                 results = [
                     e
@@ -164,8 +165,11 @@ def verify(value: dict[str, Any]) -> None:
                     ),
                     "ordinary_preclose_result",
                 )
-                _, response = _binding(subset, results[0])
+                request, response = _binding(subset, results[0])
+                if previous_response is not None:
+                    require(_ordered(previous_response, request), "ordinary_preclose_order")
                 require(_ordered(response, deletes[a]), "ordinary_preclose_order")
+                previous_response = response
             require(
                 not any(e.get("event") == "admission_refused" for e in subset), "ordinary_admission"
             )

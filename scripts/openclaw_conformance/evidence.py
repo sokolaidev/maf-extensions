@@ -608,9 +608,7 @@ def _evaluate(
         "campaign_duration",
     )
     require(
-        isinstance(summary["started"], str)
-        and isinstance(summary["ended"], str)
-        and summary["started"] <= summary["ended"],
+        isinstance(summary["started"], str) and isinstance(summary["ended"], str),
         "campaign_timestamps",
     )
     try:
@@ -620,6 +618,7 @@ def _evaluate(
         )
     except ValueError as exc:
         raise Refused("campaign_timestamps") from exc
+    require(stamps[0] <= stamps[1], "campaign_timestamps")
     require(
         isinstance(summary["attempts"], list) and len(summary["attempts"]) == len(GROUPS),
         "case_inventory",

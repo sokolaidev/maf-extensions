@@ -461,6 +461,36 @@ def change_artifact(bundle, group, mutate):
     e.write(root / "summary.json", summary)
 
 
+@pytest.mark.parametrize("start_separator,end_separator", [(" ", "T"), ("T", " "), ("_", "T")])
+@pytest.mark.parametrize("start_hour,end_hour", [(19, 18), (18, 19), (18, 18)])
+def test_campaign_timestamps_follow_chronology(
+    bundle, start_separator, end_separator, start_hour, end_hour
+):
+    root, plan, candidate = bundle
+    summary = e.read(root / "summary.json")
+    summary["started"] = f"2026-10-17{start_separator}{start_hour}:00:00+00:00"
+    summary["ended"] = f"2026-10-17{end_separator}{end_hour}:00:00+00:00"
+    e.write(root / "summary.json", summary)
+    if end_hour < start_hour:
+        with pytest.raises(e.Refused, match="campaign_timestamps"):
+            e.evaluate(root, plan, candidate)
+    else:
+        assert e.evaluate(root, plan, candidate)["outcome"] == "qualified_for_profile"
+
+
+@pytest.mark.parametrize("field", ["started", "ended"])
+@pytest.mark.parametrize(
+    "stamp", [None, 0, "invalid", "2026-10-17T18:00:00", "2026-10-17T18:00:00+01:00"]
+)
+def test_campaign_timestamps_require_valid_utc(bundle, field, stamp):
+    root, plan, candidate = bundle
+    summary = e.read(root / "summary.json")
+    summary[field] = stamp
+    e.write(root / "summary.json", summary)
+    with pytest.raises(e.Refused):
+        e.evaluate(root, plan, candidate)
+
+
 def test_complete_fixture_qualifies_only_the_selected_profile(bundle):
     root, plan, m = bundle
     result = e.evaluate(root, plan, m)
@@ -1365,6 +1395,44 @@ def ownership_observations(request):
         return observations(manifest())["ownership"]
     record = ROOT / "scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v4"
     return e.read(record / "evidence/ownership.json")["observations"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["overlapping_bindings", "overlapping_exchanges", "nested_exchange", "reversed_exchanges"],
+)
+def test_ordinary_preclose_exchanges_are_sequential(ownership_observations, mutation):
+    obs = ownership_observations
+    for event in obs["transport"]:
+        event["time_ns"] *= 10
+    case = obs["cases"]["maf_ordinary_close"]
+    exchanges = []
+    for sid in (case["session_a"], case["session_b"]):
+        events = [r for r in obs["transport"] if r.get("session") == sid]
+        request = next(
+            r for r in events if r.get("event") == "request" and r.get("method") == "tools/call"
+        )
+        start = next(r for r in events if r.get("event") == "binding_started")
+        result = next(r for r in events if r.get("event") == "binding_result")
+        response = next(
+            r
+            for r in events
+            if r.get("event") == "response" and r.get("exchange") == request["exchange"]
+        )
+        exchanges.append([request, start, result, response])
+    a, b = exchanges
+    if mutation == "overlapping_bindings":
+        b[0]["time_ns"] = a[1]["time_ns"] + 1
+        b[1]["time_ns"] = a[1]["time_ns"] + 2
+    elif mutation == "overlapping_exchanges":
+        b[0]["time_ns"] = a[2]["time_ns"] + 1
+    else:
+        origin = a[1]["time_ns"] if mutation == "nested_exchange" else a[0]["time_ns"] - 5
+        for offset, event in enumerate(b, 1):
+            event["time_ns"] = origin + offset
+    obs["transport"].sort(key=lambda event: event["time_ns"])
+    with pytest.raises(e.Refused, match="ordinary_preclose_order"):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
 
 
 def test_ownership_lifecycle_control_is_valid(ownership_observations):
