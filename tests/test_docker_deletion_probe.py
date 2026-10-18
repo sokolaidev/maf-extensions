@@ -1,9 +1,11 @@
 """Qualification observations must distinguish absence from a failed observer."""
 
+import asyncio
 import importlib.util
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -65,3 +67,54 @@ def test_guest_stat_error_is_not_absence(monkeypatch):
     monkeypatch.setattr(probe.subprocess, "run", denied_guest)
     with pytest.raises(RuntimeError, match="PermissionError"):
         probe._exists("fixture", "/target")
+
+
+@pytest.mark.parametrize("method", ["remove", "reclaim"])
+@pytest.mark.parametrize("swallowed", [False, True])
+def test_cancellation_requires_propagation_and_disposes(monkeypatch, method, swallowed):
+    started = asyncio.Event()
+    disposed = False
+    sandbox = SimpleNamespace(container_name="fixture", instance_id="physical-id")
+
+    async def acquire(*args, **kwargs):
+        return sandbox
+
+    async def dispose(*args, **kwargs):
+        nonlocal disposed
+        disposed = True
+
+    async def create(*args, **kwargs):
+        return SimpleNamespace(
+            acquire=acquire,
+            dispose=dispose,
+            declarations=SimpleNamespace(capabilities=frozenset()),
+        )
+
+    async def operation(*args, **kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            if not swallowed:
+                raise
+
+    monkeypatch.setattr(probe, "DockerSandboxBackend", SimpleNamespace(create=create))
+    monkeypatch.setattr(probe, "_operation", operation)
+    monkeypatch.setattr(probe, "_command", lambda *args: None)
+    monkeypatch.setattr(probe, "_exists", lambda *args: started.is_set())
+    monkeypatch.setattr(probe, "_container_present", lambda *args: not disposed)
+    monkeypatch.setattr(
+        probe,
+        "_status",
+        lambda *args: {
+            **dict.fromkeys(("CapPrm", "CapEff", "CapBnd", "CapInh", "CapAmb"), "0"),
+            "NoNewPrivs": "1",
+        },
+    )
+    if swallowed:
+        with pytest.raises(AssertionError, match="cancellation did not propagate"):
+            asyncio.run(probe._measure("image", "cancellation", method))
+    else:
+        result = asyncio.run(probe._measure("image", "cancellation", method))
+        assert result["outcome"] == "CancelledError"
+    assert disposed

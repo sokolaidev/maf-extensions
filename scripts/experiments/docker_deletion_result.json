@@ -2309,5 +2309,70 @@
         "TestAWorkDirTheImageGaveItsOwnUser"
       ]
     }
+  },
+  "cancellation_propagation_recheck": {
+    "measured_at": "2026-10-18T21:04:53.790441+00:00",
+    "source_commit": "215e9737eebe4417c41d09cff914501b03a7b9a6",
+    "source_sha256": {
+      "packages/maf-sandbox-docker/src/maf_sandbox_docker/_backend.py": "b003ac90d0c52e0727857230083f79ef885f8f985602760bcdfe17d913631f19",
+      "packages/maf-sandbox/src/maf_sandbox/_protocol.py": "998bc0cc9f207e0dfc594435834efe61e7452a17e9ca8e931f1ba6b1310829bc",
+      "scripts/experiments/docker_deletion_probe.py": "503ea8882921726ba1752de73387b490001704e57b83731a85c8297693f7b9c5"
+    },
+    "source_note": "Working-tree probe adds an explicit assertion that cancellation propagates; the backend is unchanged from the full 76-case run.",
+    "results": [
+      {
+        "case": "cancellation",
+        "method": "remove",
+        "grants": [],
+        "guest_status": {
+          "Uid": "0\t0\t0\t0",
+          "Gid": "0\t0\t0\t0",
+          "CapInh": "0000000000000000",
+          "CapPrm": "0000000000000000",
+          "CapEff": "0000000000000000",
+          "CapBnd": "0000000000000000",
+          "CapAmb": "0000000000000000",
+          "NoNewPrivs": "1"
+        },
+        "declarations": [
+          "exec",
+          "files_delete",
+          "files_in",
+          "files_out",
+          "host_tools",
+          "reclaim"
+        ],
+        "outcome": "CancelledError",
+        "container_present_after_operation": true,
+        "independent_disposal_check": "absent"
+      },
+      {
+        "case": "cancellation",
+        "method": "reclaim",
+        "grants": [],
+        "guest_status": {
+          "Uid": "0\t0\t0\t0",
+          "Gid": "0\t0\t0\t0",
+          "CapInh": "0000000000000000",
+          "CapPrm": "0000000000000000",
+          "CapEff": "0000000000000000",
+          "CapBnd": "0000000000000000",
+          "CapAmb": "0000000000000000",
+          "NoNewPrivs": "1"
+        },
+        "declarations": [
+          "exec",
+          "files_delete",
+          "files_in",
+          "files_out",
+          "host_tools",
+          "reclaim"
+        ],
+        "outcome": "CancelledError",
+        "container_present_after_operation": true,
+        "independent_disposal_check": "absent"
+      }
+    ],
+    "event_loop_diagnostics": []
   }
 }

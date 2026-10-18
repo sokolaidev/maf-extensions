@@ -243,6 +243,8 @@ async def _measure(
                         await task
                     except asyncio.CancelledError:
                         result["outcome"] = "CancelledError"
+                    else:
+                        raise AssertionError("cancellation did not propagate")
                 result["container_present_after_operation"] = _container_present(
                     sandbox.instance_id
                 )
