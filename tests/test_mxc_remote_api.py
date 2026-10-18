@@ -426,6 +426,65 @@ Path.write_text = delayed_write
     assert observed == [False]
 
 
+def test_coordinator_readiness_is_hidden_until_port_is_closed(tmp_path, certificates, monkeypatch):
+    probe = r"""
+from pathlib import Path
+original_write_text = Path.write_text
+def observed_write_text(path, data, *args, **kwargs):
+    if path.name not in ('ready', 'ready.tmp'):
+        return original_write_text(path, data, *args, **kwargs)
+    ready = path.with_name('ready')
+    with path.open('w') as stream:
+        assert not ready.exists(), 'readiness exposed at file creation'
+        stream.write(data[:1])
+        stream.flush()
+        assert not ready.exists(), 'readiness exposed with a partial port'
+        stream.write(data[1:])
+        stream.flush()
+        assert not ready.exists(), 'readiness exposed before close'
+    assert not ready.exists(), 'readiness exposed before replacement'
+    original_write_text(path.with_name('ready.checked'), data)
+    return len(data)
+Path.write_text = observed_write_text
+"""
+    monkeypatch.setattr(sys.modules[__name__], "SERVER", probe + SERVER)
+    root = tmp_path / "runner"
+    with running(root, certificates) as (_, address):
+        assert (root / "ready.checked").read_text() == str(address[1])
+        assert (root / "ready").read_text() == str(address[1])
+        assert not (root / "ready.tmp").exists()
+        assert client(certificates, address).call("acquire", "session", guest="guest")["owner"]
+
+
+def test_coordinator_startup_reports_child_exit(tmp_path, certificates, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "SERVER", "raise SystemExit('startup failed')")
+    with pytest.raises(AssertionError, match="startup failed"):
+        with running(tmp_path / "runner", certificates):
+            pytest.fail("a failed child must not become ready")
+
+
+def test_coordinator_startup_timeout_terminates_child(tmp_path, certificates, monkeypatch):
+    import time
+
+    children = []
+    popen = subprocess.Popen
+
+    def launch(*args, **kwargs):
+        child = popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    clock = iter((0, 0, 16))
+    monkeypatch.setattr(time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    monkeypatch.setattr(sys.modules[__name__], "SERVER", "import time; time.sleep(120)")
+    with pytest.raises(TimeoutError, match="coordinator did not become ready"):
+        with running(tmp_path / "runner", certificates):
+            pytest.fail("a child without readiness must time out")
+    assert len(children) == 1
+    assert children[0].returncode is not None
+
+
 def client(certs, address, name="a", hostname="localhost"):
     context = api.client_context(certs / f"{name}.pem", certs / f"{name}.key", certs / "ca.pem")
     return api.Client(address, context, hostname)
