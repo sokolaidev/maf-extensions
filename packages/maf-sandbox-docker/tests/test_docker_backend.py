@@ -1711,6 +1711,14 @@ class TestRemove:
             asyncio.run(sandbox.remove(".", working_directory=_WORK, recursive=True))
         assert fake.matching("exec") == []
 
+    @pytest.mark.parametrize("path", [".", _WORK, "child/.."])
+    def test_the_working_directory_refusal_requires_no_engine_io(self, path):
+        sandbox, fake = self._sandbox()
+        recorded_calls = len(fake.calls)
+        with pytest.raises(ValueError, match="working directory itself"):
+            asyncio.run(sandbox.remove(path, working_directory=_WORK, recursive=True))
+        assert len(fake.calls) == recorded_calls
+
     def test_a_path_outside_the_working_directory_is_refused(self):
         sandbox, fake = self._sandbox()
         with pytest.raises(ValueError):

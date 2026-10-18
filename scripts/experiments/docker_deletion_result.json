@@ -2437,12 +2437,12 @@
     }
   },
   "path_preflight_recheck": {
-    "measured_at": "2026-10-18T21:40:40.060507+00:00",
-    "source_commit": "99395dc0bef05c84e18ba8496dbbcd5362381efc",
+    "measured_at": "2026-10-18T21:42:42.950347+00:00",
+    "source_commit": "1fadf0db91268f7a94848f189e6ac8eac77405be",
     "source_sha256": {
-      "packages/maf-sandbox-docker/src/maf_sandbox_docker/_backend.py": "a6e333e74c454954d2456160344bd1a3cc2fef8bd21f75b1e34dfadac0d8866f",
+      "packages/maf-sandbox-docker/src/maf_sandbox_docker/_backend.py": "23eb2b89a4fce8fd268c622e7bf8fcafeba6dc3d033fb501c767d82b64d3b2bc",
       "packages/maf-sandbox/src/maf_sandbox/_protocol.py": "998bc0cc9f207e0dfc594435834efe61e7452a17e9ca8e931f1ba6b1310829bc",
-      "scripts/experiments/docker_deletion_probe.py": "40d08b6a55d92d07d2a0bd7b8e31ca826cfcb8005bf7cc096a24ddf26fd4d197"
+      "scripts/experiments/docker_deletion_probe.py": "c114899803cb3269e82022f446b1860335a0efe263f69cde126dc204b57911cd"
     },
     "source_note": "Working-tree backend adds path-only preflight guards; these two cases supplement the prior 80-case qualification.",
     "results": [
@@ -2467,6 +2467,9 @@
           "files_out",
           "host_tools",
           "reclaim"
+        ],
+        "targets_refused": [
+          "/guest-bin/base/link/../sentinel"
         ],
         "backend_io_calls": 0,
         "outcome": "refused_before_io",
@@ -2494,6 +2497,12 @@
           "host_tools",
           "reclaim"
         ],
+        "targets_refused": [
+          "../escape",
+          ".",
+          "/maf-sandbox/work",
+          "child/.."
+        ],
         "backend_io_calls": 0,
         "outcome": "refused_before_io",
         "independent_disposal_check": "absent"
@@ -2506,7 +2515,8 @@
         "TestFilesDeleteAgainstARealEngine",
         "TestReclaimAgainstARealEngine",
         "TestAWorkDirTheImageGaveItsOwnUser"
-      ]
+      ],
+      "note": "Canonical-path conformance passed before the additional string-only working-directory refusal; focused regressions and the live preflight control cover that final refusal."
     }
   }
 }

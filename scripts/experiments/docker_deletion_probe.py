@@ -140,15 +140,20 @@ async def _measure(
                 return await original_run(*args, **kwargs)
 
             sandbox._run = counted_preflight
-            try:
-                if method == "remove":
-                    await sandbox.remove(target, working_directory=WORK)
+            targets = [target, ".", WORK, "child/.."] if method == "remove" else [target]
+            for rejected in targets:
+                try:
+                    if method == "remove":
+                        await sandbox.remove(rejected, working_directory=WORK)
+                    else:
+                        await sandbox.reclaim(
+                            rejected, working_directory="/guest-bin/base", timeout=30
+                        )
+                except ValueError:
+                    pass
                 else:
-                    await sandbox.reclaim(target, working_directory="/guest-bin/base", timeout=30)
-            except ValueError:
-                pass
-            else:
-                raise AssertionError("invalid path was accepted")
+                    raise AssertionError("invalid path was accepted")
+            result["targets_refused"] = targets
             assert calls == 0
             assert _exists(name, "/outside/sentinel")
             result["backend_io_calls"] = calls

@@ -990,14 +990,14 @@ class _DockerSandbox:
         if result.returncode:
             raise RuntimeError(f"docker could not create the working directory: {result.stderr}")
 
-    def _refuse_before_freezing(self, path: str, working_directory: str) -> None:
+    def _refuse_before_freezing(self, path: str, working_directory: str) -> str:
         """Spend the string-level confinement refusals before any engine call.
 
         A freeze costs two engine round trips and stops the guest for both, so a path no
         spelling of the working directory could contain must not buy one.  The bundle inside
         the freeze checks it again, which is string work.
         """
-        confine_resolve_guest_path(path, working_directory)
+        return confine_resolve_guest_path(path, working_directory)
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         """Write ``content`` to ``path`` inside the container, parents included.
@@ -1215,7 +1215,9 @@ class _DockerSandbox:
         if not self._deletion_allowed:
             raise NotImplementedError("FILES_DELETE is unavailable with nonempty cap_add")
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
-        self._refuse_before_freezing(path, working_directory)
+        guest = self._refuse_before_freezing(path, working_directory)
+        if guest == posixpath.normpath(working_directory):
+            raise ValueError(f"refusing to remove the working directory itself: {guest!r}")
         async with self._freeze():
             guest = await confine_resolve_guest_delete_path(
                 lambda p: self._stat_guest(p, p), path, working_directory
