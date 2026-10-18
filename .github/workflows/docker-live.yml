@@ -304,8 +304,8 @@ jobs:
 
   report-failure:
     name: Report Docker live failure
-    needs: [docker-e2e, capability-policy]
-    if: always() && (needs.docker-e2e.result == 'failure' || needs.capability-policy.result == 'failure')
+    needs: [docker-e2e, capability-policy, deletion-authority]
+    if: always() && (needs.docker-e2e.result == 'failure' || needs.capability-policy.result == 'failure' || needs.deletion-authority.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
