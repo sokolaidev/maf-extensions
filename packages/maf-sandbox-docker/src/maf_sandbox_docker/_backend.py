@@ -1215,6 +1215,7 @@ class _DockerSandbox:
         if not self._deletion_allowed:
             raise NotImplementedError("FILES_DELETE is unavailable with nonempty cap_add")
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
+        self._refuse_before_freezing(path, working_directory)
         async with self._freeze():
             guest = await confine_resolve_guest_delete_path(
                 lambda p: self._stat_guest(p, p), path, working_directory
@@ -1242,8 +1243,8 @@ class _DockerSandbox:
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         """Remove a framework directory as the image's user and verify engine-visible absence.
 
-        Relative targets must be children of the working directory; all targets must be at
-        least two components from root. A failure requires escalation to container disposal.
+        Relative targets must be children of the working directory; absolute targets must be
+        canonical and at least two components from root. Failures require container disposal.
         """
         if not self._deletion_allowed:
             raise NotImplementedError("RECLAIM is unavailable with nonempty cap_add")
@@ -1256,6 +1257,8 @@ class _DockerSandbox:
             raise ValueError(f"refusing to reclaim a path that is not absolute: {directory}")
         if len([part for part in posixpath.normpath(directory).split("/") if part]) < 2:
             raise ValueError(f"refusing to reclaim recursively that close to the root: {directory}")
+        if directory != posixpath.normpath(directory) or directory.startswith("//"):
+            raise ValueError("reclaim requires a canonical absolute path")
         deadline = time.monotonic() + timeout
         removed = await self._exec(
             ["rm", "-rf", "--", directory],

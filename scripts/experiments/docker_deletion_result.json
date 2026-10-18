@@ -2435,5 +2435,78 @@
       "packages/maf-sandbox/src/maf_sandbox/_protocol.py": "998bc0cc9f207e0dfc594435834efe61e7452a17e9ca8e931f1ba6b1310829bc",
       "scripts/experiments/docker_deletion_probe.py": "d2a4b1777212d6169febb4f5e7473d8f604e110eb1ae6d5079fd1243f3bae294"
     }
+  },
+  "path_preflight_recheck": {
+    "measured_at": "2026-10-18T21:40:40.060507+00:00",
+    "source_commit": "99395dc0bef05c84e18ba8496dbbcd5362381efc",
+    "source_sha256": {
+      "packages/maf-sandbox-docker/src/maf_sandbox_docker/_backend.py": "a6e333e74c454954d2456160344bd1a3cc2fef8bd21f75b1e34dfadac0d8866f",
+      "packages/maf-sandbox/src/maf_sandbox/_protocol.py": "998bc0cc9f207e0dfc594435834efe61e7452a17e9ca8e931f1ba6b1310829bc",
+      "scripts/experiments/docker_deletion_probe.py": "40d08b6a55d92d07d2a0bd7b8e31ca826cfcb8005bf7cc096a24ddf26fd4d197"
+    },
+    "source_note": "Working-tree backend adds path-only preflight guards; these two cases supplement the prior 80-case qualification.",
+    "results": [
+      {
+        "case": "reclaim_noncanonical",
+        "method": "reclaim",
+        "grants": [],
+        "guest_status": {
+          "Uid": "0\t0\t0\t0",
+          "Gid": "0\t0\t0\t0",
+          "CapInh": "0000000000000000",
+          "CapPrm": "0000000000000000",
+          "CapEff": "0000000000000000",
+          "CapBnd": "0000000000000000",
+          "CapAmb": "0000000000000000",
+          "NoNewPrivs": "1"
+        },
+        "declarations": [
+          "exec",
+          "files_delete",
+          "files_in",
+          "files_out",
+          "host_tools",
+          "reclaim"
+        ],
+        "backend_io_calls": 0,
+        "outcome": "refused_before_io",
+        "independent_disposal_check": "absent"
+      },
+      {
+        "case": "remove_preflight",
+        "method": "remove",
+        "grants": [],
+        "guest_status": {
+          "Uid": "0\t0\t0\t0",
+          "Gid": "0\t0\t0\t0",
+          "CapInh": "0000000000000000",
+          "CapPrm": "0000000000000000",
+          "CapEff": "0000000000000000",
+          "CapBnd": "0000000000000000",
+          "CapAmb": "0000000000000000",
+          "NoNewPrivs": "1"
+        },
+        "declarations": [
+          "exec",
+          "files_delete",
+          "files_in",
+          "files_out",
+          "host_tools",
+          "reclaim"
+        ],
+        "backend_io_calls": 0,
+        "outcome": "refused_before_io",
+        "independent_disposal_check": "absent"
+      }
+    ],
+    "additional_conformance": {
+      "passed": 6,
+      "skipped": 0,
+      "suites": [
+        "TestFilesDeleteAgainstARealEngine",
+        "TestReclaimAgainstARealEngine",
+        "TestAWorkDirTheImageGaveItsOwnUser"
+      ]
+    }
   }
 }

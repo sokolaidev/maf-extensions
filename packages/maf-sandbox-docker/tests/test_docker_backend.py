@@ -1725,6 +1725,30 @@ class TestReclaim:
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
 
+    @pytest.mark.parametrize(
+        "directory",
+        [
+            "/base/link/../target",
+            "/base/./target",
+            "/base//target",
+            "/base/target/",
+            "//base/target",
+        ],
+    )
+    def test_noncanonical_absolute_targets_are_refused_before_io(self, directory):
+        sandbox, fake = self._sandbox(
+            {
+                _cp("/base"): _DockerResult(0, _directory_tar("base"), ""),
+                _cp("/base/link"): _DockerResult(0, _symlink_tar("link", "/other/child"), ""),
+                _cp("/other/target"): _DockerResult(0, _directory_tar("target"), ""),
+                ("exec", "-w"): _DockerResult(0, b"", ""),
+            }
+        )
+        recorded_calls = len(fake.calls)
+        with pytest.raises(ValueError, match="canonical absolute path"):
+            asyncio.run(sandbox.reclaim(directory, working_directory="/base", timeout=30))
+        assert len(fake.calls) == recorded_calls
+
     def test_a_directory_is_removed_via_rm_rf_behind_a_double_dash(self):
         sandbox, fake = self._sandbox()
         asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
@@ -3627,7 +3651,7 @@ class TestFreezingTheGuest:
         assert verbs[0] == "pause" and verbs[-1] == "unpause"
         assert verbs.count("pause") == 1
 
-    @pytest.mark.parametrize("member", ["write_file", "read_file", "stat_file"])
+    @pytest.mark.parametrize("member", ["write_file", "read_file", "stat_file", "remove"])
     def test_a_path_no_spelling_could_confine_costs_no_freeze(self, member):
         """A freeze stops the guest, so a caller cannot buy one with a path like this."""
         _backend, sandbox, fake = self._sandbox()
@@ -3637,6 +3661,7 @@ class TestFreezingTheGuest:
                 "../escape", working_directory=_WORK, max_bytes=8
             ),
             "stat_file": lambda: sandbox.stat_file("../escape", working_directory=_WORK),
+            "remove": lambda: sandbox.remove("../escape", working_directory=_WORK),
         }[member]
         with pytest.raises(ValueError):
             asyncio.run(call())

@@ -82,13 +82,13 @@ Missing directories at or below the working directory receive guest ownership. E
 
 The backend resolves `Config.User` from numeric IDs, account files or a bounded guest `id` check. Empty user means root. An unresolved identity refuses `FILES_OUT` and `HOST_TOOLS`; other workloads may receive root-owned inputs with a warning. Unresolved facts are retried.
 
-`remove` uses guest execution with `rm -f` or `rm -rf`. It rejects the working directory itself and requires `recursive=True` for directories. Missing paths succeed. A final link is unlinked. Initial path validation is paused; the guest command runs after resume.
+`remove` uses guest execution with `rm -f` or `rm -rf`. It rejects the working directory itself and requires `recursive=True` for directories. Missing paths succeed. A final link is unlinked. String-level confinement refusals happen before I/O; metadata validation is paused; the guest command runs after resume.
 
 Deletion and reclamation always execute as the image's configured user, with no UID 0 override or privileged retry. Root-owned ancestry cannot establish that a guest-selected command is safe to execute with greater authority. A replaced command can act only with the guest's existing permissions.
 
 After a successful command, the backend pauses the guest, revalidates every ancestor and checks the target through the engine's archive metadata. A symlink parent is refused before any descendant metadata is read, including for framework reclamation. A surviving target or an unreadable postcondition fails the operation. The check shares the removal deadline and covers the same root-filesystem view as other archive operations; guest mounts remain outside that view. The guest can change state again after resume, so this is a completion observation, not durable absence or a clean-state guarantee.
 
-`reclaim` rejects shallow targets and requires relative targets to be children of the working directory. It runs from `/` so a missing target parent does not prevent cleanup. It does not use cached ancestry to grant additional authority.
+`reclaim` rejects shallow targets and noncanonical absolute paths, including paths containing `.` or `..`, redundant slashes or a trailing slash. Relative targets resolve to children of the working directory before execution, so execution and completion verification use the same path. It runs from `/` so a missing target parent does not prevent cleanup. It does not use cached ancestry to grant additional authority.
 
 For non-root images using reclaim, make the work directory and call-directory contents removable by the image's user. Permission failures raise `OSError`; cleanup must escalate to disposal. Existing directory ownership is preserved, so adapt the image rather than expecting acquisition to change it. Nonempty grants continue to withhold deletion and reclamation.
 

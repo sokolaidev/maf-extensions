@@ -116,7 +116,44 @@ async def _measure(
             assert int(result["guest_status"][field], 16) == 0
         assert result["guest_status"]["NoNewPrivs"] == "1"
         result["declarations"] = sorted(str(c) for c in backend.declarations.capabilities)
-        if label == "refusal":
+        if label in {"reclaim_noncanonical", "remove_preflight"}:
+            if label == "reclaim_noncanonical":
+                _guest(
+                    name,
+                    "import os; os.makedirs('/guest-bin/base'); os.mkdir('/outside/child'); os.symlink('/outside/child','/guest-bin/base/link')",
+                )
+                _command(name, "exit 0")
+                target = "/guest-bin/base/link/../sentinel"
+                assert (
+                    _guest(name, f"import os; print(os.path.realpath({target!r}))")
+                    == "/outside/sentinel"
+                )
+                assert not _exists(name, "/guest-bin/base/sentinel")
+            else:
+                target = "../escape"
+            original_run = sandbox._run
+            calls = 0
+
+            async def counted_preflight(*args: Any, **kwargs: Any) -> Any:
+                nonlocal calls
+                calls += 1
+                return await original_run(*args, **kwargs)
+
+            sandbox._run = counted_preflight
+            try:
+                if method == "remove":
+                    await sandbox.remove(target, working_directory=WORK)
+                else:
+                    await sandbox.reclaim(target, working_directory="/guest-bin/base", timeout=30)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("invalid path was accepted")
+            assert calls == 0
+            assert _exists(name, "/outside/sentinel")
+            result["backend_io_calls"] = calls
+            result["outcome"] = "refused_before_io"
+        elif label == "refusal":
             assert Capability.FILES_DELETE not in backend.declarations.capabilities
             assert Capability.RECLAIM not in backend.declarations.capabilities
             _guest(
@@ -368,6 +405,12 @@ async def _main() -> None:
                     (),
                 )
             )
+    cases.extend(
+        [
+            (images["0"], "reclaim_noncanonical", "reclaim", ()),
+            (images["0"], "remove_preflight", "remove", ()),
+        ]
+    )
     try:
         for start in range(0, len(cases), args.jobs):
             batch = await asyncio.gather(
