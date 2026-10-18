@@ -41,7 +41,13 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
-from agent_framework import CharacterEstimatorTokenizer, ChatResponse, Message, SessionContext
+from agent_framework import (
+    CharacterEstimatorTokenizer,
+    ChatResponse,
+    Content,
+    Message,
+    SessionContext,
+)
 from agent_framework._compaction import (
     EXCLUDE_REASON_KEY,
     EXCLUDED_KEY,
@@ -1137,6 +1143,109 @@ async def test_a_wait_that_ran_out_is_not_begun_again_behind_the_same_record() -
     )
 
 
+@pytest.mark.parametrize("older_record", [False, True])
+@pytest.mark.parametrize("finish", ["expiry", "record"])
+async def test_invalidated_legacy_anchor_does_not_end_a_pending_recall_wait(older_record, finish):
+    summarizer = _Summarizer()
+    strategy = _composed(
+        _NARROW_CEILING, user_turns=_user_phase(_NARROW_CEILING, summarizer=summarizer)
+    )
+    messages = _conversation(record=None)
+    record = [
+        Message(
+            "assistant",
+            [Content.from_function_call(call_id="shared", name=RECALL_TOOL_NAME, arguments="{}")],
+        ),
+        Message(
+            "tool", [Content.from_function_result(call_id="shared", result=f"{RECORD_MARKER} old")]
+        ),
+    ]
+    messages[1:1] = ([build_record_message("older")] if older_record else []) + record
+    strategy._anchor = "call:shared"
+    strategy._wait_since = _responses(messages)
+    strategy._quiet_through = 0
+    assert await strategy(messages) is False
+    started = strategy._wait_since
+    quiet = strategy._quiet_through
+    messages.append(
+        Message(
+            "assistant",
+            [
+                Content.from_function_call(call_id="shared", name="lookup", arguments="{}"),
+                Content.from_function_call(
+                    call_id="fresh", name=RECALL_TOOL_NAME, arguments="{}", id="fresh"
+                ),
+            ],
+        )
+    )
+    assert _newest_record_identity(messages) != "call:shared"
+    assert await strategy(messages) is False
+    assert strategy._wait_since == started
+    assert strategy._quiet_through == quiet
+    assert summarizer.calls == 0
+    if finish == "expiry":
+        messages.append(_later_reply(2))
+    else:
+        messages.append(
+            Message(
+                "tool",
+                [
+                    Content.from_function_result(
+                        call_id="fresh", id="fresh", result=f"{RECORD_MARKER} {_covering_record(4)}"
+                    )
+                ],
+            )
+        )
+    await strategy(messages)
+    assert strategy._wait_since is None
+    assert summarizer.calls == 1
+    if finish == "record":
+        assert strategy._anchor == "occurrence:fresh"
+
+
+@pytest.mark.parametrize("reload", [False, True])
+async def test_completed_recall_in_existing_result_batch_ends_the_pending_wait(reload):
+    summarizer = _Summarizer()
+    strategy = _composed(
+        _NARROW_CEILING, user_turns=_user_phase(_NARROW_CEILING, summarizer=summarizer)
+    )
+    messages = _conversation(record=None)
+    declaration = Message(
+        "assistant",
+        [
+            Content.from_function_call(
+                call_id="shared", id=identity, name=RECALL_TOOL_NAME, arguments="{}"
+            )
+            for identity in ("first", "second")
+        ],
+    )
+    batch = Message(
+        "tool",
+        [
+            Content.from_function_result(
+                call_id="shared", id="first", result=f"{RECORD_MARKER} first"
+            )
+        ],
+    )
+    messages[1:1] = [declaration, batch]
+    strategy._anchor = "occurrence:first"
+    strategy._wait_since = _responses(messages)
+    strategy._quiet_through = 0
+    assert await strategy(messages) is False
+    batch.contents.append(
+        Content.from_function_result(
+            call_id="shared", id="second", result=f"{RECORD_MARKER} second"
+        )
+    )
+    if reload:
+        messages = [Message.from_dict(message.to_dict()) for message in messages]
+    assert _newest_record_identity(messages) == "occurrence:second"
+    assert await strategy(messages) is True
+    assert strategy._anchor == "occurrence:second"
+    assert strategy._wait_since is None
+    assert summarizer.calls == 1
+
+
 async def test_the_record_arriving_ends_the_wait_and_the_user_half_acts_only_on_what_it_left() -> (
     None
 ):
@@ -1931,6 +2040,53 @@ async def test_a_merge_that_is_no_smaller_is_refused_and_the_old_records_stay() 
     assert not [m for m in messages if _is_written_record(m)], "nothing inserted"
 
 
+async def test_mixed_recall_batch_survives_the_composed_merge_and_rewrite_chain() -> None:
+    messages = _chain_conversation()
+    declaration = next(m for m in messages if m.message_id == "rec1_call")
+    output = next(m for m in messages if m.message_id == "rec1_res")
+    declaration.contents.append(
+        Content.from_function_call(
+            call_id="mixed", id="mixed", name="lookup_secret", arguments="{}"
+        )
+    )
+    output.contents.append(
+        Content.from_function_result(
+            call_id="mixed", id="mixed", result=RECORD_MARKER + " SECRET-999"
+        )
+    )
+    summarizer = _RoutingSummarizer(
+        merge=_short_record, fold=_short_summary, harder=lambda *_: _SHORT_RECORD
+    )
+    strategy = _chain_composed(summarizer, ceiling=await _post_record_size() - 500)
+    try:
+        await strategy(messages)
+    except CompactionBudgetExceeded:
+        # An unreachable budget must still leave the mixed batch intact.
+        pass
+    assert not output.additional_properties.get(EXCLUDED_KEY, False)
+    assert not declaration.additional_properties.get(EXCLUDED_KEY, False)
+    assert output.contents[-1].result == RECORD_MARKER + " SECRET-999"
+    assert "merge" not in summarizer.log
+
+
+def test_consolidation_rejects_mixed_recall_batches_before_mutating():
+    messages = _record_messages("lookup: CODE-1 " + "details " * 100)
+    messages[0].contents.append(
+        Content.from_function_call(call_id="mixed", name="lookup", arguments="{}")
+    )
+    messages[1].contents.append(
+        Content.from_function_result(call_id="mixed", result=RECORD_MARKER + " SECRET-999")
+    )
+    annotate_message_groups(messages)
+    groups = active_record_groups(messages)
+    assert len(groups) == 1
+    with pytest.raises(ValueError, match="unrelated"):
+        _record_phase(_CHAIN_CEILING).consolidate_records(messages, groups, "short")
+    assert not _excluded_ids(messages)
+    assert len(messages) == 2
+    assert consolidatable_record_groups(messages) == []
+
+
 async def test_a_replacement_the_same_size_as_what_it_replaces_is_refused() -> None:
     """ "Smaller" means smaller: an equal-sized answer is refused, not kept.
 
@@ -2694,7 +2850,9 @@ async def test_the_wait_reads_a_written_record_arriving_the_same_way_on_both_lis
     await strategy(store)
 
     merged = _newest_record_identity(copies)
-    assert model_made == "call:rec2" and merged.startswith("text:") and merged != model_made
+    assert (
+        model_made == "message:rec2_call:0" and merged.startswith("text:") and merged != model_made
+    )
     assert _newest_record_identity(store) == merged, "the replay is named alike on both lists"
     assert strategy._anchor == model_made, "neither pass saw the merge before it was made"
 

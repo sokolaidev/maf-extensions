@@ -308,6 +308,21 @@ class TestTheInstallCommands:
             "the candidate rides the resolving pass, its siblings the forced one"
         )
 
+    def test_local_core_resolves_required_siblings_from_the_branch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        wheel = _wheel(
+            tmp_path,
+            "maf_sandbox_mcp-0.1.0-py3-none-any.whl",
+            ["maf-sandbox>=0.51.0,<0.52", "maf-sandbox-bicep>=0.23.0,<0.25"],
+        )
+        _wheel(tmp_path, "maf_sandbox_bicep-0.23.0-py3-none-any.whl", [])
+        core = _wheel(tmp_path, "maf_sandbox-0.50.0-py3-none-any.whl", [])
+        seen = self._capture(monkeypatch, published=[])
+        assert check.main(["prog", "maf-sandbox-mcp", str(wheel), "--local-core", str(core)]) == 0
+        resolving = next(a for a in seen if a[:2] == ["uv", "pip"] and "--no-deps" not in a)
+        assert resolving[resolving.index("--find-links") + 1] == str(tmp_path)
+
     def test_the_published_core_path_pins_the_newest_sibling_admitting_each_core(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
@@ -345,6 +360,7 @@ class TestTheInstallCommands:
         installs = [a for a in seen if a[:2] == ["uv", "pip"]]
         assert len(installs) == 1, "one resolving install, not a candidate pass plus a forced one"
         assert "--no-deps" not in installs[0]
+        assert "--find-links" not in installs[0]
         joined = " ".join(installs[0])
         assert "maf-sandbox==0.27.0" in joined
         assert "maf-sandbox-docker==0.10.0" in joined, (

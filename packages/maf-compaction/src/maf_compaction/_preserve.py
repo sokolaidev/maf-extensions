@@ -43,7 +43,10 @@ loads, whose flags are stored with it; :func:`removable_whole` is what that cost
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import TYPE_CHECKING, Any, Final
+
+from ._occurrences import ContentPosition, function_result_candidates
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -166,11 +169,36 @@ def removable_whole(
         True when excluding the span's messages removes each call with its output, in the list
         the call is sent and in the stored history alike.
     """
-    if any(
-        other["group_id"] == span["group_id"] and other["start_index"] != span["start_index"]
-        for other in spans
-    ):
-        return False
-    members = messages[span["start_index"] : span["end_index"] + 1]
-    loaded = [_ATTRIBUTION_KEY in message.additional_properties for message in members]
-    return all(loaded) or not any(loaded)
+    return (span["start_index"], span["end_index"]) in removable_spans(messages, spans)
+
+
+def removable_spans(
+    messages: Sequence[Message],
+    spans: Sequence[Mapping[str, Any]],
+    *,
+    matches: Mapping[ContentPosition, tuple[ContentPosition, ...]] | None = None,
+) -> set[tuple[int, int]]:
+    """Compute whole-removal eligibility once for a pass whose message positions stay fixed."""
+    if matches is None:
+        matches = function_result_candidates(messages)
+    counts = Counter(span["group_id"] for span in spans)
+    containing: dict[int, tuple[int, int]] = {}
+    allowed: set[tuple[int, int]] = set()
+    for span in spans:
+        key = (span["start_index"], span["end_index"])
+        loaded: set[bool] = set()
+        for index in range(key[0], key[1] + 1):
+            containing[index] = key
+            loaded.add(_ATTRIBUTION_KEY in messages[index].additional_properties)
+        if counts[span["group_id"]] == 1 and len(loaded) <= 1:
+            allowed.add(key)
+    for result, candidates in matches.items():
+        result_span = containing.get(result[0])
+        for call in candidates:
+            call_span = containing.get(call[0])
+            if call_span != result_span:
+                if result_span is not None:
+                    allowed.discard(result_span)
+                if call_span is not None:
+                    allowed.discard(call_span)
+    return allowed
