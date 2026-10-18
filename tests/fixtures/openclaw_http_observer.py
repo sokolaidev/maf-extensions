@@ -51,19 +51,15 @@ def resolve_image(reference: str) -> str:
 
 def decode_withheld(body: bytes | bytearray, request_id: int | str | None = None) -> dict[str, Any]:
     """Reject malformed workload responses without exposing their contents."""
-    from openclaw_gateway_http_check import rpc_result
+    from openclaw_gateway_http_check import rpc_result, workload_result
 
     identity = hashlib.sha256(body).hexdigest()
     try:
-        result = rpc_result(body, request_id)
+        return workload_result(rpc_result(body, request_id))
     except RuntimeError:
-        raise RuntimeError(f"Withheld response is not valid JSON (sha256:{identity})") from None
-    structured = result.get("structuredContent")
-    if result.get("isError", False) is not False or not isinstance(structured, dict):
         raise RuntimeError(
-            f"Withheld response lacks a structured workload result (sha256:{identity})"
-        )
-    return structured
+            f"Withheld response lacks valid JSON workload evidence (sha256:{identity})"
+        ) from None
 
 
 def digest(value: Any) -> str:
@@ -364,7 +360,9 @@ def refuse_completed_cleanup(observer: ObserveHTTP, fault: Path) -> None:
         observer.record(event="binding_started", session=digest(context.session_id.encode().hex()))
         result = await binding.execute(arguments, context)
         if fault.exists():
-            structured = result.structuredContent or {}
+            from openclaw_gateway_http_check import workload_result
+
+            structured = workload_result(result.model_dump(mode="json"))
             if (
                 result.isError
                 or structured.get("completed") is not True

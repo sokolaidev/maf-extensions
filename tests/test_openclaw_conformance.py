@@ -2244,3 +2244,172 @@ def test_settled_snapshots_require_literal_unpoisoned_state(ownership_observatio
         snapshot["poisoned"] = poisoned
     with pytest.raises(e.Refused, match="ownership_settled_state"):
         importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+def _retained_ownership():
+    record = ROOT / "scripts/experiments/openclaw_conformance_evidence/2026-10-17-windows-v4"
+    return e.read(record / "evidence/ownership.json")["observations"]
+
+
+def _settled_controls():
+    obs = _retained_ownership()
+    uncertain = {
+        event["exchange"]
+        for event in obs["transport"]
+        if event.get("event") == "request"
+        and event.get("method") == "tools/call"
+        and event.get("session")
+        in {
+            obs["cases"][case]["session_a"]
+            for case in ("equal_ids_repeated_cancel", "maf_active_close")
+        }
+    }
+    return [
+        index
+        for index, event in enumerate(obs["transport"])
+        if event.get("event") == "settled" and event["exchange"] not in uncertain
+    ]
+
+
+@pytest.mark.parametrize("index", _settled_controls())
+def test_settled_state_matches_proven_binding_lifecycle(index):
+    obs = _retained_ownership()
+    snapshot = obs["transport"][index]
+    snapshot["active"] = not snapshot["active"]
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("case", ["equal_ids_repeated_cancel", "maf_active_close"])
+@pytest.mark.parametrize("active", [False, True])
+def test_settled_cancellation_cleanup_interval_remains_uncertain(case, active):
+    obs = _retained_ownership()
+    sid = obs["cases"][case]["session_a"]
+    request = next(
+        event
+        for event in obs["transport"]
+        if event.get("event") == "request"
+        and event.get("method") == "tools/call"
+        and event.get("session") == sid
+    )
+    snapshot = next(
+        event
+        for event in obs["transport"]
+        if event.get("event") == "settled" and event.get("exchange") == request["exchange"]
+    )
+    snapshot["active"] = active
+    importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("method", ["POST", "GET", "DELETE"])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("active", None),
+        ("active", 0),
+        ("active", 1),
+        ("active", "false"),
+        ("active", "missing"),
+        ("sessions", None),
+        ("sessions", -1),
+        ("sessions", True),
+        ("sessions", 2.0),
+        ("sessions", 3),
+        ("sessions", "missing"),
+        ("time_ns", 0),
+        ("time_ns", True),
+        ("exchange", "unknown"),
+        ("session", "unknown"),
+        ("method", "PATCH"),
+    ],
+)
+def test_settled_snapshot_metadata_cannot_contradict_exchange(method, field, value):
+    obs = _retained_ownership()
+    snapshot = next(
+        event
+        for event in obs["transport"]
+        if event.get("event") == "settled" and event.get("method") == method
+    )
+    if value == "missing":
+        snapshot.pop(field)
+    else:
+        snapshot[field] = value
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("mutation", ["duplicate", "no_sessions", "before_response"])
+def test_active_settled_snapshot_has_registry_and_exchange_evidence(mutation):
+    obs = _retained_ownership()
+    snapshot = next(
+        event
+        for event in obs["transport"]
+        if event.get("event") == "settled" and event.get("active") is True
+    )
+    if mutation == "duplicate":
+        obs["transport"].append(dict(snapshot))
+    elif mutation == "no_sessions":
+        snapshot["sessions"] = 0
+    else:
+        response = next(
+            event
+            for event in obs["transport"]
+            if event.get("event") == "response" and event.get("exchange") == snapshot["exchange"]
+        )
+        snapshot["time_ns"] = response["time_ns"] - 1
+    with pytest.raises(e.Refused):
+        importlib.import_module("openclaw_conformance.ownership").verify(obs)
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_settled_snapshot_at_binding_start_observes_active_slot(active):
+    obs = _retained_ownership()
+    admission = next(
+        event for event in obs["transport"] if event.get("event") == "admission_refused"
+    )
+    start = next(event for event in obs["transport"] if event.get("event") == "binding_started")
+    for event in obs["transport"]:
+        if event.get("exchange") == admission["exchange"] and event["event"] in (
+            "request",
+            "response",
+            "settled",
+        ):
+            event["time_ns"] = start["time_ns"]
+            if event["event"] == "settled":
+                event["active"] = active
+    verify = importlib.import_module("openclaw_conformance.ownership").verify
+    if active:
+        verify(obs)
+    else:
+        with pytest.raises(e.Refused):
+            verify(obs)
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_settled_snapshot_at_completed_response_observes_released_slot(active):
+    obs = _retained_ownership()
+    sid = obs["cases"]["maf_ordinary_close"]["session_a"]
+    request = next(
+        event
+        for event in obs["transport"]
+        if event.get("event") == "request"
+        and event.get("method") == "tools/call"
+        and event.get("session") == sid
+    )
+    response = next(
+        event
+        for event in obs["transport"]
+        if event.get("event") == "response" and event.get("exchange") == request["exchange"]
+    )
+    snapshot = next(
+        event
+        for event in obs["transport"]
+        if event.get("event") == "settled" and event.get("exchange") == request["exchange"]
+    )
+    snapshot.update(time_ns=response["time_ns"], active=active)
+    verify = importlib.import_module("openclaw_conformance.ownership").verify
+    if active:
+        with pytest.raises(e.Refused):
+            verify(obs)
+    else:
+        verify(obs)

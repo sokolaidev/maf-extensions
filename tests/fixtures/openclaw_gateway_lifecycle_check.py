@@ -29,6 +29,7 @@ from openclaw_gateway_http_check import (
     read_response,
     records,
     require,
+    strict_json,
     verify_binding_result,
     verify_busy,
     verify_dispatch_count,
@@ -333,12 +334,47 @@ def verify_completed_cleanup(
         and settled.get("poisoned") is True,
         "Completed cleanup did not fail closed after the binding sweep",
     )
-    result = projected.get("result", {})
-    details = result.get("details", {})
-    structured = details.get("structuredContent", {})
+    tool = projected.get("tool")
+    require(
+        isinstance(tool, dict)
+        and tool.get("id") == "mcp:bicep:bicep__bicep_validate"
+        and tool.get("name") == "bicep__bicep_validate"
+        and tool.get("source") == "mcp",
+        "Gateway projected the wrong tool identity",
+    )
+    result = projected.get("result")
+    require(isinstance(result, dict), "Gateway result must be an object")
+    require(
+        result.get("isError", True) is True, "Gateway cleanup failure contradicts its error flag"
+    )
+    details = result.get("details")
+    require(
+        isinstance(details, dict)
+        and details.get("mcpServer") == "bicep"
+        and details.get("mcpTool") == "bicep_validate",
+        "Gateway projected the wrong MCP route",
+    )
+    structured = details.get("structuredContent")
+    content = result.get("content")
+    prefix = "structuredContent:\n"
+    require(
+        isinstance(structured, dict)
+        and isinstance(content, list)
+        and len(content) == 1
+        and isinstance(content[0], dict)
+        and content[0].get("type") == "text"
+        and isinstance(content[0].get("text"), str)
+        and content[0]["text"].startswith(prefix),
+        "Gateway cleanup failure must project one structured text item",
+    )
+    assert isinstance(content, list) and isinstance(structured, dict)
+    require(
+        json.dumps(strict_json(content[0]["text"][len(prefix) :]), sort_keys=True, allow_nan=False)
+        == json.dumps(structured, sort_keys=True, allow_nan=False),
+        "Gateway cleanup failure text contradicts structuredContent",
+    )
     require(
         details.get("status") == "error"
-        and len(result.get("content", [])) == 1
         and structured.get("completed") is False
         and structured.get("verdict", "missing") is None
         and structured.get("status") == "cleanup_failed"

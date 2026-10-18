@@ -115,6 +115,29 @@ def rpc_result(raw: str | bytes | bytearray, request_id: int | str | None = None
     return value["result"]
 
 
+def workload_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Require a successful MCP result with an exact JSON text mirror."""
+    require(result.get("isError", False) is False, "Invalid raw result projection")
+    content = result.get("content")
+    structured = result.get("structuredContent")
+    require(
+        isinstance(structured, dict)
+        and isinstance(content, list)
+        and len(content) == 1
+        and isinstance(content[0], dict)
+        and content[0].get("type") == "text"
+        and isinstance(content[0].get("text"), str),
+        "Invalid raw result projection",
+    )
+    assert isinstance(content, list) and isinstance(structured, dict)
+    require(
+        json.dumps(strict_json(content[0]["text"]), sort_keys=True, allow_nan=False)
+        == json.dumps(structured, sort_keys=True, allow_nan=False),
+        "Raw result text differs from structured content",
+    )
+    return structured
+
+
 def verify_outcome(
     projected: dict[str, Any], case: str, config_digest: str, image: str
 ) -> dict[str, Any]:

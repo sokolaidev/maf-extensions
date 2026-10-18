@@ -35,7 +35,7 @@ from typing import Any
 
 import httpx
 from agent_framework import MCPStreamableHTTPTool
-from openclaw_gateway_http_check import records, require, rpc_result, strict_json
+from openclaw_gateway_http_check import records, require, rpc_result, strict_json, workload_result
 from openclaw_http_observer import ObserveHTTP, digest, resolve_image
 from openclaw_sources import LARGE_SOURCE, SIMPLE_SOURCE
 
@@ -223,6 +223,8 @@ def observe_binding(observer: ObserveHTTP) -> None:
             observer.record(event="binding_cancelled", **fields)
             raise
         structured = result.structuredContent or {}
+        if structured.get("status") in {"ok", "incomplete"}:
+            structured = workload_result(result.model_dump(mode="json"))
         observer.record(
             event="binding_result",
             completed=structured.get("completed"),
@@ -457,26 +459,7 @@ class Check:
             r = await self.call(client)
             require(r.status_code == 200, "Surviving session not usable")
             result = rpc_result(r.content, 42)
-            require(
-                isinstance(result, dict) and result.get("isError", False) is False,
-                "Invalid raw result projection",
-            )
-            content = result.get("content")
-            require(
-                isinstance(content, list)
-                and len(content) == 1
-                and isinstance(content[0], dict)
-                and content[0].get("type") == "text"
-                and isinstance(content[0].get("text"), str),
-                "Invalid raw result projection",
-            )
-            assert isinstance(content, list)
-            value = result.get("structuredContent")
-            require(
-                json.dumps(strict_json(content[0]["text"]), sort_keys=True, allow_nan=False)
-                == json.dumps(value, sort_keys=True, allow_nan=False),
-                "Raw result text differs from structured content",
-            )
+            value = workload_result(result)
         else:
             result = await client.call_tool("bicep_validate", **SIMPLE)
             require(

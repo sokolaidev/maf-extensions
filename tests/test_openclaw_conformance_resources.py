@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json as json_module
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -452,7 +453,21 @@ def test_ownership_final_snapshot_after_check_returns(tmp_path, monkeypatch, tai
             "http_error",
         )
     ]
-    + [("positive", flag) for flag in ("tool_error", "null_flag", "zero_flag")],
+    + [
+        ("positive", flag)
+        for flag in (
+            "tool_error",
+            "null_flag",
+            "zero_flag",
+            "mirror_mismatch",
+            "mirror_boolean",
+            "mirror_duplicate",
+            "mirror_nonfinite",
+            "mirror_missing",
+            "mirror_image",
+            "mirror_multiple",
+        )
+    ],
 )
 def test_policy_input_responses_require_strict_json(tmp_path, monkeypatch, phase, malformed):
     import asyncio
@@ -501,7 +516,27 @@ def test_policy_input_responses_require_strict_json(tmp_path, monkeypatch, phase
             current = {1: "initialize", 2: "refusal", 3: "positive"}[request_id]
             if current == "positive":
                 await DockerSandboxBackend._invoke(object.__new__(DockerSandboxBackend), "create")
-                result = '{"isError":false,"structuredContent":{"completed":true,"verdict":"valid","cleanup":"confirmed"}}'
+                structured = {"completed": True, "verdict": "valid", "cleanup": "confirmed"}
+                text = json_module.dumps(structured, separators=(",", ":"))
+                content = [{"type": "text", "text": text}]
+                if malformed == "mirror_mismatch":
+                    content[0]["text"] = json_module.dumps(dict(structured, cleanup="failed"))
+                elif malformed == "mirror_boolean":
+                    content[0]["text"] = text.replace("true", "1")
+                elif malformed == "mirror_duplicate":
+                    content[0]["text"] = '{"completed":false,' + text[1:]
+                elif malformed == "mirror_nonfinite":
+                    content[0]["text"] = '{"extra":NaN,' + text[1:]
+                elif malformed == "mirror_missing":
+                    content = []
+                elif malformed == "mirror_image":
+                    content[0]["type"] = "image"
+                elif malformed == "mirror_multiple":
+                    content *= 2
+                result = json_module.dumps(
+                    {"isError": False, "structuredContent": structured, "content": content},
+                    separators=(",", ":"),
+                )
             else:
                 result = "{}" if current == "initialize" else '{"isError":true}'
             raw = '{"jsonrpc":"2.0","id":' + str(request_id) + ',"result":' + result + "}"
@@ -534,7 +569,7 @@ def test_policy_input_responses_require_strict_json(tmp_path, monkeypatch, phase
                     raw = raw.replace('"id":' + str(request_id), '"id":' + changed)
                 elif malformed == "http_error":
                     status = 500
-                else:
+                elif not malformed.startswith("mirror_"):
                     flag = {"tool_error": "true", "null_flag": "null", "zero_flag": "0"}[malformed]
                     raw = raw.replace('"isError":false', '"isError":' + flag)
             return httpx.Response(

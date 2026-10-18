@@ -324,6 +324,77 @@ def verify(value: dict[str, Any]) -> None:
         all(_ordered(left[1], right[0]) for left, right in zip(bindings, bindings[1:])),
         "ownership_binding_overlap",
     )
+    _settled(events, bindings)
+
+
+def _settled(
+    events: list[dict[str, Any]], bindings: list[tuple[dict[str, Any], dict[str, Any]]]
+) -> None:
+    """Check supplied snapshots against exchange identity and established activity bounds."""
+    snapshots = [event for event in events if event.get("event") == "settled"]
+    _exchanges(snapshots, "ownership_settled_exchange")
+    if not snapshots:
+        return
+    possible = []
+    for start, terminal in bindings:
+        request = _request(events, start)
+        ends = [
+            event
+            for event in events
+            if event.get("event") == "retired" and event.get("session") == start["session"]
+        ]
+        ends.extend(other for other, _ in bindings if terminal["time_ns"] < other["time_ns"])
+        if terminal["event"] == "binding_result":
+            ends.extend(
+                event
+                for event in events
+                if event.get("event") == "response"
+                and event.get("exchange") == request["exchange"]
+                and event.get("session") == request["session"]
+                and type(event.get("status")) is int
+                and event["status"] == 200
+                and _ordered(terminal, event)
+            )
+        end = min(ends, key=lambda event: event["time_ns"])
+        possible.append((request, end))
+    for snapshot in snapshots:
+        require(
+            type(snapshot.get("active")) is bool
+            and type(snapshot.get("sessions")) is int
+            and 0 <= snapshot["sessions"] <= 2
+            and (not snapshot["active"] or snapshot["sessions"] > 0),
+            "ownership_settled_state",
+        )
+        responses = [
+            event
+            for event in events
+            if event.get("event") == "response" and event.get("exchange") == snapshot["exchange"]
+        ]
+        require(len(responses) == 1, "ownership_settled_exchange")
+        response = responses[0]
+        requests = [
+            event
+            for event in events
+            if event.get("event") in ("request", "delete_requested")
+            and event.get("exchange") == snapshot["exchange"]
+        ]
+        session = requests[0].get("session") if requests else response.get("session")
+        require(
+            "session" in snapshot
+            and snapshot["session"] == session
+            and snapshot.get("method") in ("POST", "GET", "DELETE")
+            and snapshot["method"] == response.get("method")
+            and _ordered(response, snapshot),
+            "ownership_settled_exchange",
+        )
+        stamp = snapshot["time_ns"]
+        if any(start["time_ns"] <= stamp < terminal["time_ns"] for start, terminal in bindings):
+            require(snapshot["active"] is True, "ownership_settled_active")
+        if snapshot["active"]:
+            require(
+                any(start["time_ns"] <= stamp < end["time_ns"] for start, end in possible),
+                "ownership_settled_active",
+            )
 
 
 def _cancel_probes(

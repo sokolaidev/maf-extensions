@@ -113,7 +113,8 @@ async def _input_refusals(root: Path, prepared: Path, manifest: dict[str, Any]) 
     from maf_sandbox_docker import DockerSandboxBackend
     from maf_sandbox_mcp import server, workload_http
 
-    rpc_result = importlib.import_module("openclaw_gateway_http_check").rpc_result
+    validation = importlib.import_module("openclaw_gateway_http_check")
+    rpc_result = validation.rpc_result
     creations = 0
     original = DockerSandboxBackend._invoke
 
@@ -207,8 +208,7 @@ async def _input_refusals(root: Path, prepared: Path, manifest: dict[str, Any]) 
                 )
                 require(positive.status_code == 200, "input_positive_control")
                 call_result = rpc_result(positive.content, 3)
-                require(call_result.get("isError", False) is False, "input_positive_control")
-                result = call_result["structuredContent"]
+                result = validation.workload_result(call_result)
                 require(
                     result["completed"] is True
                     and result["verdict"] == "valid"

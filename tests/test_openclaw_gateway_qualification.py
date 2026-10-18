@@ -582,7 +582,10 @@ def test_observer_fault_withholds_one_complete_result_and_leaves_next_call_trans
         {
             "jsonrpc": "2.0",
             "id": 7,
-            "result": {"structuredContent": {"completed": True, "cleanup": "confirmed"}},
+            "result": {
+                "structuredContent": {"completed": True, "cleanup": "confirmed"},
+                "content": [{"type": "text", "text": '{"completed":true,"cleanup":"confirmed"}'}],
+            },
         }
     ).encode()
 
@@ -1243,6 +1246,9 @@ def completed_cleanup_projection():
         status="cleanup_failed",
         cleanup="failed",
     )
+    value["result"]["content"][0]["text"] = "structuredContent:\n" + json.dumps(
+        value["result"]["details"]["structuredContent"]
+    )
     return value
 
 
@@ -1428,10 +1434,15 @@ def test_completed_cleanup_fault_preserves_result_and_delegates_after_removal(
         cleanup: object
 
     calls = []
-    result = SimpleNamespace(
-        isError=False, structuredContent=projected()["result"]["details"]["structuredContent"]
+    from mcp.types import CallToolResult, TextContent
+
+    structured = projected()["result"]["details"]["structuredContent"]
+    structured["completed"] = completed
+    result = CallToolResult(
+        isError=False,
+        structuredContent=structured,
+        content=[TextContent(type="text", text=json.dumps(structured))],
     )
-    result.structuredContent["completed"] = completed
 
     async def execute(arguments, context):
         calls.append("execute")
@@ -4301,7 +4312,8 @@ def test_withheld_result_uses_strict_decoding(malformed):
         "non_list_content",
     ],
 )
-def test_ownership_raw_result_requires_exact_text_mirror(mutation):
+@pytest.mark.parametrize("route", ["ownership", "withheld"])
+def test_ownership_raw_result_requires_exact_text_mirror(mutation, route):
     import httpx
 
     config = "configuration"
@@ -4345,7 +4357,12 @@ def test_ownership_raw_result_requires_exact_text_mirror(mutation):
         config=config,
     )
     with pytest.raises(RuntimeError):
-        asyncio.run(ownership.Check.valid(probe, "session"))
+        if route == "ownership":
+            asyncio.run(ownership.Check.valid(probe, "session"))
+        else:
+            observer.decode_withheld(
+                json.dumps({"jsonrpc": "2.0", "id": 42, "result": result}).encode(), 42
+            )
 
 
 @pytest.mark.parametrize("route", ["valid", "busy", "initialize", "withheld"])
