@@ -1,7 +1,7 @@
 """Live tests of the refusals and faults that depend on host-wide ``sbx`` state.
 
 Skipped unless ``MAF_SANDBOX_SBX_E2E=1``.  A test that has to change that state — SSH agent
-forwarding, an MCP registration, the login, the daemon's engine socket — also needs
+forwarding, an MCP registration, the login, the engine transport or its socket — also needs
 ``MAF_SANDBOX_SBX_E2E_HOST=1``, and restores what it changed.  Set it only on a host no one
 else is using: while a test runs, every other sandbox on the host sees the changed state.
 Logging back in reads ``DOCKER_USERNAME`` and ``DOCKER_PAT``.
@@ -52,10 +52,6 @@ def _checked(*args: str, stdin: bytes | None = None) -> bytes:
     return result.stdout
 
 
-def _forwarding() -> str:
-    return _checked("settings", "get", _FORWARDING).decode().strip()
-
-
 def _needs_host_changes(what: str) -> None:
     if not _MAY_CHANGE_HOST:
         pytest.skip(f"{what}; set MAF_SANDBOX_SBX_E2E_HOST=1 to let the test change it")
@@ -81,24 +77,24 @@ def _listed(name: str) -> bool:
 
 
 @contextlib.contextmanager
-def _forwarding_set(value: str) -> Iterator[None]:
-    """Hold SSH agent forwarding at ``value``, restarting the daemon so sandboxes get it."""
-    before = _forwarding()
+def _setting_set(setting: str, value: str) -> Iterator[None]:
+    """Hold a host setting at ``value``, restarting the daemon on each change."""
+    before = _checked("settings", "get", setting).decode().strip()
     if before == value:
         yield
         return
-    _needs_host_changes(f"SSH agent forwarding is {before} on this host")
+    _needs_host_changes(f"{setting} is {before} on this host")
     try:
-        _checked("settings", "set", _FORWARDING, value)
+        _checked("settings", "set", setting, value)
         _checked("daemon", "restart")
         yield
     finally:
-        _checked("settings", "set", _FORWARDING, before)
+        _checked("settings", "set", setting, before)
         _checked("daemon", "restart")
 
 
 def test_a_host_forwarding_its_ssh_agent_is_refused(tmp_path):
-    with _forwarding_set("true"):
+    with _setting_set(_FORWARDING, "true"):
         backend = _backend(tmp_path)
         key = _key("refused")
         with pytest.raises(SbxHostNotConfined, match="ssh.agentForwardingEnabled"):
@@ -107,7 +103,7 @@ def test_a_host_forwarding_its_ssh_agent_is_refused(tmp_path):
 
 
 def test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path):
-    with _forwarding_set("true"):
+    with _setting_set(_FORWARDING, "true"):
         backend = _backend(tmp_path)
 
         async def accepted() -> None:
@@ -122,7 +118,7 @@ def test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path):
 
 def test_a_registered_mcp_server_is_refused(tmp_path):
     _needs_host_changes("the test registers an MCP server")
-    with _forwarding_set("false"):
+    with _setting_set(_FORWARDING, "false"):
         listed = listed_rows(_checked("mcp", "ls", "--json"), "servers")
         if listed:
             pytest.skip("an MCP server is already registered on this host")
@@ -144,7 +140,7 @@ def test_a_lapsed_login_names_sbx_login(tmp_path):
     username, token = os.environ.get("DOCKER_USERNAME"), os.environ.get("DOCKER_PAT")
     if not username or not token:
         pytest.skip("logging back in needs DOCKER_USERNAME and DOCKER_PAT")
-    with _forwarding_set("false"):
+    with _setting_set(_FORWARDING, "false"):
         try:
             help_text = _checked("logout", "--help")
             flag = "--force" if b"--force" in help_text else "--yes"
@@ -165,14 +161,14 @@ def _engine_socket() -> Path:
         is_socket = stat.S_ISSOCK(engine.lstat().st_mode)
     except FileNotFoundError:
         is_socket = False
-    if not is_socket:
-        pytest.skip(f"no engine socket at {engine} on this host")
+    assert is_socket, f"no engine socket at {engine} after selecting the socket transport"
     return engine
 
 
 def test_a_lost_engine_is_a_fault_and_not_an_absent_sandbox(tmp_path):
     _needs_host_changes("the test hides the daemon's engine socket")
-    with _forwarding_set("false"):
+    # An in-process Docker API has no socket to hide for this fault injection.
+    with _setting_set(_FORWARDING, "false"), _setting_set("feature.inmem-transport", "false"):
         backend = _backend(tmp_path)
         key = _key("engine")
 
