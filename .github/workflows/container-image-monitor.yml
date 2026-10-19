@@ -5,7 +5,7 @@ on:
     - cron: '23 4 * * *'
   workflow_dispatch:
   workflow_run:
-    workflows: [Container image release, Container image storage recovery]
+    workflows: [1-Container image release, Container image storage recovery]
     types: [completed]
     branches: [main]
 

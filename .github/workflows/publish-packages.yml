@@ -1,7 +1,7 @@
-name: Publish
+name: 1-Publish
 
 # The packages share this workflow, so the run's own title has to say which one. Without a
-# `run-name` every run is called "Publish", and a deployment-review prompt — in the mobile
+# `run-name` every run is called "1-Publish", and a deployment-review prompt — in the mobile
 # app especially, where the reviewer sees the title and the job list and nothing else — asks
 # for approval to upload without naming what.
 #

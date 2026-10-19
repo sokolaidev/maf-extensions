@@ -20,7 +20,7 @@ Register one publisher per package, at [pypi.org → Publishing](https://pypi.or
 
 Every field must match exactly. Two that reliably catch people:
 
-- **Workflow name is the filename** — `publish-packages.yml`, not the workflow's display name ("Publish").
+- **Workflow name is the filename** — `publish-packages.yml`, not the workflow's display name ("1-Publish").
 - **Environment name is matched literally**, so `pypi` and `testpypi` are not interchangeable and neither tolerates a typo.
 
 ### Pending publishers are unique per identity
