@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.6.0...maf-compaction-v0.6.1) (2026-10-19)
+
+
+### Fixes
+
+* **compaction:** preserve replies, honor summary options, and back off value-free recall ([#2042](https://github.com/sokolaidev/maf-extensions/issues/2042)) ([8fd2b51](https://github.com/sokolaidev/maf-extensions/commit/8fd2b51b50291393f68f4431697c99018d00a5ad))
+
 ## [0.6.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.5.0...maf-compaction-v0.6.0) (2026-10-18)
 
 
