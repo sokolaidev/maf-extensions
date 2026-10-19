@@ -28,7 +28,7 @@ def manifest():
 
 
 def result(m):
-    from openclaw_sources import SIMPLE_SOURCE, source_digest
+    sources = importlib.import_module("openclaw_sources")
 
     return {
         "completed": True,
@@ -37,7 +37,7 @@ def result(m):
         "cleanup": "confirmed",
         "image": m["image"],
         "config_sha256": m["config_sha256"],
-        "source_sha256": source_digest(SIMPLE_SOURCE),
+        "source_sha256": sources.source_digest(sources.SIMPLE_SOURCE),
         "diagnostics": "",
     }
 
@@ -48,7 +48,7 @@ def mirrored(value):
 
 def observation(case, m):
     """Construct contract data; these synthetic records are not live qualification."""
-    from openclaw_sources import LARGE_SOURCE, source_digest
+    sources = importlib.import_module("openclaw_sources")
 
     old_boot, new_boot = "1" * 32, "2" * 32
     identity = {"boot": old_boot, "session": "3" * 64, "request": "4" * 64}
@@ -173,7 +173,7 @@ def observation(case, m):
             wire(1000, "startup_ready", boot=new_boot, owner_empty=True)
             wire(1050, "binding_started", boot=new_boot, session="8" * 64, request="4" * 64)
             fresh = result(m)
-            fresh["source_sha256"] = source_digest(LARGE_SOURCE)
+            fresh["source_sha256"] = sources.source_digest(sources.LARGE_SOURCE)
             wire(
                 1100,
                 "binding_result",
