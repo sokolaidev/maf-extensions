@@ -172,6 +172,17 @@ def _engine_socket() -> Path:
             subprocess.run(["ls", "-la", str(engine.parent)], capture_output=True, text=True).stdout
         )
         print(Path("/proc/net/unix").read_text())
+        records = [json.loads(line) for line in Path(status["logs"]).read_text().splitlines()]
+        for record in records:
+            message = record.get("msg", "")
+            if any(word in message.lower() for word in ("docker", "backend", "socket", "engine")):
+                print(
+                    {
+                        key: record[key]
+                        for key in ("time", "msg", "source", "address")
+                        if key in record
+                    }
+                )
         pytest.skip(f"no engine socket at {engine} on this host")
     return engine
 
