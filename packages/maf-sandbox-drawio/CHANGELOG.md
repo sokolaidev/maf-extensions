@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-drawio-v0.5.0...maf-sandbox-drawio-v0.6.0) (2026-10-19)
+
+
+### Features
+
+* support MAF 1.22 and distinguish recall call occurrences ([#1963](https://github.com/sokolaidev/maf-extensions/issues/1963)) ([7c0194c](https://github.com/sokolaidev/maf-extensions/commit/7c0194c293bef15753b952e10318dbb7e122181b))
+
 ## [0.5.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-drawio-v0.4.4...maf-sandbox-drawio-v0.5.0) (2026-10-14)
 
 
