@@ -691,8 +691,10 @@ def _public_rewritten_positions(
     if not isinstance(arguments, Mapping):
         return frozenset(range(len(values)))
     supplied = cast("Mapping[str, Any]", arguments)
-    extra = cast("Mapping[str, Any]", getattr(context, "kwargs", None) or {})
-    current = supplied[argument] if argument in supplied else extra.get(argument)
+    # The public accessor's mutation check covers arguments, not kwargs.
+    if argument not in supplied:
+        return frozenset(range(len(values)))
+    current = supplied[argument]
     expected = [current] if isinstance(current, str) else current
     if not isinstance(expected, (list, tuple)) or list(cast("Sequence[Any]", expected)) != list(
         values
@@ -724,8 +726,8 @@ def positions_holding_hidden_content(
     """Positions whose values must not be echoed into a refusal.
 
     With :func:`argument_provenance_middleware` and a named ``argument``, the public framework
-    API identifies rewritten positions in the complete current argument. Mismatched values
-    and ambiguous empty maps under information-flow tracking withhold every position.
+    API identifies rewritten positions in the complete current argument. Kwargs-only arguments,
+    mismatched values and ambiguous empty maps under tracking withhold every position.
 
     Without active named-argument provenance, an information-flow context withholds all names,
     including generated values. ``candidates`` preserves a prior fallback decision across host

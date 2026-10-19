@@ -582,9 +582,10 @@ def test_nested_calls_restore_the_outer_public_map():
 
 
 @pytest.mark.parametrize("in_kwargs", [False, True])
+@pytest.mark.parametrize("mutation", ["preserve", "reverse", "filter"])
 @pytest.mark.parametrize("producer", ["ordinary_source", "quarantined_llm"])
 def test_public_provenance_covers_payload_expansion_without_store_scans(
-    in_kwargs, producer, monkeypatch
+    in_kwargs, mutation, producer, monkeypatch
 ):
     async def scenario():
         tracker = LabelTrackingFunctionMiddleware()
@@ -608,7 +609,7 @@ def test_public_provenance_covers_payload_expansion_without_store_scans(
             with monkeypatch.context() as patch:
                 patch.setattr(tracker, "get_variable_store", no_store_access)
                 seen.append(positions_holding_hidden_content(files, argument="files"))
-                assert positions_holding_hidden_content(files) == {0, 1}
+                assert positions_holding_hidden_content(files) == set(range(len(files)))
             return "ok"
 
         tool = FunctionTool(name="payload", func=body)
@@ -620,12 +621,21 @@ def test_public_provenance_covers_payload_expansion_without_store_scans(
         )
 
         async def invoke():
+            current = context.kwargs if in_kwargs else context.arguments
+            assert isinstance(current, dict)
+            if mutation == "reverse":
+                current["files"].reverse()
+            elif mutation == "filter":
+                current["files"] = current["files"][1:]
             await tool.invoke(arguments=context.arguments or None, **context.kwargs)
 
         async def inner():
             await observer.process(context, invoke)
 
         await tracker.process(context, inner)
-        assert seen == [{1}]
+        expected = {0} if mutation == "filter" else {0, 1}
+        if not in_kwargs and mutation == "preserve":
+            expected = {1}
+        assert seen == [expected]
 
     asyncio.run(scenario())
