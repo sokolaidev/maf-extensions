@@ -55,7 +55,6 @@ jobs:
           docker-pat: ${{ secrets.DOCKER_PAT }}
 
       - name: Load the test templates
-        if: false
         run: |
           set -euo pipefail
           for image in agent root; do
@@ -70,7 +69,6 @@ jobs:
           sbx template load "$RUNNER_TEMP/graphviz.tar"
 
       - name: Run the live suite
-        if: false
         env:
           MAF_SANDBOX_SBX_E2E_IMAGES: maf-sbx-e2e-agent:local,maf-sbx-e2e-root:local
           MAF_GRAPHVIZ_SBX_E2E_IMAGE: graphviz-sandbox:local
