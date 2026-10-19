@@ -153,6 +153,30 @@ Keep the entire preparation and campaign directories private: they contain servi
 
 Changing runner/adapter bytes, dependencies, the host/engine, image or configuration requires a new candidate and campaign. Preparation records both the full dependency versions and hashed locks; preserve those private locks when reproducing an exact resolution. A passing report does not authorize publication, production adoption, unattended recovery, arbitrary filesystem access, native MXC, credentials, or another platform. Bounded owner-loss qualification remains #1973 and conditional Windows/MXC file-boundary qualification remains #1974.
 
+## Bounded actor-loss profile
+
+The additional `owner-loss-windows-v1` profile selects one unbroken control, all twelve Gateway/external-caller/worker combinations at pre-admission, observed compiler execution, completed-but-undelivered response and owned-container removal barriers, and two worker-recovery refusal controls. The external caller is a separate process sending HTTP to the Gateway; killing it leaves the Gateway alive. A pre-admission caller or Gateway loss can therefore still admit one call. Missing client delivery never establishes that compilation did not happen.
+
+The [fault runner](../../scripts/openclaw_conformance/owner_loss.py) requires a complete installed-Bicep baseline for the exact same candidate, verifies installed bytes before and after the campaign, and freezes its own required cases and deadlines before starting. Every case owns separate processes, worker state and a sentinel resource. Fault injection terminates the identified actor through a retained Windows process handle after proving membership in the fixture's job. Final job termination and leftover removal are independent harness cleanup. They do not count as worker self-recovery.
+
+Recovery retains the locked deployment owner, starts a fresh worker and requires confirmed cleanup before readiness. Token rotation is an explicit operator action. The profile tests old-token refusal separately from old-session refusal, including cancellation and DELETE while a fresh compiler call remains active. Surviving-worker settlement requires the target request's terminal record and an inactive service snapshot; `/ready` alone is insufficient. Gateway sibling checks reuse a session established before the fault. Replacement workers use new sessions.
+
+Connection-unavailable recovery uses a private Docker context with an unreachable reserved loopback endpoint. Removal-denied recovery uses the existing [dedicated authorization daemon](research/openclaw-gateway-qualification.md#daemon-authorization-denial-and-retained-resource-recovery-live-result-2026-10-11), with its pinned image, locally compiled Go authorization plugin, mutual TLS and exact target/client/nonce correlation. It requires Go and the profile's already-pulled Docker-in-Docker image. The privileged disposable daemon is a scoped test control, not a stronger isolation claim about the parent engine. Its resources and the main worker's resources have separate cleanup observers.
+
+Run the installed baseline above from committed qualification sources, retain its candidate and output directory, then use fresh fault output:
+
+```powershell
+$faults = Join-Path $env:TEMP ('oc-owner-loss-' + [guid]::NewGuid().ToString('N'))
+uv run --no-project --python 3.13 python -m scripts.openclaw_conformance.owner_loss run --prepared $prepared --manifest "$prepared/candidate.json" --baseline-bundle "$campaign/evidence" --baseline-plan "$campaign/plan.json" --output $faults
+uv run --no-project --python 3.13 python -m scripts.openclaw_conformance.owner_loss evaluate --bundle "$faults/evidence" --plan "$faults/plan.json" --manifest "$prepared/candidate.json" --baseline-bundle "$campaign/evidence" --baseline-plan "$campaign/plan.json"
+```
+
+Check each exit status. A failed case remains failed; the runner proceeds to independent cases only after confirmed harness cleanup. An interrupted child or failed parent supervisor cannot turn a child report into a pass. Repeated runs use fresh directories and distinct attempts. All required cases, both recovery controls and cleanup must pass before the evaluator emits `qualified_for_profile`.
+
+If only the qualification sources change, `python -m scripts.openclaw_conformance.owner_loss bind --prepared <installation> --manifest <old-candidate.json> --output <new-candidate.json>` verifies the retained installation and writes a new candidate bound to the committed runner. It establishes no qualification. Run a fresh installed baseline with the new manifest before using it for faults; an old baseline cannot be transplanted to the new candidate.
+
+This profile does not qualify host power loss, arbitrary descendants, other platforms, model reasoning, credential orphan expiry or an unattended watchdog. Implementation, experimental observations and accepted qualification remain separate in the [research record](research/openclaw-integration.md#conformance-and-upgrade-qualification-disposition-2026-10-16).
+
 ## Status
 
 The [2026-10-12 consolidated reconciliation](research/openclaw-qualification-closure-audit.md#consolidated-closure-reconciliation-2026-10-12) covers every original #1676 acceptance row using the separately recorded Gateway, Bicep/MAF and published transport evidence. Both finite follow-ups are merged. Qualification is complete for that supervised, selected baseline; the first-tool design disposition is recorded below and installed adoption is delivered by #1898; the [conformance disposition](research/openclaw-integration.md#conformance-and-upgrade-qualification-disposition-2026-10-16) completes #1641; the [fresh published-candidate campaign](research/openclaw-gateway-qualification.md#reviewed-v4-conformance-campaign-2026-10-17) implements #1972 and qualifies its fixed Windows profile. Historical reports and their `complete_matrix: false` values are unchanged.

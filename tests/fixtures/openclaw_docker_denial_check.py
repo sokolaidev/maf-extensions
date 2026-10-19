@@ -75,6 +75,9 @@ def run(args: argparse.Namespace) -> None:
     )
     client = uuid.uuid4().hex
     name = "qualification-authz-" + client
+    (root / "daemon-control.json").write_text(
+        json.dumps({"name": name, "client": client, "host": host}), encoding="utf-8"
+    )
     saved_env = {k: v for k, v in os.environ.items() if k.startswith("DOCKER_")}
     daemon = None
     report = {}

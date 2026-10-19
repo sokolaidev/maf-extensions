@@ -10,6 +10,7 @@ import tarfile
 import urllib.request
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from itertools import batched
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -19,17 +20,27 @@ from .evidence import LIMITS, digest, encode, file_hash, read, require
 def inventory(root: Path) -> dict[str, str]:
     """Include every runtime file, including launchers, metadata and bytecode."""
     files: dict[str, str] = {}
-    for directory in ("worker/Lib/site-packages", "worker/Scripts", "openclaw/node_modules"):
-        base = root / directory
-        require(base.is_dir(), "missing_runtime_tree")
-        for path in base.rglob("*"):
-            require(
-                not path.is_symlink() and path.resolve().is_relative_to(base.resolve()),
-                "runtime_link",
-            )
-            if path.is_file():
-                files[path.relative_to(root).as_posix()] = file_hash(path)
-                require(len(files) <= 150000, "runtime_inventory_limit")
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        for directory in ("worker/Lib/site-packages", "worker/Scripts", "openclaw/node_modules"):
+            base = root / directory
+            require(base.is_dir(), "missing_runtime_tree")
+            resolved_base = base.resolve()
+
+            def inspect(path: Path) -> tuple[str, str] | None:
+                require(
+                    not path.is_symlink() and path.resolve().is_relative_to(resolved_base),
+                    "runtime_link",
+                )
+                if path.is_file():
+                    return path.relative_to(root).as_posix(), file_hash(path)
+                return None
+
+            # Bound queued work while overlapping Windows file-open latency.
+            for batch in batched(base.rglob("*"), 256):
+                for entry in pool.map(inspect, batch):
+                    if entry is not None:
+                        files[entry[0]] = entry[1]
+                        require(len(files) <= 150000, "runtime_inventory_limit")
     return files
 
 
