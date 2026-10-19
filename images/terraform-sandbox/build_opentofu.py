@@ -7,6 +7,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from build_go import download_modules
+
 
 def main() -> None:
     """Verify source and module pins, test the build and retain its inputs."""
@@ -36,11 +38,7 @@ def main() -> None:
     ).strip()
     if revision != source["revision"]:
         raise ValueError("OpenTofu source revision mismatch")
-    subprocess.run(
-        ["go", "get", *(name + "@" + version for name, version in source["modules"].items())],
-        cwd=checkout,
-        check=True,
-    )
+    download_modules(checkout, source["modules"])
     subprocess.run(["go", "mod", "verify"], cwd=checkout, check=True)
     for module, version in source["modules"].items():
         actual = subprocess.check_output(
