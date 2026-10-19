@@ -115,6 +115,8 @@ def observation(case, m):
             }
         ]
         count = 0 if actor == "worker" and phase == "pre_admission" else 1
+        if phase != "pre_admission":
+            wire(255, "request", method="tools/call", exchange="7" * 32, **identity)
         if count and phase != "pre_admission":
             wire(260, "binding_started", **identity)
         if phase != "active":
@@ -141,6 +143,7 @@ def observation(case, m):
             job_membership_verified=True,
         )
         if count and phase == "pre_admission":
+            wire(540, "request", method="tools/call", exchange="7" * 32, **identity)
             wire(550, "binding_started", **identity)
         settlement = {}
         if actor != "worker":
@@ -575,9 +578,20 @@ def test_phase_must_remain_held_until_actor_loss(phase, event):
     m = manifest()
     value = observation("worker-" + phase, m)
     identity = fault.one(value["transport"], "target_request")
+    if event == "settled" and phase == "pre_admission":
+        value["transport"].append(
+            {
+                "event": "request",
+                "method": "tools/call",
+                "exchange": "7" * 32,
+                "mono_ns": 360,
+                **{key: identity[key] for key in ("boot", "session", "request")},
+            }
+        )
     value["transport"].append(
         {
             "event": event,
+            "exchange": "7" * 32,
             "mono_ns": 450,
             "phase": phase,
             **{key: identity[key] for key in ("boot", "session", "request")},
@@ -692,3 +706,42 @@ def test_correlated_response_and_provider_result_are_allowed():
     )
     value["provider"].append({**value["provider"][0], "tool_result": "{}"})
     fault.verify(value, "gateway-response", m)
+
+
+@pytest.mark.parametrize("case", ["gateway-response", "client-cleanup", "worker-pre_admission"])
+def test_same_session_get_terminal_does_not_end_held_post(case):
+    m = manifest()
+    value = observation(case, m)
+    target = fault.one(value["transport"], "target_request")
+    value["transport"].append(
+        {
+            "event": "settled",
+            "method": "GET",
+            "exchange": "e" * 32,
+            "mono_ns": 450,
+            "boot": target["boot"],
+            "session": target["session"],
+        }
+    )
+    value["transport"].sort(key=lambda row: row["mono_ns"])
+    fault.verify(value, case, m)
+
+
+@pytest.mark.parametrize("case", ["gateway-response", "client-cleanup"])
+def test_target_post_terminal_before_fault_refuses(case):
+    m = manifest()
+    value = observation(case, m)
+    request = next(row for row in value["transport"] if row["event"] == "request")
+    value["transport"].append(
+        {
+            "event": "settled",
+            "method": "POST",
+            "exchange": request["exchange"],
+            "mono_ns": 450,
+            "boot": request["boot"],
+            "session": request["session"],
+        }
+    )
+    value["transport"].sort(key=lambda row: row["mono_ns"])
+    with pytest.raises(e.Refused, match="barrier_not_held_at_fault"):
+        fault.verify(value, case, m)

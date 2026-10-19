@@ -158,6 +158,20 @@ def verify(value: dict[str, Any], case: str, manifest: dict[str, Any]) -> None:
             and target["mono_ns"] <= held["mono_ns"] < barrier["mono_ns"],
             "barrier_correlation",
         )
+        requests = [
+            row
+            for row in transport
+            if row["event"] == "request"
+            and row.get("method") == "tools/call"
+            and all(row.get(key) == target[key] for key in ("boot", "session", "request"))
+        ]
+        require(
+            len(requests) <= 1
+            and (phase == "pre_admission" or len(requests) == 1)
+            and all(isinstance(row.get("exchange"), str) and row["exchange"] for row in requests),
+            "target_exchange_inventory",
+        )
+        exchanges = {row["exchange"] for row in requests}
         require(
             not any(
                 row.get("boot") == target["boot"]
@@ -166,7 +180,7 @@ def verify(value: dict[str, Any], case: str, manifest: dict[str, Any]) -> None:
                     row["event"] in {"barrier_released", "barrier_ended"}
                     and row.get("phase") == phase
                     or row["event"] == "settled"
-                    and row.get("session") == target["session"]
+                    and row.get("exchange") in exchanges
                     or phase == "pre_admission"
                     and row["event"] == "binding_started"
                     and row.get("session") == target["session"]
