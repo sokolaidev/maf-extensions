@@ -218,7 +218,9 @@ def test_hyperlight_payload_keeps_source_and_build_input_checks(tmp_path, monkey
             "ghcr.io/sokolaidev/maf-extensions/hyperlight-aks-probe@" + expected["registryDigest"]
         )
         image_id = expected["imageId"] if change != "image" else "sha256:" + "f" * 64
-        return subprocess.CompletedProcess(command, 0, stdout=image_id)
+        return subprocess.CompletedProcess(
+            command, 0, stdout=json.dumps({"Id": image_id, "Os": "linux", "Architecture": "amd64"})
+        )
 
     monkeypatch.setattr("verify_container_release.subprocess.run", run)
     monkeypatch.setattr("verify_container_release.verify_image", lambda *_: {"source": source})
@@ -522,3 +524,154 @@ def test_hyperlight_failed_packaging_never_records_qualification(tmp_path, monke
     monkeypatch.setattr(runtime, "verify_image", refuse)
     with pytest.raises(ValueError, match="cleanup failed"):
         runtime.check("hyperlight-aks-probe", "sha256:" + "c" * 64, tmp_path)
+
+
+@pytest.fixture
+def pulled_hyperlight(tmp_path, monkeypatch):
+    from verify_container_release import hyperlight_payload
+
+    expected, _ = evidence(tmp_path, "hyperlight-aks-probe")
+    details = {
+        "Id": expected["registryDigest"],
+        "Os": "linux",
+        "Architecture": "amd64",
+        "Descriptor": {
+            "digest": expected["registryDigest"],
+            "mediaType": MANIFEST,
+            "size": (tmp_path / "manifest.json").stat().st_size,
+        },
+    }
+    source = {
+        "repository": "https://github.com/sokolaidev/maf-extensions",
+        "revision": expected["sourceCommit"],
+        "dirty": False,
+    }
+    commands, executions = [], []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        assert command[-1] == f"{PREFIX}/hyperlight-aks-probe@{expected['registryDigest']}"
+        assert kwargs["check"]
+        if command[1] == "image":
+            assert command[2:5] == ["inspect", "--format", "{{json .}}"]
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(details))
+        assert command[1:4] == ["pull", "--platform", "linux/amd64"]
+        return subprocess.CompletedProcess(command, 0)
+
+    def smoke(image_id, inputs):
+        executions.append((image_id, inputs))
+        return {"source": source}
+
+    monkeypatch.setattr("verify_container_release.subprocess.run", run)
+    monkeypatch.setattr("verify_container_release.verify_image", smoke)
+    return expected, details, commands, executions, lambda: hyperlight_payload(expected, tmp_path)
+
+
+@pytest.mark.parametrize("store", ["classic", "classic-descriptor", "containerd"])
+def test_pulled_hyperlight_executes_only_the_verified_immutable_identity(pulled_hyperlight, store):
+    expected, details, commands, executions, verify_payload = pulled_hyperlight
+    if store != "containerd":
+        details["Id"] = expected["imageId"]
+    if store == "classic":
+        del details["Descriptor"]
+    assert verify_payload()["source"]["revision"] == expected["sourceCommit"]
+    assert len(commands) == 2
+    assert executions == [(details["Id"], expected["buildInputsSha256"].removeprefix("sha256:"))]
+    assert expected["imageId"] != expected["registryDigest"]
+
+
+@pytest.mark.parametrize("store", ["classic", "containerd"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "id",
+        "tag",
+        "os",
+        "architecture",
+        "descriptor-digest",
+        "descriptor-type",
+        "descriptor-size",
+        "descriptor-size-type",
+        "descriptor-malformed",
+    ],
+)
+def test_pulled_hyperlight_refuses_unbound_identity_before_execution(
+    pulled_hyperlight, store, change
+):
+    expected, details, _, executions, verify_payload = pulled_hyperlight
+    if store == "classic":
+        details["Id"] = expected["imageId"]
+    if change == "id":
+        details["Id"] = "sha256:" + "f" * 64
+    elif change == "tag":
+        details["Id"] = "hyperlight:latest"
+    elif change == "os":
+        details["Os"] = "windows"
+    elif change == "architecture":
+        details["Architecture"] = "arm64"
+    elif change == "descriptor-digest":
+        details["Descriptor"]["digest"] = "sha256:" + "f" * 64
+    elif change == "descriptor-type":
+        details["Descriptor"]["mediaType"] = "application/vnd.oci.image.index.v1+json"
+    elif change == "descriptor-size":
+        details["Descriptor"]["size"] += 1
+    elif change == "descriptor-size-type":
+        details["Descriptor"]["size"] = str(details["Descriptor"]["size"])
+    else:
+        details["Descriptor"] = []
+    with pytest.raises(ValueError):
+        verify_payload()
+    assert executions == []
+
+
+@pytest.mark.parametrize("descriptor", [None, {}])
+def test_manifest_local_id_requires_a_complete_descriptor(pulled_hyperlight, descriptor):
+    _, details, _, executions, verify_payload = pulled_hyperlight
+    details["Descriptor"] = descriptor
+    with pytest.raises(ValueError):
+        verify_payload()
+    assert executions == []
+
+
+@pytest.mark.parametrize("change", ["bytes", "config-policy", "manifest-type"])
+def test_local_execution_rechecks_authenticated_manifest_config_binding(
+    pulled_hyperlight, tmp_path, change
+):
+    expected, _, commands, executions, verify_payload = pulled_hyperlight
+    manifest = tmp_path / "manifest.json"
+    if change == "bytes":
+        manifest.write_bytes(manifest.read_bytes() + b" ")
+    elif change == "config-policy":
+        expected["imageId"] = "sha256:" + "f" * 64
+    else:
+        document = json.loads(manifest.read_bytes())
+        document["mediaType"] = "application/vnd.oci.image.index.v1+json"
+        write(manifest, document)
+        expected["registryDigest"] = digest(manifest)
+    with pytest.raises(ValueError):
+        verify_payload()
+    assert commands == executions == []
+
+
+@pytest.mark.parametrize("store", ["classic", "containerd"])
+def test_publication_pull_keeps_configuration_identity_for_inventory(tmp_path, monkeypatch, store):
+    import container_release_registry as registry
+
+    expected, _ = evidence(tmp_path)
+    raw = (tmp_path / "manifest.json").read_bytes()
+    monkeypatch.setattr(registry, "manifest", lambda *_: raw)
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        selected = expected["imageId" if store == "classic" else "registryDigest"]
+        return subprocess.CompletedProcess(command, 0, stdout=selected)
+
+    monkeypatch.setattr(registry.subprocess, "run", run)
+    if store == "classic":
+        assert registry.anonymous_pull(expected) == expected["imageId"]
+    else:
+        with pytest.raises(ValueError, match="configuration differs"):
+            registry.anonymous_pull(expected)
+    assert commands[0][:2] == ["docker", "--config"]
+    assert commands[0][-1].endswith("@" + expected["registryDigest"])
