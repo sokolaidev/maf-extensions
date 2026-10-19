@@ -119,7 +119,7 @@ The downloaded binary's size and SHA-256 match upstream release metadata. The bi
 
 ## Publication
 
-This PR changes build inputs only. After merge, Image release tracking detects the affected profiles during its next scheduled reconciliation or manual dispatch. Prepare and qualify each candidate through Container image release, then obtain maintainer approval before publication. Existing published digests remain unchanged.
+This PR changes build inputs only. After merge, Image release tracking detects the affected profiles during its next scheduled reconciliation or manual dispatch. Prepare and qualify each candidate through 1-Container image release, then obtain maintainer approval before publication. Existing published digests remain unchanged.
 """
     return changes, body
 

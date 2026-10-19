@@ -1,4 +1,4 @@
-name: Container image release
+name: 1-Container image release
 run-name: >-
   ${{ inputs.operation == 'abandon' && 'Permanently abandon' || 'Publish' }}
   ${{ inputs.profile }}:${{ inputs.version }}
@@ -38,7 +38,7 @@ on:
         description: Required explanation when abandoning an incomplete version
         type: string
       bicep_route:
-        description: Bicep compiler acquisition (Bicep profiles only)
+        description: Bicep compiler acquisition (choose upstream for non-Bicep images; source is unsupported)
         type: choice
         options: [upstream, source]
         default: upstream

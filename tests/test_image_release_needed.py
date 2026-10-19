@@ -1057,7 +1057,7 @@ def test_ci_has_no_automatic_image_builds_and_tracker_cannot_publish():
     assert set(trigger["workflows"]) == {
         "Image security",
         "Container image monitor",
-        "Container image release",
+        "1-Container image release",
     }
     assert workflow["concurrency"]["cancel-in-progress"] is False
     job = workflow["jobs"]["reconcile"]

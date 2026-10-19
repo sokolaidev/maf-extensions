@@ -18,8 +18,14 @@ PROFILES = {"bicep", "bicep-avm", "bicep-docker-sbx"}
 
 def validate_route(route: str, profile: str) -> None:
     """Reject unknown routes and source selection for unrelated release profiles."""
-    if route not in ROUTES or (route != "upstream" and profile not in PROFILES):
-        raise ValueError("Bicep source builds require a Bicep image profile")
+    if route not in ROUTES:
+        raise ValueError(f"Unknown bicep_route={route!r}; choose 'upstream' or 'source'")
+    if route != "upstream" and profile not in PROFILES:
+        raise ValueError(
+            f"Image profile {profile!r} does not support bicep_route='source'. "
+            "Choose 'upstream' for this image. This option controls only Bicep compiler "
+            "acquisition; it does not change how Terraform or other engines are built."
+        )
 
 
 def command(route: str, tag: str) -> list[str]:
