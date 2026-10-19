@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.51.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.51.0...maf-sandbox-v0.51.1) (2026-10-19)
+
+
+### Fixes
+
+* **sandbox:** withhold hidden names using public argument provenance ([#2041](https://github.com/sokolaidev/maf-extensions/issues/2041)) ([7046a3f](https://github.com/sokolaidev/maf-extensions/commit/7046a3f9de071531061966cd2174532d0f8538ef))
+
 ## [0.51.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.50.0...maf-sandbox-v0.51.0) (2026-10-18)
 
 
