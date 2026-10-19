@@ -252,31 +252,31 @@ def valid_released_cell(cell: str, changelog: str, distribution: str) -> bool:
 
 
 def readme_package_table() -> list[tuple[str, str]]:
-    """Each row of the root README's package table: the package it links to, and its *Released* cell.
+    """Each row of the root README's package tables: its package and *Released* cell.
 
     Rows, not a mapping keyed by package: two rows for one package have to reach the caller as
     two, and a mapping would keep the last of them and call the table complete.
     """
     lines = README.read_text(encoding="utf-8").splitlines()
-    header = next(
-        (
-            index
-            for index, line in enumerate(lines)
-            if line.startswith("|") and table_cells(line)[:2] == ["Package", "Released"]
-        ),
-        None,
-    )
-    assert header is not None, "README.md carries no `| Package | Released | … |` table"
+    headers = [
+        index
+        for index, line in enumerate(lines)
+        if line.startswith("|") and table_cells(line)[:2] == ["Package", "Released"]
+    ]
+    assert headers, "README.md carries no `| Package | Released | … |` table"
     rows = []
-    for line in lines[header + 1 :]:
-        if not line.startswith("|"):
-            break
-        cells = table_cells(line)
-        if all(re.fullmatch(r":?-+:?", cell) for cell in cells):
-            continue
-        link = ROW_PACKAGE.search(cells[0])
-        assert link is not None, f"README.md table row {cells[0]!r} links to no package directory"
-        rows.append((link.group(1), cells[1]))
+    for header in headers:
+        for line in lines[header + 1 :]:
+            if not line.startswith("|"):
+                break
+            cells = table_cells(line)
+            if all(re.fullmatch(r":?-+:?", cell) for cell in cells):
+                continue
+            link = ROW_PACKAGE.search(cells[0])
+            assert link is not None, (
+                f"README.md table row {cells[0]!r} links to no package directory"
+            )
+            rows.append((link.group(1), cells[1]))
     return rows
 
 
