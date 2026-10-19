@@ -166,6 +166,12 @@ def _engine_socket() -> Path:
     except FileNotFoundError:
         is_socket = False
     if not is_socket:
+        print(f"daemon status: {status!r}")
+        print(f"socket directory: {list(engine.parent.iterdir())!r}")
+        print(
+            subprocess.run(["ls", "-la", str(engine.parent)], capture_output=True, text=True).stdout
+        )
+        print(Path("/proc/net/unix").read_text())
         pytest.skip(f"no engine socket at {engine} on this host")
     return engine
 
