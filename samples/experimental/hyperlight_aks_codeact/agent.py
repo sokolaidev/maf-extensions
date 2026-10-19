@@ -104,7 +104,7 @@ async def run(*, smoke: bool = True) -> int:
                 instructions="Always use execute_code and report the integer the tool returned.",
                 tools=tools,
             )
-            response = await agent.run(TASK)
+            response = await agent.run(TASK, options={"store": False})
             reply = response.text
             print(quoted(reply), flush=True)
             outputs = tool_results(response, "execute_code")
