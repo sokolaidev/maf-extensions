@@ -4,6 +4,18 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.31.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.30.0...maf-sandbox-acas-v0.31.0) (2026-10-19)
+
+
+### Features
+
+* support MAF 1.22 and distinguish recall call occurrences ([#1963](https://github.com/sokolaidev/maf-extensions/issues/1963)) ([7c0194c](https://github.com/sokolaidev/maf-extensions/commit/7c0194c293bef15753b952e10318dbb7e122181b))
+
+
+### Fixes
+
+* require maf-sandbox 0.51.0 in the packages that use it ([#2035](https://github.com/sokolaidev/maf-extensions/issues/2035)) ([a53ca06](https://github.com/sokolaidev/maf-extensions/commit/a53ca06dd391f42361b016f9764db3df124554c0))
+
 ## [0.30.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.29.2...maf-sandbox-acas-v0.30.0) (2026-10-14)
 
 
