@@ -91,8 +91,7 @@ jobs:
       # Five non-root guests, built below, varying along two axes. **Who owns what around
       # `work_dir`**: the image's build (as `images/bicep-sandbox/Dockerfile` leaves it), the
       # image's user (as the hardening advice that produces a non-root `USER` also asks for),
-      # or that user all the way up to `/maf-sandbox` — which is the shape `reclaim` checks
-      # for, since a guest that can write *above* `work_dir` can swap it. **How `USER` is
+      # or that user all the way up to `/maf-sandbox`, allowing guest parent replacement. **How `USER` is
       # spelled**: a numeric pair is taken from `Config.User` as-is, while a name has to be
       # resolved against the container's own account files. The last carries no `work_dir` at
       # all, so the write has to send it. Their own column because every other image this

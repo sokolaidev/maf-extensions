@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.29.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.28.2...maf-sandbox-docker-v0.29.0) (2026-10-19)
+
+
+### Features
+
+* support MAF 1.22 and distinguish recall call occurrences ([#1963](https://github.com/sokolaidev/maf-extensions/issues/1963)) ([7c0194c](https://github.com/sokolaidev/maf-extensions/commit/7c0194c293bef15753b952e10318dbb7e122181b))
+
+
+### Fixes
+
+* **docker:** keep deletion at guest authority and verify completion ([#2039](https://github.com/sokolaidev/maf-extensions/issues/2039)) ([e14109b](https://github.com/sokolaidev/maf-extensions/commit/e14109b6f383116fb45283dd31c25038c0932c99))
+* require maf-sandbox 0.51.0 in the packages that use it ([#2035](https://github.com/sokolaidev/maf-extensions/issues/2035)) ([a53ca06](https://github.com/sokolaidev/maf-extensions/commit/a53ca06dd391f42361b016f9764db3df124554c0))
+
 ## [0.28.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.28.1...maf-sandbox-docker-v0.28.2) (2026-10-16)
 
 

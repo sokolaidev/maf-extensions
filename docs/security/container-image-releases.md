@@ -51,7 +51,7 @@ The first publishing workflow covers all eleven currently scanned profiles on Li
 | `terraform-random` | [Terraform with its verified random-provider preparation and local module bundle](../../images/terraform-sandbox/TERRAFORM.md) |
 | `opentofu-random` | [OpenTofu with the approved random-provider preparation and local module bundle](../../images/terraform-sandbox/OPENTOFU.md) |
 | `terraform-avm` | Terraform with the pinned AVM catalogue and provider mirror; [consumer guide](../../images/terraform-sandbox/AVM.md) |
-| `hyperlight` | The repository's Hyperlight runtime and verification application |
+| `hyperlight-aks-probe` | [Scoped Hyperlight verification application and AKS consumer guide](../../images/hyperlight-sandbox/README.md) |
 | `egress-proxy` | [Patched proxy infrastructure for Docker/WSLC, with Docker consumer qualification](../../images/egress-proxy/README.md) |
 
 The initial platform is `linux/amd64`. Custom provider manifests, the larger AVM/platform variants, other architectures and the upstream Hyperlight device plugin require their own release scope and evidence. Publishing the Hyperlight verification application does not qualify an embedding application's payload or prove live KVM/AKS behavior. Each profile records its intended consumers and actual compatibility checks before its first publication.
@@ -317,7 +317,7 @@ Builds use profile `graphviz`, source path `images/graphviz-sandbox`, and regist
 | Decision | State | Tracking |
 |---|---|---|
 | Approval context and Mobile usability | Presentation implemented; maintainer confirmed actual Mobile approval and requested closure; separate web observation not recorded | [#1854](https://github.com/sokolaidev/maf-extensions/issues/1854) (closed) by [#1856](https://github.com/sokolaidev/maf-extensions/pull/1856) (merged) |
-| Remaining approval UI observations | Web-screen, Mobile browser fallback and per-flow observations pending | [#1904](https://github.com/sokolaidev/maf-extensions/issues/1904) (open) |
+| Remaining approval UI observations | Closed by maintainer acceptance of the recorded publication views; browser/Mobile versions, browser fallback, full scrolling, freshness-policy rendering, recovery and abandonment remain unverified | [#1904](https://github.com/sokolaidev/maf-extensions/issues/1904) (closed); [maintainer acceptance](https://github.com/sokolaidev/maf-extensions/issues/1904#issuecomment-6256275245) |
 | Public GHCR destination and repository linkage | Graphviz 0.1.2 and Bicep AVM 0.1.0 public pull and immutable evidence delivery passed | untracked |
 | Strict High/Critical gate for publication | Graphviz and Bicep AVM publication and first monitoring assessment passed; remaining profiles pending | untracked |
 | 1: Independent per-profile versions and immutable release identities | Graphviz 0.1.2 and Bicep AVM 0.1.0 identities published and verified; remaining profiles pending | untracked |

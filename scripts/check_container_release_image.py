@@ -54,7 +54,7 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             "containersRemaining": result["containersRemaining"],
             "liveDeploymentVerified": False,
         }
-    if profile == "hyperlight":
+    if profile == "hyperlight-aks-probe":
         from container_release import digest
 
         inputs = directory / "hyperlight-build-inputs.json"
@@ -64,7 +64,11 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             "profile": profile,
             "checkedAt": now(),
             "kind": "packaging",
+            "passed": True,
             "result": result,
+            "containersRemaining": [],
+            "hypervisorExecutionVerified": False,
+            "liveDeploymentVerified": False,
         }
     if profile == "bicep-docker-sbx":
         import bicep_docker_sbx_qualification

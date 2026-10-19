@@ -139,17 +139,17 @@ def test_hyperlight_release_transition_defers_the_entire_scan_evidence_chain():
     steps = workflow["jobs"]["scan"]["steps"]
     preflight = next(step for step in steps if step.get("id") == "hyperlight-image")
     build = next(step for step in steps if step.get("id") == "build")
-    assert preflight["if"] == "matrix.profile == 'hyperlight'"
+    assert preflight["if"] == "matrix.profile == 'hyperlight-aks-probe'"
     assert preflight["run"] == (
         'python3 scripts/check_hyperlight_image_compatibility.py >> "$GITHUB_OUTPUT"'
     )
     assert build["if"] == (
-        "matrix.profile != 'hyperlight' || steps.hyperlight-image.outputs.build == 'true'"
+        "matrix.profile != 'hyperlight-aks-probe' || steps.hyperlight-image.outputs.build == 'true'"
     )
     assert steps.index(preflight) < steps.index(build)
     deferred = next(step for step in steps if step.get("name") == "Report deferred Hyperlight scan")
     assert deferred["if"] == (
-        "matrix.profile == 'hyperlight' && steps.hyperlight-image.outputs.build == 'false'"
+        "matrix.profile == 'hyperlight-aks-probe' && steps.hyperlight-image.outputs.build == 'false'"
     )
     assert (
         "no image, inventory, vulnerability scan or security evidence artifact" in deferred["run"]

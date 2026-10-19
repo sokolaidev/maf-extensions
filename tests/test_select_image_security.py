@@ -225,11 +225,14 @@ def test_release_with_image_change_selects_that_image(repository):
             "images/terraform-sandbox/install.py",
             ["terraform-random", "opentofu-random", "terraform-avm"],
         ),
-        ("images/hyperlight-sandbox/Dockerfile", ["hyperlight"]),
-        ("samples/experimental/hyperlight-aks/probe.py", ["hyperlight"]),
-        ("packages/maf-sandbox/src/maf_sandbox/router.py", ["hyperlight"]),
-        ("packages/maf-sandbox-codeact/src/maf_sandbox_codeact/tool.py", ["hyperlight"]),
-        ("packages/maf-sandbox-hyperlight/src/maf_sandbox_hyperlight/worker.py", ["hyperlight"]),
+        ("images/hyperlight-sandbox/Dockerfile", ["hyperlight-aks-probe"]),
+        ("samples/experimental/hyperlight-aks/probe.py", ["hyperlight-aks-probe"]),
+        ("packages/maf-sandbox/src/maf_sandbox/router.py", ["hyperlight-aks-probe"]),
+        ("packages/maf-sandbox-codeact/src/maf_sandbox_codeact/tool.py", ["hyperlight-aks-probe"]),
+        (
+            "packages/maf-sandbox-hyperlight/src/maf_sandbox_hyperlight/worker.py",
+            ["hyperlight-aks-probe"],
+        ),
         ("packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/Dockerfile", ["egress-proxy"]),
         ("LICENSE", ["egress-proxy", "bicep-docker-sbx"]),
         ("images/egress-proxy/Dockerfile", ["egress-proxy"]),
@@ -421,7 +424,7 @@ def test_consumer_guide_does_not_hide_image_or_unknown_document_changes(reposito
     assert select(root, "push", base, head)[0] == ["graphviz", "drawio-export"]
     assert affected("images/new-image/README.md") == PROFILES
     assert affected("images/graphviz-sandbox/assets/README.md") == ("graphviz",)
-    assert affected("packages/maf-sandbox/README.md") == ("hyperlight",)
+    assert affected("packages/maf-sandbox/README.md") == ("hyperlight-aks-probe",)
 
 
 def test_deleted_image_input_and_new_profile_both_select_scans(repository):

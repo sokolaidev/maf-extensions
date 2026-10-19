@@ -79,7 +79,6 @@ def test_forged_files_do_not_redirect_cleanup_and_observed_escapees_are_stopped(
             backend._docker,
             name,
             30,
-            cap_drop_all=True,
             guest_uid=65534,
             guest_gid=65534,
             instance_id=created.stdout.decode().strip(),

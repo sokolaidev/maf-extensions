@@ -1,8 +1,38 @@
-# Hyperlight on AKS
+# Hyperlight AKS probe image
 
 This deployment adds one application owner to the pinned upstream [Hyperlight device plugin](https://github.com/hyperlight-dev/hyperlight-on-kubernetes/tree/fc71b4501d23977fcc54f7be144d884fc8210667). Each pod owns one `(scope, thread_id, agent_id, kind)`, one resident VM and one active call. The application and protocol adapter run together. The host establishes these identifiers before accepting tool calls; model arguments cannot choose them. Several calls can reuse the pod within that ownership scope. The router defaults to disposal; select `Cleanup.RESET` explicitly for warm reuse.
 
 The integration requires Linux x86-64 KVM, cgroup v2, finite CPU/memory/PID limits, disabled swap, CDI support and an operator-approved device plugin. Its workload satisfies Kubernetes Restricted admission. The upstream plugin remains trusted node infrastructure: it runs as root and writes kubelet/CDI directories. Installation must fit the cluster's actual admission policies. AKS Automatic acceptance and production operations are not implied by the Standard AKS probe.
+
+## Public image and release evidence
+
+The public release profile is `hyperlight-aks-probe`, with target registry repository `ghcr.io/sokolaidev/maf-extensions/hyperlight-aks-probe` for Linux/amd64. It contains Python 3.13, the checkout's `maf-sandbox`, `maf-sandbox-hyperlight` and `maf-sandbox-codeact` wheels, their locked dependencies, the pod supervisor and the [verification application](../../samples/experimental/hyperlight-aks/probe.py). Exact installed versions and payload hashes are recorded in the release evidence. This is a probe application for an operator-prepared KVM cluster, not a generic application image or a distribution of the privileged device plugin. The source directory remains `images/hyperlight-sandbox`; there is no separate public `hyperlight` profile.
+
+Select the reviewed release from the [image catalogue](https://sokolaidev.github.io/maf-extensions/) and follow the [signed release verification procedure](../../docs/security/container-image-releases.md#evidence-and-verification). The independent policy must select `hyperlight-aks-probe` and include `buildInputsSha256`, the approved SHA-256 of `hyperlight-build-inputs.json`, alongside the exact version, source commit/ref, registry and assessed-manifest digests, image ID and attempt ID. Obtain those expectations from the reviewed candidate and publisher policy. Run `scripts/verify_container_release.py` with that policy and the retained release evidence before executing the probe. It verifies provenance, SPDX SBOM and signed release completion before pulling the digest and checking the clean source and embedded build inputs. The older runtime-only verifier below does not replace these three public-release checks.
+
+The approved policy's `imageId` remains the configuration digest from the authenticated manifest. For local execution, the consumer verifier accepts either that configuration ID from Docker's classic store or the exact authenticated manifest ID from its containerd store. A manifest ID requires a matching single-image descriptor; changed digests, descriptors and platforms refuse before image execution. This consumer compatibility does not change the release/monitoring runner's configuration-ID contract for runtime and SBOM evidence.
+
+The release workflow records the candidate's security assessment and repeats restricted packaging qualification on a fresh runner after verifying candidate signatures and pulling anonymously. Packaging checks establish imports, dependency consistency, source/input identity and removal of the named smoke container. They do not open KVM or establish AKS execution. Current vulnerability monitoring is reported separately from signed release identity; no High/Critical findings is not a malware-free or production-safety guarantee. The supported initial-publication scope and its remaining live acceptance evidence are tracked in [#1845](https://github.com/sokolaidev/maf-extensions/issues/1845), under [#1836](https://github.com/sokolaidev/maf-extensions/issues/1836).
+
+## Qualify the published probe on AKS
+
+Use the verified immutable image reference as `IMAGE_DIGEST_REF`, an explicit operator-owned kubeconfig/context, and a dedicated workload namespace with the admission/RBAC prerequisites below. Confirm the actual node and approved device-plugin rollout with `scripts/hyperlight_aks.py nodes` and `plugin-status`; an image signature does not establish node or plugin trust. The plugin's remaining provenance work is tracked separately in [#1424](https://github.com/sokolaidev/maf-extensions/issues/1424).
+
+Run the existing positive probe through the scoped controller:
+
+```sh
+uv run python scripts/hyperlight_aks.py supervise \
+  --kubeconfig "$KUBECONFIG_PATH" --context "$KUBE_CONTEXT" \
+  --namespace "$PROBE_NAMESPACE" \
+  --scope release-qualification --thread "$RELEASE_ATTEMPT" --agent probe \
+  --image "$IMAGE_DIGEST_REF" --mode positive > "$EVIDENCE_DIR/aks-positive.json"
+```
+
+Repeat with `--mode codeact-fixed` and a distinct thread identifier to check the actual tool contract and reset between calls. The positive probe checks real guest execution, ownership refusal, queued-call expiry, reset, ordinary exception reuse, closed network, stale-instance disposal refusal and fresh state after disposal. The controller bounds the pod lifetime and returns only after confirmed cleanup; a pending cleanup, missing expected probe event, nonzero result or unresolved pod is a failed qualification. If the host/controller is interrupted, use the documented `recover` procedure with the same ownership key before treating capacity as released.
+
+Retain the verified release policy, signature evidence, exact digest/source, node/platform and plugin observations, positive and CodeAct diagnostics, ownership key and confirmed cleanup results in operator-controlled evidence storage. Link a redacted report from #1845 before closing the initial-publication tracker. Do not commit kubeconfigs, credentials or private infrastructure identifiers to this repository. A passing bounded probe applies to that digest and measured environment; additional AKS modes, failure/concurrency rehearsals, embedding applications and production operations require their own qualification.
+
+For usage problems, include the image profile, version/digest, source revision and a sanitized failing check in a [bug report](https://github.com/sokolaidev/maf-extensions/issues/new?template=bug.md). Report suspected security vulnerabilities through the [security policy](../../SECURITY.md).
 
 ## Build and install
 

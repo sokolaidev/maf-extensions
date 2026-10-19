@@ -12,7 +12,7 @@
     "terraform-random",
     "opentofu-random",
     "terraform-avm",
-    "hyperlight",
+    "hyperlight-aks-probe",
     "egress-proxy"
   ]
 }
