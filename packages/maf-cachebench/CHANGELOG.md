@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.2.0...maf-cachebench-v0.3.0) (2026-10-19)
+
+
+### Features
+
+* support MAF 1.22 and distinguish recall call occurrences ([#1963](https://github.com/sokolaidev/maf-extensions/issues/1963)) ([7c0194c](https://github.com/sokolaidev/maf-extensions/commit/7c0194c293bef15753b952e10318dbb7e122181b))
+
 ## [0.2.0](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.1.0...maf-cachebench-v0.2.0) (2026-10-14)
 
 
