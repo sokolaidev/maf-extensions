@@ -1,4 +1,4 @@
-name: Container image release
+name: 1-Container image release
 run-name: >-
   ${{ inputs.operation == 'abandon' && 'Permanently abandon' || 'Publish' }}
   ${{ inputs.profile }}:${{ inputs.version }}

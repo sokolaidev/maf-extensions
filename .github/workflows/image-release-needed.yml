@@ -2,7 +2,7 @@ name: Image release tracking
 
 on:
   workflow_run:
-    workflows: [Image security, Container image monitor, Container image release]
+    workflows: [Image security, Container image monitor, 1-Container image release]
     types: [completed]
     branches: [main]
   workflow_dispatch:

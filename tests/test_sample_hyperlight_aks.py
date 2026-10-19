@@ -313,7 +313,7 @@ def test_model_requires_tool_evidence_and_matching_answer(
     assert client_args == [
         {"model": "test-model", "base_url": "https://example.invalid/v1", "api_key": "test-key"}
     ]
-    turn.assert_awaited_once_with(sample.TASK)
+    turn.assert_awaited_once_with(sample.TASK, options={"store": False})
     assert stack.events == ["purge", "close"]
 
 
@@ -394,3 +394,100 @@ def test_model_secret_replaces_existing_entries_once(launcher, monkeypatch, bind
 def test_scaffold_matches_numbered_samples():
     canonical = _SAMPLE.parents[1] / "03_acas_codeact" / "_scaffold.py"
     assert (_SAMPLE / "_scaffold.py").read_bytes() == canonical.read_bytes()
+
+
+def test_model_replays_tool_result_without_server_state(sample, stack, monkeypatch):
+    import json
+
+    import agent_framework.openai
+    import httpx
+    from agent_framework import tool
+    from openai import AsyncOpenAI
+
+    requests = []
+    executed = []
+    expected = stack.tool.invoke.return_value
+
+    @tool
+    def execute_code(code: str) -> str:
+        """Execute the supplied Python program."""
+        executed.append(code)
+        return expected
+
+    def respond(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        assert body["store"] is False
+        assert "previous_response_id" not in body
+        assert "conversation" not in body
+        if len(requests) == 1:
+            output = [
+                {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "opaque"},
+                {
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "call_1",
+                    "name": "execute_code",
+                    "arguments": json.dumps({"code": sample.PROGRAM}),
+                    "status": "completed",
+                },
+            ]
+        else:
+            assert len(requests) == 2
+            assert any(
+                item.get("type") == "function_call_output"
+                and item.get("call_id") == "call_1"
+                and expected in str(item.get("output"))
+                for item in body["input"]
+            )
+            assert any(
+                item.get("type") == "reasoning" and item.get("encrypted_content") == "opaque"
+                for item in body["input"]
+            )
+            output = [
+                {
+                    "type": "message",
+                    "id": "msg_1",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": sample.ANSWER, "annotations": []}],
+                }
+            ]
+        return httpx.Response(
+            200,
+            json={
+                "id": f"resp_{len(requests)}",
+                "object": "response",
+                "created_at": 1,
+                "model": "test-model",
+                "status": "completed",
+                "output": output,
+            },
+        )
+
+    client_type = agent_framework.openai.OpenAIChatClient
+    for name, value in zip(
+        sample.MODEL_VARS, ["https://example.invalid/v1", "test-model", "test-key"], strict=True
+    ):
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(sample, "make_codeact_tools", lambda *args, **kwargs: [execute_code])
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as transport:
+            client = AsyncOpenAI(
+                api_key="test-key",
+                base_url="https://example.invalid/v1",
+                http_client=transport,
+                max_retries=0,
+            )
+            monkeypatch.setattr(
+                agent_framework.openai,
+                "OpenAIChatClient",
+                lambda **kwargs: client_type(model=kwargs["model"], async_client=client),
+            )
+            return await sample.run(smoke=False)
+
+    assert asyncio.run(run()) == 0
+    assert len(requests) == 2
+    assert executed == [sample.PROGRAM]
+    assert stack.events == ["purge", "close"]
