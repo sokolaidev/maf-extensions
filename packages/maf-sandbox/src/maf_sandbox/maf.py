@@ -47,7 +47,6 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
-import json
 import logging
 import math
 import ntpath
@@ -56,7 +55,7 @@ import string
 import threading
 import time
 import warnings
-from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextvars import ContextVar
 from copy import copy
 from dataclasses import dataclass, field, replace
@@ -294,29 +293,11 @@ _CALL_CONTEXT: ContextVar[_CallProvenance | None] = ContextVar(
 
 
 def argument_provenance_middleware() -> Any:
-    """Middleware that lets a tool body see its arguments as the framework first received them.
+    """Expose the active call context to the public argument-provenance adapter.
 
-    A host's information-flow middleware may rewrite an argument before the body runs — a
-    variable reference becomes the content it stands for — and the body is handed the result
-    with no record of the substitution.  Wire this beside it and
-    :func:`positions_holding_hidden_content` answers from that record rather than by inference.
-
-    Order does not matter: middleware share one call context, so this publishes the same
-    record whichever side of the chain it sits on.
-
-    **It publishes the framework's call context, not an accessor.** That object is the one the
-    framework already hands any tool body declaring a ``FunctionInvocationContext`` parameter,
-    so nothing here widens what a body can reach.  Nothing *public* returns it: this factory
-    answers with a stateless middleware, and :func:`positions_holding_hidden_content` answers
-    with positions in the list it was given.
-
-    **Any middleware that rewrites arguments must sit before the information-flow middleware**,
-    whichever side this one is on: the record is taken there, so an edit made after it reads as
-    content the framework substituted.
-
-    Returns a middleware instance to add to an agent's ``middleware`` list::
-
-        Agent(..., middleware=[LabelTrackingFunctionMiddleware(), argument_provenance_middleware()])
+    Wire beside ``LabelTrackingFunctionMiddleware`` in either order. Both share the same
+    context; :func:`positions_holding_hidden_content` asks the framework for rewrite positions.
+    The shared lifetime guard expires inherited child contexts when this middleware exits.
     """
     from agent_framework import FunctionMiddleware
 
@@ -605,7 +586,7 @@ def _write_call_arguments(context: Any) -> Mapping[str, Any] | None:
 
     A call's arguments are a mapping *or* a model, and the framework keeps whichever it was
     given, so a model is dumped before it is read — duck-typed, as
-    ``_spellings_before_rewriting`` does it, because this package does not depend on the
+    the argument-provenance adapter does it, because this package does not depend on the
     framework's validation library.
     """
     arguments: Any = getattr(context, "arguments", None)
@@ -635,100 +616,9 @@ def _reachable_middleware() -> Any | None:
     return get_current_middleware()
 
 
-#: Where the framework keeps a call's arguments as they arrived, before it expands any
-#: reference into them.  **Not a published contract** — a string literal inside
-#: `LabelTrackingFunctionMiddleware`, and this package accepts ``agent-framework-core>=1.22,<1.23``
-#: — so a release that range admits may rename it and this would stop answering.  Two
-#: things keep that from being silent: a divergence alarm in the suite, and, for a host whose
-#: upgrade this suite never saw, `_warn_once_about_a_missing_record` beside an answer that names
-#: every position rather than quoting one.
-#: Retiring both needs a public availability signal: MAF 1.21 returns an empty provenance
-#: map both when tracking is unavailable and when no arguments were rewritten.
-_ORIGINAL_ARGUMENTS_KEY = "original_arguments_for_messages"
-
-#: One warning per process, not one per refusal.
-_warned_about_a_missing_record = False
-
-
-def _warn_once_about_a_missing_record(logger: logging.Logger) -> None:
-    """Say that the framework stopped keeping the record, where that is what it must mean.
-
-    Called where a middleware is reachable and the call carries no `_ORIGINAL_ARGUMENTS_KEY` —
-    see :func:`_the_framework_kept_no_record` for why that pairing is the tell.
-    """
-    global _warned_about_a_missing_record
-    with _warning_lock:
-        if _warned_about_a_missing_record:
-            return
-        _warned_about_a_missing_record = True
-    # Logged outside the lock: a handler is arbitrary host code and may be slow or re-entrant.
-    logger.warning(
-        "argument_provenance_middleware: this agent-framework-core no longer records %r on a "
-        "call, so which arguments it rewrote can no longer be answered. Every checked value is "
-        "being named by its position instead of quoted, which is safe and noisy. See "
-        "https://github.com/sokolaidev/maf-extensions/issues/826",
-        _ORIGINAL_ARGUMENTS_KEY,
-    )
-
-
 def _framework_metadata(context: Any) -> Mapping[str, Any]:
     """What the framework left on this call, or empty where it left nothing."""
     return cast("Mapping[str, Any]", getattr(context, "metadata", None) or {})
-
-
-def _the_framework_kept_a_record(context: Any) -> bool:
-    """Whether this call carries the framework's record of the arguments it received."""
-    return _ORIGINAL_ARGUMENTS_KEY in _framework_metadata(context)
-
-
-def _the_framework_kept_no_record(context: Any) -> bool:
-    """Whether a middleware ran on this call and left no record of the arguments it received.
-
-    A middleware that ran and kept no record is the framework's contract having moved, rather
-    than a host that wired no information-flow middleware at all — and the two have to be told
-    apart, because the second is ordinary and the first must fail closed.
-
-    **Whether one ran is asked of the accessor, which the framework publishes.**  It answers
-    from the worker thread a synchronous body is dispatched to, because the middleware holds
-    it in a ``ContextVar`` and ``asyncio.to_thread`` copies one; before ``agent-framework-core``
-    1.18 it was a thread-local and did not, which is why this used to read a second metadata
-    key — one more unpublished name to keep alive, for a question a published one answers.
-    """
-    return _ORIGINAL_ARGUMENTS_KEY not in _framework_metadata(context) and (
-        _reachable_middleware() is not None
-    )
-
-
-def _spellings_before_rewriting(context: Any, argument: str) -> list[str] | None:
-    """``argument``'s values as the caller spelled them, before the framework rewrote any.
-
-    ``None`` where the record is absent — no information-flow middleware ran, so nothing was
-    rewritten — and equally where it holds neither a string nor a list for ``argument``, which
-    means a caller named a parameter this call does not have and must not be read as "nothing
-    was rewritten".
-
-    **A ``str`` is one spelling, not a sequence of characters.**  A tool whose parameter is a
-    single path has one value to check, and reading its argument as "no list under this name"
-    would fail it closed on every call — hiding a path the caller spelled itself.
-
-    A call's arguments are a mapping *or* a model, and the framework keeps whichever it was
-    given, so a model is dumped before it is read.  Duck-typed rather than imported: this
-    package does not depend on the framework's validation library.
-    """
-    original: Any = _framework_metadata(context).get(_ORIGINAL_ARGUMENTS_KEY)
-    dump = getattr(original, "model_dump", None)
-    if callable(dump):
-        original = dump()
-    if not isinstance(original, Mapping):
-        return None
-    spellings: Any = cast("Mapping[str, Any]", original).get(argument)
-    if isinstance(spellings, str):
-        return [spellings]
-    if not isinstance(spellings, (list, tuple)):
-        return None
-    return [
-        item if isinstance(item, str) else str(item) for item in cast("Sequence[Any]", spellings)
-    ]
 
 
 def _awaits(body: object) -> bool:
@@ -774,144 +664,46 @@ def _prefixed(name: str) -> str:
     return name.replace("%", "%%")
 
 
-def _reduced_form(payload: object) -> object:
-    """One of the two forms the middleware substitutes for ``payload`` when it expands it.
-
-    A mapping, or JSON text naming a ``response``, is reduced to that field.  **Everything else
-    is substituted unchanged**, which is the branch that matters most here: a payload of any
-    other type still reaches an argument, as ``str()`` of itself, once the reference is spliced
-    into surrounding text.  So this always answers with something, and "no reduction" is the
-    payload rather than an absence — there is no shape a caller should skip.
-
-    **Whether a core applies this reduction at all is :func:`_substituted_forms`' to say**, and
-    it is why that function offers this beside the payload rather than instead of it.
-
-    **It mirrors behaviour rather than a published contract.** The rule lives inside
-    ``agent_framework.security`` (MIT, Microsoft Corporation), which promises nothing about it,
-    and it has already moved once.  A shape this stops matching costs precision rather than the
-    check, because :func:`_substituted_forms` offers the payload whole beside this reduction, so
-    the comparison holds whichever one a core substitutes.  ``THIRD-PARTY-NOTICES.md`` records
-    the reuse.
-    """
-    if isinstance(payload, Mapping):
-        mapping = cast("Mapping[str, Any]", payload)
-        return mapping["response"] if "response" in mapping else mapping
-    if isinstance(payload, str):
-        stripped = payload.strip()
-        if stripped.startswith("{") and stripped.endswith("}"):
-            try:
-                parsed = json.loads(stripped)
-            except (ValueError, RecursionError):
-                # `RecursionError` is not a `ValueError`, and this walks the whole store: a
-                # payload nothing referenced must not end the call that asked about another.
-                return payload
-            if isinstance(parsed, dict) and "response" in parsed:
-                return cast("dict[str, Any]", parsed)["response"]
-    return payload
-
-
-def _deliverable_texts(value: object) -> Iterator[str]:
-    """Each text a reference to ``value`` alone, or spliced into other text, could deliver.
-
-    Two, and only a ``str`` subclass makes them differ: substituted alone a payload arrives as
-    itself, and spliced it arrives as ``str()`` of itself — which a subclass may define to
-    answer neither its own characters.  Rendering only one of those leaves the other form
-    uncompared, which is a value quoted back.
-
-    **``str()`` runs a stored payload's own code, and this walks the whole store**, so a payload
-    nothing referenced must not end the call that asked about another — the rule
-    :func:`_reduced_form`'s parse already holds to.  A form that will not render is dropped
-    rather than reported, which costs nothing: the framework splices a reference by calling
-    ``str()`` too, so a payload raising there could not have reached an argument as text either.
-    ``BaseException`` is left to propagate, since a host's interrupt is not a payload's failure.
-
-    An empty rendering is dropped with them.  It is a candidate contained in every value, so
-    reporting it would name every position rather than the rewritten one.
-    """
-    if isinstance(value, str):
-        own = str.__str__(value)  # its own characters, whatever `__str__` was overridden to say
-        if own:
-            yield own
-    try:
-        text = str(value)
-    except Exception:  # noqa: BLE001 - a payload's `__str__` is arbitrary code
-        return
-    if text:
-        yield text
-
-
-def _substituted_forms(payload: object) -> set[str]:
-    """Every text a reference to ``payload`` could be replaced by.
-
-    A reference is expanded two ways.  Alone, it is replaced by the payload; spliced into
-    surrounding text, by ``str()`` of it — so a payload of any type reaches an argument as text,
-    and a stored ``["SECRET"]`` arrives inside ``['SECRET'].bicep``.
-
-    The framework reduces only payloads produced by ``quarantined_llm``; all others arrive
-    whole.  The store walk does not read producer metadata, so both forms remain candidates
-    in this conservative comparison.
-
-    A reduction that answers the payload itself is rendered once, not twice: rendering runs the
-    payload's own code, and this is reached for every stored value on every call.
-    """
-    reduced = _reduced_form(payload)
-    substituted = (payload,) if reduced is payload else (payload, reduced)
-    return {text for value in substituted for text in _deliverable_texts(value)}
-
-
-def _hidden_payloads(middleware: Any) -> Iterator[str]:
-    """Every string form a rewritten argument could have arrived carrying."""
-    store = middleware.get_variable_store()
-    for variable_id in store.list_variables():
-        try:
-            content, _ = store.retrieve(variable_id)
-        except KeyError:  # pragma: no cover - a store cleared between the two calls
-            continue
-        yield from _substituted_forms(content)
-
-
 def hidden_content_candidates() -> frozenset[str]:
-    """Every string form a rewritten argument could have arrived carrying, as the store holds it.
+    """Snapshot conservative refusal matching for values without argument provenance.
 
-    The framework's accessor survives awaits within the calling context.  Take a snapshot
-    before external work when later checks must retain the same candidates even if the store
-    changes, or when passing them to a caller outside that context.
-    :func:`positions_holding_hidden_content` accepts the snapshot as ``candidates``; without
-    one, it reads the current store.
+    An information-flow context or closed inherited call returns the universal substring
+    ``""``: generated values have no positional provenance, so every name must be withheld.
+    Otherwise the set is empty. Pass this snapshot as ``candidates`` to retain the decision
+    across host work or outside the call; no stored payload is inspected.
     """
-    middleware = _reachable_middleware()
-    if middleware is None:
-        return frozenset()
-    return frozenset(_hidden_payloads(middleware))
+    record = _CALL_CONTEXT.get()
+    if _reachable_middleware() is not None or (record is not None and record.closed):
+        return frozenset({""})
+    return frozenset()
 
 
 def _public_rewritten_positions(
     context: Any, argument: str, values: Sequence[str]
-) -> frozenset[int] | None:
+) -> frozenset[int]:
     """Translate public provenance only for the complete, current argument value."""
     from agent_framework import security
 
-    accessor = getattr(security, "rewritten_arguments", None)
-    if not callable(accessor):
-        return None
     arguments = getattr(context, "arguments", None)
-    if arguments is None:
-        return None
     dump = getattr(arguments, "model_dump", None)
     if callable(dump):
         arguments = dump()
     if not isinstance(arguments, Mapping):
         return frozenset(range(len(values)))
-    current = cast("Mapping[str, Any]", arguments).get(argument)
+    supplied = cast("Mapping[str, Any]", arguments)
+    # The public accessor's mutation check covers arguments, not kwargs.
+    if argument not in supplied:
+        return frozenset(range(len(values)))
+    current = supplied[argument]
     expected = [current] if isinstance(current, str) else current
     if not isinstance(expected, (list, tuple)) or list(cast("Sequence[Any]", expected)) != list(
         values
     ):
         return frozenset(range(len(values)))
-    rewritten = accessor(context)
-    # An empty public map does not distinguish unavailable tracking from no rewrites.
-    if not rewritten:
-        return None
+    rewritten: Any = security.rewritten_arguments(context)
+    # Empty maps cannot establish tracking availability; use only positive public evidence.
+    if rewritten == {}:
+        return frozenset(range(len(values))) if _reachable_middleware() is not None else frozenset()
     if not isinstance(rewritten, dict):
         return frozenset(range(len(values)))
     positions = cast("dict[str, Any]", rewritten).get(argument, set())
@@ -931,64 +723,25 @@ def positions_holding_hidden_content(
     argument: str | None = None,
     candidates: frozenset[str] | None = None,
 ) -> frozenset[int]:
-    """The positions in ``values`` the host's middleware expanded content it had hidden into.
+    """Positions whose values must not be echoed into a refusal.
 
-    MAF's information-flow middleware rewrites a variable reference back into a tool's arguments
-    **before** the body runs, so a value a kind is about to quote in a refusal may be content the
-    framework hid rather than anything the model chose.  Pass the verdict to
-    :func:`~maf_sandbox.echoed_name` as ``hidden`` and it renders the position instead.
+    With :func:`argument_provenance_middleware` and a named ``argument``, the public framework
+    API identifies rewritten positions in the complete current argument. Kwargs-only arguments,
+    mismatched values and ambiguous empty maps under tracking withhold every position.
 
-    Answered two ways.  Where a host has wired :func:`argument_provenance_middleware` *and*
-    ``argument`` names the parameter these values came from, use public rewrite positions where
-    available, with the original-spelling adapter for older SDKs and ambiguous empty maps.
-    This exact path consults no stored payload. Otherwise it
-    falls back to containment against the whole conversation's store, which is conservative — a
-    store holding ``"main"`` reports an untouched ``"main.bicep"`` — and reports a value the
-    caller chose that merely matches hidden content.  ``docs/sandbox/information-flow.md``
-    carries why that difference matters.
+    Without active named-argument provenance, an information-flow context withholds all names,
+    including generated values. ``candidates`` preserves a prior fallback decision across host
+    work; explicit substring sets remain supported. A closed call never supplies exact
+    provenance. Hosts with no information-flow context retain ordinary name rendering.
 
-    What a caller has to know:
-
-    - **Index the answer.**  Two entries can arrive equal while only one was rewritten, so a
-      verdict belongs to a position and never to a value.
-    - **``argument`` is required for the exact answer, and names one call argument.**  Values
-      that came from no argument — a manifest a program wrote — leave it unset, or the
-      comparison is against a list the caller never sent.
-    - **Containment, not equality.**  A reference is spliced into the text around it, so
-      ``"[var_a1b2].bicep"`` arrives as the content with a suffix and equals no stored payload.
-    - **A task outliving the call falls back.**  The record is closed with the call.  An
-      inherited framework context can still reach the store, but only an explicit
-      ``candidates`` snapshot preserves its earlier contents if that store changes.
-    - **An empty answer from the fallback is not "nothing was hidden".**  It is also what an
-      unreachable middleware gives, including a host that wired none.  Both the record and
-      the framework's accessor reach a synchronous body through ``asyncio.to_thread``.
-
-    Take the whole argument list in one call: the answer costs one pass over the variable store,
-    and the store's own reads are logged by the framework.
+    Index the answer when calling :func:`~maf_sandbox.echoed_name`: equal values can have
+    different provenance. Leave ``argument`` unset for names generated by a program.
     """
     if not values:
         return frozenset()
     record = _CALL_CONTEXT.get()
     if record is not None and not record.closed and argument is not None:
-        public = _public_rewritten_positions(record.context, argument, values)
-        if public is not None:
-            return public
-        if _the_framework_kept_no_record(record.context):
-            # A missing record means the contract moved, so no checked position can be vouched for.
-            _warn_once_about_a_missing_record(_DEFAULT_LOGGER)
-            return frozenset(range(len(values)))
-        before = _spellings_before_rewriting(record.context, argument)
-        # Per position, never against the record as a whole: an equal value at another position
-        # would otherwise excuse this one.
-        if before is not None and len(before) == len(values):
-            return frozenset(
-                position
-                for position, (spelling, value) in enumerate(zip(before, values, strict=True))
-                if value != spelling
-            )
-        if _the_framework_kept_a_record(record.context):
-            # An unreadable argument or mismatched length cannot establish which positions changed.
-            return frozenset(range(len(values)))
+        return _public_rewritten_positions(record.context, argument, values)
     payloads = hidden_content_candidates() if candidates is None else candidates
     return frozenset(
         position
