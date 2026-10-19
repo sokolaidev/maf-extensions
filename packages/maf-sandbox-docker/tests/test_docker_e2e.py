@@ -327,8 +327,8 @@ class TestAGuestThatIsNotRoot:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
-    def test_remove_deletes_a_file_the_host_wrote(self):
-        """What the `FILES_DELETE` probes ask for, against a guest that owns none of it."""
+    def test_remove_reports_permission_failure_under_a_root_owned_work_dir(self):
+        """Deleting a host-written file still requires write access to its parent."""
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
 
@@ -336,14 +336,38 @@ class TestAGuestThatIsNotRoot:
             sandbox = await backend.acquire(_key(scope), self._spec())
             await sandbox.write_file(f"{_WORK}/doomed.txt", "x", working_directory=_WORK)
 
-            await sandbox.remove("doomed.txt", working_directory=_WORK)
-
-            assert await sandbox.stat_file("doomed.txt", working_directory=_WORK) is None
+            with pytest.raises(OSError, match="Permission denied"):
+                await sandbox.remove("doomed.txt", working_directory=_WORK)
+            assert (
+                await sandbox.read_file("doomed.txt", working_directory=_WORK, max_bytes=1) == b"x"
+            )
+            assert await sandbox.stat_file(_CARRIED, working_directory=_WORK) is not None
 
         try:
             asyncio.run(scenario())
         finally:
-            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+            assert not asyncio.run(backend.dispose_scope(scope, "thread-1")).undisposed
+        assert not _names_on_the_machine(_container_name(_key(scope), self._spec().kind))
+
+    @pytest.mark.skipif(not _GUEST_OWNED_IMAGE, reason="needs the guest-owned work-dir image")
+    def test_remove_deletes_a_host_written_file_under_a_guest_owned_work_dir(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._spec(_GUEST_OWNED_IMAGE))
+            await sandbox.write_file(f"{_WORK}/doomed.txt", "x", working_directory=_WORK)
+
+            await sandbox.remove("doomed.txt", working_directory=_WORK)
+
+            assert await sandbox.stat_file("doomed.txt", working_directory=_WORK) is None
+            assert await sandbox.stat_file(_CARRIED, working_directory=_WORK) is not None
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            assert not asyncio.run(backend.dispose_scope(scope, "thread-1")).undisposed
+        assert not _names_on_the_machine(_container_name(_key(scope), self._spec().kind))
 
     def test_a_guest_command_still_runs_as_the_image_user(self):
         """The half that must not move: `exec` is the guest program's."""

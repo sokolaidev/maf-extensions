@@ -989,8 +989,6 @@ jobs:
           docker-username: ${{ secrets.DOCKER_USERNAME }}
           docker-pat: ${{ secrets.DOCKER_PAT }}
 
-      # Debian with bash and util-linux already meets the backend's requirements, so the image
-      # loads as it is built.
       - name: Build the sandbox image and load it as an sbx template
         run: |
           set -euo pipefail

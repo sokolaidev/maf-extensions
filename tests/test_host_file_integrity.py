@@ -263,7 +263,7 @@ def test_shipped_report_uses_stable_provenance(kind, state, expected):
 
 
 @pytest.mark.parametrize("kind", ["bicep", "terraform", "codeact"])
-def test_trusted_report_remains_visible_and_allows_a_following_write(kind):
+def test_trusted_report_allows_a_following_write_with_conservative_name_redaction(kind):
     async def exercise():
         attached, arguments = _attach(kind, [SourceIntegrity.TRUSTED])
         tracker = LabelTrackingFunctionMiddleware(auto_hide_untrusted=False)
@@ -288,7 +288,14 @@ def test_trusted_report_remains_visible_and_allows_a_following_write(kind):
             return context.result
 
         items = await call(attached, arguments)
-        report = next(item for item in items if _REPORT in (item.text or ""))
+        expected = (
+            "Guest diagnostic text and locations withheld because argument names are hidden."
+            if kind == "terraform"
+            else _REPORT
+        )
+        report = next(item for item in items if expected in (item.text or ""))
+        if kind == "terraform":
+            assert not any(_REPORT in (item.text or "") for item in items)
         assert not report.additional_properties.get("_variable_reference")
         assert tracker.get_context_label().integrity.value == "trusted"
         await call(write_file, {"text": "fixed content"})

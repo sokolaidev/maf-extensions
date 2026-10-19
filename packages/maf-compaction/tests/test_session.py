@@ -810,6 +810,7 @@ async def test_ignored_pins_degrade_only_their_session_across_cold_restores(
         with registry.activate(session) as stack:
             disabled = index == len(sequence) - 1
             assert stack.middleware.pin_disabled == disabled
+            assert stack.middleware.pin_disabled_reason == ("ignored" if disabled else None)
             assert stack.middleware._ignored_streak == (0 if honours else (2 if disabled else 1))
             if disabled:
                 assert not stack.gate.take()
@@ -886,6 +887,7 @@ async def test_nonstream_retry_restores_request_and_is_bounded(original_options)
     assert context.result.text == "answer"
     assert current.middleware.failed_forced_calls == 1
     assert current.middleware.pin_disabled
+    assert current.middleware.pin_disabled_reason == "failed"
 
 
 async def test_legacy_middleware_state_starts_with_supported_pin():
@@ -971,3 +973,178 @@ async def test_unpinned_stream_failure_propagates_without_a_third_request():
         await context.result.get_final_response()
     assert calls == 2
     assert current.middleware.pin_disabled
+
+
+@pytest.mark.parametrize("session_scoped", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("overhead", [970, 1100])
+async def test_post_call_budget_refusal_preserves_delivered_response(
+    session_scoped, stream, overhead
+):
+    def factory():
+        stack = build_stack(budget=1000)
+        assert isinstance(
+            stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+        )
+        stack.strategy.estimate_margin = 0.05
+        return stack
+
+    stack = factory()
+    registry = SessionCompactionRegistry(factory)
+    context = ChatContext(
+        None,
+        [Message("user", ["question"])],
+        {"instructions": "x" * (overhead * 4)},
+        session=AgentSession(),
+        stream=stream,
+    )
+    middleware = (
+        SessionToolResultRecallMiddleware(registry, compact_before=True)
+        if session_scoped
+        else stack.middleware
+    )
+    if not session_scoped:
+        context.kwargs["compaction_strategy"] = stack.strategy
+    response = ChatResponse(messages=Message("assistant", ["delivered"]))
+
+    async def updates():
+        yield ChatResponseUpdate(role="assistant", contents=[Content.from_text("delivered")])
+
+    result = ResponseStream(updates(), finalizer=lambda _: response) if stream else response
+    calls = 0
+
+    async def send_anyway():
+        nonlocal calls
+        calls += 1
+        with pytest.raises(CompactionBudgetExceeded):
+            await context.kwargs["compaction_strategy"](context.messages)
+        context.result = result
+
+    await middleware.process(context, send_anyway)
+    assert calls == 1
+    assert context.result is result
+    if stream:
+        assert isinstance(result, ResponseStream)
+        assert (await result.get_final_response()).text == "delivered"
+    with registry.activate(context.session) if session_scoped else nullcontext(stack) as current:
+        assert not current.middleware._force_next
+        assert not current.middleware.pin_disabled
+
+
+@pytest.mark.parametrize("composed", [False, True])
+@pytest.mark.parametrize("with_value_between", [False, True])
+@pytest.mark.parametrize("trigger_fraction", [0.0001, 0.8])
+async def test_value_free_records_disable_forcing_across_cold_restores(
+    composed, with_value_between, trigger_fraction
+):
+    def factory():
+        stack = build_stack(budget=100_000, composed=composed)
+        record = (
+            stack.strategy.tool_results
+            if isinstance(
+                stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+            )
+            else stack.strategy
+        )
+        record.trigger_fraction = trigger_fraction
+        stack.middleware.max_groups_before_record = 1
+        return stack
+
+    session = AgentSession()
+    messages = [
+        Message("user", ["Return only titles."], message_id="head"),
+        Message(
+            "assistant",
+            [Content.from_function_call(call_id="lookup", name="fetch", arguments={})],
+            message_id="lookup-call",
+        ),
+        Message(
+            "tool",
+            [
+                Content.from_function_result(
+                    call_id="lookup", result="Limit=VALUE-123; Region=REGION-456"
+                )
+            ],
+            message_id="lookup-result",
+        ),
+    ]
+    options = {"tools": [make_recall_tool()], "tool_choice": "auto"}
+    answers = (
+        ["Titles only", "VALUE-123", "Titles only", "Titles only"]
+        if with_value_between
+        else ["Titles only", "Titles only"]
+    )
+    streak = 0
+    for index, answer in enumerate(answers):
+        registry = SessionCompactionRegistry(factory, max_cached_sessions=0)
+        with registry.activate(session) as stack:
+            assert not stack.middleware.pin_disabled
+            stack.middleware._force_next = True
+        context = ChatContext(None, list(messages), options, session=session)
+        call_id = f"recall-{index}"
+        call = Message(
+            "assistant",
+            [
+                Content.from_function_call(
+                    call_id=call_id,
+                    name="recall_earlier_tool_results",
+                    arguments={"values": answer},
+                )
+            ],
+            message_id=f"{call_id}-call",
+        )
+
+        async def respond():
+            assert context.options is not None
+            assert context.options["tool_choice"]["mode"] == "required"
+            context.result = ChatResponse(messages=call)
+
+        await SessionToolResultRecallMiddleware(registry).process(context, respond)
+        messages.extend(
+            [
+                call,
+                Message(
+                    "tool",
+                    [
+                        Content.from_function_result(
+                            call_id=call_id, result=f"{RECORD_MARKER} {answer}"
+                        )
+                    ],
+                    message_id=f"{call_id}-result",
+                ),
+            ]
+        )
+        streak = 0 if answer == "VALUE-123" else streak + 1
+        for _ in range(2):
+            registry = SessionCompactionRegistry(factory, max_cached_sessions=0)
+            with registry.activate(session) as stack:
+                record = (
+                    stack.strategy.tool_results
+                    if isinstance(
+                        stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+                    )
+                    else stack.strategy
+                )
+                await record(deepcopy(messages))
+                assert stack.middleware.value_free_record_streak == streak
+                assert stack.middleware.pin_disabled == (streak == 2)
+                assert stack.middleware.pin_disabled_reason == (
+                    "value_free" if streak == 2 else None
+                )
+            session.state = round_trip(session.state)
+    registry = SessionCompactionRegistry(factory, max_cached_sessions=0)
+    with registry.activate(session) as stack:
+        assert stack.middleware.pin_disabled
+        assert not stack.middleware.record_due(messages)
+        stack.middleware.forget_pending()
+        assert stack.middleware.pin_disabled_reason == "value_free"
+    context = ChatContext(None, messages, options, session=session)
+
+    async def unpinned():
+        assert context.options is options
+        context.result = ChatResponse(messages=Message("assistant", ["answer"]))
+
+    await SessionToolResultRecallMiddleware(registry).process(context, unpinned)
+    with registry.activate(AgentSession()) as fresh:
+        assert not fresh.middleware.pin_disabled
+        assert fresh.middleware.value_free_record_streak == 0
