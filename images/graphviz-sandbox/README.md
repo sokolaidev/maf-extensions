@@ -94,6 +94,16 @@ docker build --platform linux/amd64 -t graphviz-sandbox:local images/graphviz-sa
 
 The sample can use this local tag. A local build has no suite release-completion attestation and is not interchangeable with a published digest. It may contain different package versions even when built from the same Dockerfile: the Wolfi base is pinned, but `apk upgrade` and `apk add` use a rolling package repository.
 
+The local build includes bash, coreutils and Wolfi's `util-linux-misc` and `mount` packages for the Docker Sandboxes backend. It checks the required guest commands and `unshare` user/group mapping options during the build. To check the built template's workspace access, PNG delivery and cleanup without a model, load it into a configured `sbx` host and run the opt-in test:
+
+```bash
+docker save -o graphviz-sandbox.tar graphviz-sandbox:local
+sbx template load graphviz-sandbox.tar
+MAF_GRAPHVIZ_SBX_E2E_IMAGE=graphviz-sandbox:local uv run pytest -q tests/test_graphviz_sbx_e2e.py
+```
+
+This test uses the sample's rendering tool with closed egress. It does not qualify the older published image digests above.
+
 ## Updates, support and security
 
 Pin the verified manifest digest in application configuration. To update, select and verify a new completed image release, review its SBOM and vulnerability reports, then test your diagrams and application integration before changing the pin. Graphviz and font updates can change layout and pixels; neither rebuilding from source nor upgrading preserves byte-identical output.
