@@ -11,6 +11,75 @@ import test_sbx_e2e as live
 import test_sbx_e2e_host as host
 
 
+@pytest.mark.parametrize(
+    "setting, before",
+    [
+        (host._FORWARDING, "true"),
+        (
+            "feature.inmem-transport",
+            '{"enabled":true,"variant":"test","variantPayload":"saved"}',
+        ),
+    ],
+)
+@pytest.mark.parametrize("failure", [None, "body", "restart"])
+def test_host_setting_is_restored_after_success_or_failure(monkeypatch, setting, before, failure):
+    commands = []
+
+    def checked(*args):
+        commands.append(args)
+        if args == ("settings", "get", setting):
+            return (before + "\n").encode()
+        if failure == "restart" and len(commands) == 3:
+            raise RuntimeError("restart failed")
+        return b""
+
+    monkeypatch.setattr(host, "_MAY_CHANGE_HOST", True)
+    monkeypatch.setattr(host, "_checked", checked)
+    expected = pytest.raises(RuntimeError) if failure else contextlib.nullcontext()
+    with expected, host._setting_set(setting, "false"):
+        assert commands[-1] == ("daemon", "restart")
+        if failure == "body":
+            raise RuntimeError("fault assertion failed")
+    assert commands == [
+        ("settings", "get", setting),
+        ("settings", "set", setting, "false"),
+        ("daemon", "restart"),
+        ("settings", "set", setting, before),
+        ("daemon", "restart"),
+    ]
+
+
+@pytest.mark.parametrize("before", ["false", "true"])
+def test_host_setting_without_permission_never_mutates(monkeypatch, before):
+    commands = []
+
+    def checked(*args):
+        commands.append(args)
+        return before.encode()
+
+    monkeypatch.setattr(host, "_MAY_CHANGE_HOST", False)
+    monkeypatch.setattr(host, "_checked", checked)
+    expected = (
+        pytest.raises(pytest.skip.Exception) if before == "true" else contextlib.nullcontext()
+    )
+    with expected, host._setting_set("feature.inmem-transport", "false"):
+        assert before == "false"
+    assert commands == [("settings", "get", "feature.inmem-transport")]
+
+
+@pytest.mark.parametrize("regular_file", [False, True], ids=["missing", "regular-file"])
+def test_selected_socket_transport_requires_a_real_socket(monkeypatch, tmp_path, regular_file):
+    if regular_file:
+        (tmp_path / "docker.sock").touch()
+    monkeypatch.setattr(
+        host,
+        "_checked",
+        lambda *args: json.dumps({"socket": str(tmp_path / "sandboxd.sock")}).encode(),
+    )
+    with pytest.raises(AssertionError, match="after selecting the socket transport"):
+        host._engine_socket()
+
+
 @pytest.mark.parametrize("module", [live, host], ids=["suite", "host"])
 @pytest.mark.parametrize("wrapped", [False, True], ids=["array", "legacy"])
 @pytest.mark.parametrize("names, expected", [([], False), (["other"], False), (["target"], True)])
@@ -56,7 +125,7 @@ def test_mcp_preflight_observes_both_formats(monkeypatch, tmp_path, wrapped, reg
             raise host.SbxHostNotConfined("remove registered servers with sbx mcp rm")
 
     monkeypatch.setattr(host, "_MAY_CHANGE_HOST", True)
-    monkeypatch.setattr(host, "_forwarding_set", lambda value: contextlib.nullcontext())
+    monkeypatch.setattr(host, "_setting_set", lambda setting, value: contextlib.nullcontext())
     monkeypatch.setattr(host, "_checked", checked)
     monkeypatch.setattr(host, "_backend", lambda path: RefusingBackend())
     monkeypatch.setattr(host, "_listed", lambda name: False)
@@ -81,7 +150,7 @@ def test_unknown_mcp_listing_stops_before_registration(monkeypatch, tmp_path, pa
         return json.dumps(payload).encode()
 
     monkeypatch.setattr(host, "_MAY_CHANGE_HOST", True)
-    monkeypatch.setattr(host, "_forwarding_set", lambda value: contextlib.nullcontext())
+    monkeypatch.setattr(host, "_setting_set", lambda setting, value: contextlib.nullcontext())
     monkeypatch.setattr(host, "_checked", checked)
     with pytest.raises(AssertionError):
         host.test_a_registered_mcp_server_is_refused(tmp_path)
@@ -107,7 +176,7 @@ def test_lapsed_login_uses_supported_confirmation_and_restores_login(monkeypatch
     monkeypatch.setenv("DOCKER_USERNAME", "test-user")
     monkeypatch.setenv("DOCKER_PAT", "test-token")
     monkeypatch.setattr(host, "_MAY_CHANGE_HOST", True)
-    monkeypatch.setattr(host, "_forwarding_set", lambda value: contextlib.nullcontext())
+    monkeypatch.setattr(host, "_setting_set", lambda setting, value: contextlib.nullcontext())
     monkeypatch.setattr(host, "_checked", checked)
     monkeypatch.setattr(host, "_backend", lambda path: LoggedOutBackend())
     host.test_a_lapsed_login_names_sbx_login(tmp_path)
