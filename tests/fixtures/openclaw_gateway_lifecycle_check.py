@@ -26,8 +26,11 @@ from openclaw_gateway_http_check import (
     check,
     matching_cancel,
     projected_result,
+    read_response,
     records,
     require,
+    strict_json,
+    verify_binding_result,
     verify_busy,
     verify_dispatch_count,
     verify_environment,
@@ -322,12 +325,7 @@ def verify_completed_cleanup(
         "Completed cleanup evidence has wrong identity or ordering",
     )
     completed, fault, response, settled = selected[2:]
-    verify_outcome(
-        {"result": {"content": [{}], "details": {"structuredContent": completed}}},
-        "valid",
-        config_digest,
-        image,
-    )
+    verify_binding_result(completed, "valid", config_digest, image)
     require(
         fault.get("resource") == "bicep-docker"
         and fault.get("owner_empty") is True
@@ -336,12 +334,47 @@ def verify_completed_cleanup(
         and settled.get("poisoned") is True,
         "Completed cleanup did not fail closed after the binding sweep",
     )
-    result = projected.get("result", {})
-    details = result.get("details", {})
-    structured = details.get("structuredContent", {})
+    tool = projected.get("tool")
+    require(
+        isinstance(tool, dict)
+        and tool.get("id") == "mcp:bicep:bicep__bicep_validate"
+        and tool.get("name") == "bicep__bicep_validate"
+        and tool.get("source") == "mcp",
+        "Gateway projected the wrong tool identity",
+    )
+    result = projected.get("result")
+    require(isinstance(result, dict), "Gateway result must be an object")
+    require(
+        result.get("isError", True) is True, "Gateway cleanup failure contradicts its error flag"
+    )
+    details = result.get("details")
+    require(
+        isinstance(details, dict)
+        and details.get("mcpServer") == "bicep"
+        and details.get("mcpTool") == "bicep_validate",
+        "Gateway projected the wrong MCP route",
+    )
+    structured = details.get("structuredContent")
+    content = result.get("content")
+    prefix = "structuredContent:\n"
+    require(
+        isinstance(structured, dict)
+        and isinstance(content, list)
+        and len(content) == 1
+        and isinstance(content[0], dict)
+        and content[0].get("type") == "text"
+        and isinstance(content[0].get("text"), str)
+        and content[0]["text"].startswith(prefix),
+        "Gateway cleanup failure must project one structured text item",
+    )
+    assert isinstance(content, list) and isinstance(structured, dict)
+    require(
+        json.dumps(strict_json(content[0]["text"][len(prefix) :]), sort_keys=True, allow_nan=False)
+        == json.dumps(structured, sort_keys=True, allow_nan=False),
+        "Gateway cleanup failure text contradicts structuredContent",
+    )
     require(
         details.get("status") == "error"
-        and len(result.get("content", [])) == 1
         and structured.get("completed") is False
         and structured.get("verdict", "missing") is None
         and structured.get("status") == "cleanup_failed"
@@ -1318,7 +1351,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
             try:
                 connection.request("GET", path, headers={"Authorization": "Bearer " + token})
                 response = connection.getresponse()
-                response.read()
+                read_response(response)
                 return response.status == 200
             except (OSError, http.client.HTTPException):
                 return False
@@ -1376,7 +1409,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
             connection, turn_id = begin_turn(index, "valid")
             try:
                 response = connection.getresponse()
-                response.read()
+                read_response(response)
                 require(response.status == 200, "Gateway turn failed")
             finally:
                 connection.close()
@@ -1527,7 +1560,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     connection, turn_id = begin_turn(index, "valid")
                     try:
                         response = connection.getresponse()
-                        payload = json.loads(response.read())
+                        payload = json.loads(read_response(response))
                     finally:
                         connection.close()
                     log = (
@@ -1583,7 +1616,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     connection, turn_id = begin_turn(index, "valid")
                     try:
                         response = connection.getresponse()
-                        payload = json.loads(response.read())
+                        payload = json.loads(read_response(response))
                     finally:
                         connection.close()
                     log = (
@@ -1728,7 +1761,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                             "GET", "/ready", headers={"Authorization": "Bearer " + service_token}
                         )
                         response = probe.getresponse()
-                        response.read()
+                        read_response(response)
                         readiness_status = response.status
                     finally:
                         probe.close()
@@ -1779,7 +1812,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                         blocked, blocked_turn = begin_turn(index, "valid")
                         try:
                             response = blocked.getresponse()
-                            response.read()
+                            read_response(response)
                             require(response.status == 200, "Poisoned Gateway turn did not settle")
                         finally:
                             blocked.close()
@@ -2248,7 +2281,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                         },
                     )
                     response = probe.getresponse()
-                    response.read()
+                    read_response(response)
                     stale_session = response.getheader("mcp-session-id") or ""
                     require(
                         response.status == 200 and stale_session,
@@ -2285,7 +2318,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                         },
                     )
                     response = probe.getresponse()
-                    response.read()
+                    read_response(response)
                     require(
                         response.status == 404,
                         "Service accepted a session from its previous process",
@@ -2340,7 +2373,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     # Freeze the orphan so natural completion cannot masquerade as recovery.
                     docker("pause", crashed_container)
                     response = connection.getresponse()
-                    response.read()
+                    read_response(response)
                     require(response.status == 200, "Gateway did not settle the crashed turn")
                     projected = projected_result(records(provider), crash_turn, "cancel")
                     crash_evidence = records(transport)[before_crash:]
@@ -2387,7 +2420,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                         refused_connection, refused_turn = begin_turn(index, "valid")
                         try:
                             response = refused_connection.getresponse()
-                            response.read()
+                            read_response(response)
                             require(response.status == 200, "Gateway did not settle refused work")
                         finally:
                             refused_connection.close()
@@ -2539,7 +2572,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 failed_connection, failed_turn = begin_turn(0, "valid")
                 try:
                     response = failed_connection.getresponse()
-                    response.read()
+                    read_response(response)
                     require(response.status == 200, "Gateway did not settle cleanup failure")
                 finally:
                     failed_connection.close()
@@ -2567,7 +2600,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     blocked_connection, blocked_turn = begin_turn(index, "valid")
                     try:
                         response = blocked_connection.getresponse()
-                        response.read()
+                        read_response(response)
                         require(response.status == 200, "Gateway did not settle poisoned turn")
                     finally:
                         blocked_connection.close()
@@ -2586,7 +2619,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                         "GET", "/ready", headers={"Authorization": "Bearer " + service_token}
                     )
                     response = probe.getresponse()
-                    response.read()
+                    read_response(response)
                     require(response.status == 503, "Poisoned service advertised readiness")
                 finally:
                     probe.close()
@@ -2753,7 +2786,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                             busy_connection, busy_turn = begin_turn(1, "valid")
                             try:
                                 response = busy_connection.getresponse()
-                                response.read()
+                                read_response(response)
                                 require(
                                     response.status == 200,
                                     "Replacement session did not settle busy",
@@ -2779,7 +2812,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                             )
                     response = pending.getresponse()
                     retirement_reports["aborted_turn_http_status"] = verify_deleted_turn(
-                        response.status, json.loads(response.read())
+                        response.status, json.loads(read_response(response))
                     )
                     require(
                         not any(
@@ -2881,7 +2914,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 overflow_connection, overflow_turn = begin_turn(len(names) - 1, "valid")
                 try:
                     response = overflow_connection.getresponse()
-                    payload = json.loads(response.read())
+                    payload = json.loads(read_response(response))
                     require(
                         response.status == 500
                         and payload
@@ -2942,7 +2975,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                     connection, turn_id = begin_turn(len(names) - 1, "valid")
                     try:
                         reply = connection.getresponse()
-                        value = json.loads(reply.read())
+                        value = json.loads(read_response(reply))
                     finally:
                         connection.close()
                     log = (
@@ -3019,7 +3052,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 probe_connection, probe_turn = begin_turn(0, "valid")
                 try:
                     response = probe_connection.getresponse()
-                    payload = json.loads(response.read())
+                    payload = json.loads(read_response(response))
                 finally:
                     probe_connection.close()
                 log = (
@@ -3081,7 +3114,7 @@ def qualify(args: argparse.Namespace) -> dict[str, Any]:
                 refresh_connection, refresh_turn = begin_turn(0, "valid")
                 try:
                     response = refresh_connection.getresponse()
-                    refresh_payload = json.loads(response.read())
+                    refresh_payload = json.loads(read_response(response))
                     require(
                         response.status == 500
                         and refresh_payload

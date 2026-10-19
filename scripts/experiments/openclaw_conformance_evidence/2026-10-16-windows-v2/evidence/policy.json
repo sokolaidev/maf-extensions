@@ -1,0 +1,1 @@
+{"attempt_id":"da297beb26c04ea1801f211e32cd0cce","campaign_id":"608ffe97c305475a9e323deb44c9ab2b","candidate_sha256":"293320ccbd77ac0cc1522dfd3e8fe839c0cea352236833d39e1a908a605c1eaf","group":"policy","observations":{"malformed_input":true,"missing_config":true,"mutable_image":true,"no_allocation":true,"oversized_config":true}}

@@ -106,6 +106,7 @@ class Processes:
                 command = [
                     sys.executable,
                     "-I",
+                    "-B",
                     "-c",
                     (
                         "import subprocess,sys; sys.exit(subprocess.call(sys.argv[1:], "
@@ -257,7 +258,7 @@ for d in m.distributions():
 print(json.dumps({'versions':{d.metadata['Name']:d.version for d in m.distributions()},
  'modules':{f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in p.glob('*.py')}}))
 """
-    identity = json.loads(execute([str(python), "-I", "-c", probe], root))
+    identity = json.loads(execute([str(python), "-I", "-B", "-c", probe], root))
     with zipfile.ZipFile(args.wheel) as wheel:
         expected = {
             Path(name).name: hashlib.sha256(wheel.read(name)).hexdigest()
@@ -549,6 +550,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     [
                         str(python),
                         "-I",
+                        "-B",
                         "-c",
                         "from pathlib import Path; from maf_sandbox_mcp.server import ownership; import sys; c=ownership(Path(sys.argv[1])); c.__enter__(); c.__exit__(None,None,None)",
                         str(root / "owner"),

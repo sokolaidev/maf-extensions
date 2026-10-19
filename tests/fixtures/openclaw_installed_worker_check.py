@@ -48,7 +48,7 @@ def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def installed_environment() -> dict[str, Any]:
+def installed_environment(expected: dict[str, str] | None = None) -> dict[str, Any]:
     """Require index dependencies and one non-editable candidate wheel with installed imports."""
     versions: dict[str, str] = {}
     locations: dict[str, str] = {}
@@ -63,7 +63,9 @@ def installed_environment() -> dict[str, Any]:
             )
         versions[name] = dist.version
     require(
-        all(versions.get(k) == v for k, v in BASELINE.items()),
+        versions == expected
+        if expected is not None
+        else all(versions.get(k) == v for k, v in BASELINE.items()),
         "Requalify changed dependency baseline explicitly",
     )
     for name, module_name in MODULES.items():
@@ -71,7 +73,9 @@ def installed_environment() -> dict[str, Any]:
         location = Path(module.__file__).resolve()
         root = Path(str(importlib.metadata.distribution(name).locate_file(""))).resolve()
         require(
-            location.is_relative_to(root) and "site-packages" in location.parts,
+            location.is_relative_to(root)
+            and root.is_relative_to(Path(sys.prefix).resolve())
+            and "site-packages" in location.parts,
             "Import escaped installed distribution",
         )
         locations[name] = str(location)
@@ -133,7 +137,7 @@ def transport(root: Path, repo: Path) -> dict[str, Any]:
     }
 
 
-def networking(image: str) -> dict[str, Any]:
+def networking(image: str, control: dict[str, Any] | None = None) -> dict[str, Any]:
     """Compare one HTTP/TCP destination from bridge and closed guests of the same image."""
     nonce = uuid.uuid4().hex.encode()
 
@@ -154,13 +158,14 @@ def networking(image: str) -> dict[str, Any]:
     observations = []
     try:
         for mode in ("bridge", "none"):
-            name = "mcp-network-" + uuid.uuid4().hex
+            name = control["names"][mode] if control else "mcp-network-" + uuid.uuid4().hex
             created.append(name)
             command = [
                 "docker",
                 "run",
                 "--name",
                 name,
+                *(["--label", control["label"]] if control else []),
                 "--network",
                 mode,
                 "--add-host",
@@ -196,17 +201,22 @@ def networking(image: str) -> dict[str, Any]:
                     "mode": mode,
                     "exit_code": result.returncode,
                     "control_body_matches": result.stdout == nonce,
+                    "image": config["Image"],
                 }
             )
     finally:
+        cleanup_errors = []
         for name in created:
-            subprocess.run(
-                ["docker", "rm", "-f", name], check=True, capture_output=True, timeout=30
-            )
+            try:
+                subprocess.run(
+                    ["docker", "rm", "-f", name], check=True, capture_output=True, timeout=30
+                )
+            except Exception as exc:
+                cleanup_errors.append(type(exc).__name__)
         listener.shutdown()
         listener.server_close()
         thread.join(timeout=5)
-    require(not thread.is_alive(), "Control server did not stop")
+    require(not cleanup_errors and not thread.is_alive(), "Control cleanup did not finish")
     return {
         "protocol": "HTTP over IPv4 TCP",
         "destination": "host-gateway ephemeral listener",
@@ -220,10 +230,16 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
     import http.client
 
     from agent_framework import Content, MCPStreamableHTTPTool
-    from openclaw_gateway_http_check import projected_result, records, verify_outcome
+    from openclaw_gateway_http_check import (
+        projected_result,
+        read_response,
+        records,
+        strict_json,
+        verify_outcome,
+    )
     from openclaw_http_observer import resolve_image
 
-    installed_environment()
+    installed_environment(getattr(args, "expected_versions", None))
     config = json.loads(args.config.read_text(encoding="utf-8-sig"))
     image = resolve_image(args.image)
     config_digest = sha(args.bicep_config.read_bytes())
@@ -236,14 +252,18 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
 
     report: dict[str, Any] = {
         "sessions": [],
+        "session_ids": [],
+        "requests": [],
         "entry_point": "maf-bicep-mcp",
         "provider": "deterministic-local-fixture",
     }
     for _ in range(2):
         session = uuid.uuid4().hex
+        report["session_ids"].append(session)
         results = {}
         for case in ("valid", "invalid", "incomplete"):
             turn = uuid.uuid4().hex
+            report["requests"].append({"session": session, "turn": turn, "scenario": case})
             connection = http.client.HTTPConnection(
                 "127.0.0.1", config["gateway"]["port"], timeout=180
             )
@@ -258,7 +278,7 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
                             "messages": [
                                 {
                                     "role": "user",
-                                    "content": f"qualification {case} qualification-turn={turn}",
+                                    "content": f"qualification {case} qualification-turn={turn} qualification-session={session}",
                                 }
                             ],
                         }
@@ -269,7 +289,7 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
                     },
                 )
                 response = connection.getresponse()
-                payload = json.loads(response.read())
+                payload = strict_json(read_response(response))
                 require(
                     response.status == 200
                     and payload["choices"][0]["message"]["content"]
@@ -281,12 +301,15 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
             results[case] = verify_outcome(
                 projected_result(records(args.evidence), turn, case), case, config_digest, image
             )
+            results[case].update(session=session, turn=turn)
             require(empty(), "Console call left owned resources")
         report["sessions"].append(results)
 
     async def prepared():
         server = config["mcp"]["servers"]["bicep"]
-        source = "module network 'br/public:avm/res/network/virtual-network:0.7.2' = {\n name: 'network'\n params: { name: 'example-network'\n addressPrefixes: ['10.0.0.0/16'] }\n}"
+        from openclaw_sources import PREPARED_SOURCE, source_digest
+
+        source = PREPARED_SOURCE
         async with MCPStreamableHTTPTool(
             name="prepared",
             url=server["url"],
@@ -304,7 +327,7 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
                 or not isinstance(content[0].text, str)
             ):
                 raise RuntimeError("Unexpected MAF result projection")
-            result = json.loads(content[0].text)
+            result = strict_json(content[0].text)
             require(
                 result["completed"] is True
                 and result["verdict"] == "valid"
@@ -312,7 +335,9 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
                 "Prepared module did not validate",
             )
             require(
-                result["image"] == image and result["config_sha256"] == config_digest,
+                result["image"] == image
+                and result["config_sha256"] == config_digest
+                and result.get("source_sha256") == source_digest(PREPARED_SOURCE),
                 "Prepared identity differs",
             )
             require(empty(), "Prepared call left owned resources")
@@ -329,6 +354,7 @@ def console_gateway(args: argparse.Namespace) -> dict[str, Any]:
                 )
             }
 
+    report["provider_observations"] = records(args.evidence, final=True)
     report["prepared_module"] = asyncio.run(prepared())
     report["owned_empty"] = empty()
     return report

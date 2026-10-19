@@ -46,6 +46,11 @@ def handler(evidence: Path) -> type[BaseHTTPRequestHandler]:
                 "turn": turn[1] if turn else None,
                 "advertised_tools": [tool["function"]["name"] for tool in body.get("tools", [])],
             }
+            session = re.search(
+                r"qualification-session=([0-9a-f]{32})(?![0-9a-f])", str(user["content"])
+            )
+            if session:
+                record["session"] = session[1]
             if messages[-1]["role"] == "tool":
                 record["tool_result"] = messages[-1]["content"]
                 delta: dict[str, Any] = {

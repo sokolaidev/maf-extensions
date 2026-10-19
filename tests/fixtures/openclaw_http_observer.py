@@ -49,20 +49,17 @@ def resolve_image(reference: str) -> str:
     return image
 
 
-def decode_withheld(body: bytes | bytearray) -> dict[str, Any]:
+def decode_withheld(body: bytes | bytearray, request_id: int | str | None = None) -> dict[str, Any]:
     """Reject malformed workload responses without exposing their contents."""
+    from openclaw_gateway_http_check import rpc_result, workload_result
+
     identity = hashlib.sha256(body).hexdigest()
     try:
-        value = json.loads(body)
-    except (ValueError, UnicodeError):
-        raise RuntimeError(f"Withheld response is not valid JSON (sha256:{identity})") from None
-    result = value.get("result") if isinstance(value, dict) else None
-    structured = result.get("structuredContent") if isinstance(result, dict) else None
-    if not isinstance(structured, dict):
+        return workload_result(rpc_result(body, request_id))
+    except RuntimeError:
         raise RuntimeError(
-            f"Withheld response lacks a structured workload result (sha256:{identity})"
-        )
-    return structured
+            f"Withheld response lacks valid JSON workload evidence (sha256:{identity})"
+        ) from None
 
 
 def digest(value: Any) -> str:
@@ -154,6 +151,7 @@ class ObserveHTTP:
         observed = False
         method = scope["method"]
         drop = False
+        request_id: int | str | None = None
         withheld = bytearray()
         original_status = None
         retiring_record = (
@@ -165,7 +163,7 @@ class ObserveHTTP:
             self.record(event="delete_requested", exchange=exchange, session=sid)
 
         async def read():
-            nonlocal observed, drop
+            nonlocal observed, drop, request_id
             message = await receive()
             if message["type"] == "http.request" and not observed:
                 body.extend(message.get("body", b""))
@@ -211,6 +209,11 @@ class ObserveHTTP:
                                 except FileNotFoundError:
                                     pass
                                 else:
+                                    request_id = value.get("id")
+                                    if type(request_id) not in (int, str):
+                                        raise RuntimeError(
+                                            "Fault requires a valid JSON-RPC request ID"
+                                        )
                                     drop = True
                                     self.record(event="fault_armed", exchange=exchange, session=sid)
             return message
@@ -233,7 +236,7 @@ class ObserveHTTP:
                     if len(withheld) > 2 * 1024 * 1024:
                         raise RuntimeError("Qualification response exceeds fault buffer")
                     if not message.get("more_body", False):
-                        result = decode_withheld(withheld)
+                        result = decode_withheld(withheld, request_id)
                         self.record(
                             event="result_withheld",
                             exchange=exchange,
@@ -357,7 +360,9 @@ def refuse_completed_cleanup(observer: ObserveHTTP, fault: Path) -> None:
         observer.record(event="binding_started", session=digest(context.session_id.encode().hex()))
         result = await binding.execute(arguments, context)
         if fault.exists():
-            structured = result.structuredContent or {}
+            from openclaw_gateway_http_check import workload_result
+
+            structured = workload_result(result.model_dump(mode="json"))
             if (
                 result.isError
                 or structured.get("completed") is not True

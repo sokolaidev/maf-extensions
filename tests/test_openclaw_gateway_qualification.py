@@ -37,10 +37,17 @@ observer = load("openclaw_http_observer")
 
 def projected(case="valid"):
     canonical = json.dumps([["main.bicep", provider.SOURCES[case]]], separators=(",", ":")).encode()
-    return {
+    value = {
+        "tool": {
+            "id": "mcp:bicep:bicep__bicep_validate",
+            "name": "bicep__bicep_validate",
+            "source": "mcp",
+        },
         "result": {
             "content": [{"type": "text", "text": "result"}],
             "details": {
+                "mcpServer": "bicep",
+                "mcpTool": "bicep_validate",
                 "structuredContent": {
                     "completed": case != "incomplete",
                     "verdict": None if case == "incomplete" else case,
@@ -49,10 +56,15 @@ def projected(case="valid"):
                     "source_sha256": hashlib.sha256(canonical).hexdigest(),
                     "config_sha256": "config",
                     "image": "image",
-                }
+                },
             },
-        }
+        },
     }
+
+    value["result"]["content"][0]["text"] = "structuredContent:\n" + json.dumps(
+        value["result"]["details"]["structuredContent"]
+    )
+    return value
 
 
 @pytest.mark.parametrize("case", ["valid", "invalid", "incomplete"])
@@ -87,6 +99,51 @@ def test_check_rejects_duplicate_projection():
         checker.verify_outcome(result, "valid", "config", "image")
 
 
+@pytest.mark.parametrize("case", ["valid", "invalid", "incomplete"])
+@pytest.mark.parametrize(
+    "content",
+    [
+        "x",
+        {"x": 1},
+        [],
+        [None],
+        [{}],
+        [{"type": "image", "text": "x"}],
+        [{"type": "text"}],
+        [{"type": "text", "text": 1}],
+    ],
+)
+def test_check_rejects_malformed_projection(case, content):
+    value = projected(case)
+    value["result"]["content"] = content
+    with pytest.raises(RuntimeError):
+        checker.verify_outcome(value, case, "config", "image")
+
+
+@pytest.mark.parametrize("case", ["valid", "invalid", "incomplete"])
+@pytest.mark.parametrize(
+    "level,field,value",
+    [
+        ("envelope", "status", "error"),
+        ("result", "isError", True),
+        ("result", "isError", "false"),
+        ("details", "status", "error"),
+    ],
+)
+def test_check_rejects_error_projection(case, level, field, value):
+    result = projected(case)
+    target = (
+        result
+        if level == "envelope"
+        else result["result"]
+        if level == "result"
+        else result["result"]["details"]
+    )
+    target[field] = value
+    with pytest.raises(RuntimeError):
+        checker.verify_outcome(result, case, "config", "image")
+
+
 def test_results_are_correlated_to_one_turn_and_scenario():
     record = {
         "turn": "current",
@@ -94,8 +151,14 @@ def test_results_are_correlated_to_one_turn_and_scenario():
         "tool_result": "untrusted wrapper\n" + json.dumps(projected()) + "\nend",
     }
     stale = dict(record, turn="stale")
-    assert checker.projected_result([stale, record], "current", "valid") == projected()
-    for evidence, case in [([stale], "valid"), ([record, record], "valid"), ([record], "invalid")]:
+    request = {"turn": "current", "scenario": "valid"}
+    assert checker.projected_result([stale, request, record], "current", "valid") == projected()
+    for evidence, case in [
+        ([stale], "valid"),
+        ([request, record, record], "valid"),
+        ([record, request], "valid"),
+        ([request, record], "invalid"),
+    ]:
         with pytest.raises(RuntimeError):
             checker.projected_result(evidence, "current", case)
 
@@ -220,7 +283,8 @@ def test_observer_preserves_chunked_messages_and_redacts(tmp_path, payload):
         assert evidence[0]["target"] == observer.digest(7)
 
 
-def test_provider_concurrent_turns_do_not_mix_evidence(tmp_path):
+@pytest.mark.parametrize("with_session", [False, True])
+def test_provider_concurrent_turns_do_not_mix_evidence(tmp_path, with_session):
     evidence = tmp_path / "provider.jsonl"
     with ThreadingHTTPServer(("127.0.0.1", 0), provider.handler(evidence)) as server:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -238,7 +302,8 @@ def test_provider_concurrent_turns_do_not_mix_evidence(tmp_path):
                             "messages": [
                                 {
                                     "role": "user",
-                                    "content": f"qualification valid qualification-turn={turn}",
+                                    "content": f"qualification valid qualification-turn={turn}"
+                                    + (f" qualification-session={turn}" if with_session else ""),
                                 },
                                 {"role": "tool", "content": turn},
                             ],
@@ -263,6 +328,48 @@ def test_provider_concurrent_turns_do_not_mix_evidence(tmp_path):
     assert len(records) == 16
     assert len({record["turn"] for record in records}) == 16
     assert all(record["tool_result"] == record["turn"] for record in records)
+    assert all((record.get("session") == record["turn"]) == with_session for record in records)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        b'{"scenario":"wrong","scenario":"valid"}\n',
+        b'{"scenario":',
+        b'{"x":NaN}\n',
+        b'{"x":Infinity}\n',
+        b'{"x":1e400}\n',
+        b'{"x":{"a":1,"a":2}}\n',
+        b"[]\n",
+        b"\xff\n",
+    ],
+)
+def test_final_provider_snapshot_rejects_malformed_records(tmp_path, tail):
+    path = tmp_path / "provider.jsonl"
+    prefix = b'{"scenario":"valid"}\n' * 12
+    path.write_bytes(prefix + tail)
+    with pytest.raises((RuntimeError, ValueError)):
+        checker.records(path, final=True)
+    assert path.read_bytes() == prefix + tail
+
+
+def test_final_provider_snapshot_preserves_all_complete_records(tmp_path):
+    path = tmp_path / "provider.jsonl"
+    path.write_bytes(b'{"scenario":"valid"}\n' * 13)
+    assert checker.records(path, final=True) == [{"scenario": "valid"}] * 13
+
+
+@pytest.mark.parametrize("overflow", [False, True])
+def test_final_provider_snapshot_enforces_read_budget(tmp_path, monkeypatch, overflow):
+    path = tmp_path / "provider.jsonl"
+    raw = b'{"scenario":"valid"}\n'
+    monkeypatch.setattr(checker, "MAX_EVIDENCE_BYTES", len(raw), raising=False)
+    path.write_bytes(raw + (b" " if overflow else b""))
+    if overflow:
+        with pytest.raises(RuntimeError, match="Evidence exceeds"):
+            checker.records(path, final=True)
+    else:
+        assert checker.records(path, final=True) == [{"scenario": "valid"}]
 
 
 def test_partial_evidence_line_is_not_a_result(tmp_path):
@@ -472,7 +579,14 @@ def test_observer_fault_withholds_one_complete_result_and_leaves_next_call_trans
     fault = tmp_path / "drop"
     fault.touch()
     payload = json.dumps(
-        {"result": {"structuredContent": {"completed": True, "cleanup": "confirmed"}}}
+        {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "result": {
+                "structuredContent": {"completed": True, "cleanup": "confirmed"},
+                "content": [{"type": "text", "text": '{"completed":true,"cleanup":"confirmed"}'}],
+            },
+        }
     ).encode()
 
     class App:
@@ -1132,6 +1246,9 @@ def completed_cleanup_projection():
         status="cleanup_failed",
         cleanup="failed",
     )
+    value["result"]["content"][0]["text"] = "structuredContent:\n" + json.dumps(
+        value["result"]["details"]["structuredContent"]
+    )
     return value
 
 
@@ -1317,10 +1434,15 @@ def test_completed_cleanup_fault_preserves_result_and_delegates_after_removal(
         cleanup: object
 
     calls = []
-    result = SimpleNamespace(
-        isError=False, structuredContent=projected()["result"]["details"]["structuredContent"]
+    from mcp.types import CallToolResult, TextContent
+
+    structured = projected()["result"]["details"]["structuredContent"]
+    structured["completed"] = completed
+    result = CallToolResult(
+        isError=False,
+        structuredContent=structured,
+        content=[TextContent(type="text", text=json.dumps(structured))],
     )
-    result.structuredContent["completed"] = completed
 
     async def execute(arguments, context):
         calls.append("execute")
@@ -3874,6 +3996,16 @@ def passing_transport_evidence():
     return evidence
 
 
+@pytest.mark.parametrize("phase", ["setup", "call", "teardown"])
+@pytest.mark.parametrize("xfail", [None, 0, 0.0, "", [], {}, True])
+def test_published_transport_requires_literal_false_xfail(phase, xfail):
+    evidence = passing_transport_evidence()
+    row = next(r for r in evidence.reports if r["phase"] == phase)
+    row["xfail"] = xfail
+    with pytest.raises(RuntimeError, match="cannot satisfy acceptance"):
+        evidence.verify(0)
+
+
 def test_published_transport_accepts_complete_evidence():
     passing_transport_evidence().verify(0)
 
@@ -3978,3 +4110,416 @@ def test_published_transport_clears_stale_success_before_refusing_reuse(monkeypa
     with pytest.raises(RuntimeError, match="fresh private evidence"):
         published_transport.main()
     assert not (tmp_path / "transport-report.json").exists()
+
+
+@pytest.mark.parametrize("framing", ["length", "chunked", "eof"])
+@pytest.mark.parametrize("overflow", [False, True])
+def test_gateway_response_budget_before_decoding(monkeypatch, framing, overflow):
+    from io import BytesIO
+
+    raw = json.dumps(
+        {
+            "choices": [{"message": {"content": "QUALIFICATION_TOOL_RESULT_RECEIVED"}}],
+            "padding": "x" * 1024,
+        }
+    ).encode()
+    monkeypatch.setattr(checker, "MAX_RESPONSE_BYTES", len(raw) - int(overflow))
+    body = raw
+    headers = b""
+    if framing == "length":
+        headers = f"Content-Length: {len(raw)}\r\n".encode()
+    elif framing == "chunked":
+        headers = b"Transfer-Encoding: chunked\r\n"
+        body = f"{len(raw):x}\r\n".encode() + raw + b"\r\n0\r\n\r\n"
+    wire = BytesIO(b"HTTP/1.1 200 OK\r\n" + headers + b"\r\n" + body)
+    response = http.client.HTTPResponse(SimpleNamespace(makefile=lambda *args: wire))
+    response.begin()
+    try:
+        if overflow:
+            with pytest.raises(RuntimeError, match="Gateway response exceeds"):
+                checker.read_response(response)
+        else:
+            assert checker.read_response(response) == raw
+    finally:
+        response.close()
+
+
+def test_installed_gateway_refuses_padding_before_projection(tmp_path, monkeypatch):
+    from io import BytesIO
+
+    worker = __import__("openclaw_installed_worker_check")
+    monkeypatch.setattr(worker, "installed_environment", lambda *args: None)
+    monkeypatch.setattr(observer, "resolve_image", lambda image: image)
+    monkeypatch.setattr(checker, "MAX_RESPONSE_BYTES", 128)
+    monkeypatch.setattr(checker, "records", lambda *args, **kwargs: [])
+    monkeypatch.setattr(checker, "projected_result", lambda *args: {})
+
+    def projected(*args):
+        raise AssertionError("Oversized response reached projection")
+
+    monkeypatch.setattr(checker, "verify_outcome", projected)
+    raw = json.dumps(
+        {
+            "choices": [{"message": {"content": "QUALIFICATION_TOOL_RESULT_RECEIVED"}}],
+            "padding": "x" * 1024,
+        }
+    ).encode()
+
+    class Response(BytesIO):
+        status = 200
+
+    response = Response(raw)
+    closed = []
+    connection = SimpleNamespace(
+        request=lambda *args: None, getresponse=lambda: response, close=lambda: closed.append(True)
+    )
+    monkeypatch.setattr(http.client, "HTTPConnection", lambda *args, **kwargs: connection)
+    config = tmp_path / "gateway.json"
+    config.write_text(json.dumps({"gateway": {"port": 1234, "auth": {"token": "test"}}}))
+    (tmp_path / "owner").write_text("a" * 32)
+    args = SimpleNamespace(
+        config=config,
+        bicep_config=config,
+        image="image",
+        owner=tmp_path,
+        evidence=tmp_path / "provider.jsonl",
+    )
+    with pytest.raises(RuntimeError, match="Gateway response exceeds"):
+        worker.console_gateway(args)
+    assert response.tell() == 129
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("missing", [1, 1024])
+def test_gateway_response_refuses_truncated_content_length(missing):
+    from io import BytesIO
+
+    raw = b'{"choices":[{"message":{"content":"QUALIFICATION_TOOL_RESULT_RECEIVED"}}]}'
+    wire = BytesIO(
+        f"HTTP/1.1 200 OK\r\nContent-Length: {len(raw) + missing}\r\n\r\n".encode() + raw
+    )
+    response = http.client.HTTPResponse(SimpleNamespace(makefile=lambda *args: wire))
+    response.begin()
+    try:
+        with pytest.raises(RuntimeError, match="Gateway response is incomplete"):
+            checker.read_response(response)
+    finally:
+        response.close()
+
+
+@pytest.mark.parametrize("route", ["http", "maf"])
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        None,
+        '"completed":false,',
+        '"ignored":1e400,',
+        '"ignored":NaN,',
+        '"ignored":Infinity,',
+        '"ignored":{"x":1,"x":2},',
+    ],
+)
+def test_ownership_results_decode_strictly_before_normalization(route, malformed):
+    import httpx
+
+    config = "configuration"
+    expected = dict(
+        completed=True,
+        verdict="valid",
+        status="ok",
+        cleanup="confirmed",
+        image="image",
+        config_sha256=hashlib.sha256(config.encode()).hexdigest(),
+        source_sha256="source",
+    )
+    raw = "{" + (malformed or "") + json.dumps(expected)[1:]
+    envelope = (
+        '{"jsonrpc":"2.0","id":42,"result":{"isError":false,"content":[{"type":"text","text":'
+        + json.dumps(raw)
+        + '}],"structuredContent":'
+        + raw
+        + "}}"
+    )
+
+    async def call(*args, **kwargs):
+        return httpx.Response(200, content=envelope.encode())
+
+    async def call_tool(*args, **kwargs):
+        return [SimpleNamespace(text=raw)]
+
+    probe = SimpleNamespace(
+        call=call,
+        prototype=SimpleNamespace(snapshot=lambda _: SimpleNamespace(digest="source")),
+        image="image",
+        config=config,
+    )
+    client = "session" if route == "http" else SimpleNamespace(call_tool=call_tool)
+    if malformed is None:
+        assert asyncio.run(ownership.Check.valid(probe, client)) == expected
+    else:
+        with pytest.raises(RuntimeError, match="JSON"):
+            asyncio.run(ownership.Check.valid(probe, client))
+
+
+@pytest.mark.parametrize("malformed", ['"isError":false,', '"ignored":1e400,'])
+def test_ownership_busy_response_uses_strict_decoding(malformed):
+    import httpx
+
+    raw = (
+        '{"jsonrpc":"2.0","id":42,"result":{'
+        + malformed
+        + '"isError":true,"content":[{"type":"text","text":"busy"}]}}'
+    )
+
+    async def call(*args):
+        return httpx.Response(200, content=raw.encode())
+
+    async def owned():
+        raise AssertionError("Malformed busy response was accepted")
+
+    probe = SimpleNamespace(call=call, events=lambda: [], owned=owned)
+    with pytest.raises(RuntimeError, match="JSON"):
+        asyncio.run(ownership.Check.busy(probe, "session", "container"))
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        '"completed":false,"completed":true',
+        '"ignored":1e400',
+        '"ignored":NaN',
+        '"ignored":{"x":1,"x":2}',
+    ],
+)
+def test_withheld_result_uses_strict_decoding(malformed):
+    raw = ('{"result":{"structuredContent":{' + malformed + "}}}").encode()
+    with pytest.raises(RuntimeError, match="valid JSON"):
+        observer.decode_withheld(raw)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "mismatch",
+        "numeric_boolean",
+        "duplicate_text",
+        "nonfinite_text",
+        "image",
+        "missing_text",
+        "zero_flag",
+        "empty_flag",
+        "missing_content",
+        "non_list_content",
+    ],
+)
+@pytest.mark.parametrize("route", ["ownership", "withheld"])
+def test_ownership_raw_result_requires_exact_text_mirror(mutation, route):
+    import httpx
+
+    config = "configuration"
+    value = dict(
+        completed=True,
+        verdict="valid",
+        status="ok",
+        cleanup="confirmed",
+        image="image",
+        config_sha256=hashlib.sha256(config.encode()).hexdigest(),
+        source_sha256="source",
+    )
+    content = {"type": "text", "text": json.dumps(value)}
+    result = {"isError": False, "content": [content], "structuredContent": value}
+    if mutation == "mismatch":
+        content["text"] = json.dumps(dict(value, completed=False))
+    elif mutation == "numeric_boolean":
+        content["text"] = json.dumps(dict(value, completed=1))
+    elif mutation == "duplicate_text":
+        content["text"] = '{"completed":false,' + json.dumps(value)[1:]
+    elif mutation == "nonfinite_text":
+        content["text"] = '{"extra":1e400,' + json.dumps(value)[1:]
+    elif mutation == "image":
+        content["type"] = "image"
+    elif mutation == "missing_text":
+        content.pop("text")
+    elif mutation in ("zero_flag", "empty_flag"):
+        result["isError"] = 0 if mutation == "zero_flag" else ""
+    elif mutation == "missing_content":
+        result.pop("content")
+    else:
+        result["content"] = {"0": content}
+
+    async def call(*args):
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 42, "result": result})
+
+    probe = SimpleNamespace(
+        call=call,
+        prototype=SimpleNamespace(snapshot=lambda _: SimpleNamespace(digest="source")),
+        image="image",
+        config=config,
+    )
+    with pytest.raises(RuntimeError):
+        if route == "ownership":
+            asyncio.run(ownership.Check.valid(probe, "session"))
+        else:
+            observer.decode_withheld(
+                json.dumps({"jsonrpc": "2.0", "id": 42, "result": result}).encode(), 42
+            )
+
+
+@pytest.mark.parametrize("route", ["valid", "busy", "initialize", "withheld"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "error",
+        "null_error",
+        "false_error",
+        "empty_error",
+        "version",
+        "missing_version",
+        "missing_id",
+        "null_id",
+        "bool_id",
+        "float_id",
+        "string_id",
+        "wrong_id",
+    ],
+)
+def test_raw_rpc_envelopes_are_validated_before_projection(route, mutation):
+    import httpx
+
+    config = "configuration"
+    value = dict(
+        completed=True,
+        verdict="valid",
+        status="ok",
+        cleanup="confirmed",
+        image="image",
+        config_sha256=hashlib.sha256(config.encode()).hexdigest(),
+        source_sha256="source",
+    )
+    result = {
+        "isError": route == "busy",
+        "content": [{"type": "text", "text": "busy" if route == "busy" else json.dumps(value)}],
+        "structuredContent": value,
+    }
+    request_id = 1 if route == "initialize" else 42
+    envelope = {"jsonrpc": "2.0", "id": request_id, "result": result}
+    if mutation in ("error", "null_error", "false_error", "empty_error"):
+        envelope["error"] = {
+            "error": {"code": -32603, "message": "internal error"},
+            "null_error": None,
+            "false_error": False,
+            "empty_error": {},
+        }[mutation]
+    elif mutation == "version":
+        envelope["jsonrpc"] = "1.0"
+    elif mutation == "missing_version":
+        envelope.pop("jsonrpc")
+    elif mutation == "missing_id":
+        envelope.pop("id")
+    else:
+        envelope["id"] = {
+            "null_id": None,
+            "bool_id": True,
+            "float_id": float(request_id),
+            "string_id": str(request_id),
+            "wrong_id": request_id + 1,
+        }[mutation]
+
+    async def call(*args, **kwargs):
+        if kwargs.get("json", {}).get("method") == "notifications/initialized":
+            return httpx.Response(202)
+        return httpx.Response(200, json=envelope, headers={"mcp-session-id": "session"})
+
+    async def owned():
+        raise AssertionError("Malformed envelope reached resource verification")
+
+    probe = SimpleNamespace(
+        call=call,
+        client=SimpleNamespace(post=call),
+        events=lambda: [],
+        owned=owned,
+        prototype=SimpleNamespace(snapshot=lambda _: SimpleNamespace(digest="source")),
+        image="image",
+        config=config,
+    )
+    with pytest.raises(RuntimeError, match="JSON"):
+        if route == "valid":
+            asyncio.run(ownership.Check.valid(probe, "session"))
+        elif route == "busy":
+            asyncio.run(ownership.Check.busy(probe, "session", "container"))
+        elif route == "initialize":
+            asyncio.run(ownership.Check.initialize(probe))
+        else:
+            observer.decode_withheld(json.dumps(envelope).encode(), request_id)
+
+
+@pytest.mark.parametrize("request_id", [1, 42, "42", ""])
+def test_rpc_result_preserves_valid_wire_ids_and_extensions(request_id):
+    result = {"content": [], "extension": "preserved"}
+    raw = json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result, "extension": True})
+    assert checker.rpc_result(raw, request_id) == result
+
+
+@pytest.mark.parametrize("flag", [True, 0, "", None])
+def test_withheld_response_rejects_tool_error_before_projection(flag):
+    raw = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "result": {
+                "isError": flag,
+                "structuredContent": {"completed": True, "cleanup": "confirmed"},
+            },
+        }
+    ).encode()
+    with pytest.raises(RuntimeError):
+        observer.decode_withheld(raw)
+
+
+@pytest.mark.parametrize(
+    "request_id,response_id",
+    [(7, 8), (7, "7"), (7, 7.0), (7, True), (None, 7), (False, 7), (7.0, 7)],
+)
+def test_withheld_response_requires_original_request_identity(tmp_path, request_id, response_id):
+    marker = tmp_path / "drop"
+    marker.touch()
+    emitted = []
+
+    class App:
+        sessions = {}
+        service = SimpleNamespace(active=None, poisoned=False)
+
+        async def __call__(self, scope, receive, send):
+            await receive()
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": response_id,
+                            "result": {
+                                "structuredContent": {"completed": True, "cleanup": "confirmed"}
+                            },
+                        }
+                    ).encode(),
+                }
+            )
+
+    async def receive():
+        return {
+            "type": "http.request",
+            "body": json.dumps(
+                {"jsonrpc": "2.0", "method": "tools/call", "id": request_id}
+            ).encode(),
+        }
+
+    async def send(message):
+        emitted.append(message)
+
+    observed = observer.ObserveHTTP(App(), tmp_path / "evidence.jsonl", marker)
+    with pytest.raises(RuntimeError, match="JSON"):
+        asyncio.run(observed({"type": "http", "method": "POST", "headers": []}, receive, send))
+    assert not emitted
+    assert not any(row["event"] == "result_withheld" for row in checker.records(observed.evidence))

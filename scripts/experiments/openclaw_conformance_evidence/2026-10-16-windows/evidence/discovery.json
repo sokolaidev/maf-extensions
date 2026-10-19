@@ -1,0 +1,1 @@
+{"attempt_id":"901b058f9da84f22b659d67cc89e2514","campaign_id":"fce960ecf9f64cb794a4af2a69c03ca4","candidate_sha256":"1d2c51882a090bccab8f12ca04a000c65c0ea9dc2386a594d10fa10d836268f8","group":"discovery","observations":{"exit_code":0,"imports":["maf_sandbox_mcp.server","maf_sandbox_mcp.workload_http"],"late_guard_control":true,"side_effect_attempts":[]}}

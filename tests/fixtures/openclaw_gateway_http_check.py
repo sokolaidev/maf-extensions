@@ -10,6 +10,7 @@ import socket
 import subprocess
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,8 @@ from openclaw_gateway_check import docker
 from openclaw_gateway_provider import SOURCES
 
 BASELINE_DISPATCHES = 9
+MAX_EVIDENCE_BYTES = 16 * 1024 * 1024
+MAX_RESPONSE_BYTES = 1024 * 1024
 
 
 def require(condition: Any, message: str) -> None:
@@ -24,13 +27,31 @@ def require(condition: Any, message: str) -> None:
         raise RuntimeError(message)
 
 
-def records(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
+def read_response(response: http.client.HTTPResponse) -> bytes:
+    """Read a Gateway response within the decoded-body byte budget."""
+    raw = response.read(MAX_RESPONSE_BYTES + 1)
+    require(len(raw) <= MAX_RESPONSE_BYTES, "Gateway response exceeds 1 MiB")
+    require(getattr(response, "length", None) in (None, 0), "Gateway response is incomplete")
+    return raw
+
+
+def records(path: Path, *, final: bool = False) -> list[dict[str, Any]]:
+    if not path.exists() and not final:
         return []
-    data = path.read_bytes()
-    require(len(data) <= 16 * 1024 * 1024, "Evidence exceeds 16 MiB; rotate before a new check")
+    with path.open("rb") as stream:
+        data = stream.read(MAX_EVIDENCE_BYTES + 1)
+    require(len(data) <= MAX_EVIDENCE_BYTES, "Evidence exceeds 16 MiB; rotate before a new check")
+    lines = data.split(b"\n")[:-1]
+    if final:
+        require(not data or data.endswith(b"\n"), "Provider evidence has an unfinished record")
+        require(all(lines), "Provider evidence has an empty record")
+        values = [strict_json(line) for line in lines]
+        require(
+            all(isinstance(value, dict) for value in values), "Provider records must be objects"
+        )
+        return values
     # A concurrent writer may not have finished the last line yet.
-    return [json.loads(line) for line in data.split(b"\n")[:-1] if line]
+    return [json.loads(line) for line in lines if line]
 
 
 def verify_dispatch_count(evidence: list[dict[str, Any]], expected: int) -> int:
@@ -39,15 +60,82 @@ def verify_dispatch_count(evidence: list[dict[str, Any]], expected: int) -> int:
     return count
 
 
-def projected_result(evidence: list[dict[str, Any]], turn: str, case: str) -> dict[str, Any]:
-    matching = [
-        record for record in evidence if record.get("turn") == turn and "tool_result" in record
-    ]
-    require(len(matching) == 1, "Expected exactly one provider tool result for this turn")
-    record = matching[0]
-    require(record.get("scenario") == case, "Provider result belongs to another scenario")
+def projected_result(
+    evidence: list[dict[str, Any]],
+    turn: str,
+    case: str,
+    *,
+    loads: Callable[[str], Any] = json.loads,
+) -> dict[str, Any]:
+    observed = [r for r in evidence if r.get("turn") == turn]
+    require(
+        len(observed) == 2
+        and all(r.get("scenario") == case for r in observed)
+        and "tool_result" not in observed[0]
+        and "tool_result" in observed[1],
+        "Wrong provider request/result order or scenario",
+    )
+    record = observed[1]
     text = record["tool_result"]
-    return json.loads(text[text.index("{") : text.rindex("}") + 1])
+    return loads(text[text.index("{") : text.rindex("}") + 1])
+
+
+def _json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value = dict(pairs)
+    require(len(value) == len(pairs), "Gateway evidence contains duplicate JSON keys")
+    return value
+
+
+def strict_json(raw: str | bytes | bytearray) -> Any:
+    """Decode complete JSON without duplicate keys or nonfinite numbers."""
+    try:
+        value = json.loads(raw, object_pairs_hook=_json_pairs)
+        json.dumps(value, allow_nan=False)
+        return value
+    except (UnicodeError, TypeError, ValueError, RecursionError) as exc:
+        raise RuntimeError("Gateway evidence contains malformed JSON") from exc
+
+
+def rpc_result(raw: str | bytes | bytearray, request_id: int | str | None = None) -> dict[str, Any]:
+    """Validate a successful JSON-RPC envelope before projecting its result."""
+    value = strict_json(raw)
+    require(
+        isinstance(value, dict)
+        and value.get("jsonrpc") == "2.0"
+        and "error" not in value
+        and type(value.get("id")) in (int, str)
+        and isinstance(value.get("result"), dict),
+        "Invalid successful JSON-RPC response envelope",
+    )
+    if request_id is not None:
+        require(
+            type(value["id"]) is type(request_id) and value["id"] == request_id,
+            "JSON-RPC response does not match the request ID",
+        )
+    return value["result"]
+
+
+def workload_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Require a successful MCP result with an exact JSON text mirror."""
+    require(result.get("isError", False) is False, "Invalid raw result projection")
+    content = result.get("content")
+    structured = result.get("structuredContent")
+    require(
+        isinstance(structured, dict)
+        and isinstance(content, list)
+        and len(content) == 1
+        and isinstance(content[0], dict)
+        and content[0].get("type") == "text"
+        and isinstance(content[0].get("text"), str),
+        "Invalid raw result projection",
+    )
+    assert isinstance(content, list) and isinstance(structured, dict)
+    require(
+        json.dumps(strict_json(content[0]["text"]), sort_keys=True, allow_nan=False)
+        == json.dumps(structured, sort_keys=True, allow_nan=False),
+        "Raw result text differs from structured content",
+    )
+    return structured
 
 
 def verify_outcome(
@@ -59,9 +147,56 @@ def verify_outcome(
             "Unauthorized tool was not refused",
         )
         return {"rejected": True}
-    result = projected["result"]
-    structured = result["details"]["structuredContent"]
-    require(len(result["content"]) == 1, "Gateway duplicated the projected result")
+    tool = projected.get("tool")
+    require(
+        isinstance(tool, dict)
+        and tool.get("id") == "mcp:bicep:bicep__bicep_validate"
+        and tool.get("name") == "bicep__bicep_validate"
+        and tool.get("source") == "mcp",
+        "Gateway projected the wrong tool identity",
+    )
+    require(projected.get("status") != "error", "Gateway returned an error projection")
+    result = projected.get("result")
+    require(isinstance(result, dict), "Gateway result must be an object")
+    require(result.get("isError", False) is False, "Gateway returned a tool error")
+    details = result.get("details")
+    require(isinstance(details, dict), "Gateway result details must be an object")
+    require(details.get("status") != "error", "Gateway returned error details")
+    require(
+        details.get("mcpServer") == "bicep" and details.get("mcpTool") == "bicep_validate",
+        "Gateway projected the wrong MCP route",
+    )
+    content = result.get("content")
+    require(isinstance(content, list), "Gateway content must be a list")
+    require(len(content) == 1, "Gateway duplicated the projected result")
+    require(
+        isinstance(content[0], dict)
+        and content[0].get("type") == "text"
+        and isinstance(content[0].get("text"), str),
+        "Gateway must project one text item",
+    )
+    structured = details.get("structuredContent")
+    require(isinstance(structured, dict), "Gateway structured content must be an object")
+    text = content[0]["text"]
+    prefix = "structuredContent:\n"
+    require(text.startswith(prefix), "Gateway text lacks the structuredContent projection")
+    try:
+        mirrored = strict_json(text[len(prefix) :])
+        same = json.dumps(mirrored, sort_keys=True, allow_nan=False) == json.dumps(
+            structured, sort_keys=True, allow_nan=False
+        )
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise RuntimeError("Gateway text contains malformed JSON") from exc
+    require(same, "Gateway text contradicts structuredContent")
+    return verify_binding_result(structured, case, config_digest, image) | {
+        "projected_content_items": 1
+    }
+
+
+def verify_binding_result(
+    structured: dict[str, Any], case: str, config_digest: str, image: str
+) -> dict[str, Any]:
+    """Validate the Bicep outcome independently of its Gateway envelope."""
     require(structured["cleanup"] == "confirmed", "Cleanup was not confirmed")
     require(structured["completed"] is (case != "incomplete"), "Wrong completion state")
     require(structured["verdict"] == (None if case == "incomplete" else case), "Wrong verdict")
@@ -77,8 +212,16 @@ def verify_outcome(
     require(structured["image"] == image, "Wrong image identity")
     return {
         key: structured[key]
-        for key in ("completed", "verdict", "status", "cleanup", "source_sha256")
-    } | {"projected_content_items": 1}
+        for key in (
+            "completed",
+            "verdict",
+            "status",
+            "cleanup",
+            "source_sha256",
+            "image",
+            "config_sha256",
+        )
+    }
 
 
 def verify_busy(projected: dict[str, Any]) -> None:
@@ -213,7 +356,7 @@ def check(args: argparse.Namespace) -> dict[str, Any]:
         connection, turn = request(case, index)
         try:
             response = connection.getresponse()
-            payload = json.loads(response.read())
+            payload = json.loads(read_response(response))
             require(response.status == 200, "Gateway turn failed")
             require(
                 payload["choices"][0]["message"]["content"] == "QUALIFICATION_TOOL_RESULT_RECEIVED",

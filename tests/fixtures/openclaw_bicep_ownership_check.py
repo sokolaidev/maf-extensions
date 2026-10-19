@@ -35,8 +35,9 @@ from typing import Any
 
 import httpx
 from agent_framework import MCPStreamableHTTPTool
-from openclaw_gateway_http_check import records, require
+from openclaw_gateway_http_check import records, require, rpc_result, strict_json, workload_result
 from openclaw_http_observer import ObserveHTTP, digest, resolve_image
+from openclaw_sources import LARGE_SOURCE, SIMPLE_SOURCE
 
 BASELINE = {
     "agent-framework-core": "1.19.0",
@@ -47,25 +48,18 @@ BASELINE = {
     "uvicorn": "0.54.0",
     "starlette": "1.7.0",
 }
-SIMPLE = {"files": [{"path": "main.bicep", "content": "output greeting string = 'hello'"}]}
-LARGE = {
-    "files": [
-        {
-            "path": "main.bicep",
-            "content": "\n".join(f"var v{i} = range(0, 1000)" for i in range(1500)),
-        }
-    ]
-}
+SIMPLE = {"files": [{"path": "main.bicep", "content": SIMPLE_SOURCE}]}
+LARGE = {"files": [{"path": "main.bicep", "content": LARGE_SOURCE}]}
 
 
-def environment(installed: bool = False) -> dict[str, str]:
+def environment(installed: bool = False, expected: dict[str, str] | None = None) -> dict[str, str]:
     if installed:
         from openclaw_installed_worker_check import installed_environment
 
-        return installed_environment()["versions"]
+        return installed_environment(expected)["versions"]
     versions = {}
     for dist in importlib.metadata.distributions():
-        direct = json.loads(dist.read_text("direct_url.json") or "{}")
+        direct = strict_json(dist.read_text("direct_url.json") or "{}")
         require(not direct, "Qualification requires published distributions without local fallback")
         versions[dist.metadata["Name"]] = dist.version
     require(
@@ -113,7 +107,15 @@ def verify_result(value: Any, prototype: Any, image: str, config: str) -> dict[s
     )
     return {
         k: value[k]
-        for k in ("completed", "verdict", "cleanup", "image", "config_sha256", "source_sha256")
+        for k in (
+            "completed",
+            "verdict",
+            "status",
+            "cleanup",
+            "image",
+            "config_sha256",
+            "source_sha256",
+        )
     }
 
 
@@ -221,6 +223,8 @@ def observe_binding(observer: ObserveHTTP) -> None:
             observer.record(event="binding_cancelled", **fields)
             raise
         structured = result.structuredContent or {}
+        if structured.get("status") in {"ok", "incomplete"}:
+            structured = workload_result(result.model_dump(mode="json"))
         observer.record(
             event="binding_result",
             completed=structured.get("completed"),
@@ -272,7 +276,7 @@ class RemovalGate:
 
     async def arm(self, container: str) -> None:
         require(self.target is None, "Removal gate already armed")
-        info = json.loads(await docker("inspect", container))[0]
+        info = strict_json(await docker("inspect", container))[0]
         require(
             info["Id"] == container
             and info["Config"]["Labels"].get("maf-sandbox.scope") == self.scope,
@@ -343,6 +347,7 @@ class Check:
             },
         )
         require(r.status_code == 200, "Initialization refused")
+        rpc_result(r.content, 1)
         sid = r.headers["mcp-session-id"]
         r = await self.client.post(
             "/mcp",
@@ -381,11 +386,12 @@ class Check:
         require(r.status_code == 202, "Cancellation not acknowledged")
 
     async def busy(self, sid: str, container: str) -> None:
+        before = len(self.events())
         r = await self.call(sid)
+        require(r.status_code == 200, "Admission released before cleanup")
+        result = rpc_result(r.content, 42)
         require(
-            r.status_code == 200
-            and r.json()["result"].get("isError") is True
-            and "busy" in r.json()["result"]["content"][0]["text"].lower(),
+            result.get("isError") is True and "busy" in result["content"][0]["text"].lower(),
             "Admission released before cleanup",
         )
         require(
@@ -396,6 +402,26 @@ class Check:
             "Active supervision did not survive",
         )
 
+        request = next(
+            e
+            for e in self.events()[before:]
+            if e.get("event") == "request" and e.get("method") == "tools/call"
+        )
+        active_call = self.app.service.active
+        assert active_call is not None
+        active = active_call[0]
+        self.observer.record(
+            event="admission_refused",
+            session=digest(sid.encode().hex()),
+            request=digest(42),
+            exchange=request["exchange"],
+            active_session=digest(active.session_id.encode().hex()),
+            active_request=digest(active.request_id),
+            container=digest(container),
+            owned_count=1,
+            active_pending=True,
+        )
+
     async def compiler(self) -> str:
         async with asyncio.timeout(45):
             while True:
@@ -404,7 +430,7 @@ class Check:
                 if owned and compiler_running(await docker("top", owned[0], "-eo", "pid,args")):
                     container = owned[0]
                     await docker("pause", container)
-                    info = json.loads(await docker("inspect", container))[0]
+                    info = strict_json(await docker("inspect", container))[0]
                     require(
                         info["State"]["Paused"] is True
                         and info["HostConfig"]["NetworkMode"] == "none"
@@ -432,12 +458,8 @@ class Check:
         if isinstance(client, str):
             r = await self.call(client)
             require(r.status_code == 200, "Surviving session not usable")
-            result = r.json()["result"]
-            require(
-                len(result["content"]) == 1 and not result.get("isError"),
-                "Invalid raw result projection",
-            )
-            value = result["structuredContent"]
+            result = rpc_result(r.content, 42)
+            value = workload_result(result)
         else:
             result = await client.call_tool("bicep_validate", **SIMPLE)
             require(
@@ -445,7 +467,7 @@ class Check:
                 "Invalid MAF projection",
             )
             assert isinstance(result, list) and result[0].text is not None
-            value = json.loads(result[0].text)
+            value = strict_json(result[0].text)
         return verify_result(value, self.prototype, self.image, self.config)
 
     def events(self) -> list[dict[str, Any]]:
@@ -483,6 +505,8 @@ class Check:
         value = await self.valid(b)
         self.observations["equal_ids_repeated_cancel"] = {
             "container": digest(container),
+            "session_a": digest(a.encode().hex()),
+            "session_b": digest(b.encode().hex()),
             "matching_cancels": 4,
             "other_session_cancels": 1,
             "survivor": value,
@@ -528,7 +552,10 @@ class Check:
                 self.events()[before:], a, self.prototype.snapshot(LARGE).digest
             )
             self.observations["response_loss"] = {
+                "session": digest(a.encode().hex()),
                 "container": digest(container),
+                "session_a": digest(a.encode().hex()),
+                "session_b": digest(b.encode().hex()),
                 "socket_closed": writer.is_closing(),
                 "binding_result": binding_result,
                 "survivor": await self.valid(b),
@@ -621,6 +648,8 @@ class Check:
             )
         self.observations["maf_active_close" if active_close else "maf_idle_close"] = {
             "container": digest(container),
+            "session_a": digest(a_sid.encode().hex()),
+            "session_b": digest(b_sid.encode().hex()),
             "delete_observed": True,
             "call_raised": isinstance(outcome, BaseException),
             "call_error_type": type(outcome).__name__
@@ -644,14 +673,18 @@ class Check:
         await a.close()
         await until(lambda: a_sid not in self.app.sessions, "Ordinary MAF close did not retire")
         require(b_sid in self.app.sessions, "Ordinary close lost B")
-        self.observations["maf_ordinary_close"] = {"survivor": await self.valid(b)}
+        self.observations["maf_ordinary_close"] = {
+            "session_a": digest(a_sid.encode().hex()),
+            "session_b": digest(b_sid.encode().hex()),
+            "survivor": await self.valid(b),
+        }
         await b.close()
         await until(lambda: not self.app.sessions, "Ordinary MAF sessions did not drain")
 
     async def finish(self) -> None:
         self.gate.release.set()
         for container in await self.owned():
-            info = json.loads(await docker("inspect", container))[0]
+            info = strict_json(await docker("inspect", container))[0]
             if info["State"]["Paused"]:
                 await docker("unpause", container)
         for client in self.clients:
@@ -662,7 +695,9 @@ class Check:
 
 
 async def check(args: argparse.Namespace) -> dict[str, Any]:
-    versions = environment(getattr(args, "installed", False))
+    versions = environment(
+        getattr(args, "installed", False), getattr(args, "expected_versions", None)
+    )
     if getattr(args, "installed", False):
         prototype = importlib.import_module("maf_sandbox_mcp.server")
         transport = importlib.import_module("maf_sandbox_mcp.workload_http")
@@ -697,8 +732,15 @@ async def check(args: argparse.Namespace) -> dict[str, Any]:
         try:
             await until(lambda: host.started or serving.done(), "Service did not start")
             require(host.started and not serving.done(), "Service startup failed")
+            control = getattr(args, "control", None)
+            planned = (
+                ["--name", control["names"]["ownership"], "--label", control["label"]]
+                if control
+                else []
+            )
             sentinel = await docker(
                 "run",
+                *planned,
                 "-d",
                 "--network",
                 "none",
@@ -754,7 +796,7 @@ async def check(args: argparse.Namespace) -> dict[str, Any]:
                 "owned_empty": True,
                 "unrelated_preserved": True,
             }
-            report["transport"] = records(observer.evidence)
+            report["transport"] = records(observer.evidence, final=True)
         finally:
             gate.release.set()
             host.should_exit = True

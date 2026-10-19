@@ -13,8 +13,6 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from openclaw_gateway_provider import SOURCES
-
 
 def docker(*args: str) -> str:
     return subprocess.check_output(
@@ -23,6 +21,8 @@ def docker(*args: str) -> str:
 
 
 def check(args: argparse.Namespace) -> dict[str, Any]:
+    from openclaw_gateway_http_check import read_response, verify_outcome
+
     config = json.loads(args.config.read_text(encoding="utf-8-sig"))
     assert config["gateway"]["bind"] == "loopback"
     port = config["gateway"]["port"]
@@ -62,7 +62,7 @@ def check(args: argparse.Namespace) -> dict[str, Any]:
         connection = request(case)
         try:
             response = connection.getresponse()
-            payload = json.loads(response.read())
+            payload = json.loads(read_response(response))
             assert response.status == 200, payload
             assert (
                 payload["choices"][0]["message"]["content"] == "QUALIFICATION_TOOL_RESULT_RECEIVED"
@@ -74,29 +74,24 @@ def check(args: argparse.Namespace) -> dict[str, Any]:
         assert recorded and recorded[-1]["scenario"] == case
         text = recorded[-1]["tool_result"]
         projected = json.loads(text[text.index("{") : text.rindex("}") + 1])
-        if case in ("denied", "helper"):
-            assert projected["status"] == "error" and "Unknown tool id:" in projected["error"]
-            report["cases"][case] = {"rejected": True}
-            return
-        result = projected["result"]
-        structured = result["details"]["structuredContent"]
-        assert len(result["content"]) == 1
-        assert structured["cleanup"] == "confirmed"
-        assert structured["completed"] is (case != "incomplete")
-        assert structured["verdict"] == (None if case == "incomplete" else case)
-        assert structured["status"] == ("incomplete" if case == "incomplete" else "ok")
-        canonical = json.dumps([["main.bicep", SOURCES[case]]], separators=(",", ":")).encode()
-        assert structured["source_sha256"] == hashlib.sha256(canonical).hexdigest()
-        assert (
-            structured["config_sha256"]
-            == hashlib.sha256(args.bicep_config.read_bytes()).hexdigest()
+        verified = verify_outcome(
+            projected, case, hashlib.sha256(args.bicep_config.read_bytes()).hexdigest(), args.image
         )
-        assert structured["image"] == args.image
+        if case in ("denied", "helper"):
+            report["cases"][case] = verified
+            return
         assert not docker("ps", "-aq", "--filter", f"label=maf-sandbox.scope={owner}")
         report["cases"][case] = {
-            key: structured[key]
-            for key in ("completed", "verdict", "status", "cleanup", "source_sha256")
-        } | {"projected_content_items": len(result["content"])}
+            key: verified[key]
+            for key in (
+                "completed",
+                "verdict",
+                "status",
+                "cleanup",
+                "source_sha256",
+                "projected_content_items",
+            )
+        }
 
     for case in ("valid", "invalid", "incomplete", "denied", "helper"):
         outcome(case)

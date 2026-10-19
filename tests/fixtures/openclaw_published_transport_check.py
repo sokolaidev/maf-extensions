@@ -193,7 +193,7 @@ class Results:
             "Incomplete test-phase evidence",
         )
         require(
-            all(r["outcome"] == "passed" and not r["xfail"] for r in self.reports),
+            all(r["outcome"] == "passed" and r["xfail"] is False for r in self.reports),
             "Skipped, expected-failed or failed cases cannot satisfy acceptance",
         )
         verify_retirements(self.retirements)
