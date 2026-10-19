@@ -64,7 +64,7 @@ Use an operator-created Secret in the application namespace with exactly these r
 
 Manage this Secret through your normal secret tooling; never put its values in the image, source, command arguments or a committed manifest. The launcher references only these three keys, replaces any existing entries for those names, never imports arbitrary Secret entries, and does not read Secret values. Namespace policy must authorize the controller to create a workload referencing this Secret. Model access occurs in the trusted application, outside the Hyperlight guest; cluster network policy must permit the chosen HTTPS endpoint and DNS. Closed guest egress does not restrict the host application's model request.
 
-Add `--model-secret YOUR_SECRET_NAME` to the smoke command to enable model mode. This makes billable inference requests. The application checks both the CodeAct tool result and the final answer. It uses the same ownership, containment and cleanup path as smoke mode.
+Add `--model-secret YOUR_SECRET_NAME` to the smoke command to enable model mode. This makes billable inference requests. Model requests use `store=False` and replay the tool history locally, so the endpoint need not support server-side response continuation. The application checks both the CodeAct tool result and the final answer. It uses the same ownership, containment and cleanup path as smoke mode.
 
 ## Recover interrupted cleanup
 
