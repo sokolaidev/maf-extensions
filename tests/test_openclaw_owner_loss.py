@@ -745,3 +745,22 @@ def test_target_post_terminal_before_fault_refuses(case):
     value["transport"].sort(key=lambda row: row["mono_ns"])
     with pytest.raises(e.Refused, match="barrier_not_held_at_fault"):
         fault.verify(value, case, m)
+
+
+def test_retained_owner_loss_campaign_qualifies_exact_candidate():
+    runner = importlib.import_module("openclaw_conformance.owner_loss")
+    record = ROOT / "scripts/experiments/openclaw_owner_loss_evidence/2026-10-19-windows-v1"
+    candidate = e.read(record / "candidate.json")
+    baseline = runner.baseline(
+        record / "baseline/evidence", record / "baseline/plan.json", candidate
+    )
+    result = fault.evaluate(
+        record / "faults/evidence", e.read(record / "faults/plan.json"), candidate, baseline
+    )
+    assert result == {
+        "outcome": "qualified_for_profile",
+        "profile": "owner-loss-windows-v1",
+        "campaign_id": "48d6fda50c654d76acc81494eb733401",
+        "candidate_sha256": "01c302cfa02f341cb149da075a86d28285cfd8e0a04e372103c5c3bad4a1eeb0",
+        "cases": 15,
+    }
