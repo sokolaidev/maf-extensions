@@ -3023,3 +3023,23 @@ async def test_records_with_any_target_value_are_not_counted_as_value_free():
     messages.extend(_record_messages("Only titles.", call_id="second"))
     await strategy(messages)
     assert strategy.records_without_values == 1
+
+
+async def test_records_without_eligible_values_do_not_degrade_recall():
+    strategy = _strategy(max_input_tokens=100_000, trigger_fraction=0.001)
+    gate = RecallGate()
+    middleware = ToolResultRecallMiddleware(
+        max_input_tokens=100_000,
+        tokenizer=TOKENIZER,
+        arm=gate.arm,
+        reforce=strategy.take_reforce,
+    )
+    messages = _conversation(
+        3, result_values=lambda _: "Ordinary prose", payload_chars=0, record="Titles only"
+    )
+    await strategy(messages)
+    messages.extend(_record_messages("Still titles only", call_id="second"))
+    await strategy(messages)
+    assert strategy.records_without_values == 0
+    assert middleware.value_free_record_streak == 0
+    assert not middleware.pin_disabled

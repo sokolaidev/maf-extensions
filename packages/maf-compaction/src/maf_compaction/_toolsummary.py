@@ -1395,6 +1395,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         self._reforce: _Reforce | None = None
         self._recall_due: Callable[[list[Message], int | None], bool] | None = None
         self._recall_disabled: Callable[[], bool] = lambda: False
+        self._observe_record_values: Callable[[str, bool], None] | None = None
         # Group ids whose asking has ended -- uncovered still, after a record that covered none
         # of them or after an ask that produced no record -- and which are preserved for good
         # while they stay uncovered. Accumulated, because an ended chain must not restart.
@@ -1656,6 +1657,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             messages, max_input_tokens=budget
         )
         self._recall_disabled = lambda: middleware.pin_disabled
+        self._observe_record_values = middleware._observe_record_values  # pyright: ignore[reportPrivateUsage]
         middleware.reforce_feedback = self.recall_feedback
 
     def record_pending(
@@ -1743,10 +1745,14 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         repaired = repair_compacted_items(messages, lambda text: text.startswith(_ROWS_OMITTED))
         if repaired:
             annotate_token_counts(messages, tokenizer=self.tokenizer, force_retokenize=True)
+        anchor = find_record_index(messages)
         if prompt_tokens <= trigger_tokens:
+            if anchor is not None:
+                recall_results = _recall_results(messages)
+                candidates = self._record_candidates(messages, anchor, recall_results)
+                self._observe_values(messages, anchor, candidates, recall_results)
             return repaired
 
-        anchor = find_record_index(messages)
         if anchor is not None:
             self._records = max(self._records, 1)
             # Before anything is deleted on the strength of a record, the record is put out of
@@ -1915,6 +1921,66 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         if self._reforce is not None:
             self._reforce.records = max(self._reforce.records - (len(groups) - 1), 0)
 
+    def _record_candidates(
+        self, messages: list[Message], anchor: int, recall_results: dict[int, str]
+    ) -> list[tuple[dict[str, Any], set[str], set[str]]]:
+        """Find whole, unclaimed tool groups whose values a record could replace."""
+        groups = group_messages(messages)
+        removable = removable_spans(messages, groups)
+        candidates: list[tuple[dict[str, Any], set[str], set[str]]] = []
+        for position, group in enumerate(groups):
+            if position < self.keep_head_groups or group.get("kind") != "tool_call":
+                continue
+            if group["end_index"] >= anchor:
+                continue
+            if _is_recall_group(messages, group, recall_results=recall_results):
+                # An older record. Deleting it would destroy the only surviving account of the
+                # groups behind *it* -- the same loss this strategy exists to prevent, one
+                # level removed, and quieter, because the newer record looks like coverage.
+                continue
+            if (group["start_index"], group["end_index"]) not in removable:
+                # Its call and its result would not leave together -- see
+                # :func:`~._preserve.removable_whole` -- so it is not a candidate on this pass, and
+                # not reported as uncovered either: the record may cover it perfectly well.
+                continue
+            if _claimed_elsewhere(messages[group["start_index"] : group["end_index"] + 1]):
+                # Something else has already declared this group irreplaceable. Not counted as
+                # uncovered: it was never a candidate for deletion, so reporting it would put a
+                # protected message in a diagnostic that means "the record fell short". A hold
+                # of this strategy's own is not that: the group is a candidate still, so the
+                # record it was held for can release it -- see ``PRESERVE_REASON_UNCOVERED``.
+                continue
+            candidates.append(
+                (
+                    group,
+                    _called_function_names(messages, group),
+                    _distinctive_tokens(_group_result_text(messages, group)),
+                )
+            )
+
+        return candidates
+
+    def _observe_values(
+        self,
+        messages: list[Message],
+        anchor: int,
+        candidates: list[tuple[dict[str, Any], set[str], set[str]]],
+        recall_results: dict[int, str],
+    ) -> None:
+        identity = _record_identity(messages[anchor], recall_results)
+        values = {value for _, _, group_values in candidates for value in group_values}
+        if identity and values:
+            newest_quoted = set(
+                _tokens(_record_text(messages[anchor], recall_results), fold_case=False)
+            )
+            has_values = bool(values & newest_quoted)
+            if identity not in self._observed_value_records:
+                self._observed_value_records.add(identity)
+                if not has_values:
+                    self._records_without_values += 1
+            if self._observe_record_values is not None:
+                self._observe_record_values(identity, has_values)
+
     def _drop_before(self, messages: list[Message], anchor: int) -> bool:
         """Exclude the tool groups the record demonstrably covers, and only those.
 
@@ -2003,10 +2069,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         Returns:
             True if anything was excluded.
         """
-        groups = group_messages(messages)
-        matches = function_result_candidates(messages)
-        recall_results = _recall_results(messages, matches)
-        removable = removable_spans(messages, groups, matches=matches)
+        recall_results = _recall_results(messages)
         record = "\n".join(
             text
             for message in messages[: anchor + 1]
@@ -2027,46 +2090,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         quoted_rows = {row for row in _table_rows(record).values() if source_rows[row] == 1}
         mentions = Counter(_tokens(record))
 
-        candidates: list[tuple[dict[str, Any], set[str], set[str]]] = []
-        for position, group in enumerate(groups):
-            if position < self.keep_head_groups or group.get("kind") != "tool_call":
-                continue
-            if group["end_index"] >= anchor:
-                continue
-            if _is_recall_group(messages, group, recall_results=recall_results):
-                # An older record. Deleting it would destroy the only surviving account of the
-                # groups behind *it* -- the same loss this strategy exists to prevent, one
-                # level removed, and quieter, because the newer record looks like coverage.
-                continue
-            if (group["start_index"], group["end_index"]) not in removable:
-                # Its call and its result would not leave together -- see
-                # :func:`~._preserve.removable_whole` -- so it is not a candidate on this pass, and
-                # not reported as uncovered either: the record may cover it perfectly well.
-                continue
-            if _claimed_elsewhere(messages[group["start_index"] : group["end_index"] + 1]):
-                # Something else has already declared this group irreplaceable. Not counted as
-                # uncovered: it was never a candidate for deletion, so reporting it would put a
-                # protected message in a diagnostic that means "the record fell short". A hold
-                # of this strategy's own is not that: the group is a candidate still, so the
-                # record it was held for can release it -- see ``PRESERVE_REASON_UNCOVERED``.
-                continue
-            candidates.append(
-                (
-                    group,
-                    _called_function_names(messages, group),
-                    _distinctive_tokens(_group_result_text(messages, group)),
-                )
-            )
-
-        identity = _record_identity(messages[anchor], recall_results)
-        if identity and identity not in self._observed_value_records:
-            self._observed_value_records.add(identity)
-            values = {value for _, _, group_values in candidates for value in group_values}
-            newest_quoted = set(
-                _tokens(_record_text(messages[anchor], recall_results), fold_case=False)
-            )
-            if values and not values & newest_quoted:
-                self._records_without_values += 1
+        candidates = self._record_candidates(messages, anchor, recall_results)
+        self._observe_values(messages, anchor, candidates, recall_results)
 
         # How many groups each name has to account for, counted over the droppable candidates
         # alone. A group the head protects, or one sitting after the record, is not being
@@ -2432,6 +2457,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self._awaiting_record = False
         self._pin_disabled = False
         self._ignored_streak = 0
+        self._value_free_streak = 0
+        self._value_records: set[str] = set()
+        self._pin_disabled_reason: str | None = None
         self._ignored_forced_calls = 0
         self._failed_forced_calls = 0
         self._session_id: str | None = None
@@ -2449,6 +2477,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             "last_record": self._last_record,
             "pin_disabled": self._pin_disabled,
             "ignored_streak": self._ignored_streak,
+            "value_free_streak": self._value_free_streak,
+            "value_records": sorted(self._value_records),
+            "pin_disabled_reason": self._pin_disabled_reason,
             "feedback": self._feedback,
         }
 
@@ -2460,6 +2491,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self._last_record = data["last_record"]
         self._pin_disabled = data.get("pin_disabled", False)
         self._ignored_streak = data.get("ignored_streak", 0)
+        self._value_free_streak = data.get("value_free_streak", 0)
+        self._value_records = set(data.get("value_records", []))
+        self._pin_disabled_reason = data.get("pin_disabled_reason")
         self._feedback = data.get("feedback", "")
 
     def forget_pending(self) -> None:
@@ -2555,8 +2589,26 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
     @property
     def pin_disabled(self) -> bool:
-        """Whether this session stopped forcing recall after ignored or failed pins."""
+        """Whether this session stopped forcing recall after ineffective or failed pins."""
         return self._pin_disabled
+
+    @property
+    def pin_disabled_reason(self) -> str | None:
+        """Why forcing stopped: ignored, failed, or value_free; None if unset or legacy."""
+        return self._pin_disabled_reason
+
+    @property
+    def value_free_record_streak(self) -> int:
+        """Consecutive eligible records quoting none of their targets' distinctive values."""
+        return self._value_free_streak
+
+    def _observe_record_values(self, identity: str, has_values: bool) -> None:
+        if identity in self._value_records or self._pin_disabled:
+            return
+        self._value_records.add(identity)
+        self._value_free_streak = 0 if has_values else self._value_free_streak + 1
+        if self._value_free_streak >= 2:
+            self._disable_pin("value_free")
 
     @property
     def ignored_forced_calls(self) -> int:
@@ -2568,8 +2620,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         """Forced requests that raised and triggered one unpinned retry."""
         return self._failed_forced_calls
 
-    def _disable_pin(self) -> None:
+    def _disable_pin(self, reason: str) -> None:
         self._pin_disabled = True
+        self._pin_disabled_reason = reason
         self._force_next = False
         self._reforce_next = False
         self._awaiting_record = False
@@ -2600,7 +2653,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             self._ignored_forced_calls += 1
             self._ignored_streak += 1
             if self._ignored_streak >= 2:
-                self._disable_pin()
+                self._disable_pin("ignored")
 
     async def process(
         self,
@@ -2611,8 +2664,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
     ) -> None:
         """Pin the next request after loaded history triggers recall.
 
-        Two consecutive ignored pins disable forcing for the session. A forced request
-        that raises disables it immediately and retries once with the original options.
+        Two consecutive ignored pins or value-free records disable forcing for the session.
+        A forced request that raises disables it immediately and retries once with the
+        original options.
         Forced streams are buffered so failed updates cannot escape into that retry.
         Cancellation propagates and leaves the pending ask available for a later request.
         """
@@ -2651,7 +2705,10 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 self._reforce_next = False
                 self._reforced += 1
 
-        from ._composed import ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+        from ._composed import (
+            CompactionBudgetExceeded,
+            ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+        )
 
         strategy = context.kwargs.get(
             "compaction_strategy", getattr(context.client, "compaction_strategy", None)
@@ -2695,7 +2752,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             if not forced_this_call:
                 raise
             self._failed_forced_calls += 1
-            self._disable_pin()
+            self._disable_pin("failed")
             context.options = original_options
             context.messages = original_messages
             context.kwargs = {
@@ -2745,11 +2802,13 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             return
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
-        self._force_next = self._record_due(
-            messages,
-            record_index,
-            max_input_tokens=request_budget() if request_budget is not None else None,
-        )
+        try:
+            budget = request_budget() if request_budget is not None else None
+        except CompactionBudgetExceeded:
+            # A post-call estimate must not discard a delivered response.
+            self._force_next = False
+            return
+        self._force_next = self._record_due(messages, record_index, max_input_tokens=budget)
         self._feedback = ""
         if self._reforce_next and self.reforce_feedback is not None:
             self._feedback = self.reforce_feedback(messages)
