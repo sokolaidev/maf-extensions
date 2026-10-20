@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -72,6 +73,44 @@ EGRESS_PROBE = (
     " body = b''\n"
     "print('connected' if b'modules.v1' in body else 'refused')\n"
 )
+
+
+async def capture_launcher(execute, record, command, **kwargs):
+    if not isinstance(command, list) or command[2:3] != ["/opt/maf-terraform/runner.py"]:
+        return await execute(command, **kwargs)
+    started = time.monotonic()
+    record["timeout_seconds"] = kwargs.get("timeout")
+    try:
+        result = await execute(command, **kwargs)
+        record.update(
+            exit_code=result.exit_code,
+            producer_owns_stderr=result.producer_owns_stderr,
+            stdout_bytes=len(result.stdout_bytes),
+            stderr_bytes=len(result.stderr_bytes),
+            stdout_tail=result.stdout_bytes[-8192:].decode("utf-8", errors="replace"),
+            stderr_tail=result.stderr_bytes[-2048:].decode("utf-8", errors="replace"),
+        )
+        return result
+    except BaseException as exc:
+        record["exception_type"] = type(exc).__name__
+        raise
+    finally:
+        record["elapsed_seconds"] = round(time.monotonic() - started, 3)
+
+
+def retain_failure(case: str, backend: str, launcher: dict[str, Any]) -> None:
+    """Retain bounded guest output as diagnostic evidence, never as a validation verdict."""
+    payload = json.dumps(
+        {"case": case, "backend": backend, "launcher": launcher}, ensure_ascii=True
+    )
+    print("AVM failure diagnostics (guest output is untrusted): " + payload)
+    if directory := os.environ.get("MAF_TERRAFORM_DIAGNOSTICS_DIR"):
+        try:
+            destination = Path(directory)
+            destination.mkdir(parents=True, exist_ok=True)
+            (destination / f"{case}-{backend}.json").write_text(payload + "\n", encoding="utf-8")
+        except OSError as exc:
+            print("AVM diagnostic artifact could not be written: " + type(exc).__name__)
 
 
 def network_module(version: str = "0.22.2", source: str = NETWORK) -> str:
@@ -196,6 +235,8 @@ async def create_backend(name: str) -> Any:
     ],
 )
 def test_avm_graph_validates_offline(backend_name, case, expected, monkeypatch):
+    launcher: dict[str, Any] = {}
+
     async def scenario() -> None:
         receipt = json.loads((PREPARED / "receipt.json").read_text(encoding="utf-8"))
         files, root = project(case, receipt)
@@ -214,6 +255,12 @@ def test_avm_graph_validates_offline(backend_name, case, expected, monkeypatch):
         async def checked_acquire(key, spec):
             sandbox = await acquire(key, spec)
             instances.append(sandbox.instance_id)
+            execute = sandbox.exec
+
+            async def observed_exec(command, **kwargs):
+                return await capture_launcher(execute, launcher, command, **kwargs)
+
+            monkeypatch.setattr(sandbox, "exec", observed_exec)
             if backend_name == "docker":
                 inspection = subprocess.run(
                     ["docker", "inspect", sandbox.instance_id],
@@ -256,7 +303,11 @@ def test_avm_graph_validates_offline(backend_name, case, expected, monkeypatch):
             if backend_name == "acas":
                 await backend.aclose()
 
-    asyncio.run(scenario())
+    try:
+        asyncio.run(scenario())
+    except BaseException:
+        retain_failure(case, backend_name, launcher)
+        raise
 
 
 @pytest.mark.skipif(not DOCKER_IMAGE, reason="needs MAF_TERRAFORM_AVM_IMAGE")
