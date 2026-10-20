@@ -600,6 +600,13 @@ def execute(
     }
     if mode == "format":
         result["mode"] = mode
+    started = phase_started = time.monotonic()
+    phase = "setup"
+
+    def begin_phase(name: str) -> None:
+        nonlocal phase, phase_started
+        phase, phase_started = name, time.monotonic()
+
     try:
         if (
             engine not in ("terraform", "opentofu")
@@ -625,6 +632,7 @@ def execute(
         for name in ("home", "tmp", "data"):
             (private / name).mkdir(parents=True, exist_ok=False)
         supervisor = Supervisor(timeout, clean_environment(private))
+        begin_phase("version")
         version = supervisor.execute_phase([str(binary), "version", "-json"], private)
         if (
             version["exit_code"] != 0
@@ -632,10 +640,12 @@ def execute(
         ):
             raise ValueError("engine version mismatch")
         if mode == "format":
+            begin_phase("fmt")
             format_project(supervisor, binary, project, result)
             if len(json.dumps(result, ensure_ascii=True).encode("ascii")) + 1 > OUTPUT_LIMIT:
                 raise RuntimeError("output limit")
             return result
+        begin_phase("modules")
         receipt = INSTALL / "dependencies.json"
         dependencies = json.loads(receipt.read_text()) if receipt.is_file() else {}
         packages = dependencies.get("registry_modules", [])
@@ -650,7 +660,9 @@ def execute(
         if original_lock is not None:
             init.append("-lockfile=readonly")
         phases = result["phases"]
+        begin_phase("init")
         phases["init"] = supervisor.execute_phase(init, root)
+        begin_phase("providers")
         if original_lock is not None and lock.read_bytes() != original_lock:
             raise ValueError("supplied lock changed")
         if phases["init"]["exit_code"] == 0:
@@ -679,13 +691,28 @@ def execute(
                             "expected baked h1 checksum.\n"
                         )
                         return result
+            begin_phase("validate")
             phases["validate"] = supervisor.execute_phase([str(binary), "validate", "-json"], root)
+            begin_phase("fmt")
             phases["fmt"] = supervisor.execute_phase(
                 [str(binary), "fmt", "-check", "-recursive", "-no-color"], project
             )
-    except Exception:
+    except Exception as exc:
         # The host renders this as incomplete regardless of any completed phase's verdict.
         result["error"] = "launcher could not complete the bounded execution"
+        now = time.monotonic()
+        result["diagnostics"] = {
+            "phase": phase,
+            "elapsed_seconds": round(now - started, 3),
+            "phase_seconds": round(now - phase_started, 3),
+            "failure": (
+                "timeout"
+                if isinstance(exc, (TimeoutError, subprocess.TimeoutExpired))
+                else "output_limit"
+                if isinstance(exc, RuntimeError) and str(exc) == "output limit"
+                else "launcher_error"
+            ),
+        }
         if mode == "format":
             result["phases"] = {}
             result.pop("formatted_files", None)
