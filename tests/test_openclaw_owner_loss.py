@@ -46,6 +46,17 @@ def mirrored(value):
     return {"structuredContent": value, "content": [{"type": "text", "text": json.dumps(value)}]}
 
 
+def target_request(value):
+    target = fault.one(value["transport"], "target_request")
+    return next(
+        row
+        for row in value["transport"]
+        if row["event"] == "request"
+        and row.get("method") == "tools/call"
+        and all(row.get(k) == target[k] for k in ("boot", "session", "request"))
+    )
+
+
 def observation(case, m):
     """Construct contract data; these synthetic records are not live qualification."""
     sources = importlib.import_module("openclaw_sources")
@@ -253,6 +264,86 @@ def observation(case, m):
         sentinel_survived=True,
         sentinel_removed=True,
     )
+    if case.startswith(("gateway-", "client-")):
+        sibling_session = "9" * 64 if case.startswith("gateway-") else "5" * 64
+        for row in transport:
+            if row["event"] in {"binding_started", "binding_result"} and row["mono_ns"] >= 1300:
+                row["session"] = sibling_session
+        wire(
+            1290,
+            "request",
+            boot=old_boot,
+            session=sibling_session,
+            request="4" * 64,
+            method="tools/call",
+            exchange="8" * 32,
+        )
+        if case.startswith("gateway-"):
+            wire(
+                120,
+                "request",
+                boot=old_boot,
+                session=None,
+                request="1" * 64,
+                method="initialize",
+                exchange="9" * 32,
+            )
+            wire(
+                130,
+                "response",
+                boot=old_boot,
+                session=sibling_session,
+                method="POST",
+                exchange="9" * 32,
+                status=200,
+            )
+        else:
+            wire(
+                40,
+                "request",
+                boot=old_boot,
+                session="5" * 64,
+                request="6" * 64,
+                method="tools/call",
+                exchange="9" * 32,
+            )
+            wire(
+                60,
+                "binding_result",
+                boot=old_boot,
+                session="5" * 64,
+                request="6" * 64,
+                result=mirrored(result(m)),
+            )
+            add(90, "gateway_result", session="a" * 32, turn="a" * 32, result=result(m))
+            add(1390, "gateway_result", session="a" * 32, turn="b" * 32, result=result(m))
+            projected = {
+                "tool": {
+                    "id": "mcp:bicep:bicep__bicep_validate",
+                    "name": "bicep__bicep_validate",
+                    "source": "mcp",
+                },
+                "result": {
+                    "content": [
+                        {"type": "text", "text": "structuredContent:\n" + json.dumps(result(m))}
+                    ],
+                    "details": {
+                        "mcpServer": "bicep",
+                        "mcpTool": "bicep_validate",
+                        "structuredContent": result(m),
+                    },
+                },
+            }
+
+            def provider_pair(turn):
+                request = {"session": "a" * 32, "turn": turn, "scenario": "valid"}
+                return [request, {**request, "tool_result": json.dumps(projected)}]
+
+            value["provider"] = (
+                provider_pair("a" * 32) + value["provider"] + provider_pair("b" * 32)
+            )
+        rows.sort(key=lambda row: row["mono_ns"])
+        transport.sort(key=lambda row: row["mono_ns"])
     return value
 
 
@@ -466,7 +557,7 @@ def test_late_dispatch_cannot_hide_after_count_snapshot(case):
             **{key: target[key] for key in ("boot", "session", "request")},
         }
     )
-    with pytest.raises(e.Refused, match="late_or_missing_dispatch"):
+    with pytest.raises(e.Refused, match="late_target_replay"):
         fault.verify(value, case, m)
 
 
@@ -739,7 +830,7 @@ def test_same_session_get_terminal_does_not_end_held_post(case):
 def test_target_post_terminal_before_fault_refuses(case):
     m = manifest()
     value = observation(case, m)
-    request = next(row for row in value["transport"] if row["event"] == "request")
+    request = target_request(value)
     value["transport"].append(
         {
             "event": "settled",
@@ -845,7 +936,7 @@ def test_service_settlement_requires_target_exchange_and_runtime(case, mutation,
 def test_service_settlement_request_must_be_target(case, field):
     m = manifest()
     value = observation(case, m)
-    request = fault.one(value["transport"], "request")
+    request = target_request(value)
     request[field] = "foreign"
     with pytest.raises(e.Refused, match="service_terminal"):
         fault.verify(value, case, m)
@@ -856,9 +947,146 @@ def test_service_settlement_request_must_be_target(case, field):
 def test_service_settlement_exchange_must_be_unambiguous(case, event):
     m = manifest()
     value = observation(case, m)
-    duplicate = copy.deepcopy(fault.one(value["transport"], event))
+    duplicate = copy.deepcopy(
+        target_request(value) if event == "request" else fault.one(value["transport"], event)
+    )
     duplicate["mono_ns"] += 1
     value["transport"].append(duplicate)
     value["transport"].sort(key=lambda row: row["mono_ns"])
     with pytest.raises(e.Refused, match="service_terminal"):
+        fault.verify(value, case, m)
+
+
+@pytest.mark.parametrize(
+    "case", [f"{actor}-{phase}" for actor in ("gateway", "client") for phase in fault.PHASES]
+)
+@pytest.mark.parametrize("mutation", ["replay", "boot", "session"])
+def test_retained_survivor_cannot_be_replay_or_unrelated_work(case, mutation):
+    record = ROOT / "scripts/experiments/openclaw_owner_loss_evidence/2026-10-19-windows-v1"
+    m = e.read(record / "candidate.json")
+    value = e.read(record / "faults/evidence" / (case + ".json"))["observations"]
+    target = fault.one(value["transport"], "target_request")
+    start = [row for row in value["transport"] if row["event"] == "binding_started"][-1]
+    ending = next(
+        row
+        for row in value["transport"]
+        if row["event"] == "binding_result" and row["mono_ns"] > start["mono_ns"]
+    )
+    replacement = (
+        {k: target[k] for k in ("boot", "session", "request")}
+        if mutation == "replay"
+        else {mutation: "f" * (32 if mutation == "boot" else 64)}
+    )
+    start.update(replacement)
+    ending.update(replacement)
+    with pytest.raises(e.Refused):
+        fault.verify(value, case, m)
+
+
+@pytest.mark.parametrize(
+    "case", [f"{actor}-{phase}" for actor in ("gateway", "client") for phase in fault.PHASES]
+)
+@pytest.mark.parametrize(
+    "mutation", ["request_session", "coherent_session", "result_after_observation"]
+)
+def test_retained_sibling_requires_independent_session_evidence(case, mutation):
+    record = ROOT / "scripts/experiments/openclaw_owner_loss_evidence/2026-10-19-windows-v1"
+    m = e.read(record / "candidate.json")
+    value = e.read(record / "faults/evidence" / (case + ".json"))["observations"]
+    start = [row for row in value["transport"] if row["event"] == "binding_started"][-1]
+    request = next(
+        row
+        for row in value["transport"]
+        if row["event"] == "request"
+        and row.get("method") == "tools/call"
+        and all(row.get(k) == start[k] for k in ("boot", "session", "request"))
+    )
+    ending = next(
+        row
+        for row in value["transport"]
+        if row["event"] == "binding_result" and row["mono_ns"] > start["mono_ns"]
+    )
+    if mutation == "result_after_observation":
+        ending["mono_ns"] = fault.one(value["events"], "sibling_result")["mono_ns"] + 1
+    else:
+        request["session"] = "f" * 64
+        if mutation == "coherent_session":
+            start["session"] = ending["session"] = request["session"]
+    value["transport"].sort(key=lambda row: row["mono_ns"])
+    with pytest.raises(e.Refused):
+        fault.verify(value, case, m)
+
+
+@pytest.mark.parametrize("phase", fault.PHASES)
+@pytest.mark.parametrize("mutation", ["missing", "boot", "session", "late"])
+def test_retained_gateway_survivor_requires_pre_fault_initialization(phase, mutation):
+    case = "gateway-" + phase
+    record = ROOT / "scripts/experiments/openclaw_owner_loss_evidence/2026-10-19-windows-v1"
+    m = e.read(record / "candidate.json")
+    value = e.read(record / "faults/evidence" / (case + ".json"))["observations"]
+    control = fault.one(value["events"], "control_result")
+    barrier = fault.one(value["events"], "barrier_observed")
+    request = next(
+        row
+        for row in value["transport"]
+        if row["event"] == "request"
+        and row.get("method") == "initialize"
+        and control["mono_ns"] < row["mono_ns"] < barrier["target_started_ns"]
+    )
+    response = next(
+        row
+        for row in value["transport"]
+        if row["event"] == "response" and row.get("exchange") == request["exchange"]
+    )
+    if mutation == "missing":
+        value["transport"].remove(request)
+    elif mutation == "late":
+        response["mono_ns"] = barrier["target_started_ns"] + 1
+    else:
+        response[mutation] = "f" * (32 if mutation == "boot" else 64)
+    value["transport"].sort(key=lambda row: row["mono_ns"])
+    with pytest.raises(e.Refused):
+        fault.verify(value, case, m)
+
+
+@pytest.mark.parametrize("phase", fault.PHASES)
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "gateway_session",
+        "gateway_turn",
+        "provider_session",
+        "provider_result",
+        "control_start",
+        "control_request",
+        "control_result",
+    ],
+)
+def test_retained_client_survivor_requires_original_gateway_session(phase, mutation):
+    case = "client-" + phase
+    record = ROOT / "scripts/experiments/openclaw_owner_loss_evidence/2026-10-19-windows-v1"
+    m = e.read(record / "candidate.json")
+    value = e.read(record / "faults/evidence" / (case + ".json"))["observations"]
+    gateway = [row for row in value["events"] if row["event"] == "gateway_result"]
+    if mutation.startswith("gateway_"):
+        gateway[-1][mutation.removeprefix("gateway_")] = "f" * 32
+    elif mutation.startswith("provider_"):
+        records = [row for row in value["provider"] if row.get("turn") == gateway[-1]["turn"]]
+        if mutation == "provider_session":
+            records[-1]["session"] = "f" * 32
+        else:
+            records[-1]["tool_result"] = "{}"
+    else:
+        event = {
+            "control_start": "binding_started",
+            "control_request": "request",
+            "control_result": "binding_result",
+        }[mutation]
+        row = next(
+            row
+            for row in value["transport"]
+            if row["event"] == event and (event != "request" or row.get("method") == "tools/call")
+        )
+        row["session"] = "f" * 64
+    with pytest.raises(e.Refused):
         fault.verify(value, case, m)

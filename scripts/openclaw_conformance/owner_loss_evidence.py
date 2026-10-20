@@ -8,7 +8,18 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .evidence import LIMITS, candidate, digest, encode, file_hash, keys, read, require
+from .evidence import (
+    LIMITS,
+    Refused,
+    candidate,
+    decode,
+    digest,
+    encode,
+    file_hash,
+    keys,
+    read,
+    require,
+)
 
 PROFILE = "owner-loss-windows-v1"
 PHASES = ("pre_admission", "active", "response", "cleanup")
@@ -231,6 +242,15 @@ def verify(value: dict[str, Any], case: str, manifest: dict[str, Any]) -> None:
         if r["event"] == "binding_started" and r["mono_ns"] >= barrier["target_started_ns"]
     ]
     require(
+        sum(
+            r["event"] == "binding_started"
+            and all(r.get(k) == target[k] for k in ("boot", "session", "request"))
+            for r in transport
+        )
+        == dispatch["count"],
+        "late_target_replay",
+    )
+    require(
         len(complete) == dispatch["count"] + (2 if actor == "worker" else 1),
         "late_or_missing_dispatch",
     )
@@ -427,15 +447,20 @@ def verify(value: dict[str, Any], case: str, manifest: dict[str, Any]) -> None:
         and sibling["result"]["source_sha256"] == source_digest(SIMPLE_SOURCE),
         "sibling_identity",
     )
-    controls = [(complete[-1], sibling["result"])]
+    if actor != "worker":
+        try:
+            _surviving_sibling(value, actor, target, complete[-1])
+        except RuntimeError as exc:
+            raise Refused("surviving_sibling_projection") from exc
+    controls = [(complete[-1], sibling["result"], sibling["mono_ns"])]
     if actor == "worker":
-        controls.insert(0, (complete[-2], recovered["fresh_result"]))
+        controls.insert(0, (complete[-2], recovered["fresh_result"], recovered["mono_ns"]))
     old_sessions = {
         row["session"]
         for row in transport
         if row.get("boot") == target["boot"] and isinstance(row.get("session"), str)
     }
-    for start, expected_result in controls:
+    for start, expected_result, observed_ns in controls:
         if actor == "worker":
             require(
                 start.get("boot") == recovered["boot"]
@@ -453,7 +478,7 @@ def verify(value: dict[str, Any], case: str, manifest: dict[str, Any]) -> None:
             r
             for r in transport
             if r["event"] == "binding_result"
-            and start["mono_ns"] < r["mono_ns"] < next_start
+            and start["mono_ns"] < r["mono_ns"] < min(next_start, observed_ns)
             and all(r[k] == start[k] for k in ("boot", "session", "request"))
         ]
         require(len(endings) == 1, "control_binding_completion")
@@ -467,6 +492,141 @@ def verify(value: dict[str, Any], case: str, manifest: dict[str, Any]) -> None:
             "control_binding_result",
         )
     require(sibling["mono_ns"] > settled["mono_ns"], "sibling_order")
+
+
+def _surviving_sibling(
+    value: dict[str, Any], actor: str, target: dict[str, Any], start: dict[str, Any]
+) -> None:
+    """Bind surviving work to its pre-fault direct or Gateway session."""
+    rows, transport = value["events"], value["transport"]
+    control, sibling = one(rows, "control_result"), one(rows, "sibling_result")
+    settled, barrier = one(rows, "service_observed"), one(rows, "barrier_observed")
+    require(
+        start.get("boot") == target["boot"]
+        and settled["mono_ns"] < start["mono_ns"] < sibling["mono_ns"]
+        and start.get("session") != target["session"],
+        "surviving_sibling_identity",
+    )
+    requests = [
+        r
+        for r in transport
+        if r["event"] == "request"
+        and r.get("method") == "tools/call"
+        and all(r.get(k) == start[k] for k in ("boot", "session", "request"))
+        and settled["mono_ns"] < r["mono_ns"] < start["mono_ns"]
+    ]
+    require(len(requests) == 1, "sibling_request_identity")
+    if actor == "gateway":
+        initializations = [
+            r
+            for r in transport
+            if r["event"] == "request"
+            and r.get("method") == "initialize"
+            and r.get("boot") == target["boot"]
+            and control["mono_ns"] < r["mono_ns"] < barrier["target_started_ns"]
+        ]
+        require(len(initializations) == 1, "sibling_initialization")
+        initialization = initializations[0]
+        responses = [
+            r
+            for r in transport
+            if r["event"] == "response" and r.get("exchange") == initialization["exchange"]
+        ]
+        require(
+            len(responses) == 1
+            and responses[0].get("boot") == target["boot"]
+            and responses[0].get("method") == "POST"
+            and responses[0].get("status") == 200
+            and responses[0].get("session") == start["session"]
+            and initialization["mono_ns"] < responses[0]["mono_ns"] < barrier["target_started_ns"],
+            "sibling_initialization",
+        )
+        return
+    previous = [
+        r
+        for r in transport
+        if r["event"] == "binding_started" and r["mono_ns"] < control["mono_ns"]
+    ]
+    require(
+        len(previous) == 1
+        and previous[0].get("boot") == start["boot"]
+        and previous[0].get("session") == start["session"],
+        "sibling_existing_session",
+    )
+    gateway = [r for r in rows if r["event"] == "gateway_result"]
+    require(
+        len(gateway) == 2
+        and previous[0]["mono_ns"] < gateway[0]["mono_ns"] < control["mono_ns"]
+        and start["mono_ns"] < gateway[1]["mono_ns"] < sibling["mono_ns"]
+        and isinstance(gateway[0].get("session"), str)
+        and re.fullmatch(r"[0-9a-f]{32}", gateway[0]["session"])
+        and gateway[0]["session"] == gateway[1].get("session"),
+        "sibling_gateway_session",
+    )
+    checker = importlib.import_module("openclaw_gateway_http_check")
+    before = previous[0]
+    before_requests = [
+        r
+        for r in transport
+        if r["event"] == "request"
+        and r.get("method") == "tools/call"
+        and all(r.get(k) == before[k] for k in ("boot", "session", "request"))
+        and r["mono_ns"] < before["mono_ns"]
+    ]
+    before_results = [
+        r
+        for r in transport
+        if r["event"] == "binding_result"
+        and all(r.get(k) == before[k] for k in ("boot", "session", "request"))
+        and before["mono_ns"] < r["mono_ns"] < gateway[0]["mono_ns"]
+    ]
+    require(len(before_requests) == len(before_results) == 1, "sibling_control_binding")
+    before_result = checker.workload_result(before_results[0]["result"])
+    require(
+        all(
+            encode(before_result.get(k)) == encode(v)
+            for k, v in control["result"].items()
+            if k != "projected_content_items"
+        ),
+        "sibling_control_result",
+    )
+    turns = {one(rows, "target_identity")["turn"]}
+    target_provider_start = next(
+        i for i, r in enumerate(value["provider"]) if r.get("turn") in turns
+    )
+    previous_provider_end = -1
+    for index, (row, expected) in enumerate(zip(gateway, (control, sibling), strict=True)):
+        turn = row.get("turn")
+        require(
+            isinstance(turn, str) and re.fullmatch(r"[0-9a-f]{32}", turn) and turn not in turns,
+            "sibling_gateway_turn",
+        )
+        turns.add(turn)
+        records = [(i, r) for i, r in enumerate(value["provider"]) if r.get("turn") == turn]
+        require(
+            len(records) == 2
+            and records[0][0] > previous_provider_end
+            and all(r.get("session") == row["session"] for _, r in records),
+            "sibling_provider_session",
+        )
+        require(
+            records[-1][0] < target_provider_start
+            if index == 0
+            else records[0][0] > target_provider_start,
+            "sibling_provider_order",
+        )
+        previous_provider_end = records[-1][0]
+        projected = checker.projected_result([r for _, r in records], turn, "valid", loads=decode)
+        checked = checker.verify_outcome(projected, "valid", value["config_sha256"], value["image"])
+        require(
+            encode(row["result"]) == encode(expected["result"])
+            and all(
+                encode(row["result"].get(k)) == encode(v)
+                for k, v in checked.items()
+                if k != "projected_content_items"
+            ),
+            "sibling_gateway_result",
+        )
 
 
 def evaluate(
