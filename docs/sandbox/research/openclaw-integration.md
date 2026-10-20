@@ -508,7 +508,7 @@ Qualification requires a fresh installed-Bicep baseline bound to the same candid
 
 ### Installed surface and source evidence
 
-The [retained import-only report](../../../scripts/experiments/openclaw_backend_surface_result.json) records a clean Windows installation of `openclaw@2026.10.5`, Node `26.8.1`, lifecycle scripts disabled, and a 30-second bounded import probe. The npm archive's SHA-512 integrity matched the registry value; the report records SHA-256 values and archive equality for the package metadata, sandbox facade, registration bundle and shipped SDK catalog. This verifies those selected files, not every transitive dependency or runtime path. The full backend was not registered or executed.
+A clean Windows installation of `openclaw@2026.10.5`, Node `26.8.1`, lifecycle scripts disabled, passed the 30-second bounded import probe below with exit code zero. The npm archive's SHA-512 integrity matched the registry value; the selected installed files matched that verified archive. The identities, hashes and observations are retained here in Markdown. This verifies those selected files, not every transitive dependency or runtime path. The full backend was not registered or executed.
 
 | Installed observation | Meaning |
 |---|---|
@@ -518,11 +518,28 @@ The [retained import-only report](../../../scripts/experiments/openclaw_backend_
 | The same installed catalog labels `plugin-sdk/sandbox` private-local and describes production private exports as JavaScript-only helpers for separately published official plugins | Refuse to treat the exported function as this project's supported extension point |
 | `openclaw/src/agents/sandbox/backend.js` fails with `ERR_PACKAGE_PATH_NOT_EXPORTED` | A negative resolution control, not an alternative integration mechanism |
 
-There is a documentation tension: the installed and live [host-hooks guide](https://docs.openclaw.ai/plugins/sdk-overview/host-hooks#sandbox-backends) explains backend registration and remote-shell helpers without repeating the catalog's private-local restriction. That is evidence that the mechanism is usable, not a clear third-party support promise. This assessment follows the explicit catalog/inventory boundary and treats support as unresolved until upstream reconciles it; it does not claim registration is technically impossible. The guide's existence is retained in the probe report.
+There is a documentation tension: the installed and live [host-hooks guide](https://docs.openclaw.ai/plugins/sdk-overview/host-hooks#sandbox-backends) explains backend registration and remote-shell helpers without repeating the catalog's private-local restriction. That is evidence that the mechanism is usable, not a clear third-party support promise. This assessment follows the explicit catalog/inventory boundary and treats support as unresolved until upstream reconciles it; it does not claim registration is technically impossible. The guide's installed hash is recorded below; it was not compared with the archive.
 
 Upstream [openclaw#146282](https://github.com/openclaw/openclaw/issues/146282) remains open at this assessment. Its [author-reported experiment](https://github.com/openclaw/openclaw/issues/146282#issuecomment-5647907965) demonstrates a third-party backend on `2026.9.2` with explicit startup activation, and corrects the original claim that users must manually enable an installed plugin. This is additional evidence of technical feasibility, not our reproduction or a resolution of the SDK classification. Any future consumer probe must test Gateway startup, CLI selection and non-full discovery separately; configuration acceptance alone does not prove that the backend registered.
 
-To reproduce the import observation, create a fresh private npm project with empty user/global npm configuration, install exactly `openclaw@2026.10.5` with `--ignore-scripts --no-audit --no-fund`, and execute the report's `probe.command` from that project with its recorded timeout. Independently verify the archive integrity and listed installed-file hashes before interpreting the result. Installation with hooks disabled deliberately does not qualify native prerequisites. No Gateway, process execution, PTY, file operation, model or OpenClaw registration lifecycle was exercised.
+To reproduce the import observation, create a fresh private npm project with empty user/global npm configuration, install exactly `openclaw@2026.10.5` with `--ignore-scripts --no-audit --no-fund`, and run the following Python launcher from that project. It enforces a 30-second timeout and prints observations to stdout without writing an evidence file. Independently verify the archive integrity and listed installed-file hashes before interpreting the result. Installation with hooks disabled deliberately does not qualify native prerequisites. No Gateway, process execution, PTY, file operation, model or OpenClaw registration lifecycle was exercised.
+
+```python
+import subprocess
+
+probe = r'''for (const path of ["openclaw/plugin-sdk/core", "openclaw/plugin-sdk/sandbox", "openclaw/src/agents/sandbox/backend.js"]) { try { const m = await import(path); console.log(JSON.stringify({path,ok:true,registerSandboxBackend:typeof m.registerSandboxBackend,exportCount:Object.keys(m).length})); } catch (e) { console.log(JSON.stringify({path,ok:false,code:e.code})); } }'''
+subprocess.run(["node", "--input-type=module", "-e", probe], timeout=30, check=True)
+```
+
+The [npm archive](https://registry.npmjs.org/openclaw/-/openclaw-2026.10.5.tgz) contained 103,343,430 bytes and matched integrity `sha512-9rCuXMweqVKZIK3KBtGcLzesz9G6+FmQ30lvwomRhmcNWDcOtlBoqdLbPditoJMuTP55jPqXpt1AA0L8tSzFHg==`. The core import exposed 66 exports; the sandbox facade exposed 31. These counts describe this probe only and are not a compatibility guarantee.
+
+| Path beneath `node_modules` | SHA-256 | Compared with verified archive |
+|---|---|---|
+| `openclaw/package.json` | `44c4e2ed880440392d10224f0fec7c4f5ad59d93008827586e2acb038a5a21ee` | Yes |
+| `openclaw/dist/plugin-sdk/sandbox.js` | `ee3d064f0257356d636c1de71481df3720bedcccd3be358aba93ef15e30adb5c` | Yes |
+| `openclaw/dist/backend-DB2-ia5A.mjs` | `ebf735e11f3b5087469a03fa61a38526db5242cbae035dfc5821e71689c575fa` | Yes |
+| `openclaw/docs/plugins/sdk-subpaths.md` | `65e36c4b85b0726e9770df757bf9575f1b972f0d4291552728c4dedcffd51dc4` | Yes |
+| `openclaw/docs/plugins/sdk-overview/host-hooks.md` | `d5259b64f833648f90a44c81cb660cfb05533b00273047deabbb3693ac2a4435` | No; installed-file observation only |
 
 The detailed compatibility assessment below reads newer OpenClaw source at [`c93e2b73b89ffd333459b0a3d83fcfa3f05a8fdd`](https://github.com/openclaw/openclaw/tree/c93e2b73b89ffd333459b0a3d83fcfa3f05a8fdd), separately from the installed release. Its [private-subpath inventory](https://github.com/openclaw/openclaw/blob/c93e2b73b89ffd333459b0a3d83fcfa3f05a8fdd/scripts/lib/plugin-sdk-private-local-only-subpaths.json) still includes `sandbox`, matching the [current SDK catalog](https://docs.openclaw.ai/plugins/sdk-subpaths) inspected on this date. No claim equates these newer source interfaces with the installed release's behavior. Suite contracts were inspected at [`4a1c5899ebe7133469188975b22cbc9a2c72f45a`](https://github.com/sokolaidev/maf-extensions/tree/4a1c5899ebe7133469188975b22cbc9a2c72f45a).
 
