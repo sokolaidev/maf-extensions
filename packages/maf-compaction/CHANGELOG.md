@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.6.1...maf-compaction-v0.6.2) (2026-10-20)
+
+
+### Fixes
+
+* **compaction:** request recall by prompt when tool choice is unsupported ([#2068](https://github.com/sokolaidev/maf-extensions/issues/2068)) ([e2ce91a](https://github.com/sokolaidev/maf-extensions/commit/e2ce91a00f32008a2d7f5fcd4bbe0e207351f13c))
+
 ## [0.6.1](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.6.0...maf-compaction-v0.6.1) (2026-10-19)
 
 
