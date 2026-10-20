@@ -2293,9 +2293,25 @@ async def _buffer_recall_stream(
     return ResponseStream(updates(), finalizer=lambda _: response), response
 
 
-def _recall_tools_with_feedback(options: Mapping[str, Any], feedback: str) -> list[Any]:
+def _is_recall_tool(tool: Any) -> bool:
+    if isinstance(tool, FunctionTool):
+        return tool.name == RECALL_TOOL_NAME
+    if isinstance(tool, dict):
+        spec: dict[str, Any] = cast(dict[str, Any], tool).get("function", tool)
+        return spec.get("name") == RECALL_TOOL_NAME
+    return callable(tool) and getattr(tool, "__name__", None) == RECALL_TOOL_NAME
+
+
+def _recall_tools_with_feedback(
+    options: Mapping[str, Any], feedback: str, *, only_recall: bool = False
+) -> list[Any]:
     tools: list[Any] = []
     for original in request_tools(options):
+        if only_recall and not _is_recall_tool(original):
+            continue
+        if not feedback:
+            tools.append(original)
+            continue
         tool = original
         if isinstance(tool, FunctionTool) and tool.name == RECALL_TOOL_NAME:
             tool = copy(tool)
@@ -2365,8 +2381,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             sized for an ordinary answer and a record asked to summarise everything has no
             bound of its own at all.
         supports_tool_choice: Set False for routes that cannot pin a tool. Recall uses a
-            temporary request instruction instead. A tool_choice client rejection also
-            selects this mode for the rest of the session.
+            temporary trailing message with only the recall tool advertised. A tool_choice
+            client rejection also selects this mode for the rest of the session.
         max_groups_before_record: How many tool-call groups one record may be asked to cover
             before another is forced. ``None`` switches only this bound off; the size trigger
             and ``reforce`` still apply. It is a second trigger beside
@@ -2640,12 +2656,28 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         """Failed recall attempts that triggered an ordinary retry, excluding rejected pins."""
         return self._failed_forced_calls
 
-    def _disable_pin(self, reason: str) -> None:
+    def _disable_pin(self, reason: str, *, response: ChatResponse[Any] | None = None) -> None:
         if not self._pin_disabled or self._pin_disabled_reason != reason:
+            detail = ""
+            if response is not None:
+                kinds = {
+                    content.type for message in response.messages for content in message.contents
+                }
+                outcome = (
+                    "+".join(
+                        label
+                        for kind, label in (("function_call", "other_tool"), ("text", "text"))
+                        if kind in kinds
+                    )
+                    or "other_or_empty"
+                )
+                mode = "prompted" if self._pin_disabled else "pinned"
+                detail = f" (mode={mode}, response={outcome})"
             logger.warning(
-                "Recall pin disabled for session %s: %s",
+                "Recall pin disabled for session %s: %s%s",
                 self._session_id,
                 reason,
+                detail,
             )
         self._pin_disabled = True
         self._pin_disabled_reason = reason
@@ -2661,10 +2693,6 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         options = dict(original)
         if self._pin_disabled:
             options["tool_choice"] = "auto"
-            instructions = options.get("instructions") or ""
-            options["instructions"] = (
-                f"{instructions}\n\n{_RECALL_INSTRUCTION}" if instructions else _RECALL_INSTRUCTION
-            )
         else:
             options["tool_choice"] = {
                 "mode": "required",
@@ -2672,8 +2700,10 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             }
         if self.record_max_tokens is not None:
             options["max_tokens"] = self.record_max_tokens
-        if self._feedback:
-            options["tools"] = _recall_tools_with_feedback(original, self._feedback)
+        if self._feedback or self._pin_disabled:
+            options["tools"] = _recall_tools_with_feedback(
+                original, self._feedback, only_recall=self._pin_disabled
+            )
         return options
 
     def _observe_forced(self, response: ChatResponse[Any]) -> None:
@@ -2700,7 +2730,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             self._ignored_forced_calls += 1
             self._ignored_streak += 1
             if self._ignored_streak >= 2:
-                self._disable_pin("ignored")
+                self._disable_pin("ignored", response=response)
 
     async def process(
         self,
@@ -2711,8 +2741,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
     ) -> None:
         """Request a recall record after loaded history triggers recall.
 
-        Unsupported tool_choice falls back to a temporary instruction. Two consecutive
-        ignored requests or value-free records stop recall; other failures stop it
+        Unsupported tool_choice falls back to a temporary trailing message and one tool.
+        Two consecutive ignored requests or value-free records stop recall; other failures stop it
         immediately and retry once with the original options.
         Forced streams are buffered so failed updates cannot escape into that retry.
         Cancellation propagates and leaves the pending ask available for a later request.
@@ -2724,7 +2754,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         available = original_options or {}
         choice = available.get("tool_choice")
         can_call_tools = (
-            bool(request_tools(available))
+            any(_is_recall_tool(tool) for tool in request_tools(available))
             and choice != "none"
             and not (
                 isinstance(choice, dict) and cast(dict[str, Any], choice).get("mode") == "none"
@@ -2786,13 +2816,35 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             context.result = None
 
         async def attempt() -> None:
-            await call_next()
-            if forced_this_call:
-                if isinstance(context.result, ResponseStream):
-                    context.result, response = await _buffer_recall_stream(context.result)
-                    self._observe_forced(response)
-                elif isinstance(context.result, ChatResponse):
-                    self._observe_forced(context.result)
+            prompt = (
+                Message("user", [_RECALL_INSTRUCTION])
+                if forced_this_call and self._pin_disabled
+                else None
+            )
+            if prompt is not None:
+                context.messages = [*context.messages, prompt]
+            sent_messages = context.messages
+            try:
+                await call_next()
+                if forced_this_call:
+                    if isinstance(context.result, ResponseStream):
+                        context.result, response = await _buffer_recall_stream(context.result)
+                        self._observe_forced(response)
+                    elif isinstance(context.result, ChatResponse):
+                        self._observe_forced(context.result)
+            finally:
+                if prompt is not None:
+                    # Downstream reconciliation can retain the sent list after this call.
+                    if isinstance(sent_messages, list):
+                        sent_messages[:] = [
+                            message for message in sent_messages if message is not prompt
+                        ]
+                    if context.messages is not sent_messages:
+                        cleaned = [message for message in context.messages if message is not prompt]
+                        if isinstance(context.messages, list):
+                            context.messages[:] = cleaned
+                        else:
+                            context.messages = cleaned
 
         async def attempt_with_fallback() -> None:
             try:

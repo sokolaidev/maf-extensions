@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from copy import deepcopy
 
 import pytest
 from agent_framework import (
@@ -12,6 +13,7 @@ from agent_framework import (
     ChatResponse,
     ChatResponseUpdate,
     Content,
+    FunctionTool,
     Message,
     MiddlewareFailure,
     MiddlewareTermination,
@@ -20,7 +22,7 @@ from agent_framework import (
 from agent_framework.exceptions import ChatClientInvalidRequestException
 
 from maf_compaction import RecallGate, ToolResultRecallMiddleware, make_recall_tool
-from maf_compaction._toolsummary import RECALL_TOOL_NAME, RECORD_MARKER
+from maf_compaction._toolsummary import _RECALL_INSTRUCTION, RECALL_TOOL_NAME, RECORD_MARKER
 
 pytestmark = pytest.mark.anyio
 REJECTION = "Ollama does not support tool_choice mode 'required'. Use 'auto' or 'none'."
@@ -91,12 +93,13 @@ async def test_unsupported_pin_retries_with_prompt_and_keeps_record_armed(
 
             context.result = ResponseStream(broken_updates(), finalizer=finalize)
             return
-        assert context.messages == [original]
+        assert list(context.messages[:-1]) == [original]
+        assert context.messages[-1].role == "user"
+        assert context.messages[-1].text == _RECALL_INSTRUCTION
         assert context.kwargs == {}
         assert context.result is None
         assert context.options["tool_choice"] == "auto"
-        assert context.options["instructions"].startswith(options["instructions"] + "\n\n")
-        assert RECALL_TOOL_NAME in context.options["instructions"]
+        assert context.options["instructions"] == options["instructions"]
         assert context.options["max_tokens"] == 4000
         assert context.options["temperature"] == 0.3
         response = ChatResponse(messages=Message("assistant", [record_call()]))
@@ -144,7 +147,8 @@ async def test_prompt_mode_survives_restore_and_leaves_ordinary_options_unchange
         assert context.options is not None
         if context.options.get("tool_choice") != "auto":
             raise ChatClientInvalidRequestException(REJECTION)
-        assert context.options["instructions"].count(RECALL_TOOL_NAME) == 1
+        assert context.options["instructions"] == options["instructions"]
+        assert [message.text for message in context.messages] == [_RECALL_INSTRUCTION]
         context.result = ChatResponse(messages=Message("assistant", [record_call()]))
 
     await middleware.process(context, send)
@@ -227,6 +231,7 @@ async def test_failed_prompt_retry_is_buffered_and_has_one_ordinary_retry(stream
             return
         assert context.options is options
         assert context.result is None
+        assert not context.messages
         assert not gate.take()
         raise RuntimeError("ordinary failed")
 
@@ -237,6 +242,7 @@ async def test_failed_prompt_retry_is_buffered_and_has_one_ordinary_retry(stream
     assert middleware.pin_disabled_reason == "failed"
     assert middleware.recall_disabled
     assert context.options is options
+    assert not context.messages
     assert len([record for record in caplog.records if record.levelno == logging.WARNING]) == 2
 
 
@@ -265,6 +271,7 @@ async def test_prompt_retry_abort_requeues_without_disabling_recall(signal):
     assert middleware.session_state()["force_next"]
     assert middleware.session_state()["reforce_next"]
     assert middleware.forced_calls == middleware.reforced_calls == 0
+    assert not context.messages
     assert not gate.take()
     assert context.options is options
 
@@ -337,3 +344,128 @@ async def test_prompt_fallback_uses_the_forced_deadline():
     assert calls == 3
     assert middleware.recall_disabled
     assert middleware.pin_disabled_reason == "failed"
+
+
+@pytest.mark.parametrize("form", ["callable", "function_tool", "nested_spec", "flat_spec"])
+@pytest.mark.parametrize("feedback", ["", "Retain SKU-123 from lookup."])
+@pytest.mark.parametrize("single", [False, True])
+@pytest.mark.parametrize("replace_messages", [False, True])
+async def test_prompt_advertises_only_recall_without_mutating_registered_tools(
+    form, feedback, single, replace_messages
+):
+    middleware, gate = recall(supports_tool_choice=False)
+    middleware._feedback = feedback
+    tool = make_recall_tool(gate)
+    if form != "callable":
+        tool = FunctionTool(name=RECALL_TOOL_NAME, func=tool)
+    if form in ("nested_spec", "flat_spec"):
+        assert isinstance(tool, FunctionTool)
+        tool = tool.to_json_schema_spec()
+        if form == "flat_spec":
+            tool = tool["function"]
+    snapshot = (
+        deepcopy(tool) if isinstance(tool, dict) else getattr(tool, "description", tool.__doc__)
+    )
+    other = FunctionTool(name="lookup", func=lambda: "result")
+    options = {"tools": tool if single else [other, tool], "max_tokens": 9000}
+    original = Message("tool", [Content.from_function_result(call_id="lookup", result="SKU-123")])
+    messages = [original]
+    context = ChatContext(None, messages, options)
+    retained = []
+    summary = Message("assistant", ["compacted history"])
+
+    async def send():
+        assert context.options is not None
+        assert "instructions" not in context.options
+        assert context.options["max_tokens"] == 4000
+        advertised = context.options["tools"]
+        assert len(advertised) == 1
+        selected = advertised[0]
+        spec = selected.get("function", selected) if isinstance(selected, dict) else None
+        if spec is not None:
+            assert spec["name"] == RECALL_TOOL_NAME
+            description = spec.get("description", "")
+        else:
+            assert (
+                getattr(selected, "name", getattr(selected, "__name__", None)) == RECALL_TOOL_NAME
+            )
+            description = getattr(selected, "description", "")
+        if feedback:
+            assert description.endswith(feedback)
+        assert list(context.messages[:-1]) == messages
+        assert context.messages[-1].text == _RECALL_INSTRUCTION
+        if replace_messages:
+            context.messages = list(context.messages)
+        retained.append(context.messages)
+        assert isinstance(context.messages, list)
+        context.messages.insert(0, summary)
+        context.result = ChatResponse(messages=Message("assistant", [record_call()]))
+
+    await middleware.process(context, send)
+    assert context.options is options
+    assert messages == [original]
+    assert context.messages == retained[0] == [summary, original]
+    assert (
+        tool if isinstance(tool, dict) else getattr(tool, "description", tool.__doc__)
+    ) == snapshot
+
+
+@pytest.mark.parametrize("prompted", [False, True])
+@pytest.mark.parametrize(
+    ("contents", "outcome"),
+    [
+        ([Content.from_text("private answer")], "text"),
+        (
+            [
+                Content.from_function_call(
+                    call_id="secret", name="private_lookup", arguments={"key": "secret"}
+                )
+            ],
+            "other_tool",
+        ),
+        (
+            [
+                Content.from_function_call(call_id="secret", name="private_lookup", arguments={}),
+                Content.from_text("private answer"),
+            ],
+            "other_tool+text",
+        ),
+        ([], "other_or_empty"),
+    ],
+)
+async def test_ignored_warning_identifies_request_mode_and_response_kind(
+    prompted, contents, outcome, caplog
+):
+    middleware, _ = recall(supports_tool_choice=not prompted)
+    options = {"tools": [make_recall_tool()]}
+    context = ChatContext(None, [], options, session=AgentSession(session_id="diagnostic-session"))
+
+    async def send():
+        context.result = ChatResponse(messages=Message("assistant", contents))
+
+    for _ in range(2):
+        middleware._force_next = True
+        await middleware.process(context, send)
+    ignored = [record.message for record in caplog.records if ": ignored" in record.message]
+    assert len(ignored) == 1
+    mode = "prompted" if prompted else "pinned"
+    assert f"diagnostic-session: ignored (mode={mode}, response={outcome})" in ignored[0]
+    assert "private" not in caplog.text and "secret" not in caplog.text
+    assert middleware.ignored_forced_calls == 2
+    assert middleware.recall_disabled
+
+
+async def test_missing_recall_tool_defers_prompt_without_hiding_other_tools():
+    middleware, gate = recall(supports_tool_choice=False)
+    options = {"tools": [FunctionTool(name="lookup", func=lambda: "result")]}
+    context = ChatContext(None, [], options)
+
+    async def send():
+        assert context.options is options
+        assert not context.messages
+        assert not gate.take()
+        context.result = ChatResponse(messages=Message("assistant", ["answer"]))
+
+    await middleware.process(context, send)
+    assert middleware.session_state()["force_next"]
+    assert middleware.forced_calls == 0
