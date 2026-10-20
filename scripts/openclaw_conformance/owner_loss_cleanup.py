@@ -10,14 +10,22 @@ from pathlib import Path
 from typing import Any
 
 from .evidence import read, require
+from .install import environment
 
 
 def cleanup(root: Path, case: str) -> dict[str, Any]:
     """Reconcile only fixture-owned resources after every child process tree has stopped."""
 
+    observer_environment = environment(root)
+
     def docker(*args):
         value = subprocess.run(
-            ["docker", *args], capture_output=True, text=True, encoding="utf-8", timeout=60
+            ["docker", *args],
+            env=observer_environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
         )
         require(value.returncode == 0, "independent_observer_unavailable")
         return value.stdout.strip()

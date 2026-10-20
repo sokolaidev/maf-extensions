@@ -209,3 +209,61 @@ def test_final_owner_loss_trace_accepts_complete_records_and_absent_control_clie
     }
     with pytest.raises(FileNotFoundError):
         cases.observations(tmp_path, "client-active")
+
+
+@pytest.mark.parametrize("selection", ["default", "host", "context", "config"])
+def test_independent_cleanup_queries_the_case_engine_not_parent_configuration(
+    tmp_path, monkeypatch, selection
+):
+    install = importlib.import_module("openclaw_conformance.install")
+    for key in ("DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG"):
+        monkeypatch.delenv(key, raising=False)
+    selected = {
+        "host": ("DOCKER_HOST", "unix:///case-engine.sock"),
+        "context": ("DOCKER_CONTEXT", "case-context"),
+        "config": ("DOCKER_CONFIG", str(tmp_path / "explicit-config")),
+    }
+    if selection in selected:
+        monkeypatch.setenv(*selected[selection])
+    monkeypatch.setenv("HOME", str(tmp_path / "parent-home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "parent-profile"))
+    monkeypatch.setenv("DOCKER_TLS_VERIFY", "1")
+    monkeypatch.setenv("DOCKER_CERT_PATH", str(tmp_path / "parent-certs"))
+    monkeypatch.setenv("DOCKER_CUSTOM_HEADERS", "X-Parent=unrelated")
+    service_environment = install.environment(tmp_path)
+    (tmp_path / "owner").mkdir()
+    (tmp_path / "owner/owner").write_text("a" * 32)
+    identifier = "b" * 64
+    removed = []
+    queried = []
+
+    def docker(args, **kwargs):
+        queried.append(kwargs.get("env"))
+        if kwargs.get("env") != service_environment:
+            return SimpleNamespace(returncode=0, stdout="")
+        if args[1] == "ps":
+            return SimpleNamespace(returncode=0, stdout="" if removed else identifier)
+        if args[1] == "inspect":
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "Id": identifier,
+                            "Config": {
+                                "Labels": {"maf-sandbox.scope": "openclaw-bicep-" + "a" * 32}
+                            },
+                        }
+                    ]
+                ),
+            )
+        assert args[1:] == ["rm", "-f", identifier]
+        removed.append(identifier)
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(cleanup.subprocess, "run", docker)
+    result = cleanup.cleanup(tmp_path, "worker-active")
+    assert result["confirmed"] is True
+    assert result["removed"] == removed == [identifier]
+    assert len(queried) == 4
+    assert all(env == service_environment for env in queried)
