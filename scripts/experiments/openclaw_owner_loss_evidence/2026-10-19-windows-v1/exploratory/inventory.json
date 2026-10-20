@@ -1,0 +1,74 @@
+{
+  "qualification": "not_qualified",
+  "reason": "Collector development probes were not bound to a frozen candidate and baseline. A collector pass is not qualification.",
+  "attempts": [
+    {
+      "attempt": "control-1",
+      "sha256": "58883adf8a14a4b246afb10bff8e9d249a06bcf62cbad8851bdca8e19cc72aba",
+      "bytes": 14036,
+      "collector_outcome": "pass",
+      "failure": null
+    },
+    {
+      "attempt": "gateway-response-1",
+      "sha256": "11859f31f81bc2d2a3df36cbcd9e965531928cd857420fcb8312d8ae7a3f35ac",
+      "bytes": 33251,
+      "collector_outcome": "pass",
+      "failure": null
+    },
+    {
+      "attempt": "worker-active-1",
+      "sha256": "2f7de2dc5bb0561de5900d3572a784af118d342d803794715549db809909911b",
+      "bytes": 21083,
+      "collector_outcome": "fail",
+      "failure": "compiler_barrier"
+    },
+    {
+      "attempt": "worker-active-2",
+      "sha256": "3dad606abe5042910ccb86d24c088760e949e88808d9a0008fc6ae1d0b3c4502",
+      "bytes": 37517,
+      "collector_outcome": "pass",
+      "failure": null
+    },
+    {
+      "attempt": "worker-denied-2",
+      "sha256": "6787bcb02a708f11a04d60c15626564cdcc125bbaad82d6cd38ed7560170be27",
+      "bytes": 723,
+      "collector_outcome": "fail",
+      "failure": "observer_docker_failure"
+    },
+    {
+      "attempt": "worker-denied-3",
+      "sha256": "8b4955bad8226bd3ffcbb8d9f1dbccb97693f9e71d7fe17f8495d2e2d508c457",
+      "bytes": 41761,
+      "collector_outcome": "pass",
+      "failure": null
+    },
+    {
+      "attempt": "worker-pre_admission-1",
+      "sha256": "2ce49121f2ccbaa449b0b6df4001d724fc221211f39bca39263c811c5a10355b",
+      "bytes": 1835,
+      "collector_outcome": "fail",
+      "failure": "readiness_deadline"
+    },
+    {
+      "attempt": "worker-pre_admission-2",
+      "sha256": "f3697c6ee512271f13e7b2e7d206c2181d20ba3373071fb510879268abb7267a",
+      "bytes": 36313,
+      "collector_outcome": "pass",
+      "failure": null
+    }
+  ],
+  "setup_observations": [
+    {
+      "attempt": "worker-denied-1",
+      "outcome": "fail",
+      "reason": "Cold Go cross-compilation exceeded the existing 120-second setup deadline before a daemon was created. The subsequent attempt used a prepared build cache."
+    },
+    {
+      "attempt": "worker-denied-2",
+      "outcome": "fail",
+      "reason": "Docker exported metadata without image config/layers; sentinel creation failed. The exact image content was retrieved with digest and size verification and loaded before a new attempt."
+    }
+  ]
+}
