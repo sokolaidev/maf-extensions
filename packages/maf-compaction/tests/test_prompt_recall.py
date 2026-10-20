@@ -19,9 +19,19 @@ from agent_framework import (
     MiddlewareTermination,
     ResponseStream,
 )
+from agent_framework._compaction import EXCLUDED_KEY, included_token_count
 from agent_framework.exceptions import ChatClientInvalidRequestException
 
-from maf_compaction import RecallGate, ToolResultRecallMiddleware, make_recall_tool
+from maf_compaction import (
+    CompactionBudgetExceeded,
+    RecallGate,
+    ToolResultAnchoredSummarizationCompactionStrategy,
+    ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+    ToolResultRecallMiddleware,
+    UserTurnAnchoredSummarizationCompactionStrategy,
+    make_recall_tool,
+)
+from maf_compaction._media import annotate_token_counts
 from maf_compaction._toolsummary import _RECALL_INSTRUCTION, RECALL_TOOL_NAME, RECORD_MARKER
 
 pytestmark = pytest.mark.anyio
@@ -469,3 +479,106 @@ async def test_missing_recall_tool_defers_prompt_without_hiding_other_tools():
     await middleware.process(context, send)
     assert middleware.session_state()["force_next"]
     assert middleware.forced_calls == 0
+
+
+@pytest.mark.parametrize("mode", ["recompact", "boundary", "fold"])
+@pytest.mark.parametrize("tail", [1, 2])
+async def test_prompt_recall_preserves_real_user_anchors_during_composed_compaction(mode, tail):
+    tokenizer = CharacterEstimatorTokenizer()
+    requests = []
+
+    class Summarizer:
+        async def get_response(self, messages, **kwargs):
+            requests.append([message.text for message in messages])
+            return ChatResponse(messages=Message("assistant", ["short summary"]))
+
+    users = UserTurnAnchoredSummarizationCompactionStrategy(
+        max_input_tokens=3000,
+        tokenizer=tokenizer,
+        client=Summarizer(),
+        keep_head_user_turns=1,
+        keep_tail_user_turns=tail,
+        min_band_share=0,
+        summary_mode=mode,
+        remembered_requests=2,
+        max_summary_input_tokens=100_000,
+    )
+    strategy = ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
+        tokenizer=tokenizer,
+        tool_results=ToolResultAnchoredSummarizationCompactionStrategy(
+            max_input_tokens=3000, tokenizer=tokenizer
+        ),
+        user_turns=users,
+    )
+    middleware, gate = recall(supports_tool_choice=False)
+    options = {"tools": [make_recall_tool(gate)]}
+    head = Message("user", ["Keep this initial request verbatim."])
+    band = [Message("user", [f"Earlier request {index}. " * 300]) for index in range(3)]
+    anchors = [
+        Message("user", [f"Unanswered question {index}: preserve ACCOUNT-{index:04d} exactly."])
+        for index in range(tail)
+    ]
+    messages = [head, *band, *anchors]
+    context = ChatContext(None, messages, options, kwargs={"compaction_strategy": strategy})
+
+    async def send():
+        assert isinstance(context.messages, list)
+        assert context.messages[-1].text == _RECALL_INSTRUCTION
+        assert await context.kwargs["compaction_strategy"](context.messages)
+        assert requests and users.user_compactions == 1
+        assert all(message.additional_properties.get(EXCLUDED_KEY) for message in band)
+        for anchor in [head, *anchors]:
+            assert not anchor.additional_properties.get(EXCLUDED_KEY, False)
+            assert anchor in context.messages
+            assert all(anchor.text not in text for request in requests for text in request)
+        assert all(_RECALL_INSTRUCTION not in text for request in requests for text in request)
+        assert context.messages[-1].text == _RECALL_INSTRUCTION
+        assert not context.messages[-1].additional_properties.get(EXCLUDED_KEY, False)
+        context.result = ChatResponse(messages=Message("assistant", [record_call()]))
+
+    await middleware.process(context, send)
+    assert middleware.failed_forced_calls == 0
+    assert all(message.text != _RECALL_INSTRUCTION for message in context.messages)
+    assert context.options is options
+
+
+async def test_prompt_recall_message_still_counts_towards_the_composed_sending_budget():
+    tokenizer = CharacterEstimatorTokenizer()
+    middleware, gate = recall(supports_tool_choice=False)
+    strategy = ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
+        tokenizer=tokenizer,
+        tool_results=ToolResultAnchoredSummarizationCompactionStrategy(
+            max_input_tokens=4000, tokenizer=tokenizer
+        ),
+        user_turns=UserTurnAnchoredSummarizationCompactionStrategy(
+            max_input_tokens=4000, tokenizer=tokenizer, client=None
+        ),
+    )
+    options = {"tools": [make_recall_tool(gate)]}
+    budget = strategy.sending_budget(options)
+    question = Message("user", ["x" * ((budget - 64) * 4)])
+    with_prompt = [question, Message("user", [_RECALL_INSTRUCTION])]
+    annotate_token_counts(with_prompt, tokenizer=tokenizer)
+    assert included_token_count([question]) < budget < included_token_count(with_prompt)
+    context = ChatContext(None, [question], options, kwargs={"compaction_strategy": strategy})
+    refusals = []
+    calls = 0
+
+    async def send():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            with pytest.raises(CompactionBudgetExceeded) as failure:
+                await context.kwargs["compaction_strategy"](context.messages)
+            refusals.append(failure.value)
+            raise failure.value
+        assert list(context.messages) == [question]
+        assert context.options is options
+        assert not await context.kwargs["compaction_strategy"](context.messages)
+        context.result = ChatResponse(messages=Message("assistant", ["ordinary answer"]))
+
+    await middleware.process(context, send)
+    assert calls == 2 and len(refusals) == 1
+    assert refusals[0].budget == budget
+    assert middleware.failed_forced_calls == 1
+    assert not question.additional_properties.get(EXCLUDED_KEY, False)

@@ -42,6 +42,7 @@ from agent_framework._compaction import (
 
 from ._media import MEDIA_TYPES, annotate_token_counts, media_identity
 from ._preserve import PRESERVE_REASON_KEY, any_preserved, set_preserved
+from ._request import RECALL_PROMPT_KEY
 from ._summary_input import bounded_prefix, fits_summary_input, summary_request
 from ._summary_links import has_summary_links
 
@@ -1177,12 +1178,16 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             The spans this pass may replace, empty when the anchors leave nothing between them.
         """
+        # Request-only recall prompts consume budget without moving the user's anchors.
         turns = [
             span
             for span in group_messages(messages)
             if span.get("kind") == "user"
             and not messages[int(span["start_index"])].additional_properties.get(
                 EXCLUDED_KEY, False
+            )
+            and not messages[int(span["start_index"])].additional_properties.get(
+                RECALL_PROMPT_KEY, False
             )
         ]
         if self.recompacts_summaries or not standing:

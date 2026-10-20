@@ -69,7 +69,7 @@ from ._preserve import (
     removable_spans,
     set_preserved,
 )
-from ._request import request_tools
+from ._request import RECALL_PROMPT_KEY, request_tools
 from ._tool_result import (
     ResultTextRewriter,
     can_shorten_result,
@@ -2817,7 +2817,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
         async def attempt() -> None:
             prompt = (
-                Message("user", [_RECALL_INSTRUCTION])
+                Message(
+                    "user", [_RECALL_INSTRUCTION], additional_properties={RECALL_PROMPT_KEY: True}
+                )
                 if forced_this_call and self._pin_disabled
                 else None
             )
