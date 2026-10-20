@@ -66,6 +66,7 @@ from agent_framework._compaction import (
 
 from ._media import annotate_token_counts
 from ._preserve import any_preserved, is_preserved, removable_spans
+from ._request import RECALL_PROMPT_KEY
 from ._summary_links import has_summary_links
 from ._tool_result import (
     ResultTextRewriter,
@@ -385,12 +386,15 @@ class AnchoredCompactionStrategy:
             The middle groups, oldest first. Empty when the conversation is still short
             enough that the anchors cover all of it.
         """
-        # Notes left by an earlier pass are skipped before the anchors are counted. Each one
-        # stands in for a removed group, so counting them would shift the head and tail by one
-        # per note and hand a different band back on every pass -- which would make the
-        # strategy's own output change what it does next, the exact instability it exists to
-        # remove.
-        real = [group for group in groups if not self._is_marker_group(messages, group)]
+        # Removal notes and request-only prompts must not shift the retained working set.
+        real = [
+            group
+            for group in groups
+            if not self._is_marker_group(messages, group)
+            and not messages[int(group["start_index"])].additional_properties.get(
+                RECALL_PROMPT_KEY, False
+            )
+        ]
         tail_start = len(real) - self.keep_tail_groups
         if tail_start <= self.keep_head_groups:
             return []

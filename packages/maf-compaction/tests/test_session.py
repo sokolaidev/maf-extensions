@@ -1151,12 +1151,14 @@ async def test_value_free_records_disable_forcing_across_cold_restores(
             assert context.options is not None
             if prompt_recall:
                 assert context.options["tool_choice"] == "auto"
-                assert "recall_earlier_tool_results" in context.options["instructions"]
+                assert "instructions" not in context.options
+                assert "recall_earlier_tool_results" in context.messages[-1].text
             else:
                 assert context.options["tool_choice"]["mode"] == "required"
             context.result = ChatResponse(messages=call)
 
         await SessionToolResultRecallMiddleware(registry).process(context, respond)
+        assert list(context.messages) == messages
         messages.extend(
             [
                 call,
