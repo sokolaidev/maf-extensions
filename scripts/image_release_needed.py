@@ -147,6 +147,7 @@ def changed_inputs(root: Path, base: str, head: str, profile: str) -> list[str]:
                 if before == after:
                     continue
             except (subprocess.CalledProcessError, SyntaxError, ValueError):
+                # Unproven equivalence must retain the build input.
                 pass
         if profile in changed_profiles(root, base, head, path):
             result.append(path)
@@ -640,11 +641,6 @@ def desired(
                     evidence=candidate["evidence"],
                     observedAt=candidate["observedAt"],
                 )
-        state["status"] = (
-            "Last candidate scan passed; release gate still required"
-            if candidate["assessment"]["outcome"] == "clean"
-            else "Blocked on candidate remediation"
-        )
         state["candidateEvidence"] = candidate["evidence"]
         state["candidateObservedAt"] = candidate["observedAt"]
         state["candidateFindings"] = sorted(
@@ -667,6 +663,12 @@ def desired(
             "Refresh blocked on candidate remediation"
             if state.get("candidateFindings")
             else "Refresh available for maintainer review"
+        )
+    elif state.get("candidateEvidence"):
+        state["status"] = (
+            "Blocked on candidate remediation"
+            if state.get("candidateFindings")
+            else "Last candidate scan passed; release gate still required"
         )
     elif state["status"].startswith("Refresh"):
         state["status"] = "Awaiting release preparation"

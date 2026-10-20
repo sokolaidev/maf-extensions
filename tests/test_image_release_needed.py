@@ -456,6 +456,43 @@ def test_vulnerable_candidate_marks_release_request_blocked():
     assert "CVE-2026-1234" in tracker.body("graphviz", result)
 
 
+@pytest.mark.parametrize("outcome", ["clean", "vulnerable"])
+@pytest.mark.parametrize("repeat_candidate", [False, True])
+@pytest.mark.parametrize("previously_escalated", [False, True])
+def test_refresh_escalation_preserves_candidate_assessment(
+    outcome, repeat_candidate, previously_escalated
+):
+    observed = candidate(outcome=outcome)
+    previous = desired(observed=observed)
+    record = RECORD | {
+        "latestAttempt": {
+            "outcome": "vulnerable",
+            "findings": [FINDING],
+            "evidenceRelease": "image-monitor-1-1",
+        }
+    }
+    if previously_escalated:
+        previous["status"] = "Awaiting release preparation"
+    expected = (
+        "Blocked on candidate remediation"
+        if outcome == "vulnerable"
+        else "Last candidate scan passed; release gate still required"
+    )
+    for _ in range(2):
+        result = desired(
+            record=record,
+            previous=previous,
+            observed=observed if repeat_candidate else None,
+        )
+        assert tracker.required(result)
+        assert result["status"] == expected
+        assert result["candidateEvidence"] == observed["evidence"]
+        assert result["candidateObservedAt"] == observed["observedAt"]
+        assert result["candidateFindings"] == observed["assessment"]["findings"]
+        assert expected in tracker.body("graphviz", result)
+        previous = result
+
+
 @pytest.mark.parametrize("outcome", ["unavailable", "running"])
 def test_monitor_outages_alone_do_not_request_new_image(outcome):
     assert optional_desired(record=RECORD | {"latestAttempt": {"outcome": outcome}}) is None
