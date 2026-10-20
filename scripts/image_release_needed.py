@@ -450,6 +450,7 @@ def reconcile_component_route(
     baseline_digest = reason.get("baselineDigest", previous["baseline"])
     comparison_record, comparison_release = record, released
     evidence = reason.get("evidence", previous.get("candidateEvidence", ""))
+    original_evidence = evidence
     match = re.fullmatch(
         rf"https://github\.com/{re.escape(REPOSITORY)}/actions/runs/([1-9][0-9]*)/attempts/([1-9][0-9]*)",
         evidence,
@@ -537,7 +538,10 @@ def reconcile_component_route(
         "baselineDigest": record["registryDigest"],
         "comparisonDigest": baseline_digest,
     }
-    if result.get("candidateEvidence") == evidence:
+    if (
+        result.get("candidateEvidence") in {original_evidence, evidence}
+        and result.get("candidateObservedAt") == observed["observedAt"]
+    ):
         for key in ("candidateEvidence", "candidateFindings", "candidateObservedAt"):
             result.pop(key, None)
         result["status"] = "Awaiting release preparation"

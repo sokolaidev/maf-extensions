@@ -428,6 +428,63 @@ def test_legacy_scan_link_recovery_requires_unique_exact_evidence(
         assert desired(record=current, released=released, previous=repaired)["resolved"]
 
 
+@pytest.mark.parametrize("saved_link", ["original", "recovered", "unrelated"])
+@pytest.mark.parametrize("newer", [False, True])
+def test_same_digest_recovery_clears_only_matching_candidate_assessment(
+    bicep_request, monkeypatch, tmp_path, saved_link, newer
+):
+    record, released, observed, previous = bicep_request
+    original_link = f"https://github.com/{tracker.REPOSITORY}/actions/runs/999/attempts/1"
+    previous["reasons"]["components"].update(
+        evidence=original_link, observedAt=observed["observedAt"]
+    )
+    previous["candidateEvidence"] = {
+        "original": original_link,
+        "recovered": observed["evidence"],
+        "unrelated": f"https://github.com/{tracker.REPOSITORY}/actions/runs/456/attempts/1",
+    }[saved_link]
+    if newer:
+        previous["candidateObservedAt"] = "2026-01-03T00:00:00Z"
+    run = {
+        "id": 123,
+        "head_repository": {"full_name": tracker.REPOSITORY},
+        "head_branch": "main",
+        "path": ".github/workflows/image-security.yml",
+        "event": "schedule",
+        "status": "completed",
+        "created_at": "2026-01-01T23:00:00Z",
+        "updated_at": "2026-01-02T01:00:00Z",
+    }
+    monkeypatch.setattr(tracker, "action_listing", lambda *_: [run])
+    monkeypatch.setattr(
+        tracker,
+        "candidates",
+        lambda _client, run_id, *_, **__: {record["profile"]: observed} if run_id == "123" else {},
+    )
+    repaired = tracker.reconcile_component_route(
+        GitHub(), record, released, previous, tmp_path, releases={}
+    )
+    assert repaired is not None
+    assert "components" not in repaired["reasons"]
+    result = desired(
+        record=record,
+        released=released,
+        previous=repaired,
+        changed=["images/bicep-sandbox/source.json"],
+    )
+    assert set(result["reasons"]) == {"source"}
+    assert result["currentDigest"] == record["registryDigest"]
+    assert not result["resolved"]
+    if newer or saved_link == "unrelated":
+        for field in ("candidateEvidence", "candidateFindings", "candidateObservedAt"):
+            assert result[field] == previous[field]
+        assert result["status"] == "Refresh blocked on candidate remediation"
+    else:
+        for field in ("candidateEvidence", "candidateFindings", "candidateObservedAt"):
+            assert field not in result
+        assert result["status"] == "Refresh available for maintainer review"
+
+
 def test_inventory_must_identify_the_assessed_image():
     with pytest.raises(ValueError, match="identify"):
         tracker.components(
