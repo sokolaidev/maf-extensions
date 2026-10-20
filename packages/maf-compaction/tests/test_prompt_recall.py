@@ -23,7 +23,9 @@ from agent_framework._compaction import EXCLUDED_KEY, included_token_count
 from agent_framework.exceptions import ChatClientInvalidRequestException
 
 from maf_compaction import (
+    AnchoredCompactionStrategy,
     CompactionBudgetExceeded,
+    MinimumGainAnchoredCompactionStrategy,
     RecallGate,
     ToolResultAnchoredSummarizationCompactionStrategy,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
@@ -582,3 +584,74 @@ async def test_prompt_recall_message_still_counts_towards_the_composed_sending_b
     assert refusals[0].budget == budget
     assert middleware.failed_forced_calls == 1
     assert not question.additional_properties.get(EXCLUDED_KEY, False)
+
+
+@pytest.mark.parametrize("composed", [False, True])
+@pytest.mark.parametrize(
+    "fallback_type", [AnchoredCompactionStrategy, MinimumGainAnchoredCompactionStrategy]
+)
+@pytest.mark.parametrize("keep_tokens", [32, 100_000], ids=["shortening", "shedding"])
+async def test_prompt_recall_preserves_the_latest_tool_group_in_fallback(
+    composed, fallback_type, keep_tokens
+):
+    tokenizer = CharacterEstimatorTokenizer()
+    fallback = fallback_type(
+        max_input_tokens=4000,
+        tokenizer=tokenizer,
+        keep_head_groups=1,
+        keep_tail_groups=1,
+        keep_tokens=keep_tokens,
+    )
+    records = ToolResultAnchoredSummarizationCompactionStrategy(
+        max_input_tokens=4000,
+        tokenizer=tokenizer,
+        keep_head_groups=1,
+        keep_tail_groups=1,
+        fallback=fallback,
+    )
+    strategy = (
+        ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
+            tokenizer=tokenizer,
+            tool_results=records,
+            user_turns=UserTurnAnchoredSummarizationCompactionStrategy(
+                max_input_tokens=4000, tokenizer=tokenizer, client=None
+            ),
+        )
+        if composed
+        else records
+    )
+    payload = "SKU-123 " * 4000
+    result = Content.from_function_result(call_id="lookup", result=payload)
+    messages = [
+        Message("user", ["Read the latest tool result verbatim."]),
+        Message(
+            "assistant",
+            [Content.from_function_call(call_id="lookup", name="lookup", arguments={})],
+        ),
+        Message("tool", [result]),
+    ]
+    assert not await fallback(deepcopy(messages))
+    middleware, gate = recall(supports_tool_choice=False)
+    options = {"tools": [make_recall_tool(gate)]}
+    context = ChatContext(None, messages, options, kwargs={"compaction_strategy": strategy})
+    completed = []
+
+    async def send():
+        await context.kwargs["compaction_strategy"](context.messages)
+        completed.append(True)
+        context.result = ChatResponse(messages=Message("assistant", [record_call()]))
+
+    if composed:
+        with pytest.raises(CompactionBudgetExceeded):
+            await middleware.process(context, send)
+        assert not completed
+        assert middleware.failed_forced_calls == 1
+    else:
+        await middleware.process(context, send)
+        assert completed == [True]
+        assert middleware.failed_forced_calls == 0
+    assert records.fallbacks_used >= 1
+    assert result.result == payload
+    assert all(not message.additional_properties.get(EXCLUDED_KEY, False) for message in messages)
+    assert list(context.messages) == messages
+    assert context.options is options
