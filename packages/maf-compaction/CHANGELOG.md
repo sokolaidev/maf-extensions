@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.6.2...maf-compaction-v0.6.3) (2026-10-20)
+
+
+### Fixes
+
+* **compaction:** put prompted recall last and advertise only the recall tool ([#2072](https://github.com/sokolaidev/maf-extensions/issues/2072)) ([fedb765](https://github.com/sokolaidev/maf-extensions/commit/fedb765ac00be7a40438b2aa6c1f5d0715019dc6))
+
 ## [0.6.2](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.6.1...maf-compaction-v0.6.2) (2026-10-20)
 
 
