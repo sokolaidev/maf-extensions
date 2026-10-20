@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import string
 from collections import Counter
@@ -57,6 +58,7 @@ from agent_framework._compaction import (
     included_token_count,
     set_excluded,
 )
+from agent_framework.exceptions import ChatClientInvalidRequestException
 
 from ._anchored import AnchoredCompactionStrategy
 from ._media import annotate_token_counts
@@ -77,6 +79,8 @@ from ._tool_result import (
 
 if TYPE_CHECKING:
     from agent_framework import TokenizerProtocol
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "CONSOLIDATE_EXCLUDE_REASON",
@@ -105,6 +109,12 @@ __all__ = [
 #: Name of the tool the agent must call. The strategy looks for this name in the history, so
 #: the tool the caller registers has to match it.
 RECALL_TOOL_NAME: Final[str] = "recall_earlier_tool_results"
+_RECALL_INSTRUCTION: Final[str] = (
+    f"Before continuing, call {RECALL_TOOL_NAME} to record earlier tool results using its "
+    "values parameter. Follow the tool's description and preserve exact values. "
+    "This is an internal compaction step; do not answer the user yet. "
+    "Keep applicable access and confidentiality restrictions."
+)
 
 #: Prefix the recall tool puts on a result that counts as a record.
 #:
@@ -250,9 +260,8 @@ _SEPARATOR_TABLE: Final[dict[int, str]] = str.maketrans(dict.fromkeys(_SEPARATOR
 #: Record length stated in the tool's own description, which is the only channel that makes
 #: the model aim for a size.
 #:
-#: The middleware deliberately sends no message -- an appended instruction would be persisted
-#: into the caller's own conversation -- so the description and the ``values`` parameter are
-#: the entire prompt, and a target has to be baked into them at construction.
+#: The target belongs in the description and ``values`` parameter so both pinned and
+#: prompt-based recall requests carry the same size guidance.
 DEFAULT_RECORD_TARGET_TOKENS: Final[int] = 2_000
 
 #: Fraction of the ceiling at which a record is first asked for.
@@ -1656,7 +1665,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         self._recall_due = lambda messages, budget: middleware.record_due(
             messages, max_input_tokens=budget
         )
-        self._recall_disabled = lambda: middleware.pin_disabled
+        self._recall_disabled = lambda: middleware.recall_disabled
         self._observe_record_values = middleware._observe_record_values  # pyright: ignore[reportPrivateUsage]
         middleware.reforce_feedback = self.recall_feedback
 
@@ -2355,6 +2364,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             ``None`` leaves whatever cap the run already sets, so the record inherits the cap
             sized for an ordinary answer and a record asked to summarise everything has no
             bound of its own at all.
+        supports_tool_choice: Set False for routes that cannot pin a tool. Recall uses a
+            temporary request instruction instead. A tool_choice client rejection also
+            selects this mode for the rest of the session.
         max_groups_before_record: How many tool-call groups one record may be asked to cover
             before another is forced. ``None`` switches only this bound off; the size trigger
             and ``reforce`` still apply. It is a second trigger beside
@@ -2406,6 +2418,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         repeat_records: bool = True,
         reforce: Callable[[], bool] | None = None,
         forced_call_timeout_seconds: float | None = None,
+        supports_tool_choice: bool = True,
     ) -> None:
         """Validate and store the configuration.
 
@@ -2436,6 +2449,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         ):
             raise ValueError("forced_call_timeout_seconds must be positive and finite.")
         self.forced_call_timeout_seconds = forced_call_timeout_seconds
+        self.supports_tool_choice = supports_tool_choice
         self._feedback = ""
         self.arm = arm
         self.disarm = disarm
@@ -2522,14 +2536,15 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             self.disarm()
 
     def _bind_session(self, context: ChatContext) -> None:
+        if context.session is not None:
+            self._bind_session_id(context.session.session_id)
+
+    def _bind_session_id(self, session_id: str) -> None:
         """Bind to the first session seen, and refuse any other.
 
         Raises:
             RuntimeError: If the call belongs to a different session than earlier calls did.
         """
-        if context.session is None:
-            return
-        session_id = context.session.session_id
         if self._session_id is None:
             self._session_id = session_id
         elif session_id != self._session_id:
@@ -2558,7 +2573,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
     @property
     def records_forced(self) -> int:
-        """Records that appeared on a call this middleware pinned."""
+        """Records attributed to this middleware's pinned or prompt-based recall requests."""
         return self._records_forced
 
     @property
@@ -2589,12 +2604,17 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
     @property
     def pin_disabled(self) -> bool:
-        """Whether this session stopped forcing recall after ineffective or failed pins."""
+        """Whether tool-choice pinning stopped; unsupported routes may still request recall."""
         return self._pin_disabled
 
     @property
+    def recall_disabled(self) -> bool:
+        """Whether both pinned and prompt-based recall have stopped for this session."""
+        return self._pin_disabled and self._pin_disabled_reason != "unsupported"
+
+    @property
     def pin_disabled_reason(self) -> str | None:
-        """Why forcing stopped: ignored, failed, or value_free; None if unset or legacy."""
+        """Why pinning stopped: unsupported, ignored, failed, or value_free; None if unset."""
         return self._pin_disabled_reason
 
     @property
@@ -2603,7 +2623,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         return self._value_free_streak
 
     def _observe_record_values(self, identity: str, has_values: bool) -> None:
-        if identity in self._value_records or self._pin_disabled:
+        if identity in self._value_records or self.recall_disabled:
             return
         self._value_records.add(identity)
         self._value_free_streak = 0 if has_values else self._value_free_streak + 1
@@ -2617,17 +2637,44 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
     @property
     def failed_forced_calls(self) -> int:
-        """Forced requests that raised and triggered one unpinned retry."""
+        """Failed recall attempts that triggered an ordinary retry, excluding rejected pins."""
         return self._failed_forced_calls
 
     def _disable_pin(self, reason: str) -> None:
+        if not self._pin_disabled or self._pin_disabled_reason != reason:
+            logger.warning(
+                "Recall pin disabled for session %s: %s",
+                self._session_id,
+                reason,
+            )
         self._pin_disabled = True
         self._pin_disabled_reason = reason
+        if reason == "unsupported":
+            return
         self._force_next = False
         self._reforce_next = False
         self._awaiting_record = False
         if self.disarm is not None:
             self.disarm()
+
+    def _forced_options(self, original: Mapping[str, Any]) -> dict[str, Any]:
+        options = dict(original)
+        if self._pin_disabled:
+            options["tool_choice"] = "auto"
+            instructions = options.get("instructions") or ""
+            options["instructions"] = (
+                f"{instructions}\n\n{_RECALL_INSTRUCTION}" if instructions else _RECALL_INSTRUCTION
+            )
+        else:
+            options["tool_choice"] = {
+                "mode": "required",
+                "required_function_name": RECALL_TOOL_NAME,
+            }
+        if self.record_max_tokens is not None:
+            options["max_tokens"] = self.record_max_tokens
+        if self._feedback:
+            options["tools"] = _recall_tools_with_feedback(original, self._feedback)
+        return options
 
     def _observe_forced(self, response: ChatResponse[Any]) -> None:
         for message in response.messages:
@@ -2662,15 +2709,17 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         *,
         request_budget: Callable[[], int] | None = None,
     ) -> None:
-        """Pin the next request after loaded history triggers recall.
+        """Request a recall record after loaded history triggers recall.
 
-        Two consecutive ignored pins or value-free records disable forcing for the session.
-        A forced request that raises disables it immediately and retries once with the
-        original options.
+        Unsupported tool_choice falls back to a temporary instruction. Two consecutive
+        ignored requests or value-free records stop recall; other failures stop it
+        immediately and retry once with the original options.
         Forced streams are buffered so failed updates cannot escape into that retry.
         Cancellation propagates and leaves the pending ask available for a later request.
         """
         self._bind_session(context)
+        if not self.supports_tool_choice and not self._pin_disabled:
+            self._disable_pin("unsupported")
         original_options = context.options
         available = original_options or {}
         choice = available.get("tool_choice")
@@ -2681,8 +2730,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 isinstance(choice, dict) and cast(dict[str, Any], choice).get("mode") == "none"
             )
         )
-        deferred = self._force_next and not self._pin_disabled and not can_call_tools
-        forced_this_call = self._force_next and not self._pin_disabled and can_call_tools
+        deferred = self._force_next and not self.recall_disabled and not can_call_tools
+        forced_this_call = self._force_next and not self.recall_disabled and can_call_tools
         reforced_this_call = forced_this_call and self._reforce_next
         original_messages = list(context.messages)
         original_kwargs = dict(context.kwargs)
@@ -2690,15 +2739,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             self.disarm()
         if forced_this_call:
             self.arm()
-            options: dict[str, Any] = {
-                **dict(original_options or {}),
-                "tool_choice": {"mode": "required", "required_function_name": RECALL_TOOL_NAME},
-            }
-            if self.record_max_tokens is not None:
-                options["max_tokens"] = self.record_max_tokens
-            if self._feedback:
-                options["tools"] = _recall_tools_with_feedback(available, self._feedback)
-            context.options = options
+            context.options = self._forced_options(available)
             self._force_next = False
             self._forced += 1
             if self._reforce_next:
@@ -2729,32 +2770,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
                 request_budget = sending_budget
 
-        async def attempt() -> None:
-            await call_next()
-            if forced_this_call:
-                if isinstance(context.result, ResponseStream):
-                    context.result, response = await _buffer_recall_stream(context.result)
-                    self._observe_forced(response)
-                elif isinstance(context.result, ChatResponse):
-                    self._observe_forced(context.result)
-
-        try:
-            if forced_this_call and self.forced_call_timeout_seconds is not None:
-                async with asyncio.timeout(self.forced_call_timeout_seconds):
-                    await attempt()
-            else:
-                await attempt()
-        except (MiddlewareFailure, MiddlewareTermination):
-            if forced_this_call:
-                self._requeue_forced(reforced=reforced_this_call)
-            raise
-        except Exception:
-            if not forced_this_call:
-                raise
-            self._failed_forced_calls += 1
-            self._disable_pin("failed")
+        def restore_request() -> None:
             context.options = original_options
-            context.messages = original_messages
+            context.messages = list(original_messages)
             context.kwargs = {
                 **original_kwargs,
                 **(
@@ -2766,6 +2784,48 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 ),
             }
             context.result = None
+
+        async def attempt() -> None:
+            await call_next()
+            if forced_this_call:
+                if isinstance(context.result, ResponseStream):
+                    context.result, response = await _buffer_recall_stream(context.result)
+                    self._observe_forced(response)
+                elif isinstance(context.result, ChatResponse):
+                    self._observe_forced(context.result)
+
+        async def attempt_with_fallback() -> None:
+            try:
+                await attempt()
+            except ChatClientInvalidRequestException as exc:
+                if (
+                    not forced_this_call
+                    or self._pin_disabled
+                    or "tool_choice" not in str(exc).lower()
+                ):
+                    raise
+                self._disable_pin("unsupported")
+                restore_request()
+                context.options = self._forced_options(available)
+                self.arm()
+                await attempt()
+
+        try:
+            if forced_this_call and self.forced_call_timeout_seconds is not None:
+                async with asyncio.timeout(self.forced_call_timeout_seconds):
+                    await attempt_with_fallback()
+            else:
+                await attempt_with_fallback()
+        except (MiddlewareFailure, MiddlewareTermination):
+            if forced_this_call:
+                self._requeue_forced(reforced=reforced_this_call)
+            raise
+        except Exception:
+            if not forced_this_call:
+                raise
+            self._failed_forced_calls += 1
+            self._disable_pin("failed")
+            restore_request()
             await call_next()
         except BaseException:
             if forced_this_call:
@@ -2796,8 +2856,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         # asked for, so there is nothing here to decide on; see :meth:`process`.
         if deferred:
             return
-        self._awaiting_record = forced_this_call and not self._pin_disabled
-        if forced_this_call or not messages or self._pin_disabled:
+        self._awaiting_record = forced_this_call and not self.recall_disabled
+        if forced_this_call or not messages or self.recall_disabled:
             self._force_next = False
             return
         annotate_message_groups(messages)
@@ -2861,7 +2921,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         Returns:
             True when the next call should be forced.
         """
-        if self._pin_disabled:
+        if self.recall_disabled:
             return False
         if self.reforce is not None and self.reforce():
             self._reforce_next = True
@@ -2893,7 +2953,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         Messages must be grouped and token-annotated. The strategy checks its own re-force
         state; this preview also includes a pin queued or already sent by the middleware.
         """
-        return not self._pin_disabled and (
+        return not self.recall_disabled and (
             self._force_next
             or self._awaiting_record
             or self._trigger_due(

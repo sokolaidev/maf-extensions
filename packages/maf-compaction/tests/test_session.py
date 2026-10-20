@@ -27,7 +27,11 @@ from agent_framework import (
     create_harness_agent,
     tool,
 )
-from agent_framework._compaction import annotate_token_counts, project_included_messages
+from agent_framework._compaction import (
+    annotate_message_groups,
+    annotate_token_counts,
+    project_included_messages,
+)
 
 from maf_compaction import (
     ChainDecisions,
@@ -900,6 +904,53 @@ async def test_legacy_middleware_state_starts_with_supported_pin():
     assert current.middleware._ignored_streak == 0
 
 
+@pytest.mark.parametrize("composed", [False, True])
+async def test_prompt_recall_keeps_strategy_waiting_across_cold_restore(composed):
+    current = build_stack(composed=composed)
+    current.middleware.supports_tool_choice = False
+    current.middleware._force_next = True
+    messages = [
+        Message("user", ["question"]),
+        Message(
+            "assistant", [Content.from_function_call(call_id="lookup", name="lookup", arguments={})]
+        ),
+        Message("tool", [Content.from_function_result(call_id="lookup", result="SKU-123")]),
+    ]
+    annotate_message_groups(messages)
+    annotate_token_counts(messages, tokenizer=TOKENIZER)
+    context = ChatContext(None, messages, {"tools": [make_recall_tool()]})
+
+    async def respond():
+        context.result = ChatResponse(
+            messages=Message(
+                "assistant",
+                [
+                    Content.from_function_call(
+                        call_id="record",
+                        name="recall_earlier_tool_results",
+                        arguments={"values": "SKU-123"},
+                    )
+                ],
+            )
+        )
+
+    await current.middleware.process(context, respond)
+    restored = build_stack(composed=composed)
+    restored.restore(round_trip(current.to_dict()))
+    record = (
+        restored.strategy.tool_results
+        if isinstance(
+            restored.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+        )
+        else restored.strategy
+    )
+    assert restored.middleware.pin_disabled
+    assert not restored.middleware.recall_disabled
+    assert record.record_pending(messages)
+    restored.middleware._disable_pin("ignored")
+    assert not record.record_pending(messages)
+
+
 @pytest.mark.parametrize("stream", [False, True])
 async def test_harness_retries_a_failed_pin_without_persisting_partial_output(stream):
     class FailingPin(Model):
@@ -1034,8 +1085,9 @@ async def test_post_call_budget_refusal_preserves_delivered_response(
 @pytest.mark.parametrize("composed", [False, True])
 @pytest.mark.parametrize("with_value_between", [False, True])
 @pytest.mark.parametrize("trigger_fraction", [0.0001, 0.8])
+@pytest.mark.parametrize("prompt_recall", [False, True])
 async def test_value_free_records_disable_forcing_across_cold_restores(
-    composed, with_value_between, trigger_fraction
+    composed, with_value_between, trigger_fraction, prompt_recall, caplog
 ):
     def factory():
         stack = build_stack(budget=100_000, composed=composed)
@@ -1048,6 +1100,7 @@ async def test_value_free_records_disable_forcing_across_cold_restores(
         )
         record.trigger_fraction = trigger_fraction
         stack.middleware.max_groups_before_record = 1
+        stack.middleware.supports_tool_choice = not prompt_recall
         return stack
 
     session = AgentSession()
@@ -1078,7 +1131,7 @@ async def test_value_free_records_disable_forcing_across_cold_restores(
     for index, answer in enumerate(answers):
         registry = SessionCompactionRegistry(factory, max_cached_sessions=0)
         with registry.activate(session) as stack:
-            assert not stack.middleware.pin_disabled
+            assert not stack.middleware.recall_disabled
             stack.middleware._force_next = True
         context = ChatContext(None, list(messages), options, session=session)
         call_id = f"recall-{index}"
@@ -1096,7 +1149,11 @@ async def test_value_free_records_disable_forcing_across_cold_restores(
 
         async def respond():
             assert context.options is not None
-            assert context.options["tool_choice"]["mode"] == "required"
+            if prompt_recall:
+                assert context.options["tool_choice"] == "auto"
+                assert "recall_earlier_tool_results" in context.options["instructions"]
+            else:
+                assert context.options["tool_choice"]["mode"] == "required"
             context.result = ChatResponse(messages=call)
 
         await SessionToolResultRecallMiddleware(registry).process(context, respond)
@@ -1127,9 +1184,9 @@ async def test_value_free_records_disable_forcing_across_cold_restores(
                 )
                 await record(deepcopy(messages))
                 assert stack.middleware.value_free_record_streak == streak
-                assert stack.middleware.pin_disabled == (streak == 2)
+                assert stack.middleware.recall_disabled == (streak == 2)
                 assert stack.middleware.pin_disabled_reason == (
-                    "value_free" if streak == 2 else None
+                    "value_free" if streak == 2 else "unsupported" if prompt_recall else None
                 )
             session.state = round_trip(session.state)
     registry = SessionCompactionRegistry(factory, max_cached_sessions=0)
@@ -1145,6 +1202,7 @@ async def test_value_free_records_disable_forcing_across_cold_restores(
         context.result = ChatResponse(messages=Message("assistant", ["answer"]))
 
     await SessionToolResultRecallMiddleware(registry).process(context, unpinned)
+    assert f"session {session.session_id}: value_free" in caplog.text
     with registry.activate(AgentSession()) as fresh:
         assert not fresh.middleware.pin_disabled
         assert fresh.middleware.value_free_record_streak == 0
