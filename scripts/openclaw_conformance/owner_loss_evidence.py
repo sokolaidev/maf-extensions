@@ -384,12 +384,15 @@ def verify(value: dict[str, Any], case: str, manifest: dict[str, Any]) -> None:
                 require(denial["container"] in settled["resources"], "denial_orphan_binding")
     else:
         require(settled["state"] == "settled" and settled["resources"] == [], "service_settlement")
+        request = [
+            r
+            for r in transport
+            if r["event"] == "request" and r.get("exchange") == settled["exchange"]
+        ]
         terminal = [
             r
             for r in transport
-            if r["event"] == "settled"
-            and r.get("exchange") == settled["exchange"]
-            and r["mono_ns"] == settled["terminal_ns"]
+            if r["event"] == "settled" and r.get("exchange") == settled["exchange"]
         ]
         snapshot = [
             r
@@ -397,8 +400,20 @@ def verify(value: dict[str, Any], case: str, manifest: dict[str, Any]) -> None:
             if r["event"] == "registry_snapshot" and r["mono_ns"] == settled["snapshot_ns"]
         ]
         require(
-            len(terminal) == len(snapshot) == 1
-            and terminal[0]["mono_ns"] < snapshot[0]["mono_ns"] < settled["mono_ns"]
+            len(request) == len(terminal) == len(snapshot) == 1
+            and request[0].get("method") == "tools/call"
+            and all(request[0].get(k) == target[k] for k in ("boot", "session", "request"))
+            and target["mono_ns"] <= request[0]["mono_ns"] < terminal[0]["mono_ns"]
+            and terminal[0].get("method") == "POST"
+            and all(terminal[0].get(k) == target[k] for k in ("boot", "session"))
+            and terminal[0]["mono_ns"] == settled["terminal_ns"]
+            and fault["mono_ns"]
+            < terminal[0]["mono_ns"]
+            < snapshot[0]["mono_ns"]
+            < settled["mono_ns"]
+            and terminal[0].get("active") is False
+            and terminal[0].get("poisoned") is False
+            and snapshot[0].get("boot") == target["boot"]
             and snapshot[0]["active"] is False
             and snapshot[0]["poisoned"] is False,
             "service_terminal",

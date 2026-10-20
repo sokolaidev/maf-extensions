@@ -13,7 +13,7 @@ $record = 'scripts/experiments/openclaw_owner_loss_evidence/2026-10-19-windows-v
 uv run --no-project --python 3.13 python -m scripts.openclaw_conformance.owner_loss evaluate --bundle "$record/faults/evidence" --plan "$record/faults/plan.json" --manifest "$record/candidate.json" --baseline-bundle "$record/baseline/evidence" --baseline-plan "$record/baseline/plan.json"
 ```
 
-This command evaluates recorded observations; it does not repeat live execution or qualify changed runner, dependency or platform bytes. Private installation inventories and configuration are not included. A new live run follows the preparation and qualification instructions in [the service document](../../../../docs/sandbox/openclaw.md#bounded-actor-loss-profile).
+The current evaluator additionally requires surviving-worker settlement to join the target tools/call exchange and runtime; the unchanged recorded campaign passes those predicates. This command evaluates recorded observations; it does not repeat live execution or qualify changed runner, dependency or platform bytes. Private installation inventories and configuration are not included. A new live run follows the preparation and qualification instructions in [the service document](../../../../docs/sandbox/openclaw.md#bounded-actor-loss-profile).
 
 ## Excluded development observations
 

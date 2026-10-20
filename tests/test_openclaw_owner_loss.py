@@ -147,7 +147,15 @@ def observation(case, m):
             wire(550, "binding_started", **identity)
         settlement = {}
         if actor != "worker":
-            wire(570, "settled", exchange="7" * 32, **identity)
+            wire(
+                570,
+                "settled",
+                exchange="7" * 32,
+                method="POST",
+                active=False,
+                poisoned=False,
+                **identity,
+            )
             wire(580, "registry_snapshot", boot=old_boot, active=False, poisoned=False)
             settlement = {"exchange": "7" * 32, "terminal_ns": 570, "snapshot_ns": 580}
         add(
@@ -764,3 +772,93 @@ def test_retained_owner_loss_campaign_qualifies_exact_candidate():
         "candidate_sha256": "01c302cfa02f341cb149da075a86d28285cfd8e0a04e372103c5c3bad4a1eeb0",
         "cases": 15,
     }
+
+
+@pytest.mark.parametrize("retained", [False, True], ids=["synthetic", "retained"])
+@pytest.mark.parametrize(
+    "case", [f"{actor}-{phase}" for actor in ("gateway", "client") for phase in fault.PHASES]
+)
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "unrelated_get_pre_fault",
+        "unrelated_get_post_fault",
+        "terminal_boot",
+        "terminal_session",
+        "snapshot_boot",
+        "terminal_before_fault",
+        "terminal_active",
+        "terminal_poisoned",
+        "request_after_terminal",
+    ],
+)
+def test_service_settlement_requires_target_exchange_and_runtime(case, mutation, retained):
+    if retained:
+        record = ROOT / "scripts/experiments/openclaw_owner_loss_evidence/2026-10-19-windows-v1"
+        m = e.read(record / "candidate.json")
+        value = e.read(record / "faults/evidence" / (case + ".json"))["observations"]
+    else:
+        m = manifest()
+        value = observation(case, m)
+    observed = fault.one(value["events"], "service_observed")
+    target = fault.one(value["transport"], "target_request")
+    terminal = next(
+        row
+        for row in value["transport"]
+        if row["event"] == "settled" and row.get("exchange") == observed["exchange"]
+    )
+    request = next(
+        row
+        for row in value["transport"]
+        if row["event"] == "request" and row.get("exchange") == observed["exchange"]
+    )
+    snapshot = next(
+        row
+        for row in value["transport"]
+        if row["event"] == "registry_snapshot" and row["mono_ns"] == observed["snapshot_ns"]
+    )
+    if mutation.startswith("unrelated_get"):
+        terminal.update(method="GET", exchange="e" * 32)
+        observed["exchange"] = terminal["exchange"]
+        if mutation.endswith("pre_fault"):
+            terminal["mono_ns"] = target["mono_ns"] - 2
+            observed["terminal_ns"] = terminal["mono_ns"]
+    elif mutation == "terminal_before_fault":
+        terminal["mono_ns"] = target["mono_ns"] - 2
+        observed["terminal_ns"] = terminal["mono_ns"]
+    elif mutation == "request_after_terminal":
+        request["mono_ns"] = terminal["mono_ns"] + 1
+    elif mutation == "snapshot_boot":
+        snapshot["boot"] = "f" * 32
+    else:
+        field = mutation.removeprefix("terminal_")
+        terminal[field] = (
+            True if field in {"active", "poisoned"} else "f" * (32 if field == "boot" else 64)
+        )
+    value["transport"].sort(key=lambda row: row["mono_ns"])
+    with pytest.raises(e.Refused):
+        fault.verify(value, case, m)
+
+
+@pytest.mark.parametrize("case", ["gateway-active", "client-active"])
+@pytest.mark.parametrize("field", ["boot", "session", "request", "method", "exchange"])
+def test_service_settlement_request_must_be_target(case, field):
+    m = manifest()
+    value = observation(case, m)
+    request = fault.one(value["transport"], "request")
+    request[field] = "foreign"
+    with pytest.raises(e.Refused, match="service_terminal"):
+        fault.verify(value, case, m)
+
+
+@pytest.mark.parametrize("event", ["request", "settled"])
+@pytest.mark.parametrize("case", ["gateway-active", "client-active"])
+def test_service_settlement_exchange_must_be_unambiguous(case, event):
+    m = manifest()
+    value = observation(case, m)
+    duplicate = copy.deepcopy(fault.one(value["transport"], event))
+    duplicate["mono_ns"] += 1
+    value["transport"].append(duplicate)
+    value["transport"].sort(key=lambda row: row["mono_ns"])
+    with pytest.raises(e.Refused, match="service_terminal"):
+        fault.verify(value, case, m)
