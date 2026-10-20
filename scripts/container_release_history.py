@@ -297,7 +297,13 @@ class History:
             if type(release.get("draft")) is not bool:
                 raise ValueError("History release has no draft state")
             if number in records:
-                raise ValueError("Conflicting or unstable security-history listing")
+                previous = records[number]
+                raise ValueError(
+                    "Conflicting or unstable security-history listing: "
+                    f"sequence {number}, "
+                    f"first release ID {previous['id']} (draft={previous['draft']}), "
+                    f"repeated release ID {release['id']} (draft={release['draft']})"
+                )
             records[number] = release
         return records
 

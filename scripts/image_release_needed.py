@@ -86,7 +86,11 @@ def components(sbom: dict[str, Any], image_id: str) -> list[list[str]]:
 def baseline(client: GitHub, record: dict[str, Any], directory: Path) -> dict[str, Any]:
     """Require delivered, authenticated completion before using or closing against a release."""
     if record["state"] != "completed" or record["delivery"] != "complete":
-        raise ValueError("Release evidence delivery is incomplete")
+        raise ValueError(
+            "Release evidence delivery is incomplete: "
+            f"{record['profile']}/{record['version']} "
+            f"(state={record['state']}, delivery={record['delivery']})"
+        )
     evidence = Evidence(client)
     release = evidence.fetch(image_tag(record), directory)
     if (
