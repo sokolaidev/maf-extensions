@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("runner", "/opt/maf-terraform/runner.py")
 assert spec is not None and spec.loader is not None
@@ -17,6 +18,36 @@ spec.loader.exec_module(runner)
 
 class LauncherTests(unittest.TestCase):
     """Exercise actual subprocess pipes, environment, locks, and engine commands."""
+
+    def test_stalled_init_retains_phase_and_deadline_diagnostics(self):
+        metadata = json.loads((runner.INSTALL / "engine.json").read_text())
+        execute_phase = runner.Supervisor.execute_phase
+
+        def stalled(supervisor, command, cwd):
+            if command[1] == "version":
+                return {
+                    "exit_code": 0,
+                    "stdout": json.dumps({"terraform_version": metadata["version"]}),
+                    "stderr": "",
+                }
+            return execute_phase(
+                supervisor, [sys.executable, "-c", "import time; time.sleep(10)"], cwd
+            )
+
+        original_cwd = Path.cwd()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                (Path(directory) / "project").mkdir()
+                os.chdir(directory)
+                with patch.object(runner.Supervisor, "execute_phase", stalled):
+                    result = runner.execute(metadata["engine"], ".", 0.25)
+                self.assertIsNotNone(result["error"])
+                self.assertEqual(result["diagnostics"]["phase"], "init")
+                self.assertEqual(result["diagnostics"]["failure"], "timeout")
+                self.assertGreaterEqual(result["diagnostics"]["elapsed_seconds"], 0.25)
+                self.assertLess(result["diagnostics"]["elapsed_seconds"], 3)
+        finally:
+            os.chdir(original_cwd)
 
     def test_formatting_needs_no_dependencies_and_only_returns_changed_files(self):
         """Missing modules and providers do not prevent formatting the authored project."""
