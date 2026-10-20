@@ -814,6 +814,37 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  security:
+    name: Security (Bandit)
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        if: needs.changes.outputs.code == 'true'
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Sync workspace
+        if: needs.changes.outputs.code == 'true'
+        run: uv sync --locked
+
+      - name: Bandit SAST gate and report
+        if: needs.changes.outputs.code == 'true'
+        run: uv run python scripts/check_bandit.py --report bandit-report.json
+
+      - name: Upload Bandit report
+        if: always() && needs.changes.outputs.code == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bandit-sast-report
+          path: bandit-report.json
+          retention-days: 30
+          if-no-files-found: error
+
   # Lint, format and the commit-msg tier: seconds in total, and a first answer while the
   # heavier shards are still installing.
   fast:
@@ -1082,7 +1113,7 @@ jobs:
   # and never themselves, so a skipped shard means something went wrong with the graph.
   tests:
     name: Python (pytest + ruff + pyright)
-    needs: [changes, suite, hyperlight-worker, hyperlight-linux-worker, mxc-recovery, mxc-durability, mxc-v1, mxc-stream-kernel, mxc-streams, mxc-file-kernel, mxc-files, fast, pre-commit, types, packaging, published-cores]
+    needs: [changes, suite, hyperlight-worker, hyperlight-linux-worker, mxc-recovery, mxc-durability, mxc-v1, mxc-stream-kernel, mxc-streams, mxc-file-kernel, mxc-files, security, fast, pre-commit, types, packaging, published-cores]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

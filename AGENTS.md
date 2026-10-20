@@ -40,7 +40,7 @@ release-please owns all four. Adding a changelog entry or bumping a version by h
 1. Run the local checks first — a red PR wastes a review:
    ```bash
    uv sync && uv run poe gate
-   # gate = pytest -q → ruff check . → ruff format --check . → every package's strict
+   # gate = pytest -q → ruff check . → ruff format --check . → Bandit → every package's strict
    # pyright (enumerated from packages/*/, not listed) → the bare pyright over scripts/,
    # tests/ and samples/, which no per-package pass sees
    ```

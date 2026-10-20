@@ -28,7 +28,7 @@ uv run python scripts/install_hooks.py # the commit, message and push hooks: lin
 
 ```bash
 uv sync            # one workspace, one lock, every package editable
-uv run poe gate    # pytest -q, ruff check, ruff format --check, both pyright passes, doc references, commas
+uv run poe gate    # pytest -q, ruff check, ruff format --check, Bandit, both pyright passes, doc references, commas
 uv run poe md-blocks   # optional: lint the markdown's python blocks (report-only in CI too)
 uv run poe sample-floors   # optional: type-check each sample against the core its block names
 ```
@@ -38,6 +38,10 @@ uv run poe sample-floors   # optional: type-check each sample against the core i
 The last line lints the ```python blocks embedded in the markdown against the installed `maf_sandbox*` packages — a renamed export or a removed enum member in a README quickstart fails it. Wiring-only snippets that import none of the packages are skipped, so undefined `router`/`context` and top-level `await` are tolerated. It is report-only in CI for now (`continue-on-error`); the gate flips on once it has stayed green across a release or two ([#289](https://github.com/sokolaidev/maf-extensions/issues/289)).
 
 The gate also refuses two literals sitting side by side inside a list, tuple or set. Python joins them, so a comma left out leaves the collection one element shorter than it reads, and ruff has no rule for the form that spans lines. Wrap a message written across lines in parentheses when it is one value: that says so at the point of ambiguity, and it is what the CodeQL query behind the bot's review comment exempts as well.
+
+Run `uv run poe security` for the Bandit SAST gate alone, or `uv run python scripts/check_bandit.py --report bandit-report.json` to retain its JSON report. CI runs the same gate and uploads `bandit-sast-report` for 30 days, including on a finding failure. The scan covers Python under `packages/`, `scripts/`, `samples/`, `images/` and `tests/`, including package tests and experimental tools. Only virtual environments and bytecode caches are excluded. Both severity and confidence thresholds are medium; lower-rated findings are outside this gate.
+
+[bandit-baseline.json](bandit-baseline.json) records the 274 pre-existing medium-severity findings at adoption. These are outstanding triage items, not findings certified safe or fixed. They remain in every report. New findings, changed source context, extra occurrences of the same finding, scanner errors and invalid baselines fail the gate. Paths, rule IDs, severity, confidence, source context and occurrence counts bind each allowance; line-number shifts and Windows path separators do not invalidate it. Remove matching entries when fixing existing findings. Do not regenerate the baseline to make a failure green: any added allowance needs an explicit review of the affected code and rationale in its PR. High-severity findings cannot be baselined.
 
 Type checking comes in two passes. The per-package one is **strict** and covers `src/` only — fixtures and hand-rolled fakes are not where a strict checker's objections are signal. The bare `uv run pyright` is the second: `scripts/`, `tests/` and `samples/` belong to no package, so no `-p` pass reaches them. It runs at *standard*. The test trees relax four rules to warnings for the loose fakes they are made of; `scripts/` and `samples/` relax nothing, and a sample suppresses a single site inline when it has to. `samples/` is in the pass because a sample naming an attribute a package deleted is otherwise caught by nothing until the sample runs for real, which is after a release ([#334](https://github.com/sokolaidev/maf-extensions/issues/334)).
 
