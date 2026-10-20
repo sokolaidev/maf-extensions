@@ -267,3 +267,75 @@ def test_independent_cleanup_queries_the_case_engine_not_parent_configuration(
     assert result["removed"] == removed == [identifier]
     assert len(queried) == 4
     assert all(env == service_environment for env in queried)
+
+
+@pytest.mark.parametrize(
+    "phase,prior_failure",
+    [
+        ("start", False),
+        ("poll", False),
+        ("close", False),
+        ("cleanup", False),
+        ("logs", False),
+        ("logs", True),
+    ],
+)
+def test_operator_interrupt_retains_failure_and_never_starts_another_case(
+    tmp_path, monkeypatch, phase, prior_failure
+):
+    runner = importlib.import_module("openclaw_conformance.owner_loss")
+    started = []
+    cleaned = []
+
+    def interrupt(at):
+        if phase == at:
+            raise KeyboardInterrupt
+
+    def poll():
+        interrupt("poll")
+        return 1 if prior_failure else 0
+
+    class Processes:
+        stopped = True
+
+        def __init__(self, root):
+            self.children = []
+
+        def start(self, case, command, environment):
+            started.append(case)
+            interrupt("start")
+            self.children.append(
+                (SimpleNamespace(poll=poll, returncode=1 if prior_failure else 0), None)
+            )
+
+        def close(self):
+            interrupt("close")
+            return []
+
+    def independent(root, case):
+        cleaned.append(case)
+        interrupt("cleanup")
+        return {"confirmed": True, "remaining": []}
+
+    monkeypatch.setitem(sys.modules, "agent", SimpleNamespace(Processes=Processes))
+    monkeypatch.setattr(runner, "check_prepared", lambda *a: None)
+    monkeypatch.setattr(runner, "plan", lambda *a: {"campaign_id": "a" * 32})
+    monkeypatch.setattr(runner, "environment", lambda *a: {})
+    monkeypatch.setattr(runner, "check_logs", lambda *a: interrupt("logs"))
+    monkeypatch.setattr(runner, "verify", lambda *a: None)
+    monkeypatch.setattr(cleanup, "cleanup", independent)
+    output = tmp_path / "campaign"
+    try:
+        result = runner.run(tmp_path / "prepared", {}, {}, output)
+    except KeyboardInterrupt:
+        pytest.fail("Interruption escaped before failure evidence was retained")
+    assert result["outcome"] == "failed"
+    assert started == cleaned == ["control"]
+    assert e.read(output / "failures.json") == [{"case": "control", "reason": "KeyboardInterrupt"}]
+    artifact = e.read(output / "evidence/control.json")["observations"]
+    assert artifact["parent_failure"] == "KeyboardInterrupt"
+    assert artifact["independent_cleanup"]["confirmed"] is (phase not in {"close", "cleanup"})
+    summary = e.read(output / "evidence/summary.json")
+    assert summary["outcome"] == "failed"
+    assert len(summary["attempts"]) == 1
+    assert summary["attempts"][0]["outcome"] == "fail"

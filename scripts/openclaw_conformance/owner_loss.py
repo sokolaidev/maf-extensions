@@ -77,6 +77,7 @@ def run(
         processes = Processes(output)
         root = output / case
         failure = None
+        interrupted = False
         try:
             processes.start(
                 case,
@@ -102,9 +103,14 @@ def run(
                 time.sleep(0.2)
             require(process.returncode == 0, "fault_case_exit")
         except (Exception, KeyboardInterrupt) as exc:
+            interrupted = isinstance(exc, KeyboardInterrupt)
             failure = str(exc) if isinstance(exc, Refused) else type(exc).__name__
         finally:
-            errors = processes.close()
+            try:
+                errors = processes.close()
+            except (Exception, KeyboardInterrupt) as exc:
+                interrupted |= isinstance(exc, KeyboardInterrupt)
+                errors = [type(exc).__name__]
             if errors:
                 failure = failure or "case_supervisor_cleanup"
             from .owner_loss_cleanup import cleanup
@@ -117,14 +123,18 @@ def run(
                         "confirmed": False,
                         "error": "process_tree_unconfirmed",
                     }
-            except Exception as exc:
+            except (Exception, KeyboardInterrupt) as exc:
+                interrupted |= isinstance(exc, KeyboardInterrupt)
                 independent = {"confirmed": False, "error": type(exc).__name__}
                 failure = failure or "independent_cleanup_unconfirmed"
             try:
                 check_logs(output, case, prepared)
             except (Exception, KeyboardInterrupt) as exc:
+                interrupted |= isinstance(exc, KeyboardInterrupt)
                 reason = str(exc) if isinstance(exc, Refused) else type(exc).__name__
                 failure = failure or reason
+        if interrupted:
+            failure = "KeyboardInterrupt"
         result_path = root / "result.json"
         observed: dict[str, Any] = (
             read(result_path, LIMITS["events"])
@@ -162,7 +172,8 @@ def run(
             summary["outcome"] = "failed"
             write(bundle / "summary.json", summary)
             failures.append({"case": case, "reason": str(exc)})
-            if independent.get("confirmed") is not True:
+            if interrupted or independent.get("confirmed") is not True:
+                write(output / "failures.json", failures)
                 return {"outcome": "failed", "failures": failures}
     try:
         check_prepared(prepared, manifest)
