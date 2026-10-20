@@ -179,3 +179,33 @@ def test_final_output_budget_includes_exit_shutdown_and_cleanup(
     artifact = e.read(output / "evidence/control.json")
     assert artifact["observations"]["parent_failure"] == ("stage_log_limit" if oversized else None)
     assert artifact["observations"]["independent_cleanup"]["confirmed"] is True
+
+
+@pytest.mark.parametrize("file", ["observer", "transport", "provider", "client"])
+@pytest.mark.parametrize(
+    "bad",
+    [b'{"event":"unfinished"}', b"\n", b'{"event":"x","event":"y"}\n', b'{"n":NaN}\n', b"[]\n"],
+)
+def test_final_owner_loss_trace_rejects_incomplete_or_ambiguous_records(tmp_path, file, bad):
+    cases = importlib.import_module("openclaw_conformance.owner_loss_cases")
+    for name in ("observer", "transport", "provider", "client"):
+        (tmp_path / (name + ".jsonl")).write_bytes(b'{"event":"complete"}\n')
+    with (tmp_path / (file + ".jsonl")).open("ab") as stream:
+        stream.write(bad)
+    with pytest.raises(RuntimeError):
+        cases.observations(tmp_path, "client-active")
+
+
+def test_final_owner_loss_trace_accepts_complete_records_and_absent_control_client(tmp_path):
+    cases = importlib.import_module("openclaw_conformance.owner_loss_cases")
+    for name in ("observer", "transport", "provider"):
+        (tmp_path / (name + ".jsonl")).write_bytes(b'{"event":"complete"}\n')
+    observed = cases.observations(tmp_path, "control")
+    assert observed == {
+        "events": [{"event": "complete"}],
+        "transport": [{"event": "complete"}],
+        "provider": [{"event": "complete"}],
+        "client": [],
+    }
+    with pytest.raises(FileNotFoundError):
+        cases.observations(tmp_path, "client-active")

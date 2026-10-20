@@ -45,6 +45,18 @@ def rows(path: Path) -> list[dict[str, Any]]:
     return importlib.import_module("openclaw_gateway_http_check").records(path)
 
 
+def observations(root: Path, name: str) -> dict[str, list[dict[str, Any]]]:
+    """Collect the final trace after all owned writers have stopped."""
+    records = importlib.import_module("openclaw_gateway_http_check").records
+    client = root / "client.jsonl"
+    return {
+        "events": records(root / "observer.jsonl", final=True),
+        "transport": records(root / "transport.jsonl", final=True),
+        "provider": records(root / "provider.jsonl", final=True),
+        "client": [] if name == "control" and not client.exists() else records(client, final=True),
+    }
+
+
 def http(port: int, token: str, path: str = "/ready", body=None, sid=None, method=None, timeout=5):
     """Exchange one bounded loopback request without retrying it."""
     checker = importlib.import_module("openclaw_gateway_http_check")
@@ -754,10 +766,7 @@ def case(
         "image": manifest["image"],
         "config_sha256": manifest["config_sha256"],
         "duration": time.monotonic() - started,
-        "events": rows(journal),
-        "transport": rows(root / "transport.jsonl"),
-        "provider": rows(root / "provider.jsonl"),
-        "client": rows(root / "client.jsonl"),
+        **observations(root, name),
     }
     write(root / "result.json", value)
     return value
