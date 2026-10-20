@@ -131,6 +131,7 @@ class SessionCompactionRegistry:
             stack = self.build()
         if data is not None:
             stack.restore(data)
+        stack.middleware._bind_session_id(session.session_id)  # pyright: ignore[reportPrivateUsage]
         binding = _Binding(session, stack)
         self._active[session.session_id] = binding
         token = self._current.set(binding)
