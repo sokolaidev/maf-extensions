@@ -1,14 +1,16 @@
-"""Measure the request options that sit outside conversation messages."""
+"""Share request-only metadata and measure options outside conversation messages."""
 
 from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
 from functools import lru_cache
-from typing import Any, cast
+from typing import Any, Final, cast
 
 from agent_framework import FunctionTool, TokenizerProtocol
 from agent_framework import tool as function_tool
+
+RECALL_PROMPT_KEY: Final[str] = "_maf_recall_prompt"
 
 
 def request_tools(options: Mapping[str, Any]) -> list[Any]:
