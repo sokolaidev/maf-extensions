@@ -107,6 +107,11 @@ def run(
             errors = processes.close()
             if errors:
                 failure = failure or "case_supervisor_cleanup"
+            try:
+                check_logs(output, case, prepared)
+            except (Exception, KeyboardInterrupt) as exc:
+                reason = str(exc) if isinstance(exc, Refused) else type(exc).__name__
+                failure = failure or reason
             from .owner_loss_cleanup import cleanup
 
             try:

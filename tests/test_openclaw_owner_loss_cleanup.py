@@ -121,3 +121,59 @@ def test_unconfirmed_process_tree_stops_campaign_even_if_docker_is_empty(tmp_pat
     artifact = e.read(output / "evidence/control.json")
     assert artifact["observations"]["independent_cleanup"]["confirmed"] is False
     assert artifact["observations"]["independent_cleanup"]["error"] == "process_tree_unconfirmed"
+
+
+@pytest.mark.parametrize("when", ["exit", "shutdown"])
+@pytest.mark.parametrize("name", ["control.log", "control/worker.log", "control/transport.jsonl"])
+@pytest.mark.parametrize("oversized", [False, True])
+def test_final_output_budget_survives_immediate_exit_and_shutdown(
+    tmp_path, monkeypatch, when, name, oversized
+):
+    runner = importlib.import_module("openclaw_conformance.owner_loss")
+    output = tmp_path / "campaign"
+    events = []
+    monkeypatch.setitem(e.LIMITS, "log", 16)
+    monkeypatch.setitem(e.LIMITS, "events", 2048)
+
+    def emit():
+        path = output / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        limit = e.LIMITS["events" if path.suffix == ".jsonl" else "log"]
+        path.write_bytes(b"x" * (limit + int(oversized)))
+
+    class Processes:
+        stopped = True
+
+        def __init__(self, root):
+            self.children = []
+
+        def start(self, case, command, environment):
+            if when == "exit":
+                emit()
+            self.children.append((SimpleNamespace(poll=lambda: 0, returncode=0), None))
+
+        def close(self):
+            if when == "shutdown":
+                emit()
+            events.append("closed")
+            return []
+
+    def independent(*args):
+        assert events == ["closed"]
+        events.append("independent")
+        return {"confirmed": True, "remaining": []}
+
+    monkeypatch.setitem(sys.modules, "agent", SimpleNamespace(Processes=Processes))
+    monkeypatch.setattr(runner, "CASES", ["control"])
+    monkeypatch.setattr(runner, "check_prepared", lambda *a: None)
+    monkeypatch.setattr(runner, "plan", lambda *a: {"campaign_id": "a" * 32})
+    monkeypatch.setattr(runner, "environment", lambda *a: {})
+    monkeypatch.setattr(runner, "verify", lambda *a: None)
+    monkeypatch.setattr(runner, "evaluate", lambda *a, **k: {"outcome": "qualified_for_profile"})
+    monkeypatch.setattr(cleanup, "cleanup", independent)
+    result = runner.run(tmp_path / "prepared", {}, {}, output)
+    assert events == ["closed", "independent"]
+    assert result["outcome"] == ("failed" if oversized else "qualified_for_profile")
+    artifact = e.read(output / "evidence/control.json")
+    assert artifact["observations"]["parent_failure"] == ("stage_log_limit" if oversized else None)
+    assert artifact["observations"]["independent_cleanup"]["confirmed"] is True
