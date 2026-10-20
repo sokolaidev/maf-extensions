@@ -8,6 +8,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from build_go import download_modules
+
 
 def build(plan: dict[str, Any], checkout: Path, output: Path) -> None:
     """Verify source and module pins, test the build and retain its inputs."""
@@ -32,11 +34,7 @@ def build(plan: dict[str, Any], checkout: Path, output: Path) -> None:
     ).strip()
     if revision != source["revision"]:
         raise ValueError("Terraform source revision mismatch")
-    subprocess.run(
-        ["go", "get", *(name + "@" + version for name, version in source["modules"].items())],
-        cwd=checkout,
-        check=True,
-    )
+    download_modules(checkout, source["modules"])
     subprocess.run(["go", "mod", "verify"], cwd=checkout, check=True)
     for module, version in source["modules"].items():
         actual = json.loads(

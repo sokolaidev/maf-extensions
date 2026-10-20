@@ -191,6 +191,7 @@ def test_live_build_with_custom_provider_manifest(tmp_path, engine):
     for name in (
         "Dockerfile",
         "build_image.py",
+        "build_go.py",
         "build_opentofu.py",
         "build_terraform.py",
         "install.py",
