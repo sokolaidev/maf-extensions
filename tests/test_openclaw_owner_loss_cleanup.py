@@ -123,10 +123,10 @@ def test_unconfirmed_process_tree_stops_campaign_even_if_docker_is_empty(tmp_pat
     assert artifact["observations"]["independent_cleanup"]["error"] == "process_tree_unconfirmed"
 
 
-@pytest.mark.parametrize("when", ["exit", "shutdown"])
+@pytest.mark.parametrize("when", ["exit", "shutdown", "cleanup"])
 @pytest.mark.parametrize("name", ["control.log", "control/worker.log", "control/transport.jsonl"])
 @pytest.mark.parametrize("oversized", [False, True])
-def test_final_output_budget_survives_immediate_exit_and_shutdown(
+def test_final_output_budget_includes_exit_shutdown_and_cleanup(
     tmp_path, monkeypatch, when, name, oversized
 ):
     runner = importlib.import_module("openclaw_conformance.owner_loss")
@@ -161,6 +161,8 @@ def test_final_output_budget_survives_immediate_exit_and_shutdown(
     def independent(*args):
         assert events == ["closed"]
         events.append("independent")
+        if when == "cleanup":
+            emit()
         return {"confirmed": True, "remaining": []}
 
     monkeypatch.setitem(sys.modules, "agent", SimpleNamespace(Processes=Processes))
