@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.4](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.6.3...maf-compaction-v0.6.4) (2026-10-21)
+
+
+### Fixes
+
+* **compaction:** strip stale recall prompts and accept structured records ([#2084](https://github.com/sokolaidev/maf-extensions/issues/2084)) ([030e9fa](https://github.com/sokolaidev/maf-extensions/commit/030e9fa969d6655a54b838252f436669cda355ef))
+
 ## [0.6.3](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.6.2...maf-compaction-v0.6.3) (2026-10-20)
 
 
