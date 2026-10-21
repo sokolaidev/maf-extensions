@@ -34,6 +34,7 @@ from maf_compaction import (
     make_recall_tool,
 )
 from maf_compaction._media import annotate_token_counts
+from maf_compaction._request import RECALL_PROMPT_KEY
 from maf_compaction._toolsummary import _RECALL_INSTRUCTION, RECALL_TOOL_NAME, RECORD_MARKER
 
 pytestmark = pytest.mark.anyio
@@ -57,6 +58,91 @@ def record_call():
     return Content.from_function_call(
         call_id="record", name=RECALL_TOOL_NAME, arguments={"values": "SKU-123"}
     )
+
+
+@pytest.mark.parametrize("forced", [False, True])
+@pytest.mark.parametrize("disabled", [False, True])
+@pytest.mark.parametrize("sequence", [list, tuple])
+async def test_retained_prompt_copies_are_removed_before_the_next_request(
+    forced, disabled, sequence
+):
+    middleware, gate = recall(supports_tool_choice=False)
+    original = Message("user", [_RECALL_INSTRUCTION])
+    context = ChatContext(None, [original], {"tools": [make_recall_tool(gate)]})
+    retained = []
+
+    async def first():
+        retained.extend(deepcopy(list(context.messages)))
+        context.result = ChatResponse(messages=Message("assistant", [record_call()]))
+
+    await middleware.process(context, first)
+    assert retained[-1].additional_properties[RECALL_PROMPT_KEY]
+    middleware._force_next = forced
+    if disabled:
+        middleware._disable_pin("failed")
+    context.messages = sequence([*retained, deepcopy(retained[-1])])
+
+    async def later():
+        prompts = [m for m in context.messages if m.additional_properties.get(RECALL_PROMPT_KEY)]
+        assert len(prompts) == int(forced and not disabled)
+        assert context.messages[0].text == original.text
+        assert not context.messages[0].additional_properties.get(RECALL_PROMPT_KEY)
+        context.result = ChatResponse(messages=Message("assistant", ["answer"]))
+
+    await middleware.process(context, later)
+    assert len(context.messages) == 1
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("values", ["", " \n\t", [], {}])
+async def test_blank_recall_is_value_free_across_restore_without_recording(stream, values):
+    middleware, gate = recall(supports_tool_choice=False)
+    for index in range(2):
+        middleware._force_next = True
+        tool = make_recall_tool(gate)
+        context = ChatContext(None, [], {"tools": [tool]}, stream=stream)
+
+        async def send():
+            call = Content.from_function_call(
+                call_id="reused", name=RECALL_TOOL_NAME, arguments={"values": values}
+            )
+            response = ChatResponse(messages=Message("assistant", [call]))
+            if stream:
+
+                async def updates():
+                    yield ChatResponseUpdate(role="assistant", contents=[deepcopy(call)])
+
+                context.result = ResponseStream(updates(), finalizer=lambda _: response)
+            else:
+                context.result = response
+
+        await middleware.process(context, send)
+        response = (
+            await context.result.get_final_response()
+            if isinstance(context.result, ResponseStream)
+            else context.result
+        )
+        assert isinstance(response, ChatResponse)
+        arguments = response.messages[0].contents[0].arguments
+        assert isinstance(arguments, dict)
+        assert RECORD_MARKER not in tool(arguments["values"])
+        assert middleware.value_free_record_streak == index + 1
+        assert middleware.failed_forced_calls == 0
+        snapshot = json.loads(json.dumps(middleware.session_state()))
+        middleware, gate = recall(supports_tool_choice=False)
+        middleware.restore_session_state(snapshot)
+    assert middleware.recall_disabled
+    assert middleware.pin_disabled_reason == "value_free"
+
+
+@pytest.mark.parametrize("values", ["", " \n\t"])
+def test_blank_tool_consumes_permission_without_recording(values):
+    gate = RecallGate()
+    gate.arm()
+    tool = make_recall_tool(gate)
+    assert RECORD_MARKER not in tool(values)
+    assert RECORD_MARKER not in tool("SKU-123")
+    assert RECORD_MARKER not in make_recall_tool()(values)
 
 
 @pytest.mark.parametrize(
@@ -108,7 +194,7 @@ async def test_unsupported_pin_retries_with_prompt_and_keeps_record_armed(
         assert list(context.messages[:-1]) == [original]
         assert context.messages[-1].role == "user"
         assert context.messages[-1].text == _RECALL_INSTRUCTION
-        assert context.kwargs == {}
+        assert set(context.kwargs) == {"compaction_strategy"}
         assert context.result is None
         assert context.options["tool_choice"] == "auto"
         assert context.options["instructions"] == options["instructions"]

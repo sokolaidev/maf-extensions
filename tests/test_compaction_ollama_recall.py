@@ -12,7 +12,14 @@ from agent_framework import (
     ResponseStream,
 )
 from agent_framework.ollama import OllamaChatClient
-from maf_compaction import RecallGate, ToolResultRecallMiddleware, make_recall_tool
+from maf_compaction import (
+    RecallGate,
+    ToolResultAnchoredSummarizationCompactionStrategy,
+    ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+    ToolResultRecallMiddleware,
+    UserTurnAnchoredSummarizationCompactionStrategy,
+    make_recall_tool,
+)
 from maf_compaction._toolsummary import _RECALL_INSTRUCTION, RECALL_TOOL_NAME, RECORD_MARKER
 from ollama import AsyncClient, ChatResponse
 
@@ -22,8 +29,10 @@ pytestmark = pytest.mark.anyio
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("declared", [False, True])
 @pytest.mark.parametrize("last_role", ["user", "tool"])
+@pytest.mark.parametrize("composed", [False, True])
+@pytest.mark.parametrize("values", ["SKU-123", ["SKU-123", "REGION-456"], {"sku": "SKU-123"}])
 async def test_ollama_executes_prompt_recall_without_persisting_the_instruction(
-    monkeypatch, stream, declared, last_role
+    monkeypatch, stream, declared, last_role, composed, values
 ):
     gate = RecallGate()
     middleware = ToolResultRecallMiddleware(
@@ -50,7 +59,7 @@ async def test_ollama_executes_prompt_recall_without_persisting_the_instruction(
             message = {
                 "role": "assistant",
                 "tool_calls": [
-                    {"function": {"name": RECALL_TOOL_NAME, "arguments": {"values": "SKU-123"}}}
+                    {"function": {"name": RECALL_TOOL_NAME, "arguments": {"values": values}}}
                 ],
             }
         else:
@@ -65,6 +74,17 @@ async def test_ollama_executes_prompt_recall_without_persisting_the_instruction(
             }
             assert any(
                 RECORD_MARKER in (message.get("content") or "") for message in kwargs["messages"]
+            )
+            expected = (
+                values
+                if isinstance(values, str)
+                else "SKU-123\nREGION-456"
+                if isinstance(values, list)
+                else '{"sku": "SKU-123"}'
+            )
+            assert any(
+                (message.get("content") or "").endswith("\n" + expected)
+                for message in kwargs["messages"]
             )
             assert all(
                 RECALL_TOOL_NAME not in (message.get("content") or "")
@@ -86,6 +106,18 @@ async def test_ollama_executes_prompt_recall_without_persisting_the_instruction(
     transport = AsyncClient(host="http://localhost:11434")
     monkeypatch.setattr(transport, "chat", AsyncMock(side_effect=chat))
     client = OllamaChatClient(client=transport, model="test-model", middleware=[middleware])
+    strategy = None
+    if composed:
+        tokenizer = CharacterEstimatorTokenizer()
+        strategy = ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
+            tokenizer=tokenizer,
+            tool_results=ToolResultAnchoredSummarizationCompactionStrategy(
+                max_input_tokens=100_000, tokenizer=tokenizer
+            ),
+            user_turns=UserTurnAnchoredSummarizationCompactionStrategy(
+                max_input_tokens=100_000, tokenizer=tokenizer, client=None
+            ),
+        )
     try:
         messages = [Message("user", ["Continue from SKU-123."])]
         if last_role == "tool":
@@ -110,6 +142,7 @@ async def test_ollama_executes_prompt_recall_without_persisting_the_instruction(
                 "instructions": "Keep access restrictions.",
             },
             stream=stream,
+            compaction_strategy=strategy,
         )
         response = (
             await result.get_final_response()
