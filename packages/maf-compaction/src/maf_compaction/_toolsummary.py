@@ -58,7 +58,7 @@ from agent_framework._compaction import (
     included_token_count,
     set_excluded,
 )
-from agent_framework.exceptions import ChatClientInvalidRequestException
+from agent_framework.exceptions import ChatClientException
 
 from ._anchored import AnchoredCompactionStrategy
 from ._media import annotate_token_counts
@@ -2332,6 +2332,18 @@ def _recall_tools_with_feedback(
     return tools
 
 
+def _mentions_tool_choice(error: BaseException) -> bool:
+    """Match tool-choice diagnostics through explicit provider exception causes."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if "tool_choice" in str(current).lower():
+            return True
+        current = current.__cause__
+    return False
+
+
 class ToolResultRecallMiddleware(ChatMiddleware):
     """Force recall calls when phase 2 needs written records to anchor on.
 
@@ -2897,12 +2909,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         async def attempt_with_fallback() -> None:
             try:
                 await attempt()
-            except ChatClientInvalidRequestException as exc:
-                if (
-                    not forced_this_call
-                    or self._pin_disabled
-                    or "tool_choice" not in str(exc).lower()
-                ):
+            except ChatClientException as exc:
+                if not forced_this_call or self._pin_disabled or not _mentions_tool_choice(exc):
                     raise
                 self._disable_pin("unsupported")
                 restore_request()
