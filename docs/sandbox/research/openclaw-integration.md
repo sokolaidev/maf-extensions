@@ -725,6 +725,32 @@ The supported execution route is `/v1/chat/completions`, configured to use the d
 
 Development attempts are not qualifying campaigns. A 120-second startup attempt timed out and was cleaned up; a 360-second attempt became ready after about 321 seconds. Its `rw` model turn reached the real plugin but failed before native launch because `.openclaw/sandbox-skills/skills` was protected beneath the writable agent root. A separate `none` development turn reached the native launcher but used PowerShell syntax through the plugin's `cmd.exe` command path and exited 1; the reusable fixture invokes PowerShell explicitly. That native log selected `appcontainer-dacl`, while the standalone readiness probe had reported `base-container`; a probe alone does not establish the isolation implementation used by a command. No host-wide ACL preparation was performed.
 
+### Observed smoke results (2026-10-21)
+
+The final three attempts used the runtime sources committed in `bd69b2c0`, the selected installed tuple above, Windows 11 build 26220.9739 on x64, Node 26.8.1 and Python 3.13.12. Each attempt used a fresh owned root and its own Gateway, provider and Windows job. The same finite PowerShell fixture first completed outside the sandbox, including permitted reads and writes of the active, agent and outside markers; the mutable markers were restored before starting the Gateway. These controls establish that the fixture and targets are usable without the sandbox policy. They do not establish that the sandbox permits execution.
+
+| Mode | Native fixture | Host-file observations | Disposition |
+|---|---|---|---|
+| `none` | `Access is denied.` and exit 1 before the first fixture marker; no verified executor-descendant observation | Active marker read succeeded; write returned `Sandbox path is read-only` and left the planted file unchanged | Native smoke unqualified |
+| `ro` | `Access is denied.` and exit 1 before the first fixture marker; no verified executor-descendant observation | Active marker read succeeded; host write remains the declared policy-filtered exclusion | Native smoke unqualified |
+| `rw` | Pre-launch writable-parent/read-only-child overlap refusal for the generated `.openclaw/sandbox-skills/skills` subtree, despite empty agent and bundled-skill allowlists | Active marker read and ordinary workspace-file write succeeded | Native smoke unqualified |
+
+Independent host inspection after cleanup found the outside marker and native-write marker unchanged in every mode. The `rw` host-file write contained the selected nonce; the corresponding `none`/`ro` files retained their original content. All three attempts finished without a campaign exception, passed the selected asset/configuration equality checks and reported no cleanup errors. The supervisor observed its owned jobs empty and stopped the provider. These are bounded supervisor observations, not arbitrary descendant/resource or retained-workspace lifecycle qualification.
+
+| Mode | Configuration SHA-256 | Markdown report SHA-256 |
+|---|---|---|
+| `none` | `1f506d94ed0dd52912ec392606090623a5635c16b0d9a2bd3bbba6367c1dd47e` | `0574a49301c7619d1df7e29022eff997188a75351dbecfaa65862fea993bec67` |
+| `ro` | `46f43e910450d9c9aa3fee0a4d96be3b43a361b7ce3ab9dcaababb1b7648d486` | `1967ebdbdbf5000e0c180dfb70e9abcc7400304fba2c8e56c06f678e540844f9` |
+| `rw` | `1f73c738a20bb0f8ba2f625c9ab6abf3e50e82dd285950e3c4e2f07fc62d8fea` | `6428907a7a03f4c10275e84c8381f3b2db50d2b95dd984e5197388b3e4376908` |
+
+The generated fixture SHA-256 values were `994b51095d6b4494f87a34692706c31173e77c239a04b63b2b29e49a16149dbb` (`none`), `aecce57e94d9d939f45c11914249275f7e13a91b2dfe57cc82c98fd235ba0260` (`ro`) and `12aa83aab3b7e2677de2384e7327e763d31dd8af5bdfb5ff3c4d06f253359d86` (`rw`). Different fresh paths and nonces make their bytes distinct. The npm lock SHA-256 was `478a3309d40e90e6a26f2dfcb3625b41be44cd38ce16c14439162a116a859946`; the native executable hash remains the preflight value recorded above. Raw reports and runtime files remain private in the external campaigns; this Markdown record retains the measured identities, outcomes and limits.
+
+Excluded development attempts include the earlier command-syntax and executor-resolution failures, the 120-second Gateway startup timeout, and an `ro` CLI setup timeout at 180 seconds while other validation was active. The final runner allows 360 seconds for setup and still requires the same controls. None of those failed prerequisites is counted as a confinement pass.
+
+Local validation passed: `uv sync`, `uv run poe gate` (23,253 tests passed, 932 skipped; Ruff, formatting, Bandit, package/root Pyright and repository checks passed), Markdown block checks and 322 tracker references. A final focused run passed 23 tests, including the Windows process observer and the added unrestricted PowerShell fixture control. Hosted CI and production acceptance are separate from these local results.
+
+The next #1974 increment is native-launch diagnosis on an explicitly prepared disposable Windows subject, followed by a supported resolution of the generated-skills/writable-parent layout. The host-preparation warning and the readiness/runtime isolation-selection difference are useful leads; they do not prove the cause of the access-denied result. Do not change host-wide ACLs or relax read-only grants merely to turn this smoke green. Obtain permitted native execution before extending the hostile-path and lifetime matrix; deterministic parent/leaf replacement remains independently unqualified. The bounded MCP adoption path is unchanged.
+
 ## Status
 
 The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audit.md#consolidated-closure-reconciliation-2026-10-12) covers every original #1676 acceptance row using the separately recorded Gateway, Bicep/MAF and published transport evidence. Both finite follow-ups are merged. Qualification is complete for that supervised, selected baseline; the first-tool design is complete and #1898 delivers the separately qualified installed worker. Historical reports and their `complete_matrix: false` values are unchanged.
