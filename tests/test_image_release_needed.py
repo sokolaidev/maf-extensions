@@ -1029,8 +1029,12 @@ def test_issue_state_cannot_break_its_html_comment(ending):
     [("incomplete", "pending"), ("completed", "pending"), ("abandoned", "pending")],
 )
 def test_incomplete_release_cannot_be_used_to_close_request(tmp_path, state, delivery):
-    with pytest.raises(ValueError, match="incomplete"):
+    with pytest.raises(ValueError, match="incomplete") as caught:
         tracker.baseline(GitHub(), RECORD | {"state": state, "delivery": delivery}, tmp_path)
+    assert str(caught.value) == (
+        "Release evidence delivery is incomplete: "
+        f"{RECORD['profile']}/{RECORD['version']} (state={state}, delivery={delivery})"
+    )
 
 
 @pytest.mark.parametrize("draft,immutable", [(True, False), (False, False)])

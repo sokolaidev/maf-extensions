@@ -557,6 +557,45 @@ def test_history_api_reads_all_pages_and_pins_repository_and_host(monkeypatch):
     assert all("repos/sokolaidev/maf-extensions/releases?" in command[4] for command, _ in seen)
 
 
+@pytest.mark.parametrize("draft", [False, True])
+@pytest.mark.parametrize("change", ["identical", "draft", "identity"])
+def test_repeated_history_sequence_across_pages_is_diagnosed_without_retry(
+    monkeypatch, draft, change
+):
+    first = {"id": 123, "tag_name": TAG + "000000000203", "draft": draft}
+    repeated = first.copy()
+    if change == "draft":
+        repeated["draft"] = not draft
+    elif change == "identity":
+        repeated["id"] = 456
+    pages = [
+        [{"id": i, "tag_name": f"software-v{i}"} for i in range(1, 100)] + [first],
+        [repeated],
+    ]
+    seen = []
+    delays = []
+    client = GitHub()
+
+    def request(endpoint):
+        seen.append(endpoint)
+        assert endpoint == (
+            f"repos/sokolaidev/maf-extensions/releases?per_page=100&page={len(seen)}"
+        )
+        return encode(pages[len(seen) - 1])
+
+    monkeypatch.setattr(client, "request", request)
+    monkeypatch.setattr("container_release_history.time.sleep", delays.append)
+    with pytest.raises(ValueError, match="Conflicting or unstable") as caught:
+        History(client).head()
+    assert str(caught.value) == (
+        "Conflicting or unstable security-history listing: sequence 203, "
+        f"first release ID 123 (draft={draft}), "
+        f"repeated release ID {repeated['id']} (draft={repeated['draft']})"
+    )
+    assert len(seen) == 2
+    assert delays == []
+
+
 def test_release_creation_is_draft_and_never_changes_latest(monkeypatch):
     gh = GitHub()
     seen = []
