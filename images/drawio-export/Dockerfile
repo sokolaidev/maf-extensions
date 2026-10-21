@@ -4,11 +4,12 @@ LABEL org.opencontainers.image.description="Editable Draw.io and native PNG, SVG
 
 ARG DRAWIO_VERSION=32.4.1
 ARG DRAWIO_SHA256=f4455b3bba3d3b539c3cd069218fc64f0462b1b01610fe8d11acc3ca8566f32b
+COPY requirements.txt /opt/maf-drawio/requirements.txt
 RUN apk upgrade --no-cache \
-    && apk add --no-cache ca-certificates-bundle python-3.13 py3.13-pillow \
+    && apk add --no-cache ca-certificates-bundle python-3.13 \
        graphviz xvfb-run xauth xkbcomp xkeyboard-config font-misc ttf-dejavu \
        mesa-gbm alsa-lib gtk-3 libnss cups-libs libudev \
-    && apk add --no-cache --virtual .unpack curl dpkg \
+    && apk add --no-cache --virtual .unpack curl dpkg py3.13-pip \
     && curl --fail --location --retry 3 \
        "https://github.com/jgraph/drawio-desktop/releases/download/v${DRAWIO_VERSION}/drawio-amd64-${DRAWIO_VERSION}.deb" \
        --output /tmp/drawio.deb \
@@ -17,6 +18,8 @@ RUN apk upgrade --no-cache \
     && mkdir -p /opt \
     && cp -a /tmp/drawio-unpacked/opt/drawio /opt/drawio \
     && rm -rf /tmp/drawio-unpacked /tmp/drawio.deb \
+    && python3 -m pip install --no-cache-dir --only-binary=:all: --require-hashes \
+       --target /usr/lib/python3.13/site-packages -r /opt/maf-drawio/requirements.txt \
     && apk del --no-cache .unpack \
     && dot -c
 
