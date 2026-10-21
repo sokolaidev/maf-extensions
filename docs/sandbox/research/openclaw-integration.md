@@ -629,6 +629,69 @@ Use #1641's candidate/evaluator separation and #1973's finite actor-loss method 
 
 The next existing adoption PBI is conditional #1974: first establish a supported installed official MXC operator surface and suitable disposable Windows host, then run its workspace/host-file profile. #1952 stays blocked, #1639 stays deferred, and #1637 retains prioritization. No new speculative full-backend implementation issue is opened: this documented defer decision is #1642's permitted design outcome, with explicit evidence and reopening conditions.
 
+## Official MXC qualification preflight (2026-10-21)
+
+**Disposition: the #1974 native profile is unqualified; retain the issue for the missing controls and installed execution evidence.** This is a prerequisite assessment of the official published plugin, not a new `maf-sandbox` backend, a completed filesystem campaign or a reversal of #1642's defer decision. No command sandbox or hostile filesystem fixture was provisioned. The existing Bicep and actor-loss results do not cover these native rows.
+
+### Selected installed subject
+
+A private npm installation outside the checkout selected `openclaw@2026.10.5` and `@openclaw/mxc-sandbox@2026.10.5` with exact direct versions, empty npm user/global configuration and lifecycle scripts disabled. The plugin bundles `@microsoft/mxc-sdk@0.9.0` and `zod@4.6.5`; the SDK resolves below the plugin's own `node_modules`, not the installation's top-level SDK path. The separately published SDK 1.0.1 was not substituted. Disabling installation scripts is part of this observation and does not establish that every optional native dependency is usable.
+
+Preparation used `npm install --prefix <private-installation> --ignore-scripts --no-audit --no-fund --save-exact openclaw@2026.10.5 @openclaw/mxc-sandbox@2026.10.5`. The npm lock recorded these registry integrity identities. These are artifact identities, not a publisher-authenticity or production-trust assessment:
+
+| Artifact | Registry archive | npm SHA-512 integrity |
+|---|---|---|
+| OpenClaw 2026.10.5 | [Host archive](https://registry.npmjs.org/openclaw/-/openclaw-2026.10.5.tgz) | `sha512-9rCuXMweqVKZIK3KBtGcLzesz9G6+FmQ30lvwomRhmcNWDcOtlBoqdLbPditoJMuTP55jPqXpt1AA0L8tSzFHg==` |
+| Official MXC plugin 2026.10.5 | [Plugin archive](https://registry.npmjs.org/@openclaw/mxc-sandbox/-/mxc-sandbox-2026.10.5.tgz) | `sha512-yz49ojbbyEQVCf0qbmQeM/dkYqFWqBp4Hp5SdYTUUM1IK03c/QjV0VE/OtPmJC3aDBypS3Q1ZAePhbhTu9Cpxg==` |
+
+The following SHA-256 values were calculated from installed bytes. Paths are relative to the installed `@openclaw/mxc-sandbox` package, not this repository:
+
+| Installed asset | Bytes | SHA-256 |
+|---|---:|---|
+| Plugin `package.json` | 1357 | `9841367e9cd38fb54aa104a7bebb467117ad57aeadeb8911258dddc70796c8d6` |
+| `openclaw.plugin.json` | 3583 | `d4264961060829ecdefb37dcf1887d4d040f0a0ebd638a4b981097f58b9b101f` |
+| Plugin README | 13631 | `c2b0600bc27fc3001c64c8a4ba915ef30892a26daeb81fc42d7e91ec8ff8646a` |
+| Installed runtime entry | 46670 | `bdc382abc7db2e831479f2f287025e13c1452b802e4293329454baa3efd7fe77` |
+| Packed `mxc-spawn-launcher.mjs` | 4306 | `4fa0a7005094bcd324f0e58018cb2dad57dee809134bc948b723bfb8e7f98165` |
+| Bundled SDK `package.json` | 2248 | `4ea38a9d96ee579ebd26535e3ebf37f4094a99d9ec52aefce2756049c9990882` |
+| Bundled x64 `wxc-exec.exe` | 12414776 | `819ecd9b08a8dcb2376d489c0352087468bf56800ab059f57d38901d7743049e` |
+
+The runtime entry is the plugin's `dist/index.js`, and its launcher is beside it. The bundled executor is under `node_modules/@microsoft/mxc-sdk/bin/x64`. The installed runtime emits policy schema `0.7.0-alpha`. No request was executed against that schema, so this record establishes neither compatibility nor incompatibility with SDK 0.9.0. The pinned [upstream plugin source](https://github.com/openclaw/openclaw/tree/27875c27cd14bb8dc488077f18edda5e1b7f98f3/extensions/mxc) was inspected separately; it does not replace installed-release evidence.
+
+### Host and operator observations
+
+The host was Windows x64, display version 25H2, build `26220.9739`, with Node `26.8.1` and `processmodel.dll` present. The operator was not elevated. The exact bundled executor's `--probe` completed with exit 0 under the existing bounded command supervisor. It selected `base-container`, returned `needsDaclAugmentation: false` and no warnings. It reported base-container API and native capture available; guarded capture, `bfscfg` and compiled BFS were unavailable. These fields are native readiness observations, not proof that an OpenClaw command used ProcessContainer or that a filesystem attack was contained.
+
+A read-only `icacls` query of the system-drive root succeeded but did not find either `S-1-15-2-1` or `APPLICATION PACKAGES`, the marker check used by this plugin's advisory. Its readiness code warns that directory listing can fail without host preparation even when basic file access works. No `wxc-host-prep prepare-system-drive` command or ACL change was performed. A future disposable host must establish actual permitted directory access independently; a warning or marker heuristic alone cannot decide the filesystem result.
+
+The installed CLI exposed `plugins install --link`, `plugins inspect --runtime`, and `sandbox explain/list/recreate`. The plugin was linked into isolated configuration after accepting its declared capability surface. Initial attempts without the source acknowledgment or capability consent were refused and are not qualification failures. Installation/discovery exit 0 is not sufficient: the runtime inspection must also have no load errors, and a separate observed command must execute the native engine. The first runtime inspection returned exit 0 but reported `FsSafeError: copy path changed during operation` with diagnostic code `path-mismatch`. A fresh isolated configuration using canonical long Windows paths instead of the temporary-directory short-name alias returned exit 0, `status: loaded`, `imported: true`, no missing declared dependencies and an empty diagnostics list. Metadata-only inspection reported `imported: false`. This retry removes the observed loading blocker for that configuration; it does not isolate the root cause of the first failure, prove full backend registration, or execute a native command.
+
+The observed CLI sequence was `plugins install --link --force --accept-capabilities <installed-plugin-directory>`, `plugins inspect mxc --json`, then `plugins inspect mxc --runtime --json`. These commands ran with the installed host's `openclaw.mjs`, an allowlisted child environment, isolated HOME/profile/application-data/temp roots, a 120-second deadline and 32/64-KiB stdout caps. JSON output was parsed/observed in memory, not saved under experiments. The native command was the exact hashed executor with `--probe`, a 20-second deadline and 16-KiB stdout cap. Both used the existing repository command supervisor's owned Windows Job Object. Each command finished and the supervisor completed its cleanup; the external npm installation and isolated configuration were retained for reproduction. No Gateway, test agent, native command workload or adversarial filesystem fixture was started. The listed seven installed hashes still matched after the inspections.
+
+### Required predicates that preflight cannot satisfy
+
+| Required row | Observed prerequisite or gap | Disposition |
+|---|---|---|
+| I1: installed identity and native entry | Published host/plugin, bundled SDK/executor and launcher bytes identified; canonical-path runtime inspection loaded; exact executor readiness probe succeeded | Prerequisites only. No ProcessContainer command, schema acceptance or complete loaded dependency manifest qualified |
+| I2: inert discovery | Installed entry guards registration with `registrationMode !== "full"`; CLI metadata discovery is available | Static evidence only. No independent observation of all guarded operations, delayed activity or descendants; do not mark inertness passed |
+| W1: workspace modes | The installed plugin README and runtime make both isolated `none` and isolated `ro` workspaces read-only; `ro` additionally exposes a distinct agent root read-only. `rw` adds the active agent workspace to writable grants | Conflicts with the selected W1 positive predicate that `none` permits private workspace writes. Keep W1 unqualified; do not silently redefine a denial as a pass |
+| W2 and F1: protected roots and hostile layouts | Installed code refuses a writable parent with protected skill roots, but directory access preparation and independent positive native controls were not established | Not run; code inspection does not prove containment, either rename endpoint, or cleanup |
+| F2: controlled replacement | Neither the installed plugin configuration nor the inspected operator API documents a parent/leaf barrier between authorization and access | Required deterministic control unavailable in this assessment. No race-confinement claim; no probabilistic loop, source patch or private import substituted |
+| X1 and lifecycle | No native command, timeout, descendant or two-session/new-generation workspace campaign ran | Not run; probe exit does not establish descendant extinction or workspace disposal |
+
+The installed host's `openclaw/docs/gateway/sandboxing/workspace-access.md` describes writable private `none` workspaces, whereas the installed official plugin documents a stricter contract. The plugin implementation independently confirms the read-only grants in both its command configuration and file bridge. This is a candidate-specific policy/documentation discrepancy, not a demonstrated escape. The older W1 matrix above remains the selected expectation, with this dated failed prerequisite attached. Additional writable policy paths are installation-wide grants shared by MXC sandboxes; adding one would change the isolation premise and cannot repair that predicate by stealth.
+
+The inspected [operator tools API](https://docs.openclaw.ai/gateway/tools-invoke-http-api) describes public tool dispatch with Gateway authentication and policy. Its installed copy exposes no authorization/access replacement barrier. Before selecting it as the native adapter, verify the exact tool route reaches the MXC sandbox and its file bridge; an HTTP tool with a filesystem name is not proof of that routing. The installed SDK catalog classifies both `plugin-sdk/sandbox` and `plugin-sdk/file-access-runtime` as private-local. Importing those helpers or calling a bridge directly would test a different subject. The absence of a documented control in these inspected surfaces is a bounded finding, not proof that every possible external instrument is impossible.
+
+### Resume conditions
+
+1. Reproduce the successful canonical-path runtime inspection, then establish full backend registration and one independently observed permitted ProcessContainer command using the pinned plugin's supported operator route. Bind the loaded dependency and native bytes before any confinement claim.
+2. Resolve the `none` workspace contract explicitly: select and document the official plugin's narrower read-only behavior, or qualify a released candidate that meets writable-private-workspace W1. Do not alter the acceptance predicate merely because this candidate denies access.
+3. Use a disposable prepared Windows host and independently demonstrate allowed directory/file operations and every attack prerequisite on owned roots. Keep host ACL preparation separate from plugin configuration and from security conclusions.
+4. Obtain a supported deterministic authorization/access barrier or an accepted external control that preserves the installed subject and proves the held phase. Then implement the native adapter/evaluator and run F2 alongside the complete workspace, path, bounds and lifecycle matrix. If that control remains unavailable, retain the unqualified rows explicitly.
+
+#1974 stays open because no complete native qualification or reusable native runner was delivered. #1637 retains this prerequisite work; #1952 remains blocked, #1639 deferred, and the selected bounded MCP integration remains available. Evidence is retained here as Markdown only; no experiment JSON file was added. Temporary npm/config files belong to the external preparation, not a retained qualified campaign.
+
 ## Status
 
 The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audit.md#consolidated-closure-reconciliation-2026-10-12) covers every original #1676 acceptance row using the separately recorded Gateway, Bicep/MAF and published transport evidence. Both finite follow-ups are merged. Qualification is complete for that supervised, selected baseline; the first-tool design is complete and #1898 delivers the separately qualified installed worker. Historical reports and their `complete_matrix: false` values are unchanged.
@@ -648,5 +711,5 @@ The Bicep workstream has a locally qualified installed worker and its historical
 | Conformance and installed-package qualification | Design complete; installed runner #1972 and bounded fault profile #1973 qualified, native profile #1974 conditional | [#1641](https://github.com/sokolaidev/maf-extensions/issues/1641) (closed) by [#1977](https://github.com/sokolaidev/maf-extensions/pull/1977) (merged) |
 | Installed Bicep conformance runner | Implemented; fresh published-candidate Windows profile qualified | [#1972](https://github.com/sokolaidev/maf-extensions/issues/1972) (closed) by [#1983](https://github.com/sokolaidev/maf-extensions/pull/1983) (merged) |
 | Bounded owner-loss qualification | Complete for the selected Windows/Docker candidate; fresh baseline and all fifteen cases passed independent evaluation | [#1973](https://github.com/sokolaidev/maf-extensions/issues/1973) (closed) by [#2066](https://github.com/sokolaidev/maf-extensions/pull/2066) (merged) |
-| Native MXC workspace and host-file qualification | Open; conditional installed Windows profile | [#1974](https://github.com/sokolaidev/maf-extensions/issues/1974) (open) |
+| Native MXC workspace and host-file qualification | Open; published-candidate preflight recorded, workspace predicate and deterministic file controls unresolved; native profile unqualified | [#1974](https://github.com/sokolaidev/maf-extensions/issues/1974) (open) |
 | Full sandbox provider | Design assessed; implementation deferred pending a supported third-party SDK and process/file contracts | [#1642](https://github.com/sokolaidev/maf-extensions/issues/1642) (closed) by [#2073](https://github.com/sokolaidev/maf-extensions/pull/2073) (merged) |
