@@ -22,6 +22,7 @@
         },
         "go_version": "go1.27.2",
         "modules": {
+          "github.com/klauspost/compress": "v1.18.7",
           "golang.org/x/net": "v0.60.0",
           "golang.org/x/crypto": "v0.57.0",
           "golang.org/x/text": "v0.42.0",
@@ -29,10 +30,10 @@
           "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "18dd2e89978bd8c8779a99a4d7d8749600dac3c71434ee6747a40a3e52ef3d7a",
-          "go.sum": "a89f534c4b2fdc6a9fcbe27a4410a09587103fe4250e56f908eecf37aa763246"
+          "go.mod": "f135dd26ffe46c611884647b9194ba75643d547e20484a368252adddc40a14e5",
+          "go.sum": "ef7d8dd2e5ed5a51dff35f47cb99e215ea9229b0f3a69f7361ecfa6a0053a048"
         },
-        "sha256": "b0177ff82d313e53efeeb36b60441ccdafe3cc723c1f865891a00040f200b751"
+        "sha256": "783607bcad5774fc93bd02a75afe3978c14e3f0aadd5ade19a3da3580ce6b52a"
       }
     },
     {
