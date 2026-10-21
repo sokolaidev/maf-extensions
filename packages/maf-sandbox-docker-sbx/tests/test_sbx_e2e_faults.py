@@ -66,7 +66,7 @@ def test_faults_cross_http_and_restore_the_original_socket(daemon, fail_body):
             200,
             {"real_daemon": True, "path": "/daemon/settings?key=forwarding"},
         )
-        assert request(path, "GET", "/sandbox?all=true") == (200, {"sandboxes": []})
+        assert request(path, "GET", "/sandbox?all=true") == (200, [])
         for method, route in (("POST", "/sandbox/existing/exec"), ("DELETE", "/sandbox/existing")):
             assert request(path, method, route) == (500, {"message": "backend unavailable"})
         assert request(path, "POST", "/sandbox") == (500, {"message": "backend unavailable"})

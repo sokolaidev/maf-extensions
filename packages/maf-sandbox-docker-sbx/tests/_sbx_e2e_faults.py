@@ -51,7 +51,7 @@ def engine_fault_responses(daemon_socket: Path) -> Iterator[list[str]]:
             path = urlsplit(self.path).path.rstrip("/")
             if path in ("/sandbox", "/sandboxes") and self.command == "GET":
                 observed.append("listing")
-                status, body = 200, b'{"sandboxes":[]}'
+                status, body = 200, b"[]"
             elif (
                 path in ("/sandbox", "/sandboxes")
                 or path.startswith("/sandbox/")
