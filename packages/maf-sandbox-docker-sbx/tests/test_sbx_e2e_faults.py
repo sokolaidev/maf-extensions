@@ -33,7 +33,7 @@ def daemon(tmp_path):
             self.wfile.write(body)
 
     class Server(socketserver.TCPServer):
-        address_family = socket.AF_UNIX
+        address_family = getattr(socket, "AF_UNIX")
 
     with Server(str(path), Handler) as server:
         path.chmod(0o600)
@@ -69,7 +69,13 @@ def test_faults_cross_http_and_restore_the_original_socket(daemon, fail_body):
         assert request(path, "GET", "/sandbox?all=true") == (200, {"sandboxes": []})
         for method, route in (("POST", "/sandbox/existing/exec"), ("DELETE", "/sandbox/existing")):
             assert request(path, method, route) == (500, {"message": "backend unavailable"})
-        assert observed == ["listing", "POST /sandbox/existing/exec", "DELETE /sandbox/existing"]
+        assert request(path, "POST", "/sandbox") == (500, {"message": "backend unavailable"})
+        assert observed == [
+            "listing",
+            "POST /sandbox/existing/exec",
+            "DELETE /sandbox/existing",
+            "POST /sandbox",
+        ]
         assert requests == ["/daemon/settings?key=forwarding"]
         if fail_body:
             raise RuntimeError("body failed")
@@ -91,11 +97,18 @@ def test_bind_failure_restores_the_daemon_socket(daemon, monkeypatch):
     assert request(path, "GET", "/sandbox")[1]["real_daemon"] is True
 
 
-def test_a_stale_backup_is_never_overwritten(daemon):
+@pytest.mark.parametrize("symlink", [False, True])
+def test_a_stale_backup_is_never_overwritten(daemon, symlink):
     path, requests, identity = daemon
     hidden = path.with_name(path.name + ".maf-hidden")
-    hidden.write_text("keep")
+    if symlink:
+        hidden.symlink_to(path.with_name("missing"))
+    else:
+        hidden.write_text("keep")
     with pytest.raises(AssertionError, match="refusing to replace"), engine_fault_responses(path):
         pytest.fail("must not enter the fault context")
-    assert hidden.read_text() == "keep"
+    if symlink:
+        assert hidden.is_symlink()
+    else:
+        assert hidden.read_text() == "keep"
     assert path.stat().st_ino == identity

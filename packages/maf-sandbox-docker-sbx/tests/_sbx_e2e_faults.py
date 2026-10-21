@@ -20,7 +20,7 @@ class _UnixConnection(http.client.HTTPConnection):
         self.path = path
 
     def connect(self) -> None:
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock = socket.socket(getattr(socket, "AF_UNIX"), socket.SOCK_STREAM)
         self.sock.settimeout(self.timeout)
         self.sock.connect(str(self.path))
 
@@ -31,7 +31,7 @@ def engine_fault_responses(daemon_socket: Path) -> Iterator[list[str]]:
     mode = daemon_socket.lstat().st_mode
     assert stat.S_ISSOCK(mode), f"not a daemon socket: {daemon_socket}"
     hidden = daemon_socket.with_name(f"{daemon_socket.name}.maf-hidden")
-    assert not hidden.exists(), f"refusing to replace {hidden}"
+    assert not hidden.exists() and not hidden.is_symlink(), f"refusing to replace {hidden}"
     observed: list[str] = []
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -52,7 +52,11 @@ def engine_fault_responses(daemon_socket: Path) -> Iterator[list[str]]:
             if path in ("/sandbox", "/sandboxes") and self.command == "GET":
                 observed.append("listing")
                 status, body = 200, b'{"sandboxes":[]}'
-            elif path.startswith("/sandbox/") or path.startswith("/sandboxes/"):
+            elif (
+                path in ("/sandbox", "/sandboxes")
+                or path.startswith("/sandbox/")
+                or path.startswith("/sandboxes/")
+            ):
                 observed.append(f"{self.command} {path}")
                 status, body = 500, b'{"message":"backend unavailable"}'
             else:
@@ -71,7 +75,7 @@ def engine_fault_responses(daemon_socket: Path) -> Iterator[list[str]]:
             self.wfile.write(body)
 
     class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
-        address_family = socket.AF_UNIX
+        address_family = getattr(socket, "AF_UNIX")
         daemon_threads = True
 
     daemon_socket.rename(hidden)
