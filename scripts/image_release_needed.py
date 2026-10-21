@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import json
 import os
@@ -18,7 +19,13 @@ from container_release_history import GitHub, History, decode, encode, sha256
 from image_scan_policy import BICEP_ROUTES, evidence_route
 from image_security_evidence import verify_inventory
 from report_stuck_releases import as_code
-from select_image_security import PROFILES, SCRIPT_INPUTS, changed_profiles, metadata_only
+from select_image_security import (
+    PROFILES,
+    SCRIPT_INPUTS,
+    WHEEL_PACKAGES,
+    changed_profiles,
+    metadata_only,
+)
 from verify_container_release import verify_identity
 
 MARKER = "<!-- image-release-needed:"
@@ -28,6 +35,64 @@ WORKFLOWS = {
     ".github/workflows/container-image-monitor.yml",
     ".github/workflows/container-image-release.yml",
 }
+WORKSPACE_INPUTS = {"uv.lock", "uv.toml", "pyproject.toml", ".python-version"}
+
+
+def bicep_diagnostics(source: str) -> str:
+    """Normalize only side-effect-free route rejection messages and equivalent OR guards."""
+    tree = ast.parse(source)
+    functions = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "validate_route"
+    ]
+    if len(functions) != 1:
+        raise ValueError("Unknown route validator")
+    function = functions[0]
+    guards = []
+    for node in function.body:
+        if (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            continue
+        if not isinstance(node, ast.If) or node.orelse or len(node.body) != 1:
+            raise ValueError("Unknown route guard")
+        failure = node.body[0]
+        if not isinstance(failure, ast.Raise) or failure.cause is not None:
+            raise ValueError("Unknown route rejection")
+        call = failure.exc
+        if (
+            not isinstance(call, ast.Call)
+            or not isinstance(call.func, ast.Name)
+            or call.func.id != "ValueError"
+            or len(call.args) != 1
+            or call.keywords
+        ):
+            raise ValueError("Unknown route error")
+        message = call.args[0]
+        if not isinstance(message, (ast.Constant, ast.JoinedStr)) or any(
+            not isinstance(
+                part, (ast.Constant, ast.JoinedStr, ast.FormattedValue, ast.Name, ast.Load)
+            )
+            for part in ast.walk(message)
+        ):
+            raise ValueError("Route error may have side effects")
+        guards.extend(
+            node.test.values
+            if isinstance(node.test, ast.BoolOp) and isinstance(node.test.op, ast.Or)
+            else [node.test]
+        )
+    if not guards:
+        raise ValueError("Missing route guards")
+    function.body = [ast.Expr(value=guard) for guard in guards]
+    return ast.dump(tree)
+
+
+def required(state: dict[str, Any]) -> bool:
+    """Known published vulnerabilities and explicit route policy require replacement."""
+    return bool({"vulnerabilities", "route"} & state["reasons"].keys())
 
 
 def git(root: Path, *args: str) -> str:
@@ -57,6 +122,14 @@ def changed_inputs(root: Path, base: str, head: str, profile: str) -> list[str]:
     for path in paths:
         if path in ignored or path.startswith(("tests/", ".github/")):
             continue
+        if path == "images/README.md":
+            continue
+        if path in WORKSPACE_INPUTS and profile != "hyperlight-aks-probe":
+            continue
+        if re.fullmatch(r"packages/[^/]+/pyproject\.toml", path) and (
+            profile != "hyperlight-aks-probe" or path.split("/")[1] not in WHEEL_PACKAGES
+        ):
+            continue
         if (
             path.startswith("scripts/")
             and path not in SCRIPT_INPUTS
@@ -66,6 +139,16 @@ def changed_inputs(root: Path, base: str, head: str, profile: str) -> list[str]:
             }
         ):
             continue
+        if path == "scripts/build_bicep_image.py":
+            try:
+                before, after = (
+                    bicep_diagnostics(git(root, "show", f"{ref}:{path}")) for ref in (base, head)
+                )
+                if before == after:
+                    continue
+            except (subprocess.CalledProcessError, SyntaxError, ValueError):
+                # Unproven equivalence must retain the build input.
+                pass
         if profile in changed_profiles(root, base, head, path):
             result.append(path)
     return sorted(result)
@@ -358,6 +441,8 @@ def reconcile_component_route(
     released: dict[str, Any],
     previous: dict[str, Any] | None,
     directory: Path,
+    *,
+    releases: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Withdraw only a component requirement disproven by its original scan evidence."""
     profile = record["profile"]
@@ -366,9 +451,10 @@ def reconcile_component_route(
     reason = previous["reasons"].get("components")
     if not reason or reason.get("bicepRoute") == BICEP_ROUTES[profile]:
         return previous
-    if reason.get("baselineDigest", previous["baseline"]) != record["registryDigest"]:
-        return previous
+    baseline_digest = reason.get("baselineDigest", previous["baseline"])
+    comparison_record, comparison_release = record, released
     evidence = reason.get("evidence", previous.get("candidateEvidence", ""))
+    original_evidence = evidence
     match = re.fullmatch(
         rf"https://github\.com/{re.escape(REPOSITORY)}/actions/runs/([1-9][0-9]*)/attempts/([1-9][0-9]*)",
         evidence,
@@ -376,24 +462,72 @@ def reconcile_component_route(
     if not match:
         return previous
     try:
+        if baseline_digest != record["registryDigest"]:
+            originals = [
+                value
+                for value in (releases or {}).values()
+                if value["profile"] == profile and value["registryDigest"] == baseline_digest
+            ]
+            if len(originals) != 1:
+                return previous
+            comparison_record = originals[0]
+            comparison_release = baseline(client, comparison_record, directory / "baseline")
         observed = candidates(
             client, match[1], directory, historical=True, profiles=(profile,)
         ).get(profile)
+
+        def matches(value: dict[str, Any] | None) -> bool:
+            if value is None:
+                return False
+            old = {tuple(row) for row in comparison_release["components"]}
+            new = {tuple(row) for row in value["components"]}
+            return (
+                value["observedAt"] == reason.get("observedAt", previous.get("candidateObservedAt"))
+                and timestamp(value["observedAt"]) > timestamp(comparison_record["completedAt"])
+                and sha256(encode(value["components"])) == reason["inventorySha256"]
+                and [list(row) for row in sorted(new - old)] == reason["added"]
+                and [list(row) for row in sorted(old - new)] == reason["removed"]
+            )
+
+        if not (observed and observed["evidence"] == evidence and matches(observed)):
+            if releases is None or "bicepRoute" in reason:
+                return previous
+            at = timestamp(reason.get("observedAt", previous.get("candidateObservedAt")))
+            recovered = []
+            runs = action_listing(
+                client,
+                f"repos/{REPOSITORY}/actions/workflows/image-security.yml/runs",
+                "workflow_runs",
+            )
+            for run in runs:
+                if (
+                    str(run["id"]) == match[1]
+                    or run.get("head_repository", {}).get("full_name") != REPOSITORY
+                    or run.get("head_branch") != "main"
+                    or run.get("path") != ".github/workflows/image-security.yml"
+                    or run.get("event") not in {"schedule", "workflow_dispatch"}
+                    or run.get("status") != "completed"
+                    or not timestamp(run["created_at"]) <= at <= timestamp(run["updated_at"])
+                ):
+                    continue
+                value = candidates(
+                    client,
+                    str(run["id"]),
+                    directory / str(run["id"]),
+                    historical=True,
+                    profiles=(profile,),
+                ).get(profile)
+                if matches(value):
+                    recovered.append(value)
+            if len(recovered) != 1:
+                return previous
+            observed = recovered[0]
+            assert observed is not None
+            evidence = observed["evidence"]
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         print(f"{profile}: saved component route could not be verified: {error}")
         return previous
-    if not observed or observed["evidence"] != evidence:
-        return previous
-    old = {tuple(row) for row in released["components"]}
-    new = {tuple(row) for row in observed["components"]}
-    if (
-        observed["observedAt"] != reason.get("observedAt", previous.get("candidateObservedAt"))
-        or timestamp(observed["observedAt"]) <= timestamp(record["completedAt"])
-        or sha256(encode(observed["components"])) != reason["inventorySha256"]
-        or [list(row) for row in sorted(new - old)] != reason["added"]
-        or [list(row) for row in sorted(old - new)] != reason["removed"]
-    ):
-        return previous
+    assert observed is not None
     result = copy.deepcopy(previous)
     if observed["bicepRoute"] == BICEP_ROUTES[profile]:
         result["reasons"]["components"].update(
@@ -406,8 +540,12 @@ def reconcile_component_route(
         "candidateRoute": observed["bicepRoute"],
         "replacementRoute": BICEP_ROUTES[profile],
         "baselineDigest": record["registryDigest"],
+        "comparisonDigest": baseline_digest,
     }
-    if result.get("candidateEvidence") == evidence:
+    if (
+        result.get("candidateEvidence") in {original_evidence, evidence}
+        and result.get("candidateObservedAt") == observed["observedAt"]
+    ):
         for key in ("candidateEvidence", "candidateFindings", "candidateObservedAt"):
             result.pop(key, None)
         result["status"] = "Awaiting release preparation"
@@ -511,11 +649,6 @@ def desired(
                     evidence=candidate["evidence"],
                     observedAt=candidate["observedAt"],
                 )
-        state["status"] = (
-            "Last candidate scan passed; release gate still required"
-            if candidate["assessment"]["outcome"] == "clean"
-            else "Blocked on candidate remediation"
-        )
         state["candidateEvidence"] = candidate["evidence"]
         state["candidateObservedAt"] = candidate["observedAt"]
         state["candidateFindings"] = sorted(
@@ -533,6 +666,20 @@ def desired(
     state["currentDigest"] = record["registryDigest"]
     state["releaseEvidence"] = released["evidence"]
     state["resolved"] = not reasons
+    if not required(state):
+        state["status"] = (
+            "Refresh blocked on candidate remediation"
+            if state.get("candidateFindings")
+            else "Refresh available for maintainer review"
+        )
+    elif state.get("candidateEvidence"):
+        state["status"] = (
+            "Blocked on candidate remediation"
+            if state.get("candidateFindings")
+            else "Last candidate scan passed; release gate still required"
+        )
+    elif state["status"].startswith("Refresh"):
+        state["status"] = "Awaiting release preparation"
     if (
         state["resolved"]
         and state.get("routeReconciliation", {}).get("baselineDigest") == record["registryDigest"]
@@ -637,6 +784,9 @@ def body(profile: str, state: dict[str, Any]) -> str:
                 "Resolved by the completed, verified replacement release."
                 if state["resolved"]
                 else f"Prepare a replacement image release. Status: **{state['status']}**."
+                if required(state)
+                else f"Review these build-input or component changes for the next planned image release. "
+                f"They do not establish a vulnerability in the published image. Status: **{state['status']}**."
             )
         )
         + "\n\nPublication requires the existing exact-candidate runtime, SBOM, High/Critical scan, approval and signature checks. A passing daily scan does not close this request.\n\n"
@@ -662,8 +812,12 @@ def reconcile(
     """Use one issue mutation per change so retries do not duplicate notifications."""
     if state is None:
         return
-    action = "resolved at" if state["resolved"] else "replace"
-    title = f"Image release needed: {profile} ({action} {state['currentVersion']})"
+    if state["resolved"]:
+        title = f"Image release needed: {profile} (resolved at {state['currentVersion']})"
+    elif required(state):
+        title = f"Image release needed: {profile} (replace {state['currentVersion']})"
+    else:
+        title = f"Image refresh available: {profile} (current {state['currentVersion']})"
     endpoint = f"repos/{REPOSITORY}/issues"
     if issue:
         match = STATE.search(issue["body"])
@@ -754,7 +908,12 @@ def main() -> None:
             record = snapshot.catalogue["releases"][name]
             released = baseline(client, record, root / profile)
             previous = reconcile_component_route(
-                client, record, released, previous, root / "saved-candidates" / profile
+                client,
+                record,
+                released,
+                previous,
+                root / "saved-candidates" / profile,
+                releases=snapshot.catalogue["releases"],
             )
             changed = changed_inputs(ROOT, record["sourceCommit"], source, profile)
             candidate = observed.get(profile)

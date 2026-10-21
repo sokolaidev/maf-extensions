@@ -25,6 +25,7 @@ _GATE_MEMBERS = [
     "test",
     "lint",
     "format",
+    "security",
     "types-packages",
     "types",
     "doc-paths",

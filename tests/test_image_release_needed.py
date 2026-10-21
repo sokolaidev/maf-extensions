@@ -314,6 +314,177 @@ def test_scan_timestamps_and_catalogue_ids_do_not_change_component_identity():
     assert optional_desired(observed=candidate(version="1")) is None
 
 
+@pytest.mark.parametrize("route", ["upstream", "source"])
+@pytest.mark.parametrize("damage", [None, "missing", "ambiguous", "unverified", "delta", "time"])
+def test_old_component_route_is_reconciled_against_authenticated_original_release(
+    bicep_request, monkeypatch, tmp_path, route, damage
+):
+    original, released, observed, previous = bicep_request
+    observed["bicepRoute"] = route
+    current = replacement() | {"profile": original["profile"]}
+    releases = {"original": original, "current": current}
+    if damage == "missing":
+        del releases["original"]
+    elif damage == "ambiguous":
+        releases["duplicate"] = original
+    elif damage == "delta":
+        observed["components"] = []
+    elif damage == "time":
+        observed["observedAt"] = original["completedAt"]
+    fetched = []
+
+    def verified(_client, record, _directory):
+        fetched.append(record)
+        if damage == "unverified":
+            raise ValueError("Unverified historical release")
+        return released
+
+    monkeypatch.setattr(tracker, "baseline", verified)
+    monkeypatch.setattr(tracker, "action_listing", lambda *_: [])
+    monkeypatch.setattr(tracker, "candidates", lambda *_, **__: {original["profile"]: observed})
+    latest = released | {"components": [["apk", "graphviz", "3", "pkg:apk/graphviz@3"]]}
+    repaired = tracker.reconcile_component_route(
+        GitHub(), current, latest, previous, tmp_path, releases=releases
+    )
+    assert repaired is not None
+    if damage:
+        assert repaired == previous
+    elif route == "source":
+        assert repaired["reasons"]["components"]["bicepRoute"] == "source"
+        assert not desired(record=current, released=latest, previous=repaired)["resolved"]
+    else:
+        assert fetched == [original]
+        assert "components" not in repaired["reasons"]
+        assert repaired["routeReconciliation"]["comparisonDigest"] == original["registryDigest"]
+        result = desired(record=current, released=latest, previous=repaired)
+        assert result["resolved"]
+        assert result["resolution"] == "route-reconciled"
+
+
+@pytest.mark.parametrize(
+    "damage", [None, "missing", "duplicate", "hash", "time", "untrusted", "incomplete"]
+)
+def test_legacy_scan_link_recovery_requires_unique_exact_evidence(
+    bicep_request, monkeypatch, tmp_path, damage
+):
+    original, released, observed, previous = bicep_request
+    current = replacement() | {"profile": original["profile"]}
+    previous["reasons"]["components"].update(
+        evidence=f"https://github.com/{tracker.REPOSITORY}/actions/runs/999/attempts/1",
+        observedAt=observed["observedAt"],
+    )
+    run = {
+        "id": 123,
+        "head_repository": {"full_name": tracker.REPOSITORY},
+        "head_branch": "main",
+        "path": ".github/workflows/image-security.yml",
+        "event": "schedule",
+        "status": "completed",
+        "created_at": "2026-01-01T23:00:00Z",
+        "updated_at": "2026-01-02T01:00:00Z",
+    }
+    if damage == "hash":
+        observed["components"] = []
+    elif damage == "time":
+        observed["observedAt"] = "2026-01-02T00:00:01Z"
+    elif damage == "untrusted":
+        run["head_branch"] = "untrusted"
+
+    def history(*_):
+        if damage == "incomplete":
+            raise ValueError("Incomplete scan history")
+        return (
+            []
+            if damage == "missing"
+            else [run, run | {"id": 124}]
+            if damage == "duplicate"
+            else [run]
+        )
+
+    def scans(_client, run_id, *_args, **_kwargs):
+        return {
+            original["profile"]: observed
+            | {
+                "bicepRoute": "source",
+                "observedAt": "2026-01-04T00:00:00Z",
+                "evidence": previous["reasons"]["components"]["evidence"],
+            }
+            if run_id == "999"
+            else observed
+        }
+
+    monkeypatch.setattr(tracker, "baseline", lambda *_: released)
+    monkeypatch.setattr(tracker, "action_listing", history)
+    monkeypatch.setattr(tracker, "candidates", scans)
+    repaired = tracker.reconcile_component_route(
+        GitHub(), current, released, previous, tmp_path, releases={"original": original}
+    )
+    assert repaired is not None
+    if damage:
+        assert repaired == previous
+    else:
+        assert "components" not in repaired["reasons"]
+        assert repaired["routeReconciliation"]["evidence"] == observed["evidence"]
+        assert desired(record=current, released=released, previous=repaired)["resolved"]
+
+
+@pytest.mark.parametrize("saved_link", ["original", "recovered", "unrelated"])
+@pytest.mark.parametrize("newer", [False, True])
+def test_same_digest_recovery_clears_only_matching_candidate_assessment(
+    bicep_request, monkeypatch, tmp_path, saved_link, newer
+):
+    record, released, observed, previous = bicep_request
+    original_link = f"https://github.com/{tracker.REPOSITORY}/actions/runs/999/attempts/1"
+    previous["reasons"]["components"].update(
+        evidence=original_link, observedAt=observed["observedAt"]
+    )
+    previous["candidateEvidence"] = {
+        "original": original_link,
+        "recovered": observed["evidence"],
+        "unrelated": f"https://github.com/{tracker.REPOSITORY}/actions/runs/456/attempts/1",
+    }[saved_link]
+    if newer:
+        previous["candidateObservedAt"] = "2026-01-03T00:00:00Z"
+    run = {
+        "id": 123,
+        "head_repository": {"full_name": tracker.REPOSITORY},
+        "head_branch": "main",
+        "path": ".github/workflows/image-security.yml",
+        "event": "schedule",
+        "status": "completed",
+        "created_at": "2026-01-01T23:00:00Z",
+        "updated_at": "2026-01-02T01:00:00Z",
+    }
+    monkeypatch.setattr(tracker, "action_listing", lambda *_: [run])
+    monkeypatch.setattr(
+        tracker,
+        "candidates",
+        lambda _client, run_id, *_, **__: {record["profile"]: observed} if run_id == "123" else {},
+    )
+    repaired = tracker.reconcile_component_route(
+        GitHub(), record, released, previous, tmp_path, releases={}
+    )
+    assert repaired is not None
+    assert "components" not in repaired["reasons"]
+    result = desired(
+        record=record,
+        released=released,
+        previous=repaired,
+        changed=["images/bicep-sandbox/source.json"],
+    )
+    assert set(result["reasons"]) == {"source"}
+    assert result["currentDigest"] == record["registryDigest"]
+    assert not result["resolved"]
+    if newer or saved_link == "unrelated":
+        for field in ("candidateEvidence", "candidateFindings", "candidateObservedAt"):
+            assert result[field] == previous[field]
+        assert result["status"] == "Refresh blocked on candidate remediation"
+    else:
+        for field in ("candidateEvidence", "candidateFindings", "candidateObservedAt"):
+            assert field not in result
+        assert result["status"] == "Refresh available for maintainer review"
+
+
 def test_inventory_must_identify_the_assessed_image():
     with pytest.raises(ValueError, match="identify"):
         tracker.components(
@@ -338,8 +509,45 @@ def test_unfixed_published_vulnerability_opens_request_without_candidate():
 
 def test_vulnerable_candidate_marks_release_request_blocked():
     result = desired(observed=candidate(outcome="vulnerable"))
-    assert result["status"] == "Blocked on candidate remediation"
+    assert result["status"] == "Refresh blocked on candidate remediation"
     assert "CVE-2026-1234" in tracker.body("graphviz", result)
+
+
+@pytest.mark.parametrize("outcome", ["clean", "vulnerable"])
+@pytest.mark.parametrize("repeat_candidate", [False, True])
+@pytest.mark.parametrize("previously_escalated", [False, True])
+def test_refresh_escalation_preserves_candidate_assessment(
+    outcome, repeat_candidate, previously_escalated
+):
+    observed = candidate(outcome=outcome)
+    previous = desired(observed=observed)
+    record = RECORD | {
+        "latestAttempt": {
+            "outcome": "vulnerable",
+            "findings": [FINDING],
+            "evidenceRelease": "image-monitor-1-1",
+        }
+    }
+    if previously_escalated:
+        previous["status"] = "Awaiting release preparation"
+    expected = (
+        "Blocked on candidate remediation"
+        if outcome == "vulnerable"
+        else "Last candidate scan passed; release gate still required"
+    )
+    for _ in range(2):
+        result = desired(
+            record=record,
+            previous=previous,
+            observed=observed if repeat_candidate else None,
+        )
+        assert tracker.required(result)
+        assert result["status"] == expected
+        assert result["candidateEvidence"] == observed["evidence"]
+        assert result["candidateObservedAt"] == observed["observedAt"]
+        assert result["candidateFindings"] == observed["assessment"]["findings"]
+        assert expected in tracker.body("graphviz", result)
+        previous = result
 
 
 @pytest.mark.parametrize("outcome", ["unavailable", "running"])
@@ -721,11 +929,12 @@ def test_retries_and_unchanged_daily_scans_do_not_duplicate_issues_or_comments()
 
 
 @pytest.mark.parametrize("profile", ["graphviz", "bicep", "bicep-avm"])
-def test_new_issue_title_identifies_the_published_version_to_replace(profile):
+def test_refresh_title_identifies_the_published_version(profile):
     client = Issues()
     state = desired(observed=candidate())
     tracker.reconcile(client, profile, state, None)
-    assert client.items[0]["title"] == f"Image release needed: {profile} (replace 0.1.0)"
+    assert client.items[0]["title"] == f"Image refresh available: {profile} (current 0.1.0)"
+    assert "next planned image release" in client.items[0]["body"]
 
 
 @pytest.mark.parametrize("resolved", [False, True])
@@ -746,11 +955,35 @@ def test_existing_issue_title_is_repaired_once_without_state_changes(resolved, o
     before = {key: value for key, value in issue.items() if key != "title"}
     tracker.reconcile(client, "graphviz", state, issue)
     tracker.reconcile(client, "graphviz", state, issue)
-    action = "resolved at" if resolved else "replace"
-    assert issue["title"] == f"Image release needed: graphviz ({action} 0.1.0)"
+    expected = (
+        "Image release needed: graphviz (resolved at 0.1.0)"
+        if resolved
+        else "Image refresh available: graphviz (current 0.1.0)"
+    )
+    assert issue["title"] == expected
     assert {key: value for key, value in issue.items() if key != "title"} == before
     assert len(client.calls) == calls_before + 1
     assert client.calls[-1][1] == "PATCH"
+
+
+@pytest.mark.parametrize("reason", ["vulnerabilities", "route"])
+def test_refresh_escalates_to_required_replacement_without_duplicate_issue(reason):
+    client = Issues()
+    refresh = desired(observed=candidate())
+    tracker.reconcile(client, "graphviz", refresh, None)
+    state = copy.deepcopy(refresh)
+    state["reasons"][reason] = (
+        {"findings": [FINDING], "evidence": "monitor"}
+        if reason == "vulnerabilities"
+        else {"published": "upstream", "replacement": "source"}
+    )
+    tracker.reconcile(client, "graphviz", state, client.items[0])
+    assert len(client.items) == 1
+    assert client.items[0]["title"] == "Image release needed: graphviz (replace 0.1.0)"
+    assert "Prepare a replacement image release" in client.items[0]["body"]
+    assert "next planned image release" not in client.items[0]["body"]
+    tracker.reconcile(client, "graphviz", refresh, client.items[0])
+    assert client.items[0]["title"] == "Image refresh available: graphviz (current 0.1.0)"
 
 
 def test_closure_and_closed_issue_reuse_are_idempotent():
@@ -769,7 +1002,7 @@ def test_closure_and_closed_issue_reuse_are_idempotent():
     )
     tracker.reconcile(client, "graphviz", newer, client.items[0])
     assert client.items[0]["state"] == "open"
-    assert client.items[0]["title"] == "Image release needed: graphviz (replace 0.1.1)"
+    assert client.items[0]["title"] == "Image refresh available: graphviz (current 0.1.1)"
     assert len(client.items) == 1
 
 
@@ -952,6 +1185,63 @@ def test_bicep_profile_rename_reconciles_avm_source_request(tmp_path):
     ]
 
 
+def test_bicep_diagnostic_changes_do_not_hide_build_or_guard_changes(tmp_path):
+    tracker.git(tmp_path, "init")
+    path = "scripts/build_bicep_image.py"
+    prefix = 'PROFILES = {"bicep", "bicep-avm"}\nROUTES = ("upstream", "source")\n'
+    original = (
+        prefix
+        + """
+def validate_route(route, profile):
+    if route not in ROUTES or (route != "upstream" and profile not in PROFILES):
+        raise ValueError("Unsupported route")
+def command():
+    return ["docker", "build", "--pull"]
+"""
+    )
+    updated = (
+        prefix
+        + """
+def validate_route(route, profile):
+    if route not in ROUTES:
+        raise ValueError(f"Unknown {route!r}")
+    if route != "upstream" and profile not in PROFILES:
+        raise ValueError("Choose a Bicep profile")
+def command():
+    return ["docker", "build", "--pull"]
+"""
+    )
+    base = commit(tmp_path, {path: original})
+    head = commit(tmp_path, {path: updated})
+    assert tracker.changed_inputs(tmp_path, base, head, "bicep") == []
+    for modified in (
+        updated.replace(', "--pull"', ""),
+        updated.replace('route != "upstream"', 'route == "upstream"'),
+        updated.replace(
+            'raise ValueError("Choose a Bicep profile")', "raise ValueError(read_policy())"
+        ),
+    ):
+        head = commit(tmp_path, {path: modified})
+        assert tracker.changed_inputs(tmp_path, base, head, "bicep") == [path]
+
+
+def test_workspace_and_package_metadata_only_select_images_that_consume_them(tmp_path):
+    tracker.git(tmp_path, "init")
+    paths = [
+        "images/README.md",
+        "packages/maf-compaction/pyproject.toml",
+        "uv.lock",
+        "pyproject.toml",
+    ]
+    base = commit(tmp_path, {path: "old" for path in paths})
+    head = commit(tmp_path, {path: "new" for path in paths})
+    for profile in tracker.PROFILES:
+        changed = tracker.changed_inputs(tmp_path, base, head, profile)
+        assert changed == (
+            ["pyproject.toml", "uv.lock"] if profile == "hyperlight-aks-probe" else []
+        )
+
+
 def test_terraform_profile_addition_reconciles_bicep_source_request(tmp_path):
     tracker.git(tmp_path, "init")
     builder = (ROOT / "scripts/build_scan_image.sh").read_text()
@@ -1031,8 +1321,9 @@ def test_unclassifiable_metadata_remains_a_release_input(tmp_path, path, change)
         head = commit(tmp_path, {})
     else:
         head = commit(tmp_path, {path: valid if change == "added" else "[invalid"})
-    changed = tracker.changed_inputs(tmp_path, base, head, "graphviz")
+    changed = tracker.changed_inputs(tmp_path, base, head, "hyperlight-aks-probe")
     assert changed == [path]
+    assert tracker.changed_inputs(tmp_path, base, head, "graphviz") == []
     previous = desired(changed=changed)
     assert not desired(record=replacement(), changed=changed, previous=previous)["resolved"]
 

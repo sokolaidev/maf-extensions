@@ -9,6 +9,7 @@ samples/_pyright_probe_*.py
 dist/
 .pytest_cache/
 .ruff_cache/
+bandit-report.json
 *.egg-info/
 
 # Sample runs land artifacts here; the sink is a host directory, not the repository.
