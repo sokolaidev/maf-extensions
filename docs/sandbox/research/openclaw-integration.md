@@ -692,6 +692,39 @@ The inspected [operator tools API](https://docs.openclaw.ai/gateway/tools-invoke
 
 #1974 stays open because no complete native qualification or reusable native runner was delivered. #1637 retains this prerequisite work; #1952 remains blocked, #1639 deferred, and the selected bounded MCP integration remains available. Evidence is retained here as Markdown only; no experiment JSON file was added. Temporary npm/config files belong to the external preparation, not a retained qualified campaign.
 
+## Official MXC smoke profile selection (2026-10-21)
+
+The next increment under #1974 is `official-mxc-smoke-windows-v1`, a separate partial profile selected after #2089's preflight. It adopts the official plugin's documented read-only private `none` workspace explicitly; it does not rewrite the historical generic W1 expectation or claim full P2 coverage. `ro` additionally exposes the distinct agent workspace read-only, while `rw` permits agent workspace writes only when protected child roots do not make the policy unrepresentable.
+
+The first deliverable exercises the pinned installed OpenClaw/plugin 2026.10.5 and bundled SDK 0.9.0 through supported Gateway calls. It requires actual native execution evidence, independently observed permitted file access and prohibited mutations, bounded supervised processes, fresh owned fixture/configuration roots, exact candidate/configuration identity and recorded cleanup. A deterministic provider may select fixed tool arguments; it cannot supply the tested execution or filesystem outcome. A tool advertised over HTTP is not assumed to be the sandbox file bridge. Missing tools, failed native setup, unavailable positive controls or cleanup failures make this smoke profile unqualified.
+
+Controlled parent/leaf replacement is outside this smoke profile and remains unqualified under #1974. Full hostile-link/path/rename coverage, byte/output and timeout limits, arbitrary descendants, two-session/new-generation lifetime, real-model behavior and production acceptance remain unfinished. This scope selection permits the finite smoke experiment before those broader controls exist; it does not close #1974 or authorize a host-wide ACL change. Evidence stays in Markdown; npm and Gateway runtime configuration remain outside the checkout.
+
+### Reusable partial smoke runner
+
+[`mxc_smoke.py`](../../../scripts/openclaw_conformance/mxc_smoke.py) runs one selected workspace mode in a fresh external campaign against the prepared npm prefix from #2089. Run all three modes with distinct output roots before considering even this partial profile complete. The runner does not install packages, alter host ACLs or configure a shared Gateway. Its local deterministic provider chooses one fixed call per turn and accepts only the matching call identity, unchanged arguments and actual Gateway tool result; final assistant text cannot satisfy a case.
+
+```powershell
+$installation = Join-Path $env:TEMP "oc-1974/installed"
+$campaign = Join-Path $env:TEMP ("openclaw-mxc-smoke-" + [guid]::NewGuid().ToString("N"))
+uv run --directory scripts python -m openclaw_conformance.mxc_smoke --installation $installation --output $campaign --mode none
+```
+
+The installed host/plugin version is 2026.10.5 and SDK version is 0.9.0. The runner checks the plugin entry, manifest, launcher and SDK metadata against the preflight hashes and pins the native x64 executable. Selected host/package-lock/configuration hashes are recorded and compared after successful case execution; this is not a full installed dependency-tree attestation. Runtime configuration JSON, native payloads and Gateway databases stay in the external campaign. `report.md` is the retained result format; no experiment JSON is added.
+
+| Selected-mode case | Required observation |
+|---|---|
+| Fixture prerequisite | The same finite PowerShell fixture runs unsandboxed against only owned markers, including the outside target, and permits all reads and writes. Markers are restored before starting the Gateway. A failed prerequisite stops the campaign. |
+| Native execution | A fixed PowerShell fixture reaches both completion markers and emits a PID independently observed below the exact installed executor in the supervisor's Windows job. A merely advertised tool, readiness probe, final assistant answer or SDK log is insufficient. |
+| Native workspace access | The active marker is readable in every mode. Agent-marker reads are denied in `none` and permitted in `ro`/`rw`. Host observation confirms active writes only in `rw`, with the outside marker unchanged in every mode. |
+| Host file read | The actual `read` result contains the independently planted active-workspace marker. |
+| Host file write | `rw` changes the planted file; `none` returns the bridge's read-only refusal and leaves it unchanged. The `ro` host-write route is excluded from this partial smoke because normal OpenClaw tool policy filters it; that exclusion does not qualify the full host-file matrix. |
+| Supervision and cleanup | Setup has a 360-second deadline, Gateway readiness 360 seconds, each HTTP turn at most 300 seconds, and the campaign 1,200 seconds before cleanup. The Windows job owns the Gateway descendants and is terminated/observed empty; provider shutdown is checked. Gateway logging has a polled 8 MiB stop threshold, not a strict streaming byte cap or a qualification of hostile output. |
+
+The supported execution route is `/v1/chat/completions`, configured to use the deterministic local provider and the OpenClaw agent runtime, with Code Mode disabled. On this tuple, authenticated `/tools/invoke` returned 404 for both `exec` and `read`; it cannot stand in for the native agent tool route. `sandbox explain --json --agent main` supplies the workspace path before planting, and the runner refuses a path outside the fresh owned root. The documented `mxcBinaryPath` setting names the same hash-checked bundled executable explicitly: without it, the CLI's captured plugin attempted an executor path that failed with `ENOENT`. This is a supported configuration selection, not a replacement SDK or private import.
+
+Development attempts are not qualifying campaigns. A 120-second startup attempt timed out and was cleaned up; a 360-second attempt became ready after about 321 seconds. Its `rw` model turn reached the real plugin but failed before native launch because `.openclaw/sandbox-skills/skills` was protected beneath the writable agent root. A separate `none` development turn reached the native launcher but used PowerShell syntax through the plugin's `cmd.exe` command path and exited 1; the reusable fixture invokes PowerShell explicitly. That native log selected `appcontainer-dacl`, while the standalone readiness probe had reported `base-container`; a probe alone does not establish the isolation implementation used by a command. No host-wide ACL preparation was performed.
+
 ## Status
 
 The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audit.md#consolidated-closure-reconciliation-2026-10-12) covers every original #1676 acceptance row using the separately recorded Gateway, Bicep/MAF and published transport evidence. Both finite follow-ups are merged. Qualification is complete for that supervised, selected baseline; the first-tool design is complete and #1898 delivers the separately qualified installed worker. Historical reports and their `complete_matrix: false` values are unchanged.
@@ -711,5 +744,5 @@ The Bicep workstream has a locally qualified installed worker and its historical
 | Conformance and installed-package qualification | Design complete; installed runner #1972 and bounded fault profile #1973 qualified, native profile #1974 conditional | [#1641](https://github.com/sokolaidev/maf-extensions/issues/1641) (closed) by [#1977](https://github.com/sokolaidev/maf-extensions/pull/1977) (merged) |
 | Installed Bicep conformance runner | Implemented; fresh published-candidate Windows profile qualified | [#1972](https://github.com/sokolaidev/maf-extensions/issues/1972) (closed) by [#1983](https://github.com/sokolaidev/maf-extensions/pull/1983) (merged) |
 | Bounded owner-loss qualification | Complete for the selected Windows/Docker candidate; fresh baseline and all fifteen cases passed independent evaluation | [#1973](https://github.com/sokolaidev/maf-extensions/issues/1973) (closed) by [#2066](https://github.com/sokolaidev/maf-extensions/pull/2066) (merged) |
-| Native MXC workspace and host-file qualification | Open; published-candidate preflight recorded, workspace predicate and deterministic file controls unresolved; native profile unqualified | [#1974](https://github.com/sokolaidev/maf-extensions/issues/1974) (open) |
+| Native MXC workspace and host-file qualification | Open; partial smoke runner and host-file observations recorded; native execution and full matrix unqualified | [#1974](https://github.com/sokolaidev/maf-extensions/issues/1974) (open) |
 | Full sandbox provider | Design assessed; implementation deferred pending a supported third-party SDK and process/file contracts | [#1642](https://github.com/sokolaidev/maf-extensions/issues/1642) (closed) by [#2073](https://github.com/sokolaidev/maf-extensions/pull/2073) (merged) |
