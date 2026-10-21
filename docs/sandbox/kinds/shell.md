@@ -26,5 +26,5 @@ PowerShell qualification covers analysis-time module resolution, host assembly l
 
 | Decision | State | Tracking |
 |---|---|---|
-| Host-selected shell validation and suppression reporting | Implemented; Docker qualified | [#2063](https://github.com/sokolaidev/maf-extensions/issues/2063) (open) |
-| PowerShell host-provided dependencies and runtime qualification | Docker qualified; ACAS pending | [#2063](https://github.com/sokolaidev/maf-extensions/issues/2063) (open) |
+| Host-selected shell validation and suppression reporting | Implemented; Docker qualified | [#2063](https://github.com/sokolaidev/maf-extensions/issues/2063) (open); implementation by [#2097](https://github.com/sokolaidev/maf-extensions/pull/2097) (merged) |
+| PowerShell host-provided dependencies and runtime qualification | Docker qualified; ACAS pending | [#2063](https://github.com/sokolaidev/maf-extensions/issues/2063) (open); implementation by [#2097](https://github.com/sokolaidev/maf-extensions/pull/2097) (merged) |
