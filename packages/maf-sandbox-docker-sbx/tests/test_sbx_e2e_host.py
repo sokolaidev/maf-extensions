@@ -1,7 +1,7 @@
 """Live tests of the refusals and faults that depend on host-wide ``sbx`` state.
 
 Skipped unless ``MAF_SANDBOX_SBX_E2E=1``.  A test that has to change that state — SSH agent
-forwarding, an MCP registration, the login, the engine transport or its socket — also needs
+forwarding, an MCP registration, the login, or the daemon API socket — also needs
 ``MAF_SANDBOX_SBX_E2E_HOST=1``, and restores what it changed.  Set it only on a host no one
 else is using: while a test runs, every other sandbox on the host sees the changed state.
 Logging back in reads ``DOCKER_USERNAME`` and ``DOCKER_PAT``.
@@ -13,13 +13,13 @@ import asyncio
 import contextlib
 import json
 import os
-import stat
 import subprocess
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from _sbx_e2e_faults import engine_fault_responses
 from _sbx_e2e_helpers import listed_rows
 from maf_sandbox import Capability, Egress, SandboxKey, SandboxSpec
 
@@ -154,21 +154,9 @@ def test_a_lapsed_login_names_sbx_login(tmp_path):
             _checked("login", "--username", username, "--password-stdin", stdin=token.encode())
 
 
-def _engine_socket() -> Path:
-    status = json.loads(_checked("daemon", "status", "--json"))
-    engine = Path(status["socket"]).with_name("docker.sock")
-    try:
-        is_socket = stat.S_ISSOCK(engine.lstat().st_mode)
-    except FileNotFoundError:
-        is_socket = False
-    assert is_socket, f"no engine socket at {engine} after selecting the socket transport"
-    return engine
-
-
-def test_a_lost_engine_is_a_fault_and_not_an_absent_sandbox(tmp_path):
-    _needs_host_changes("the test hides the daemon's engine socket")
-    # An in-process Docker API has no socket to hide for this fault injection.
-    with _setting_set(_FORWARDING, "false"), _setting_set("feature.inmem-transport", "false"):
+def test_engine_fault_responses_do_not_mean_an_absent_sandbox(tmp_path):
+    _needs_host_changes("the test substitutes responses at the daemon API socket")
+    with _setting_set(_FORWARDING, "false"):
         backend = _backend(tmp_path)
         key = _key("engine")
 
@@ -176,11 +164,8 @@ def test_a_lost_engine_is_a_fault_and_not_an_absent_sandbox(tmp_path):
             try:
                 sandbox = await backend.acquire(key, _spec())
                 workspace = tmp_path / "workspaces" / sandbox.name
-                engine = _engine_socket()
-                hidden = engine.with_name(f"{engine.name}.hidden")
-                engine.rename(hidden)
-                try:
-                    # A daemon without its engine lists no sandboxes at all.
+                status = json.loads(_checked("daemon", "status", "--json"))
+                with engine_fault_responses(Path(status["socket"])) as observed:
                     assert not _listed(sandbox.name)
                     with pytest.raises(SbxDaemonFault, match="sbx daemon restart"):
                         await backend.acquire(key, _spec())
@@ -190,8 +175,9 @@ def test_a_lost_engine_is_a_fault_and_not_an_absent_sandbox(tmp_path):
                     ):
                         assert failure is not None and failure.code == "unreachable", failure
                     assert workspace.is_dir()
-                finally:
-                    hidden.rename(engine)
+                    assert "listing" in observed
+                    assert any(path.startswith("POST /sandbox/") for path in observed), observed
+                print(json.dumps({"engine_fault_injection": "daemon-api", "requests": observed}))
                 assert _listed(sandbox.name)
                 again = await backend.acquire(key, _spec())
                 assert again.instance_id == sandbox.instance_id
