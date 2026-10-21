@@ -5,10 +5,11 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes
 import hashlib
+import sys
 from pathlib import Path
 from typing import Any
 
-from .evidence import require
+from .evidence import Refused, require
 
 
 class _ProcessIds(ctypes.Structure):
@@ -36,6 +37,8 @@ class _ProcessEntry(ctypes.Structure):
 
 def sample(job: Any, executor: Path) -> dict[int, dict[str, Any]]:
     """Return owned process ancestry, binding the executor to its installed bytes."""
+    if sys.platform != "win32":
+        raise Refused("native_process_platform")
     api = ctypes.WinDLL("kernel32", use_last_error=True)
     signatures = {
         "CreateToolhelp32Snapshot": ([ctypes.c_ulong, ctypes.c_ulong], ctypes.c_void_p),
