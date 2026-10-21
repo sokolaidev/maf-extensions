@@ -20,7 +20,7 @@ from agent_framework import (
     ResponseStream,
 )
 from agent_framework._compaction import EXCLUDED_KEY, included_token_count
-from agent_framework.exceptions import ChatClientInvalidRequestException
+from agent_framework.exceptions import ChatClientException, ChatClientInvalidRequestException
 
 from maf_compaction import (
     AnchoredCompactionStrategy,
@@ -39,6 +39,26 @@ from maf_compaction._toolsummary import _RECALL_INSTRUCTION, RECALL_TOOL_NAME, R
 
 pytestmark = pytest.mark.anyio
 REJECTION = "Ollama does not support tool_choice mode 'required'. Use 'auto' or 'none'."
+
+
+@pytest.fixture(params=["invalid_request", "generic", "provider_raw", "cause_chain"])
+def unsupported_error(request):
+    if request.param == "invalid_request":
+        return ChatClientInvalidRequestException(REJECTION)
+    if request.param == "generic":
+        return ChatClientException(REJECTION)
+    if request.param == "provider_raw":
+        raw = json.dumps({"error": {"message": 'only "auto" is supported for "tool_choice"'}})
+        body = {
+            "error": {"message": "Provider returned error", "code": 400, "metadata": {"raw": raw}}
+        }
+        return ChatClientException(f"Error code: 400 - {json.dumps(body)}")
+    provider = RuntimeError(REJECTION.upper())
+    transport = RuntimeError("Provider returned error")
+    transport.__cause__ = provider
+    error = ChatClientException("Service failed to complete the prompt")
+    error.__cause__ = transport
+    return error
 
 
 def recall(**kwargs):
@@ -150,7 +170,7 @@ def test_blank_tool_consumes_permission_without_recording(values):
     [(False, "request"), (True, "request"), (True, "stream"), (True, "finalizer")],
 )
 async def test_unsupported_pin_retries_with_prompt_and_keeps_record_armed(
-    stream, rejection_at, caplog
+    stream, rejection_at, unsupported_error, caplog
 ):
     middleware, gate = recall()
     original = Message("user", ["question"])
@@ -174,7 +194,7 @@ async def test_unsupported_pin_retries_with_prompt_and_keeps_record_armed(
             context.messages = [Message("user", ["loaded"]), original]
             context.kwargs["temporary"] = True
             if rejection_at == "request":
-                raise ChatClientInvalidRequestException(REJECTION)
+                raise unsupported_error
 
             async def broken_updates():
                 try:
@@ -182,12 +202,12 @@ async def test_unsupported_pin_retries_with_prompt_and_keeps_record_armed(
                         role="assistant", contents=[Content.from_text("hidden")]
                     )
                     if rejection_at == "stream":
-                        raise ChatClientInvalidRequestException(REJECTION)
+                        raise unsupported_error
                 finally:
                     closed.append(True)
 
             def finalize(_):
-                raise ChatClientInvalidRequestException(REJECTION)
+                raise unsupported_error
 
             context.result = ResponseStream(broken_updates(), finalizer=finalize)
             return
@@ -233,7 +253,9 @@ async def test_unsupported_pin_retries_with_prompt_and_keeps_record_armed(
 
 
 @pytest.mark.parametrize("declared", [False, True])
-async def test_prompt_mode_survives_restore_and_leaves_ordinary_options_unchanged(declared):
+async def test_prompt_mode_survives_restore_and_leaves_ordinary_options_unchanged(
+    declared, unsupported_error
+):
     middleware, gate = recall(supports_tool_choice=not declared)
     options = {"tools": [make_recall_tool()], "instructions": "Host instruction."}
     context = ChatContext(None, [], options)
@@ -244,7 +266,7 @@ async def test_prompt_mode_survives_restore_and_leaves_ordinary_options_unchange
         calls += 1
         assert context.options is not None
         if context.options.get("tool_choice") != "auto":
-            raise ChatClientInvalidRequestException(REJECTION)
+            raise unsupported_error
         assert context.options["instructions"] == options["instructions"]
         assert [message.text for message in context.messages] == [_RECALL_INSTRUCTION]
         context.result = ChatResponse(messages=Message("assistant", [record_call()]))
@@ -277,6 +299,7 @@ async def test_prompt_mode_survives_restore_and_leaves_ordinary_options_unchange
     [
         RuntimeError("tool_choice transport failure"),
         ChatClientInvalidRequestException("max_tokens is unsupported"),
+        ChatClientException("Provider returned error: max_tokens is unsupported"),
     ],
 )
 async def test_unrelated_errors_keep_the_ordinary_retry(error, caplog):
@@ -301,8 +324,43 @@ async def test_unrelated_errors_keep_the_ordinary_retry(error, caplog):
     assert "failure-session: failed" in caplog.text
 
 
+async def test_cyclic_client_error_causes_keep_the_ordinary_retry(caplog):
+    error = ChatClientException("Provider returned error")
+    cause = RuntimeError("Transport failed")
+    error.__cause__ = cause
+    cause.__cause__ = error
+    await test_unrelated_errors_keep_the_ordinary_retry(error, caplog)
+
+
+async def test_ordinary_client_error_does_not_start_prompt_recall(unsupported_error):
+    middleware, gate = recall()
+    middleware._force_next = False
+    options = {"tools": [make_recall_tool(gate)]}
+    context = ChatContext(None, [], options)
+    calls = 0
+
+    async def send():
+        nonlocal calls
+        calls += 1
+        raise unsupported_error
+
+    with pytest.raises(ChatClientException) as caught:
+        await middleware.process(context, send)
+    assert caught.value is unsupported_error
+    assert calls == 1
+    assert middleware.pin_disabled_reason is None
+    assert not middleware.recall_disabled
+    assert not gate.take()
+    assert context.options is options
+
+
 @pytest.mark.parametrize("stream", [False, True])
-async def test_failed_prompt_retry_is_buffered_and_has_one_ordinary_retry(stream, caplog):
+@pytest.mark.parametrize(
+    "prompt_error", [RuntimeError("prompt failed"), ChatClientException(REJECTION)]
+)
+async def test_failed_prompt_retry_is_buffered_and_has_one_ordinary_retry(
+    stream, prompt_error, caplog
+):
     middleware, gate = recall()
     options = {"tools": [make_recall_tool()]}
     context = ChatContext(None, [], options, stream=stream)
@@ -317,11 +375,11 @@ async def test_failed_prompt_retry_is_buffered_and_has_one_ordinary_retry(stream
             assert context.options is not None
             assert context.options["tool_choice"] == "auto"
             if not stream:
-                raise RuntimeError("prompt failed")
+                raise prompt_error
 
             async def updates():
                 yield ChatResponseUpdate(role="assistant", contents=[record_call()])
-                raise RuntimeError("prompt failed")
+                raise prompt_error
 
             context.result = ResponseStream(
                 updates(), finalizer=lambda _: ChatResponse(messages=[])
