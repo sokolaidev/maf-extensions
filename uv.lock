@@ -24,6 +24,7 @@ members = [
     "maf-sandbox-hyperlight",
     "maf-sandbox-mcp",
     "maf-sandbox-otel",
+    "maf-sandbox-shell",
     "maf-sandbox-terraform",
     "maf-sandbox-tui",
     "maf-sandbox-wslc",
@@ -1752,6 +1753,21 @@ dependencies = [
 requires-dist = [
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
     { name = "opentelemetry-api", specifier = ">=1.38,<2" },
+]
+
+[[package]]
+name = "maf-sandbox-shell"
+version = "0.0.0"
+source = { editable = "packages/maf-sandbox-shell" }
+dependencies = [
+    { name = "agent-framework-core" },
+    { name = "maf-sandbox" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-framework-core", specifier = ">=1.22.0,<1.23" },
+    { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
 
 [[package]]

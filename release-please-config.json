@@ -129,6 +129,11 @@
         }
       ]
     },
+    "packages/maf-sandbox-shell": {
+      "package-name": "maf-sandbox-shell",
+      "exclude-paths": ["packages/maf-sandbox-shell/tests"],
+      "extra-files": [{"type": "toml", "path": "/uv.lock", "jsonpath": "$.package[?(@.name.value=='maf-sandbox-shell')].version"}]
+    },
     "packages/maf-sandbox-terraform": {
       "package-name": "maf-sandbox-terraform",
       "exclude-paths": [

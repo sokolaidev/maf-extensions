@@ -38,6 +38,7 @@ _PACKAGES = {
     "maf-sandbox-drawio": "maf_sandbox_drawio",
     "maf-sandbox-otel": "maf_sandbox_otel",
     "maf-sandbox-terraform": "maf_sandbox_terraform",
+    "maf-sandbox-shell": "maf_sandbox_shell",
     "maf-sandbox-mcp": "maf_sandbox_mcp",
     "maf-sandbox-tui": "maf_sandbox_tui",
     "maf-sandbox-wslc": "maf_sandbox_wslc",
@@ -682,6 +683,32 @@ def _smoke_maf_sandbox_hyperlight() -> str:
     return "constructs without WHP, declares runtime/reset and standard-method egress, and refuses shell/file workloads and custom methods before starting a worker"
 
 
+def _smoke_maf_sandbox_shell() -> str:
+    """Check both public flavors and immutable host policy from the installed wheel."""
+    from maf_sandbox import CallerContext, Cleanup, Egress, IsolationScope
+    from maf_sandbox.testing import InMemoryStore
+    from maf_sandbox_shell import (
+        ShellFlavor,
+        ShellPolicy,
+        ShellSeverity,
+        make_shell_tools,
+        shell_sandbox_spec,
+    )
+
+    context = CallerContext(
+        current_scope=lambda: "smoke",
+        current_thread_id=lambda: "test",
+        list_files=InMemoryStore.list,
+    )
+    assert ShellPolicy().minimum_severity == ShellSeverity.STYLE
+    for flavor in ShellFlavor:
+        spec = shell_sandbox_spec(flavor=flavor)
+        assert spec.kind == flavor and spec.egress == Egress.CLOSED
+        assert spec.isolation_scope == IsolationScope.CALL and spec.min_cleanup == Cleanup.DISPOSE
+        assert make_shell_tools(None, InMemoryStore({}), "smoke", context, flavor=flavor) == []  # pyright: ignore[reportArgumentType]
+    return "both flavors require closed call isolation and disposal; default policy includes all severities"
+
+
 def _smoke_maf_sandbox_terraform() -> str:
     """Exercise both public engine options without requiring guest binaries on the host."""
     from maf_sandbox import CallerContext, Cleanup, Egress, IsolationScope
@@ -915,6 +942,7 @@ _SMOKES = {
     "maf-sandbox-hyperlight": _smoke_maf_sandbox_hyperlight,
     "maf-sandbox-otel": _smoke_maf_sandbox_otel,
     "maf-sandbox-terraform": _smoke_maf_sandbox_terraform,
+    "maf-sandbox-shell": _smoke_maf_sandbox_shell,
     "maf-sandbox-mcp": _smoke_maf_sandbox_mcp,
     "maf-sandbox-tui": _smoke_maf_sandbox_tui,
     "maf-sandbox-wslc": _smoke_maf_sandbox_wslc,

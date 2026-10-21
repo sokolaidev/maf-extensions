@@ -28,6 +28,10 @@ from prepare_container_release import run
 WEB = f"https://github.com/{REPOSITORY}"
 UNAVAILABLE = "Unavailable (not established by retained evidence)"
 PROFILE_GUIDES = {
+    "shell": (
+        "Offline Bash, sh, dash and PowerShell parsing, linting and suppression auditing.",
+        "images/shell-sandbox/README.md",
+    ),
     "bicep": (
         "Bicep validation with the Bicep CLI and fallback configuration.",
         "images/bicep-sandbox/BICEP.md",

@@ -20,6 +20,7 @@ PROFILES = (
     "graphviz",
     "drawio",
     "drawio-export",
+    "shell",
     "terraform-random",
     "opentofu-random",
     "terraform-avm",
@@ -27,6 +28,7 @@ PROFILES = (
     "egress-proxy",
 )
 IMAGE_INPUTS = {
+    "images/shell-sandbox/": ("shell",),
     "images/egress-proxy/": ("egress-proxy",),
     "images/bicep-sandbox/": ("bicep", "bicep-avm", "bicep-docker-sbx"),
     "images/bicep-docker-sbx/": ("bicep-docker-sbx",),
@@ -44,6 +46,7 @@ IMAGE_INPUTS = {
 }
 # These exact consumer guides are not consumed by the image recipes or build helpers.
 CONSUMER_GUIDES = {
+    "images/shell-sandbox/README.md",
     "images/egress-proxy/README.md",
     "images/bicep-sandbox/README.md",
     "images/bicep-sandbox/AVM.md",
@@ -60,6 +63,7 @@ CONSUMER_GUIDES = {
     "images/hyperlight-sandbox/README.md",
 }
 SCRIPT_INPUTS = {
+    "scripts/check_shell_image.py": ("shell",),
     "scripts/build_bicep_image.py": ("bicep", "bicep-avm", "bicep-docker-sbx"),
     "scripts/bicep_source.py": ("bicep", "bicep-avm", "bicep-docker-sbx"),
     "LICENSE": ("egress-proxy", "bicep-docker-sbx"),

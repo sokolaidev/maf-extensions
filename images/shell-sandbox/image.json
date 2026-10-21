@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "platform": "linux/amd64",
+  "baseImage": "python:3.13-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d",
+  "bash": {
+    "version": "5.2.15-2+b13",
+    "url": "https://deb.debian.org/debian/pool/main/b/bash/bash_5.2.15-2+b13_amd64.deb",
+    "sha256": "82130bb6a560cd2a7234d8018baf73f188f5dd56413d5aa0accc987b2197a6a1"
+  },
+  "dash": {
+    "version": "0.5.12-2",
+    "url": "https://deb.debian.org/debian/pool/main/d/dash/dash_0.5.12-2_amd64.deb",
+    "sha256": "33ea40061da2f1a861ec46212b2b6a34f0776a049b1a3f0abce2fb8cb994258f"
+  },
+  "shellcheck": {
+    "version": "0.11.0",
+    "url": "https://codeload.github.com/koalaman/shellcheck/tar.gz/refs/tags/v0.11.0",
+    "sha256": "8b07554f92e4fbfc33f1539a1f475f21c6503ceae8f806efcc518b1f529f7102"
+  },
+  "powershell": {
+    "version": "7.6.7",
+    "url": "https://github.com/PowerShell/PowerShell/releases/download/v7.6.7/powershell-7.6.7-linux-x64.tar.gz",
+    "sha256": "6896f9e3a6b0a354bf470835a96da76d2f801cd50dcf047ad7c4563bf93bf431"
+  },
+  "psscriptanalyzer": {
+    "version": "1.25.0",
+    "url": "https://github.com/PowerShell/PSScriptAnalyzer/releases/download/1.25.0/PSScriptAnalyzer.1.25.0.nupkg",
+    "sha256": "14e634c828eb98efb9f40b2918ba90f139ed5eccdf663a2a747736d996995d60"
+  }
+}

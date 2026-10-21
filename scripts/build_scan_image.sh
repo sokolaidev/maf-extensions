@@ -38,6 +38,10 @@ assert Path('diagram-1.png').read_bytes().startswith(b'\x89PNG\r\n\x1a\n')
 print('Offline PNG, SVG and JPEG exports passed')
 PY
     ;;
+  shell)
+    docker build --pull --platform linux/amd64 -t maf-image-scan:target images/shell-sandbox
+    uv run --locked python scripts/check_shell_image.py --image maf-image-scan:target
+    ;;
   terraform-random)
     uv run --locked python images/terraform-sandbox/build_image.py --engine terraform --profile builtin --tag maf-image-scan:base
     docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-image-scan:base --build-arg MANIFEST=dependencies.terraform.json --label org.opencontainers.image.documentation=https://github.com/sokolaidev/maf-extensions/blob/main/images/terraform-sandbox/TERRAFORM.md -f images/terraform-sandbox/prepared.Dockerfile -t maf-image-scan:target images/terraform-sandbox
