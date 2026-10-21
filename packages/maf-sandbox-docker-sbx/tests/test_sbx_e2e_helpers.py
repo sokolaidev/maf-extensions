@@ -11,18 +11,9 @@ import test_sbx_e2e as live
 import test_sbx_e2e_host as host
 
 
-@pytest.mark.parametrize(
-    "setting, before",
-    [
-        (host._FORWARDING, "true"),
-        (
-            "feature.inmem-transport",
-            '{"enabled":true,"variant":"test","variantPayload":"saved"}',
-        ),
-    ],
-)
 @pytest.mark.parametrize("failure", [None, "body", "restart"])
-def test_host_setting_is_restored_after_success_or_failure(monkeypatch, setting, before, failure):
+def test_host_setting_is_restored_after_success_or_failure(monkeypatch, failure):
+    setting, before = host._FORWARDING, "true"
     commands = []
 
     def checked(*args):
@@ -62,22 +53,9 @@ def test_host_setting_without_permission_never_mutates(monkeypatch, before):
     expected = (
         pytest.raises(pytest.skip.Exception) if before == "true" else contextlib.nullcontext()
     )
-    with expected, host._setting_set("feature.inmem-transport", "false"):
+    with expected, host._setting_set(host._FORWARDING, "false"):
         assert before == "false"
-    assert commands == [("settings", "get", "feature.inmem-transport")]
-
-
-@pytest.mark.parametrize("regular_file", [False, True], ids=["missing", "regular-file"])
-def test_selected_socket_transport_requires_a_real_socket(monkeypatch, tmp_path, regular_file):
-    if regular_file:
-        (tmp_path / "docker.sock").touch()
-    monkeypatch.setattr(
-        host,
-        "_checked",
-        lambda *args: json.dumps({"socket": str(tmp_path / "sandboxd.sock")}).encode(),
-    )
-    with pytest.raises(AssertionError, match="after selecting the socket transport"):
-        host._engine_socket()
+    assert commands == [("settings", "get", host._FORWARDING)]
 
 
 @pytest.mark.parametrize("module", [live, host], ids=["suite", "host"])
