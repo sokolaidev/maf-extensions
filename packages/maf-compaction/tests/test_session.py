@@ -648,6 +648,83 @@ def harness(registry, model):
 
 
 @pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("values", [["SKU-123"], {"sku": "SKU-123"}, " \n\t"])
+async def test_harness_prompt_recall_normalizes_values_and_strips_stale_asks(stream, values):
+    from maf_compaction._request import RECALL_PROMPT_KEY
+    from maf_compaction._toolsummary import _RECALL_INSTRUCTION, RECALL_TOOL_NAME
+
+    def build():
+        stack = build_stack(budget=100_000)
+        stack.middleware.supports_tool_choice = False
+        return stack
+
+    class PromptModel(Model):
+        def _inner_get_response(self, *, messages, stream, options, **kwargs):
+            self.prompts.append(deepcopy(list(messages)))
+            if len(self.prompts) == 1:
+                assert messages[-1].text == _RECALL_INSTRUCTION
+                contents = [
+                    Content.from_function_call(
+                        call_id="recall", name=RECALL_TOOL_NAME, arguments={"values": values}
+                    )
+                ]
+            else:
+                assert len(self.prompts) == 2
+                assert all(not m.additional_properties.get(RECALL_PROMPT_KEY) for m in messages)
+                results = [
+                    c.result for m in messages for c in m.contents if c.type == "function_result"
+                ]
+                assert any(RECORD_MARKER in str(result) for result in results) == bool(
+                    values != " \n\t"
+                )
+                assert not any("Error" in str(result) for result in results)
+                contents = [Content.from_text("answer")]
+            response = ChatResponse(messages=Message("assistant", contents))
+            if stream:
+
+                async def updates():
+                    if contents[0].type == "function_call":
+                        arguments = json.dumps({"values": values})
+                        split = len(arguments) // 2
+                        for part in (arguments[:split], arguments[split:]):
+                            yield ChatResponseUpdate(
+                                role="assistant",
+                                contents=[
+                                    Content.from_function_call(
+                                        call_id="recall", name=RECALL_TOOL_NAME, arguments=part
+                                    )
+                                ],
+                            )
+                    else:
+                        yield ChatResponseUpdate(role="assistant", contents=deepcopy(contents))
+
+                return ResponseStream(updates(), finalizer=lambda _: response)
+
+            async def answer():
+                return response
+
+            return answer()
+
+    registry = SessionCompactionRegistry(build)
+    model = PromptModel()
+    agent = harness(registry, model)
+    session = AgentSession()
+    with registry.activate(session) as stack:
+        stack.middleware._force_next = True
+    result = agent.run("Recall SKU-123.", session=session, stream=stream)
+    response = (
+        await result.get_final_response() if isinstance(result, ResponseStream) else await result
+    )
+    assert response.text == "answer"
+    assert len(model.prompts) == 2
+    with registry.activate(session) as stack:
+        assert stack.middleware.failed_forced_calls == 0
+        assert stack.middleware.value_free_record_streak == int(values == " \n\t")
+        assert stack.middleware.records_forced == int(values != " \n\t")
+        assert not stack.middleware.recall_disabled
+
+
+@pytest.mark.parametrize("stream", [False, True])
 async def test_harness_refuses_irreducible_overflow_before_contacting_model(stream):
     registry = SessionCompactionRegistry(lambda: build_stack(Summarizer("x" * 50_000), budget=4000))
     model = Model()
@@ -879,7 +956,7 @@ async def test_nonstream_retry_restores_request_and_is_bounded(original_options)
             context.messages = [Message("user", ["loaded history"]), original]
             context.kwargs["temporary"] = True
             raise RuntimeError("pin rejected")
-        assert context.kwargs == {}
+        assert set(context.kwargs) == {"compaction_strategy"}
         assert not current.gate.take()
         context.result = ChatResponse(messages=Message("assistant", ["answer"]))
 

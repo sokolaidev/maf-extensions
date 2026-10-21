@@ -2,8 +2,8 @@
 
 Wire ``make_recall_tool``, ``RecallGate`` and ``ToolResultRecallMiddleware``
 with the strategy. After a size or group-count trigger, the middleware pins
-a later model request to the recall tool without adding a message. The
-provider issues the tool call; a later strategy pass finds its persisted
+a later model request to the recall tool, with a temporary prompt when pinning is unsupported.
+The provider issues the tool call; a later strategy pass finds its persisted
 result and drops only earlier tool groups that pass the value-coverage check.
 
 Every record is preserved. Uncovered groups are held while another record is
@@ -1238,11 +1238,8 @@ def make_recall_tool(
     transcript as a tool result, which the provider issued and which survives strategies that
     shed assistant prose.
 
-    The docstring built here is the entire prompt for the record. The middleware sends no
-    message -- one appended there would carry no history provider's source tag, so per-call
-    persistence would store it and an instruction of ours would surface in the conversation
-    the application replays to its user -- so the description, the ``values`` guidance and the
-    stated target are the only three things steering what the model writes.
+    The description, ``values`` guidance and stated target steer the record. Blank values
+    consume any gate permission but produce no record marker.
 
     Args:
         gate: Permission to record. Without one the tool always records, which is only right
@@ -1266,6 +1263,8 @@ def make_recall_tool(
     def tool(values: str) -> str:
         if gate is not None and not gate.take():
             return "Not required right now: nothing was recorded, and no results have been removed."
+        if not values.strip():
+            return "No values supplied: nothing was recorded, and no results have been removed."
         return f"{RECORD_MARKER} {_RECORD_PREAMBLE}\n{values}"
 
     tool.__name__ = RECALL_TOOL_NAME
@@ -2276,6 +2275,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
 
 async def _buffer_recall_stream(
     source: ResponseStream[ChatResponseUpdate, ChatResponse[Any]],
+    observe: Callable[[ChatResponse[Any]], bool],
 ) -> tuple[ResponseStream[ChatResponseUpdate, ChatResponse[Any]], ChatResponse[Any]]:
     """Keep forced updates private until the response and its finalizer succeed."""
     buffered: list[ChatResponseUpdate] = []
@@ -2285,6 +2285,9 @@ async def _buffer_recall_stream(
         response = await source.get_final_response()
     finally:
         await source.close()
+    if observe(response):
+        # Executors and history providers can assemble calls from updates independently.
+        buffered = response.to_updates()
 
     async def updates():
         for update in buffered:
@@ -2635,13 +2638,14 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
     @property
     def value_free_record_streak(self) -> int:
-        """Consecutive eligible records quoting none of their targets' distinctive values."""
+        """Consecutive blank forced responses or eligible records quoting no target value."""
         return self._value_free_streak
 
-    def _observe_record_values(self, identity: str, has_values: bool) -> None:
+    def _observe_record_values(self, identity: str | None, has_values: bool) -> None:
         if identity in self._value_records or self.recall_disabled:
             return
-        self._value_records.add(identity)
+        if identity is not None:
+            self._value_records.add(identity)
         self._value_free_streak = 0 if has_values else self._value_free_streak + 1
         if self._value_free_streak >= 2:
             self._disable_pin("value_free")
@@ -2706,7 +2710,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             )
         return options
 
-    def _observe_forced(self, response: ChatResponse[Any]) -> None:
+    def _observe_forced(self, response: ChatResponse[Any]) -> bool:
+        normalized = False
+        first_values: str | None = None
         for message in response.messages:
             for content in message.contents:
                 if content.type != "function_call" or content.name != RECALL_TOOL_NAME:
@@ -2714,10 +2720,30 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 arguments = content.arguments
                 if isinstance(arguments, str):
                     arguments = json.loads(arguments)
-                if not isinstance(arguments, dict) or not isinstance(
-                    cast(dict[str, Any], arguments).get("values"), str
-                ):
+                if not isinstance(arguments, dict):
                     raise ValueError("Forced recall requires a JSON object with string values.")
+                arguments = cast(dict[str, Any], arguments)
+                values = arguments.get("values")
+                if isinstance(values, (list, dict)):
+                    values = (
+                        "\n".join(
+                            item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)
+                            for item in cast(list[Any], values)
+                        )
+                        if isinstance(values, list)
+                        else json.dumps(values, ensure_ascii=False)
+                        if values
+                        else ""
+                    )
+                    content.arguments = {**arguments, "values": values}
+                    normalized = True
+                if not isinstance(values, str):
+                    raise ValueError("Forced recall requires a JSON object with string values.")
+                if first_values is None:
+                    first_values = values
+        if first_values is not None and not first_values.strip():
+            # A forced response is observed once; blank calls never become record anchors.
+            self._observe_record_values(None, False)
         if response.finish_reason == "length":
             self._records_truncated += 1
         if any(
@@ -2731,6 +2757,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             self._ignored_streak += 1
             if self._ignored_streak >= 2:
                 self._disable_pin("ignored", response=response)
+        return normalized
 
     async def process(
         self,
@@ -2748,6 +2775,15 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         Cancellation propagates and leaves the pending ask available for a later request.
         """
         self._bind_session(context)
+        cleaned = [
+            message
+            for message in context.messages
+            if not message.additional_properties.get(RECALL_PROMPT_KEY)
+        ]
+        if isinstance(context.messages, list):
+            context.messages[:] = cleaned
+        else:
+            context.messages = cleaned
         if not self.supports_tool_choice and not self._pin_disabled:
             self._disable_pin("unsupported")
         original_options = context.options
@@ -2784,15 +2820,25 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         strategy = context.kwargs.get(
             "compaction_strategy", getattr(context.client, "compaction_strategy", None)
         )
+        prompt: Message | None = None
 
         async def compact(messages: list[Message]) -> bool:
-            assert isinstance(
-                strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
-            )
-            return await strategy.compact_before(messages, options=context.options or {})
+            # History providers can load retained asks after middleware entry.
+            messages[:] = [
+                message
+                for message in messages
+                if not message.additional_properties.get(RECALL_PROMPT_KEY)
+            ]
+            if prompt is not None:
+                messages.append(prompt)
+            if isinstance(strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy):
+                return await strategy.compact_before(messages, options=context.options or {})
+            if strategy is not None:
+                return await cast(Callable[[list[Message]], Awaitable[bool]], strategy)(messages)
+            return False
 
+        context.kwargs = {**context.kwargs, "compaction_strategy": compact}
         if isinstance(strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy):
-            context.kwargs = {**context.kwargs, "compaction_strategy": compact}
             if request_budget is None:
 
                 def sending_budget() -> int:
@@ -2803,19 +2849,11 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         def restore_request() -> None:
             context.options = original_options
             context.messages = list(original_messages)
-            context.kwargs = {
-                **original_kwargs,
-                **(
-                    {"compaction_strategy": compact}
-                    if isinstance(
-                        strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
-                    )
-                    else {}
-                ),
-            }
+            context.kwargs = {**original_kwargs, "compaction_strategy": compact}
             context.result = None
 
         async def attempt() -> None:
+            nonlocal prompt
             prompt = (
                 Message(
                     "user", [_RECALL_INSTRUCTION], additional_properties={RECALL_PROMPT_KEY: True}
@@ -2830,8 +2868,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 await call_next()
                 if forced_this_call:
                     if isinstance(context.result, ResponseStream):
-                        context.result, response = await _buffer_recall_stream(context.result)
-                        self._observe_forced(response)
+                        context.result, _ = await _buffer_recall_stream(
+                            context.result, self._observe_forced
+                        )
                     elif isinstance(context.result, ChatResponse):
                         self._observe_forced(context.result)
             finally:
@@ -2839,14 +2878,21 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                     # Downstream reconciliation can retain the sent list after this call.
                     if isinstance(sent_messages, list):
                         sent_messages[:] = [
-                            message for message in sent_messages if message is not prompt
+                            message
+                            for message in sent_messages
+                            if not message.additional_properties.get(RECALL_PROMPT_KEY)
                         ]
                     if context.messages is not sent_messages:
-                        cleaned = [message for message in context.messages if message is not prompt]
+                        cleaned = [
+                            message
+                            for message in context.messages
+                            if not message.additional_properties.get(RECALL_PROMPT_KEY)
+                        ]
                         if isinstance(context.messages, list):
                             context.messages[:] = cleaned
                         else:
                             context.messages = cleaned
+                prompt = None
 
         async def attempt_with_fallback() -> None:
             try:
@@ -2888,6 +2934,11 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         finally:
             if forced_this_call:
                 context.options = original_options
+            if context.kwargs.get("compaction_strategy") is compact:
+                if "compaction_strategy" in original_kwargs:
+                    context.kwargs["compaction_strategy"] = original_kwargs["compaction_strategy"]
+                else:
+                    context.kwargs.pop("compaction_strategy")
 
         messages = list(context.messages)
         record_index = find_record_index(messages) if messages else None
