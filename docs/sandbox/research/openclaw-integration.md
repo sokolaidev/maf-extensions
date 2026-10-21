@@ -631,7 +631,7 @@ The next existing adoption PBI is conditional #1974: first establish a supported
 
 ## Official MXC qualification preflight (2026-10-21)
 
-**Disposition: the #1974 native profile is unqualified; retain the issue for the missing controls and installed execution evidence.** This is a prerequisite assessment of the official published plugin, not a new `maf-sandbox` backend, a completed filesystem campaign or a reversal of #1642's defer decision. No command sandbox or hostile filesystem fixture was provisioned. The existing Bicep and actor-loss results do not cover these native rows.
+**Disposition: the #1974 native profile is unqualified; retain the issue for the missing controls and installed execution evidence.** This is a prerequisite assessment of the official published plugin, not a new `maf-sandbox` backend, a completed filesystem campaign or a reversal of #1642's defer decision. No OpenClaw command workload or hostile filesystem fixture was provisioned. The existing Bicep and actor-loss results do not cover these native rows.
 
 ### Selected installed subject
 
