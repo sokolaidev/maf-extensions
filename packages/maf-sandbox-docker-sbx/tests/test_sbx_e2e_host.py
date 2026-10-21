@@ -1,7 +1,7 @@
 """Live tests of the refusals and faults that depend on host-wide ``sbx`` state.
 
-Skipped unless ``MAF_SANDBOX_SBX_E2E=1``.  A test that has to change that state — SSH agent
-forwarding, an MCP registration, the login, or the daemon API socket — also needs
+Skipped unless ``MAF_SANDBOX_SBX_E2E=1``.  A test that has to change that state â€” SSH agent
+forwarding, an MCP registration, the login, or the daemon API socket â€” also needs
 ``MAF_SANDBOX_SBX_E2E_HOST=1``, and restores what it changed.  Set it only on a host no one
 else is using: while a test runs, every other sandbox on the host sees the changed state.
 Logging back in reads ``DOCKER_USERNAME`` and ``DOCKER_PAT``.
@@ -176,7 +176,11 @@ def test_engine_fault_responses_do_not_mean_an_absent_sandbox(tmp_path):
                         assert failure is not None and failure.code == "unreachable", failure
                     assert workspace.is_dir()
                     assert "listing" in observed
-                    assert any(path.startswith("POST /sandbox/") for path in observed), observed
+                    target = f"/sandbox/{sandbox.name}"
+                    paths = [request.partition(" ")[2] for request in observed]
+                    assert any(path == target or path.startswith(target + "/") for path in paths), (
+                        observed
+                    )
                 print(json.dumps({"engine_fault_injection": "daemon-api", "requests": observed}))
                 assert _listed(sandbox.name)
                 again = await backend.acquire(key, _spec())

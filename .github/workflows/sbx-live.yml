@@ -68,17 +68,6 @@ jobs:
           docker save -o "$RUNNER_TEMP/graphviz.tar" graphviz-sandbox:local
           sbx template load "$RUNNER_TEMP/graphviz.tar"
 
-      - name: Run the live suite
-        env:
-          MAF_SANDBOX_SBX_E2E_IMAGES: maf-sbx-e2e-agent:local,maf-sbx-e2e-root:local
-          MAF_GRAPHVIZ_SBX_E2E_IMAGE: graphviz-sandbox:local
-        run: |
-          set -euo pipefail
-          # A skip here is a bug: the module skips itself without MAF_SANDBOX_SBX_E2E.
-          # `--durations` records whether the runner is fast enough to keep.
-          uv run pytest -q -rs -s --durations=0 packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e.py tests/test_sbx_codeact_e2e.py tests/test_graphviz_sbx_e2e.py | tee suite.log
-          ! grep -q '^SKIPPED' suite.log
-
       - name: Run the host-state refusals and faults
         env:
           # Each test changes host-wide sbx state and restores it; this runner has no other user.
@@ -91,6 +80,17 @@ jobs:
           eval "$(ssh-agent -s)"
           uv run pytest -q -rs -s packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e_host.py | tee host.log
           ! grep -q '^SKIPPED' host.log
+
+      - name: Run the live suite
+        env:
+          MAF_SANDBOX_SBX_E2E_IMAGES: maf-sbx-e2e-agent:local,maf-sbx-e2e-root:local
+          MAF_GRAPHVIZ_SBX_E2E_IMAGE: graphviz-sandbox:local
+        run: |
+          set -euo pipefail
+          # A skip here is a bug: the module skips itself without MAF_SANDBOX_SBX_E2E.
+          # `--durations` records whether the runner is fast enough to keep.
+          uv run pytest -q -rs -s --durations=0 packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e.py tests/test_sbx_codeact_e2e.py tests/test_graphviz_sbx_e2e.py | tee suite.log
+          ! grep -q '^SKIPPED' suite.log
 
       - name: Retain live evidence
         if: always()
