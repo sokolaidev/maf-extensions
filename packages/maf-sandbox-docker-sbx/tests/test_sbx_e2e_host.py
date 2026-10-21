@@ -1,7 +1,7 @@
 """Live tests of the refusals and faults that depend on host-wide ``sbx`` state.
 
-Skipped unless ``MAF_SANDBOX_SBX_E2E=1``.  A test that has to change that state â€” SSH agent
-forwarding, an MCP registration, the login, or the daemon API socket â€” also needs
+Skipped unless ``MAF_SANDBOX_SBX_E2E=1``.  A test that has to change that state — SSH agent
+forwarding, an MCP registration, the login, or the daemon API socket — also needs
 ``MAF_SANDBOX_SBX_E2E_HOST=1``, and restores what it changed.  Set it only on a host no one
 else is using: while a test runs, every other sandbox on the host sees the changed state.
 Logging back in reads ``DOCKER_USERNAME`` and ``DOCKER_PAT``.
