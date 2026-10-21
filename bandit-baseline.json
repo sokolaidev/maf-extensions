@@ -1,0 +1,1978 @@
+[
+  {
+    "filename": "images/drawio-export/export.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    total = len(xml.encode())\n    with tempfile.TemporaryDirectory(prefix=\"drawio-\", dir=\"/tmp\") as directory:\n        temporary = Path(directory)\n",
+    "count": 1
+  },
+  {
+    "filename": "images/drawio-export/export.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "        raise ValueError(\"Processing instructions are not supported\")\n    return ET.fromstring(text)\n\n",
+    "count": 1
+  },
+  {
+    "filename": "images/terraform-sandbox/install.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        [str(path), \"version\", \"-json\"],\n        env={\"PATH\": \"/usr/local/bin:/usr/bin:/bin\", \"HOME\": \"/tmp\", \"CHECKPOINT_DISABLE\": \"1\"},\n        capture_output=True,\n",
+    "count": 1
+  },
+  {
+    "filename": "images/terraform-sandbox/install.py",
+    "test_id": "B310",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    \"\"\"Verify archive identity before extracting or installing it.\"\"\"\n    with urllib.request.urlopen(url, timeout=120) as response:\n        data = response.read()\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/src/maf_sandbox_acas/_exec_capture.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    token = \"maf-exec-\" + uuid4().hex\n    directory = \"/tmp/\" + token\n    result = await run(capture_command(command, directory, token, limit))\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/src/maf_sandbox_acas/_probes.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        elif name == \"exec-capture\":\n            directory = f\"/tmp/maf-exec-probe-{uuid4().hex}\"\n            script = capture_command(\"printf x\", directory, \"probe\", 8)\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_backend.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "\n    @pytest.mark.parametrize(\"working_directory\", [\".\", \"/tmp\", \"/protected\"])\n    def test_a_parent_swapped_after_the_check_cannot_select_host_authority(self, working_directory):\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_backend.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                await guest.sandbox.write_file(\"payload\", b\"input\", working_directory=\".\")\n            await guest.sandbox.write_file(\"payload\", b\"input\", working_directory=\"/tmp\")\n\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_backend.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                token = next(\n                    line.split(\"=\", 1)[1].removeprefix(\"/tmp/\")\n                    for line in command.splitlines()\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_backend.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        \"directory\",\n        [\"/maf-sandbox/work/call/\", \"/tmp/linked/call\", \"/\", \"relative\"],\n    )\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_backend.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        assert client.created_directories == []\n        repaired = replace(spec, work_dir=\"/tmp/base\")\n        if delete_fails:\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_backend.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        assert not client.deleted\n        client.files[first.instance_id][\"/tmp/residue\"] = b\"old input\"\n        adopted = await SandboxRouter([backend]).acquire(key, spec)\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_backend.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        assert replacement.instance_id != held.sandbox_id\n        assert replacement._work_dir == \"/tmp/base\"\n        assert held.sandbox_id in client.deleted\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_backend.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        asyncio.run(scenario())\n        assert guest.commands[-1].endswith(\"/tmp/payload\")\n        assert client.written == []\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_backend.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "def test_preparation_accepts_successful_creation_of_multiline_paths(line_break):\n    base = f\"/tmp/start{line_break}tail\"\n    client = _PrepClient()\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_backend.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "def test_preparation_does_not_classify_diagnostics_in_multiline_paths(line_break, diagnostic):\n    base = f\"/tmp/start{line_break}mkdir: {diagnostic}{line_break}tail\"\n    client = _PrepClient(\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                    restored = await sandbox.exec(\n                        [\"cp\", \"/tmp/maf-command-backup\", \"/bin/nohup\"],\n                        working_directory=\"/\",\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                [\"sh\", \"-c\", f'test -e \"{refused}\" && echo landed || echo absent'],\n                working_directory=\"/tmp\",\n                timeout=_EXEC_TIMEOUT,\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                ],\n                working_directory=\"/tmp\",\n                timeout=_EXEC_TIMEOUT,\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            == writing.run(\n                writing.sandbox.exec(\"id -u\", working_directory=\"/tmp\", timeout=_EXEC_TIMEOUT)\n            ).stdout.strip()\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            image=_NONROOT_IMAGE,\n            work_dir=\"/tmp\",\n            requires=frozenset({Capability.EXEC, Capability.FILES_IN}),\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            image=_NONROOT_IMAGE,\n            work_dir=f\"/tmp/maf-sandbox-nonroot-{uuid.uuid4().hex}/nested\",\n            requires=frozenset({Capability.EXEC}),\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            image=image,\n            work_dir=\"/tmp\",\n            requires=frozenset({Capability.EXEC}),\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            writing.sandbox.exec(\n                [\"stat\", \"-c\", \"%u\", control], working_directory=\"/tmp\", timeout=_EXEC_TIMEOUT\n            )\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        \"\"\"What the reach rule asks of a write: the guest program can change what it got.\"\"\"\n        planted = f\"/tmp/given-{uuid.uuid4().hex[:12]}.txt\"\n        writing.run(writing.sandbox.write_file(planted, \"in\\n\", working_directory=\"/tmp\"))\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        answered = writing.run(\n            writing.sandbox.exec(\"id -u\", working_directory=\"/tmp\", timeout=_EXEC_TIMEOUT)\n        )\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        planted = f\"/tmp/given-{uuid.uuid4().hex[:12]}.txt\"\n        writing.run(writing.sandbox.write_file(planted, \"in\\n\", working_directory=\"/tmp\"))\n\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        planted = f\"/tmp/given-{uuid.uuid4().hex}.txt\"\n        nonroot.run(nonroot.sandbox.write_file(planted, \"in\\n\", working_directory=\"/tmp\"))\n        removed = nonroot.run(\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        sandbox = live.sandbox\n        root = f\"/tmp/maf-read-window-{uuid.uuid4().hex}\"\n        working = f\"{root}/checked\"\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        token = uuid.uuid4().hex\n        directory = f\"/tmp/maf-write-{token}\"\n        leaf = f\"maf-write-protected-{token}\"\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    def test_an_alternate_writable_directory_accepts_the_write(self, nonroot: _Live):\n        planted = f\"/tmp/given-{uuid.uuid4().hex}.txt\"\n        nonroot.run(nonroot.sandbox.write_file(planted, \"in\\n\", working_directory=\"/tmp\"))\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_e2e_collection.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        assert spec.work_dir not in existing, \"the live fixture must exercise directory creation\"\n        assert spec.work_dir.startswith(\"/tmp/\")\n        existing.add(spec.work_dir)\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_e2e_collection.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "def test_nonroot_live_fixture_requires_creation_under_a_writable_parent(monkeypatch):\n    existing = {\"/\", \"/tmp\"}\n\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_exec_bytes_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                    [\"python3\", \"-c\", \"import sys; sys.stdout.buffer.write(b'x'*65537)\"],\n                    working_directory=\"/tmp\",\n                    timeout=60,\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_exec_bytes_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                PosixGuestSubject(\n                    sandbox, \"/tmp\", backend.declarations.capabilities, exec_cleanup_timeout=30\n                )\n            )\n            assert not any(result.skipped for result in results)\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_exec_bytes_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                await sandbox.exec_bounded(\n                    program, working_directory=\"/tmp\", timeout=60, max_output_bytes=131072\n                )\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_exec_bytes_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                sandbox.exec_bounded(\n                    \"sleep 30\", working_directory=\"/tmp\", timeout=60, max_output_bytes=1024\n                )\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_exec_bytes_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            background = await sandbox.exec(\n                \"printf before; (sleep .1; printf after) &\", working_directory=\"/tmp\", timeout=60\n            )\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_exec_bytes_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            results = await asyncio.gather(\n                *(sandbox.exec(program, working_directory=\"/tmp\", timeout=60) for _ in range(2))\n            )\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_acas_exec_bytes_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        spec = SandboxSpec(\n            kind=\"bytes\", image=image, work_dir=\"/tmp\", requires=frozenset({Capability.EXEC})\n        )\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_bounded_capture.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            self.token = next(\n                line[2:].removeprefix(\"/tmp/\")\n                for line in script.splitlines()\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_exec_capture.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                token = next(\n                    line.split(\"=\", 1)[1].removeprefix(\"/tmp/\")\n                    for line in command.splitlines()\n",
+    "count": 2
+  },
+  {
+    "filename": "packages/maf-sandbox-acas/tests/test_exec_capture.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        for directory in directories:\n            assert directory.startswith(\"/tmp/maf-exec-\") and \"/\" not in directory[len(\"/tmp/\") :]\n            shutil.rmtree(directory, ignore_errors=True)\n",
+    "count": 2
+  },
+  {
+    "filename": "packages/maf-sandbox-bubblewrap/src/maf_sandbox_bubblewrap/_backend.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            \"HOME\",\n            \"/tmp\",\n            \"--setenv\",\n            \"TMPDIR\",\n            \"/tmp\",\n            \"--setenv\",\n            \"DRAWIO_DISABLE_UPDATE\",\n            \"true\",\n            \"--chdir\",\n            \"/\",\n            \"--\",\n            \"/usr/bin/python3\",\n            \"-I\",\n            \"/run/maf-broker.py\",\n        ]\n    )\n    return args\n\n\nclass _Sandbox:\n    \"\"\"One supervised namespace; command output and transfer frames are independently bounded.\"\"\"\n\n    def __init__(\n        self,\n        backend: BubblewrapSandboxBackend,\n        instance: str,\n        process: asyncio.subprocess.Process,\n        lock_fd: int,\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-bubblewrap/src/maf_sandbox_bubblewrap/_backend.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            \"TMPDIR\",\n            \"/tmp\",\n            \"--setenv\",\n            \"DRAWIO_DISABLE_UPDATE\",\n            \"true\",\n            \"--chdir\",\n            \"/\",\n            \"--\",\n            \"/usr/bin/python3\",\n            \"-I\",\n            \"/run/maf-broker.py\",\n        ]\n    )\n    return args\n\n\nclass _Sandbox:\n    \"\"\"One supervised namespace; command output and transfer frames are independently bounded.\"\"\"\n\n    def __init__(\n        self,\n        backend: BubblewrapSandboxBackend,\n        instance: str,\n        process: asyncio.subprocess.Process,\n        lock_fd: int,\n        record: Path,\n        spec: SandboxSpec,\n        diagnostics: asyncio.Task[str],\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-bubblewrap/src/maf_sandbox_bubblewrap/_backend.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    )\n    for directory in (\"/tmp\", \"/run\", \"/maf-sandbox\"):\n        args.extend([\"--size\", str(config.workspace_bytes), \"--tmpfs\", directory])\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-bubblewrap/tests/test_bubblewrap_paths.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        (\"/maf-sandbox/work/a/../result\", \".\"),\n        (\"result\", \"/tmp/a/../work\"),\n        (\".\", \"/\"),\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-codeact/tests/test_codeact_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    tool = make_codeact_tools(router, \"data-analyst\", _context(thread_id), image=_IMAGE)[0]\n    guest_residue = f\"/tmp/codeact-{uuid.uuid4().hex}\"\n\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-codeact/tests/test_codeact_runtime.py",
+    "test_id": "B102",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "        try:\n            exec(code, namespace)\n        except Exception as error:\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-deepagents/tests/test_deepagents_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            blob, folder, absent = await adapter.adownload_files(\n                [\"/tmp/deepagents-e2e/blob.bin\", \"/tmp/deepagents-e2e\", \"/tmp/deepagents-e2e/no\"]\n            )\n",
+    "count": 3
+  },
+  {
+    "filename": "packages/maf-sandbox-deepagents/tests/test_deepagents_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        try:\n            (uploaded,) = await adapter.aupload_files([(\"/tmp/deepagents-e2e/blob.bin\", content)])\n            assert uploaded.error is None, uploaded\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-deepagents/tests/test_deepagents_sandbox.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "\n        (grown,) = asyncio.run(adapter.adownload_files([\"/tmp/grew\"]))\n        assert grown.error is not None and \"max_bytes_per_file\" in grown.error\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-deepagents/tests/test_deepagents_sandbox.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "\n        (response,) = asyncio.run(adapter.aupload_files([(\"/tmp/.deepagents_edit_x_old\", content)]))\n\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-deepagents/tests/test_deepagents_sandbox.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        # writers admitted together each land a whole file and the last one stands.\n        asyncio.run(adapter.aupload_files([(\"/tmp/.deepagents_edit_x_old\", b\"again\")]))\n        again = [command for command, _, _ in fake.commands][len(commands) :]\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-deepagents/tests/test_deepagents_sandbox.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        )\n        (refused,) = asyncio.run(adapter.adownload_files([\"/tmp/big\"]))\n        assert refused.error is not None and \"max_bytes_per_file\" in refused.error\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-deepagents/tests/test_deepagents_sandbox.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        )\n        assert staged.startswith(\"/tmp/.maf-\") and staged.endswith(\".part\")\n        chunks = [\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-deepagents/tests/test_deepagents_sandbox.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        a, e, b, missing = asyncio.run(\n            adapter.adownload_files([\"/tmp/a\", \"/tmp/e\", \"/tmp/b\", \"/tmp/m\"])\n        )\n",
+    "count": 4
+  },
+  {
+    "filename": "packages/maf-sandbox-deepagents/tests/test_deepagents_sandbox.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        adapter, _ = _adapter(InProcessSandbox(outputs={\"wc -c\": f\"{answer}\\n\"}))\n        (response,) = asyncio.run(adapter.adownload_files([\"/tmp/x\"]))\n        assert response.error == error\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-deepagents/tests/test_deepagents_sandbox.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        adapter, _ = _adapter(Unbounded())\n        (response,) = asyncio.run(adapter.aupload_files([(\"/tmp/x\", b\"1\")]))\n        assert response.error is not None and \"outside the storage base\" in response.error\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-deepagents/tests/test_deepagents_sandbox.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        async def scenario():\n            responses = await adapter.adownload_files([\"/tmp/grew\", \"/tmp/next\"])\n            await adapter.aclose()\n",
+    "count": 2
+  },
+  {
+    "filename": "packages/maf-sandbox-deepagents/tests/test_deepagents_sandbox.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        async def scenario():\n            responses = await adapter.adownload_files([f\"{WORK}/a.txt\", \"/tmp/x\", \"/tmp/y\"])\n            await adapter.aclose()  # joins the delete the timeout started\n",
+    "count": 2
+  },
+  {
+    "filename": "packages/maf-sandbox-deepagents/tests/test_deepagents_sandbox.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        async def scenario():\n            responses = await adapter.aupload_files([(\"/tmp/x\", b\"1\")])\n            await adapter.aclose()\n",
+    "count": 2
+  },
+  {
+    "filename": "packages/maf-sandbox-deepagents/tests/test_deepagents_sandbox.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        async def scenario():\n            responses = await adapter.aupload_files([(\"kept.txt\", b\"1\"), (\"/tmp/x\", b\"2\")])\n            await adapter.aclose()  # joins the delete the timeout started\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker-sbx/src/maf_sandbox_docker_sbx/_backend.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        nonce = secrets.token_hex(12)\n        pid_file = f\"/tmp/maf-sbx-{nonce}.pgid\"\n        expired = f\"the command did not finish within {timeout} seconds\"\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker-sbx/src/maf_sandbox_docker_sbx/_backend.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        nonce = secrets.token_hex(12)\n        pid_file = f\"/tmp/maf-sbx-{nonce}.pgid\"\n        ready = (nonce + \"\\n\").encode()\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_backend.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))\n        asyncio.run(sandbox.write_file(\"/tmp/run-1/note\", \"x\", working_directory=\"/\"))\n        stdin = fake.only(\"cp\", \"-\").stdin\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_capability_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                    assert next_sandbox.instance_id != instance\n                    assert await next_sandbox.stat_file(\"residue\", working_directory=\"/tmp\") is None\n                    refuse_disposal = False\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_capability_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                seen.append((key, sandbox.instance_id))\n                await sandbox.write_file(\"residue\", mode, working_directory=\"/tmp\")\n                result = await sandbox.exec(\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_e2e.py",
+    "test_id": "B104",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    \"\"\"\n    server = http.server.ThreadingHTTPServer((\"0.0.0.0\", 0), _OkHandler)  # noqa: S104\n    thread = threading.Thread(target=server.serve_forever, daemon=True)\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_fingerprint.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        elif change == \"tmpfs\":\n            engine.observed[\"entries\"][\"/dev/shm/residue\"] = \"content\"\n        elif change == \"process\":\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_fingerprint.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        self.observed = {\n            \"entries\": {\"/dev/shm\": \"directory\"},\n            \"processes\": [\"1:100\"],\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_fingerprint.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    elif dirty == \"tmpfs\":\n        engine.observed[\"tmpfs_entries\"] = [\"/dev/shm/already-there\"]\n    elif dirty == \"writable_mount\":\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_fingerprint_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                    )\n                    await sandbox.reclaim(\"/tmp/confined-call\", working_directory=\"/\", timeout=30)\n                else:\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_fingerprint_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            image=_IMAGE,\n            work_dir=\"/tmp/fingerprint\",\n            egress=Egress.ALLOWLIST,\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_fingerprint_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        (\"chmod 600 .maf-proxy-ca.crt\", \".maf-proxy-ca.crt\"),\n        (\"chmod 700 .\", \"/tmp/fingerprint\"),\n        (\"echo residue > residue\", \"residue\"),\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_fingerprint_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        (\"chmod 600 /etc/hosts; chmod 644 /etc/hosts\", None),\n        (\"touch /dev/shm\", \"/dev/shm\"),\n        (\"touch -h /dev/stdout\", \"/dev/stdout\"),\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_fingerprint_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        (\"echo residue > /tmp/residue\", \"/tmp/residue\"),\n        (\"echo residue > /dev/shm/residue\", \"/dev/shm/residue\"),\n        (\"echo residue > /dev/residue\", \"/dev/residue\"),\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_fingerprint_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        (\"touch -h /dev/stdout\", \"/dev/stdout\"),\n        (\"ln -s /etc/passwd /dev/shm/residue\", \"/dev/shm/residue\"),\n        (\"sleep 120 >/dev/null 2>&1 &\", \"processes added\"),\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_fingerprint_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        ([\"--tmpfs\", \"/tmp\"], \"/tmp/residue\"),\n        ([\"--user\", \"10001:10001\", \"--cap-drop=ALL\"], \"/dev/shm/residue\"),\n    ],\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_fingerprint_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        ),\n        (\"echo residue > /tmp/residue\", \"/tmp/residue\"),\n        (\"echo residue > /dev/shm/residue\", \"/dev/shm/residue\"),\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_fingerprint_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    [\n        ([\"--tmpfs\", \"/tmp\"], \"/tmp/residue\"),\n        ([\"--user\", \"10001:10001\", \"--cap-drop=ALL\"], \"/dev/shm/residue\"),\n",
+    "count": 2
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_process_cleanup_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                [\"mkdir\", \"-p\", layout.work, posixpath.dirname(layout.program)],\n                working_directory=\"/tmp\",\n                timeout=10,\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_process_cleanup_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                ],\n                working_directory=\"/tmp\",\n                timeout=10,\n",
+    "count": 2
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_process_cleanup_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            )\n            physical = maf_sandbox.guest_run_layout(\"/tmp/process-test/run\")\n            execute = sandbox.exec\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_process_cleanup_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            layout = maf_sandbox.guest_run_layout(\n                \"process-test/run\" if relative else \"/tmp/process-test/run\"\n            )\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_process_cleanup_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            target = int(victim.stdout)\n            setsid = await sandbox.exec(\"command -v setsid\", working_directory=\"/tmp\", timeout=10)\n            has_setsid = setsid.exit_code == 0\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_process_cleanup_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        )\n        sandbox._work_dir = \"/tmp\"\n        try:\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-docker/tests/test_docker_process_cleanup_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "\"\"\"\n            await sandbox.write_file(layout.program, program, working_directory=\"/tmp\")\n            records = Records()\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-drawio/tests/test_renderer.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "        )\n    result = ET.fromstring(convert(xml(document)))\n    assert len(dot) == 1\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-drawio/tests/test_renderer.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "        )\n    result = ET.fromstring(convert(xml(source), direction=direction))\n    rectangles = [geometry(result, identifier) for identifier in (\"a\", \"b\", \"isolated\")]\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-drawio/tests/test_renderer.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "        cell(source, identifier).set(\"style\", f\"rotation={angle};fillColor=#dae8fc;\")\n    result = ET.fromstring(convert(xml(source), preserve_layout=False, direction=direction))\n    bounds: list[tuple[float, float, float, float]] = []\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-drawio/tests/test_renderer.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    )\n    result = ET.fromstring(convert(xml(source)))\n    saved = result.find(\".//object\")\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-drawio/tests/test_renderer.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    ET.SubElement(points, \"mxPoint\", x=\"200\", y=\"200\")\n    result = ET.fromstring(convert(xml(source)))\n    assert not dot\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-drawio/tests/test_renderer.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    ET.SubElement(points, \"mxPoint\", x=\"350\", y=\"42.5\")\n    result = ET.fromstring(convert(xml(source)))\n    assert not dot\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-drawio/tests/test_renderer.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    cell(source, \"a\").set(\"style\", style)\n    result = ET.fromstring(convert(xml(source)))\n    unrotated = ET.fromstring(convert(xml(model())))\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-drawio/tests/test_renderer.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    cell(source, \"e\").set(\"style\", original)\n    result = ET.fromstring(convert(xml(source), preserve_layout=preserve))\n    edge = cell(result, \"e\")\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-drawio/tests/test_renderer.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    geometry(source, \"a\").set(\"width\", value)\n    result = ET.fromstring(convert(xml(source)))\n    assert not dot\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-drawio/tests/test_renderer.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    geometry(source, \"b\").set(\"relative\", \"1\")\n    saved = ET.fromstring(convert(xml(source)))\n    assert cell(saved, \"b\").get(\"parent\") == \"a\"\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-drawio/tests/test_renderer.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    result = ET.fromstring(convert(xml(source)))\n    unrotated = ET.fromstring(convert(xml(model())))\n    for identifier in (\"a\", \"b\"):\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-drawio/tests/test_renderer.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    source = model(positioned=positioned)\n    result = ET.fromstring(convert(xml(source), preserve_layout=preserve))\n    assert len(dot) == expected\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-drawio/tests/test_renderer.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    wrapper.append(vertex)\n    result = ET.fromstring(convert(xml(source), preserve_layout=preserve))\n    saved = result.find(f\".//{wrapper_tag}\")\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-drawio/tests/test_tool.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    assert [\n        ET.fromstring(artifact.content).find(\".//mxCell[@id='a']\").get(\"value\")\n        for artifact in artifacts\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-drawio/tests/test_tool.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    assert answer[-1].additional_properties[\"security_label\"][\"integrity\"] == \"untrusted\"\n    document = ET.fromstring((tmp_path / \"out/diagram.drawio\").read_bytes())\n    assert document.find(\".//mxCell[@id='a']\").get(\"value\") == \"Résumé & 中文\"\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-drawio/tests/test_tool.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    assert not invoke(tool, source).startswith(\"Error:\")\n    document = ET.fromstring((tmp_path / \"diagram.drawio\").read_bytes())\n    assert document.find(\".//mxGeometry\").get(\"x\") is not None\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-drawio/tests/test_tool.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    monkeypatch.setenv(\"PATH\", \"\")\n    source = ET.fromstring(_XML)\n    vertex = source.find(\".//mxCell[@id='a']\")\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-drawio/tests/test_tool.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "def test_structural_array_expansion_is_refused_before_delivery(tmp_path: Path, preserve: bool):\n    source = ET.fromstring(_XML)\n    geometry = source.find(\".//mxGeometry\")\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-terraform/tests/test_terraform_diagnostics.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        {\"filename\": \"SECRET.tf\"},\n        {\"filename\": \"/tmp/main.tf\"},\n        {\"filename\": \"../main.tf\"},\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-terraform/tests/test_terraform_docker.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            \"--tmpfs\",\n            \"/tmp:rw,exec,size=256m\",\n            \"-i\",\n            IMAGES[engine],\n            \"/usr/local/bin/python3\",\n            \"-\",\n        ],\n        input=source.read_bytes(),\n        capture_output=True,\n        # Above the guest budgets it contains: the lock test alone may spend 30 seconds per\n        # call over three calls. A cap below that turns a slow runner into a failure here\n        # instead of a verdict from the suite.\n        timeout=150,\n    )\n    assert result.returncode == 0, result.stderr.decode()\n\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-tui/src/maf_sandbox_tui/_update.py",
+    "test_id": "B310",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    try:\n        with urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed HTTPS origin\n            final_url = response.geturl()\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-wslc/tests/test_wslc_backend.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "class TestReclaim:\n    @pytest.mark.parametrize(\"directory\", [\"/work/call\", \"/tmp/linked/call\", \"/\", \"relative\"])\n    def test_reclaim_refuses_without_running_a_guest_command(self, directory):\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-wslc/tests/test_wslc_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            result = await sandbox.exec(\n                [\"test\", \"!\", \"-e\", \"/tmp/call-residue\"], working_directory=\"/\", timeout=30\n            )\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-wslc/tests/test_wslc_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            result = await sandbox.exec(\n                [\"touch\", \"/tmp/call-residue\"], working_directory=\"/\", timeout=30\n            )\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox-wslc/tests/test_wslc_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    required = replace(spec, requires=frozenset({capability}))\n    backup = \"/tmp/maf-command-backup\"\n\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_adoption.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        assert isinstance(first, InProcessSandbox)\n        first.contents[\"/tmp/residue\"] = b\"old input\"\n        first.running.add(\"survivor\")\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_adoption.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        old = await subject.acquire(KEY, SPEC)\n        old.contents[\"/tmp/unknown\"] = b\"residue\"\n        old.running.add(\"survivor\")\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_adoption.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        replacement = await acquire(KEY, SPEC)\n        replacement.contents[\"/tmp/residue\"] = b\"unknown\"\n        fresh = await current.acquire(KEY, SPEC)\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "\n    @pytest.mark.parametrize(\"path\", [\"/tmp/a\\nPermission denied\\nb\", \"/tmp/a\\rb\", \"/tmp/a\\0b\"])\n    def test_a_path_no_command_can_carry_is_refused_before_any_command(self, path):\n",
+    "count": 3
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "\n    @pytest.mark.parametrize(\"path\", [\"/tmp/new/\", \"/tmp/.\", \"/tmp/..\", \"trailing/\"])\n    def test_a_leaf_that_names_a_directory_is_refused_before_any_command(self, path):\n",
+    "count": 3
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                    Answering(exit_code=2, stderr=\"sh: wc: not found\"),\n                    \"/tmp/x\",\n                    working_directory=WORK,\n                    timeout=5,\n                    max_bytes=64,\n                )\n            )\n        with pytest.raises(SandboxShellTransferFailed):\n            asyncio.run(\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                    InProcessSandbox(outputs={\"wc -c\": \"many\\n\"}),\n                    \"/tmp/x\",\n                    working_directory=WORK,\n                    timeout=5,\n                    max_bytes=64,\n                )\n            )\n\n    def test_a_read_that_returns_no_base64_is_a_failure(self):\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                    _CancellingRead(),\n                    \"/tmp/f\",\n                    working_directory=WORK,\n                    timeout=5,\n                    max_bytes=8,\n                )\n            )\n\n    def test_a_sibling_that_cannot_be_taken_back_is_unfinished(self):\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                asyncio.run(\n                    write_file_over_exec(fake, \"/tmp/f/x\", b\"1\", working_directory=WORK, timeout=5)\n                )\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                read_file_over_exec(\n                    InProcessSandbox(), \"/tmp/x\", working_directory=WORK, timeout=5, max_bytes=0\n                )\n            )\n\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                read_file_over_exec(\n                    fake, \"/tmp/f\", working_directory=WORK, timeout=timeout, max_bytes=8\n                )\n            )\n        assert fake.commands == []\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                read_file_over_exec(\n                    slower, \"/tmp/x\", working_directory=WORK, timeout=0.5, max_bytes=8\n                )\n            )\n        assert len(slower.commands) == 1\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            asyncio.run(\n                read_file_over_exec(fake, \"/tmp/x\", working_directory=WORK, timeout=5, max_bytes=64)\n            )\n",
+    "count": 9
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            asyncio.run(\n                write_file_over_exec(Stuck(), \"/tmp/f\", b\"1\", working_directory=WORK, timeout=5)\n            )\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            asyncio.run(\n                write_file_over_exec(fake, \"/tmp/f\", b\"1\", working_directory=WORK, timeout=5)\n            )\n",
+    "count": 4
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            asyncio.run(\n                write_file_over_exec(fake, \"/tmp/f\", b\"1\", working_directory=WORK, timeout=timeout)\n            )\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            asyncio.run(\n                write_file_over_exec(fake, \"/tmp/f\", content, working_directory=WORK, timeout=1.0)\n            )\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        asyncio.run(\n            write_file_over_exec(refusing, \"/tmp/g\", b\"x\", working_directory=WORK, timeout=5)\n        )\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        content = asyncio.run(\n            read_file_over_exec(fake, \"/tmp/x\", working_directory=WORK, timeout=1.0, max_bytes=8)\n        )\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        fake = InProcessSandbox()\n        asyncio.run(write_file_over_exec(fake, \"/tmp/f\", b\"1\", working_directory=WORK, timeout=5))\n        first = _commands(fake)\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        first = _commands(fake)\n        asyncio.run(write_file_over_exec(fake, \"/tmp/f\", b\"2\", working_directory=WORK, timeout=5))\n        second = _commands(fake)[len(first) :]\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    asyncio.run(write_file_over_exec(fake, \"/tmp/f\", b\"x\", working_directory=WORK, timeout=5))\n    asyncio.run(read_file_over_exec(fake, \"/tmp/f\", working_directory=WORK, timeout=5, max_bytes=8))\n\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_file_transfer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    fake = InProcessSandbox(outputs={\"wc -c\": \"1\\n\", \"base64 <\": \"eA==\\n\"})\n    asyncio.run(write_file_over_exec(fake, \"/tmp/f\", b\"x\", working_directory=WORK, timeout=5))\n    asyncio.run(read_file_over_exec(fake, \"/tmp/f\", working_directory=WORK, timeout=5, max_bytes=8))\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_host_tools_over_exec.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            \"/\",\n            \"/tmp\",\n            \"../run\",\n            \"\",\n            \"/runs/../..\",\n            # Two components as written, one as meant. `rm` happens to refuse a `.` operand,\n            # but the guard must answer for the directory rather than its spelling.\n            \"/tmp/.\",\n            \"/etc/./\",\n        ],\n    )\n    def test_a_path_that_is_not_a_run_directory_is_refused(self, directory: str):\n        from maf_sandbox._host_tools_over_exec import _removable\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_host_tools_over_exec.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            # but the guard must answer for the directory rather than its spelling.\n            \"/tmp/.\",\n            \"/etc/./\",\n        ],\n    )\n    def test_a_path_that_is_not_a_run_directory_is_refused(self, directory: str):\n        from maf_sandbox._host_tools_over_exec import _removable\n\n        assert not _removable(directory)\n\n    def test_a_real_run_directory_passes(self):\n        from maf_sandbox._host_tools_over_exec import _removable\n\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_maf_glue.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                assert acquired is sandbox\n                sandbox.contents[\"/tmp/left\"] = \"data\"\n                first.changed = True\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_maf_glue.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                sandbox.running.add(\"child\")\n                sandbox.contents[\"/tmp/left\"] = \"data\"\n                note_unclean(sandbox, \"a child process may still be running\")\n",
+    "count": 1
+  },
+  {
+    "filename": "packages/maf-sandbox/tests/test_result_integrity.py",
+    "test_id": "B102",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    prefix = \"\" if synchronous else \"async \"\n    exec(f\"{prefix}def probe(value: str):\\n    return value\", namespace)\n    body = namespace[\"probe\"]\n",
+    "count": 1
+  },
+  {
+    "filename": "samples/07_docker_diagram/qualify.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            \"--tmpfs\",\n            \"/tmp:rw,noexec,nosuid,size=64m\",\n            \"--mount\",\n            f\"type=bind,src={source},dst=/input,readonly\",\n            \"--mount\",\n            f\"type=bind,src={target},dst=/output\",\n            \"--entrypoint\",\n            \"dot\",\n            image,\n            \"-Tpng\",\n            \"/input/diagram.dot\",\n            \"-o\",\n            \"/output/diagram.png\",\n        ).strip()\n        require(engine.owned(scope) == [container], \"CLI ownership is ambiguous\")\n        report[\"containerId\"] = container\n        inspected = json.loads(engine.command(\"inspect\", container))\n        require(len(inspected) == 1, \"CLI inspection is ambiguous\")\n        report[\"controls\"] = check_cli_container(\n            inspected[0], image, selected[\"Id\"], user, source, target\n        )\n        started = time.monotonic()\n        try:\n            engine.command(\"start\", \"--attach\", container, timeout=deadline)\n        except subprocess.TimeoutExpired:\n            report.update(timedOut=True, failureType=\"TimeoutExpired\")\n            if not timeout_probe:\n                raise\n        finally:\n            report[\"seconds\"] = time.monotonic() - started\n        png = target / \"diagram.png\"\n        if timeout_probe:\n            require(report[\"timedOut\"], \"CLI timeout probe completed without a timeout\")\n            require(engine.owned(scope) == [container], \"CLI timeout container is missing\")\n            state = json.loads(engine.command(\"inspect\", container))\n            require(len(state) == 1, \"CLI timeout inspection is ambiguous\")\n            report[\"stateAtTimeout\"] = state[0][\"State\"]\n            require(state[0][\"State\"][\"Running\"] is True, \"CLI renderer was not running at timeout\")\n            report[\"outputAbsent\"] = not png.exists() and not png.is_symlink()\n            require(report[\"outputAbsent\"], \"CLI timeout probe produced output\")\n",
+    "count": 1
+  },
+  {
+    "filename": "samples/07_docker_diagram/qualify.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            ],\n            working_directory=\"/tmp\",\n            timeout=10,\n",
+    "count": 1
+  },
+  {
+    "filename": "samples/07_docker_diagram/qualify.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        )\n    if \"/tmp\" in mounts:\n        require(mounts[\"/tmp\"][\"Type\"] == \"tmpfs\", \"CLI scratch is not tmpfs\")\n",
+    "count": 1
+  },
+  {
+    "filename": "samples/07_docker_diagram/qualify.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        try:\n            await sandbox.exec([\"sleep\", \"30\"], working_directory=\"/tmp\", timeout=1)\n        except TimeoutError:\n",
+    "count": 1
+  },
+  {
+    "filename": "samples/07_docker_diagram/qualify.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    if \"/tmp\" in mounts:\n        require(mounts[\"/tmp\"][\"Type\"] == \"tmpfs\", \"CLI scratch is not tmpfs\")\n    return {\"user\": user, \"hostConfig\": host, \"networks\": networks, \"mounts\": value[\"Mounts\"]}\n",
+    "count": 1
+  },
+  {
+    "filename": "samples/07_docker_diagram/qualify.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    require(host[\"AutoRemove\"] is True, \"CLI automatic removal is disabled\")\n    require(host[\"Tmpfs\"] == {\"/tmp\": \"rw,noexec,nosuid,size=64m\"}, \"CLI scratch mount differs\")\n    require(config[\"Entrypoint\"] == [\"dot\"], \"CLI renderer entrypoint differs\")\n",
+    "count": 1
+  },
+  {
+    "filename": "samples/07_docker_diagram/qualify.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    require(len(mounts) == len(value[\"Mounts\"]), \"CLI mount destinations are duplicated\")\n    require(set(mounts) <= {\"/input\", \"/output\", \"/tmp\"}, \"CLI has an unexpected mount\")\n    for destination, path, writable in ((\"/input\", source, False), (\"/output\", target, True)):\n",
+    "count": 1
+  },
+  {
+    "filename": "samples/18_acas_drawio_repair/agent.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "        raise ValueError(\"Sample XML cannot declare entities or a DTD\")\n    document = ET.fromstring(text)\n    if document.tag not in {\"mxfile\", \"mxGraphModel\"}:\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/acas_egress_origin.py",
+    "test_id": "B104",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "if __name__ == \"__main__\":\n    ThreadingHTTPServer((\"0.0.0.0\", 8080), Origin).serve_forever()\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/bicep_dependencies.py",
+    "test_id": "B310",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "        )\n        with urllib.request.urlopen(request, timeout=60) as response:\n            data = response.read()\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/bicep_qualification.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        name = case[\"name\"]\n        parent = \"/tmp\" if name == \"default-config-control\" else WORK\n        lines.extend([f\"mkdir {parent}/{name}\", f\"cd {parent}/{name}\", \"export HOME=$PWD\"])\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/bicep_source.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    \"\"\"Use central transitive pins so the published dependency graph includes the fixes.\"\"\"\n    tree = ET.parse(path)\n    root = tree.getroot()\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/check_container_release_image.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        \"--tmpfs\",\n        \"/tmp:rw,exec,size=512m\",\n        \"--workdir\",\n        \"/tmp\",\n        \"--entrypoint\",\n        command[0],\n        image_id,\n        *command[1:],\n    ]\n    if profile in {\"bicep\", \"bicep-avm\"}:\n        create[2:2] = [\"--env\", \"DOTNET_BUNDLE_EXTRACT_BASE_DIR=/tmp/dotnet-bundle\"]\n    if profile == \"bicep\":\n        create[2:2] = [\"--tmpfs\", f\"{bicep_qualification.WORK}:rw,noexec,size=16m\"]\n    subprocess.run(create, check=True, capture_output=True, timeout=30)\n    try:\n        start = [\"docker\", \"start\", \"--attach\", name]\n        output = asyncio.run(\n            _smoke_output(start, timeout=360)\n            if profile in {\"terraform-avm\", \"opentofu-random\", \"terraform-random\"}\n            else _smoke_output(start)\n        )\n        result = None\n        evidence_key = \"bicepAvm\" if profile == \"bicep-avm\" else \"terraformAvm\"\n        if profile == \"bicep\":\n            evidence_key = \"bicep\"\n            result = bicep_qualification.evidence(output)\n        elif profile == \"bicep-avm\":\n            result = bicep_avm_qualification.evidence(output)\n        elif profile == \"terraform-avm\":\n            result = terraform_avm_qualification.evidence(output)\n        elif profile == \"terraform-random\":\n            evidence_key = \"terraformRandom\"\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/check_container_release_image.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        \"--workdir\",\n        \"/tmp\",\n        \"--entrypoint\",\n        command[0],\n        image_id,\n        *command[1:],\n    ]\n    if profile in {\"bicep\", \"bicep-avm\"}:\n        create[2:2] = [\"--env\", \"DOTNET_BUNDLE_EXTRACT_BASE_DIR=/tmp/dotnet-bundle\"]\n    if profile == \"bicep\":\n        create[2:2] = [\"--tmpfs\", f\"{bicep_qualification.WORK}:rw,noexec,size=16m\"]\n    subprocess.run(create, check=True, capture_output=True, timeout=30)\n    try:\n        start = [\"docker\", \"start\", \"--attach\", name]\n        output = asyncio.run(\n            _smoke_output(start, timeout=360)\n            if profile in {\"terraform-avm\", \"opentofu-random\", \"terraform-random\"}\n            else _smoke_output(start)\n        )\n        result = None\n        evidence_key = \"bicepAvm\" if profile == \"bicep-avm\" else \"terraformAvm\"\n        if profile == \"bicep\":\n            evidence_key = \"bicep\"\n            result = bicep_qualification.evidence(output)\n        elif profile == \"bicep-avm\":\n            result = bicep_avm_qualification.evidence(output)\n        elif profile == \"terraform-avm\":\n            result = terraform_avm_qualification.evidence(output)\n        elif profile == \"terraform-random\":\n            evidence_key = \"terraformRandom\"\n            result = terraform_random_qualification.evidence(output)\n        elif profile == \"opentofu-random\":\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/check_doc_trackers.py",
+    "test_id": "B310",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    )\n    with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:\n        return answered(json.loads(response.read()))\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/check_drawio_acceptance.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                probe = await sandbox.exec(\n                    [\"python3\", \"-c\", EGRESS_PROBE], working_directory=\"/tmp\", timeout=20\n                )\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/check_drawio_acceptance.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        probe = await sandbox.exec(\n            [\"python3\", \"-c\", STOP_RENDERER], working_directory=\"/tmp\", timeout=50\n        )\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/check_drawio_acceptance.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    \"\"\"Exercise regular, bold, italic and bold-italic native labels in both pages.\"\"\"\n    document = ET.fromstring(exports.diagram())\n    for cell in document.findall(\".//mxCell[@vertex='1']\"):\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/check_drawio_docker.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "            artifact = destination / \"diagram.drawio\"\n            document = ET.fromstring(artifact.read_bytes())\n            vertices = document.findall(\".//mxCell[@vertex='1']\")\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/check_drawio_exports.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "        svg = (output / f\"diagram-{page}.svg\").read_text(\"utf-8\")\n        root = ET.fromstring(svg)\n        assert root.tag == \"{http://www.w3.org/2000/svg}svg\"\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/check_drawio_exports.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    \"\"\"Exercise native object labels whose HTML is supplied by metadata substitution.\"\"\"\n    document = ET.fromstring(diagram())\n    root = document[0][0][0]\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/check_drawio_renderer.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    original = Path.cwd()\n    with tempfile.TemporaryDirectory(prefix=\"drawio-identity-\", dir=\"/tmp\") as directory:\n        os.chdir(directory)\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/check_wslc_e2e.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    \"\"\"Require successful concrete cases, even when pytest accepts an all-skipped run.\"\"\"\n    cases = list(ET.parse(path).iter(\"testcase\"))\n    passed = {\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/drawio_export_qualification.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                    timeout=30,\n                    working_directory=\"/tmp\",\n                )\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/drawio_qualification.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                    timeout=30,\n                    working_directory=\"/tmp\",\n                )\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/drawio_qualification.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    \"\"\"Validate the returned editable graph, labels, edges and requested layout policy.\"\"\"\n    document = ET.fromstring(raw)\n    require(document.tag == \"mxfile\", \"Draw.io output is not an editable document\")\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/drawio_qualification.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    edges = document.findall(\".//mxCell[@edge='1']\")\n    expected = ET.fromstring(_input(positioned))\n    for actual, originals in (\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/egress_proxy_qualification.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            bundle.addfile(item, io.BytesIO(content))\n    docker(\"exec\", \"-i\", name, \"tar\", \"xf\", \"-\", \"-C\", \"/tmp\", data=archive.getvalue())\n    docker(\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/egress_proxy_qualification.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        \"--tmpfs\",\n        \"/tmp:rw,noexec,size=16m\",\n        \"--cap-drop\",\n        \"ALL\",\n        \"--security-opt\",\n        \"no-new-privileges\",\n        \"--memory\",\n        \"128m\",\n        \"--pids-limit\",\n        \"64\",\n        \"--cpus\",\n        \"1\",\n        \"--pull=never\",\n        guest_id,\n        \"sh\",\n        \"-c\",\n        \"until [ -f /tmp/ready ]; do sleep 0.1; done; exec python /tmp/server.py\",\n    )\n    archive = io.BytesIO()\n    with tarfile.open(fileobj=archive, mode=\"w\") as bundle:\n        for filename, content in {\n            \"cert.pem\": cert,\n            \"key.pem\": key,\n            \"server.py\": SERVER.encode(),\n            \"ready\": b\"\",\n        }.items():\n            item = tarfile.TarInfo(filename)\n            item.size = len(content)\n            item.mode = 0o600\n            bundle.addfile(item, io.BytesIO(content))\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/mxc_session_patch/accounting.py",
+    "test_id": "B608",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    ):\n        for row in db.execute(f\"SELECT session,{columns} FROM {table}\"):\n            if row[0] not in quotas or row[0] == \"\":\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/mxc_session_patch/accounting_benchmark.py",
+    "test_id": "B608",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        count = self.db.execute(\n            \"SELECT count(*) FROM sessions\" + (\"\" if session is None else \" WHERE id=?\"), args\n        ).fetchone()[0]\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/mxc_session_patch/accounting_benchmark.py",
+    "test_id": "B608",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        reserved = self.db.execute(\n            \"SELECT coalesce(sum(charge),0) FROM reservations\" + where, args\n        ).fetchone()[0]\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/mxc_session_patch/accounting_benchmark.py",
+    "test_id": "B608",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        retained = self.db.execute(\n            \"SELECT coalesce(sum(?+result_charge+checkpoint_charge),0) FROM calls\" + where,\n            (CALL_METADATA, *args),\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/mxc_session_patch/descriptor_guest.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            \"errno\": error,\n            \"size\": os.stat(\"/tmp/mxc-output-limit\").st_size,\n        }\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/mxc_session_patch/descriptor_guest.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        resource.setrlimit(resource.RLIMIT_FSIZE, (4096, before[1]))\n        with open(\"/tmp/mxc-output-limit\", \"wb\", buffering=0) as stream:\n            try:\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/mxc_session_patch/prepare_agent.py",
+    "test_id": "B310",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    )\n    with urllib.request.urlopen(token_url, timeout=60) as response:\n        token = json.load(response)[\"token\"]\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/mxc_session_patch/prepare_agent.py",
+    "test_id": "B310",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    total = 0\n    with urllib.request.urlopen(request, timeout=120) as response, archive.open(\"xb\") as output:\n        while data := response.read(1024 * 1024):\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/mxc_session_patch/remote_authority.py",
+    "test_id": "B608",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            raise Refused(\"unknown coordinator ledger\")\n        if self.db.execute(f\"SELECT COUNT(*) FROM {table}\").fetchone()[0] >= self.capacity:\n            raise Refused(\"coordinator metadata capacity exhausted\")\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/openshell_egress_probe.py",
+    "test_id": "B104",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "\n    second = ThreadingHTTPServer((\"0.0.0.0\", 8001), Handler)\n    threading.Thread(target=second.serve_forever, daemon=True).start()\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/openshell_egress_probe.py",
+    "test_id": "B104",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    threading.Thread(target=second.serve_forever, daemon=True).start()\n    ThreadingHTTPServer((\"0.0.0.0\", 8000), Handler).serve_forever()\n\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/openshell_files_probe.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            (\"/tmp/spike-public.pem\", public),\n            (\"/tmp/spike-kid\", kid),\n        ):\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/openshell_files_probe.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            (\"/tmp/spike-signing.pem\", private),\n            (\"/tmp/spike-public.pem\", public),\n            (\"/tmp/spike-kid\", kid),\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/openshell_files_probe.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        for old, new in (\n            (\"/tmp/spike-signing.pem\", private),\n            (\"/tmp/spike-public.pem\", public),\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/openshell_https_probe.py",
+    "test_id": "B104",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "\n    server = TlsServer((\"0.0.0.0\", 8443), Handler)\n    threading.Thread(target=server.serve_forever, daemon=True).start()\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/openshell_https_probe.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        raise RuntimeError(\"private origin unexpectedly trusted\")\n    context = ssl.create_default_context(cafile=\"/tmp/https-origin-cert.pem\")\n    if control_https(host, \"/\", port=8443, context=context) != {\"private_tls_origin\": True}:\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/openshell_live_probe.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    policy.filesystem.read_only.extend([\"/usr\", \"/bin\", \"/lib\", \"/lib64\", \"/etc\", \"/proc\"])\n    policy.filesystem.read_write.extend([\"/sandbox\", \"/tmp\", \"/home/sandbox\", \"/dev/null\"])\n    policy.filesystem.include_workdir = True\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/openshell_owned_probe.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    policy.filesystem.read_only.extend([\"/usr\", \"/bin\", \"/lib\", \"/lib64\", \"/etc\", \"/proc\"])\n    policy.filesystem.read_write.extend([\"/sandbox\", \"/tmp\", \"/home/sandbox\", \"/dev/null\"])\n    policy.filesystem.include_workdir = True\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/experiments/openshell_sftp_probe.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            (\"parent_refused\", \"../tmp/spike1797-value\", 13),\n            (\"outside_absolute_is_virtual\", \"/tmp/spike1797-value\", 2),\n            (\"outside_link_does_not_escape\", \"linked-file\", 2),\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/hyperlight_aks.py",
+    "test_id": "B310",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    if args.action == \"plugin\":\n        with urllib.request.urlopen(UPSTREAM_MANIFEST, timeout=20) as response:\n            source = response.read(1024 * 1024).decode()\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/install_container_scanners.py",
+    "test_id": "B310",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "        url = f\"https://github.com/anchore/{name}/releases/download/v{version}/{name}_{version}_linux_amd64.tar.gz\"\n        with urllib.request.urlopen(url, timeout=120) as response:\n            raw = response.read(LIMIT + 1)\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/openclaw_conformance/assets.py",
+    "test_id": "B310",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "        tags = set(re.findall(r\"^Tag: (.+)$\", (dist[0] / \"WHEEL\").read_text(), re.M))\n        with urllib.request.urlopen(\n            f\"https://pypi.org/pypi/{name}/{version}/json\", timeout=60\n        ) as response:\n            metadata = json.load(response)\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/openclaw_conformance/install.py",
+    "test_id": "B310",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    \"\"\"Acquire an artifact with a fixed byte limit.\"\"\"\n    with urllib.request.urlopen(url, timeout=60) as response, target.open(\"xb\") as stream:\n        size = 0\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/probe_acas_egress.py",
+    "test_id": "B310",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "        )\n        with urlopen(request, timeout=30) as response:\n            events.extend({**event, \"origin\": str(index)} for event in json.load(response))\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/probe_acas_exec_bytes.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                image=\"python-3.13\",\n                work_dir=\"/tmp/exec-bytes-work\",\n                requires=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}),\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/probe_acas_exec_bytes.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        )\n        work = \"/tmp/exec-bytes-work\"\n        async with sandbox.client_lease():\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/pypi_index.py",
+    "test_id": "B310",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "        try:\n            with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:\n                return json.load(response)\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/qualify_wslc.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            command(\"container\", \"cp\", str(source), f\"{name}:/tmp/\")\n        output = command(\"container\", \"exec\", name, \"cat\", \"/tmp/probe.txt\")\n        if output.strip() != marker:\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/terraform_manifest.py",
+    "test_id": "B310",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "            request = Request(url, headers={\"User-Agent\": USER_AGENT, **(headers or {})})\n            with urlopen(request, timeout=120) as response:\n                data = response.read(MAX_BODY + 1)\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/terraform_manifest.py",
+    "test_id": "B310",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    \"\"\"Return the X-Terraform-Get location of one registry module download.\"\"\"\n    with urlopen(Request(url, headers={\"User-Agent\": USER_AGENT}), timeout=120) as response:\n        return response.headers.get(\"X-Terraform-Get\", \"\")\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/update_bicep_catalog.py",
+    "test_id": "B310",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    request = urllib.request.Request(url, headers={\"User-Agent\": \"maf-extensions-bicep-catalog\"})\n    with urllib.request.urlopen(request, timeout=90) as response:\n        data = response.read(LIMIT + 1)\n",
+    "count": 1
+  },
+  {
+    "filename": "scripts/update_bicep_images.py",
+    "test_id": "B310",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    )\n    with urllib.request.urlopen(request, timeout=90) as response:\n        while chunk := response.read(1024 * 1024):\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/fixtures/openclaw_installed_worker_check.py",
+    "test_id": "B104",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "\n    listener = ThreadingHTTPServer((\"0.0.0.0\", 0), Control)\n    thread = threading.Thread(target=listener.serve_forever, daemon=True)\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_bicep_source_build.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "        item.attrib[\"Include\"]: item.attrib[\"Version\"]\n        for item in ET.parse(path).findall(\"./ItemGroup/PackageVersion\")\n    }\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_check_drawio_acceptance.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            [\"python3\", \"-I\", \"renderer.py\", \"--timeout\", \"120\"],\n            working_directory=\"/tmp\",\n            timeout=120,\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_check_drawio_acceptance.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        observed = acceptance.ObservedSandbox(sandbox, queue)\n        await observed.exec([\"python3\", \"-c\", \"pass\"], working_directory=\"/tmp\", timeout=1)\n        assert queue.empty()\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_check_drawio_acceptance.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "def test_font_fixture_preserves_pages_icons_and_all_variants(family):\n    document = ET.fromstring(acceptance.font_diagram(family))\n    assert len(document) == 2\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_check_drawio_docker.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "            observer.tool_call_ended(SimpleNamespace(unclean=int(outcome == \"unclean\")))\n            document = ET.fromstring(xml)\n            positioned = document.find(\".//mxCell[@vertex='1']/mxGeometry\") is not None\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_check_live_fix_loop_sample.py",
+    "test_id": "B102",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "        module = ast.Module(body=[wanted[\"WORK_PRODUCT\"], wanted[\"work_missing\"]], type_ignores=[])\n        exec(compile(module, \"<sample-13>\", \"exec\"), namespace)  # noqa: S102 - this repo's file\n        return namespace[\"work_missing\"]\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_check_live_fix_loop_sample.py",
+    "test_id": "B102",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    module = ast.Module(body=ordered, type_ignores=[])\n    exec(compile(module, \"<sample-13>\", \"exec\"), namespace)  # noqa: S102 - this repo's own file\n    return namespace[\"faults_left\"]\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_check_live_fix_loop_sample.py",
+    "test_id": "B102",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    }\n    exec(compile(ast.Module(body=[run], type_ignores=[]), \"<sample-13>\", \"exec\"), namespace)\n    assert asyncio.run(namespace[\"run\"]()) == 0\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_check_samples_against_declared_core.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        monkeypatch.setattr(\n            check, \"build_environment\", lambda *_: environment or Path(\"/tmp/python\")\n        )\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_credential_gateway_e2e.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        container(\n            engine, \"exec\", \"-i\", name, \"tar\", \"xf\", \"-\", \"-C\", \"/tmp\", data=buffer.getvalue()\n        )\n        ip = inspect(engine, name)[\"NetworkSettings\"][\"Networks\"][\"bridge\"][\"IPAddress\"]\n        yield engine, name, ip, cert\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_drawio_export_runtime.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    )\n    cell = ET.fromstring(prepared).find(\"mxCell\")\n    assert cell is not None\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_drawio_export_runtime.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    )\n    wrapper = ET.fromstring(result).find(f\".//{tag}\")\n    assert wrapper is not None and wrapper.get(\"label\") == \"%name%\"\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_drawio_export_runtime.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "def placeholder_document(tag=\"object\", indirect=False, payload='<img src=\"/etc/passwd\">'):\n    document = ET.fromstring(\n        '<mxfile><diagram><mxGraphModel><root><mxCell id=\"0\"/>'\n        '<mxCell id=\"1\" parent=\"0\"/></root></mxGraphModel></diagram></mxfile>'\n    )\n    wrapper = ET.SubElement(\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_drawio_qualification.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "                positioned = (\n                    ET.fromstring(xml).find(\".//mxCell[@vertex='1']/mxGeometry\") is not None\n                )\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_drawio_qualification.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "def document(preserve=True, positioned=True):\n    root = ET.fromstring(drawio._input(positioned))\n    for cell in root.findall(\".//mxCell[@vertex='1']\"):\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_drawio_renderer_identity.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    expected = 10001 if os.geteuid() == 0 else os.geteuid()\n    with tempfile.TemporaryDirectory(prefix=\"drawio-identity-test-\", dir=\"/tmp\") as directory:\n        root = Path(directory)\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_graphviz_sdk_qualification.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            \"AutoRemove\": True,\n            \"Tmpfs\": {\"/tmp\": \"rw,noexec,nosuid,size=64m\"},\n        },\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_mxc_accounting.py",
+    "test_id": "B608",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                db.db.execute(statement, (value,))\n        assert list(db.db.execute(f\"SELECT * FROM {table}\")) == before\n        assert list(db.db.execute(\"SELECT * FROM logical_usage ORDER BY session\")) == totals\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_mxc_accounting.py",
+    "test_id": "B608",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "            db.begin(\"a\", b\"code\")\n        before = list(db.db.execute(f\"SELECT * FROM {table}\"))\n        totals = list(db.db.execute(\"SELECT * FROM logical_usage ORDER BY session\"))\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_mxc_accounting.py",
+    "test_id": "B608",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        totals = list(db.db.execute(\"SELECT * FROM logical_usage ORDER BY session\"))\n        original = db.db.execute(f\"SELECT {column} FROM {table}\").fetchone()[0]\n        value = {\"null\": None, \"rename\": \"other\", \"unchanged\": original}[change]\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_mxc_local_initialization.py",
+    "test_id": "B608",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        if damage == \"missing_metadata\":\n            connection.execute(\"DELETE FROM \" + (\"meta\" if kind == \"legacy\" else \"settings\"))\n        elif damage == \"missing_table\":\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_mxc_local_initialization.py",
+    "test_id": "B608",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    with sqlite3.connect(path) as connection:\n        connection.execute(\"DELETE FROM \" + (\"meta\" if kind == \"legacy\" else \"sessions\"))\n    before = path.read_bytes()\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_mxc_physical_probe.py",
+    "test_id": "B102",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    namespace = {}\n    exec(FAKE_NATIVE, namespace)\n    monkeypatch.setattr(namespace[\"shared_call\"], \"execute\", namespace[\"execute\"])\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_mxc_remote_authority.py",
+    "test_id": "B608",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        stopped(db, owner)\n        db.db.execute(f\"UPDATE sessions SET {field}=?\", (value,))\n        with pytest.raises(remote.Refused):\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_mxc_workflows.py",
+    "test_id": "B506",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    workflow = ROOT / \".github\" / \"workflows\" / f\"mxc-{name}.yml\"\n    triggers = yaml.load(workflow.read_text(encoding=\"utf-8\"), Loader=yaml.BaseLoader)[\"on\"]\n    patterns = triggers[\"pull_request\"][\"paths\"]\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_no_isolation_backend.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "    \"\"\"\n    sandbox = NoIsolationSandbox(Path(\"/tmp/no-isolation-ab\"), _GUEST_WORK_DIR)\n    translated = sandbox._to_guest(\"file:///tmp/no-isolation-ab/main.bicep:21\")  # noqa: SLF001\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_offline_test_shards.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    assert result.returncode == 1, result.stdout + result.stderr\n    assert len(list(ET.parse(suite / \"failed.xml\").iter(\"failure\"))) == 1\n\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_offline_test_shards.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    return Counter(\n        (case.get(\"classname\"), case.get(\"name\")) for case in ET.parse(path).iter(\"testcase\")\n    )\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_openshell_cleanup.py",
+    "test_id": "B102",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "        with pytest.raises(ExceptionGroup) as raised:\n            exec(code, namespace)\n        errors = raised.value.exceptions\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_openshell_cleanup.py",
+    "test_id": "B102",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    else:\n        exec(code, namespace)\n    assert {name for action, name in events if action == \"lookup\"} == {\"first\", \"middle\", \"last\"}\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_openshell_replay_probe.py",
+    "test_id": "B102",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "        module.__file__ = str(path)\n        exec(\n            compile(path.read_text(encoding=\"utf-8\"), str(path), \"exec\", optimize=request.param),\n            module.__dict__,\n        )\n        return module\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_probe_acas_exec_bytes.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "\n@pytest.mark.parametrize(\"stdout,count\", [(\"\", 0), (\"/tmp/one\\n/tmp/two\\n\", 2)])\ndef test_successful_inventory_counts_the_returned_directories(stdout, count):\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_release_config.py",
+    "test_id": "B102",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "        try:\n            exec(compile(source, \"<propagation>\", \"exec\"), namespace)  # noqa: S102\n        except SystemExit as exit_called:\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_sample_acas_drawio.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    assert len(storage.delivered) == 1 and reads == [storage.delivered[0][0].handle]\n    document = ET.fromstring(storage.delivered[0][1].content)\n    assert document.find(\".//mxCell[@id='web']\").get(\"style\") == \"rounded=1;\"\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_sample_acas_drawio.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    original = ET.fromstring(xml)\n    broken = ET.fromstring(sample.inject_error(xml))\n    differences = [\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_sample_acas_drawio.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "def test_external_resources_are_refused_before_storage(sample, xml, attribute, value):\n    document = ET.fromstring(xml)\n    document.find(\".//mxCell[@id='web_to_api']\").set(attribute, value)\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_sample_acas_drawio.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "def test_only_the_selected_edge_target_is_changed(sample, xml):\n    original = ET.fromstring(xml)\n    broken = ET.fromstring(sample.inject_error(xml))\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_sample_acas_drawio.py",
+    "test_id": "B314",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "def test_wrong_architecture_never_reaches_storage(sample, xml, defect):\n    document = ET.fromstring(xml)\n    if defect == \"empty\":\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_terraform_avm_offline.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                [\"/usr/local/bin/python3\", \"-I\", \"-c\", EGRESS_PROBE],\n                working_directory=\"/tmp\",\n                timeout=30,\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_terraform_avm_offline.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                removed = await sandbox.exec(\n                    [\"rm\", \"-rf\", path], working_directory=\"/tmp\", timeout=30\n                )\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_terraform_dependencies_docker.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "                        [\"/usr/local/bin/python3\", \"-I\", \"-c\", command],\n                        working_directory=\"/tmp\",\n                        timeout=5,\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_terraform_prepared_dockerfile.py",
+    "test_id": "B102",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    namespace: dict[str, Any] = {\"json\": json}\n    exec(compile(ast.Module(body=[function], type_ignores=[]), str(DOCKERFILE), \"exec\"), namespace)\n    result = {\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_terraform_prepared_dockerfile.py",
+    "test_id": "B102",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "HIGH",
+    "code": "    step = step.replace('Path(\"/opt/maf-terraform\")', f\"Path({install.as_posix()!r})\")\n    exec(compile(step, str(DOCKERFILE), \"exec\"), {\"__name__\": \"__main__\"})\n\n",
+    "count": 1
+  },
+  {
+    "filename": "tests/test_wslc_live_workflow.py",
+    "test_id": "B108",
+    "issue_severity": "MEDIUM",
+    "issue_confidence": "MEDIUM",
+    "code": "        if args[:2] == (\"container\", \"exec\"):\n            assert args[-1] == \"/tmp/probe.txt\"\n            return \"wrong contents\" if failure == \"exec\" else marker\n",
+    "count": 1
+  }
+]

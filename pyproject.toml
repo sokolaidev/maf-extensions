@@ -17,6 +17,7 @@ dev = [
     # same bands as the application these packages were extracted from.
     "ruff>=0.15.20,<0.16",
     "pyright>=1.1.411,<1.2",
+    "bandit[toml]>=1.9.4,<1.10",
     # Release checks (metadata validation of built sdists/wheels).
     "twine>=6,<7",
     # Task runner for the local gate (`uv run poe gate`): poe detects uv.lock and runs every
@@ -195,6 +196,7 @@ test = "pytest -q"
 lint = "ruff check ."
 format = "ruff format --check ."
 types = "pyright"
+security = "python scripts/check_bandit.py"
 
 [tool.poe.tasks.types-packages]
 help = "Every package's strict pyright pass, enumerated from the workspace"
@@ -229,5 +231,8 @@ help = "Refuse a sample that cannot run on the core its own PEP 723 block names"
 cmd = "python scripts/check_samples_against_declared_core.py"
 
 [tool.poe.tasks.gate]
-help = "The full pre-PR gate: tests, lint, format, both pyright passes, doc references, commas"
-sequence = ["test", "lint", "format", "types-packages", "types", "doc-paths", "implicit-concat"]
+help = "The full pre-PR gate: tests, lint, format, Bandit, both pyright passes, doc references, commas"
+sequence = ["test", "lint", "format", "security", "types-packages", "types", "doc-paths", "implicit-concat"]
+
+[tool.bandit]
+exclude_dirs = ["__pycache__", ".venv"]
