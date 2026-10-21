@@ -29,7 +29,7 @@ def main() -> None:
             "--memory",
             "1g",
             "--tmpfs",
-            "/tmp:rw,exec,size=512m",
+            "/tmp:rw,exec,size=512m",  # nosec B108 -- guest tmpfs mount specification
             args.image,
             "/usr/local/bin/python3",
             "-",

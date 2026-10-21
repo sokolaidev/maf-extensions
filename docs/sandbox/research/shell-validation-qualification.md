@@ -1,6 +1,6 @@
 # Shell validation qualification
 
-Local observations on 2026-10-22 for [#2063](https://github.com/sokolaidev/maf-extensions/issues/2063). The accepted interface is in the [kind contract](../kinds/shell.md); reproducible image commands and dependency preparation are in the [image guide](../../../images/shell-sandbox/README.md).
+> Local observations on 2026-10-22 for [#2063](https://github.com/sokolaidev/maf-extensions/issues/2063). The accepted interface is in the [kind contract](../kinds/shell.md); reproducible image commands and dependency preparation are in the [image guide](../../../images/shell-sandbox/README.md).
 
 ## Analysis-time execution
 

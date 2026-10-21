@@ -107,7 +107,8 @@ class Supervisor:
                 code = process.wait(timeout=left)
         finally:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                # Windows stdlib stubs omit the Linux image's process-group API.
+                os.killpg(process.pid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
             except ProcessLookupError:
                 pass
             process.stdin.close()
