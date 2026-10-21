@@ -11,6 +11,7 @@ from typing import Any
 from .evidence import decode, require
 
 LIMIT = 4 * 1024 * 1024
+REQUEST_TIMEOUT = 20
 
 
 class Provider:
@@ -29,8 +30,9 @@ class Provider:
         provider = self
 
         class Handler(BaseHTTPRequestHandler):
+            timeout = REQUEST_TIMEOUT
+
             def do_POST(self) -> None:
-                self.connection.settimeout(20)
                 try:
                     require(self.path == "/v1/chat/completions", "provider_route")
                     require(

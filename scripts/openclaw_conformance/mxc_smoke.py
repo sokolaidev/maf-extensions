@@ -179,7 +179,11 @@ def native_script(active: Path, agent: Path, outside: Path, nonce: str) -> str:
         statements.append(
             f"try {{ Write-Output ('{label}='+[IO.File]::ReadAllText({quoted(path)})) }} catch {{ Write-Output '{label}=denied' }}"
         )
-    for label, path in (("active-write", active / "native-write.txt"), ("outside-write", outside)):
+    for label, path in (
+        ("active-write", active / "native-write.txt"),
+        ("agent-write", agent / "agent-write.txt"),
+        ("outside-write", outside),
+    ):
         statements.append(
             f"try {{ [IO.File]::WriteAllText({quoted(path)},'{nonce}'); Write-Output '{label}=allowed' }} catch {{ Write-Output '{label}=denied' }}"
         )
@@ -188,7 +192,7 @@ def native_script(active: Path, agent: Path, outside: Path, nonce: str) -> str:
 
 
 def native_passed(
-    result: str, observed: set[int], active: Path, outside: Path, mode: str, nonce: str
+    result: str, observed: set[int], active: Path, agent: Path, outside: Path, mode: str, nonce: str
 ) -> bool:
     """Require real execution plus independent positive and negative file controls."""
     import re
@@ -203,8 +207,10 @@ def native_passed(
         and f"active-read={nonce}" in result
         and (f"agent-read={nonce}" if mode != "none" else "agent-read=denied") in result
         and (active / "native-write.txt").read_text() == expected_write
+        and (agent / "agent-write.txt").read_text() == expected_write
         and outside.read_text() == "outside-before"
         and ("active-write=allowed" if mode == "rw" else "active-write=denied") in result
+        and ("agent-write=allowed" if mode == "rw" else "agent-write=denied") in result
         and "outside-write=denied" in result
     )
 
@@ -350,6 +356,7 @@ class Campaign:
             (active / "native-write.txt", "before"),
             (active / "host-write.txt", "before"),
             (self.root / "agent/agent-marker.txt", nonce),
+            (self.root / "agent/agent-write.txt", "before"),
             (self.root / "outside.txt", "outside-before"),
         ):
             path.write_text(value)
@@ -387,14 +394,17 @@ class Campaign:
                 and f"active-read={nonce}" in control_text
                 and f"agent-read={nonce}" in control_text
                 and "active-write=allowed" in control_text
+                and "agent-write=allowed" in control_text
                 and "outside-write=allowed" in control_text
                 and (active / "native-write.txt").read_text() == nonce
+                and (self.root / "agent/agent-write.txt").read_text() == nonce
                 and outside.read_text() == nonce
             )
             self.rows.append(("unsandboxed fixture positive control", permitted, control_text))
             require(permitted, "host_fixture_prerequisite")
         finally:
             (active / "native-write.txt").write_text("before")
+            (self.root / "agent/agent-write.txt").write_text("before")
             outside.write_text("outside-before")
         self.provider.start()
         self.processes.start("gateway", [*command, "gateway", "run"], env)
@@ -422,7 +432,9 @@ class Campaign:
         self.rows.append(
             (
                 "native execution and filesystem controls",
-                native_passed(result, self.observed, active, outside, self.mode, nonce),
+                native_passed(
+                    result, self.observed, active, self.root / "agent", outside, self.mode, nonce
+                ),
                 result + "\nVerified executor descendant PIDs: " + repr(sorted(self.observed)),
             )
         )

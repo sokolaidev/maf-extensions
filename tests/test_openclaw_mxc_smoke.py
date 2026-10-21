@@ -117,6 +117,10 @@ process = importlib.import_module("openclaw_conformance.mxc_smoke_process")
 def test_native_success_requires_process_and_file_evidence(tmp_path: Path, mode: str):
     active = tmp_path / "active"
     active.mkdir()
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    agent_write = agent / "agent-write.txt"
+    agent_write.write_text("nonce" if mode == "rw" else "before")
     outside = tmp_path / "outside.txt"
     outside.write_text("outside-before")
     target = active / "native-write.txt"
@@ -128,18 +132,30 @@ def test_native_success_requires_process_and_file_evidence(tmp_path: Path, mode:
             "active-read=nonce",
             "agent-read=denied" if mode == "none" else "agent-read=nonce",
             "active-write=allowed" if mode == "rw" else "active-write=denied",
+            "agent-write=allowed" if mode == "rw" else "agent-write=denied",
             "outside-write=denied",
             "smoke-end=nonce",
         ]
     )
-    assert smoke.native_passed(result, {123}, active, outside, mode, "nonce")
-    assert not smoke.native_passed(result, {456}, active, outside, mode, "nonce")
-    assert not smoke.native_passed('{"status":"error"}', {123}, active, outside, mode, "nonce")
+    assert smoke.native_passed(result, {123}, active, agent, outside, mode, "nonce")
+    assert not smoke.native_passed(result, {456}, active, agent, outside, mode, "nonce")
+    assert not smoke.native_passed(
+        '{"status":"error"}', {123}, active, agent, outside, mode, "nonce"
+    )
     outside.write_text("modified")
-    assert not smoke.native_passed(result, {123}, active, outside, mode, "nonce")
+    assert not smoke.native_passed(result, {123}, active, agent, outside, mode, "nonce")
     outside.write_text("outside-before")
+    agent_write.write_text("wrong-state")
+    assert not smoke.native_passed(result, {123}, active, agent, outside, mode, "nonce")
+    agent_write.write_text("nonce" if mode == "rw" else "before")
+    wrong_result = (
+        result.replace("agent-write=denied", "agent-write=allowed")
+        if mode != "rw"
+        else result.replace("agent-write=allowed", "agent-write=denied")
+    )
+    assert not smoke.native_passed(wrong_result, {123}, active, agent, outside, mode, "nonce")
     target.write_text("wrong-state")
-    assert not smoke.native_passed(result, {123}, active, outside, mode, "nonce")
+    assert not smoke.native_passed(result, {123}, active, agent, outside, mode, "nonce")
 
 
 @pytest.mark.parametrize("mode", smoke.MODES)
@@ -200,7 +216,8 @@ def test_real_owned_process_snapshot(tmp_path: Path):
         else:
             pytest.fail("No verified executor ancestor in the owned job")
     finally:
-        assert owned.close() == []
+        cleanup = owned.close()
+        assert cleanup == []
         assert owned.stopped
 
 
@@ -244,12 +261,16 @@ def test_report_cannot_pass_missing_cases_or_failed_cleanup(tmp_path: Path):
     campaign = smoke.Campaign(tmp_path, tmp_path / "installation", "none")
     try:
         campaign.rows = [("native", True, "native result")]
-        assert not campaign.report(None)
+        passed = campaign.report(None)
+        assert not passed
         campaign.rows = [(str(i), True, "ok") for i in range(4)]
-        assert campaign.report(None)
-        assert not campaign.report("candidate_changed")
+        passed = campaign.report(None)
+        assert passed
+        passed = campaign.report("candidate_changed")
+        assert not passed
         campaign.cleanup.append("still-running")
-        assert not campaign.report(None)
+        passed = campaign.report(None)
+        assert not passed
         assert list(tmp_path.glob("*.json")) == []
         assert "unqualified" in (tmp_path / "report.md").read_text()
     finally:
@@ -267,6 +288,7 @@ def test_owned_powershell_fixture_reaches_every_unrestricted_target(tmp_path: Pa
     outside = tmp_path / "outside.txt"
     (active / "marker.txt").write_text("nonce")
     (agent / "agent-marker.txt").write_text("nonce")
+    (agent / "agent-write.txt").write_text("before")
     outside.write_text("outside-before")
     script = active / "smoke.ps1"
     script.write_text(smoke.native_script(active, agent, outside, "nonce"), encoding="utf-8-sig")
@@ -290,6 +312,121 @@ def test_owned_powershell_fixture_reaches_every_unrestricted_target(tmp_path: Pa
     assert b"smoke-end=nonce" in result.stdout
     assert b"active-read=nonce" in result.stdout
     assert b"agent-read=nonce" in result.stdout
+    assert b"agent-write=allowed" in result.stdout
     assert b"outside-write=allowed" in result.stdout
     assert outside.read_text() == "nonce"
     assert (active / "native-write.txt").read_text() == "nonce"
+    assert (agent / "agent-write.txt").read_text() == "nonce"
+
+
+@pytest.mark.parametrize(
+    "partial", [b"", b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\n"]
+)
+def test_provider_shutdown_with_incomplete_headers(monkeypatch: pytest.MonkeyPatch, partial: bytes):
+    import socket
+    import threading
+
+    module = importlib.import_module("openclaw_conformance.mxc_smoke_provider")
+    monkeypatch.setattr(module, "REQUEST_TIMEOUT", 0.1)
+    value = Provider()
+    accepted = threading.Event()
+    finished = threading.Event()
+    errors = []
+    get_request = value.server.get_request
+
+    def accept():
+        connection = get_request()
+        accepted.set()
+        return connection
+
+    def close():
+        try:
+            value.close()
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(value.server, "get_request", accept)
+    value.start()
+    connection = socket.create_connection(("127.0.0.1", value.server.server_port), timeout=3)
+    closer = threading.Thread(target=close, daemon=True)
+    try:
+        if partial:
+            connection.sendall(partial)
+        assert accepted.wait(3)
+        closer.start()
+        assert finished.wait(3), "Provider shutdown blocked on request parsing"
+        assert not errors
+        assert not value.thread.is_alive()
+        assert value.calls == 0
+    finally:
+        connection.close()
+        if closer.ident is not None:
+            closer.join(timeout=3)
+        value.close()
+
+
+@pytest.mark.parametrize("mode", smoke.MODES)
+@pytest.mark.parametrize("agent_allowed", [False, True])
+def test_fixture_control_requires_and_restores_agent_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, agent_allowed: bool
+):
+    from types import SimpleNamespace
+
+    (tmp_path / "state").mkdir()
+    agent = tmp_path / "agent"
+    agent.mkdir()
+    active = agent if mode == "rw" else tmp_path / "private/session"
+    monkeypatch.setattr(smoke, "identities", lambda _: {})
+    monkeypatch.setattr(smoke.shutil, "which", lambda _: "node")
+    monkeypatch.setenv("SYSTEMROOT", str(tmp_path))
+    campaign = smoke.Campaign(tmp_path, tmp_path / "installation", mode)
+
+    def capture(command, *args, **kwargs):
+        if "explain" in command:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "sandbox": {
+                            "backend": "mxc",
+                            "sessionIsSandboxed": True,
+                            "workspaceAccess": mode,
+                            "scope": "agent",
+                            "effectiveHostWorkspaceRoot": str(active),
+                        }
+                    }
+                ).encode(),
+            )
+        nonce = (active / "marker.txt").read_text()
+        (active / "native-write.txt").write_text(nonce)
+        (tmp_path / "outside.txt").write_text(nonce)
+        if agent_allowed:
+            (agent / "agent-write.txt").write_text(nonce)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                f"smoke-end={nonce}\nactive-read={nonce}\nagent-read={nonce}\n"
+                "active-write=allowed\noutside-write=allowed\n"
+                + ("agent-write=allowed" if agent_allowed else "agent-write=denied")
+            ).encode(),
+        )
+
+    def before_gateway():
+        assert (agent / "agent-write.txt").read_text() == "before"
+        assert (active / "native-write.txt").read_text() == "before"
+        assert (tmp_path / "outside.txt").read_text() == "outside-before"
+        raise Refused("stop_after_control")
+
+    monkeypatch.setattr(smoke, "capture", capture)
+    monkeypatch.setattr(campaign.provider, "start", before_gateway)
+    try:
+        with pytest.raises(
+            Refused, match="stop_after_control" if agent_allowed else "host_fixture_prerequisite"
+        ):
+            campaign.execute()
+        assert campaign.rows[0][1] is agent_allowed
+        assert (agent / "agent-write.txt").read_text() == "before"
+    finally:
+        campaign.provider.close()
