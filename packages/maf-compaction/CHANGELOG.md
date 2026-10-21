@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.5](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.6.4...maf-compaction-v0.6.5) (2026-10-21)
+
+
+### Fixes
+
+* **compaction:** fall back to prompt recall for wrapped tool-choice errors ([#2091](https://github.com/sokolaidev/maf-extensions/issues/2091)) ([2c10f2c](https://github.com/sokolaidev/maf-extensions/commit/2c10f2c61619658d7e284afc89e3e5206cafb9dd))
+
 ## [0.6.4](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.6.3...maf-compaction-v0.6.4) (2026-10-21)
 
 
