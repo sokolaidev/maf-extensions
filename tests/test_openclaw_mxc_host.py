@@ -176,7 +176,7 @@ def test_hosted_comparison_is_opt_in_and_retains_only_markdown():
     assert job["runs-on"] == "windows-latest"
     assert job["strategy"]["matrix"] == {
         "mode": ["none", "ro", "rw"],
-        "preparation": ["unprepared", "prepared"],
+        "preparation": "${{ fromJSON(inputs.openclaw_mxc_phase == 'prerequisites' && '[\"unprepared\"]' || '[\"unprepared\", \"prepared\"]') }}",
     }
     for step in job["steps"]:
         assert "github.event_name == 'workflow_dispatch' && inputs.openclaw_mxc" in step["if"]

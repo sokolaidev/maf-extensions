@@ -776,7 +776,7 @@ The operator-approved six-case [initial run 39853674592](https://github.com/soko
 | Initial case | Observation | Disposition |
 |---|---|---|
 | Unprepared `none` | Unrestricted fixture passed; native `cmd.exe` route returned access denied without fixture completion or a verified executor descendant; host-file read and denied-write controls passed | Unqualified |
-| Unprepared `ro` | CLI setup exceeded its 360-second deadline before the unrestricted fixture or native cases | Prerequisite unavailable; unqualified |
+| Unprepared `ro` | Smoke prerequisite timed out before a completed unrestricted fixture or native case; phase not retained | Prerequisite unavailable; unqualified |
 | Unprepared `rw` | Unrestricted fixture passed; native route refused the generated read-only skills subtree beneath the writable agent root; ordinary host-file read/write controls passed | Safe refusal; permitted native control unavailable |
 | Prepared `none`/`ro`/`rw` | Selected identities and readiness passed, but the preparer exited 1; smoke step did not run | Preparation incomplete; no native result |
 
@@ -788,9 +788,9 @@ The six-case [retry 39854889313](https://github.com/sokolaidev/maf-extensions/ac
 
 | Retry case | Runner image version (`win25-vs2026`) | Observation | Disposition |
 |---|---|---|---|
-| Unprepared `none` | `20261021.278.1` | CLI setup deadline exceeded before fixture/native controls | Unqualified |
+| Unprepared `none` | `20261021.278.1` | Smoke prerequisite timed out; phase not retained | Unqualified |
 | Prepared `none` | `20261021.278.1` | Host preparation deadline exceeded; smoke not run | Unqualified |
-| Unprepared `ro` | `20261021.278.1` | CLI setup deadline exceeded before fixture/native controls | Unqualified |
+| Unprepared `ro` | `20261021.278.1` | Smoke prerequisite timed out; phase not retained | Unqualified |
 | Prepared `ro` | `20261007.264.1` | Host preparation deadline exceeded; smoke not run | Unqualified; host image also differs |
 | Unprepared `rw` | `20261018.275.1` | Unrestricted fixture and ordinary host-file read/write controls passed; protected generated-skills overlap refused before native execution | Unqualified |
 | Prepared `rw` | `20261021.278.1` | Host preparation deadline exceeded; smoke not run | Unqualified; host image also differs |
@@ -820,13 +820,13 @@ Markdown evidence remains in the workflow artifacts and external local copies; n
 | `39854889313` | `rw-unprepared` | `host.md` | `88593736157f0137c3df8184809ca88d74b9fd611d15f92bd27374e9cd17c4cc` |
 | `39854889313` | `rw-unprepared` | `report.md` | `f9e18e843ca03cccd0535d02c9339accf9ddf28842f51855c7ba3752eba68702` |
 
-After these initial two attempts, the next #1974 increment was bounded diagnosis of the preparer timeout and CLI setup stalls, with command progress/exit evidence and a successful post-preparation check before a native campaign. The follow-ups below retain the preparer progress and refine the host prerequisite. Keep the 60-second host-command and 360-second CLI deadlines explicit; do not silently extend them or convert failures to skips. If a supported NUL-device preparation is subsequently selected, record it as a distinct preparation profile and run fresh controls. The generated-skills overlap still needs a supported workspace-layout resolution. Native execution, deterministic replacement, full hostile filesystem operations and multi-session lifetime remain unqualified; the bounded MCP adoption direction is unchanged.
+After these initial two attempts, the next #1974 increment was bounded diagnosis of the preparer timeout and smoke prerequisite timeouts, with command progress/exit evidence and a successful post-preparation check before a native campaign. The follow-ups below retain the preparer progress and refine the host prerequisite. Keep the 60-second host-command and 360-second CLI deadlines explicit; do not silently extend them or convert failures to skips. If a supported NUL-device preparation is subsequently selected, record it as a distinct preparation profile and run fresh controls. The generated-skills overlap still needs a supported workspace-layout resolution. Native execution, deterministic replacement, full hostile filesystem operations and multi-session lifetime remain unqualified; the bounded MCP adoption direction is unchanged.
 
 
 
 ### Timeout-reporting retry (2026-10-22)
 
-[Run 39859863535](https://github.com/sokolaidev/maf-extensions/actions/runs/39859863535) used `6a34e0a12ba3418e7695906f5c24034f66612cd0`. All six native jobs failed. The prepared reports now identify the attempted preparation step on timeout, but contain no stderr; stdout was still unavailable in this revision. All three preparation commands hit the unchanged deadline, with no prepared smoke. Unprepared `none` and `ro` again timed out at CLI setup; `rw` passed the unrestricted fixture and ordinary host-file controls but refused the protected generated-skills overlap. The smoke reports list no cleanup errors; none qualifies native execution.
+[Run 39859863535](https://github.com/sokolaidev/maf-extensions/actions/runs/39859863535) used `6a34e0a12ba3418e7695906f5c24034f66612cd0`. All six native jobs failed. The prepared reports now identify the attempted preparation step on timeout, but contain no stderr; stdout was still unavailable in this revision. All three preparation commands hit the unchanged deadline, with no prepared smoke. Unprepared `none` and `ro` again reported a smoke prerequisite timeout without retaining its phase; `rw` passed the unrestricted fixture and ordinary host-file controls but refused the protected generated-skills overlap. The smoke reports list no cleanup errors; none qualifies native execution.
 
 Prepared `none`/`rw` and unprepared `none` used image `20261007.264.1`; both `ro` cases used `20261021.278.1`; unprepared `rw` used `20261018.275.1` (all `win25-vs2026`). The unchanged initial ACL fingerprint and fallback readiness warnings do not establish post-timeout permissions. The artifact layout is the same as above.
 
@@ -857,7 +857,7 @@ This finding makes host isolation capability a qualification prerequisite. More 
 
 [Run 39860888435](https://github.com/sokolaidev/maf-extensions/actions/runs/39860888435) exercised stdout retention at `2d9bbdaa78f1cadd20d9a8ab62381d59986c2c7c`. All three prepared reports retain the drive-root heading, metadata mask `0x00120088` and first trustee `ALL APPLICATION PACKAGES` (`S-1-15-2-1`), followed by the 60-second timeout. Neither the second trustee nor `Done.` was observed. Compared with the tagged source, this places the last observed progress immediately before the first `apply_explicit_ace` call. It is consistent with the upstream propagation report, but no call stack or filesystem trace establishes which API was running or which ACLs changed. No post-preparation check or prepared native fixture ran.
 
-All three unprepared cases exceeded the 360-second CLI setup deadline, including `rw` on image `20261018.275.1`, which had reached the generated-skills refusal on earlier attempts. This rules out treating image version alone as an explanation of the CLI stall; it does not identify its cause. No unrestricted fixture or native process/filesystem controls ran in this campaign. The smoke reports list no cleanup errors and retain preflight identities only. All six native jobs failed. Ordinary pull-request CI remains separate from these opt-in failures.
+All three unprepared cases reported a smoke prerequisite timeout without retaining its phase, including `rw` on image `20261018.275.1`, which had reached the generated-skills refusal on earlier attempts. This rules out treating image version alone as an explanation of the timeout; it does not identify its phase or cause. No unrestricted fixture completed and no native process/filesystem control ran in this campaign. The smoke reports list no cleanup errors and retain preflight identities only. All six native jobs failed. Ordinary pull-request CI remains separate from these opt-in failures.
 
 Prepared `none`/`ro` and unprepared `none` used `20261007.264.1`; prepared `rw` and unprepared `ro` used `20261021.278.1`; unprepared `rw` used `20261018.275.1` (all `win25-vs2026`). Initial readiness again selected AppContainer + DACL with both preparation warnings. The Markdown artifact layout is unchanged.
 
@@ -873,7 +873,18 @@ Prepared `none`/`ro` and unprepared `none` used `20261007.264.1`; prepared `rw` 
 | `rw-unprepared` | `host.md` | `ae560b1c0e7dde6bcd3ad8e56a653946d5b69bcc292037f31c0f2b3b8ed3b453` |
 | `rw-unprepared` | `report.md` | `99859f7c8e851f19de41c664dca43027d0826ad32e7ab3e9a3367c8d95c9a5a1` |
 
-The diagnostic increment is complete: the bounded supervisor now preserves the preparer's last progress without weakening timeout, ownership or qualification rules. Do not repeat the same preparation profile or extend its deadline as a qualification strategy. The next native increment must first establish a supported Windows host/isolation combination and resolve the CLI startup prerequisite with bounded command output; the protected generated-skills layout remains unresolved as well. A successful readiness probe alone still cannot qualify native execution. #1974 remains open and the bounded MCP adoption work continues independently.
+The diagnostic increment is complete: the bounded supervisor now preserves the preparer's last progress without weakening timeout, ownership or qualification rules. Do not repeat the same preparation profile or extend its deadline as a qualification strategy. The next native increment must first establish a supported Windows host/isolation combination and resolve the smoke prerequisites with phase-specific bounded command output; the protected generated-skills layout remains unresolved as well. A successful readiness probe alone still cannot qualify native execution. #1974 remains open and the bounded MCP adoption work continues independently.
+
+
+### Smoke prerequisite phase audit (2026-10-23)
+
+The earlier narrative incorrectly attributed the hosted generic `setup_command_timeout` to the 360-second `sandbox explain` command. The same error code also covers the 30-second unrestricted PowerShell fixture, and the report did not retain the failing command. GitHub's step timestamps for the timed-out unprepared cases are only 55-60 seconds from start to finish: initial `ro` 58 seconds, first retry `none`/`ro` 57/58 seconds, timeout-report retry `none`/`ro` 58/55 seconds, and bounded-progress retry `none`/`ro`/`rw` 60/59/58 seconds. Those observations do not support a 360-second CLI timeout. The narrative above is corrected; original report bytes/hashes are unchanged. The exact failing phase requires new evidence.
+
+An isolated local CLI-only diagnostic against the same selected installed assets returned exit 0 after 187.8 seconds and an owned sandbox workspace explanation. It ran neither the unrestricted fixture nor Gateway/native execution and made no host-preparation call. Its redacted Markdown SHA-256 is `a1f4f7c6c46028e435ddfc4894cb2600e509ab9e5ba424e5df8f7221c5d9a28f`. This demonstrates local CLI completion only; it neither explains the hosted failure nor qualifies the local host.
+
+The runner now retains separate command labels, configured deadlines, elapsed times and bounded redacted stdout/stderr for `sandbox explain` and the unrestricted fixture, including refusal paths. Owned fixture markers are restored even when command capture refuses. The opt-in workflow's `openclaw_mxc_phase=prerequisites` selects only unprepared cases and stops after these two controls, before the Gateway or native workload. A successful diagnostic exit means its prerequisites completed; its report still says native smoke is unqualified. The default `smoke` phase preserves the original prepared/unprepared matrix and pass criteria.
+
+Host selection also remains bounded. The [GitHub-hosted runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) lists standard Windows 11 runners as ARM64, while standard x64 runners use Server images. The [Windows 11 image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows11-VS2026-Arm64-Readme.md) currently records build 26200.9457. This profile pins x64 native assets and explicitly refuses other architectures; ARM64 or emulated x64 is a distinct candidate, not an interchangeable qualification host. The MXC v0.9.0 support matrix does not promise an enabled BaseContainer contract on that build. No new host or isolation mode is qualified by these listings, and no runner label alone supplies the missing runtime capability.
 
 ## Status
 

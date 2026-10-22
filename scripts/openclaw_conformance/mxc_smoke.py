@@ -11,13 +11,14 @@ import os
 import platform
 import secrets
 import shutil
+import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
-from .commands import capture
+from .commands import CaptureRefused, capture
 from .evidence import Refused, decode, file_hash, require
 from .install import REPO, SAMPLE, environment
 from .mxc_smoke_process import native_ancestor, sample
@@ -278,6 +279,9 @@ class Campaign:
         self.cleanup: list[str] = []
         self.manifest: dict[str, str] = {}
         self.config_hash = "not-created"
+        self.setup: list[str] = []
+        self.prerequisites_only = False
+        self.prerequisites_complete = False
         self.native = (
             installation
             / "node_modules/@openclaw/mxc-sandbox/node_modules/@microsoft/mxc-sdk/bin/x64/wxc-exec.exe"
@@ -352,8 +356,53 @@ class Campaign:
         )
         return str(self.provider.results[0])
 
-    def execute(self) -> None:
+    def setup_command(
+        self, label: str, args: list[str], env: dict[str, str], timeout: int
+    ) -> subprocess.CompletedProcess[bytes]:
+        """Retain bounded phase diagnostics without counting them as smoke controls."""
+        log = self.root / "setup.log"
+        offset = log.stat().st_size if log.exists() else 0
+        started = time.monotonic()
+        self.setup.extend(["", f"### {label}", f"Deadline: {timeout} seconds."])
+        result = None
+        partial = b""
+        try:
+            result = capture(args, self.root, env, timeout, diagnostics=True, stdout_limit=LIMIT)
+            return result
+        except CaptureRefused as exc:
+            partial = exc.stdout
+            raise
+        finally:
+            self.setup.append(f"Elapsed: {time.monotonic() - started:.3f} seconds.")
+            self.setup.append(
+                f"Exit code: {result.returncode}."
+                if result is not None
+                else "Command refused; exit status unavailable. Output may be partial."
+            )
+            error = b""
+            if log.exists():
+                with log.open("rb") as stream:
+                    stream.seek(offset)
+                    error = stream.read(16385)
+            for channel, raw in (
+                ("stdout", result.stdout if result else partial),
+                ("stderr", error),
+            ):
+                if raw:
+                    self.setup.extend(
+                        [
+                            channel + ":",
+                            "```text",
+                            raw[:16384].decode("utf-8", errors="replace").replace("```", "---"),
+                            "```",
+                        ]
+                    )
+                if len(raw) > 16384:
+                    self.setup.append(f"{channel} exceeded 16 KiB; extraction is incomplete.")
+
+    def execute(self, *, prerequisites_only: bool = False) -> None:
         """Run the declared selected-mode cases without adapting them to failures."""
+        self.prerequisites_only = prerequisites_only
         self.manifest = identities(self.installation)
         plugin = self.installation / "node_modules/@openclaw/mxc-sandbox"
         config = self.root / "state/openclaw.json"
@@ -386,13 +435,11 @@ class Campaign:
         require(node is not None, "node_missing")
         assert node is not None
         command = [node, str(self.installation / "node_modules/openclaw/openclaw.mjs")]
-        explained = capture(
+        explained = self.setup_command(
+            "sandbox explain prerequisite",
             [*command, "sandbox", "explain", "--json", "--agent", "main"],
-            self.root,
             env,
             360,
-            diagnostics=True,
-            stdout_limit=LIMIT,
         )
         if explained.returncode != 0:
             self.rows.append(
@@ -425,24 +472,22 @@ class Campaign:
         guest_command = (
             f'"{shell}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{script}"'
         )
-        control = capture(
-            [
-                str(shell),
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(script),
-            ],
-            self.root,
-            env,
-            30,
-            diagnostics=True,
-            stdout_limit=LIMIT,
-        )
-        control_text = control.stdout.decode("utf-8", errors="replace")
         try:
+            control = self.setup_command(
+                "unrestricted fixture prerequisite",
+                [
+                    str(shell),
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(script),
+                ],
+                env,
+                30,
+            )
+            control_text = control.stdout.decode("utf-8", errors="replace")
             permitted = (
                 control.returncode == 0
                 and f"smoke-end={nonce}" in control_text
@@ -461,6 +506,11 @@ class Campaign:
             (active / "native-write.txt").write_text("before")
             (self.root / "agent/agent-write.txt").write_text("before")
             outside.write_text("outside-before")
+        self.prerequisites_complete = True
+        if prerequisites_only:
+            require(identities(self.installation) == self.manifest, "candidate_changed")
+            require(file_hash(config) == self.config_hash, "configuration_changed")
+            return
         self.provider.start()
         self.processes.start("gateway", [*command, "gateway", "run"], env)
         deadline = time.monotonic() + 360
@@ -514,7 +564,8 @@ class Campaign:
     def report(self, failure: str | None) -> bool:
         """Retain Markdown only; runtime JSON stays in the external private campaign."""
         passed = (
-            len(self.rows) == (3 if self.mode == "ro" else 4)
+            not self.prerequisites_only
+            and len(self.rows) == (3 if self.mode == "ro" else 4)
             and all(ok for _, ok, _ in self.rows)
             and failure is None
             and not self.cleanup
@@ -524,10 +575,13 @@ class Campaign:
             (str(self.installation), "<installation>"),
             (self.token, "<gateway-token>"),
             (self.provider.token, "<provider-token>"),
+            (os.environ.get("USERPROFILE", ""), "<profile>"),
         ]
 
         def redact(text: str) -> str:
             for old, new in replacements:
+                if not old:
+                    continue
                 text = text.replace(old.replace("\\", "\\\\"), new).replace(old, new)
             return text
 
@@ -535,6 +589,9 @@ class Campaign:
             f"# {PROFILE}: {self.mode}",
             "",
             f"Selected-mode smoke: {'passed' if passed else 'unqualified'}.",
+            "Prerequisites-only diagnostic; native smoke not run."
+            if self.prerequisites_only
+            else "Native smoke requested.",
             "",
             f"Host: {platform.system()} {platform.release()} {platform.version()}, {platform.machine()}; Python {platform.python_version()}.",
             "",
@@ -559,6 +616,9 @@ class Campaign:
                     "```",
                 ]
             )
+        if self.setup:
+            lines.extend(["", "## Setup diagnostics (not native qualification)"])
+            lines.extend(redact(line) for line in self.setup)
         if self.debug:
             lines.extend(["", "## Native diagnostics (not independent execution proof)", ""])
             lines.extend(
@@ -575,6 +635,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mode", choices=MODES, required=True)
     parser.add_argument("--debug-native", action="store_true")
+    parser.add_argument("--prerequisites-only", action="store_true")
     args = parser.parse_args()
     require(
         os.name == "nt" and platform.machine().lower() in {"amd64", "x86_64"},
@@ -597,7 +658,7 @@ def main() -> int:
     campaign = Campaign(root, installation, args.mode, debug=args.debug_native)
     failure = None
     try:
-        campaign.execute()
+        campaign.execute(prerequisites_only=args.prerequisites_only)
     except Exception as exc:
         failure = str(exc) if isinstance(exc, Refused) else type(exc).__name__
     finally:
@@ -609,6 +670,12 @@ def main() -> int:
         except Exception as exc:
             campaign.cleanup.append(type(exc).__name__)
     passed = campaign.report(failure)
+    if args.prerequisites_only:
+        completed = campaign.prerequisites_complete and failure is None and not campaign.cleanup
+        print(
+            f"Prerequisite diagnostic {'completed' if completed else 'failed'}; native smoke not run."
+        )
+        return 0 if completed else 1
     print(f"Selected-mode smoke {'passed' if passed else 'unqualified'}; see {root / 'report.md'}")
     return 0 if passed else 1
 
