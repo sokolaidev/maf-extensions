@@ -2030,11 +2030,23 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         anchor = _newest_record_identity(messages)
         if self._value_targets is not None and anchor != self._value_target_anchor:
             return
+        recall_results = _recall_results(messages)
+        candidates = self._record_candidates(messages, len(messages), recall_results)
+        record_index = find_record_index(messages)
+        if record_index is not None:
+            preceding = [item for item in candidates if item[0]["end_index"] < record_index]
+            _, quoted, named = self._record_coverage(
+                messages, record_index, preceding, recall_results
+            )
+            candidates = [
+                (group, names, values)
+                for group, names, values in candidates
+                if group["end_index"] >= record_index
+                or not self._is_covered(quoted, names=names, values=values, named=named)
+            ]
         candidates = [
             candidate
-            for candidate in self._record_candidates(
-                messages, len(messages), _recall_results(messages)
-            )
+            for candidate in candidates
             if any(
                 not message.additional_properties.get(EXCLUDED_KEY, False)
                 for message in messages[candidate[0]["start_index"] : candidate[0]["end_index"] + 1]
@@ -2099,6 +2111,25 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 self._records_without_values += 1
         if self._observe_record_values is not None:
             self._observe_record_values(identity, has_values)
+
+    def _record_coverage(
+        self,
+        messages: list[Message],
+        anchor: int,
+        candidates: list[tuple[dict[str, Any], set[str], set[str]]],
+        recall_results: dict[int, str],
+    ) -> tuple[str, set[str], set[str]]:
+        """Read standing records against only the candidates that precede their anchor."""
+        record = "\n".join(
+            text
+            for message in messages[: anchor + 1]
+            if (text := _record_text(message, recall_results))
+        )
+        quoted = set(_tokens(record, fold_case=False))
+        mentions = Counter(_tokens(record))
+        demand = Counter(name for _, names, _ in candidates for name in names)
+        named = {name for name, needed in demand.items() if mentions[name.lower()] >= needed}
+        return record, quoted, named
 
     def _drop_before(self, messages: list[Message], anchor: int) -> bool:
         """Exclude the tool groups the record demonstrably covers, and only those.
@@ -2189,14 +2220,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             True if anything was excluded.
         """
         recall_results = _recall_results(messages)
-        record = "\n".join(
-            text
-            for message in messages[: anchor + 1]
-            if (text := _record_text(message, recall_results))
-        )
-        # Tokenised once, and kept in both shapes the two rules need: a set for "is this value
-        # in the record", a count for "is this name mentioned as often as it was called".
-        quoted = set(_tokens(record, fold_case=False))
+        candidates = self._record_candidates(messages, anchor, recall_results)
+        record, quoted, named = self._record_coverage(messages, anchor, candidates, recall_results)
         source_rows = Counter(
             row
             for message in messages
@@ -2207,19 +2232,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             for row in _table_rows(content.result).values()
         )
         quoted_rows = {row for row in _table_rows(record).values() if source_rows[row] == 1}
-        mentions = Counter(_tokens(record))
-
-        candidates = self._record_candidates(messages, anchor, recall_results)
         self._observe_values(messages, anchor, candidates, recall_results)
-
-        # How many groups each name has to account for, counted over the droppable candidates
-        # alone. A group the head protects, or one sitting after the record, is not being
-        # replaced by this record and must not raise the bar for the groups that are.
-        demand: dict[str, int] = {}
-        for _, names, _ in candidates:
-            for name in names:
-                demand[name] = demand.get(name, 0) + 1
-        named = {name for name, needed in demand.items() if mentions[name.lower()] >= needed}
 
         changed = False
         # Rebuilt every pass rather than accumulated, so the count answers "how much is the

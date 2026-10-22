@@ -3194,3 +3194,74 @@ async def test_unjudged_value_outcomes_survive_reobservation(reason, cold):
         assert strategy.records_without_values == 0
         assert middleware.value_free_record_streak == 0
         assert not middleware.pin_disabled
+
+
+@pytest.mark.parametrize("load_at", ["entry", "hook"])
+@pytest.mark.parametrize("already_pending", [False, True])
+@pytest.mark.parametrize("answer", ["CODE-0", "CODE-1"])
+async def test_reloaded_targets_exclude_values_in_standing_records(
+    load_at, already_pending, answer
+):
+    strategy = _strategy(max_input_tokens=100_000, trigger_fraction=0.0001)
+    middleware = ToolResultRecallMiddleware(
+        max_input_tokens=100_000,
+        tokenizer=TOKENIZER,
+        arm=RecallGate().arm,
+    )
+    strategy.bind_recall(middleware)
+    messages = _conversation(1, payload_chars=0, record="CODE-0")
+    await strategy(messages)
+    assert strategy._excluded(messages) > 0
+    messages.extend(_conversation(1, payload_chars=0, first_turn=1)[3:])
+    if already_pending:
+        strategy._capture_value_targets(messages)
+        assert strategy.decision_state().value_targets == frozenset({"CODE-1"})
+    for message in messages:
+        message.additional_properties.clear()
+    middleware._observe_record_values(None, False)
+    middleware._force_next = True
+    context = ChatContext(
+        None, messages if load_at == "entry" else [], {"tools": [make_recall_tool()]}
+    )
+    context.kwargs["compaction_strategy"] = strategy
+
+    async def respond():
+        if load_at == "hook":
+            await context.kwargs["compaction_strategy"](messages)
+        for message in messages:
+            if message.message_id in {"a_call_1", "t_res_1"}:
+                set_excluded(message, excluded=True)
+        context.result = ChatResponse(messages=_record_messages(answer, call_id="answer")[:1])
+
+    await middleware.process(context, respond)
+    targets = strategy.decision_state().value_targets
+    messages[:] = project_included_messages(messages)
+    messages.extend(_record_messages(answer, call_id="answer"))
+    await strategy(messages)
+    assert strategy.last_record_value_judgment == (
+        "has_values" if answer == "CODE-1" else "value_free"
+    )
+    assert middleware.value_free_record_streak == (0 if answer == "CODE-1" else 2)
+    assert targets == frozenset({"CODE-1"})
+
+
+@pytest.mark.parametrize("value", ["CODE-0", "Prose only"])
+def test_standing_record_coverage_does_not_cover_later_targets(value):
+    strategy = _strategy(max_input_tokens=100_000)
+    messages = _conversation(
+        1,
+        payload_chars=0,
+        tool_name="lookup",
+        result_values=lambda _: value,
+        record="lookup CODE-0",
+    )
+    messages.extend(
+        _conversation(
+            1, payload_chars=0, first_turn=1, tool_name="lookup", result_values=lambda _: value
+        )[3:]
+    )
+    strategy._capture_value_targets(messages)
+    saved = strategy.decision_state()
+    assert saved.value_target_groups == 1
+    assert saved.value_targets == (frozenset({"CODE-0"}) if value == "CODE-0" else frozenset())
+    assert strategy._excluded(messages) == 0
