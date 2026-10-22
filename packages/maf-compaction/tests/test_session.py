@@ -1423,7 +1423,23 @@ async def test_value_judgment_replays_after_restoring_the_same_stack():
     ]
     await stack.strategy(messages)
     before_record = round_trip(stack.to_dict())
-    messages = [messages[0], build_record_message("Titles only")]
+    messages = [
+        messages[0],
+        Message(
+            "assistant",
+            [
+                Content.from_function_call(
+                    call_id="recall",
+                    name="recall_earlier_tool_results",
+                    arguments={"values": "Titles only"},
+                )
+            ],
+        ),
+        Message(
+            "tool",
+            [Content.from_function_result(call_id="recall", result=f"{RECORD_MARKER} Titles only")],
+        ),
+    ]
     for _ in range(2):
         stack.restore(before_record)
         await stack.strategy(messages)

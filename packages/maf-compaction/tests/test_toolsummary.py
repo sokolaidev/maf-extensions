@@ -25,7 +25,11 @@ from agent_framework import (
     Content,
     Message,
 )
-from agent_framework._compaction import included_token_count, project_included_messages
+from agent_framework._compaction import (
+    included_token_count,
+    project_included_messages,
+    set_excluded,
+)
 
 from maf_compaction._anchored import REMOVAL_MARKER, AnchoredCompactionStrategy
 from maf_compaction._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
@@ -45,6 +49,7 @@ from maf_compaction._toolsummary import (
     ToolResultRecallMiddleware,
     _distinctive_tokens,
     _hold_unrecorded,
+    _newest_record_identity,
     _Reforce,
     _table_rows,
     active_record_groups,
@@ -3091,3 +3096,101 @@ async def test_new_recall_targets_omit_groups_already_removed_by_a_record():
     await strategy(messages)
     targets = strategy.decision_state().value_targets
     assert targets is not None and "CODE-1" in targets and "CODE-0" not in targets
+
+
+@pytest.mark.parametrize("replace", ["rewrite", "merge", "prefix"])
+@pytest.mark.parametrize("cold", [False, True])
+@pytest.mark.parametrize("answer", ["Titles only", "CODE-1"])
+async def test_pending_value_targets_survive_record_consolidation(replace, cold, answer):
+    strategy = _strategy(max_input_tokens=100_000)
+    middleware = ToolResultRecallMiddleware(
+        max_input_tokens=100_000, tokenizer=TOKENIZER, arm=RecallGate().arm
+    )
+    strategy.bind_recall(middleware)
+    messages = _conversation(1, payload_chars=0, record="Titles only")
+    if replace != "rewrite":
+        messages[3:3] = _record_messages("Earlier record", call_id="earlier")
+    await strategy(messages)
+    assert middleware.value_free_record_streak == 1
+    for message in messages:
+        if message.message_id in {"a_call_0", "t_res_0"}:
+            set_excluded(message, excluded=True)
+    messages.extend(_conversation(1, payload_chars=0, first_turn=1)[3:])
+    strategy._capture_value_targets(messages)
+    targets = strategy.decision_state().value_targets
+    assert targets == frozenset({"CODE-1"})
+    records = active_record_groups(messages)
+    strategy.consolidate_records(
+        messages, records[:1] if replace == "prefix" else records, "Short record"
+    )
+    assert strategy.decision_state().value_target_anchor == _newest_record_identity(messages)
+    if cold:
+        decisions = RecordDecisions.from_dict(
+            json.loads(json.dumps(strategy.decision_state().to_dict()))
+        )
+        state = json.loads(json.dumps(middleware.session_state()))
+        strategy = _strategy(max_input_tokens=100_000)
+        middleware = ToolResultRecallMiddleware(
+            max_input_tokens=100_000, tokenizer=TOKENIZER, arm=RecallGate().arm
+        )
+        strategy.bind_recall(middleware)
+        strategy.restore_decisions(decisions)
+        middleware.restore_session_state(state)
+    await strategy(messages)
+    assert middleware.value_free_record_streak == 1
+    assert strategy.decision_state().value_targets == targets
+    for message in messages:
+        if message.message_id in {"a_call_1", "t_res_1"}:
+            set_excluded(message, excluded=True)
+    messages[:] = project_included_messages(messages)
+    messages.extend(_record_messages(answer, call_id="answer"))
+    await strategy(messages)
+    assert strategy.last_record_value_judgment == (
+        "has_values" if answer == "CODE-1" else "value_free"
+    )
+    assert middleware.value_free_record_streak == (0 if answer == "CODE-1" else 2)
+    assert middleware.pin_disabled_reason == (None if answer == "CODE-1" else "value_free")
+
+
+@pytest.mark.parametrize("reason", ["no_candidates", "no_values"])
+@pytest.mark.parametrize("cold", [False, True])
+async def test_unjudged_value_outcomes_survive_reobservation(reason, cold):
+    strategy = _strategy(max_input_tokens=100_000)
+    middleware = ToolResultRecallMiddleware(
+        max_input_tokens=100_000, tokenizer=TOKENIZER, arm=RecallGate().arm
+    )
+    strategy.bind_recall(middleware)
+    messages = _conversation(0)
+    if reason == "no_values":
+        messages.extend(_conversation(1, payload_chars=0)[3:])
+        for message in messages[-2:]:
+            set_excluded(message, excluded=True)
+        messages.extend(
+            _conversation(1, payload_chars=0, first_turn=1, result_values=lambda _: "Prose only")[
+                3:
+            ]
+        )
+        strategy._capture_value_targets(messages)
+    messages.extend(_record_messages("Titles only"))
+    await strategy(messages)
+    assert strategy.last_record_value_judgment == reason
+    if reason == "no_candidates":
+        messages[3:3] = _conversation(1, payload_chars=0)[3:]
+    for _ in range(2):
+        if cold:
+            decisions = RecordDecisions.from_dict(
+                json.loads(json.dumps(strategy.decision_state().to_dict()))
+            )
+            state = json.loads(json.dumps(middleware.session_state()))
+            strategy = _strategy(max_input_tokens=100_000)
+            middleware = ToolResultRecallMiddleware(
+                max_input_tokens=100_000, tokenizer=TOKENIZER, arm=RecallGate().arm
+            )
+            strategy.bind_recall(middleware)
+            strategy.restore_decisions(decisions)
+            middleware.restore_session_state(state)
+        await strategy(messages)
+        assert strategy.last_record_value_judgment == reason
+        assert strategy.records_without_values == 0
+        assert middleware.value_free_record_streak == 0
+        assert not middleware.pin_disabled

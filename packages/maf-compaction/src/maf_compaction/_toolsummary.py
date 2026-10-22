@@ -35,7 +35,7 @@ from copy import copy, deepcopy
 from dataclasses import dataclass, replace
 from math import ceil, isfinite
 from types import MethodType
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from agent_framework import (
     ChatContext,
@@ -1121,7 +1121,7 @@ class RecordDecisions:
     value_targets: frozenset[str] | None = None
     value_target_anchor: str = ""
     value_target_groups: int = 0
-    value_judgments: tuple[tuple[str, bool], ...] = ()
+    value_judgments: tuple[tuple[str, bool | Literal["no_candidates", "no_values"]], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         """Return independent JSON-safe decisions, including any outstanding ask."""
@@ -1417,7 +1417,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         self._value_targets: set[str] | None = None
         self._value_target_anchor = ""
         self._value_target_groups = 0
-        self._value_judgments: dict[str, bool] = {}
+        self._value_judgments: dict[str, bool | Literal["no_candidates", "no_values"]] = {}
         self._last_record_value_judgment: str | None = None
         self._unjudged_value_records: set[str] = set()
         # The ask for another record that is outstanding, if one is. See :meth:`take_reforce`.
@@ -1948,9 +1948,19 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             raise ValueError(
                 "A record handed to consolidate_records cannot be removed with its call and result."
             )
-        record_contents = _record_contents(messages, matches, _recall_results(messages, matches))
+        recall_results = _recall_results(messages, matches)
+        record_contents = _record_contents(messages, matches, recall_results)
         if not all(_record_only_group(messages, group, record_contents) for group in groups):
             raise ValueError("A record handed to consolidate_records contains unrelated content.")
+        replaces_value_anchor = (
+            bool(self._value_target_anchor)
+            and self._value_targets is not None
+            and any(
+                _record_identity(message, recall_results) == self._value_target_anchor
+                for group in groups
+                for message in messages[group["start_index"] : group["end_index"] + 1]
+            )
+        )
         for group in groups:
             for message in messages[group["start_index"] : group["end_index"] + 1]:
                 # Released before the exclusion, as ``_drop_before`` releases a hold: the promise
@@ -1959,7 +1969,10 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 set_preserved(message, preserved=False)
                 set_excluded(message, excluded=True, reason=CONSOLIDATE_EXCLUDE_REASON)
         insertion_index = int(groups[-1]["end_index"]) + 1
-        messages.insert(insertion_index, build_record_message(text))
+        replacement = build_record_message(text)
+        messages.insert(insertion_index, replacement)
+        if replaces_value_anchor:
+            self._value_target_anchor = _record_identity(replacement, {})
         annotate_message_groups(messages, from_index=insertion_index)
         annotate_token_counts(messages, tokenizer=self.tokenizer, from_index=insertion_index)
         records = _preserve_records(messages)
@@ -2043,11 +2056,17 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         candidates: list[tuple[dict[str, Any], set[str], set[str]]],
         recall_results: dict[int, str],
     ) -> None:
+        # Consolidation sees standing records, not the pending recall's target groups.
+        if _is_written_record(messages[anchor]):
+            return
         identity = _record_identity(messages[anchor], recall_results)
         if not identity:
             return
         if identity in self._value_judgments:
             has_values = self._value_judgments[identity]
+            if isinstance(has_values, str):
+                self._last_record_value_judgment = has_values
+                return
             self._last_record_value_judgment = "has_values" if has_values else "value_free"
             if self._observe_record_values is not None:
                 self._observe_record_values(identity, has_values)
@@ -2061,7 +2080,9 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             self._value_target_anchor = ""
             self._value_target_groups = 0
         if not values:
-            self._last_record_value_judgment = "no_candidates" if not target_groups else "no_values"
+            reason = "no_candidates" if not target_groups else "no_values"
+            self._value_judgments[identity] = reason
+            self._last_record_value_judgment = reason
             if identity not in self._unjudged_value_records:
                 self._unjudged_value_records.add(identity)
                 logger.info("Recall record unjudged: %s", self._last_record_value_judgment)
