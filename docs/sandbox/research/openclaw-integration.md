@@ -951,6 +951,62 @@ On 2026-10-23 npm metadata reported plugin 2026.10.6 and SDK 1.0.1. Neither is a
 
 [Issue #2104](https://github.com/sokolaidev/maf-extensions/issues/2104), a child of #1974, now owns the first deliverable: establish a supported policy/runtime route, including checking current published candidates, before selecting another host. Preserve LPAC through a supported working fallback, or obtain an explicitly supported PSEC-compatible policy with documented security semantics and tests; do not edit the installed plugin or treat `leastPrivilege=false` as equivalent. Any upstream proposal must be prepared and tested before separate publication approval. Then select a disposable host, probe the complete actual request, and establish native positive controls. The generated-skills conflict and full #1974 matrix remain separate acceptance work; bounded MCP adoption continues independently.
 
+### Published candidate audit and upstream compatibility proposal (2026-10-23)
+
+The current published plugin does not remove the blocker. The npm `latest` metadata selects [@openclaw/mxc-sandbox 2026.10.6](https://www.npmjs.com/package/@openclaw/mxc-sandbox/v/2026.10.6), whose complete 54,651,288-byte tarball was inspected in memory after matching registry SHA-512 integrity. Its `dist/index.js` is byte-identical to the selected installed 2026.10.5 implementation; its manifest still pins `@microsoft/mxc-sdk` to exactly `0.9.0`, and its plugin configuration exposes the same six fields. Thus the published patch neither removes the hardcoded LPAC requirement nor adds a supported override. No package was installed or changed for this archive inspection.
+
+| Published artifact | Integrity or selected-file SHA-256 |
+|---|---|
+| Plugin 2026.10.6 tarball, SHA-512 SRI | `sha512-FPtgdw6M5uG4oWw304/5SecnCzJpW0ojqkxRqDY0m7OrDT/X7l3BNgfpEPepaZ8Nn5104nTnbtoNrv8bz7Qn9g==` |
+| Plugin `dist/index.js` | `bdc382abc7db2e831479f2f287025e13c1452b802e4293329454baa3efd7fe77` |
+| Plugin `package.json` | `385b6ad510cc8f609a4779335bd8b429488af023115506f0d0d7c17817d224b2` |
+| Plugin `openclaw.plugin.json` | `d4264961060829ecdefb37dcf1887d4d040f0a0ebd638a4b981097f58b9b101f` |
+| SDK 1.0.1 tarball, SHA-512 SRI | `sha512-2cP925G5+lQyKzjBVha8uNtVd7XESgDBtgi1yCYYSo9M3xiFyZWtCO4SWPGTk509rdI6nqjyGcZxvEP3t6l8Hg==` |
+| SDK `dist/v1/container.js` | `87cf73e5325ac8e9f5d356edf2c2272ed06421397f29bb04ca0d9d41af9ecda6` |
+| SDK `dist/v1/probe.js` | `c75f07b66ae9090e5f4e221ff3a7bfa2cd123193f08a5557d83c6832d84202fe` |
+| SDK `dist/v1/types.d.ts` | `f4bc3b3272a648a8a4677630d1bc66672765983a0c39a501d5226c407348a3e0` |
+| SDK `package.json` | `d6fa280a01408b6fb5be11c54009233ba8aab69e818614d90f55bb8d11108292` |
+
+The [SDK 1.0.1 release](https://github.com/microsoft/mxc/releases/tag/v1.0.1) is pinned to `fda29ac63bc306b7f97f3b86b4b63d44f7f40cf2`. Its complete 38,256,855-byte npm tarball was also integrity-verified and inspected in memory. The public v1 `probe(request)` calls the request mapper, and the mapper explicitly rejects the presence of `containment.config.leastPrivilege` with `malformed_request`, for either boolean value. The field still exists in the raw stable wire schema and native request model, which does not make it supported by the public v1 authoring API. A cast, private mapper import or raw-wire bypass is not the selected integration route. The tagged [BaseContainer selector](https://github.com/microsoft/mxc/blob/fda29ac63bc306b7f97f3b86b4b63d44f7f40cf2/src/mxc-sdk/src/backends/process_container/common/base_container_runner.rs) still rejects the LPAC requirement. This establishes a public-API gap in addition to the native PSEC limitation; replacing a dependency alone does not preserve the selected contract.
+
+The v1.0.1 [OS support table](https://github.com/microsoft/mxc/blob/fda29ac63bc306b7f97f3b86b4b63d44f7f40cf2/docs/backends/process-container/os-version-support.md) now documents serviced public Windows 11 release builds, including 26100.9278 and 26200.9278 for process isolation. This newer table supersedes assumptions that every future supported host must be a preview build; it does not retroactively qualify the pinned 0.9.0 plugin/runtime combination or make LPAC representable by PSEC. Actual request compatibility and independent execution controls remain necessary.
+
+A fresh published-SDK execution test was not performed: the proposed temporary installation would write package manifests/lockfiles and was refused under the no-JSON-experiment constraint. The artifact audit above reads archive members in memory and creates no installation, extracted package files or experiment JSON. Its conclusions are packaged-code/source findings, not observed SDK 1.0.1 API execution. The earlier paired 0.9.0 native probe remains separate runtime evidence.
+
+Existing upstream work already owns this migration and its missing contract:
+
+| Upstream item | Verified current state and boundary |
+|---|---|
+| [microsoft/mxc#1496](https://github.com/microsoft/mxc/issues/1496) | Open, no comments at inspection; asks how to obtain LPAC-compatible PSEC behavior without host DACL mutation. Its proposed OS/API mechanisms are questions, not supported capabilities. |
+| [openclaw/openclaw#167292](https://github.com/openclaw/openclaw/pull/167292) | Open draft at `ef89852e7e28416aca6efedfac0940242983df72`; migrates to SDK 1.0.0 and removes the LPAC request from the typed request builder. It discloses regular-AppContainer scope on fallback modes. |
+| [openclaw/openclaw#168499](https://github.com/openclaw/openclaw/issues/168499) | Open coordination issue; distinguishes Core command containment, Windows Node and whole-Gateway packaging, with an unresolved Core security-acceptance requirement. |
+
+The migration author's current-head VM results use a test-only packed artifact, with a disclosed local packaging-integrity waiver, and a source-built OpenClaw host. Historical DACL results on an older PR head report that an `ALL APPLICATION PACKAGES`-only outside-workspace canary was readable and that the token lacked `WIN://NOALLAPPPKG`. Those are author-reported observations, not results independently replayed here, current-head DACL proof, a published candidate, or acceptance of the changed contract. Ordinary private-file denials and an isolation-mode label cannot establish LPAC equivalence. Do not duplicate that migration or turn its successful execution reports into our qualification.
+
+#### Proposed contribution through the existing upstream work
+
+Preserve the selected contract while #1496 and the Core migration resolve the policy decision. The immediate proposal is a compatibility gate and evidence contract, not a silent toggle of `leastPrivilege`:
+
+1. The SDK owner must identify a supported public authoring route for the required LPAC semantics, or explicitly document that the route is unavailable. A compatible native implementation alone is insufficient if the supported Node API cannot express it.
+2. The existing Core migration should preserve the selected isolation requirement through request construction and admission. Probe the complete immutable request through a supported request-aware surface; reject missing/error/malformed/incompatible results before launch. A policy-free readiness probe is advisory only. If the requirement cannot be represented, report unavailable rather than dropping it. Runtime enforcement must still reject incompatible requests; a successful earlier probe is not an atomic launch guarantee.
+3. Any proposed replacement for LPAC requires an explicit security-contract decision and independent positive/negative controls. BaseContainer-only admission or an empty warning list is not evidence of equivalent token, file, registry, named-object and device access boundaries. DACL mutation consent and preparation support must be decided separately; this profile does not inherit consent from a newer SDK default.
+4. Once the supported route is accepted and published, pin the complete plugin/SDK/native tuple, select a disposable supported host, and replay native smoke before expanding #1974. The protected-skills overlap remains independent.
+
+The reviewable validation plan for that proposal is:
+
+| Case | Required result | Evidence still needed |
+|---|---|---|
+| Required LPAC field absent or rejected by the public mapper | Admission refuses; no launcher/workload starts | Public-API regression test on the selected published SDK |
+| Host advertises BaseContainer but full request is incompatible | Admission refuses despite capability-only success | Full generated-request probe and no-spawn assertion |
+| Probe errors, times out, returns malformed output or no selected mode | Admission refuses; owned diagnostics clean up | Unit failure injection plus supervisor coverage |
+| Probe succeeds but native creation later refuses | Failure remains visible; no host-execution fallback | Controlled runtime failure and process observation |
+| Supported LPAC route | Permitted workspace control succeeds; outside AAP-only canary remains inaccessible under the approved contract | Independent token query and file controls on a disposable host |
+| Proposed PSEC-equivalent replacement | Same approved access boundaries or an explicitly approved changed contract | AAP-only file plus relevant registry/object/device controls; ordinary user-private-file denial is insufficient |
+| DACL-based route | Explicit allowed scope, bounded preparation and exact cleanup/recovery evidence | Disposable-host ACL baselines and post-run comparison |
+| Candidate or policy changes | Prior admission/evidence cannot qualify the changed request | Identity/configuration binding regression coverage |
+
+These are acceptance tests to implement with the owning upstream change, not tests claimed to have passed here. The current repository delivery completes the published-artifact audit and this proposal. #2104 remains open and dependent on upstream policy/API support; #1974 remains unqualified. No upstream message or PR was posted, no installed plugin was patched, and no host or cloud environment was provisioned.
+
 ## Status
 
 The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audit.md#consolidated-closure-reconciliation-2026-10-12) covers every original #1676 acceptance row using the separately recorded Gateway, Bicep/MAF and published transport evidence. Both finite follow-ups are merged. Qualification is complete for that supervised, selected baseline; the first-tool design is complete and #1898 delivers the separately qualified installed worker. Historical reports and their `complete_matrix: false` values are unchanged.
@@ -971,5 +1027,5 @@ The Bicep workstream has a locally qualified installed worker and its historical
 | Installed Bicep conformance runner | Implemented; fresh published-candidate Windows profile qualified | [#1972](https://github.com/sokolaidev/maf-extensions/issues/1972) (closed) by [#1983](https://github.com/sokolaidev/maf-extensions/pull/1983) (merged) |
 | Bounded owner-loss qualification | Complete for the selected Windows/Docker candidate; fresh baseline and all fifteen cases passed independent evaluation | [#1973](https://github.com/sokolaidev/maf-extensions/issues/1973) (closed) by [#2066](https://github.com/sokolaidev/maf-extensions/pull/2066) (merged) |
 | Native MXC workspace and host-file qualification | Open; four hosted comparison attempts recorded; first-trustee preparer progress retained; revised hosted prerequisites passed; pinned LPAC policy forces fallback; supported policy route required before another host; native execution and full matrix unqualified | [#1974](https://github.com/sokolaidev/maf-extensions/issues/1974) (open) |
-| Official MXC policy/runtime compatibility | Open; establish a supported route before disposable host selection | [#2104](https://github.com/sokolaidev/maf-extensions/issues/2104) (open) |
+| Official MXC policy/runtime compatibility | Open; published artifact audit complete; supported policy/API route depends on upstream decisions | [#2104](https://github.com/sokolaidev/maf-extensions/issues/2104) (open) |
 | Full sandbox provider | Design assessed; implementation deferred pending a supported third-party SDK and process/file contracts | [#1642](https://github.com/sokolaidev/maf-extensions/issues/1642) (closed) by [#2073](https://github.com/sokolaidev/maf-extensions/pull/2073) (merged) |
