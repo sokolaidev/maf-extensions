@@ -767,7 +767,60 @@ The workflow retains only `host.md` and `report.md`. Raw native logs, runtime JS
 
 A local read-only check on Windows build 26220/x64 with Python 3.13.12 and Node 26.8.1 completed the identity checks, ACL fingerprint and exact executor readiness probe. Readiness again reported `base-container`, no DACL augmentation and no warnings. No preparer was executed. This verifies the diagnostic collection path only; it does not resolve the earlier runtime isolation-selection discrepancy or establish native execution.
 
-This increment provides the comparison harness; the six hosted campaigns have not been dispatched or qualified. No workstation ACLs were changed. Host selection/preparation remains pending explicit operator selection. After that selection, dispatch Tests on the reviewed branch with `openclaw_mxc=true`, inspect all six Markdown artifacts, and record image/candidate equality, native positive controls, per-mode results and cleanup before updating the qualification disposition. Retain the `rw` safe refusal if the protected generated subtree persists; do not suppress it or widen grants. Full #1974 acceptance, including deterministic replacement and multi-session lifecycle, remains open.
+At delivery of #2095, the comparison harness had not been dispatched or qualified. The operator selected disposable GitHub-hosted Windows runners on 2026-10-22; the resulting trials are recorded below. No workstation ACLs were changed. Compare image/candidate equality, native positive controls, per-mode results and cleanup before updating the qualification disposition. Retain the `rw` safe refusal if the protected generated subtree persists; do not suppress it or widen grants. Full #1974 acceptance, including deterministic replacement and multi-session lifecycle, remains open.
+
+## Hosted system-drive preparation comparison (2026-10-22)
+
+The operator-approved six-case [initial run 39853674592](https://github.com/sokolaidev/maf-extensions/actions/runs/39853674592) used merged commit `8e905bb395c79004cd05407ac040388615d97240`, OpenClaw/plugin 2026.10.5, bundled SDK 0.9.0, Node 26.8.1 and Python 3.12.10. All hosts were Windows Server 2025 build 26100/x64. Runner images differed: `none` used `win25-vs2026/20261007.264.1` for both preparations, `ro` used `win25-vs2026/20261018.275.1` for both, and `rw` used the newer image unprepared and the older image prepared. Do not aggregate those images as one equivalent host.
+
+| Initial case | Observation | Disposition |
+|---|---|---|
+| Unprepared `none` | Unrestricted fixture passed; native `cmd.exe` route returned access denied without fixture completion or a verified executor descendant; host-file read and denied-write controls passed | Unqualified |
+| Unprepared `ro` | CLI setup exceeded its 360-second deadline before the unrestricted fixture or native cases | Prerequisite unavailable; unqualified |
+| Unprepared `rw` | Unrestricted fixture passed; native route refused the generated read-only skills subtree beneath the writable agent root; ordinary host-file read/write controls passed | Safe refusal; permitted native control unavailable |
+| Prepared `none`/`ro`/`rw` | Selected identities and readiness passed, but the preparer exited 1; smoke step did not run | Preparation incomplete; no native result |
+
+The initial unprepared reports share npm lock SHA-256 `8d6cc586db51f456001b46160d4ab57be830196801b114f84d6d050d6d6fb4c5` and the selected package/executor identities recorded above. `none` and `rw` completed the post-case identity comparisons and reported no cleanup errors; `ro` timed out before that comparison and also reported no cleanup errors. Readiness selected `appcontainer-dacl`, with BaseContainer unavailable and BFS not compiled. In the `none` native attempt, diagnostic events reported both `host_prep_system_drive_missing` and `host_prep_null_device_missing`, then a child exit 1 and teardown success. Those events are not independent execution or cleanup qualification.
+
+The initial prepared reports retained no stderr and therefore do not identify the preparer's failure cause. Harness inspection found that its isolated environment omitted the helper's `SystemDrive` input. The follow-up derives that variable from `SYSTEMROOT` and retains only the current command's bounded, redacted stderr in `host.md`, with explicit truncation. It leaves native pass criteria and the requested system-drive-only preparation unchanged. The separate readiness warning recommends NUL-device preparation; that operation has not been added to this comparison.
+
+The six-case [retry 39854889313](https://github.com/sokolaidev/maf-extensions/actions/runs/39854889313) exercised the environment/stderr fix at `e5c9464f7f4faa77b91fa852977e7a1739e16526`. Preparation now exceeded the unchanged 60-second command deadline in all three prepared jobs, after initial readiness and before any prepared ACL fingerprint or native smoke. The reports do not establish whether the preparer changed permissions before cancellation; those hosts are unusable as either prepared or unchanged controls. This also exposed a report gap on capture exceptions: the final follow-up retains the attempted step and bounded stderr even on timeout. That final reporting change has regression coverage but was not part of either hosted campaign.
+
+| Retry case | Runner image version (`win25-vs2026`) | Observation | Disposition |
+|---|---|---|---|
+| Unprepared `none` | `20261021.278.1` | CLI setup deadline exceeded before fixture/native controls | Unqualified |
+| Prepared `none` | `20261021.278.1` | Host preparation deadline exceeded; smoke not run | Unqualified |
+| Unprepared `ro` | `20261021.278.1` | CLI setup deadline exceeded before fixture/native controls | Unqualified |
+| Prepared `ro` | `20261007.264.1` | Host preparation deadline exceeded; smoke not run | Unqualified; host image also differs |
+| Unprepared `rw` | `20261018.275.1` | Unrestricted fixture and ordinary host-file read/write controls passed; protected generated-skills overlap refused before native execution | Unqualified |
+| Prepared `rw` | `20261021.278.1` | Host preparation deadline exceeded; smoke not run | Unqualified; host image also differs |
+
+All three retry smoke reports retain the same npm lock and selected asset identities as the initial unprepared reports. Only `rw` reached its post-case identity comparison; `none`/`ro` have preflight identities only. Each smoke supervisor reported no cleanup errors. Neither timeout nor a successful job cleanup proves arbitrary descendant/resource cleanup. Both workflow runs correctly failed the native jobs and aggregate gate; their other validation jobs passed. No prepared native result exists, and there is no evidence that system-drive preparation fixes the access denial. The NUL-device warning is an independent lead, not an authorization to widen workload grants or a demonstrated cause.
+
+Markdown evidence remains in the workflow artifacts and external local copies; no experiment JSON was added. The table below binds each retained Markdown file to its downloaded bytes. Artifact names are `openclaw-mxc-<mode>-<preparation>-<run>-1`; `host.md` is under `oc-mxc-host/`, and `report.md` under `oc-mxc-smoke/`. An absent smoke report means the workflow stopped at host diagnostics.
+
+| Run | Case | File | SHA-256 |
+|---|---|---|---|
+| `39853674592` | `none-prepared` | `host.md` | `2b22b195808820b3718fdb88c87041bf32a1c824218761cd148c05202bbb8dad` |
+| `39853674592` | `ro-prepared` | `host.md` | `8556f87fbfc24405dec5f4f54fa9929402fd5db38b946960d3a07d7211d4c138` |
+| `39853674592` | `rw-prepared` | `host.md` | `2b22b195808820b3718fdb88c87041bf32a1c824218761cd148c05202bbb8dad` |
+| `39853674592` | `none-unprepared` | `host.md` | `d5da3e4109cffbf92ba59b05c0e2ef79ea1c1a8b7dc1dc5b1dc8ccb6a449cb55` |
+| `39853674592` | `none-unprepared` | `report.md` | `d709e1549015a5a93e1b317d90fef03b8196f4ef09c2ab4e660d2800bec364c3` |
+| `39853674592` | `ro-unprepared` | `host.md` | `5fbbed4d8f6fc8c802cca097e7e30730584a4dc0fdcbf537dd7c5c73cee67fcb` |
+| `39853674592` | `ro-unprepared` | `report.md` | `fd4bc6b0086869f8a300cdc8b71550c2422d67e18f6e0f59d89e526a1a576a1e` |
+| `39853674592` | `rw-unprepared` | `host.md` | `5fbbed4d8f6fc8c802cca097e7e30730584a4dc0fdcbf537dd7c5c73cee67fcb` |
+| `39853674592` | `rw-unprepared` | `report.md` | `493a43eb1c2ad580999e2edf2e0c3d087aee7060ee24484389033ffc83f73c55` |
+| `39854889313` | `none-prepared` | `host.md` | `8566d4cb776b3107e5a8205fb25e3c6b727171968ca9553c3f4bb65f58265a30` |
+| `39854889313` | `ro-prepared` | `host.md` | `7dc9a321413e0b8e6ef10a9fa50580abe4dd3710059cf946b8ba37df2fcd61a2` |
+| `39854889313` | `rw-prepared` | `host.md` | `8566d4cb776b3107e5a8205fb25e3c6b727171968ca9553c3f4bb65f58265a30` |
+| `39854889313` | `none-unprepared` | `host.md` | `8f76e2440e2defd5bfed37f4acfb78495c2f18574e01b54b32fed988134d983f` |
+| `39854889313` | `none-unprepared` | `report.md` | `510e64a04be5768ed305e9faf35a2f843c25280d546aef99c65c77b5f7bde32a` |
+| `39854889313` | `ro-unprepared` | `host.md` | `8f76e2440e2defd5bfed37f4acfb78495c2f18574e01b54b32fed988134d983f` |
+| `39854889313` | `ro-unprepared` | `report.md` | `991b07f7ce4f28c1464868e9b3026c8cf8cbc145dc6f3b8088ebd3880c95192f` |
+| `39854889313` | `rw-unprepared` | `host.md` | `88593736157f0137c3df8184809ca88d74b9fd611d15f92bd27374e9cd17c4cc` |
+| `39854889313` | `rw-unprepared` | `report.md` | `f9e18e843ca03cccd0535d02c9339accf9ddf28842f51855c7ba3752eba68702` |
+
+The next #1974 increment is bounded diagnosis of the preparer timeout and CLI setup stalls on a fixed Windows image, with command progress/exit evidence and a successful post-preparation check before a native campaign. Keep the 60-second host-command and 360-second CLI deadlines explicit; do not silently extend them or convert failures to skips. If a supported NUL-device preparation is subsequently selected, record it as a distinct preparation profile and run fresh controls. The generated-skills overlap still needs a supported workspace-layout resolution. Native execution, deterministic replacement, full hostile filesystem operations and multi-session lifetime remain unqualified; the bounded MCP adoption direction is unchanged.
 
 ## Status
 
@@ -788,5 +841,5 @@ The Bicep workstream has a locally qualified installed worker and its historical
 | Conformance and installed-package qualification | Design complete; installed runner #1972 and bounded fault profile #1973 qualified, native profile #1974 conditional | [#1641](https://github.com/sokolaidev/maf-extensions/issues/1641) (closed) by [#1977](https://github.com/sokolaidev/maf-extensions/pull/1977) (merged) |
 | Installed Bicep conformance runner | Implemented; fresh published-candidate Windows profile qualified | [#1972](https://github.com/sokolaidev/maf-extensions/issues/1972) (closed) by [#1983](https://github.com/sokolaidev/maf-extensions/pull/1983) (merged) |
 | Bounded owner-loss qualification | Complete for the selected Windows/Docker candidate; fresh baseline and all fifteen cases passed independent evaluation | [#1973](https://github.com/sokolaidev/maf-extensions/issues/1973) (closed) by [#2066](https://github.com/sokolaidev/maf-extensions/pull/2066) (merged) |
-| Native MXC workspace and host-file qualification | Open; partial smoke runner and host-file observations recorded; native execution and full matrix unqualified | [#1974](https://github.com/sokolaidev/maf-extensions/issues/1974) (open) |
+| Native MXC workspace and host-file qualification | Open; two hosted comparison attempts recorded; preparation and startup prerequisites incomplete; native execution and full matrix unqualified | [#1974](https://github.com/sokolaidev/maf-extensions/issues/1974) (open) |
 | Full sandbox provider | Design assessed; implementation deferred pending a supported third-party SDK and process/file contracts | [#1642](https://github.com/sokolaidev/maf-extensions/issues/1642) (closed) by [#2073](https://github.com/sokolaidev/maf-extensions/pull/2073) (merged) |

@@ -226,3 +226,26 @@ def test_failed_preparation_retains_bounded_redacted_stderr(
     assert "omitted suffix" not in last
     assert str(output) not in report
     assert "completed: `False`" in report
+
+
+def test_timed_out_preparation_keeps_step_and_stderr(
+    runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    original = host.capture
+    output = tmp_path / "output"
+
+    def capture(args, root, *positional, **kwargs):
+        if args[-1] == "prepare-system-drive":
+            (root / "setup.log").write_bytes(b"preparer diagnostic before timeout\n")
+            raise Refused("setup_command_timeout")
+        return original(args, root, *positional, **kwargs)
+
+    monkeypatch.setattr(host, "capture", capture)
+    assert not host.observe(tmp_path / "installation", output, prepare=True)
+    report = (output / "host.md").read_text(encoding="utf-8")
+    assert "## Disposable host preparation" in report
+    assert "exit status unavailable" in report
+    assert "preparer diagnostic before timeout" in report
+    assert "setup_command_timeout" in report
+    assert "completed: `False`" in report
+    assert "## Prepared native readiness" not in report
