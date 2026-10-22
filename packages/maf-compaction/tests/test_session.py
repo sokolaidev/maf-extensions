@@ -50,7 +50,13 @@ from maf_compaction import (
     make_recall_tool,
     make_session_recall_tool,
 )
-from maf_compaction._toolsummary import RECORD_MARKER, _Reforce, build_record_message
+from maf_compaction._preserve import set_preserved
+from maf_compaction._toolsummary import (
+    PRESERVE_REASON_UNRECORDED,
+    RECORD_MARKER,
+    _Reforce,
+    build_record_message,
+)
 
 pytestmark = pytest.mark.anyio
 TOKENIZER = CharacterEstimatorTokenizer()
@@ -105,6 +111,10 @@ def test_decisions_are_independent_json_values():
         frozenset({"c"}),
         frozenset({"d"}),
         _Reforce(frozenset({"a"}), 2, 1, True),
+        frozenset({"VALUE-123"}),
+        "anchor",
+        1,
+        (("earlier", False),),
     )
     chain = ChainDecisions(3, "anchor", 4, "declined", record)
     restored = ChainDecisions.from_dict(round_trip(chain.to_dict()))
@@ -1285,3 +1295,137 @@ async def test_value_free_records_disable_forcing_across_cold_restores(
     with registry.activate(AgentSession()) as fresh:
         assert not fresh.middleware.pin_disabled
         assert fresh.middleware.value_free_record_streak == 0
+
+
+@pytest.mark.parametrize("shed", ["never", "before_force", "during_force"])
+@pytest.mark.parametrize(
+    "answers",
+    [
+        ["Titles only", "Titles only"],
+        ["Titles only", "VALUE-123", "Titles only", "Titles only"],
+        ["VALUE-123", "VALUE-123"],
+    ],
+)
+async def test_recall_values_survive_overflow_before_record_and_cold_restore(shed, answers):
+    def factory():
+        stack = build_stack(budget=2000)
+        stack.middleware.max_groups_before_record = 1
+        assert isinstance(
+            stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+        )
+        stack.strategy.tool_results.fallback.keep_tail_groups = 0
+        return stack
+
+    session = AgentSession()
+    messages = [Message("user", ["Return only titles."], message_id="head")]
+    streak = 0
+    for index, answer in enumerate(answers):
+        call_id = f"lookup-{index}"
+        messages.extend(
+            [
+                Message(
+                    "assistant",
+                    [Content.from_function_call(call_id=call_id, name="fetch", arguments={})],
+                ),
+                Message(
+                    "tool",
+                    [Content.from_function_result(call_id=call_id, result="VALUE-123 " * 1500)],
+                ),
+                Message("user", ["Continue."], message_id=f"tail-{index}"),
+            ]
+        )
+        registry = SessionCompactionRegistry(factory, max_cached_sessions=0)
+        with registry.activate(session) as stack:
+            stack.middleware._force_next = True
+        for message in messages[-3:-1]:
+            set_preserved(message, preserved=True, reason=PRESERVE_REASON_UNRECORDED)
+        if shed == "before_force":
+            with registry.activate(session) as stack:
+                await stack.strategy(messages)
+            messages[:] = project_included_messages(messages)
+            session.state = round_trip(session.state)
+            registry = SessionCompactionRegistry(factory, max_cached_sessions=0)
+        context = ChatContext(
+            None, [messages[-1]], {"tools": [make_recall_tool()]}, session=session
+        )
+
+        async def respond():
+            context.messages = messages
+            if shed == "during_force":
+                await context.kwargs["compaction_strategy"](messages)
+                messages[:] = project_included_messages(messages)
+            if shed != "never":
+                assert "VALUE-123" not in " ".join(
+                    str(c.result)
+                    for m in project_included_messages(messages)
+                    for c in m.contents
+                    if c.type == "function_result" and c.call_id == call_id
+                )
+            context.result = ChatResponse(
+                messages=Message(
+                    "assistant",
+                    [
+                        Content.from_function_call(
+                            call_id=f"recall-{index}",
+                            name="recall_earlier_tool_results",
+                            arguments={"values": answer},
+                        )
+                    ],
+                )
+            )
+
+        await SessionToolResultRecallMiddleware(registry, compact_before=True).process(
+            context, respond
+        )
+        assert isinstance(context.result, ChatResponse)
+        messages.extend(context.result.messages)
+        messages.append(
+            Message(
+                "tool",
+                [
+                    Content.from_function_result(
+                        call_id=f"recall-{index}", result=f"{RECORD_MARKER} {answer}"
+                    )
+                ],
+            )
+        )
+        session.state = round_trip(session.state)
+        streak = streak + 1 if answer == "Titles only" else 0
+        for _ in range(2):
+            registry = SessionCompactionRegistry(factory, max_cached_sessions=0)
+            with registry.activate(session) as stack:
+                assert isinstance(
+                    stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+                )
+                await stack.strategy.tool_results.compact_against(
+                    messages, prompt_tokens=0, trigger_tokens=1
+                )
+                assert stack.strategy.tool_results.last_record_value_judgment == (
+                    "value_free" if answer == "Titles only" else "has_values"
+                )
+                assert stack.middleware.value_free_record_streak == streak
+                assert stack.middleware.pin_disabled_reason == (
+                    "value_free" if streak == 2 else None
+                )
+            session.state = round_trip(session.state)
+
+
+async def test_value_judgment_replays_after_restoring_the_same_stack():
+    stack = build_stack(budget=100_000, composed=False)
+    assert isinstance(stack.strategy, ToolResultAnchoredSummarizationCompactionStrategy)
+    stack.middleware._force_next = True
+    messages = [
+        Message("user", ["Return only titles."]),
+        Message(
+            "assistant", [Content.from_function_call(call_id="fetch", name="fetch", arguments={})]
+        ),
+        Message("tool", [Content.from_function_result(call_id="fetch", result="VALUE-123")]),
+    ]
+    await stack.strategy(messages)
+    before_record = round_trip(stack.to_dict())
+    messages = [messages[0], build_record_message("Titles only")]
+    for _ in range(2):
+        stack.restore(before_record)
+        await stack.strategy(messages)
+        assert stack.middleware.value_free_record_streak == 1
+        assert stack.strategy.last_record_value_judgment == "value_free"

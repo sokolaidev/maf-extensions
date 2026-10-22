@@ -1109,12 +1109,19 @@ class RecordDecisions:
     decision the first re-entry advanced governs every later one and the re-entries are not
     repeats of each other. ``reforce`` is copied, so a restored ask starts with the passes it
     had and not the passes a discarded re-entry added.
+
+    Pending target values and completed judgments also travel with the snapshot, so shedding
+    and replay do not change the basis of value-free backoff.
     """
 
     uncovered: frozenset[str]
     settled: frozenset[str]
     preserved: frozenset[str]
     reforce: _Reforce | None
+    value_targets: frozenset[str] | None = None
+    value_target_anchor: str = ""
+    value_target_groups: int = 0
+    value_judgments: tuple[tuple[str, bool], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         """Return independent JSON-safe decisions, including any outstanding ask."""
@@ -1123,6 +1130,10 @@ class RecordDecisions:
             "settled": sorted(self.settled),
             "preserved": sorted(self.preserved),
             "reforce": None if self.reforce is None else self.reforce.to_dict(),
+            "value_targets": None if self.value_targets is None else sorted(self.value_targets),
+            "value_target_anchor": self.value_target_anchor,
+            "value_target_groups": self.value_target_groups,
+            "value_judgments": dict(self.value_judgments),
         }
 
     @classmethod
@@ -1133,6 +1144,10 @@ class RecordDecisions:
             frozenset(data["settled"]),
             frozenset(data["preserved"]),
             None if data["reforce"] is None else _Reforce.from_dict(data["reforce"]),
+            None if data.get("value_targets") is None else frozenset(data["value_targets"]),
+            data.get("value_target_anchor", ""),
+            data.get("value_target_groups", 0),
+            tuple(sorted(data.get("value_judgments", {}).items())),
         )
 
 
@@ -1399,6 +1414,12 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         self._uncovered: set[str] = set()
         self._observed_value_records: set[str] = set()
         self._records_without_values = 0
+        self._value_targets: set[str] | None = None
+        self._value_target_anchor = ""
+        self._value_target_groups = 0
+        self._value_judgments: dict[str, bool] = {}
+        self._last_record_value_judgment: str | None = None
+        self._unjudged_value_records: set[str] = set()
         # The ask for another record that is outstanding, if one is. See :meth:`take_reforce`.
         self._reforce: _Reforce | None = None
         self._recall_due: Callable[[list[Message], int | None], bool] | None = None
@@ -1419,6 +1440,10 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             settled=frozenset(self._settled),
             preserved=frozenset(self._preserved),
             reforce=None if self._reforce is None else replace(self._reforce),
+            value_targets=None if self._value_targets is None else frozenset(self._value_targets),
+            value_target_anchor=self._value_target_anchor,
+            value_target_groups=self._value_target_groups,
+            value_judgments=tuple(sorted(self._value_judgments.items())),
         )
 
     def restore_decisions(self, decisions: RecordDecisions) -> None:
@@ -1427,6 +1452,12 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         self._settled = set(decisions.settled)
         self._preserved = set(decisions.preserved)
         self._reforce = None if decisions.reforce is None else replace(decisions.reforce)
+        self._value_targets = (
+            None if decisions.value_targets is None else set(decisions.value_targets)
+        )
+        self._value_target_anchor = decisions.value_target_anchor
+        self._value_target_groups = decisions.value_target_groups
+        self._value_judgments = dict(decisions.value_judgments)
 
     @property
     def fallbacks_used(self) -> int:
@@ -1667,6 +1698,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         self._recall_disabled = lambda: middleware.recall_disabled
         self._observe_record_values = middleware._observe_record_values  # pyright: ignore[reportPrivateUsage]
         middleware.reforce_feedback = self.recall_feedback
+        middleware._capture_value_targets = self._capture_value_targets  # pyright: ignore[reportPrivateUsage]
 
     def record_pending(
         self, messages: list[Message], *, max_input_tokens: int | None = None
@@ -1759,6 +1791,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 recall_results = _recall_results(messages)
                 candidates = self._record_candidates(messages, anchor, recall_results)
                 self._observe_values(messages, anchor, candidates, recall_results)
+            if self.record_pending(messages, max_input_tokens=ceiling):
+                self._capture_value_targets(messages)
             return repaired
 
         if anchor is not None:
@@ -1777,12 +1811,16 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             # uncovered -- and before the fallback below, which is what both exist to keep away
             # from those groups.
             self._reforce_or_settle(records)
+            if self.record_pending(messages, max_input_tokens=ceiling):
+                self._capture_value_targets(messages)
             # Even a good record may not be enough on its own: the groups after it are
             # untouched by design, and they can exceed the ceiling by themselves.
             if fallback_after_record and included_token_count(messages) > budget:
                 changed = await self.fall_back_after_record(messages, ceiling=ceiling) or changed
             return changed
 
+        if self.record_pending(messages, max_input_tokens=ceiling):
+            self._capture_value_targets(messages)
         if prompt_tokens < int(budget * self.fallback_fraction):
             # Still waiting for the middleware's forced call to come back. Nothing may be
             # dropped yet: the record is the only thing that would replace it.
@@ -1968,6 +2006,36 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
 
         return candidates
 
+    @property
+    def last_record_value_judgment(self) -> str | None:
+        """Latest judgment: has_values, value_free, no_candidates, no_values, or None before one."""
+        return self._last_record_value_judgment
+
+    def _capture_value_targets(self, messages: list[Message]) -> None:
+        """Retain the pending request's values before compaction can remove their groups."""
+        annotate_message_groups(messages)
+        anchor = _newest_record_identity(messages)
+        if self._value_targets is not None and anchor != self._value_target_anchor:
+            return
+        candidates = [
+            candidate
+            for candidate in self._record_candidates(
+                messages, len(messages), _recall_results(messages)
+            )
+            if any(
+                not message.additional_properties.get(EXCLUDED_KEY, False)
+                for message in messages[candidate[0]["start_index"] : candidate[0]["end_index"] + 1]
+            )
+        ]
+        if not candidates:
+            return
+        values = {value for _, _, group_values in candidates for value in group_values}
+        if self._value_targets is None:
+            self._value_targets = set()
+            self._value_target_anchor = anchor
+        self._value_targets.update(values)
+        self._value_target_groups = max(self._value_target_groups, len(candidates))
+
     def _observe_values(
         self,
         messages: list[Message],
@@ -1976,18 +2044,40 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         recall_results: dict[int, str],
     ) -> None:
         identity = _record_identity(messages[anchor], recall_results)
-        values = {value for _, _, group_values in candidates for value in group_values}
-        if identity and values:
-            newest_quoted = set(
-                _tokens(_record_text(messages[anchor], recall_results), fold_case=False)
-            )
-            has_values = bool(values & newest_quoted)
-            if identity not in self._observed_value_records:
-                self._observed_value_records.add(identity)
-                if not has_values:
-                    self._records_without_values += 1
+        if not identity:
+            return
+        if identity in self._value_judgments:
+            has_values = self._value_judgments[identity]
+            self._last_record_value_judgment = "has_values" if has_values else "value_free"
             if self._observe_record_values is not None:
                 self._observe_record_values(identity, has_values)
+            return
+        values = {value for _, _, group_values in candidates for value in group_values}
+        target_groups = len(candidates)
+        if identity and self._value_targets is not None and identity != self._value_target_anchor:
+            values = self._value_targets
+            target_groups = self._value_target_groups
+            self._value_targets = None
+            self._value_target_anchor = ""
+            self._value_target_groups = 0
+        if not values:
+            self._last_record_value_judgment = "no_candidates" if not target_groups else "no_values"
+            if identity not in self._unjudged_value_records:
+                self._unjudged_value_records.add(identity)
+                logger.info("Recall record unjudged: %s", self._last_record_value_judgment)
+            return
+        newest_quoted = set(
+            _tokens(_record_text(messages[anchor], recall_results), fold_case=False)
+        )
+        has_values = bool(values & newest_quoted)
+        self._value_judgments[identity] = has_values
+        self._last_record_value_judgment = "has_values" if has_values else "value_free"
+        if identity not in self._observed_value_records:
+            self._observed_value_records.add(identity)
+            if not has_values:
+                self._records_without_values += 1
+        if self._observe_record_values is not None:
+            self._observe_record_values(identity, has_values)
 
     def _drop_before(self, messages: list[Message], anchor: int) -> bool:
         """Exclude the tool groups the record demonstrably covers, and only those.
@@ -2491,6 +2581,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self.repeat_records = repeat_records
         self.reforce = reforce
         self.reforce_feedback: Callable[[list[Message]], str] | None = None
+        self._capture_value_targets: Callable[[list[Message]], None] | None = None
         self._force_next = False
         self._reforce_next = False
         self._forced = 0
@@ -2816,6 +2907,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         if not forced_this_call and self.disarm is not None:
             self.disarm()
         if forced_this_call:
+            if self._capture_value_targets is not None:
+                self._capture_value_targets(list(context.messages))
             self.arm()
             context.options = self._forced_options(available)
             self._force_next = False
@@ -2835,6 +2928,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         prompt: Message | None = None
 
         async def compact(messages: list[Message]) -> bool:
+            if forced_this_call and self._capture_value_targets is not None:
+                self._capture_value_targets(messages)
             # History providers can load retained asks after middleware entry.
             messages[:] = [
                 message

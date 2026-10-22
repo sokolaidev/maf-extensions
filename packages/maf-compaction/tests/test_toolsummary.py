@@ -3043,3 +3043,51 @@ async def test_records_without_eligible_values_do_not_degrade_recall():
     assert strategy.records_without_values == 0
     assert middleware.value_free_record_streak == 0
     assert not middleware.pin_disabled
+
+
+@pytest.mark.parametrize("groups,reason", [(0, "no_candidates"), (3, "no_values")])
+async def test_unjudged_records_report_the_missing_basis(groups, reason, caplog):
+    strategy = _strategy(max_input_tokens=100_000)
+    messages = _conversation(
+        groups, result_values=lambda _: "Ordinary prose", payload_chars=0, record="Titles only"
+    )
+    with caplog.at_level("INFO", logger="maf_compaction._toolsummary"):
+        await strategy(messages)
+        await strategy(messages)
+    assert strategy.last_record_value_judgment == reason
+    assert strategy.records_without_values == 0
+    assert caplog.text.count(f"Recall record unjudged: {reason}") == 1
+
+
+@pytest.mark.parametrize("answer,judgment", [("CODE-0", "has_values"), ("CODE-1", "value_free")])
+async def test_saved_targets_judge_the_ask_without_granting_group_coverage(answer, judgment):
+    strategy = _strategy(max_input_tokens=100_000, trigger_fraction=0.0001)
+    await strategy(_conversation(1, payload_chars=0))
+    saved = strategy.decision_state()
+    assert saved.value_targets == frozenset({"CODE-0"})
+    strategy = _strategy(max_input_tokens=100_000, trigger_fraction=0.0001)
+    strategy.restore_decisions(saved)
+    messages = _conversation(1, payload_chars=0, first_turn=1, record=answer)
+    await strategy(messages)
+    assert strategy.last_record_value_judgment == judgment
+    assert strategy.groups_kept_uncovered == int(answer == "CODE-0")
+
+
+async def test_new_recall_targets_omit_groups_already_removed_by_a_record():
+    strategy = _strategy(max_input_tokens=100_000, trigger_fraction=0.0001)
+    gate = RecallGate()
+    middleware = ToolResultRecallMiddleware(
+        max_input_tokens=100_000,
+        tokenizer=TOKENIZER,
+        arm=gate.arm,
+        reforce=strategy.take_reforce,
+        max_groups_before_record=1,
+    )
+    messages = _conversation(1, payload_chars=0, record="CODE-0")
+    await strategy(messages)
+    assert strategy._excluded(messages) > 0
+    messages.extend(_trailing(1, first_turn=1))
+    middleware._force_next = True
+    await strategy(messages)
+    targets = strategy.decision_state().value_targets
+    assert targets is not None and "CODE-1" in targets and "CODE-0" not in targets
