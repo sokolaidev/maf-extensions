@@ -906,6 +906,23 @@ The local unrestricted fixture-only check completed in 10.2 seconds with all thr
 
 The fixed probe now uses .NET console output and a five-second thread sleep with PowerShell module autoload disabled. [PowerShell documents module autoload](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_modules?view=powershell-5.1), and [Start-Sleep belongs to Microsoft.PowerShell.Utility](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/start-sleep?view=powershell-5.1). Removing these cmdlet dependencies is a bounded experiment, not proof that module discovery caused the hosted timeout. File operations, independently required markers, the five-second process-observation window and all deadlines are unchanged. A fresh prerequisite comparison is required for this implementation; it cannot promote an earlier failed native result.
 
+### Hosted revised fixture result (2026-10-23)
+
+The prerequisites-only [run 39865612032](https://github.com/sokolaidev/maf-extensions/actions/runs/39865612032) at `9658989b9feb8de4a9e0afcb872d0a9ec37d56af` passed all three unprepared diagnostic jobs. CLI explanation exited 0 in 27.297/27.453/24.203 seconds for `none`/`ro`/`rw`; the revised unrestricted fixture exited 0 in 5.312/5.313/5.281 seconds. All required read/write and completion markers were present, independent host checks confirmed every permitted write, owned marker restoration completed, and selected asset/configuration equality checks passed. Each report records no failure or cleanup error.
+
+The `none` runner used `win25-vs2026` image `20261021.278.1`; `ro` and `rw` used `20261007.264.1`. All were Windows Server 2025 build 26100/AMD64, Python 3.12.10 and Node 26.8.1 with official OpenClaw/plugin 2026.10.5 and bundled SDK 0.9.0. Native readiness still selected AppContainer + DACL with the system-drive and NUL-device warnings. No preparation, Gateway or native workload ran. The reports deliberately retain `Selected-mode smoke: unqualified` alongside the successful unrestricted control.
+
+| Case | File | SHA-256 |
+|---|---|---|
+| `none-unprepared` | `host.md` | `555f12e4bb7c2445351e9f0256a3aae3344dc4eb1527f190cceb990a004d6e88` |
+| `none-unprepared` | `report.md` | `831605e268bf79a55b7141e10a3f60dafc0713d539f6a346dd82425aa86801e3` |
+| `ro-unprepared` | `host.md` | `d142e8a7fb1754c6758d020e16c05efd586e951b28ed91725503f6620ab3529c` |
+| `ro-unprepared` | `report.md` | `2338e32f4729c480c424a6ac05209aad07e463e50d11366d97c5b84a61a5eae7` |
+| `rw-unprepared` | `host.md` | `d142e8a7fb1754c6758d020e16c05efd586e951b28ed91725503f6620ab3529c` |
+| `rw-unprepared` | `report.md` | `cc8541b8eacedc7e490e345c81f9c848fa5eba24c46b85dcbd5ded6d82423d67` |
+
+This removes the observed fixture prerequisite blocker for the tested candidate without extending its deadline. The result supports keeping the probe independent of PowerShell cmdlets; it does not identify the exact internal cause of the previous timeout, because fresh runners were used and no module-loading trace was captured. Native behavior of the revised probe is still untested. The next qualification prerequisite remains a disposable supported host/isolation combination; the unchanged preparer is not rerun as a fix, and the generated protected-skills layout still requires a supported resolution. #1974 remains open for permitted native execution, replacement races, hostile filesystem routes, execution bounds and multi-session lifetime.
+
 ## Status
 
 The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audit.md#consolidated-closure-reconciliation-2026-10-12) covers every original #1676 acceptance row using the separately recorded Gateway, Bicep/MAF and published transport evidence. Both finite follow-ups are merged. Qualification is complete for that supervised, selected baseline; the first-tool design is complete and #1898 delivers the separately qualified installed worker. Historical reports and their `complete_matrix: false` values are unchanged.
@@ -925,5 +942,5 @@ The Bicep workstream has a locally qualified installed worker and its historical
 | Conformance and installed-package qualification | Design complete; installed runner #1972 and bounded fault profile #1973 qualified, native profile #1974 conditional | [#1641](https://github.com/sokolaidev/maf-extensions/issues/1641) (closed) by [#1977](https://github.com/sokolaidev/maf-extensions/pull/1977) (merged) |
 | Installed Bicep conformance runner | Implemented; fresh published-candidate Windows profile qualified | [#1972](https://github.com/sokolaidev/maf-extensions/issues/1972) (closed) by [#1983](https://github.com/sokolaidev/maf-extensions/pull/1983) (merged) |
 | Bounded owner-loss qualification | Complete for the selected Windows/Docker candidate; fresh baseline and all fifteen cases passed independent evaluation | [#1973](https://github.com/sokolaidev/maf-extensions/issues/1973) (closed) by [#2066](https://github.com/sokolaidev/maf-extensions/pull/2066) (merged) |
-| Native MXC workspace and host-file qualification | Open; four hosted comparison attempts recorded; first-trustee preparer progress retained; preparer incomplete; hosted fixture timeout identified; native execution and full matrix unqualified | [#1974](https://github.com/sokolaidev/maf-extensions/issues/1974) (open) |
+| Native MXC workspace and host-file qualification | Open; four hosted comparison attempts recorded; first-trustee preparer progress retained; preparer incomplete; revised hosted prerequisites passed in all three modes; native execution and full matrix unqualified | [#1974](https://github.com/sokolaidev/maf-extensions/issues/1974) (open) |
 | Full sandbox provider | Design assessed; implementation deferred pending a supported third-party SDK and process/file contracts | [#1642](https://github.com/sokolaidev/maf-extensions/issues/1642) (closed) by [#2073](https://github.com/sokolaidev/maf-extensions/pull/2073) (merged) |
