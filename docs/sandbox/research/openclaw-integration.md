@@ -886,6 +886,26 @@ The runner now retains separate command labels, configured deadlines, elapsed ti
 
 Host selection also remains bounded. The [GitHub-hosted runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) lists standard Windows 11 runners as ARM64, while standard x64 runners use Server images. The [Windows 11 image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows11-VS2026-Arm64-Readme.md) currently records build 26200.9457. This profile pins x64 native assets and explicitly refuses other architectures; ARM64 or emulated x64 is a distinct candidate, not an interchangeable qualification host. The MXC v0.9.0 support matrix does not promise an enabled BaseContainer contract on that build. No new host or isolation mode is qualified by these listings, and no runner label alone supplies the missing runtime capability.
 
+
+### Hosted prerequisite isolation result (2026-10-23)
+
+The prerequisites-only [run 39864079892](https://github.com/sokolaidev/maf-extensions/actions/runs/39864079892) used `684eedb5` and no preparation case. `sandbox explain` exited 0 for `none`, `ro` and `rw` in 27.250, 23.672 and 27.562 seconds respectively. The following unrestricted PowerShell fixture exceeded its unchanged 30-second deadline in every case (30.015, 30.031 and 30.032 seconds including capture cleanup). This newly instrumented campaign identifies the fixture as the failing prerequisite; it does not retroactively identify every earlier generic timeout.
+
+In `none` and `rw`, retained fixture stdout contains the start/PID, both read markers and all three allowed-write markers, but no final completion marker. In `ro`, no fixture stdout was retained. Partial markers cannot establish a completed control, and no native workload or Gateway was started. All three diagnostic jobs failed and reported no supervisor cleanup errors. The runner restores owned fixture write markers on capture refusal; the earlier immutable report bytes remain unchanged.
+
+| Case | File | SHA-256 |
+|---|---|---|
+| `none-unprepared` | `host.md` | `d11b3afff87e7183a7045c352a2e559acb7e10b138850a55e4ba2aded102080b` |
+| `none-unprepared` | `report.md` | `a13e039e68af58c0199f227542adcd1b0a068a944f009fb4537f566e5e1f08a4` |
+| `ro-unprepared` | `host.md` | `3de10294f331a98b135007dee4f63bfe441ccce3fdaeac6db09fc6a0449bdf54` |
+| `ro-unprepared` | `report.md` | `eac2e5f739b41050c51d043d988ce1b22a0efc3b76778af467723787daf81c41` |
+| `rw-unprepared` | `host.md` | `d11b3afff87e7183a7045c352a2e559acb7e10b138850a55e4ba2aded102080b` |
+| `rw-unprepared` | `report.md` | `20b60bba2a96b077dbf77fef98c6e712096979db7811085fbe25fb18b7e8680f` |
+
+The local unrestricted fixture-only check completed in 10.2 seconds with all three writes independently observed and restored (Markdown SHA-256 `c78dd2acd5539522db76608a964b339bab0c9304aec8f691082c6fb13f856da3`). A separate read-only readiness observation on Windows 11 build 26220/AMD64 reports BaseContainer plus native capture, deny-path, enumerate-path and ingress-host-loopback capabilities (Markdown SHA-256 `e80cd928e852c4b736be6022ae0f9e308a8a15ceac24fe637e14474525c51a52`). No host preparation or native workload was run for either observation. The workstation is a capability reference, not the approved disposable qualification environment, and readiness does not prove which isolation implementation the plugin would select for its full policy.
+
+The fixed probe now uses .NET console output and a five-second thread sleep with PowerShell module autoload disabled. [PowerShell documents module autoload](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_modules?view=powershell-5.1), and [Start-Sleep belongs to Microsoft.PowerShell.Utility](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/start-sleep?view=powershell-5.1). Removing these cmdlet dependencies is a bounded experiment, not proof that module discovery caused the hosted timeout. File operations, independently required markers, the five-second process-observation window and all deadlines are unchanged. A fresh prerequisite comparison is required for this implementation; it cannot promote an earlier failed native result.
+
 ## Status
 
 The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audit.md#consolidated-closure-reconciliation-2026-10-12) covers every original #1676 acceptance row using the separately recorded Gateway, Bicep/MAF and published transport evidence. Both finite follow-ups are merged. Qualification is complete for that supervised, selected baseline; the first-tool design is complete and #1898 delivers the separately qualified installed worker. Historical reports and their `complete_matrix: false` values are unchanged.
@@ -905,5 +925,5 @@ The Bicep workstream has a locally qualified installed worker and its historical
 | Conformance and installed-package qualification | Design complete; installed runner #1972 and bounded fault profile #1973 qualified, native profile #1974 conditional | [#1641](https://github.com/sokolaidev/maf-extensions/issues/1641) (closed) by [#1977](https://github.com/sokolaidev/maf-extensions/pull/1977) (merged) |
 | Installed Bicep conformance runner | Implemented; fresh published-candidate Windows profile qualified | [#1972](https://github.com/sokolaidev/maf-extensions/issues/1972) (closed) by [#1983](https://github.com/sokolaidev/maf-extensions/pull/1983) (merged) |
 | Bounded owner-loss qualification | Complete for the selected Windows/Docker candidate; fresh baseline and all fifteen cases passed independent evaluation | [#1973](https://github.com/sokolaidev/maf-extensions/issues/1973) (closed) by [#2066](https://github.com/sokolaidev/maf-extensions/pull/2066) (merged) |
-| Native MXC workspace and host-file qualification | Open; four hosted comparison attempts recorded; first-trustee preparer progress retained; preparation and startup prerequisites incomplete; native execution and full matrix unqualified | [#1974](https://github.com/sokolaidev/maf-extensions/issues/1974) (open) |
+| Native MXC workspace and host-file qualification | Open; four hosted comparison attempts recorded; first-trustee preparer progress retained; preparer incomplete; hosted fixture timeout identified; native execution and full matrix unqualified | [#1974](https://github.com/sokolaidev/maf-extensions/issues/1974) (open) |
 | Full sandbox provider | Design assessed; implementation deferred pending a supported third-party SDK and process/file contracts | [#1642](https://github.com/sokolaidev/maf-extensions/issues/1642) (closed) by [#2073](https://github.com/sokolaidev/maf-extensions/pull/2073) (merged) |

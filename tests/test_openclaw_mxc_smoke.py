@@ -368,13 +368,13 @@ def test_provider_shutdown_with_incomplete_headers(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.parametrize("mode", smoke.MODES)
-@pytest.mark.parametrize("agent_allowed", [False, True])
+@pytest.mark.parametrize("outcome", ["allow", "deny", "timeout"])
 @pytest.mark.parametrize("prerequisites_only", [False, True])
 def test_fixture_control_requires_and_restores_agent_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
-    agent_allowed: bool,
+    outcome: str,
     prerequisites_only: bool,
 ):
     from types import SimpleNamespace
@@ -407,14 +407,16 @@ def test_fixture_control_requires_and_restores_agent_write(
         nonce = (active / "marker.txt").read_text()
         (active / "native-write.txt").write_text(nonce)
         (tmp_path / "outside.txt").write_text(nonce)
-        if agent_allowed:
+        if outcome != "deny":
             (agent / "agent-write.txt").write_text(nonce)
+        if outcome == "timeout":
+            raise smoke.CaptureRefused("setup_command_timeout", b"partial fixture output")
         return SimpleNamespace(
             returncode=0,
             stdout=(
                 f"smoke-end={nonce}\nactive-read={nonce}\nagent-read={nonce}\n"
                 "active-write=allowed\noutside-write=allowed\n"
-                + ("agent-write=allowed" if agent_allowed else "agent-write=denied")
+                + ("agent-write=allowed" if outcome == "allow" else "agent-write=denied")
             ).encode(),
         )
 
@@ -428,7 +430,12 @@ def test_fixture_control_requires_and_restores_agent_write(
     monkeypatch.setattr(smoke, "capture", capture)
     monkeypatch.setattr(campaign.provider, "start", before_gateway)
     try:
-        if agent_allowed and prerequisites_only:
+        if outcome == "timeout":
+            with pytest.raises(Refused, match="setup_command_timeout"):
+                campaign.execute(prerequisites_only=prerequisites_only)
+            assert not campaign.prerequisites_complete
+            assert not campaign.rows
+        elif outcome == "allow" and prerequisites_only:
             campaign.execute(prerequisites_only=True)
             assert campaign.prerequisites_complete
             assert not campaign.processes.children
@@ -439,10 +446,13 @@ def test_fixture_control_requires_and_restores_agent_write(
         else:
             with pytest.raises(
                 Refused,
-                match="stop_after_control" if agent_allowed else "host_fixture_prerequisite",
+                match="stop_after_control" if outcome == "allow" else "host_fixture_prerequisite",
             ):
                 campaign.execute(prerequisites_only=prerequisites_only)
-        assert campaign.rows[0][1] is agent_allowed
+        if outcome != "timeout":
+            assert campaign.rows[0][1] is (outcome == "allow")
+        assert (active / "native-write.txt").read_text() == "before"
+        assert (tmp_path / "outside.txt").read_text() == "outside-before"
         assert (agent / "agent-write.txt").read_text() == "before"
     finally:
         campaign.provider.close()

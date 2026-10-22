@@ -179,15 +179,16 @@ def native_script(active: Path, agent: Path, outside: Path, nonce: str) -> str:
 
     statements = [
         "$ErrorActionPreference='Stop'",
-        f"Write-Output 'smoke-start={nonce}'",
-        "Write-Output ('guest-pid='+$PID)",
+        "$PSModuleAutoLoadingPreference='None'",
+        f"[Console]::WriteLine('smoke-start={nonce}')",
+        "[Console]::WriteLine('guest-pid='+$PID)",
     ]
     for label, path in (
         ("active-read", active / "marker.txt"),
         ("agent-read", agent / "agent-marker.txt"),
     ):
         statements.append(
-            f"try {{ Write-Output ('{label}='+[IO.File]::ReadAllText({quoted(path)})) }} catch {{ Write-Output '{label}=denied' }}"
+            f"try {{ [Console]::WriteLine('{label}='+[IO.File]::ReadAllText({quoted(path)})) }} catch {{ [Console]::WriteLine('{label}=denied') }}"
         )
     for label, path in (
         ("active-write", active / "native-write.txt"),
@@ -195,9 +196,11 @@ def native_script(active: Path, agent: Path, outside: Path, nonce: str) -> str:
         ("outside-write", outside),
     ):
         statements.append(
-            f"try {{ [IO.File]::WriteAllText({quoted(path)},'{nonce}'); Write-Output '{label}=allowed' }} catch {{ Write-Output '{label}=denied' }}"
+            f"try {{ [IO.File]::WriteAllText({quoted(path)},'{nonce}'); [Console]::WriteLine('{label}=allowed') }} catch {{ [Console]::WriteLine('{label}=denied') }}"
         )
-    statements.extend(["Start-Sleep -Seconds 5", f"Write-Output 'smoke-end={nonce}'"])
+    statements.extend(
+        ["[Threading.Thread]::Sleep(5000)", f"[Console]::WriteLine('smoke-end={nonce}')"]
+    )
     return "; ".join(statements)
 
 
