@@ -9,7 +9,7 @@ import platform
 import shutil
 from pathlib import Path
 
-from .commands import capture
+from .commands import CaptureRefused, capture
 from .evidence import Refused, file_hash, require
 from .install import REPO, environment
 from .mxc_smoke import identities
@@ -85,8 +85,12 @@ def observe(installation: Path, root: Path, *, prepare: bool) -> bool:
             offset = diagnostic_log.stat().st_size if diagnostic_log.exists() else 0
             lines.extend(["", f"## {label}", ""])
             result = None
+            partial_stdout = b""
             try:
                 result = capture(args, root, env, 60, diagnostics=True, stdout_limit=16384)
+            except CaptureRefused as exc:
+                partial_stdout = exc.stdout
+                raise
             finally:
                 error_output = b""
                 if diagnostic_log.exists():
@@ -94,7 +98,9 @@ def observe(installation: Path, root: Path, *, prepare: bool) -> bool:
                         stream.seek(offset)
                         error_output = stream.read(16385)
                 if result is None:
-                    lines.append("Command did not complete; stdout and exit status unavailable.")
+                    lines.append(
+                        "Command did not complete; exit status unavailable. Retained output may be partial."
+                    )
                 else:
                     lines.append(f"Exit code: {result.returncode}.")
                 if fingerprint and result is not None:
@@ -102,8 +108,10 @@ def observe(installation: Path, root: Path, *, prepare: bool) -> bool:
                         f"Observed ACL output SHA-256: `{hashlib.sha256(result.stdout).hexdigest()}`."
                     )
                 outputs = [("stderr", error_output[:16384])]
-                if not fingerprint and result is not None:
-                    outputs.insert(0, ("stdout", result.stdout))
+                if not fingerprint:
+                    outputs.insert(
+                        0, ("stdout", result.stdout if result is not None else partial_stdout)
+                    )
                 for channel, raw in outputs:
                     if not raw:
                         continue

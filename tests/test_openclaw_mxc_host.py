@@ -237,7 +237,7 @@ def test_timed_out_preparation_keeps_step_and_stderr(
     def capture(args, root, *positional, **kwargs):
         if args[-1] == "prepare-system-drive":
             (root / "setup.log").write_bytes(b"preparer diagnostic before timeout\n")
-            raise Refused("setup_command_timeout")
+            raise host.CaptureRefused("setup_command_timeout", f"preparing {root}\n".encode())
         return original(args, root, *positional, **kwargs)
 
     monkeypatch.setattr(host, "capture", capture)
@@ -246,6 +246,9 @@ def test_timed_out_preparation_keeps_step_and_stderr(
     assert "## Disposable host preparation" in report
     assert "exit status unavailable" in report
     assert "preparer diagnostic before timeout" in report
+    assert "preparing <host-diagnostic>" in report
+    assert str(output) not in report
+    assert "Retained output may be partial" in report
     assert "setup_command_timeout" in report
     assert "completed: `False`" in report
     assert "## Prepared native readiness" not in report
