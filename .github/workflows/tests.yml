@@ -28,6 +28,10 @@ on:
   # branch, not for that.
   workflow_dispatch:
     inputs:
+      openclaw_mxc:
+        description: "Compare official OpenClaw MXC smoke on fresh unprepared and prepared Windows runners"
+        type: boolean
+        default: false
       mxc_files:
         description: "Qualify bounded MXC files and durable artifacts on Linux and Windows"
         type: boolean
@@ -1103,6 +1107,64 @@ jobs:
           python3 scripts/run_published_core_shard.py
           --shard "$SHARD_INDEX" --shards "$SHARD_COUNT"
 
+  openclaw-mxc:
+    name: OpenClaw MXC (${{ matrix.mode }}, ${{ matrix.preparation }})
+    needs: changes
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [none, ro, rw]
+        preparation: [unprepared, prepared]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - if: github.event_name == 'workflow_dispatch' && inputs.openclaw_mxc
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: github.event_name == 'workflow_dispatch' && inputs.openclaw_mxc
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - if: github.event_name == 'workflow_dispatch' && inputs.openclaw_mxc
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.8.1'
+      - name: Install selected published subject without lifecycle scripts
+        if: github.event_name == 'workflow_dispatch' && inputs.openclaw_mxc
+        run: |
+          uv sync --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm install --prefix "$env:RUNNER_TEMP/oc-mxc-installed" --ignore-scripts --no-audit --no-fund openclaw@2026.10.5 @openclaw/mxc-sandbox@2026.10.5
+          exit $LASTEXITCODE
+      - name: Record host readiness and selected preparation
+        if: github.event_name == 'workflow_dispatch' && inputs.openclaw_mxc
+        env:
+          PREPARATION: ${{ matrix.preparation }}
+        run: |
+          $hostArguments = @('--installation', "$env:RUNNER_TEMP/oc-mxc-installed", '--output', "$env:RUNNER_TEMP/oc-mxc-host")
+          if ($env:PREPARATION -eq 'prepared') { $hostArguments += '--prepare' }
+          uv run --directory scripts python -m openclaw_conformance.mxc_host @hostArguments
+          exit $LASTEXITCODE
+      - name: Exercise the selected native workspace mode
+        if: github.event_name == 'workflow_dispatch' && inputs.openclaw_mxc
+        env:
+          WORKSPACE_MODE: ${{ matrix.mode }}
+        run: |
+          uv run --directory scripts python -m openclaw_conformance.mxc_smoke --installation "$env:RUNNER_TEMP/oc-mxc-installed" --output "$env:RUNNER_TEMP/oc-mxc-smoke" --mode "$env:WORKSPACE_MODE" --debug-native
+          exit $LASTEXITCODE
+      - name: Retain Markdown evidence only
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.openclaw_mxc
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openclaw-mxc-${{ matrix.mode }}-${{ matrix.preparation }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/oc-mxc-host/host.md
+            ${{ runner.temp }}/oc-mxc-smoke/report.md
+          if-no-files-found: error
+          retention-days: 14
+
   # The required aggregate context runs no checks of its own: it fails unless every
   # shard above succeeded.
   #
@@ -1113,7 +1175,7 @@ jobs:
   # and never themselves, so a skipped shard means something went wrong with the graph.
   tests:
     name: Python (pytest + ruff + pyright)
-    needs: [changes, suite, hyperlight-worker, hyperlight-linux-worker, mxc-recovery, mxc-durability, mxc-v1, mxc-stream-kernel, mxc-streams, mxc-file-kernel, mxc-files, security, fast, pre-commit, types, packaging, published-cores]
+    needs: [changes, openclaw-mxc, suite, hyperlight-worker, hyperlight-linux-worker, mxc-recovery, mxc-durability, mxc-v1, mxc-stream-kernel, mxc-streams, mxc-file-kernel, mxc-files, security, fast, pre-commit, types, packaging, published-cores]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

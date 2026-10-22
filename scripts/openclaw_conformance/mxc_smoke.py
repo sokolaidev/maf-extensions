@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import importlib
 import json
@@ -68,7 +69,14 @@ def identities(installation: Path) -> dict[str, str]:
 
 
 def configuration(
-    root: Path, plugin: Path, mode: str, port: int, token: str, provider: Provider
+    root: Path,
+    plugin: Path,
+    mode: str,
+    port: int,
+    token: str,
+    provider: Provider,
+    *,
+    debug: bool = False,
 ) -> dict[str, Any]:
     """Use the public plugin configuration without extra filesystem grants."""
     require(mode in MODES, "workspace_mode")
@@ -100,6 +108,7 @@ def configuration(
                         "mxcBinaryPath": str(
                             plugin / "node_modules/@microsoft/mxc-sdk/bin/x64/wxc-exec.exe"
                         ),
+                        **({"debug": True} if debug else {}),
                         "containment": "process",
                         "network": "none",
                         "timeoutSeconds": 30,
@@ -215,13 +224,51 @@ def native_passed(
     )
 
 
+def native_diagnostics(root: Path) -> list[str]:
+    """Extract bounded native events without treating them as independent evidence."""
+    folder = root / "temp/mxc-logs"
+    if not folder.resolve().is_relative_to(root.resolve()):
+        return ["Native diagnostic directory refused."]
+    logs = sorted(folder.glob("*.log"))
+    lines = []
+    for log in logs[:16]:
+        if log.is_symlink() or not log.resolve().is_relative_to(root.resolve()):
+            lines.append("Native diagnostic path refused.")
+            continue
+        try:
+            with log.open("rb") as stream:
+                raw = stream.read(65537)
+        except OSError:
+            lines.append("Native diagnostic log unavailable; extraction is incomplete.")
+            continue
+        if len(raw) <= 65536:
+            lines.append(f"- Log SHA-256: `{hashlib.sha256(raw).hexdigest()}`.")
+        else:
+            lines.append("- Diagnostic log exceeded 64 KiB; extraction is incomplete.")
+        for line in raw[:65536].decode("utf-8", errors="replace").splitlines():
+            if any(
+                marker in line
+                for marker in (
+                    "selected isolation tier:",
+                    '"event":"mxc.ProcessExited"',
+                    '"event":"mxc.EnforcementDegraded"',
+                    '"event":"mxc.SandboxTornDown"',
+                )
+            ):
+                lines.append("> " + line)
+    if len(logs) > 16:
+        lines.append("Only the first 16 native logs were inspected.")
+    return lines or ["No selected native diagnostic events were available."]
+
+
 class Campaign:
     """Own a fresh Gateway and observe only its finite smoke turns."""
 
-    def __init__(self, root: Path, installation: Path, mode: str) -> None:
+    def __init__(self, root: Path, installation: Path, mode: str, *, debug: bool = False) -> None:
         sys.path.insert(0, str(SAMPLE))
         self.helpers = importlib.import_module("agent")
         self.root, self.installation, self.mode = root, installation, mode
+        self.debug = debug
         self.provider = Provider()
         self.processes = self.helpers.Processes(root)
         self.port, self.token = self.helpers.free_port(), secrets.token_hex(32)
@@ -312,7 +359,15 @@ class Campaign:
         config = self.root / "state/openclaw.json"
         config.write_text(
             json.dumps(
-                configuration(self.root, plugin, self.mode, self.port, self.token, self.provider)
+                configuration(
+                    self.root,
+                    plugin,
+                    self.mode,
+                    self.port,
+                    self.token,
+                    self.provider,
+                    debug=self.debug,
+                )
             ),
             encoding="utf-8",
         )
@@ -483,7 +538,7 @@ class Campaign:
             "",
             f"Host: {platform.system()} {platform.release()} {platform.version()}, {platform.machine()}; Python {platform.python_version()}.",
             "",
-            f"Configuration SHA-256: `{self.config_hash}`.",
+            f"Configuration SHA-256: `{self.config_hash}`. Native debug enabled: `{self.debug}`.",
             "",
             f"Failure: {failure or 'none'}. Cleanup errors: {', '.join(self.cleanup) or 'none'}.",
             "",
@@ -504,6 +559,11 @@ class Campaign:
                     "```",
                 ]
             )
+        if self.debug:
+            lines.extend(["", "## Native diagnostics (not independent execution proof)", ""])
+            lines.extend(
+                redact(line).replace("```", "'''") for line in native_diagnostics(self.root)
+            )
         (self.root / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
         return passed
 
@@ -514,6 +574,7 @@ def main() -> int:
     parser.add_argument("--installation", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mode", choices=MODES, required=True)
+    parser.add_argument("--debug-native", action="store_true")
     args = parser.parse_args()
     require(
         os.name == "nt" and platform.machine().lower() in {"amd64", "x86_64"},
@@ -533,7 +594,7 @@ def main() -> int:
     root.mkdir()
     for name in ("state", "home", "temp", "agent", "private", "appdata", "local"):
         (root / name).mkdir()
-    campaign = Campaign(root, installation, args.mode)
+    campaign = Campaign(root, installation, args.mode, debug=args.debug_native)
     failure = None
     try:
         campaign.execute()
