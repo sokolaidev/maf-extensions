@@ -76,17 +76,32 @@ def observe(installation: Path, root: Path, *, prepare: bool) -> bool:
         require(file_hash(preparer) == PREPARER, "host_preparer_identity")
         lines.append(f"Host preparer SHA-256: `{PREPARER}`.")
         executable = str(binary / "wxc-exec.exe")
+        drive = Path(os.environ["SYSTEMROOT"]).anchor
         env = environment(root)
+        env["SystemDrive"] = drive.removesuffix("\\")
 
         def record(label: str, args: list[str], *, fingerprint: bool = False) -> None:
+            diagnostic_log = root / "setup.log"
+            offset = diagnostic_log.stat().st_size if diagnostic_log.exists() else 0
             result = capture(args, root, env, 60, diagnostics=True, stdout_limit=16384)
+            error_output = b""
+            if diagnostic_log.exists():
+                with diagnostic_log.open("rb") as stream:
+                    stream.seek(offset)
+                    error_output = stream.read(16385)
             lines.extend(["", f"## {label}", "", f"Exit code: {result.returncode}."])
             if fingerprint:
                 lines.append(
                     f"Observed ACL output SHA-256: `{hashlib.sha256(result.stdout).hexdigest()}`."
                 )
-            else:
-                text = result.stdout.decode("utf-8", errors="replace")
+            outputs = [("stderr", error_output[:16384])]
+            if not fingerprint:
+                outputs.insert(0, ("stdout", result.stdout))
+            for channel, raw in outputs:
+                if not raw:
+                    continue
+                lines.append(f"{channel}:")
+                text = raw.decode("utf-8", errors="replace")
                 for value, replacement in (
                     (str(root), "<host-diagnostic>"),
                     (str(installation), "<installation>"),
@@ -97,13 +112,14 @@ def observe(installation: Path, root: Path, *, prepare: bool) -> bool:
                             value, replacement
                         )
                 lines.extend(["```text", text.replace("```", "---"), "```"])
+            if len(error_output) > 16384:
+                lines.append("Stderr exceeded 16 KiB; extraction is incomplete.")
             require(result.returncode == 0, "host_diagnostic_command")
 
         node = shutil.which("node")
         require(node is not None, "node_missing")
         assert node is not None
         record("Node version", [node, "--version"])
-        drive = Path(os.environ["SYSTEMROOT"]).anchor
         acl = str(Path(os.environ["SYSTEMROOT"]) / "System32/icacls.exe")
         record("Initial system-drive ACL fingerprint", [acl, drive], fingerprint=True)
         record("Initial native readiness", [executable, "--probe"])

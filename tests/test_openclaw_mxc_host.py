@@ -184,3 +184,45 @@ def test_hosted_comparison_is_opt_in_and_retains_only_markdown():
     artifact = job["steps"][-1]
     assert "always()" in artifact["if"]
     assert all(path.endswith(".md") for path in artifact["with"]["path"].splitlines())
+
+
+def test_preparation_receives_system_drive_from_windows_root(
+    runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.delenv("SystemDrive", raising=False)
+    original = host.capture
+
+    def capture(args, root, env, *positional, **kwargs):
+        assert env["SystemDrive"] == (tmp_path / "Windows").anchor.removesuffix("\\")
+        return original(args, root, env, *positional, **kwargs)
+
+    monkeypatch.setattr(host, "capture", capture)
+    assert host.observe(tmp_path / "installation", tmp_path / "output", prepare=True)
+
+
+def test_failed_preparation_retains_bounded_redacted_stderr(
+    runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    original = host.capture
+    output = tmp_path / "output"
+
+    def capture(args, root, *positional, **kwargs):
+        result = original(args, root, *positional, **kwargs)
+        with (root / "setup.log").open("ab") as log:
+            if args[-1] == "prepare-system-drive":
+                log.write(f"cannot prepare {root}\n".encode() + b"x" * 16384 + b"omitted suffix")
+                result.returncode = 1
+            else:
+                log.write(b"earlier diagnostic\n")
+        return result
+
+    monkeypatch.setattr(host, "capture", capture)
+    assert not host.observe(tmp_path / "installation", output, prepare=True)
+    report = (output / "host.md").read_text(encoding="utf-8")
+    last = report.split("## Disposable host preparation", 1)[1]
+    assert "cannot prepare <host-diagnostic>" in last
+    assert "Stderr exceeded 16 KiB" in last
+    assert "earlier diagnostic" not in last
+    assert "omitted suffix" not in last
+    assert str(output) not in report
+    assert "completed: `False`" in report
