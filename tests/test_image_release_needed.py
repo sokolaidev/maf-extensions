@@ -1133,6 +1133,66 @@ def test_consumer_guide_alone_does_not_request_a_replacement(tmp_path, change):
     assert desired(changed=changed)["reasons"]["source"]["paths"] == [payload]
 
 
+@pytest.mark.parametrize("change", ["added", "modified", "deleted"])
+def test_gitignore_changes_only_request_workspace_image_refresh(tmp_path, change):
+    tracker.git(tmp_path, "init")
+    payload = "images/drawio-export/requirements.txt"
+    files = {payload: "pillow==12.3.0\n"}
+    if change != "added":
+        files[".gitignore"] = "out/\n"
+    base = commit(tmp_path, files)
+    if change == "deleted":
+        (tmp_path / ".gitignore").unlink()
+        head = commit(tmp_path, {})
+    else:
+        head = commit(tmp_path, {".gitignore": "out/\nbandit-report.json\n"})
+    for profile in tracker.PROFILES:
+        changed = tracker.changed_inputs(tmp_path, base, head, profile)
+        assert changed == ([".gitignore"] if profile == "hyperlight-aks-probe" else [])
+    assert tracker.changed_profiles(tmp_path, base, head, ".gitignore") == tracker.PROFILES
+    record = RECORD | {"profile": "drawio-export"}
+    previous = desired(record=record, changed=[".gitignore"])
+    changed = tracker.changed_inputs(tmp_path, base, head, "drawio-export")
+    result = desired(record=record, changed=changed, previous=previous)
+    assert result["resolved"]
+    assert result["resolution"] == "source-reconciled"
+    mixed = commit(tmp_path, {payload: "pillow==13.0.0\n"})
+    assert tracker.changed_inputs(tmp_path, base, mixed, "drawio-export") == [payload]
+    for observed, monitored in (
+        (candidate(), record),
+        (candidate(outcome="vulnerable"), record),
+        (
+            None,
+            record
+            | {
+                "latestAttempt": {
+                    "outcome": "vulnerable",
+                    "findings": [FINDING],
+                    "evidenceRelease": "image-monitor-1-1",
+                }
+            },
+        ),
+    ):
+        previous = desired(record=monitored, changed=[".gitignore"], observed=observed)
+        result = desired(record=monitored, changed=changed, previous=previous)
+        assert not result["resolved"]
+        assert "source" not in result["reasons"]
+        assert result["reasons"] == {
+            key: value for key, value in previous["reasons"].items() if key != "source"
+        }
+        if observed:
+            assert result["candidateFindings"] == previous["candidateFindings"]
+
+
+@pytest.mark.parametrize("path", [".dockerignore", ".gitattributes", ".gitmodules"])
+def test_shared_build_controls_remain_release_inputs(tmp_path, path):
+    tracker.git(tmp_path, "init")
+    base = commit(tmp_path, {path: "old\n"})
+    head = commit(tmp_path, {path: "new\n"})
+    for profile in tracker.PROFILES:
+        assert tracker.changed_inputs(tmp_path, base, head, profile) == [path]
+
+
 def test_source_diff_ignores_publisher_but_tracks_payload_and_prepared_dependencies(tmp_path):
     tracker.git(tmp_path, "init")
     base = commit(

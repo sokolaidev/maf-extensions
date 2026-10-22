@@ -35,7 +35,7 @@ WORKFLOWS = {
     ".github/workflows/container-image-monitor.yml",
     ".github/workflows/container-image-release.yml",
 }
-WORKSPACE_INPUTS = {"uv.lock", "uv.toml", "pyproject.toml", ".python-version"}
+WORKSPACE_INPUTS = {"uv.lock", "uv.toml", "pyproject.toml", ".python-version", ".gitignore"}
 
 
 def bicep_diagnostics(source: str) -> str:
