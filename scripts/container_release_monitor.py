@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import shutil
@@ -40,6 +41,58 @@ from image_security_evidence import verify_inventory
 from prepare_container_release import assess
 
 BATCH_SIZE = 6
+
+
+def notification(catalogue: dict[str, Any], health: dict[str, Any]) -> str:
+    """Summarize actionable health without timestamps or historical-only findings in its identity."""
+    rows = []
+    for scope in ("current", "historical", "publication"):
+        for name, status in sorted(health[scope].items()):
+            monitoring_problem = name in health["monitoringProblems"]
+            if not monitoring_problem and (
+                scope == "historical" or (scope == "current" and status == "clean")
+            ):
+                continue
+            record = catalogue["releases"][name]
+            attempt = record.get("latestAttempt", {})
+            reasons = [
+                f"scope: {scope}",
+                f"assessment: {status}",
+                f"publication: {record['state']}",
+                f"delivery: {record['delivery']}",
+            ]
+            if monitoring_problem:
+                reasons.append("monitoring evidence incomplete, stale or undelivered")
+            if attempt.get("reason"):
+                reasons.append(attempt["reason"])
+            if record.get("registryDiscovery", {}).get("outcome") == "unavailable":
+                reasons.append("registry discovery unavailable")
+            for entry_digest, entry in sorted(record.get("unexpectedDigests", {}).items()):
+                if unexpected_end(entry) is None:
+                    reasons.append(f"unexpected registry digest: {entry_digest}")
+            findings = sorted(
+                {
+                    f"{finding['severity']} {finding['id']}"
+                    for finding in attempt.get("findings", [])
+                }
+            )
+            if findings:
+                reasons.append("findings: " + ", ".join(findings))
+            rows.append(f"- **{name}** (`{record['registryDigest']}`): " + "; ".join(reasons) + ".")
+    identity = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+    warnings = sum(state != "clean" for state in health["historical"].values())
+    summary = (
+        f"Current images tracked: {len(health['current'])}. "
+        f"Historical warnings: {warnings} (historical findings alone do not fail the gate)."
+    )
+    if rows:
+        summary += "\n\nAffected images and reasons:\n\n" + "\n".join(rows)
+    if len(summary) > 32000:
+        summary = (
+            summary[:32000]
+            + "\n\nDetails truncated; see the finish job summary and retained evidence."
+        )
+    return json.dumps({"attention": health["attention"], "problems": identity, "summary": summary})
 
 
 def target_name(target: dict[str, Any]) -> str:
@@ -446,6 +499,7 @@ def finish(directory: Path) -> None:
         {
             "attention": str(health["attention"]).lower(),
             "historical_warnings": str(len(warnings)),
+            "notification": notification(catalogue, health),
         }
     )
 
