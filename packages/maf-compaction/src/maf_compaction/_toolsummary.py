@@ -1423,6 +1423,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         # The ask for another record that is outstanding, if one is. See :meth:`take_reforce`.
         self._reforce: _Reforce | None = None
         self._recall_due: Callable[[list[Message], int | None], bool] | None = None
+        self._value_capture_due: Callable[[list[Message], int | None], bool] | None = None
         self._recall_disabled: Callable[[], bool] = lambda: False
         self._observe_record_values: Callable[[str, bool], None] | None = None
         # Group ids whose asking has ended -- uncovered still, after a record that covered none
@@ -1691,13 +1692,16 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         return True
 
     def bind_recall(self, middleware: ToolResultRecallMiddleware) -> None:
-        """Bind this conversation's recall trigger when take_reforce is wrapped."""
-        self._recall_due = lambda messages, budget: middleware.record_due(
+        """Bind value observation and, when enabled, this conversation's re-force hooks."""
+        self._value_capture_due = lambda messages, budget: middleware.record_due(
             messages, max_input_tokens=budget
         )
+        self._recall_due = self._value_capture_due if middleware.reforce is not None else None
         self._recall_disabled = lambda: middleware.recall_disabled
         self._observe_record_values = middleware._observe_record_values  # pyright: ignore[reportPrivateUsage]
-        middleware.reforce_feedback = self.recall_feedback
+        middleware.reforce_feedback = (
+            self.recall_feedback if middleware.reforce is not None else None
+        )
         middleware._capture_value_targets = self._capture_value_targets  # pyright: ignore[reportPrivateUsage]
 
     def record_pending(
@@ -1791,8 +1795,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 recall_results = _recall_results(messages)
                 candidates = self._record_candidates(messages, anchor, recall_results)
                 self._observe_values(messages, anchor, candidates, recall_results)
-            if self.record_pending(messages, max_input_tokens=ceiling):
-                self._capture_value_targets(messages)
+            self._capture_pending_value_targets(messages, ceiling)
             return repaired
 
         if anchor is not None:
@@ -1811,16 +1814,14 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             # uncovered -- and before the fallback below, which is what both exist to keep away
             # from those groups.
             self._reforce_or_settle(records)
-            if self.record_pending(messages, max_input_tokens=ceiling):
-                self._capture_value_targets(messages)
+            self._capture_pending_value_targets(messages, ceiling)
             # Even a good record may not be enough on its own: the groups after it are
             # untouched by design, and they can exceed the ceiling by themselves.
             if fallback_after_record and included_token_count(messages) > budget:
                 changed = await self.fall_back_after_record(messages, ceiling=ceiling) or changed
             return changed
 
-        if self.record_pending(messages, max_input_tokens=ceiling):
-            self._capture_value_targets(messages)
+        self._capture_pending_value_targets(messages, ceiling)
         if prompt_tokens < int(budget * self.fallback_fraction):
             # Still waiting for the middleware's forced call to come back. Nothing may be
             # dropped yet: the record is the only thing that would replace it.
@@ -2023,6 +2024,13 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
     def last_record_value_judgment(self) -> str | None:
         """Latest judgment: has_values, value_free, no_candidates, no_values, or None before one."""
         return self._last_record_value_judgment
+
+    def _capture_pending_value_targets(self, messages: list[Message], budget: int | None) -> None:
+        due = self.record_pending(messages, max_input_tokens=budget) or (
+            self._value_capture_due is not None and self._value_capture_due(messages, budget)
+        )
+        if due:
+            self._capture_value_targets(messages)
 
     def _capture_value_targets(self, messages: list[Message]) -> None:
         """Retain the pending request's values before compaction can remove their groups."""

@@ -72,7 +72,7 @@ class Summarizer:
         return ChatResponse(messages=Message("assistant", [self.text]))
 
 
-def build_stack(summarizer=None, *, budget=2000, composed=True, **user_options):
+def build_stack(summarizer=None, *, budget=2000, composed=True, reforce="bound", **user_options):
     record = ToolResultAnchoredSummarizationCompactionStrategy(
         max_input_tokens=budget, tokenizer=TOKENIZER, keep_head_groups=1
     )
@@ -96,9 +96,29 @@ def build_stack(summarizer=None, *, budget=2000, composed=True, **user_options):
         tokenizer=TOKENIZER,
         arm=gate.arm,
         disarm=gate.disarm,
-        reforce=record.take_reforce,
+        reforce=(
+            record.take_reforce
+            if reforce == "bound"
+            else (lambda: record.take_reforce())
+            if reforce == "wrapped"
+            else None
+        ),
     )
     return CompactionStack(strategy, gate, middleware)
+
+
+@pytest.mark.parametrize("composed", [False, True])
+@pytest.mark.parametrize("reforce", ["bound", "wrapped", None])
+def test_stack_keeps_reforce_hooks_optional(composed, reforce):
+    stack = build_stack(composed=composed, reforce=reforce)
+    record = (
+        stack.strategy.tool_results
+        if isinstance(stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy)
+        else stack.strategy
+    )
+    assert (record._recall_due is None) == (reforce is None)
+    assert (stack.middleware.reforce_feedback is None) == (reforce is None)
+    assert (stack.middleware.reforce is None) == (reforce is None)
 
 
 def round_trip(value):
@@ -1173,11 +1193,12 @@ async def test_post_call_budget_refusal_preserves_delivered_response(
 @pytest.mark.parametrize("with_value_between", [False, True])
 @pytest.mark.parametrize("trigger_fraction", [0.0001, 0.8])
 @pytest.mark.parametrize("prompt_recall", [False, True])
+@pytest.mark.parametrize("reforce", ["bound", "wrapped", None])
 async def test_value_free_records_disable_forcing_across_cold_restores(
-    composed, with_value_between, trigger_fraction, prompt_recall, caplog
+    composed, with_value_between, trigger_fraction, prompt_recall, reforce, caplog
 ):
     def factory():
-        stack = build_stack(budget=100_000, composed=composed)
+        stack = build_stack(budget=100_000, composed=composed, reforce=reforce)
         record = (
             stack.strategy.tool_results
             if isinstance(
@@ -1306,9 +1327,12 @@ async def test_value_free_records_disable_forcing_across_cold_restores(
         ["VALUE-123", "VALUE-123"],
     ],
 )
-async def test_recall_values_survive_overflow_before_record_and_cold_restore(shed, answers):
+@pytest.mark.parametrize("reforce", ["bound", None])
+async def test_recall_values_survive_overflow_before_record_and_cold_restore(
+    shed, answers, reforce
+):
     def factory():
-        stack = build_stack(budget=2000)
+        stack = build_stack(budget=2000, reforce=reforce)
         stack.middleware.max_groups_before_record = 1
         assert isinstance(
             stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
