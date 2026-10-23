@@ -233,7 +233,7 @@ def measure(image, issuer, *, native_probe=None):
 
 
 @contextmanager
-def signed_gateway(config_path):
+def signed_gateway(config_path, *, control=None):
     """Own the disposable fixture signing material, issuer and gateway state."""
     with TemporaryDirectory(prefix="files-gateway-") as temporary:
         root = Path(temporary)
@@ -260,7 +260,7 @@ def signed_gateway(config_path):
             config = config.replace(old, str(new))
         configured = root / "gateway.toml"
         configured.write_text(config)
-        with gateway_fixture(configured) as issuer:
+        with gateway_fixture(configured, control=control) as issuer:
             yield issuer
 
 

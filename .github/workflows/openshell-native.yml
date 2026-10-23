@@ -1,0 +1,64 @@
+name: OpenShell native Linux characterization
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/openshell-native.yml'
+      - 'scripts/experiments/openshell*'
+      - 'tests/test_openshell*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openshell-native-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: '3.13'
+      - name: Prepare official pinned gateway and immutable images
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/openshell-evidence"
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/gateway.tar.gz" https://github.com/NVIDIA/OpenShell/releases/download/v0.1.2/openshell-gateway-x86_64-unknown-linux-gnu.tar.gz
+          printf '%s  %s\n' 218d887845b3a020ab7535c9985eb9c666d6938f144044957f8b82b42892aadb "$RUNNER_TEMP/gateway.tar.gz" | sha256sum --check
+          mkdir "$RUNNER_TEMP/gateway"
+          tar -xzf "$RUNNER_TEMP/gateway.tar.gz" -C "$RUNNER_TEMP/gateway"
+          sudo install -m 0755 "$RUNNER_TEMP/gateway/openshell-gateway" /opt/openshell-gateway
+          /opt/openshell-gateway --version
+          docker pull ghcr.io/nvidia/openshell/sandbox@sha256:b0f0f6217b11b22954b10a033a9fd798cf0a4e35cf4af63c1ba0d9c03e74338a
+          docker pull ghcr.io/nvidia/openshell/supervisor@sha256:90a6f1a7257a8d3c76f89cc7cc1a1050567cf065a59ce76888f23dfd4f4c757d
+          docker build --iidfile "$RUNNER_TEMP/workload-id" -f scripts/experiments/openshell-native.Dockerfile .
+          docker image inspect "$(cat "$RUNNER_TEMP/workload-id")" ghcr.io/nvidia/openshell/sandbox@sha256:b0f0f6217b11b22954b10a033a9fd798cf0a4e35cf4af63c1ba0d9c03e74338a ghcr.io/nvidia/openshell/supervisor@sha256:90a6f1a7257a8d3c76f89cc7cc1a1050567cf065a59ce76888f23dfd4f4c757d > "$RUNNER_TEMP/openshell-evidence/images.json"
+      - name: Measure shared probes, replacement barriers and cleanup
+        shell: bash
+        env:
+          OTEL_SDK_DISABLED: 'true'
+        run: |
+          set -euo pipefail
+          uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --report "$RUNNER_TEMP/openshell-evidence/report.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/probe.log"
+      - name: Record final engine inventory
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/openshell-evidence"
+          docker ps -a --no-trunc --filter label=openshell.ai/sandbox-id > "$RUNNER_TEMP/openshell-evidence/containers.txt"
+          docker volume ls --filter label=openshell.ai/sandbox-id > "$RUNNER_TEMP/openshell-evidence/volumes.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: openshell-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/openshell-evidence/
+          if-no-files-found: error
+          retention-days: 14

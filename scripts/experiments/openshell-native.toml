@@ -1,0 +1,24 @@
+[openshell]
+version = 2
+
+[openshell.gateway]
+bind_address = "127.0.0.1:19797"
+log_level = "info"
+compute_driver = "docker"
+disable_tls = true
+
+[openshell.gateway.auth]
+allow_unauthenticated_users = true
+
+[openshell.gateway.gateway_jwt]
+signing_key_path = "/tmp/spike-signing.pem"
+public_key_path = "/tmp/spike-public.pem"
+kid_path = "/tmp/spike-kid"
+gateway_id = "openshell-native-fixture"
+
+[openshell.drivers.docker]
+image_pull_policy = "never"
+sandbox_label = "maf-openshell-1833"
+sandbox_runtime_image = "ghcr.io/nvidia/openshell/sandbox@sha256:b0f0f6217b11b22954b10a033a9fd798cf0a4e35cf4af63c1ba0d9c03e74338a"
+supervisor_image = "ghcr.io/nvidia/openshell/supervisor@sha256:90a6f1a7257a8d3c76f89cc7cc1a1050567cf065a59ce76888f23dfd4f4c757d"
+app_armor_profile = "Unconfined"
