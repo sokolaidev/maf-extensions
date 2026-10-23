@@ -35,7 +35,12 @@ from maf_compaction import (
 )
 from maf_compaction._media import annotate_token_counts
 from maf_compaction._request import RECALL_PROMPT_KEY
-from maf_compaction._toolsummary import _RECALL_INSTRUCTION, RECALL_TOOL_NAME, RECORD_MARKER
+from maf_compaction._toolsummary import (
+    _RECALL_INSTRUCTION,
+    PIN_REASON_PROMPT_CACHE,
+    RECALL_TOOL_NAME,
+    RECORD_MARKER,
+)
 
 pytestmark = pytest.mark.anyio
 REJECTION = "Ollama does not support tool_choice mode 'required'. Use 'auto' or 'none'."
@@ -799,3 +804,71 @@ async def test_prompt_recall_preserves_the_latest_tool_group_in_fallback(
     assert all(not message.additional_properties.get(EXCLUDED_KEY, False) for message in messages)
     assert list(context.messages) == messages
     assert context.options is options
+
+
+@pytest.mark.parametrize("feedback", ["", "Retain SKU-123 from lookup."])
+@pytest.mark.parametrize("supports_tool_choice", [True, False])
+async def test_preserved_prompt_cache_asks_without_changing_tools_or_tool_choice(
+    feedback, supports_tool_choice, caplog
+):
+    # Anthropic drops cached message blocks when tool_choice or thinking changes and matches
+    # nothing when tools change, so the ask must leave the agent's request as it was.
+    caplog.set_level(logging.INFO, logger="maf_compaction")
+    middleware, gate = recall(preserve_prompt_cache=True, supports_tool_choice=supports_tool_choice)
+    middleware._feedback = feedback
+    tool = make_recall_tool(gate)
+    other = FunctionTool(name="lookup", func=lambda: "result")
+    tools = [other, tool]
+    options = {"tools": tools, "tool_choice": "auto", "max_tokens": 9000}
+    original = Message("tool", [Content.from_function_result(call_id="lookup", result="SKU-123")])
+    context = ChatContext(
+        None, [original], options, session=AgentSession(session_id="cache-session")
+    )
+    description = tool.__doc__
+
+    async def send():
+        assert context.options is not None
+        assert context.options["tools"] is tools
+        assert context.options["tool_choice"] == "auto"
+        assert context.options["max_tokens"] == 4000
+        assert context.messages[:-1] == [original]
+        ask = context.messages[-1]
+        assert ask.additional_properties[RECALL_PROMPT_KEY]
+        assert ask.text == (
+            f"{_RECALL_INSTRUCTION}\n\n{feedback}" if feedback else _RECALL_INSTRUCTION
+        )
+        context.result = ChatResponse(messages=Message("assistant", [record_call()]))
+
+    await middleware.process(context, send)
+    assert context.options is options
+    assert tool.__doc__ == description
+    assert middleware.forced_calls == 1
+    assert middleware.pin_disabled
+    assert middleware.pin_disabled_reason == PIN_REASON_PROMPT_CACHE
+    assert not middleware.recall_disabled
+    disabled = [r for r in caplog.records if "cache-session: prompt_cache" in r.message]
+    assert [r.levelno for r in disabled] == [logging.INFO]
+
+
+async def test_preserved_prompt_cache_survives_restore_and_still_stops_on_ignored_asks(caplog):
+    middleware, _ = recall(preserve_prompt_cache=True)
+    tools = [FunctionTool(name="lookup", func=lambda: "result"), make_recall_tool()]
+    context = ChatContext(
+        None, [], {"tools": tools}, session=AgentSession(session_id="cache-backoff")
+    )
+
+    async def ignore():
+        assert context.options is not None
+        assert context.options["tools"] is tools
+        assert "tool_choice" not in context.options
+        context.result = ChatResponse(messages=Message("assistant", ["answer"]))
+
+    for _ in range(2):
+        middleware._force_next = True
+        await middleware.process(context, ignore)
+        snapshot = json.loads(json.dumps(middleware.session_state()))
+        middleware, _ = recall(preserve_prompt_cache=True)
+        middleware.restore_session_state(snapshot)
+    assert middleware.pin_disabled_reason == "ignored"
+    assert middleware.recall_disabled
+    assert "cache-backoff: ignored (mode=prompted" in caplog.text
