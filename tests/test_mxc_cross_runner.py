@@ -244,7 +244,7 @@ def test_workflow_requires_oidc_and_overlapping_roles():
         "id-token": "write",
     }
     tailscale = next(s for s in participants["steps"] if s.get("uses", "").startswith("tailscale/"))
-    assert tailscale["with"]["audience"] == "${{ vars.MXC_TAILSCALE_AUDIENCE }}"
+    assert tailscale["with"]["audience"] == "${{ secrets.MXC_TAILSCALE_AUDIENCE }}"
     assert "oauth-secret" not in tailscale["with"]
     assert tailscale["with"]["args"] == "--accept-dns=false --accept-routes=false"
     assert participants["steps"][-1]["with"]["if-no-files-found"] == "error"

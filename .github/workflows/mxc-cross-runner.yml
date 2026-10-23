@@ -13,12 +13,12 @@ jobs:
     steps:
       - name: Require the configured Tailscale federated identity
         env:
-          CLIENT_ID: ${{ vars.MXC_TAILSCALE_CLIENT_ID }}
-          AUDIENCE: ${{ vars.MXC_TAILSCALE_AUDIENCE }}
+          CLIENT_ID: ${{ secrets.MXC_TAILSCALE_CLIENT_ID }}
+          AUDIENCE: ${{ secrets.MXC_TAILSCALE_AUDIENCE }}
         run: |
           set -euo pipefail
           test -n "$CLIENT_ID" && test -n "$AUDIENCE" || {
-            echo 'Configure MXC_TAILSCALE_CLIENT_ID and MXC_TAILSCALE_AUDIENCE before dispatch.'
+            echo 'Configure repository secrets MXC_TAILSCALE_CLIENT_ID and MXC_TAILSCALE_AUDIENCE before dispatch.'
             exit 1
           }
 
@@ -112,8 +112,8 @@ jobs:
           test -r /dev/kvm && test -w /dev/kvm
       - uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
         with:
-          oauth-client-id: ${{ vars.MXC_TAILSCALE_CLIENT_ID }}
-          audience: ${{ vars.MXC_TAILSCALE_AUDIENCE }}
+          oauth-client-id: ${{ secrets.MXC_TAILSCALE_CLIENT_ID }}
+          audience: ${{ secrets.MXC_TAILSCALE_AUDIENCE }}
           tags: tag:mxc-ci
           version: '1.94.2'
           args: --accept-dns=false --accept-routes=false
