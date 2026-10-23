@@ -344,7 +344,7 @@ async def execution_cases(fixture: Fixture) -> dict:
                 and result.exit_code == 0
             )
             outcome = "exit"
-        except BaseException as exc:
+        except (Exception, asyncio.CancelledError) as exc:
             outcome = type(exc).__name__
             passed = (
                 name == "cap_over"

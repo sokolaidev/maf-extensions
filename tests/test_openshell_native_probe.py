@@ -128,12 +128,17 @@ def test_leaf_metadata_retains_link_kind(modules):
     ) == SandboxEntry("link", EntryKind.SYMLINK, None)
 
 
-@pytest.mark.parametrize("failure", ["overflow", "terminal", "missing_exit", "deadline", "cancel"])
+@pytest.mark.parametrize(
+    "failure",
+    ["overflow", "terminal", "missing_exit", "deadline", "cancel", "cleanup_cancel_failure"],
+)
 def test_exec_failure_disposes_and_does_not_return_success(
     candidate, modules, monkeypatch, failure
 ):
     module = modules[1]
     events = []
+    cleanup_ready = asyncio.Event()
+    release_cleanup = asyncio.Event()
 
     class Call:
         def cancel(self):
@@ -142,7 +147,7 @@ def test_exec_failure_disposes_and_does_not_return_success(
         async def __aiter__(self):
             if failure in ("deadline", "cancel"):
                 await asyncio.sleep(10)
-            if failure == "overflow":
+            if failure in ("overflow", "cleanup_cancel_failure"):
                 yield SimpleNamespace(kind="stdout", data=b"x" * 5)
             if failure == "terminal":
                 yield SimpleNamespace(kind="exit", exit_code=0)
@@ -171,6 +176,10 @@ def test_exec_failure_disposes_and_does_not_return_success(
 
     async def dispose():
         events.append("dispose")
+        if failure == "cleanup_cancel_failure":
+            cleanup_ready.set()
+            await release_cleanup.wait()
+            raise RuntimeError("cleanup failed")
         await asyncio.sleep(0)
 
     candidate.dispose = dispose
@@ -184,6 +193,10 @@ def test_exec_failure_disposes_and_does_not_return_success(
         if failure == "cancel":
             await asyncio.sleep(0)
             task.cancel()
+        if failure == "cleanup_cancel_failure":
+            await cleanup_ready.wait()
+            release_cleanup.set()
+            task.cancel()
         await task
 
     expected = {
@@ -192,8 +205,11 @@ def test_exec_failure_disposes_and_does_not_return_success(
         "missing_exit": RuntimeError,
         "deadline": TimeoutError,
         "cancel": asyncio.CancelledError,
+        "cleanup_cancel_failure": RuntimeError,
     }[failure]
-    with pytest.raises(expected):
+    with pytest.raises(
+        expected, match="cleanup failed" if failure == "cleanup_cancel_failure" else None
+    ):
         asyncio.run(run())
     assert events == ["cancel-stream", "close-channel", "dispose"]
 

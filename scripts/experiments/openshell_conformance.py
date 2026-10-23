@@ -203,6 +203,7 @@ class Candidate:
                 try:
                     await asyncio.shield(cleanup)
                 except asyncio.CancelledError:
+                    # Repeated cancellation must not abandon disposal or hide its failure.
                     pass
             await cleanup
             if isinstance(primary, TimeoutError) and not budget.expired():
