@@ -543,6 +543,76 @@ def test_monitor_notification_includes_a_candidate_reserved_during_the_scan():
     assert "delivery: pending" in report["summary"]
 
 
+@pytest.mark.parametrize("retired", [False, True])
+@pytest.mark.parametrize("change", ["outcome", "reason", "finding", "severity"])
+def test_notification_tracks_each_active_unexpected_assessment(change, retired):
+    catalogue = reserve(empty_catalogue(), CANDIDATE, AT)
+    record = catalogue["releases"]["bicep/0.1.0"]
+    record["latestAttempt"] = {
+        "digest": CANDIDATE["registryDigest"],
+        "assessedAt": LATER,
+        "outcome": "unavailable",
+    }
+    changed_digest = "sha256:" + "d" * 64
+    other_digest = "sha256:" + "e" * 64
+    record["unexpectedDigests"] = {
+        selected: {
+            "digest": selected,
+            "discoveredAt": AT,
+            "latestAttempt": {
+                "digest": selected,
+                "assessedAt": LATER,
+                "outcome": "clean" if change == "outcome" else "vulnerable",
+                "findings": []
+                if change == "outcome"
+                else [{"id": "CVE-first", "severity": "High"}],
+            },
+        }
+        for selected in (other_digest, changed_digest)
+    }
+    entry = record["unexpectedDigests"][changed_digest]
+    if retired:
+        entry["absenceProof"] = {
+            "digest": changed_digest,
+            "digestMissing": True,
+            "checkedAt": LATER,
+        }
+
+    def details():
+        return json.loads(
+            monitor.notification(catalogue, monitor.monitoring_health(catalogue, DONE))
+        )
+
+    before = details()
+    attempt = entry["latestAttempt"]
+    if change == "outcome":
+        attempt["outcome"] = "vulnerable"
+        expected = "assessment: vulnerable"
+    elif change == "reason":
+        attempt["reason"] = "Registry or scanner assessment unavailable"
+        expected = attempt["reason"]
+    elif change == "finding":
+        attempt["findings"].append({"id": "CVE-new", "severity": "Critical"})
+        expected = "Critical CVE-new"
+    else:
+        attempt["findings"][0]["severity"] = "Critical"
+        expected = "Critical CVE-first"
+    after = details()
+    if retired:
+        assert after == before
+        assert changed_digest not in after["summary"]
+    else:
+        assert after["problems"] != before["problems"]
+        assert after["summary"] != before["summary"]
+        assert changed_digest in after["summary"] and other_digest in after["summary"]
+        assert expected in after["summary"]
+    attempt["assessedAt"] = DONE
+    attempt["monitorRunId"] = "789"
+    attempt["findings"].reverse()
+    record["unexpectedDigests"] = dict(reversed(list(record["unexpectedDigests"].items())))
+    assert details() == after
+
+
 @pytest.mark.parametrize(
     "state,missing,error,proof",
     [

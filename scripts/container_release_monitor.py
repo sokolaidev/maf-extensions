@@ -43,6 +43,17 @@ from prepare_container_release import assess
 BATCH_SIZE = 6
 
 
+def assessment_details(attempt: dict[str, Any]) -> list[str]:
+    """Describe the assessment without run-specific metadata."""
+    details = [attempt["reason"]] if attempt.get("reason") else []
+    findings = sorted(
+        {f"{finding['severity']} {finding['id']}" for finding in attempt.get("findings", [])}
+    )
+    if findings:
+        details.append("findings: " + ", ".join(findings))
+    return details
+
+
 def notification(catalogue: dict[str, Any], health: dict[str, Any]) -> str:
     """Summarize actionable health without timestamps or historical-only findings in its identity."""
     rows = []
@@ -63,21 +74,17 @@ def notification(catalogue: dict[str, Any], health: dict[str, Any]) -> str:
             ]
             if monitoring_problem:
                 reasons.append("monitoring evidence incomplete, stale or undelivered")
-            if attempt.get("reason"):
-                reasons.append(attempt["reason"])
+            reasons.extend(assessment_details(attempt))
             if record.get("registryDiscovery", {}).get("outcome") == "unavailable":
                 reasons.append("registry discovery unavailable")
             for entry_digest, entry in sorted(record.get("unexpectedDigests", {}).items()):
                 if unexpected_end(entry) is None:
-                    reasons.append(f"unexpected registry digest: {entry_digest}")
-            findings = sorted(
-                {
-                    f"{finding['severity']} {finding['id']}"
-                    for finding in attempt.get("findings", [])
-                }
-            )
-            if findings:
-                reasons.append("findings: " + ", ".join(findings))
+                    unexpected_attempt = entry.get("latestAttempt", {})
+                    details = [f"assessment: {unexpected_attempt.get('outcome', 'unavailable')}"]
+                    details.extend(assessment_details(unexpected_attempt))
+                    reasons.append(
+                        f"unexpected registry digest: {entry_digest} ({'; '.join(details)})"
+                    )
             rows.append(f"- **{name}** (`{record['registryDigest']}`): " + "; ".join(reasons) + ".")
     identity = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
     warnings = sum(state != "clean" for state in health["historical"].values())
