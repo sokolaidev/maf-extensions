@@ -61,7 +61,21 @@ def test_every_scheduled_workflow_reports_even_setup_failure_or_timeout(name):
         condition = f"({condition})"
     if name == "image-security.yml":
         condition += " && github.event_name != 'pull_request'"
-    assert reporter["if"] == f"always() && {condition}"
+    if name == "container-image-monitor.yml":
+        assert (
+            reporter["if"]
+            == "always() && needs.begin.result != 'skipped' && needs.begin.result != 'cancelled'"
+        )
+        env = reporter["steps"][-1]["env"]
+        assert env["MONITOR_NOTIFICATION"] == "${{ needs.finish.outputs.notification }}"
+        for source in sources:
+            assert f"needs.{source}.result" in env["MONITOR_JOB_RESULTS"]
+        assert (
+            workflow["jobs"]["finish"]["outputs"]["notification"]
+            == "${{ steps.finish.outputs.notification }}"
+        )
+    else:
+        assert reporter["if"] == f"always() && {condition}"
     assert reporter["permissions"] == {"contents": "read", "issues": "write"}
     assert all(
         workflow["jobs"][source].get("permissions", {}).get("issues") is None for source in sources
@@ -130,13 +144,15 @@ def test_failure_opens_or_comments_on_its_own_tracker_across_all_pages(monkeypat
 
     def run(args, **kwargs):
         calls.append((args, kwargs))
+        if "/comments?" in args[2]:
+            return subprocess.CompletedProcess(args, 0, stdout="[[]]")
         return subprocess.CompletedProcess(
             args, 0, stdout=json.dumps(pages) if len(calls) == 1 else "{}"
         )
 
     monkeypatch.setattr(report.subprocess, "run", run)
     report.main(argv)
-    assert len(calls) == 2
+    assert len(calls) == (3 if existing and name == "container-image-monitor.yml" else 2)
     assert calls[0][0] == [
         "gh",
         "api",
@@ -144,7 +160,7 @@ def test_failure_opens_or_comments_on_its_own_tracker_across_all_pages(monkeypat
         "--paginate",
         "--slurp",
     ]
-    args, kwargs = calls[1]
+    args, kwargs = calls[-1]
     assert args == [
         "gh",
         "api",
@@ -233,3 +249,146 @@ def test_api_failure_is_propagated_without_opening_a_second_tracker(monkeypatch,
     with pytest.raises(subprocess.CalledProcessError):
         report.main(reporter_arguments("docker-live.yml"))
     assert len(calls) == fail_on
+
+
+def monitor_state(monkeypatch, *, attention=True, problems="findings", **jobs):
+    monkeypatch.setenv(
+        "MONITOR_NOTIFICATION",
+        json.dumps(
+            {
+                "attention": attention,
+                "problems": problems,
+                "summary": "Current images assessed: 11. High CVE-example in bicep/0.1.0."
+                if attention
+                else "Current images assessed: 11. Historical warnings: 9.",
+            }
+        ),
+    )
+    monkeypatch.setenv(
+        "MONITOR_JOB_RESULTS",
+        json.dumps(
+            {
+                "begin": "success",
+                "scan": "success",
+                "finish": "success",
+                "result": "failure" if attention else "success",
+                **jobs,
+            }
+        ),
+    )
+
+
+@pytest.mark.usefixtures("actions_env")
+def test_monitor_reports_changes_recovery_and_recurrence_but_never_reopens(monkeypatch):
+    argv = reporter_arguments("container-image-monitor.yml")
+    marker = argv[argv.index("--marker") + 1]
+    issues = [{"number": 10, "state": "closed", "body": marker}]
+    comments = {10: []}
+    writes = []
+
+    def api(endpoint, *args, body=None):
+        if body is None:
+            if "/comments?" in endpoint:
+                number = int(endpoint.split("/")[-2])
+                return json.dumps([[], comments[number]])
+            assert "?state=open&" in endpoint
+            # Include a closed result to exercise the reporter's own state check.
+            return json.dumps([issues])
+        writes.append((endpoint, body))
+        assert "--method" not in args
+        if endpoint.endswith("/comments"):
+            number = int(endpoint.split("/")[-2])
+            assert next(issue for issue in issues if issue["number"] == number)["state"] == "open"
+            comments[number].append(body | {"user": {"login": "github-actions[bot]"}})
+        else:
+            number = 10 + len(issues)
+            issues.append(body | {"number": number, "state": "open"})
+            comments[number] = []
+        return "{}"
+
+    monkeypatch.setattr(report, "gh", api)
+    monitor_state(monkeypatch)
+    report.main(argv)
+    assert len(issues) == 2 and len(writes) == 1
+    assert "High CVE-example" in issues[-1]["body"]
+    assert "actions/runs/123/attempts/2" in issues[-1]["body"]
+    monkeypatch.setenv("GITHUB_RUN_ID", "124")
+    report.main(argv)
+    assert len(writes) == 1
+
+    monitor_state(monkeypatch, problems="different findings")
+    report.main(argv)
+    assert len(writes) == 2
+    monitor_state(monkeypatch, attention=False, problems="healthy")
+    report.main(argv)
+    assert len(writes) == 3 and "Monitoring recovered" in writes[-1][1]["body"]
+    report.main(argv)
+    assert len(writes) == 3
+    assert issues[-1]["state"] == "open"
+
+    monitor_state(monkeypatch, problems="different findings")
+    report.main(argv)
+    assert len(writes) == 4 and "Monitoring recovered" not in writes[-1][1]["body"]
+    issues[-1]["state"] = "closed"
+    report.main(argv)
+    assert len(issues) == 3 and len(writes) == 5
+    assert issues[0]["state"] == issues[1]["state"] == "closed"
+    assert comments[10] == []
+
+
+@pytest.mark.usefixtures("actions_env")
+def test_monitor_recovery_without_an_open_tracker_creates_nothing(monkeypatch):
+    monitor_state(monkeypatch, attention=False, problems="healthy")
+    calls = []
+
+    def api(*args, **kwargs):
+        calls.append((args, kwargs))
+        return "[[]]"
+
+    monkeypatch.setattr(report, "gh", api)
+    report.main(reporter_arguments("container-image-monitor.yml"))
+    assert len(calls) == 1 and not calls[0][1]
+
+
+@pytest.mark.parametrize("stage", ["begin", "scan", "finish", "result"])
+@pytest.mark.parametrize("conclusion", ["failure", "cancelled", "skipped", "unknown"])
+def test_monitor_never_reports_recovery_from_incomplete_stages(monkeypatch, stage, conclusion):
+    monitor_state(monkeypatch, attention=False, **{stage: conclusion})
+    details, _, recovered = report.monitor_notification()
+    assert recovered is (stage == "scan" and conclusion == "skipped")
+    if not recovered:
+        assert f"{stage}={conclusion}" in details
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
+        "{",
+        "null",
+        "[]",
+        "{}",
+        '{"attention": false}',
+        '{"attention":"false","problems":"x","summary":"x"}',
+    ],
+)
+def test_monitor_missing_or_invalid_health_cannot_claim_recovery(monkeypatch, raw):
+    monitor_state(monkeypatch, attention=False)
+    monkeypatch.setenv("MONITOR_NOTIFICATION", raw)
+    details, _, recovered = report.monitor_notification()
+    assert not recovered and "recovery is unverified" in details
+
+
+def test_monitor_dedup_ignores_human_markers_and_reads_all_comment_pages(monkeypatch):
+    marker = report.notification_marker("current")
+    previous = report.notification_marker("previous")
+    pages = [
+        [{"body": marker, "user": {"login": "github-actions[bot]"}}],
+        [
+            {"body": previous, "user": {"login": "github-actions[bot]"}},
+            {"body": marker, "user": {"login": "human"}},
+        ],
+    ]
+    monkeypatch.setattr(report, "gh", lambda *a: json.dumps(pages))
+    assert not report.unchanged({"number": 1, "body": marker}, "issues", marker)
+    assert report.unchanged({"number": 1, "body": marker}, "issues", previous)

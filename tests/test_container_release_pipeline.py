@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import io
+import json
 import subprocess
 import sys
 import tarfile
@@ -456,7 +457,12 @@ def test_monitor_keeps_historical_scans_and_warns_without_failing_current_health
         )
     monkeypatch.setattr(monitor, "now", lambda: DONE)
     monitor.finish(tmp_path)
-    assert emitted[-1] == {"attention": str(missing_history).lower(), "historical_warnings": "1"}
+    assert emitted[-1]["attention"] == str(missing_history).lower()
+    assert emitted[-1]["historical_warnings"] == "1"
+    notification = json.loads(emitted[-1]["notification"])
+    assert notification["attention"] is missing_history
+    assert ("bicep/0.1.0" in notification["summary"]) is missing_history
+    assert ("Monitor worker did not deliver" in notification["summary"]) is missing_history
     text = summary.read_text()
     assert "bicep/0.1.1: **clean**" in text
     assert "replacement: bicep/0.1.1; monitoring ends: 2026-04-02" in text
@@ -487,6 +493,124 @@ def test_monitor_delivery_failure_keeps_running_instead_of_clean(
         monitor_context.catalogue["releases"]["bicep/0.1.0"]["latestAttempt"]["outcome"]
         == "running"
     )
+
+
+def test_monitor_notification_identifies_findings_and_ignores_scan_timestamps():
+    catalogue = complete(
+        reserve(empty_catalogue(), CANDIDATE, AT), CANDIDATE, CANDIDATE["imageId"], AT
+    )
+    record = catalogue["releases"]["bicep/0.1.0"]
+    record["delivery"] = "complete"
+    record["latestAttempt"] = {
+        "digest": CANDIDATE["registryDigest"],
+        "assessedAt": LATER,
+        "outcome": "vulnerable",
+        "findings": [
+            {"id": "CVE-first", "severity": "High"},
+            {"id": "CVE-second", "severity": "Critical"},
+        ],
+    }
+
+    def details():
+        return json.loads(
+            monitor.notification(catalogue, monitor.monitoring_health(catalogue, DONE))
+        )
+
+    original = details()
+    assert original["attention"] is True
+    for expected in (
+        "bicep/0.1.0",
+        CANDIDATE["registryDigest"],
+        "High CVE-first",
+        "Critical CVE-second",
+        "delivery: complete",
+    ):
+        assert expected in original["summary"]
+    record["latestAttempt"]["assessedAt"] = DONE
+    record["latestAttempt"]["findings"].reverse()
+    record["latestAttempt"]["monitorRunId"] = "789"
+    assert details() == original
+    record["latestAttempt"]["findings"].append({"id": "CVE-third", "severity": "High"})
+    assert details()["problems"] != original["problems"]
+
+
+def test_monitor_notification_includes_a_candidate_reserved_during_the_scan():
+    catalogue = reserve(empty_catalogue(), CANDIDATE, AT)
+    report = json.loads(monitor.notification(catalogue, monitor.monitoring_health(catalogue, DONE)))
+    assert report["attention"] is True
+    assert "bicep/0.1.0" in report["summary"]
+    assert "publication: incomplete" in report["summary"]
+    assert "delivery: pending" in report["summary"]
+
+
+@pytest.mark.parametrize("retired", [False, True])
+@pytest.mark.parametrize("change", ["outcome", "reason", "finding", "severity"])
+def test_notification_tracks_each_active_unexpected_assessment(change, retired):
+    catalogue = reserve(empty_catalogue(), CANDIDATE, AT)
+    record = catalogue["releases"]["bicep/0.1.0"]
+    record["latestAttempt"] = {
+        "digest": CANDIDATE["registryDigest"],
+        "assessedAt": LATER,
+        "outcome": "unavailable",
+    }
+    changed_digest = "sha256:" + "d" * 64
+    other_digest = "sha256:" + "e" * 64
+    record["unexpectedDigests"] = {
+        selected: {
+            "digest": selected,
+            "discoveredAt": AT,
+            "latestAttempt": {
+                "digest": selected,
+                "assessedAt": LATER,
+                "outcome": "clean" if change == "outcome" else "vulnerable",
+                "findings": []
+                if change == "outcome"
+                else [{"id": "CVE-first", "severity": "High"}],
+            },
+        }
+        for selected in (other_digest, changed_digest)
+    }
+    entry = record["unexpectedDigests"][changed_digest]
+    if retired:
+        entry["absenceProof"] = {
+            "digest": changed_digest,
+            "digestMissing": True,
+            "checkedAt": LATER,
+        }
+
+    def details():
+        return json.loads(
+            monitor.notification(catalogue, monitor.monitoring_health(catalogue, DONE))
+        )
+
+    before = details()
+    attempt = entry["latestAttempt"]
+    if change == "outcome":
+        attempt["outcome"] = "vulnerable"
+        expected = "assessment: vulnerable"
+    elif change == "reason":
+        attempt["reason"] = "Registry or scanner assessment unavailable"
+        expected = attempt["reason"]
+    elif change == "finding":
+        attempt["findings"].append({"id": "CVE-new", "severity": "Critical"})
+        expected = "Critical CVE-new"
+    else:
+        attempt["findings"][0]["severity"] = "Critical"
+        expected = "Critical CVE-first"
+    after = details()
+    if retired:
+        assert after == before
+        assert changed_digest not in after["summary"]
+    else:
+        assert after["problems"] != before["problems"]
+        assert after["summary"] != before["summary"]
+        assert changed_digest in after["summary"] and other_digest in after["summary"]
+        assert expected in after["summary"]
+    attempt["assessedAt"] = DONE
+    attempt["monitorRunId"] = "789"
+    attempt["findings"].reverse()
+    record["unexpectedDigests"] = dict(reversed(list(record["unexpectedDigests"].items())))
+    assert details() == after
 
 
 @pytest.mark.parametrize(
