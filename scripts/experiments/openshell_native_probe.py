@@ -15,7 +15,7 @@ import uuid
 from dataclasses import asdict
 from pathlib import Path
 
-from maf_sandbox import Capability, SandboxKey
+from maf_sandbox import Capability, EntryKind, SandboxKey, SandboxTransferCapExceeded
 from maf_sandbox.conformance import (
     PosixGuestSubject,
     assert_storage_base_conformance,
@@ -223,6 +223,63 @@ async def file_races(candidate: Candidate) -> dict:
     }
 
 
+async def file_bounds(candidate: Candidate) -> dict:
+    """Measure native transfer caps and refuse nonregular files before opening them."""
+    candidate.output_limit = 1024
+    await candidate.write_file("bounded", b"x" * 1024, working_directory="/sandbox")
+    results = {
+        "exact_cap": await candidate.read_file(
+            "bounded", working_directory="/sandbox", max_bytes=1024
+        )
+        == b"x" * 1024
+    }
+    try:
+        await candidate.read_file("bounded", working_directory="/sandbox", max_bytes=1023)
+    except SandboxTransferCapExceeded:
+        results["oversize_read_refused"] = True
+    else:
+        results["oversize_read_refused"] = False
+    try:
+        await candidate.write_file("rejected", b"x" * 1025, working_directory="/sandbox")
+    except SandboxTransferCapExceeded:
+        results["oversize_write_refused"] = (
+            await candidate.stat_file("rejected", working_directory="/sandbox") is None
+        )
+    else:
+        results["oversize_write_refused"] = False
+    await candidate.write_file("growing", b"x", working_directory="/sandbox")
+
+    async def grow():
+        result = await candidate.exec(
+            ["python", "-c", "from pathlib import Path; Path('growing').write_bytes(b'x'*1025)"],
+            working_directory="/sandbox",
+            timeout=30,
+        )
+        if result.exit_code:
+            raise RuntimeError("file growth barrier failed")
+
+    candidate.before_open = grow
+    try:
+        await candidate.read_file("growing", working_directory="/sandbox", max_bytes=1024)
+    except SandboxTransferCapExceeded:
+        results["growth_refused"] = True
+    else:
+        results["growth_refused"] = False
+    finally:
+        candidate.before_open = None
+    result = await candidate.exec(["mkfifo", "pipe"], working_directory="/sandbox", timeout=30)
+    metadata = await candidate.stat_file("pipe", working_directory="/sandbox")
+    if result.exit_code or metadata is None or metadata.kind is not EntryKind.OTHER:
+        raise RuntimeError("nonregular file control failed")
+    try:
+        await candidate.read_file("pipe", working_directory="/sandbox", max_bytes=1024)
+    except OSError as exc:
+        results["nonregular_refused"] = str(exc) == "only regular files may be read"
+    else:
+        results["nonregular_refused"] = False
+    return results
+
+
 async def execution_cases(fixture: Fixture) -> dict:
     """Measure byte bounds, fractional deadlines, cancellation and cleanup failure recovery."""
     results = {}
@@ -384,6 +441,14 @@ async def measure(fixture: Fixture) -> None:
     finally:
         await sandbox.dispose()
     fixture.save()
+    sandbox = await fixture.acquire()
+    try:
+        fixture.report["file_bounds"] = await file_bounds(sandbox)
+        fixture.save()
+        if not all(fixture.report["file_bounds"].values()):
+            raise RuntimeError("unexpected native transfer-bound observation")
+    finally:
+        await sandbox.dispose()
     await execution_cases(fixture)
 
 
