@@ -116,9 +116,12 @@ class Qualification(unittest.TestCase):
         self.assertNotIn("SC2154", [item["rule"] for item in report["files"][0]["diagnostics"]])
 
     def test_scriptdir_expands_the_leading_path_component(self):
-        for directive in (
-            "source-path=SCRIPTDIR/lib",
-            "source=SCRIPTDIR/lib/helper.sh",
+        for directive, library in (
+            ("source-path=SCRIPTDIR/lib", "scripts/lib/helper.sh"),
+            ("source=SCRIPTDIR/lib/helper.sh", "scripts/lib/helper.sh"),
+            ("source-path=SCRIPTDIR/../lib", "lib/helper.sh"),
+            ("source=SCRIPTDIR/../lib/helper.sh", "lib/helper.sh"),
+            ("source-path=./lib/../lib", "lib/helper.sh"),
         ):
             with self.subTest(directive=directive):
                 report = analyze(
@@ -128,13 +131,39 @@ class Qualification(unittest.TestCase):
                             f'# shellcheck {directive}\n. helper.sh\necho "$expected"\n',
                             "scripts/main.sh",
                         ),
-                        source("expected=provided\n", "scripts/lib/helper.sh"),
+                        source("expected=provided\n", library),
                     ],
                 )
                 self.assertIsNone(report["error"])
                 rules = [item["rule"] for item in report["files"][0]["diagnostics"]]
                 self.assertNotIn("SC1091", rules)
                 self.assertNotIn("SC2154", rules)
+
+    def test_source_paths_cannot_escape_the_manifest_root(self):
+        for directive in (
+            "source-path=SCRIPTDIR/../../lib",
+            "source=SCRIPTDIR/../../lib/helper.sh",
+            "source-path=/lib",
+            "source=/lib/helper.sh",
+        ):
+            with self.subTest(directive=directive):
+                report = analyze(
+                    "bash",
+                    [
+                        source(
+                            f'# shellcheck {directive}\n. helper.sh\necho "$expected"\n',
+                            "scripts/main.sh",
+                        ),
+                        source("expected=provided\n", "lib/helper.sh"),
+                    ],
+                )
+                self.assertIsNone(report["error"])
+                rules = [item["rule"] for item in report["files"][0]["diagnostics"]]
+                self.assertIn("SC1091", rules)
+                self.assertIn("SC2154", rules)
+        report = analyze("bash", [source(". /dev/null\n")])
+        self.assertIsNone(report["error"])
+        self.assertNotIn("SC1091", [item["rule"] for item in report["files"][0]["diagnostics"]])
 
     def test_sourced_files_use_the_callers_dialect_and_suppressions(self):
         for suppressed in (False, True):
@@ -182,6 +211,41 @@ Write-Host 'hello'
             [item["rule"] for item in item["suppressed_diagnostics"]], ["PSAvoidUsingWriteHost"]
         )
         self.assertFalse(item["diagnostics"])
+
+    def test_empty_powershell_files_preserve_nonempty_lint(self):
+        report = analyze(
+            "pwsh",
+            [
+                source("", "empty.ps1", "pwsh"),
+                source("", "empty.psm1", "pwsh"),
+                source(" \t\n", "blank.ps1", "pwsh"),
+                source("# No commands.\n", "comment.psm1", "pwsh"),
+            ],
+        )
+        self.assertIsNone(report["error"])
+        self.assertEqual(len(report["files"]), 4)
+        for item in report["files"]:
+            self.assertTrue(item["parsed"])
+            self.assertEqual(item["syntax"]["exit_code"], 0)
+            if item["path"] == "blank.ps1":
+                self.assertEqual(
+                    [(entry["rule"], entry["severity"]) for entry in item["diagnostics"]],
+                    [("PSAvoidTrailingWhitespace", "info")],
+                )
+            else:
+                self.assertFalse(item["diagnostics"])
+            self.assertFalse(item["suppressions"])
+
+    def test_empty_shell_files_are_clean(self):
+        report = analyze(
+            "bash",
+            [source("", f"empty-{dialect}.sh", dialect) for dialect in ("bash", "sh", "dash")],
+        )
+        self.assertIsNone(report["error"])
+        for item in report["files"]:
+            self.assertTrue(item["parsed"])
+            self.assertEqual(item["syntax"]["exit_code"], 0)
+            self.assertFalse(item["diagnostics"])
 
     def test_submitted_modules_cannot_be_imported(self):
         marker = Path(tempfile.gettempdir()) / "maf-shell-submitted-module-executed"

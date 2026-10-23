@@ -15,7 +15,8 @@ from maf_sandbox_shell import ShellFlavor, make_shell_tools
 
 @pytest.mark.parametrize("backend_name", ["docker", "acas"])
 @pytest.mark.parametrize("flavor", list(ShellFlavor))
-def test_real_shell_tool(backend_name, flavor):
+@pytest.mark.parametrize("empty", [False, True], ids=["findings", "empty"])
+def test_real_shell_tool(backend_name, flavor, empty):
     variable = f"MAF_SHELL_{backend_name.upper()}_IMAGE"
     image = os.environ.get(variable)
     if not image:
@@ -52,6 +53,8 @@ def test_real_shell_tool(backend_name, flavor):
             if flavor == ShellFlavor.BASH
             else ("-main.ps1", "Write-Host 'hello'\n")
         )
+        if empty:
+            code = ""
         store = InMemoryStore({path: code})
         try:
             [tool] = make_shell_tools(
@@ -60,7 +63,8 @@ def test_real_shell_tool(backend_name, flavor):
             result = await tool.func(files=[path])
             rendered = "\n".join(str(item.text) for item in result)
             assert str(result[0].text) == COMPLETED_TEXT, rendered
-            assert "Result: findings" in rendered, rendered
+            expected = "clean" if empty else "findings"
+            assert f"Result: {expected}" in rendered, rendered
             assert store.files == {path: code}
             if backend_name == "docker":
                 process = await asyncio.create_subprocess_exec(

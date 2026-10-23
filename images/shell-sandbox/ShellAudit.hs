@@ -3,7 +3,7 @@
 -- The adapter uses the pinned ShellCheck parser and never reads the guest filesystem.
 module Main where
 
-import Control.Monad (forM, void)
+import Control.Monad (foldM, forM, void)
 import Data.Aeson
 import Data.IORef
 import Data.List (find, nub, sortOn, (\\))
@@ -49,6 +49,17 @@ position p = object ["line" .= posLine p, "column" .= posColumn p]
 before :: Position -> Position -> Bool
 before a b = posFile a == posFile b && (posLine a, posColumn a) <= (posLine b, posColumn b)
 
+-- Manifest sources have no symlinks, so parent components resolve lexically.
+manifestPath :: FilePath -> Maybe FilePath
+manifestPath value
+    | P.isAbsolute value = Nothing
+    | otherwise = P.joinPath . reverse <$> foldM step [] (P.splitDirectories value)
+  where
+    step stack "." = Just stack
+    step [] ".." = Nothing
+    step (_:rest) ".." = Just rest
+    step stack part = Just (part:stack)
+
 main :: IO ()
 main = do
     raw <- BL.getContents
@@ -57,7 +68,7 @@ main = do
     reports <- forM sources $ \source -> do
         audit <- newIORef []
         let resolve current _ paths target = return $ fromMaybe target $ find (`Map.member` files) $
-                nub $ map P.normalise $ expand current target :
+                nub $ mapMaybe manifestPath $ expand current target :
                     [expand current p P.</> target | p <- paths, not (P.isAbsolute p)]
             expand current p = case P.splitDirectories p of
                 ("SCRIPTDIR":rest) -> P.joinPath (P.takeDirectory current:rest)

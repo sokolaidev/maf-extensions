@@ -34,7 +34,7 @@ $diagnostics = @($parseErrors | ForEach-Object {
     }
 })
 $suppressed = @()
-if ($parseErrors.Count -eq 0) {
+if ($parseErrors.Count -eq 0 -and $request.text.Length -gt 0) {
     $records = @(Invoke-ScriptAnalyzer -ScriptDefinition $request.text -Settings @{
         IncludeDefaultRules = $true
     } -IncludeSuppressed -ErrorAction Stop -WarningAction Stop)
