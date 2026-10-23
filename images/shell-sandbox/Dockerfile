@@ -28,5 +28,5 @@ COPY --from=compiler /usr/local/bin/maf-shell-audit /usr/local/bin/maf-shell-aud
 COPY --from=compiler /usr/share/maf-shell/shellcheck-source.tar.gz /usr/share/maf-shell/
 COPY --from=compiler /build/shellcheck-0.11.0/LICENSE /usr/share/licenses/shellcheck/LICENSE
 COPY ShellAudit.hs patch_shellcheck.py /usr/share/maf-shell/
-COPY runner.py analyze.ps1 dependencies.json prepare_dependencies.py /opt/maf-shell/
+COPY runner.py analyze.ps1 analysis-output.ps1 dependencies.json prepare_dependencies.py /opt/maf-shell/
 RUN mkdir -p /opt/maf-shell/dependencies/modules /opt/maf-shell/dependencies/assemblies

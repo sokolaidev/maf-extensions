@@ -10,9 +10,12 @@ foreach ($path in ([IO.Directory]::EnumerateFiles('/opt/maf-shell/dependencies/a
     $assemblies += $path
 }
 $request = [Console]::In.ReadToEnd() | ConvertFrom-Json -AsHashtable
+$isModule = [IO.Path]::GetExtension($request.path) -ieq '.psm1'
+# The pinned analyzer recognizes modules only with a lowercase extension.
+$analysisPath = if ($isModule) { [IO.Path]::ChangeExtension($request.path, '.psm1') } else { $request.path }
 $tokens = $null
 $parseErrors = $null
-$ast = [System.Management.Automation.Language.Parser]::ParseInput($request.text, [ref]$tokens, [ref]$parseErrors)
+$ast = [System.Management.Automation.Language.Parser]::ParseInput($request.text, $analysisPath, [ref]$tokens, [ref]$parseErrors)
 $declarations = @($ast.FindAll({ param($node)
     $node -is [System.Management.Automation.Language.AttributeAst] -and
     $node.TypeName.FullName -match '(^|\.)SuppressMessage(Attribute)?$'
@@ -38,6 +41,23 @@ if ($parseErrors.Count -eq 0 -and $request.text.Length -gt 0) {
     $records = @(Invoke-ScriptAnalyzer -ScriptDefinition $request.text -Settings @{
         IncludeDefaultRules = $true
     } -IncludeSuppressed -ErrorAction Stop -WarningAction Stop)
+    if ($isModule) {
+        # Module checks need a named AST without enabling rules that read source bytes.
+        $analyzer = [Microsoft.Windows.PowerShell.ScriptAnalyzer.ScriptAnalyzer]::Instance
+        $analysisRunspace = [runspacefactory]::CreateRunspace()
+        try {
+            $analysisRunspace.Open()
+            $output = & /opt/maf-shell/analysis-output.ps1
+            $analyzer.Initialize(
+                $analysisRunspace, $output, $null,
+                @('PSAvoidGlobalFunctions', 'PSAvoidGlobalAliases'),
+                $null, $null, $true, $false, $true, $null
+            )
+            $records += @($analyzer.AnalyzeSyntaxTree($ast, $tokens, $analysisPath, $false))
+        } finally {
+            try { $analyzer.CleanUp() } finally { $analysisRunspace.Dispose() }
+        }
+    }
     foreach ($record in $records) {
         $item = @{
             file = $request.path

@@ -236,6 +236,49 @@ Write-Host 'hello'
                 self.assertFalse(item["diagnostics"])
             self.assertFalse(item["suppressions"])
 
+    def test_powershell_module_rules_and_suppressions_use_the_manifest_name(self):
+        rules = {"PSAvoidGlobalFunctions", "PSAvoidGlobalAliases"}
+        body = (
+            "function global:Get-Widget {}\n"
+            "New-Alias -Name Widget -Value Get-Widget -Scope Global\n"
+        )
+        for suffix in ("psm1", "PSM1", "ps1"):
+            for suppressed in (False, True):
+                with self.subTest(suffix=suffix, suppressed=suppressed):
+                    annotations = ""
+                    if suppressed:
+                        annotations = (
+                            "".join(
+                                f"[Diagnostics.CodeAnalysis.SuppressMessageAttribute('{rule}','')]\n"
+                                for rule in (*sorted(rules), "PSAvoidUsingWriteHost")
+                            )
+                            + "param()\n"
+                        )
+                    path = f"nested/module.{suffix}"
+                    report = analyze("pwsh", [source(annotations + body, path, "pwsh")])
+                    self.assertIsNone(report["error"])
+                    item = report["files"][0]
+                    self.assertTrue(item["parsed"])
+                    self.assertEqual(len(item["suppressions"]), 3 if suppressed else 0)
+                    for field in ("diagnostics", "suppressed_diagnostics"):
+                        expected = (
+                            rules
+                            if suffix.lower() == "psm1"
+                            and (field == "suppressed_diagnostics") == suppressed
+                            else set()
+                        )
+                        records = [entry for entry in item[field] if entry["rule"] in rules]
+                        self.assertEqual({entry["rule"] for entry in records}, expected)
+                        self.assertTrue(all(entry["severity"] == "warning" for entry in records))
+                        self.assertTrue(all(entry["file"] == path for entry in records))
+
+        invalid = (
+            "[Diagnostics.CodeAnalysis.SuppressMessageAttribute("
+            "'PSAvoidGlobalFunctions','',Scope='Invalid')]\nparam()\n" + body
+        )
+        report = analyze("pwsh", [source(invalid, "invalid.psm1", "pwsh")])
+        self.assertEqual(report["error"], "incomplete")
+
     def test_empty_shell_files_are_clean(self):
         report = analyze(
             "bash",
