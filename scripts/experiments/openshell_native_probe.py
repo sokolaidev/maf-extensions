@@ -171,7 +171,7 @@ async def file_races(candidate: Candidate) -> dict:
     async def swap():
         nonlocal swaps
         swaps += 1
-        code = "from pathlib import Path; p=Path('/sandbox/race/work/parent'); p.rename(p.with_name('saved')); p.symlink_to('/sandbox/race/outside',target_is_directory=True)"
+        code = "from pathlib import Path; p=Path('/sandbox/race/work/parent'); p.rename(p.with_name('saved')); p.symlink_to('../outside',target_is_directory=True)"
         if (
             await candidate.exec(["python", "-c", code], working_directory="/sandbox", timeout=30)
         ).exit_code:
