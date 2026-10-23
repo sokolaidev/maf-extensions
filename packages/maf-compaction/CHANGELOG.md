@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.7](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.6.6...maf-compaction-v0.6.7) (2026-10-23)
+
+
+### Fixes
+
+* **compaction:** disable value-free recall pins when re-forcing is off ([#2109](https://github.com/sokolaidev/maf-extensions/issues/2109)) ([809069c](https://github.com/sokolaidev/maf-extensions/commit/809069ca7b28f5c64df51bdf63d198ea902e4321))
+
 ## [0.6.6](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.6.5...maf-compaction-v0.6.6) (2026-10-23)
 
 
