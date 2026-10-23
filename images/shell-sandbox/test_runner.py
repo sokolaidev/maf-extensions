@@ -97,6 +97,68 @@ class Qualification(unittest.TestCase):
         self.assertNotIn("SC1091", [item["rule"] for item in report["files"][0]["diagnostics"]])
         self.assertIn("SC1091", [item["rule"] for item in report["files"][2]["diagnostics"]])
 
+    def test_source_paths_follow_direct_then_declared_order(self):
+        sources = [
+            source(
+                '# shellcheck source-path=lib\n. helper.sh\necho "$expected"\n',
+                "scripts/main.sh",
+            ),
+            source("expected=wrong\n", "scripts/helper.sh"),
+            source("# No assignment here.\n", "lib/helper.sh"),
+        ]
+        report = analyze("bash", sources)
+        self.assertIsNone(report["error"])
+        rules = [item["rule"] for item in report["files"][0]["diagnostics"]]
+        self.assertIn("SC2154", rules)
+        self.assertNotIn("SC1091", rules)
+        report = analyze("bash", [*sources, source("expected=direct\n", "helper.sh")])
+        self.assertIsNone(report["error"])
+        self.assertNotIn("SC2154", [item["rule"] for item in report["files"][0]["diagnostics"]])
+
+    def test_scriptdir_expands_the_leading_path_component(self):
+        for directive in (
+            "source-path=SCRIPTDIR/lib",
+            "source=SCRIPTDIR/lib/helper.sh",
+        ):
+            with self.subTest(directive=directive):
+                report = analyze(
+                    "bash",
+                    [
+                        source(
+                            f'# shellcheck {directive}\n. helper.sh\necho "$expected"\n',
+                            "scripts/main.sh",
+                        ),
+                        source("expected=provided\n", "scripts/lib/helper.sh"),
+                    ],
+                )
+                self.assertIsNone(report["error"])
+                rules = [item["rule"] for item in report["files"][0]["diagnostics"]]
+                self.assertNotIn("SC1091", rules)
+                self.assertNotIn("SC2154", rules)
+
+    def test_sourced_files_use_the_callers_dialect_and_suppressions(self):
+        for suppressed in (False, True):
+            with self.subTest(suppressed=suppressed):
+                annotation = "# shellcheck disable=SC3010\n" if suppressed else ""
+                report = analyze(
+                    "bash",
+                    [
+                        source("#!/bin/sh\n" + annotation + ". library.sh\n", dialect="sh"),
+                        source("[[ -f /tmp/example ]]\n", "library.sh"),
+                    ],
+                )
+                self.assertIsNone(report["error"])
+                caller, library = report["files"]
+                field = "suppressed_diagnostics" if suppressed else "diagnostics"
+                self.assertIn(
+                    ("library.sh", "SC3010"),
+                    [(item["file"], item["rule"]) for item in caller[field]],
+                )
+                if suppressed:
+                    self.assertNotIn("SC3010", [item["rule"] for item in caller["diagnostics"]])
+                    self.assertEqual(len(caller["suppressions"]), 1)
+                self.assertNotIn("SC3010", [item["rule"] for item in library["diagnostics"]])
+
     def test_parse_errors_and_deadline_are_incomplete(self):
         report = analyze("bash", [source("if then\n")])
         self.assertFalse(report["files"][0]["parsed"])

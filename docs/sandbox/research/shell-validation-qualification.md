@@ -1,6 +1,6 @@
 # Shell validation qualification
 
-> Local observations on 2026-10-22 for [#2063](https://github.com/sokolaidev/maf-extensions/issues/2063). The accepted interface is in the [kind contract](../kinds/shell.md); reproducible image commands and dependency preparation are in the [image guide](../../../images/shell-sandbox/README.md).
+> Local observations through 2026-10-24 for [#2063](https://github.com/sokolaidev/maf-extensions/issues/2063). The accepted interface is in the [kind contract](../kinds/shell.md); reproducible image commands and dependency preparation are in the [image guide](../../../images/shell-sandbox/README.md).
 
 ## Analysis-time execution
 
@@ -15,7 +15,7 @@ Host dependencies have a separate path. A derived fixture image contains an inve
 | Evidence | Observation |
 |---|---|
 | Source-pinned ShellCheck 0.11.0 adapter | Reports effective and unused disable clauses, their scopes and exact upstream rule ranges; a second parser-backed pass identifies suppressed findings |
-| Bash/sh/dash fixtures | Correct grammar selection, manifest-only source reads, heredoc text excluded from suppression declarations, syntax failures incomplete, script commands inert |
+| Bash/sh/dash fixtures | Correct grammar selection, caller-dialect sourced diagnostics and suppressions, direct-then-declared source resolution with leading `SCRIPTDIR` expansion, manifest-only source reads, heredoc text excluded from suppression declarations, syntax failures incomplete, script commands inert |
 | PowerShell fixtures | Effective and unused suppression attributes reported; parse errors and analyzer failures cannot produce a clean verdict |
 | Launcher supervision | Shared output budget enforced across processes; a child retaining output pipes is terminated at the deadline |
 | Public tools through Docker | Both flavors return findings for controlled scripts, preserve the file store and leave no call-scoped containers |

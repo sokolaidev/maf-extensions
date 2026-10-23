@@ -57,9 +57,11 @@ main = do
     reports <- forM sources $ \source -> do
         audit <- newIORef []
         let resolve current _ paths target = return $ fromMaybe target $ find (`Map.member` files) $
-                nub $ map P.normalise [target, P.takeDirectory current P.</> target] ++
-                    [P.normalise (expand current p P.</> target) | p <- paths, not (P.isAbsolute p)]
-            expand current p = if p == "SCRIPTDIR" then P.takeDirectory current else p
+                nub $ map P.normalise $ expand current target :
+                    [expand current p P.</> target | p <- paths, not (P.isAbsolute p)]
+            expand current p = case P.splitDirectories p of
+                ("SCRIPTDIR":rest) -> P.joinPath (P.takeDirectory current:rest)
+                _ -> p
             system = (newSystemInterface :: SystemInterface IO) {
                 siGetConfig = \_ -> return Nothing,
                 siReadFile = \_ path -> return $
@@ -87,7 +89,8 @@ main = do
         let checks = emptyCheckSpec {
             csFilename = name source, csScript = text source,
             csIgnoreRC = True, csShellTypeOverride = Just (shell (dialect source)),
-            csExtendedAnalysis = Just True, csMinSeverity = StyleC
+            csExtendedAnalysis = Just True, csMinSeverity = StyleC,
+            csCheckSourced = True
             }
         result <- checkScript system checks
         baseline <- checkScript (system { siIgnoreSuppressions = True }) checks

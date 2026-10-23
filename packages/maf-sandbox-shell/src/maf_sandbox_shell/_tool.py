@@ -174,6 +174,7 @@ def _build_tool(
                     try:
                         await asyncio.shield(execution)
                     except (asyncio.CancelledError, Exception):
+                        # Keep the sandbox alive until the shielded execution finishes.
                         pass
                 if not execution.cancelled():
                     execution.exception()

@@ -110,6 +110,7 @@ class Supervisor:
                 # Windows stdlib stubs omit the Linux image's process-group API.
                 os.killpg(process.pid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
             except ProcessLookupError:
+                # The process group can exit before cleanup reaches it.
                 pass
             process.stdin.close()
             process.stdout.close()
