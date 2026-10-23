@@ -449,7 +449,7 @@ def main() -> int:
     args.report.parent.mkdir(parents=True, exist_ok=True)
     control = {}
     with signed_gateway(args.config, control=control) as issuer:
-        workspace = "q1833-" + uuid.uuid4().hex[:16]
+        workspace = "q1833-" + uuid.uuid4().hex[:12]
         client = Client(
             workspace, issuer.token("admin", role="spike-admin", scopes="openshell:all"), args.image
         )
