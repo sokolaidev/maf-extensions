@@ -43,6 +43,16 @@ class CompactionStack:
     gate: RecallGate
     middleware: ToolResultRecallMiddleware
 
+    def __post_init__(self) -> None:
+        records = (
+            self.strategy.tool_results
+            if isinstance(
+                self.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+            )
+            else self.strategy
+        )
+        records.bind_recall(self.middleware)
+
     def to_dict(self) -> dict[str, Any]:
         """Snapshot behavioral state without configuration or diagnostic-only counts."""
         composed = isinstance(
