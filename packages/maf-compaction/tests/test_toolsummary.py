@@ -3265,3 +3265,70 @@ def test_standing_record_coverage_does_not_cover_later_targets(value):
     assert saved.value_target_groups == 1
     assert saved.value_targets == (frozenset({"CODE-0"}) if value == "CODE-0" else frozenset())
     assert strategy._excluded(messages) == 0
+
+
+@pytest.mark.parametrize("older_text", ["Titles only", "CODE-1"])
+@pytest.mark.parametrize("answer", ["Titles only", "CODE-1"])
+@pytest.mark.parametrize("cold", [False, True])
+async def test_invalidated_legacy_anchor_cannot_consume_pending_value_targets(
+    older_text, answer, cold
+):
+    strategy = _strategy(max_input_tokens=100_000)
+    middleware = ToolResultRecallMiddleware(
+        max_input_tokens=100_000,
+        tokenizer=TOKENIZER,
+        arm=RecallGate().arm,
+    )
+    strategy.bind_recall(middleware)
+    messages = _conversation(0) + _record_messages(older_text, call_id="older")
+    messages.extend(
+        [
+            Message(
+                "assistant",
+                [Content.from_function_call(call_id="shared", name=RECALL_TOOL_NAME, arguments={})],
+            ),
+            Message(
+                "tool",
+                [Content.from_function_result(call_id="shared", result=f"{RECORD_MARKER} Anchor")],
+            ),
+        ]
+    )
+    await strategy(messages)
+    middleware._observe_record_values(None, False)
+    messages.extend(_conversation(1, first_turn=1, payload_chars=0)[3:])
+    strategy._capture_value_targets(messages)
+    pending = strategy.decision_state()
+    assert pending.value_targets == frozenset({"CODE-1"})
+    assert pending.value_target_anchor == "call:shared"
+    messages.append(
+        Message(
+            "assistant", [Content.from_function_call(call_id="shared", name="lookup", arguments={})]
+        )
+    )
+    assert _newest_record_identity(messages) != pending.value_target_anchor
+    if cold:
+        state = json.loads(json.dumps(middleware.session_state()))
+        strategy = _strategy(max_input_tokens=100_000)
+        middleware = ToolResultRecallMiddleware(
+            max_input_tokens=100_000,
+            tokenizer=TOKENIZER,
+            arm=RecallGate().arm,
+        )
+        strategy.bind_recall(middleware)
+        strategy.restore_decisions(
+            RecordDecisions.from_dict(json.loads(json.dumps(pending.to_dict())))
+        )
+        middleware.restore_session_state(state)
+        messages = [Message.from_dict(message.to_dict()) for message in messages]
+    for _ in range(2):
+        await strategy(messages)
+        assert middleware.value_free_record_streak == 1
+        assert not middleware.pin_disabled
+        assert strategy.decision_state().value_targets == pending.value_targets
+    messages.extend(_record_messages(answer, call_id="fresh"))
+    await strategy(messages)
+    assert strategy.last_record_value_judgment == (
+        "has_values" if answer == "CODE-1" else "value_free"
+    )
+    assert middleware.value_free_record_streak == (0 if answer == "CODE-1" else 2)
+    assert strategy.decision_state().value_targets is None

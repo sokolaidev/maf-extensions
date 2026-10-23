@@ -2074,6 +2074,11 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         identity = _record_identity(messages[anchor], recall_results)
         if not identity:
             return
+        if self._value_targets is not None and identity != self._value_target_anchor:
+            previous = record_anchor_position(messages, self._value_target_anchor)
+            current = record_anchor_position(messages, identity)
+            if previous is not None and current is not None and current <= previous:
+                return
         if identity in self._value_judgments:
             has_values = self._value_judgments[identity]
             if isinstance(has_values, str):
