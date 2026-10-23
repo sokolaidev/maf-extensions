@@ -694,6 +694,100 @@ def test_replacement_with_added_component_cannot_retain_removed_component():
     assert "components" in result["reasons"]
 
 
+def apk_component(version):
+    return [
+        "apk",
+        "harfbuzz",
+        version,
+        f"pkg:apk/wolfi/harfbuzz@{version}?arch=x86_64&distro=wolfi-20230201",
+    ]
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("revision", ["15.0.0-r1", "15.0.0-r10"])
+def test_replacement_satisfies_superseded_apk_revision(legacy, revision):
+    previous = desired(observed=candidate(components=[apk_component("15.0.0-r0")]))
+    if legacy:
+        previous["reasons"]["components"].pop("baselineDigest")
+    previous["currentDigest"] = replacement()["registryDigest"]
+    result = desired(
+        record=replacement(),
+        released=RELEASED | {"components": [apk_component(revision)]},
+        previous=previous,
+    )
+    assert result["resolved"]
+    assert result["reasons"] == {}
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["kind", "name", "namespace", "arch", "distro", "subpath", "missing-purl", "bad-purl"],
+)
+def test_apk_revision_requires_matching_package_identity(mutation):
+    wanted = apk_component("15.0.0-r0")
+    actual = apk_component("15.0.0-r1")
+    if mutation == "kind":
+        actual[0] = "deb"
+    elif mutation == "name":
+        actual[1] = "other"
+    elif mutation == "namespace":
+        actual[3] = actual[3].replace("wolfi/", "alpine/")
+    elif mutation == "arch":
+        actual[3] = actual[3].replace("x86_64", "aarch64")
+    elif mutation == "distro":
+        actual[3] = actual[3].replace("wolfi-20230201", "other")
+    elif mutation == "subpath":
+        actual[3] += "#other"
+    elif mutation == "missing-purl":
+        wanted[3] = actual[3] = ""
+    else:
+        wanted[3] = wanted[3].replace("-r0?", "-r0invalid?")
+        actual[3] = actual[3].replace("-r1?", "-r1invalid?")
+    assert not tracker.component_satisfied(wanted, {tuple(actual)})
+
+
+@pytest.mark.parametrize(
+    "version", ["15.0.0-r1", "14.6.0-r9", "15.0.1-r0", "15.0.0-r03", "15.0.0-rx"]
+)
+def test_apk_revision_does_not_infer_other_version_ordering(version):
+    assert not tracker.component_satisfied(
+        apk_component("15.0.0-r2"), {tuple(apk_component(version))}
+    )
+
+
+@pytest.mark.parametrize(
+    "blocker", ["same-digest", "source", "vulnerability", "removed", "addition"]
+)
+def test_superseded_apk_revision_preserves_other_requirements(blocker):
+    previous = desired(observed=candidate(components=[apk_component("15.0.0-r0")]))
+    record = replacement()
+    inventory = [apk_component("15.0.0-r1")]
+    changed = []
+    if blocker == "same-digest":
+        record = RECORD
+    elif blocker == "source":
+        changed = ["images/graphviz-sandbox/Dockerfile"]
+    elif blocker == "vulnerability":
+        record["latestAttempt"] = {
+            "outcome": "vulnerable",
+            "findings": [FINDING],
+            "evidenceRelease": "monitor",
+        }
+    elif blocker == "removed":
+        inventory += RELEASED["components"]
+    else:
+        previous["reasons"]["components"]["added"].append(["deb", "other", "1", ""])
+    result = desired(
+        record=record,
+        released=RELEASED | {"components": inventory},
+        changed=changed,
+        previous=previous,
+    )
+    assert not result["resolved"]
+    reason = {"source": "source", "vulnerability": "vulnerabilities"}.get(blocker, "components")
+    assert set(result["reasons"]) == {reason}
+
+
 @pytest.mark.parametrize("blocker", ["same-digest", "source", "vulnerability", "newer-candidate"])
 def test_satisfied_component_delta_preserves_independent_release_requirements(blocker):
     previous = desired(observed=candidate())
@@ -903,13 +997,14 @@ class Issues(GitHub):
             self.items.append(
                 payload
                 | {
-                    "number": 1,
+                    "number": max((item["number"] for item in self.items), default=0) + 1,
                     "state": "open",
                     "user": {"login": "github-actions[bot]", "type": "Bot"},
                 }
             )
         else:
-            self.items[0].update(payload)
+            number = int(endpoint.rsplit("/", 1)[1])
+            next(item for item in self.items if item["number"] == number).update(payload)
         return b"{}"
 
 
@@ -986,7 +1081,7 @@ def test_refresh_escalates_to_required_replacement_without_duplicate_issue(reaso
     assert client.items[0]["title"] == "Image refresh available: graphviz (current 0.1.0)"
 
 
-def test_closure_and_closed_issue_reuse_are_idempotent():
+def test_closure_and_new_issue_after_closure_are_idempotent():
     client = Issues()
     state = desired(changed=["images/graphviz-sandbox/Dockerfile"])
     tracker.reconcile(client, "graphviz", state, None)
@@ -1001,9 +1096,12 @@ def test_closure_and_closed_issue_reuse_are_idempotent():
         record=replacement(), observed=candidate(version="3", observedAt="2026-01-04T00:00:00Z")
     )
     tracker.reconcile(client, "graphviz", newer, client.items[0])
-    assert client.items[0]["state"] == "open"
-    assert client.items[0]["title"] == "Image refresh available: graphviz (current 0.1.1)"
-    assert len(client.items) == 1
+    tracker.reconcile(client, "graphviz", newer, client.items[1])
+    assert client.items[0]["state"] == "closed"
+    assert client.items[1]["state"] == "open"
+    assert client.items[1]["title"] == "Image refresh available: graphviz (current 0.1.1)"
+    assert len(client.items) == 2
+    assert len(client.calls) == 3
 
 
 def test_missing_issue_state_refuses_mutation():
@@ -1480,7 +1578,9 @@ def reporter(monkeypatch):
     return client, current
 
 
-def test_reporter_clears_source_only_request_and_reuses_it_for_real_changes(reporter, monkeypatch):
+def test_reporter_clears_source_only_request_and_creates_new_issue_for_changes(
+    reporter, monkeypatch
+):
     client, current = reporter
     current["observed"] = None
     state = desired(changed=["scripts/build_scan_image.sh"])
@@ -1494,12 +1594,15 @@ def test_reporter_clears_source_only_request_and_reuses_it_for_real_changes(repo
         tracker, "changed_inputs", lambda *_: ["images/graphviz-sandbox/Dockerfile"]
     )
     tracker.main()
-    assert len(client.items) == 1
-    assert client.items[0]["state"] == "open"
+    tracker.main()
+    assert len(client.items) == 2
+    assert client.items[0]["state"] == "closed"
+    assert client.items[1]["state"] == "open"
+    assert len(client.calls) == 3
 
 
 @pytest.mark.parametrize("replacement_release", [False, True])
-def test_reporter_repairs_closed_request_status_once_and_reopens_with_current_baseline(
+def test_reporter_repairs_closed_request_and_creates_new_issue_with_current_baseline(
     reporter, replacement_release
 ):
     client, current = reporter
@@ -1531,12 +1634,17 @@ def test_reporter_repairs_closed_request_status_once_and_reopens_with_current_ba
     assert "candidateFindings" not in repaired
     assert client.items[0]["state"] == "closed"
     current["observed"] = candidate(version="3", observedAt="2026-01-04T00:00:00Z")
+    closed = copy.deepcopy(client.items[0])
     tracker.main()
-    match = tracker.STATE.search(client.items[0]["body"])
+    tracker.main()
+    assert client.items[0] == closed
+    assert len(client.items) == 2
+    assert len(client.calls) == 3
+    match = tracker.STATE.search(client.items[1]["body"])
     assert match is not None
-    reopened = json.loads(match[1])
-    assert reopened["baseline"] == current["record"]["registryDigest"]
-    assert not reopened["resolved"]
+    new = json.loads(match[1])
+    assert new["baseline"] == current["record"]["registryDigest"]
+    assert not new["resolved"]
 
 
 @pytest.mark.parametrize("failure", ["baseline", "changed_inputs"])
@@ -1558,7 +1666,7 @@ def test_source_reconciliation_requires_verified_evidence_and_comparison(
 
 
 @pytest.mark.parametrize("extra_component", [False, True])
-def test_reporter_creates_updates_closes_and_reuses_one_issue(reporter, extra_component):
+def test_reporter_creates_updates_closes_and_starts_new_issue(reporter, extra_component):
     client, current = reporter
     tracker.main()
     tracker.main()
@@ -1577,9 +1685,13 @@ def test_reporter_creates_updates_closes_and_reuses_one_issue(reporter, extra_co
     tracker.main()
     assert len(client.calls) == 3
     current["observed"] = candidate(version="4", observedAt="2026-01-04T00:00:00Z")
+    closed = copy.deepcopy(client.items[0])
     tracker.main()
-    assert len(client.items) == 1
-    assert client.items[0]["state"] == "open"
+    tracker.main()
+    assert len(client.items) == 2
+    assert client.items[0] == closed
+    assert client.items[1]["state"] == "open"
+    assert len(client.calls) == 4
 
 
 def test_unchanged_newer_observation_prevents_delayed_intermediate_scan(reporter):
@@ -1594,6 +1706,61 @@ def test_unchanged_newer_observation_prevents_delayed_intermediate_scan(reporter
     tracker.main()
     assert client.items == saved
     assert len(client.items) == 1
+
+
+@pytest.mark.parametrize("reason", ["components", "vulnerabilities", "route"])
+def test_manual_closure_creates_one_successor_preserving_requirements(reporter, reason):
+    client, current = reporter
+    tracker.main()
+    if reason != "components":
+        state = desired(observed=current["observed"])
+        state["reasons"][reason] = (
+            {
+                "findings": [FINDING],
+                "evidence": "monitor",
+                "baselineDigest": RECORD["registryDigest"],
+            }
+            if reason == "vulnerabilities"
+            else {"published": "upstream", "replacement": "source"}
+        )
+        client.items[0]["body"] = tracker.body("graphviz", state)
+    client.items[0].update(state="closed", state_reason="not_planned")
+    closed = copy.deepcopy(client.items[0])
+    current["observed"] = None
+    tracker.main()
+    tracker.main()
+    assert client.items[0] == closed
+    assert len(client.items) == len(client.calls) == 2
+    assert client.items[1]["number"] != closed["number"]
+    assert client.items[1]["state"] == "open"
+    match = tracker.STATE.search(client.items[1]["body"])
+    assert match is not None
+    successor = json.loads(match[1])
+    assert reason in successor["reasons"]
+    assert successor["candidateObservedAt"] == candidate()["observedAt"]
+    current["observed"] = candidate(version="4", observedAt="2026-01-04T00:00:00Z")
+    tracker.main()
+    assert len(client.items) == 2
+    assert client.calls[-1][0].endswith("/2")
+    assert client.items[0] == closed
+
+
+@pytest.mark.parametrize("closed", [False, True])
+def test_reporter_resolves_superseded_revision_without_successor(reporter, closed):
+    client, current = reporter
+    current["observed"] = candidate(components=[apk_component("15.0.0-r0")])
+    tracker.main()
+    if closed:
+        client.items[0]["state"] = "closed"
+    current["record"] = replacement()
+    current["released"] = RELEASED | {"components": [apk_component("15.0.0-r1")]}
+    current["observed"] = None
+    tracker.main()
+    tracker.main()
+    assert len(client.items) == 1
+    assert len(client.calls) == 2
+    assert client.items[0]["state"] == "closed"
+    assert "resolved at 0.1.1" in client.items[0]["title"]
 
 
 def test_issue_created_between_pages_does_not_duplicate_a_release_request(reporter, monkeypatch):
@@ -1687,8 +1854,14 @@ def test_unowned_marker_issue_is_never_used_or_modified(reporter, author):
     assert len(client.items) == 2
 
 
-def test_uncertain_issue_creation_is_reconciled_without_duplicate(reporter, monkeypatch):
+@pytest.mark.parametrize("closed_predecessor", [False, True])
+def test_uncertain_issue_creation_is_reconciled_without_duplicate(
+    reporter, monkeypatch, closed_predecessor
+):
     client, _ = reporter
+    if closed_predecessor:
+        tracker.main()
+        client.items[0]["state"] = "closed"
     original = client.request
 
     def uncertain(*args, **kwargs):
@@ -1700,7 +1873,9 @@ def test_uncertain_issue_creation_is_reconciled_without_duplicate(reporter, monk
         tracker.main()
     monkeypatch.setattr(client, "request", original)
     tracker.main()
-    assert len(client.items) == len(client.calls) == 1
+    assert len(client.items) == len(client.calls) == (2 if closed_predecessor else 1)
+    if closed_predecessor:
+        assert client.items[0]["state"] == "closed"
 
 
 def test_unavailable_baseline_preserves_existing_request(reporter, monkeypatch):

@@ -166,6 +166,35 @@ def components(sbom: dict[str, Any], image_id: str) -> list[list[str]]:
     return [list(row) for row in sorted(rows)]
 
 
+def component_satisfied(wanted: list[str], inventory: set[tuple[str, ...]]) -> bool:
+    """Accept exact components or a higher APK revision of the same upstream package."""
+    if tuple(wanted) in inventory:
+        return True
+    kind, name, version, purl = wanted
+    revision = re.fullmatch(r"(.+)-r(0|[1-9][0-9]*)", version)
+    identity = purl.partition(f"@{version}")
+    if (
+        kind != "apk"
+        or revision is None
+        or not identity[0].startswith("pkg:apk/")
+        or not identity[1]
+        or (identity[2] and not identity[2].startswith(("?", "#")))
+    ):
+        return False
+    for actual_kind, actual_name, actual_version, actual_purl in inventory:
+        actual_revision = re.fullmatch(r"(.+)-r(0|[1-9][0-9]*)", actual_version)
+        if (
+            actual_kind == kind
+            and actual_name == name
+            and actual_revision is not None
+            and actual_revision[1] == revision[1]
+            and int(actual_revision[2]) > int(revision[2])
+            and actual_purl == f"{identity[0]}@{actual_version}{identity[2]}"
+        ):
+            return True
+    return False
+
+
 def baseline(client: GitHub, record: dict[str, Any], directory: Path) -> dict[str, Any]:
     """Require delivered, authenticated completion before using or closing against a release."""
     if record["state"] != "completed" or record["delivery"] != "complete":
@@ -603,7 +632,7 @@ def desired(
     if (
         pending_components
         and pending_components.get("baselineDigest", state["baseline"]) != record["registryDigest"]
-        and {tuple(row) for row in pending_components["added"]} <= inventory
+        and all(component_satisfied(row, inventory) for row in pending_components["added"])
         and inventory.isdisjoint(tuple(row) for row in pending_components["removed"])
     ):
         reasons.pop("components", None)
@@ -824,6 +853,9 @@ def reconcile(
         if match is None:
             raise ValueError("Release request has no recoverable state")
         old = decode(match[1])
+        if issue["state"] == "closed" and not state["resolved"]:
+            reconcile(client, profile, state, None)
+            return
         if (
             stable(old) == stable(state)
             and issue["state"] == ("closed" if state["resolved"] else "open")
