@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.6](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.6.5...maf-compaction-v0.6.6) (2026-10-23)
+
+
+### Fixes
+
+* **compaction:** retain recall targets for backoff after overflow shedding ([#2103](https://github.com/sokolaidev/maf-extensions/issues/2103)) ([c6c9e6c](https://github.com/sokolaidev/maf-extensions/commit/c6c9e6c81d36369465e99f285c4cab7d8c368d39))
+
 ## [0.6.5](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.6.4...maf-compaction-v0.6.5) (2026-10-21)
 
 
