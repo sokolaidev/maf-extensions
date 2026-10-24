@@ -8,15 +8,44 @@ Experimental supervised MCP worker for closed-network Bicep validation. The inst
 
 ## Install and start
 
-This package is not yet published. Build a wheel from the repository with `uv build --package maf-sandbox-mcp`, then install that wheel into a fresh Python 3.12–3.14 virtual environment. For example, from a directory outside the checkout:
+For branch validation before the prepared sandbox release is published, build the worker together with its sandbox, Bicep and Docker prerequisites. The recipe below creates a fresh directory outside the checkout, writes `core-override.txt` containing `maf-sandbox @ file:///.../maf_sandbox-<version>-py3-none-any.whl` using the built core's absolute, URL-encoded path, and installs all four local wheels explicitly. This overrides only the prepared core floor; it does not change package metadata or prove the corresponding releases are published. Normal released installations must resolve their requirements without this override.
 
-```bash
-uv venv worker-env --python 3.13
-uv pip install --python worker-env/bin/python --find-links "$SUITE_WHEELS" --overrides "$CORE_OVERRIDE" "$MCP_WORKER_WHEEL"
-worker-env/bin/maf-bicep-mcp --help
+Save this Python block as `install_worker.py` outside the checkout. With uv available, run `uv run --python 3.13 /path/to/install_worker.py` from the repository root (use the saved script's path on Windows). It works with Windows and POSIX environment layouts and checks the installed entry point from outside the checkout:
+
+```python
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+checkout = Path.cwd()
+root = Path(tempfile.mkdtemp(prefix="maf-mcp-worker-"))
+wheels = root / "wheels"
+env = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "VIRTUAL_ENV"}}
+for package in ("maf-sandbox", "maf-sandbox-bicep", "maf-sandbox-docker", "maf-sandbox-mcp"):
+    subprocess.run(
+        ["uv", "build", "--package", package, "--wheel", "--out-dir", str(wheels)],
+        cwd=checkout, env=env, check=True,
+    )
+core = next(wheels.glob("maf_sandbox-*.whl"))
+override = root / "core-override.txt"
+override.write_text(f"maf-sandbox @ {core.as_uri()}\n", encoding="utf-8")
+worker = root / "worker-env"
+subprocess.run(["uv", "venv", "--python", "3.13", str(worker)], cwd=root, env=env, check=True)
+bin_dir = worker / ("Scripts" if os.name == "nt" else "bin")
+python = bin_dir / ("python.exe" if os.name == "nt" else "python")
+subprocess.run(
+    ["uv", "pip", "install", "--python", str(python), "--overrides", str(override),
+     *map(str, sorted(wheels.glob("*.whl")))],
+    cwd=root, env=env, check=True,
+)
+entry = bin_dir / ("maf-bicep-mcp.exe" if os.name == "nt" else "maf-bicep-mcp")
+subprocess.run([str(entry), "--help"], cwd=root, env=env, check=True)
+print(f"Worker entry point: {entry}")
+print(f"Build and environment directory: {root}")
 ```
 
-On Windows, use `worker-env/Scripts/python.exe` and `worker-env/Scripts/maf-bicep-mcp.exe`. The wheel includes every runtime module; neither the checkout, `PYTHONPATH` nor an editable install is required. Publication and its version assignment remain maintainer actions.
+The printed directory remains available for validation; remove it when finished. The wheel includes every runtime module, so the installed worker needs neither the checkout, `PYTHONPATH` nor an editable install. The `--help` check does not exercise Docker or qualify a deployment. Publication and version assignment remain maintainer actions.
 
 Provide a reachable Linux Docker daemon, an already prepared immutable Bicep image and a trusted prepared `bicepconfig.json`. Select the image by full `sha256:` ID or repository digest; mutable tags are rejected. The [prepared-image guide](https://github.com/sokolaidev/maf-extensions/blob/main/images/bicep-sandbox/README.md#prepared-avm-profile) describes the selected cache, which is not the whole AVM catalogue. Keep credentials out of the image because Bicep compile-time functions can read guest files.
 

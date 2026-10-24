@@ -40,9 +40,9 @@ async def test_abandoned_nested_stream_closes_source_and_exposes_failure_to_pers
         finally:
             closed.append(True)
 
-    inner = ResponseStream(updates(), finalizer=lambda updates: tuple(updates))
+    inner = ResponseStream(updates(), finalizer=tuple)
     inner.with_cleanup_hook(lambda: observed.append(inner._stream_error))
-    outer = ResponseStream(inner, finalizer=lambda updates: tuple(updates))
+    outer = ResponseStream(inner, finalizer=tuple)
     await anext(outer.__aiter__())
     failure = RuntimeError("host rejected the response")
     await outer.close(failure)
