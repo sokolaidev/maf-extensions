@@ -755,6 +755,63 @@ async def test_harness_prompt_recall_normalizes_values_and_strips_stale_asks(str
 
 
 @pytest.mark.parametrize("stream", [False, True])
+async def test_harness_never_executes_or_persists_refused_recall(stream):
+    from maf_compaction._toolsummary import RECALL_TOOL_NAME
+
+    class RefusingModel(Model):
+        def _inner_get_response(self, *, messages, stream, options, **kwargs):
+            self.prompts.append(deepcopy(list(messages)))
+            contents = [Content.from_text("answer")]
+            if len(self.prompts) == 1:
+                contents = [
+                    Content.from_function_call(
+                        call_id="refused", name=RECALL_TOOL_NAME, arguments={"values": "SKU-123"}
+                    ),
+                    Content.from_text(
+                        "provider refusal",
+                        additional_properties={"core": {"model_output_kind": "refusal"}},
+                    ),
+                ]
+            response = ChatResponse(messages=Message("assistant", contents))
+            if stream:
+
+                async def updates():
+                    for content in contents:
+                        yield ChatResponseUpdate(role="assistant", contents=[content])
+
+                return ResponseStream(updates(), finalizer=lambda _: response)
+
+            async def answer():
+                return response
+
+            return answer()
+
+    registry = SessionCompactionRegistry(lambda: build_stack(budget=100_000))
+    model = RefusingModel()
+    agent = harness(registry, model)
+    session = AgentSession()
+    with registry.activate(session) as stack:
+        stack.middleware.supports_tool_choice = False
+        stack.middleware._force_next = True
+    result = agent.run("Recall SKU-123.", session=session, stream=stream)
+    response = (
+        await result.get_final_response() if isinstance(result, ResponseStream) else await result
+    )
+    assert response.text == "answer"
+    assert len(model.prompts) == 2
+    history = json.dumps(session.to_dict())
+    assert "provider refusal" not in history
+    assert '"call_id": "refused"' not in history
+    assert RECORD_MARKER not in history
+    assert all(c.type != "function_call" for m in response.messages for c in m.contents)
+    with registry.activate(session) as stack:
+        assert stack.middleware.failed_forced_calls == 1
+        assert stack.middleware.value_free_record_streak == 1
+        assert stack.middleware.records_forced == 0
+        assert not stack.gate.take()
+
+
+@pytest.mark.parametrize("stream", [False, True])
 async def test_harness_refuses_irreducible_overflow_before_contacting_model(stream):
     registry = SessionCompactionRegistry(lambda: build_stack(Summarizer("x" * 50_000), budget=4000))
     model = Model()

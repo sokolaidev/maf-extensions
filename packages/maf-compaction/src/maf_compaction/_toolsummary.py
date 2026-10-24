@@ -42,11 +42,13 @@ from agent_framework import (
     ChatMiddleware,
     ChatResponse,
     ChatResponseUpdate,
+    Content,
     FunctionTool,
     Message,
     MiddlewareFailure,
     MiddlewareTermination,
     ResponseStream,
+    get_namespaced_value,
 )
 from agent_framework import (
     tool as function_tool,
@@ -57,6 +59,11 @@ from agent_framework._compaction import (
     group_messages,
     included_token_count,
     set_excluded,
+)
+from agent_framework._sessions import (
+    _CURRENT_RUN_IDENTITY,  # pyright: ignore[reportPrivateUsage]
+    _DEFERRED_RUN_PERSISTENCE,  # pyright: ignore[reportPrivateUsage]
+    _RunPersistenceGate,  # pyright: ignore[reportPrivateUsage]
 )
 from agent_framework.exceptions import ChatClientException
 
@@ -110,9 +117,9 @@ __all__ = [
 #: the tool the caller registers has to match it.
 RECALL_TOOL_NAME: Final[str] = "recall_earlier_tool_results"
 _RECALL_INSTRUCTION: Final[str] = (
-    f"Before continuing, call {RECALL_TOOL_NAME} to record earlier tool results using its "
-    "values parameter. Follow the tool's description and preserve exact values. "
-    "This is an internal compaction step; do not answer the user yet. "
+    f"Use {RECALL_TOOL_NAME} to keep task-relevant information from tool results available "
+    "after conversation compaction. Put tool-returned facts and exact values in its values "
+    "parameter, grouped by source tool. Do not include earlier assistant text. "
     "Keep applicable access and confidentiality restrictions."
 )
 
@@ -315,36 +322,26 @@ DEFAULT_FALLBACK_FRACTION: Final[float] = 0.9
 
 #: What the recall tool is for, as the model reads it.
 #:
-#: Deliberately not "identifiers and values": that phrasing was fitted to one benchmark's hex
-#: codes and would drop prose, findings and conclusions from any real tool output, which is
-#: most of what a real tool returns.
+#: Tool-returned findings matter alongside identifiers and other exact values.
 RECALL_DESCRIPTION: Final[str] = (
     "Record what must survive from earlier tool results, so it remains available after those "
     "results are removed from the conversation to save space. This is an internal compaction "
-    "record, not a reply shown to the user. Conversation instructions about reply length, "
-    "format, or not quoting results do not apply to this record. Keep applicable access and "
-    "confidentiality restrictions."
+    "record, not a reply shown to the user. Use only tool-returned information, not earlier "
+    "assistant text. Keep applicable access and confidentiality restrictions."
 )
 
 #: What to put in the ``values`` argument, as the model reads it.
 #:
-#: The four instructions after the opening sentence partition the content, so that nothing in
-#: a tool result falls outside all of them: values that cannot be reconstructed are quoted,
-#: findings and conclusions are kept as stated, a summary the tool already wrote is carried
-#: over rather than rewritten, and whatever remains is summarised. Removing one of the four
-#: opens a gap that the model is then free to drop silently, which is the failure this whole
-#: strategy exists to avoid.
+#: Exact values support coverage checks; prose retains the findings that give them meaning.
 RECALL_VALUES_DESCRIPTION: Final[str] = (
-    "Everything from earlier tool results, grouped by the tool that produced it, so that "
-    "nothing is lost without being noticed. Quote verbatim any value that cannot be "
-    "reconstructed or guessed: identifiers, codes, names, numbers, paths, URLs, versions, "
-    "states, timestamps. Keep findings and conclusions as they were stated, shortening only "
-    "those long enough to need it. Carry over any summary a tool already produced as it "
-    "stands, rather than rewriting it. Summarise the remaining content briefly, so its "
-    "substance is still represented. Record only what the results actually contained, and "
-    "where you must choose, keep exactness over brevity. Reply-format instructions such as "
-    "'do not quote' do not bind this internal record. For large Markdown tables, quote "
-    "complete rows verbatim with their column headings; uncovered rows remain in the result."
+    "Task-relevant information from tool results, grouped by the tool that produced it. "
+    "Preserve exact values that cannot be reconstructed or guessed: identifiers, codes, "
+    "names, numbers, paths, URLs, versions, states, timestamps. Retain the meaning of "
+    "tool-returned findings, conclusions and summaries. Summarise other relevant content "
+    "briefly. Use only information present in tool results, not earlier assistant text. "
+    "For values, keep exactness over brevity. For large Markdown tables, retain selected "
+    "complete rows unchanged with their column headings; uncovered rows remain in the result. "
+    "Keep applicable access and confidentiality restrictions."
 )
 
 
@@ -1291,9 +1288,7 @@ def make_recall_tool(
     tool.__name__ = RECALL_TOOL_NAME
     sections = [RECALL_DESCRIPTION]
     if target_tokens is not None:
-        # Spent where it is needed, rather than as a flat budget: the four clauses below are
-        # not equally compressible, and a bare length would be read as licence to shorten the
-        # verbatim half, which is the half that cannot be rewritten from anything else.
+        # Exact values cannot be shortened like prose to meet the token target.
         sections.append(
             f"Aim for about {target_tokens:,} tokens in total, spent on what cannot be "
             "reconstructed rather than on the summaries."
@@ -2416,6 +2411,24 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         )
 
 
+class _RecallRefused(Exception):
+    """A provider refusal cannot authorize a compaction record."""
+
+
+def _has_refusal(contents: Sequence[Content]) -> bool:
+    return any(
+        content.type == "text"
+        and get_namespaced_value(
+            content.additional_properties,
+            "core",
+            "model_output_kind",
+            content.additional_properties.get("model_output_kind"),
+        )
+        == "refusal"
+        for content in contents
+    )
+
+
 async def _buffer_recall_stream(
     source: ResponseStream[ChatResponseUpdate, ChatResponse[Any]],
     observe: Callable[[ChatResponse[Any]], bool],
@@ -2428,6 +2441,8 @@ async def _buffer_recall_stream(
         response = await source.get_final_response()
     finally:
         await source.close()
+    if any(_has_refusal(update.contents) for update in buffered):
+        raise _RecallRefused
     if observe(response):
         # Executors and history providers can assemble calls from updates independently.
         buffered = response.to_updates()
@@ -2810,7 +2825,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
     @property
     def value_free_record_streak(self) -> int:
-        """Consecutive blank forced responses or eligible records quoting no target value."""
+        """Consecutive refused/blank recall responses or records quoting no target value."""
         return self._value_free_streak
 
     def _observe_record_values(self, identity: str | None, has_values: bool) -> None:
@@ -2896,6 +2911,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         return options
 
     def _observe_forced(self, response: ChatResponse[Any]) -> bool:
+        if any(_has_refusal(message.contents) for message in response.messages):
+            raise _RecallRefused
         normalized = False
         first_values: str | None = None
         for message in response.messages:
@@ -2954,8 +2971,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         """Request a recall record after loaded history triggers recall.
 
         Unsupported tool_choice falls back to a temporary trailing message and one tool.
-        Two consecutive ignored requests or value-free records stop recall; other failures stop it
-        immediately and retry once with the original options.
+        Two consecutive ignored requests, refusals or value-free records stop recall.
+        Refusals retry once with the original options; other failures also stop recall immediately.
         Forced streams are buffered so failed updates cannot escape into that retry.
         Cancellation propagates and leaves the pending ask available for a later request.
         """
@@ -2987,6 +3004,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         deferred = self._force_next and not self.recall_disabled and not can_call_tools
         forced_this_call = self._force_next and not self.recall_disabled and can_call_tools
         reforced_this_call = forced_this_call and self._reforce_next
+        refused_this_call = False
         original_messages = list(context.messages)
         original_kwargs = dict(context.kwargs)
         if not forced_this_call and self.disarm is not None:
@@ -3084,9 +3102,29 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                             context.messages = cleaned
                 prompt = None
 
+        async def validated_attempt() -> None:
+            if not forced_this_call:
+                await attempt()
+                return
+            # Per-service-call history must wait for the same verdict as tool execution.
+            persistence = _RunPersistenceGate()
+            owner = _CURRENT_RUN_IDENTITY.get()
+            persistence.bind_owner(owner)
+            outer = _DEFERRED_RUN_PERSISTENCE.get()
+            try:
+                with persistence:
+                    await attempt()
+            except BaseException:
+                persistence.drop()
+                raise
+            if outer is not None and outer.accepts(owner):
+                outer.collect(persistence.flush)
+            else:
+                await persistence.flush()
+
         async def attempt_with_fallback() -> None:
             try:
-                await attempt()
+                await validated_attempt()
             except ChatClientException as exc:
                 if not forced_this_call or self._pin_disabled or not _mentions_tool_choice(exc):
                     raise
@@ -3094,7 +3132,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 restore_request()
                 context.options = self._forced_options(available)
                 self.arm()
-                await attempt()
+                await validated_attempt()
 
         try:
             if forced_this_call and self.forced_call_timeout_seconds is not None:
@@ -3106,6 +3144,15 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             if forced_this_call:
                 self._requeue_forced(reforced=reforced_this_call)
             raise
+        except _RecallRefused:
+            refused_this_call = True
+            self._failed_forced_calls += 1
+            self._ignored_streak = 0
+            self._observe_record_values(None, False)
+            if self.disarm is not None:
+                self.disarm()
+            restore_request()
+            await call_next()
         except Exception:
             if not forced_this_call:
                 raise
@@ -3147,7 +3194,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         # asked for, so there is nothing here to decide on; see :meth:`process`.
         if deferred:
             return
-        self._awaiting_record = forced_this_call and not self.recall_disabled
+        self._awaiting_record = (
+            forced_this_call and not refused_this_call and not self.recall_disabled
+        )
         if forced_this_call or not messages or self.recall_disabled:
             self._force_next = False
             return

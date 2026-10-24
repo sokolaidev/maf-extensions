@@ -2050,27 +2050,19 @@ def test_the_recall_tool_records_only_while_armed() -> None:
     [
         pytest.param("grouped by the tool that produced it", id="attribution"),
         pytest.param(
-            "Quote verbatim any value that cannot be reconstructed or guessed",
+            "Preserve exact values that cannot be reconstructed or guessed",
             id="unreconstructable",
         ),
-        pytest.param("Keep findings and conclusions as they were stated", id="findings"),
         pytest.param(
-            "Carry over any summary a tool already produced as it stands", id="existing-summary"
+            "Retain the meaning of tool-returned findings, conclusions and summaries", id="findings"
         ),
-        pytest.param("Summarise the remaining content briefly", id="the-rest"),
+        pytest.param("findings, conclusions and summaries", id="existing-summary"),
+        pytest.param("Summarise other relevant content briefly", id="the-rest"),
         pytest.param("keep exactness over brevity", id="tie-break"),
     ],
 )
 def test_the_tool_asks_for_every_kind_of_content_a_result_can_hold(clause: str) -> None:
-    """The four instructions partition the content, and a missing one is a silent hole.
-
-    The description and the ``values`` guidance are the entire prompt: the middleware sends no
-    message, because one appended there would be persisted into the caller's own conversation.
-    So whatever these do not name is content the model may drop without anything noticing, and
-    the earlier text named only "identifiers and values seen in earlier tool results" -- fitted
-    to this benchmark's hex codes, and blind to the prose, findings and conclusions that are
-    most of what a real tool returns.
-    """
+    """Recall guidance covers exact values and tool-returned prose."""
     assert clause in (make_recall_tool().__doc__ or "")
 
 
@@ -2098,7 +2090,7 @@ def test_the_target_length_is_stated_when_one_is_given() -> None:
     assert f"{DEFAULT_RECORD_TARGET_TOKENS:,} tokens" in default
     assert "Aim for about" not in silent
     # Stating a length must not cost a clause: the two bounds are independent instructions.
-    assert "Quote verbatim any value that cannot be reconstructed or guessed" in silent
+    assert "Preserve exact values that cannot be reconstructed or guessed" in silent
 
 
 def test_the_target_sits_well_under_the_cap() -> None:
@@ -3010,7 +3002,8 @@ async def test_value_free_records_receive_targeted_private_reask(tool_form, wrap
     spec = advertised.to_json_schema_spec() if isinstance(advertised, FunctionTool) else advertised
     description = spec.get("function", spec)["description"]
     assert "not a reply shown to the user" in description
-    assert "do not apply to this record" in description
+    assert "not earlier assistant text" in description
+    assert "do not apply to this record" not in description
     assert "lookup_0" in description and "lookup_1" in description and "lookup_2" in description
     assert "distinctive values verbatim" in description
     assert context.options is options
