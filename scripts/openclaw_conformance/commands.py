@@ -13,7 +13,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .evidence import LIMITS, require
+from .evidence import LIMITS, Refused, require
+
+
+class CaptureRefused(Refused):
+    """A refused command with bounded stdout retained after process cleanup."""
+
+    def __init__(self, reason: str, stdout: bytes) -> None:
+        super().__init__(reason)
+        self.stdout = stdout
 
 
 def capture(
@@ -139,7 +147,8 @@ def capture(
                     if stream is not None and not any(reader.is_alive() for reader in readers):
                         stream.close()
     require(not any(reader.is_alive() for reader in readers), "setup_process_cleanup")
-    require(not failure, failure[0] if failure else "setup_output_read")
+    if failure:
+        raise CaptureRefused(failure[0], bytes(stdout))
     assert process is not None
     return subprocess.CompletedProcess(args, process.returncode, bytes(stdout))
 

@@ -32,6 +32,11 @@ on:
         description: "Compare official OpenClaw MXC smoke on fresh unprepared and prepared Windows runners"
         type: boolean
         default: false
+      openclaw_mxc_phase:
+        description: "Select native smoke or only its CLI and unrestricted fixture prerequisites"
+        type: choice
+        default: smoke
+        options: [smoke, prerequisites]
       mxc_files:
         description: "Qualify bounded MXC files and durable artifacts on Linux and Windows"
         type: boolean
@@ -1108,7 +1113,7 @@ jobs:
           --shard "$SHARD_INDEX" --shards "$SHARD_COUNT"
 
   openclaw-mxc:
-    name: OpenClaw MXC (${{ matrix.mode }}, ${{ matrix.preparation }})
+    name: OpenClaw MXC ${{ inputs.openclaw_mxc_phase || 'smoke' }} (${{ matrix.mode }}, ${{ matrix.preparation }})
     needs: changes
     runs-on: windows-latest
     timeout-minutes: 40
@@ -1116,7 +1121,7 @@ jobs:
       fail-fast: false
       matrix:
         mode: [none, ro, rw]
-        preparation: [unprepared, prepared]
+        preparation: ${{ fromJSON(inputs.openclaw_mxc_phase == 'prerequisites' && '["unprepared"]' || '["unprepared", "prepared"]') }}
     defaults:
       run:
         shell: pwsh
@@ -1151,8 +1156,11 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.openclaw_mxc
         env:
           WORKSPACE_MODE: ${{ matrix.mode }}
+          MXC_PHASE: ${{ inputs.openclaw_mxc_phase }}
         run: |
-          uv run --directory scripts python -m openclaw_conformance.mxc_smoke --installation "$env:RUNNER_TEMP/oc-mxc-installed" --output "$env:RUNNER_TEMP/oc-mxc-smoke" --mode "$env:WORKSPACE_MODE" --debug-native
+          $smokeArguments = @('--installation', "$env:RUNNER_TEMP/oc-mxc-installed", '--output', "$env:RUNNER_TEMP/oc-mxc-smoke", '--mode', "$env:WORKSPACE_MODE", '--debug-native')
+          if ($env:MXC_PHASE -eq 'prerequisites') { $smokeArguments += '--prerequisites-only' }
+          uv run --directory scripts python -m openclaw_conformance.mxc_smoke @smokeArguments
           exit $LASTEXITCODE
       - name: Retain Markdown evidence only
         if: always() && github.event_name == 'workflow_dispatch' && inputs.openclaw_mxc

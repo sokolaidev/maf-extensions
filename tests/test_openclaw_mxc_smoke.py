@@ -368,9 +368,14 @@ def test_provider_shutdown_with_incomplete_headers(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.parametrize("mode", smoke.MODES)
-@pytest.mark.parametrize("agent_allowed", [False, True])
+@pytest.mark.parametrize("outcome", ["allow", "deny", "timeout"])
+@pytest.mark.parametrize("prerequisites_only", [False, True])
 def test_fixture_control_requires_and_restores_agent_write(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, agent_allowed: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    outcome: str,
+    prerequisites_only: bool,
 ):
     from types import SimpleNamespace
 
@@ -402,18 +407,21 @@ def test_fixture_control_requires_and_restores_agent_write(
         nonce = (active / "marker.txt").read_text()
         (active / "native-write.txt").write_text(nonce)
         (tmp_path / "outside.txt").write_text(nonce)
-        if agent_allowed:
+        if outcome != "deny":
             (agent / "agent-write.txt").write_text(nonce)
+        if outcome == "timeout":
+            raise smoke.CaptureRefused("setup_command_timeout", b"partial fixture output")
         return SimpleNamespace(
             returncode=0,
             stdout=(
                 f"smoke-end={nonce}\nactive-read={nonce}\nagent-read={nonce}\n"
                 "active-write=allowed\noutside-write=allowed\n"
-                + ("agent-write=allowed" if agent_allowed else "agent-write=denied")
+                + ("agent-write=allowed" if outcome == "allow" else "agent-write=denied")
             ).encode(),
         )
 
     def before_gateway():
+        assert not prerequisites_only
         assert (agent / "agent-write.txt").read_text() == "before"
         assert (active / "native-write.txt").read_text() == "before"
         assert (tmp_path / "outside.txt").read_text() == "outside-before"
@@ -422,11 +430,70 @@ def test_fixture_control_requires_and_restores_agent_write(
     monkeypatch.setattr(smoke, "capture", capture)
     monkeypatch.setattr(campaign.provider, "start", before_gateway)
     try:
-        with pytest.raises(
-            Refused, match="stop_after_control" if agent_allowed else "host_fixture_prerequisite"
-        ):
-            campaign.execute()
-        assert campaign.rows[0][1] is agent_allowed
+        if outcome == "timeout":
+            with pytest.raises(Refused, match="setup_command_timeout"):
+                campaign.execute(prerequisites_only=prerequisites_only)
+            assert not campaign.prerequisites_complete
+            assert not campaign.rows
+        elif outcome == "allow" and prerequisites_only:
+            campaign.execute(prerequisites_only=True)
+            assert campaign.prerequisites_complete
+            assert not campaign.processes.children
+            assert not campaign.report(None)
+            report = (tmp_path / "report.md").read_text(encoding="utf-8")
+            assert "Prerequisites-only diagnostic; native smoke not run" in report
+            assert "Selected-mode smoke: unqualified" in report
+        else:
+            with pytest.raises(
+                Refused,
+                match="stop_after_control" if outcome == "allow" else "host_fixture_prerequisite",
+            ):
+                campaign.execute(prerequisites_only=prerequisites_only)
+        if outcome != "timeout":
+            assert campaign.rows[0][1] is (outcome == "allow")
+        assert (active / "native-write.txt").read_text() == "before"
+        assert (tmp_path / "outside.txt").read_text() == "outside-before"
         assert (agent / "agent-write.txt").read_text() == "before"
+    finally:
+        campaign.provider.close()
+
+
+@pytest.mark.parametrize(
+    "label,deadline",
+    [("sandbox explain prerequisite", 360), ("unrestricted fixture prerequisite", 30)],
+)
+def test_setup_timeout_records_exact_phase_and_redacted_output(
+    tmp_path, monkeypatch, label, deadline
+):
+    campaign = smoke.Campaign(tmp_path, tmp_path / "installation", "none")
+    (tmp_path / "setup.log").write_bytes(b"earlier command output\n")
+
+    def capture(args, root, env, timeout, **kwargs):
+        assert timeout == deadline
+        with (root / "setup.log").open("ab") as stream:
+            stream.write(b"current diagnostic\n" + b"x" * 16384 + b"omitted suffix")
+        raise smoke.CaptureRefused(
+            "setup_command_timeout",
+            f"{root} {campaign.token} {campaign.provider.token} ```".encode(),
+        )
+
+    monkeypatch.setattr(smoke, "capture", capture)
+    try:
+        with pytest.raises(Refused, match="setup_command_timeout"):
+            campaign.setup_command(label, ["fixed-command"], {}, deadline)
+        assert not campaign.report("setup_command_timeout")
+        report = (tmp_path / "report.md").read_text(encoding="utf-8")
+        assert f"### {label}" in report
+        assert f"Deadline: {deadline} seconds" in report
+        assert "Elapsed:" in report
+        assert "current diagnostic" in report
+        assert "earlier command output" not in report
+        assert "omitted suffix" not in report
+        assert "exceeded 16 KiB" in report
+        assert str(tmp_path) not in report
+        assert campaign.token not in report
+        assert campaign.provider.token not in report
+        assert "<campaign> <gateway-token> <provider-token> ---" in report
+        assert not campaign.rows
     finally:
         campaign.provider.close()
