@@ -179,6 +179,11 @@ def test_inflight_completion_is_not_instant_revocation(native_probe):
     assert result["response_completed_after_loaded"]
     assert result["later_outcome"] == "explicit_policy_refusal"
     assert not result["instant_revocation_qualified"]
+    assert not result["same_connection"]
+    observed[0]["connection_generation"] = observed[1]["connection_generation"] = 1
+    assert native_probe.inflight_observation(observed, [first], first)["same_connection"]
+    observed[1]["connection_generation"] = 2
+    assert not native_probe.inflight_observation(observed, [first], first)["same_connection"]
     observed[1] = {"error": "ConnectionResetError"}
     assert native_probe.inflight_observation(observed, [first], first)["later_outcome"].startswith(
         "connection_closed"

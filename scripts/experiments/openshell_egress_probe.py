@@ -274,6 +274,9 @@ def inflight_observation(observations, hits, first):
         "response_completed_after_loaded": completed,
         "later_request_reached_origin": later,
         "later_outcome": outcome,
+        "same_connection": bool(observations[0].get("connection_generation"))
+        and observations[0]["connection_generation"]
+        == observations[1].get("connection_generation"),
         "instant_revocation_qualified": False,
     }
 
@@ -429,10 +432,13 @@ async def measure_native(fixture, ip):
         }
         code = (
             "import http.client,json,urllib.request,urllib.parse\n"
-            "p=urllib.parse.urlsplit(urllib.request.getproxies()['http']); c=http.client.HTTPConnection(p.hostname,p.port,timeout=40); results=[]\n"
+            "class TrackedConnection(http.client.HTTPConnection):\n"
+            " generation=0\n def connect(self):\n  super().connect(); self.generation+=1\n"
+            "p=urllib.parse.urlsplit(urllib.request.getproxies()['http']); c=TrackedConnection(p.hostname,p.port,timeout=40); results=[]\n"
             "for url in " + repr([url, url.replace("/hold?", "/after?")]) + ":\n"
             " try:\n  c.request('GET',url,headers={'Host':urllib.parse.urlsplit(url).netloc}); r=c.getresponse(); results.append({'status':r.status,'body':r.read(4096).decode()})\n"
             " except Exception as e:\n  results.append({'error':type(e).__name__,'errno':getattr(e,'errno',None)})\n"
+            " results[-1]['connection_generation']=c.generation\n"
             "c.close(); print(json.dumps(results))"
         )
         pending = asyncio.create_task(observe(code))
