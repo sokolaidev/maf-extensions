@@ -11,10 +11,13 @@ from pathlib import Path
 from scripts.experiments.mxc_v1_patch import qualification_runner as native
 from scripts.experiments.mxc_v1_patch.patch import metadata
 
+from . import cross_compat
+
 
 def build(root: Path) -> None:
     """Reuse the locked overlay build and native startup controls."""
     root.mkdir(parents=True, exist_ok=False)
+    producer_vendor = cross_compat.cpu_vendor()
     native.hypervisor()
     opts = native.sources(root, metadata())
     tool = [sys.executable, "-m", "scripts.experiments.mxc_v1_patch.patch"]
@@ -54,6 +57,7 @@ def build(root: Path) -> None:
     bundle.mkdir()
     shutil.copy2(native.helper(root), bundle / "helper")
     shutil.copytree(root / "images/agent/snapshot", bundle / "startup")
+    cross_compat.record_fixture(bundle, producer_vendor)
     with tarfile.open(root / "bundle.tar.gz", "w:gz") as archive:
         archive.add(bundle, arcname="bundle")
 
