@@ -1612,7 +1612,7 @@ def test_maf_response_cookie_policy_and_http_client_ownership(monkeypatch, suppl
                 message["headers"].append((b"set-cookie", b"session_hint=present; Path=/"))
             await send(message)
 
-        await original(self, scope, receive, set_cookie)
+        return await original(self, scope, receive, set_cookie)
 
     monkeypatch.setattr(http.WorkloadHTTP, "__call__", observe)
 
