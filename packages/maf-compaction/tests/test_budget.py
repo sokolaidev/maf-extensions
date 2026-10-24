@@ -113,6 +113,72 @@ def size(messages):
     return included_token_count(messages)
 
 
+@pytest.mark.parametrize("fraction", [0.0, DEFAULT_CHAIN_GAIN_FRACTION, 0.6])
+@pytest.mark.parametrize("sending", [False, True])
+async def test_no_record_sheds_with_headroom_and_replays(fraction, sending):
+    messages = conversation()
+    del messages[-2]
+    original = deepcopy(messages)
+    original_results = {m.message_id: deepcopy(m.contents) for m in messages if m.role == "tool"}
+    budget = size(messages) + (1000 if sending else -100)
+    current = stack(budget=budget, fraction=fraction)
+    options = {"instructions": "instructions " * 1000} if sending else {}
+    effective = current.strategy.sending_budget(options) if sending else budget
+    if sending:
+        await current.strategy.compact_before(messages, options=options)
+    else:
+        await current.strategy(messages)
+    lost = {m.message_id for m in messages if m.additional_properties.get(EXCLUDED_KEY)}
+    first = next(i for i, m in enumerate(original) if m.message_id in lost)
+    assert size(messages) <= effective - ceil(fraction * size(original[first:]))
+    assert all(m.contents == original_results[m.message_id] for m in messages if m.role == "tool")
+    cold = stack(budget=budget, fraction=fraction)
+    cold.restore(json.loads(json.dumps(current.to_dict())))
+    await cold.strategy(original)
+    assert [m.to_dict() for m in project_included_messages(original)] == [
+        m.to_dict() for m in project_included_messages(messages)
+    ]
+
+
+async def test_no_record_keeps_prefix_between_sheds_as_results_leave_tail():
+    messages = conversation()
+    del messages[-2]
+    budget = size(messages) - 100
+    current = stack(budget=budget)
+    await current.strategy(messages)
+    for index in range(10, 12):
+        prefix = [deepcopy(m.contents) for m in project_included_messages(messages)]
+        messages += table(index)
+        await current.strategy(messages)
+        assert size(messages) <= budget
+        assert [m.contents for m in project_included_messages(messages)][: len(prefix)] == prefix
+
+
+@pytest.mark.parametrize("policy", ["shed", "raise"])
+async def test_no_record_under_budget_does_not_shorten_aged_out_results(policy):
+    messages = conversation()
+    del messages[-2]
+    original = deepcopy(messages)
+    current = stack(budget=size(messages) + 100, policy=policy)
+    assert (
+        size(messages)
+        >= current.strategy.max_input_tokens * current.strategy.tool_results.fallback_fraction
+    )
+    await current.strategy(messages)
+    assert [m.contents for m in messages] == [m.contents for m in original]
+    assert all(not m.additional_properties.get(EXCLUDED_KEY) for m in messages)
+
+
+async def test_no_record_strict_overflow_keeps_results():
+    messages = conversation()
+    del messages[-2]
+    original = deepcopy(messages)
+    with pytest.raises(CompactionBudgetExceeded):
+        await stack(budget=size(messages) - 100, policy="raise").strategy(messages)
+    assert [m.contents for m in messages] == [m.contents for m in original]
+    assert all(not m.additional_properties.get(EXCLUDED_KEY) for m in messages)
+
+
 async def test_uncovered_tables_fit_and_shedding_survives_cold_restore(caplog):
     first = stack()
     messages = conversation()

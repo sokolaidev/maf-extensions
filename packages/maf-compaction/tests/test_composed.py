@@ -994,6 +994,7 @@ async def test_the_record_phase_runs_before_the_user_phase_and_without_its_fallb
             prompt_tokens: int,
             trigger_tokens: int,
             fallback_after_record: bool = True,
+            fallback_without_record: bool = True,
             ceiling: int | None = None,
         ) -> bool:
             order.append("record")
@@ -1003,6 +1004,7 @@ async def test_the_record_phase_runs_before_the_user_phase_and_without_its_fallb
                 prompt_tokens=prompt_tokens,
                 trigger_tokens=trigger_tokens,
                 fallback_after_record=fallback_after_record,
+                fallback_without_record=fallback_without_record,
                 ceiling=ceiling,
             )
 
@@ -1372,17 +1374,14 @@ async def test_under_the_record_halfs_own_trigger_the_user_half_does_not_wait() 
 
 
 async def test_the_user_half_does_not_wait_past_the_record_halfs_own_give_up_line() -> None:
-    """Past that line the record half has stopped waiting, so the user half must not wait longer.
-
-    The fixture starts at 18,937 tokens, over 0.9 of the 20,000 ceiling: the record half sheds
-    tool results without a record, and the user half is judged on what that left.
-    """
+    """The give-up line releases the user half without shortening unrecorded results."""
     strategy = _composed(_COMPACTING_CEILING)
 
     await strategy(_conversation(record=None))
 
-    assert strategy.fallbacks_used == 1, "the premise: the record half gave up on this pass"
+    assert strategy.fallbacks_used == 0
     assert strategy.user_passes_waited == 0
+    assert strategy.user_compactions == 1
 
 
 async def test_the_store_pass_after_a_record_arrives_replays_the_user_summary_rather_than_waiting() -> (
