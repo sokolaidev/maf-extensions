@@ -138,6 +138,10 @@ _NOTES: Final[dict[str, str]] = {
     _TOOL_CALL: "[compacted: an earlier tool call and its result]",
     _ASSISTANT_TEXT: "[compacted: an earlier assistant reply]",
 }
+_ANSWERED_NOTE: Final[str] = (
+    "[compacted: the preceding user request was already answered; the assistant reply was removed]"
+)
+_SHORT_REPLY_TOKENS: Final[int] = 64
 
 #: Share of the tokens *behind* a collapse that the collapse must remove before it is worth
 #: making.
@@ -188,7 +192,7 @@ def _is_marker(message: Message) -> bool:
         and has_summary_links(message)
         and message.message_id
         and message.message_id.startswith(MARKER_ID_PREFIX)
-        and message.text in _NOTES.values()
+        and message.text in (*_NOTES.values(), _ANSWERED_NOTE)
     )
 
 
@@ -658,6 +662,12 @@ class AnchoredCompactionStrategy:
             # model has that something was removed.
             if all(_is_marker(message) for message in members):
                 continue
+            if (
+                self._note_for(messages, group) == _ANSWERED_NOTE
+                and all(c.type == "text" for m in members for c in m.contents)
+                and sum(self.tokenizer.count_tokens(m.text) for m in members) <= _SHORT_REPLY_TOKENS
+            ):
+                continue
             # Removal paths two and three: this method is called once for tool groups and once
             # for assistant narration, and both arrive here. One preserved member protects the
             # whole group, because dropping a tool call while keeping its result -- or the
@@ -676,7 +686,7 @@ class AnchoredCompactionStrategy:
             dropped.append(group)
 
         for group in reversed(dropped):
-            self._insert_note(messages, group, _NOTES[kind])
+            self._insert_note(messages, group, self._note_for(messages, group))
         if dropped:
             # Each note is itself a message with a cost. Counting it only on the next call
             # would let this one stop just above its ceiling and look as though it had met
@@ -684,6 +694,31 @@ class AnchoredCompactionStrategy:
             # changing a decision it had already made.
             annotate_token_counts(messages, tokenizer=self.tokenizer)
         return bool(dropped)
+
+    @staticmethod
+    def _note_for(messages: list[Message], group: dict[str, Any]) -> str:
+        """Mark a textual reply ending a user turn as answered, without inferring tool success."""
+        kind = str(group["kind"])
+        if kind != _ASSISTANT_TEXT:
+            return _NOTES[kind]
+        start, end = group["start_index"], group["end_index"]
+        members = messages[start : end + 1]
+        if not any(m.text.strip() and not _is_marker(m) for m in members) or not any(
+            m.role == "user" for m in messages[:start]
+        ):
+            return _NOTES[kind]
+        # Excluded source messages still distinguish narration from the final reply.
+        following = next(
+            (
+                m
+                for m in messages[end + 1 :]
+                if m.role not in {"system", "developer"}
+                and not _is_marker(m)
+                and not m.additional_properties.get(RECALL_PROMPT_KEY, False)
+            ),
+            None,
+        )
+        return _ANSWERED_NOTE if following is None or following.role == "user" else _NOTES[kind]
 
     def shed_again(self, messages: list[Message], message_ids: Collection[str]) -> bool:
         """Shed again every group an earlier pass shed, found by its messages' ids.
@@ -733,7 +768,7 @@ class AnchoredCompactionStrategy:
                 set_excluded(message, excluded=True, reason=EXCLUDE_REASON)
             dropped.append(group)
         for group in reversed(dropped):
-            self._insert_note(messages, group, _NOTES[str(group["kind"])])
+            self._insert_note(messages, group, self._note_for(messages, group))
         if dropped:
             annotate_message_groups(messages)
             annotate_token_counts(messages, tokenizer=self.tokenizer)

@@ -301,7 +301,7 @@ async def test_the_ceiling_is_best_effort_when_the_anchors_alone_exceed_it() -> 
     assert included_token_count(messages) > 120
     # What it was allowed to shed, it shed.
     assert "[compacted: an earlier tool call and its result]" in rendered
-    assert "[compacted: an earlier assistant reply]" in rendered
+    assert all(f"I looked up {index}." in rendered for index in range(8))
     # What it was not allowed to touch is untouched.
     assert "EU-WEST-1" in rendered
 
@@ -759,11 +759,14 @@ async def test_shedding_assistant_narration_skips_a_preserved_reply() -> None:
     strategy = AnchoredCompactionStrategy(max_input_tokens=120, tokenizer=TOKENIZER)
     messages = _conversation(tool_turns=8)
     _preserve(messages, "a_txt_3")
+    for message in messages:
+        if message.message_id and message.message_id.startswith("a_txt_"):
+            message.contents.append(Content.from_text("Details. " * 100))
 
     await strategy(messages)
     rendered = _rendered(messages)
 
-    assert "[compacted: an earlier assistant reply]" in rendered, "the narration shed ran"
+    assert "the preceding user request was already answered" in rendered, "the reply shed ran"
     assert "I looked up 3." in rendered, "and stepped over the preserved reply"
     assert "I looked up 2." not in rendered, "which it would not have done for an ordinary one"
 

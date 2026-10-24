@@ -20,6 +20,8 @@ This is an independent package. It is not affiliated with or endorsed by Microso
 
 All of them implement the framework's `CompactionStrategy` and attach wherever the framework takes one: `create_harness_agent`, or a `CompactionProvider` on a plain `Agent`.
 
+Last-resort shedding keeps a completed turn's final text-only reply when its text is at most 64 tokens under the configured tokenizer. Longer final replies leave an explicit marker that the preceding user request was already answered, so removing the tool exchange does not make the request look unanswered. Intermediate narration and tool exchanges retain neutral markers. These rules also apply to the composition's anchored fallback and session replay. Kept replies still count against the budget; protected content that cannot fit remains an overflow rather than being silently removed.
+
 ## Install
 
 ```bash
