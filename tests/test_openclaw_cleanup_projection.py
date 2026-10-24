@@ -111,8 +111,8 @@ def test_binding_observers_reject_inconsistent_success_before_recording(tmp_path
         text = text.replace('"completed": true', '"completed": 1')
     result = types.CallToolResult(
         content=[types.TextContent(type="text", text=text)],
-        structuredContent=structured,
-        isError=mutation == "error",
+        structured_content=structured,
+        is_error=mutation == "error",
     )
 
     async def execute(arguments, context):
@@ -156,8 +156,8 @@ def test_ownership_binding_observer_preserves_normal_and_diagnostic_results(tmp_
     )
     result = types.CallToolResult(
         content=[types.TextContent(type="text", text=json.dumps(structured))],
-        structuredContent=structured,
-        isError=status == "error",
+        structured_content=structured,
+        is_error=status == "error",
     )
 
     async def execute(arguments, context):

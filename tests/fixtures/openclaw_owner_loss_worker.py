@@ -67,7 +67,9 @@ async def worker(root: Path) -> None:
             try:
                 result = await binding.execute(arguments, context)
                 observer.record(
-                    event="binding_result", result=result.model_dump(mode="json"), **fields
+                    event="binding_result",
+                    result=result.model_dump(mode="json", by_alias=True),
+                    **fields,
                 )
                 return result
             except BaseException as exc:

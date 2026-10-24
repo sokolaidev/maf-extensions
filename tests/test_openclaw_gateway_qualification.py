@@ -1439,8 +1439,8 @@ def test_completed_cleanup_fault_preserves_result_and_delegates_after_removal(
     structured = projected()["result"]["details"]["structuredContent"]
     structured["completed"] = completed
     result = CallToolResult(
-        isError=False,
-        structuredContent=structured,
+        is_error=False,
+        structured_content=structured,
         content=[TextContent(type="text", text=json.dumps(structured))],
     )
 
