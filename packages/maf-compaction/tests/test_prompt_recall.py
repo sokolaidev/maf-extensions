@@ -816,13 +816,18 @@ async def test_prompt_recall_preserves_the_latest_tool_group_in_fallback(
 
 @pytest.mark.parametrize("feedback", ["", "Retain SKU-123 from lookup."])
 @pytest.mark.parametrize("supports_tool_choice", [True, False])
+@pytest.mark.parametrize("record_instruction", [None, DEFAULT_RECORD_INSTRUCTION])
 async def test_preserved_prompt_cache_asks_without_changing_tools_or_tool_choice(
-    feedback, supports_tool_choice, caplog
+    feedback, supports_tool_choice, record_instruction, caplog
 ):
     # Anthropic drops cached message blocks when tool_choice or thinking changes and matches
     # nothing when tools change, so the ask must leave the agent's request as it was.
     caplog.set_level(logging.INFO, logger="maf_compaction")
-    middleware, gate = recall(preserve_prompt_cache=True, supports_tool_choice=supports_tool_choice)
+    middleware, gate = recall(
+        preserve_prompt_cache=True,
+        supports_tool_choice=supports_tool_choice,
+        record_instruction=record_instruction,
+    )
     middleware._feedback = feedback
     tool = make_recall_tool(gate)
     other = FunctionTool(name="lookup", func=lambda: "result")
