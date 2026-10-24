@@ -122,6 +122,9 @@ async def test_no_record_sheds_with_headroom_and_replays(fraction, sending):
     original_results = {m.message_id: deepcopy(m.contents) for m in messages if m.role == "tool"}
     budget = size(messages) + (1000 if sending else -100)
     current = stack(budget=budget, fraction=fraction)
+    assert isinstance(
+        current.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+    )
     options = {"instructions": "instructions " * 1000} if sending else {}
     effective = current.strategy.sending_budget(options) if sending else budget
     if sending:
@@ -160,6 +163,9 @@ async def test_no_record_under_budget_does_not_shorten_aged_out_results(policy):
     del messages[-2]
     original = deepcopy(messages)
     current = stack(budget=size(messages) + 100, policy=policy)
+    assert isinstance(
+        current.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+    )
     assert (
         size(messages)
         >= current.strategy.max_input_tokens * current.strategy.tool_results.fallback_fraction
