@@ -2,7 +2,7 @@
 
 Information-flow labels control which tool results the model can read and where data can go. A sandbox limits what a program can do. Labels control how the agent uses its answer.
 
-This design uses MAF's information-flow module, FIDES, from `agent-framework-core>=1.22.0,<1.23`. A **kind** is a sandbox workload exposed as a tool, such as a compiler or code runner.
+This design uses MAF's information-flow module, FIDES, from `agent-framework-core>=1.23.0,<1.24`. A **kind** is a sandbox workload exposed as a tool, such as a compiler or code runner.
 
 ## Tools, content and the model
 
@@ -247,5 +247,6 @@ For tools with standing guidance, read the workload claim from `maf_sandbox_deri
 | Four-field `SandboxResult` | Implemented in `maf-sandbox`; opt-in with `result_contract=True` | [Kind-authoring guide](kinds/writing-a-kind.md) |
 | Use the result contract in all four kinds, samples and live checks | Implemented for Bicep, Terraform/OpenTofu, CodeAct and draw.io, including their samples and live checks | Bicep by [#1363](https://github.com/sokolaidev/maf-extensions/pull/1363) (merged); Terraform/OpenTofu by [#1367](https://github.com/sokolaidev/maf-extensions/pull/1367) (merged); draw.io by [#1374](https://github.com/sokolaidev/maf-extensions/pull/1374) (merged); CodeAct by [#1369](https://github.com/sokolaidev/maf-extensions/pull/1369) (merged), completing [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (closed) |
 | Trusted call evidence for drawio results with no file reads | Implemented | [#1652](https://github.com/sokolaidev/maf-extensions/issues/1652) (closed) by [#1653](https://github.com/sokolaidev/maf-extensions/pull/1653) (merged) |
+| MAF 1.23 and MCP 2 compatibility | Adoption in progress; live application qualification remains separate | [#2132](https://github.com/sokolaidev/maf-extensions/issues/2132) (open) |
 | MAF 1.22 content, replay and persistence qualification | Implemented; consuming applications own downstream qualification | [#1961](https://github.com/sokolaidev/maf-extensions/issues/1961) (closed) by [#1963](https://github.com/sokolaidev/maf-extensions/pull/1963) (merged) |
 | Public provenance without private argument records or mirrored payload reduction | Implemented; conservative position-only fallback where provenance is unavailable | [#826](https://github.com/sokolaidev/maf-extensions/issues/826) (closed) by [#2041](https://github.com/sokolaidev/maf-extensions/pull/2041) (merged) |

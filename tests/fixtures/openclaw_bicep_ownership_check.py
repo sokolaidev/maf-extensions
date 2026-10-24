@@ -222,9 +222,9 @@ def observe_binding(observer: ObserveHTTP) -> None:
         except asyncio.CancelledError:
             observer.record(event="binding_cancelled", **fields)
             raise
-        structured = result.structuredContent or {}
+        structured = result.model_dump(mode="json", by_alias=True).get("structuredContent") or {}
         if structured.get("status") in {"ok", "incomplete"}:
-            structured = workload_result(result.model_dump(mode="json"))
+            structured = workload_result(result.model_dump(mode="json", by_alias=True))
         observer.record(
             event="binding_result",
             completed=structured.get("completed"),

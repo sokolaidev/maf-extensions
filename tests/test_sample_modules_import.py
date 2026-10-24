@@ -315,7 +315,18 @@ def test_pyright_is_configured_to_read_samples():
         f"the root type-checking mode is {_PYRIGHT['typeCheckingMode']!r}; anything weaker than "
         "standard drops rules across scripts/, tests/ and samples/ at once"
     )
-    silenced = [f"{key}={entry}" for key in ("exclude", "ignore") for entry in _covering(key)]
+    silenced = [
+        f"{key}={entry}"
+        for key in ("exclude", "ignore")
+        for entry in _covering(key)
+        if (key, entry) != ("exclude", "samples/experimental/openclaw_bicep")
+    ]
+    workflow = (_ROOT / ".github/workflows/tests.yml").read_text(encoding="utf-8")
+    assert "uv run poe legacy-mcp-types" in workflow
+    tasks = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["poe"][
+        "tasks"
+    ]
+    assert tasks["legacy-mcp-types"]["cmd"] == "python scripts/check_legacy_mcp_sample.py"
     assert not silenced, f"samples/ is named in {silenced}, which overrides `include`"
     assert not _relaxed(_PYRIGHT), (
         f"{_relaxed(_PYRIGHT)} is downgraded at the top level of [tool.pyright], and every "

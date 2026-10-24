@@ -41,7 +41,7 @@ dev = [
     # exist only as pre-releases on the index, so their floors name one.
     "agent-framework-foundry>=1.15.0,<2",
     "agent-framework-mistral>=1.0.0b261015,<2",
-    "agent-framework-ollama>=1.0.0b261015,<2",
+    "agent-framework-ollama>=1.0.0b261022,<2",
     "ollama>=0.5.3,<0.6",
     # Sample 17's Deep Agents wiring, for the same reason as the line above. `langchain-core`
     # arrives with it today and is named anyway: a sample declares what it imports, and a
@@ -62,7 +62,8 @@ dev = [
     "opentelemetry-sdk>=1.44,<2",
     "cryptography>=50,<51",
     # Experimental MCP workload service and its transport tests.
-    "mcp==1.30.0",
+    "mcp==2.2.0",
+    "httpx2>=2.16.0,<3",
     "uvicorn==0.54.0",
     "starlette==1.7.0",
     "anyio>=4.5,<5",
@@ -107,6 +108,8 @@ max-doc-length = 100
 # samples/ is here because nothing else catches a sample naming an attribute another package
 # deleted until the sample runs for real, which is `verify-live`, after a release.
 [tool.pyright]
+# This historical MCP 1.x sample is checked in its own declared environment in CI.
+exclude = ["samples/experimental/openclaw_bicep"]
 include = ["scripts", "tests", "samples", "packages/*/tests/**", "images/terraform-sandbox/example.py", "images/terraform-sandbox/build_image.py", "images/terraform-sandbox/build_providers.py", "images/terraform-sandbox/install.py", "images/shell-sandbox"]
 typeCheckingMode = "standard"
 # scripts/ is under no execution environment, so it stays at full standard — the phase-1
@@ -209,6 +212,10 @@ env.PYTHONPATH = "scripts"
 [tool.poe.tasks.md-blocks]
 help = "Lint the python blocks in the markdown against the installed packages (report-only in CI)"
 cmd = "python scripts/check_md_code_blocks.py README.md 'packages/*/README.md' 'samples/**/*.md' RELEASING.md 'docs/*.md' 'docs/security/*.md' 'docs/sandbox/*.md' 'docs/sandbox/backends/*.md' 'docs/sandbox/kinds/*.md' 'docs/compaction/*.md' 'docs/compaction/research/*.md'"
+
+[tool.poe.tasks.legacy-mcp-types]
+help = "Check the historical MCP sample against its published dependency pins"
+cmd = "python scripts/check_legacy_mcp_sample.py"
 
 [tool.poe.tasks.doc-paths]
 help = "Refuse a documentation link or path that no longer resolves"
