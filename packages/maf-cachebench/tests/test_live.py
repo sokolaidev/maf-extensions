@@ -7820,7 +7820,7 @@ async def test_a_shortfall_the_re_force_cannot_clear_ends_in_a_disqualified_row_
     """
     window = 12_000
     scenario = build_live_scenario(salt="dq", filler_turns=6, filler_tokens=50, tool_turns=6)
-    client = _StubbornRecordStub()
+    client = _StubbornRecordStub(reply="a reply with some body to it " * 10)
 
     outcome = await run_live(
         ProviderRuntime(client=client, model="stub"),
