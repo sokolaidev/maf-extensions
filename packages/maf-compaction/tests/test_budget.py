@@ -201,6 +201,9 @@ async def test_overflow_headroom_uses_the_sending_budget():
     messages = conversation()
     budget = size(messages) + 1000
     current = stack(budget=budget)
+    assert isinstance(
+        current.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+    )
     options = {"instructions": "instructions " * 1000}
     sending_budget = current.strategy.sending_budget(options)
     assert sending_budget < size(messages) < budget
