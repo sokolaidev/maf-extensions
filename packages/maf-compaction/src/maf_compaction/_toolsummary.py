@@ -116,6 +116,12 @@ _RECALL_INSTRUCTION: Final[str] = (
     "Keep applicable access and confidentiality restrictions."
 )
 
+#: ``pin_disabled_reason`` of a session asking by prompt because the host chose
+#: ``preserve_prompt_cache``, not because a pin failed.
+PIN_REASON_PROMPT_CACHE: Final[str] = "prompt_cache"
+#: Reasons that stop pinning but keep prompt-based recall running.
+_PROMPTED_REASONS: Final[frozenset[str]] = frozenset({"unsupported", PIN_REASON_PROMPT_CACHE})
+
 #: Prefix the recall tool puts on a result that counts as a record.
 #:
 #: The tool cannot be hidden from the model. Tools passed through per-call options reach the
@@ -2535,6 +2541,16 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         supports_tool_choice: Set False for routes that cannot pin a tool. Recall uses a
             temporary trailing message with only the recall tool advertised. A tool_choice
             client rejection also selects this mode for the rest of the session.
+        preserve_prompt_cache: Ask for a record without changing the request prefix. The
+            forced call is never pinned: the ask is the same temporary trailing message, but the
+            call keeps the agent's own ``tools`` and ``tool_choice``, and re-force feedback goes
+            into that message instead of the recall tool's description. Providers that cache by
+            exact prefix, such as Anthropic, drop every cached message block when
+            ``tool_choice`` or thinking changes and match nothing when ``tools`` does, so a
+            pinned or recall-only ask rewrites the whole conversation at the cache-write price.
+            With every tool on offer the model may answer with another tool instead; the
+            prompted mode's two-ignored-asks rule bounds that. Takes precedence over
+            ``supports_tool_choice``.
         max_groups_before_record: How many tool-call groups one record may be asked to cover
             before another is forced. ``None`` switches only this bound off; the size trigger
             and ``reforce`` still apply. It is a second trigger beside
@@ -2587,6 +2603,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         reforce: Callable[[], bool] | None = None,
         forced_call_timeout_seconds: float | None = None,
         supports_tool_choice: bool = True,
+        preserve_prompt_cache: bool = False,
     ) -> None:
         """Validate and store the configuration.
 
@@ -2618,6 +2635,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             raise ValueError("forced_call_timeout_seconds must be positive and finite.")
         self.forced_call_timeout_seconds = forced_call_timeout_seconds
         self.supports_tool_choice = supports_tool_choice
+        self.preserve_prompt_cache = preserve_prompt_cache
         self._feedback = ""
         self.arm = arm
         self.disarm = disarm
@@ -2779,11 +2797,15 @@ class ToolResultRecallMiddleware(ChatMiddleware):
     @property
     def recall_disabled(self) -> bool:
         """Whether both pinned and prompt-based recall have stopped for this session."""
-        return self._pin_disabled and self._pin_disabled_reason != "unsupported"
+        return self._pin_disabled and self._pin_disabled_reason not in _PROMPTED_REASONS
 
     @property
     def pin_disabled_reason(self) -> str | None:
-        """Why pinning stopped: unsupported, ignored, failed, or value_free; None if unset."""
+        """Why pinning stopped: unsupported, prompt_cache, ignored, failed, or value_free.
+
+        ``None`` while the session still pins. ``unsupported`` and ``prompt_cache`` leave
+        prompt-based recall running; the others stop recall.
+        """
         return self._pin_disabled_reason
 
     @property
@@ -2827,7 +2849,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 )
                 mode = "prompted" if self._pin_disabled else "pinned"
                 detail = f" (mode={mode}, response={outcome})"
-            logger.warning(
+            # A configured prompted ask is not a failure, so it is not a warning.
+            logger.log(
+                logging.INFO if reason == PIN_REASON_PROMPT_CACHE else logging.WARNING,
                 "Recall pin disabled for session %s: %s%s",
                 self._session_id,
                 reason,
@@ -2835,7 +2859,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             )
         self._pin_disabled = True
         self._pin_disabled_reason = reason
-        if reason == "unsupported":
+        if reason in _PROMPTED_REASONS:
             return
         self._force_next = False
         self._reforce_next = False
@@ -2843,8 +2867,19 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         if self.disarm is not None:
             self.disarm()
 
+    def _ask_text(self) -> str:
+        """The trailing ask, carrying re-force feedback when the tool description cannot."""
+        if self.preserve_prompt_cache and self._feedback:
+            return f"{_RECALL_INSTRUCTION}\n\n{self._feedback}"
+        return _RECALL_INSTRUCTION
+
     def _forced_options(self, original: Mapping[str, Any]) -> dict[str, Any]:
         options = dict(original)
+        if self.preserve_prompt_cache:
+            # Only the response cap changes; it is not part of any provider's cache key.
+            if self.record_max_tokens is not None:
+                options["max_tokens"] = self.record_max_tokens
+            return options
         if self._pin_disabled:
             options["tool_choice"] = "auto"
         else:
@@ -2934,8 +2969,11 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             context.messages[:] = cleaned
         else:
             context.messages = cleaned
-        if not self.supports_tool_choice and not self._pin_disabled:
-            self._disable_pin("unsupported")
+        if not self._pin_disabled:
+            if self.preserve_prompt_cache:
+                self._disable_pin(PIN_REASON_PROMPT_CACHE)
+            elif not self.supports_tool_choice:
+                self._disable_pin("unsupported")
         original_options = context.options
         available = original_options or {}
         choice = available.get("tool_choice")
@@ -3009,9 +3047,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         async def attempt() -> None:
             nonlocal prompt
             prompt = (
-                Message(
-                    "user", [_RECALL_INSTRUCTION], additional_properties={RECALL_PROMPT_KEY: True}
-                )
+                Message("user", [self._ask_text()], additional_properties={RECALL_PROMPT_KEY: True})
                 if forced_this_call and self._pin_disabled
                 else None
             )
