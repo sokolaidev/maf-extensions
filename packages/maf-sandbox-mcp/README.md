@@ -12,7 +12,7 @@ This package is not yet published. Build a wheel from the repository with `uv bu
 
 ```bash
 uv venv worker-env --python 3.13
-uv pip install --python worker-env/bin/python /absolute/path/maf_sandbox_mcp-0.0.0-py3-none-any.whl
+uv pip install --python worker-env/bin/python --find-links "$SUITE_WHEELS" --overrides "$CORE_OVERRIDE" "$MCP_WORKER_WHEEL"
 worker-env/bin/maf-bicep-mcp --help
 ```
 
