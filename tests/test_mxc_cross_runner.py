@@ -26,6 +26,7 @@ finally:
 @pytest.fixture
 def participants(tmp_path, monkeypatch):
     for name, value in {
+        "GITHUB_REPOSITORY": "sokolaidev/maf-extensions",
         "GITHUB_SHA": "a" * 40,
         "GITHUB_RUN_ID": "123",
         "GITHUB_RUN_ATTEMPT": "1",
@@ -35,13 +36,16 @@ def participants(tmp_path, monkeypatch):
     (bundle / "startup").mkdir(parents=True)
     (bundle / "startup/index.json").write_text("startup", encoding="utf-8")
     (bundle / "helper").write_bytes(b"test helper")
+    monkeypatch.setattr(cross.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(cross.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(cross.cross_compat, "cpu_vendor", lambda: "GenuineIntel")
+    cross.cross_compat.record_fixture(bundle, "GenuineIntel")
     peers, roots = {}, {}
     for index, role in enumerate(cross.ROLES, 1):
         root = tmp_path / role
         monkeypatch.setattr(cross, "_boot", lambda index=index: str(index) * 64)
         cross.bootstrap(root, bundle, role, f"100.64.0.{index}")
         peers[role] = json.loads((root / "public" / f"{role}.json").read_text("utf-8"))
-        peers[role]["profile"]["platform"] = "Linux"
         roots[role] = root
     for root in roots.values():
         for role, peer in peers.items():
@@ -316,3 +320,201 @@ sudo() {
     )
     assert (result.returncode == 0) is succeeds, result.stderr
     assert not result.stdout
+
+
+@pytest.mark.parametrize("vendor", cross.cross_compat.VENDORS)
+def test_matching_producer_and_execution_vendors_are_admitted(participants, vendor):
+    _, _, peers = participants
+    for role, peer in peers.items():
+        peer["profile"]["cpu_vendor"] = vendor
+        peer["cpu_vendor"] = vendor if role != "coordinator" else None
+    cross.validate_peers(peers, cross._binding())
+
+
+@pytest.mark.parametrize("role", ["a", "b"])
+@pytest.mark.parametrize("vendor", ["AuthenticAMD", None, "", "unknown"])
+def test_execution_cpu_must_match_fixture_even_when_workers_match(participants, role, vendor):
+    _, _, peers = participants
+    peers[role]["cpu_vendor"] = vendor
+    if role == "a":
+        peers["b"]["cpu_vendor"] = vendor
+    with pytest.raises(RuntimeError, match="execution CPU vendor differs"):
+        cross.validate_peers(peers, cross._binding())
+
+
+@pytest.mark.parametrize("change", ["missing", "unknown", "null", "different"])
+def test_discovery_refuses_legacy_or_changed_fixture_provenance(participants, change):
+    _, _, peers = participants
+    for peer in peers.values():
+        if change == "missing":
+            del peer["profile"]["cpu_vendor"]
+        else:
+            peer["profile"]["cpu_vendor"] = {
+                "unknown": "unknown",
+                "null": None,
+                "different": "AuthenticAMD",
+            }[change]
+    with pytest.raises(RuntimeError):
+        cross.validate_peers(peers, cross._binding())
+
+
+@pytest.mark.parametrize("role", ["a", "b"])
+def test_execution_rechecks_local_cpu_before_opening_a_worker(participants, monkeypatch, role):
+    roots, bundle, peers = participants
+    monkeypatch.setattr(cross.cross_compat, "cpu_vendor", lambda: "AuthenticAMD")
+    with pytest.raises(RuntimeError, match="local execution CPU vendor differs"):
+        cross.Worker(roots[role], bundle, role, peers)
+    assert not (roots[role] / "session").exists()
+
+
+def test_coordinator_does_not_probe_its_cpu(participants, monkeypatch, tmp_path):
+    _, bundle, peers = participants
+    monkeypatch.setattr(
+        cross.cross_compat, "cpu_vendor", lambda: pytest.fail("coordinator probed CPU")
+    )
+    root = tmp_path / "other-coordinator"
+    cross.bootstrap(root, bundle, "coordinator", "100.64.0.3")
+    cross.validate_local(bundle, "coordinator", peers["coordinator"])
+    assert json.loads((root / "public/coordinator.json").read_text("utf-8"))["cpu_vendor"] is None
+
+
+@pytest.mark.parametrize("change", ["missing", "cpu", "helper", "startup", "attempt", "source"])
+def test_fixture_provenance_is_bound_to_content_and_attempt(participants, change):
+    _, bundle, _ = participants
+    path = bundle / "fixture.json"
+    fixture = json.loads(path.read_text("utf-8"))
+    if change == "missing":
+        path.unlink()
+    elif change == "cpu":
+        del fixture["profile"]["cpu_vendor"]
+        path.write_text(json.dumps(fixture), encoding="utf-8")
+    elif change in {"helper", "startup"}:
+        target = bundle / ("helper" if change == "helper" else "startup/index.json")
+        target.write_bytes(b"changed")
+    else:
+        fixture["binding"]["GITHUB_RUN_ATTEMPT" if change == "attempt" else "GITHUB_SHA"] = "other"
+        path.write_text(json.dumps(fixture), encoding="utf-8")
+    with pytest.raises(RuntimeError):
+        cross.cross_compat.load_fixture(bundle)
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (
+            "processor: 0\nvendor_id: GenuineIntel\n\nprocessor: 1\nvendor_id: GenuineIntel\n",
+            "GenuineIntel",
+        ),
+        ("processor: 0\nvendor_id: AuthenticAMD\n", "AuthenticAMD"),
+        ("", None),
+        ("processor: 0\n", None),
+        ("processor: 0\nvendor_id: GenuineIntel\n\nprocessor: 1\n", None),
+        ("processor: 0\nvendor_id: GenuineIntel\n\nprocessor: 1\nvendor_id: AuthenticAMD\n", None),
+        ("vendor_id: unknown\n", None),
+        ("vendor_id: GenuineIntel\nvendor_id: GenuineIntel\n", None),
+    ],
+)
+def test_cpu_probe_requires_recognized_unambiguous_vendor(monkeypatch, content, expected):
+    monkeypatch.setattr(cross.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(cross.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(Path, "read_text", lambda *args, **kwargs: content)
+    if expected is None:
+        with pytest.raises(RuntimeError, match="CPU vendor"):
+            cross.cross_compat.cpu_vendor()
+    else:
+        assert cross.cross_compat.cpu_vendor() == expected
+
+
+def test_cpu_probe_refuses_unavailable_proc_data(monkeypatch):
+    monkeypatch.setattr(cross.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(cross.platform, "machine", lambda: "x86_64")
+
+    def unavailable(*args, **kwargs):
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(Path, "read_text", unavailable)
+    with pytest.raises(RuntimeError, match="CPU vendor is unavailable"):
+        cross.cross_compat.cpu_vendor()
+
+
+@pytest.mark.parametrize("mode", ["discover", "node"])
+def test_cli_refuses_incompatible_hosts_before_execution_and_reports_failure(
+    participants, monkeypatch, mode
+):
+    roots, bundle, peers = participants
+    peers["b"]["cpu_vendor"] = "AuthenticAMD"
+    root = roots["a"]
+    (root / "peers.json").write_text(json.dumps(peers), encoding="utf-8")
+    for role in ("b", "coordinator"):
+        destination = root / "discovery" / role
+        destination.mkdir(parents=True)
+        (destination / f"{role}.json").write_text(json.dumps(peers[role]), encoding="utf-8")
+    monkeypatch.setattr(
+        cross.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess([], 0)
+    )
+    monkeypatch.setattr(
+        cross, "serve", lambda *args: pytest.fail("incompatible host served requests")
+    )
+    monkeypatch.setattr(
+        cross, "orchestrate", lambda *args: pytest.fail("incompatible run acquired ownership")
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["cross_runner", mode, "--root", str(root), "--bundle", str(bundle), "--role", "a"],
+    )
+    with pytest.raises(RuntimeError, match="execution CPU vendor differs"):
+        cross.main()
+    report = json.loads((root / "report.json").read_text("utf-8"))
+    assert report["status"] == "failed"
+    assert report["phase"] in {"discover", "admission"}
+    assert "execution CPU vendor differs" in report["error"]
+    assert not (root / "session").exists()
+
+
+def test_fixture_build_records_producer_after_native_controls(participants, monkeypatch, tmp_path):
+    import tarfile
+
+    fixture = importlib.import_module("scripts.experiments.mxc_session_patch.cross_fixture")
+    root = tmp_path / "build"
+    monkeypatch.setattr(fixture.native, "hypervisor", lambda: "KVM")
+    monkeypatch.setattr(fixture.native, "sources", lambda *args: [])
+    monkeypatch.setattr(fixture.native, "build", lambda *args: None)
+    monkeypatch.setattr(fixture.native, "helper", lambda root: root / "helper")
+    stages = []
+
+    def run(root, stage, *args):
+        stages.append(stage)
+        if stage == "prepare-agent":
+            (root / "images/agent").mkdir(parents=True)
+        if stage == "native-state":
+            assert not (root / "bundle/fixture.json").exists()
+            (root / "helper").write_bytes(b"helper")
+            startup = root / "images/agent/snapshot"
+            startup.mkdir()
+            (startup / "index.json").write_text("startup", encoding="utf-8")
+
+    monkeypatch.setattr(fixture.native, "run", run)
+    fixture.build(root)
+    assert stages[-1] == "native-state"
+    profile = cross.cross_compat.load_fixture(root / "bundle")
+    assert profile["cpu_vendor"] == "GenuineIntel"
+    with tarfile.open(root / "bundle.tar.gz") as archive:
+        assert "bundle/fixture.json" in archive.getnames()
+
+
+@pytest.mark.parametrize(("system", "machine"), [("Windows", "AMD64"), ("Linux", "aarch64")])
+def test_cpu_probe_refuses_unsupported_platform(monkeypatch, system, machine):
+    monkeypatch.setattr(cross.platform, "system", lambda: system)
+    monkeypatch.setattr(cross.platform, "machine", lambda: machine)
+    with pytest.raises(RuntimeError, match="requires Linux x86_64"):
+        cross.cross_compat.cpu_vendor()
+
+
+def test_fixture_producer_vendor_cannot_change_during_build(participants, monkeypatch):
+    _, bundle, _ = participants
+    before = (bundle / "fixture.json").read_bytes()
+    monkeypatch.setattr(cross.cross_compat, "cpu_vendor", lambda: "AuthenticAMD")
+    with pytest.raises(RuntimeError, match="producer CPU vendor changed"):
+        cross.cross_compat.record_fixture(bundle, "GenuineIntel")
+    assert (bundle / "fixture.json").read_bytes() == before
