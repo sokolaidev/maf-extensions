@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from math import ceil
 
 import pytest
 from agent_framework import CharacterEstimatorTokenizer, ChatContext, ChatResponse, Message
@@ -15,6 +16,7 @@ from agent_framework._compaction import (
 )
 
 from maf_compaction import (
+    DEFAULT_CHAIN_GAIN_FRACTION,
     AnchoredCompactionStrategy,
     CompactionBudgetExceeded,
     CompactionStack,
@@ -37,7 +39,7 @@ class RefusingSummarizer:
         return ChatResponse(messages=Message("assistant", [messages[-1].text * 2]))
 
 
-def stack(*, policy="shed", budget=BUDGET):
+def stack(*, policy="shed", budget=BUDGET, fraction=DEFAULT_CHAIN_GAIN_FRACTION):
     records = ToolResultAnchoredSummarizationCompactionStrategy(
         max_input_tokens=budget,
         tokenizer=TOKENIZER,
@@ -62,6 +64,7 @@ def stack(*, policy="shed", budget=BUDGET):
         tool_results=records,
         user_turns=users,
         overflow_policy=policy,
+        chain_gain_fraction=fraction,
     )
     gate = RecallGate()
     recall = ToolResultRecallMiddleware(
@@ -144,6 +147,82 @@ async def test_strict_overflow_keeps_uncovered_results():
         await stack(policy="raise").strategy(messages)
     assert error.value.tokens == size(messages) > error.value.budget == BUDGET
     assert all(not m.additional_properties.get(EXCLUDED_KEY) for m in messages if m.role == "tool")
+
+
+@pytest.mark.parametrize("fraction", [0.0, DEFAULT_CHAIN_GAIN_FRACTION, 0.6])
+@pytest.mark.parametrize("protected_groups", [0, 2])
+async def test_overflow_shed_reserves_headroom_behind_its_first_removal(
+    fraction, protected_groups, caplog
+):
+    messages = conversation()
+    messages[-2].message_id = "record"
+    for message in messages[1 : 1 + 2 * protected_groups]:
+        set_preserved(message, preserved=True, reason="host")
+    original = deepcopy(messages)
+    budget = size(messages) - 100
+    current = stack(budget=budget, fraction=fraction)
+    await current.strategy(messages)
+    lost = {m.message_id for m in messages if m.additional_properties.get(EXCLUDED_KEY)}
+    first = next(i for i, m in enumerate(original) if m.message_id in lost)
+    assert first == 1 + 2 * protected_groups
+    target = budget - ceil(fraction * size(original[first:]))
+    assert size(messages) <= target
+    assert caplog.text.count("lost message IDs") == 1
+    if fraction == 0:
+        assert lost == {f"c{protected_groups}", f"r{protected_groups}"}
+    else:
+        assert len(lost) > 2
+    cold = stack(budget=budget, fraction=fraction)
+    cold.restore(json.loads(json.dumps(current.to_dict())))
+    caplog.clear()
+    await cold.strategy(original)
+    assert [m.to_dict() for m in project_included_messages(original)] == [
+        m.to_dict() for m in project_included_messages(messages)
+    ]
+    assert "lost message IDs" not in caplog.text
+
+
+async def test_overflow_headroom_allows_more_tool_results_without_another_shed(caplog):
+    messages = conversation()
+    budget = size(messages) - 100
+    current = stack(budget=budget)
+    await current.strategy(messages)
+    lost = {m.message_id for m in messages if m.additional_properties.get(EXCLUDED_KEY)}
+    caplog.clear()
+    for index in range(10, 12):
+        messages += table(index)
+        await current.strategy(messages)
+        assert size(messages) <= budget
+        assert {m.message_id for m in messages if m.additional_properties.get(EXCLUDED_KEY)} == lost
+    assert "lost message IDs" not in caplog.text
+
+
+async def test_overflow_headroom_uses_the_sending_budget():
+    messages = conversation()
+    budget = size(messages) + 1000
+    current = stack(budget=budget)
+    assert isinstance(
+        current.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+    )
+    options = {"instructions": "instructions " * 1000}
+    sending_budget = current.strategy.sending_budget(options)
+    assert sending_budget < size(messages) < budget
+    behind = size(messages[1:])
+    await current.strategy.compact_before(messages, options=options)
+    assert size(messages) <= sending_budget - ceil(DEFAULT_CHAIN_GAIN_FRACTION * behind)
+
+
+async def test_unreachable_headroom_keeps_protected_material_when_it_fits():
+    messages = conversation()
+    protected = build_record_message("fact123 " * 15_000)
+    original_text = protected.text
+    messages.insert(1, protected)
+    current = stack(fraction=0.95)
+    await current.strategy(messages)
+    assert size(messages) <= BUDGET
+    assert not protected.additional_properties.get(EXCLUDED_KEY)
+    assert protected.text == original_text
+    assert all(m.additional_properties.get(EXCLUDED_KEY) for m in messages if m.role == "tool")
 
 
 @pytest.mark.parametrize("group_bound", [None, 2])

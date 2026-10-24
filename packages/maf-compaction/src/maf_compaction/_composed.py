@@ -430,8 +430,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             error, in ``[0.0, 1.0)``. Direct history-storage passes do not apply this margin.
         chain_gain_fraction: Share of the tokens behind the chain's earliest edit on a pass that
             the chain, once started, goes on removing until it has removed -- past the budget
-            if need be. See :data:`DEFAULT_CHAIN_GAIN_FRACTION`; zero stops the chain at the
-            budget, as it stopped before the setting existed.
+            if need be. Overflow shedding reserves the same share behind its own earliest
+            edit below the budget, when removable groups permit. See
+            :data:`DEFAULT_CHAIN_GAIN_FRACTION`; zero stops both at the budget.
 
     Raises:
         ValueError: If the two phases measure against different ceilings or with different
@@ -987,8 +988,17 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         changed = False
         if self._over(messages) and self.overflow_policy == "shed":
             included = [message for message in messages if not _is_excluded(message)]
+            start = _ChainStart.take(messages)
+            ceiling = self._budget
             with _release_record_holds(messages):
-                changed = self.tool_results.fallback.shed_to(messages, ceiling=self._budget)
+                for _ in range(_MAX_FALLBACK_ROUNDS):
+                    shed = self.tool_results.fallback.shed_to(messages, ceiling=ceiling)
+                    changed = shed or changed
+                    behind = start.tokens_behind_first_edit(messages)
+                    target = self._budget - ceil(self.chain_gain_fraction * (behind or 0))
+                    if not shed or target >= ceiling:
+                        break
+                    ceiling = target
             lost = [message for message in included if _is_excluded(message)]
             self._shed_ids.update(message.message_id for message in lost if message.message_id)
             if lost:
