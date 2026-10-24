@@ -94,7 +94,7 @@ For implementation, use [writing a backend](writing-a-backend.md). For ACAS auth
 
 ## OpenShell evaluation
 
-General OpenShell backend adoption is deferred. The [v0.1.2 spike](../research/openshell-backend.md#spike-conclusion---2026-10-11) records bounded execution, lifecycle, file, egress and credential observations, but no suite adapter, supported runtime or capability declaration is qualified. The [adoption work](../research/openshell-backend.md#status) remains open for official creation-recovery and conditional-deletion dependencies plus separately tracked runtime/file, effective-egress and credential-lifecycle qualification. Use the existing backends above while those prerequisites remain unresolved.
+General OpenShell backend adoption is deferred. The [v0.1.2 spike](../research/openshell-backend.md#spike-conclusion---2026-10-11) records bounded execution, lifecycle, file, egress and credential observations, but no suite adapter, supported runtime or capability declaration is qualified. The [native Linux baseline](../research/openshell-backend.md#hosted-observations) passes serial shared probes but confirms that replacing a checked parent can redirect native SFTP reads/writes outside the caller's working directory. The [adoption work](../research/openshell-backend.md#status) remains open for official creation-recovery and conditional-deletion dependencies, atomic file confinement, effective egress and credential-lifecycle qualification. Use the existing backends above while those prerequisites remain unresolved.
 
 ## Status
 
