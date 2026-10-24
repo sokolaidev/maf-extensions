@@ -671,4 +671,42 @@ This closes the trusted-controller transport and generation-retirement gap for t
 
 ### Cross-runner native qualification candidate
 
-The next #1671 experiment uses three concurrent Linux GitHub runners joined through a temporary Tailscale overlay, with GitHub OIDC and the existing mutual-TLS worker/controller boundaries. One runner retains the coordinator journals while A publishes and B restores a common pinned native fixture. The source-only driver covers explicit fencing, saved-result replay without a helper, fresh state restoration, coordinator process restart, stale/competing-owner refusal and missing-journal refusal. Setup, evidence retention and remaining limits are in [the host-publication record](../../../scripts/experiments/mxc_session_patch/HOST_PUBLICATION.md#native-recovery-between-github-runners). The workflow is manually dispatched and requires a scoped tailnet identity; adding it is not evidence of a successful hosted native recovery run.
+The #1671 experiment uses three concurrent Linux GitHub runners joined through a temporary Tailscale overlay, with GitHub OIDC and the existing mutual-TLS worker/controller boundaries. One runner retains the coordinator journals while A publishes and B restores a common pinned native fixture. The source-only driver covers explicit fencing, saved-result replay without a helper, fresh state restoration, coordinator process restart, stale/competing-owner refusal and missing-journal refusal. Setup, evidence retention and remaining limits are in [the host-publication record](../../../scripts/experiments/mxc_session_patch/HOST_PUBLICATION.md#native-recovery-between-github-runners). The workflow is manually dispatched and requires a scoped tailnet identity; adding it is not evidence of a successful hosted native recovery run.
+
+
+### Hosted native cross-runner evidence (2026-10-24)
+
+[Run 40048039643, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/40048039643/attempts/1) passed on three distinct Ubuntu 24.04 x86-64 runners, with KVM on the execution hosts, at source `7fb50bd851fedc588d3e4e12c0066242bbd300c3`. The downloaded A, B and coordinator reports each record `status: passed`, `distinct_boots: 3`, Python 3.12.3, a closed guest-network policy and matching helper/startup identities. Tailscale authenticated the hosts through GitHub OIDC; the worker and controller requests used mutual TLS. The runtime remains the pinned MXC 1.0 candidate with the removable session, output and storage overlays.
+
+| Retained measurement | Value |
+|---|---|
+| Helper SHA-256 | `0be69b19564bf17821f899c60ec2d7f68114586277c1c91337822cd78f91bb9f` |
+| Startup index SHA-256 | `768133b432b6168cec2b31a33faa14526482e401c80d80bf943e85bc423bb9c8` |
+| A checkpoint | 862,203,088 bytes |
+| B replacement checkpoint | 862,223,568 bytes |
+| A report SHA-256 | `e90768ad55751f21d76e8b262f990b3e47a05c4bd5625492252e69210ec31cba` |
+| B report SHA-256 | `acb4269098b38839a9960fbfd5c5ebba5c643d3691ec5f479816b03f65e71cc9` |
+| Coordinator report SHA-256 | `c686b9496e039056cc290522d1024ef0906fb02cfd9b9561cf472587a42e379f` |
+
+The fixed scenario restored `remote_counter = 41` on B and advanced it to 42. It passed coordinator-process restart, retained-result replay with an absent helper, competing-owner refusal, missing-journal refusal, stale-owner refusal, retired-receipt refusal and scratch reconciliation. Checkpoint/result transfer used the coordinator API; GitHub artifacts distributed only the initial common fixture and discovery records. Both execution generations were explicitly fenced and reconciled.
+
+[Run 40043993705](https://github.com/sokolaidev/maf-extensions/actions/runs/40043993705) previously reached B's fresh native call but failed with `native execution/capture failed: 1`; helper output was not retained. [PR #2125](https://github.com/sokolaidev/maf-extensions/pull/2125) added bounded diagnostic retention and changed no runtime behavior. The successful run does not explain that earlier failure or establish a failure rate.
+
+#### Repeat blocked by CPU-vendor compatibility
+
+[Run 40080442094, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/40080442094/attempts/1) failed at source `0969fdda89aeb1f51c97eb19ae5d96c23b24b58d`, with no changes to the native harness since the successful run. All three reports recorded failed status, distinct boots and matching fixture profiles. Authentication, discovery and the competing-owner refusal completed; A's initial seed call failed before publication or B's recovery. Its retained 177-byte `native.stderr` identifies the cause: `snapshot CPU vendor mismatch: file was created on AuthenticAMD but the current CPU is GenuineIntel (snapshot produced by hyperlight 0.17.0)`. Standard output was empty.
+
+| Failed repeat identity | SHA-256 |
+|---|---|
+| Helper | `e38366787798f63b17a7131c5c2b5da581e3d75259a2b1e4124ad952c4966189` |
+| Startup index | `984ad61bd3c566b23ebcda4b321fdf05e94bc1e58a8d989c2e098ba8c50c627e` |
+| A report | `f6329e59085f6a3c16a14e67135b143868755935e5b961e296bf165d1a1e65d9` |
+| B report | `bf7aaa33caade74d7fe32bd01c9b463a7e30a4d2e0f7ebf94d21cacebf63b0b5` |
+| Coordinator report | `050ad82ce964e5eebc7dbc84c90d970c5686b31f6d87ce69495afc8a6bfac058` |
+| A native stderr | `eed89853dee944314e114c0c926f001aa2e5c2c82bea89e6fd26745d47bd23e1` |
+
+This refusal is an upstream compatibility boundary, not evidence of a transfer or fencing defect. Hyperlight 0.17.0's [snapshot loader](https://github.com/hyperlight-dev/hyperlight/blob/v0.17.0/src/hyperlight_host/src/sandbox/snapshot/file/config.rs) checks architecture, snapshot ABI, hypervisor and CPU vendor; its [snapshot documentation](https://github.com/hyperlight-dev/hyperlight/blob/v0.17.0/docs/snapshot-versioning.md) explicitly separates Intel and AMD snapshots. The experiment's discovery profile currently compares helper/startup hashes, policy, operating system and architecture, which does not establish CPU compatibility. A shared `ubuntu-24.04` label likewise does not establish that the fixture producer and execution runners share a CPU vendor; GitHub's [standard runner specification](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories) specifies x64 without pinning Intel or AMD. The coordinator performs no native restoration and does not need the execution hosts' CPU vendor.
+
+The next prerequisite is explicit compatibility admission for the fixture producer and execution hosts, followed by qualification on a matching runner set. Preserve the upstream restore guard; neither rewriting snapshot metadata nor substituting fresh state is a recovery mechanism. An incompatible runner allocation must remain unqualified, not be counted as a passed recovery test. This repeat explains its own failure; without retained native diagnostics it cannot establish the cause of the earlier B failure.
+
+The successful run qualifies the fixed workload on its recorded Linux hosts and common fixture. It does not establish abrupt execution-machine loss, coordinator-storage loss, physical reboot or power-loss durability, cross-OS checkpoint portability, arbitrary descendant termination, network-enabled guests or production integration. Coordinator storage was independent of A/B for the workflow lifetime only. [#1671](https://github.com/sokolaidev/maf-extensions/issues/1671) remains open: qualify repeat recovery with CPU compatibility enforced, then native failure cases, before broadening the recovery claim. After that prerequisite, the next failure-case target is loss of A with takeover blocked until trusted termination evidence is available; an unreachable owner alone must never authorize B.
