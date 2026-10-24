@@ -4,10 +4,8 @@ Two phases, and the tests separate them: phase 1 must ask without inserting anyt
 cached prefix, and phase 2 must act only on a record the *provider* issued -- never on one the
 client invented, which is unsafe on routes that track tool calls server-side.
 
-The tool's own text is tested here as well, because the middleware sends no message: the
-description and the ``values`` guidance are the entire prompt for the record, so a clause
-lost from them is a class of content silently dropped, with nothing else in the design to
-catch it.
+The tool description must cover both exact values and tool-returned prose in pinned and
+prompted recall requests.
 """
 
 from __future__ import annotations
@@ -244,7 +242,7 @@ def _covering_record(tool_turns: int, *, first_turn: int = 0) -> str:
     so this is what a compliant record looks like, and it is what the strategy checks against.
 
     The values are quoted bare, without the ``code_N=`` labels the results carry, because that
-    is what "quote verbatim any value that cannot be reconstructed" produces and what every
+    is what preserving exact values produces and what every
     measured record actually looks like. A record has to cover a labelled result while writing
     plain values, or the check is measuring formatting compliance.
 
@@ -740,8 +738,8 @@ async def test_a_record_quoting_a_groups_values_covers_it_though_it_never_names_
 
     Asked to record six tool groups, gpt-5.6-luna writes prose: *"extra0 deployment lookup
     returned codes: AB-123456, ..."*. Every identifier is there and ``lookup_extra0`` is not,
-    so the group counts as covered. ``RECALL_VALUES_DESCRIPTION`` leads with "Quote verbatim any
-    value that cannot be reconstructed or guessed", and that is what is tested.
+    so the group counts as covered. ``RECALL_VALUES_DESCRIPTION`` asks for exact values,
+    and that is what is tested.
     """
     strategy = _strategy(max_input_tokens=16_000)
     record = " ".join(_prose_record(index) for index in range(2))
@@ -816,7 +814,7 @@ async def test_a_record_quoting_bare_values_covers_a_result_that_labelled_them()
     """The live shape: labelled values in the result, bare values in the record.
 
     A tool result renders its values as ``code_N=VALUE``; a record quotes them plainly, because
-    that is what "quote verbatim any value that cannot be reconstructed" asks for and what every
+    that is what preserving exact values asks for and what every
     measured record does. ``code_1=TL-BA44A9`` must yield ``TL-BA44A9`` as its own token, or
     coverage would measure formatting compliance rather than preservation.
     """
@@ -2079,8 +2077,7 @@ def test_the_target_length_is_stated_when_one_is_given() -> None:
 
     A ``max_tokens`` cap cannot do it: a model does not shorten to fit one, it writes until it
     is cut, and on a tool call the cut lands inside the arguments JSON -- so a cap set where
-    the record should end produces no record rather than a shorter one. The middleware cannot
-    send an instruction message either, which leaves this text.
+    the record should end produces no record rather than a shorter one.
     """
     stated = make_recall_tool(target_tokens=1_500).__doc__ or ""
     default = make_recall_tool().__doc__ or ""

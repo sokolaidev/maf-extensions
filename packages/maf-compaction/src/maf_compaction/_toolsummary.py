@@ -2161,9 +2161,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         ``lookup_extra0``, so a name rule would score a complete record as missing groups and
         keep results it had every reason to drop.
 
-        So the test is the clause the description actually leads with -- "Quote verbatim any
-        value that cannot be reconstructed or guessed" -- applied to what the group's tool
-        *results* contained. :func:`_distinctive_tokens` finds those values and states the rule
+        Coverage checks the exact values requested by the tool description against the group's
+        tool results. :func:`_distinctive_tokens` finds those values and states the rule
         and its blind spots; a group is covered when the record quotes at least
         ``coverage_share`` of them, with their case: an identifier quoted in another case is
         another value, and the group stays. That also dissolves the repeated-name
