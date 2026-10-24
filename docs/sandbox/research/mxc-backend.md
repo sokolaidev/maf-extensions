@@ -28,6 +28,26 @@ Old-to-new restore was explicitly refused on both platforms: the old snapshot ke
 
 Guest snapshot compatibility and SQLite format compatibility are separate. A changed helper/kernel/rootfs profile must not silently reopen an old persistent session with fresh state. Keep the exact old helper binary and its profile artifacts available for existing sessions until an explicit migration or retirement policy is selected; a rebuild from the same source can have a different helper hash and is not automatically the same store profile. These checks do not qualify cross-platform snapshot transfer, remote takeover, physical power loss, physical disk quotas or production adapter conformance. Closed networking remains the baseline; enforced allowlisting stays under #1673.
 
+## MXC 1.0.1 release analysis
+
+The 2026-10-24 assessment compares [MXC 1.0.1](https://github.com/microsoft/mxc/releases/tag/v1.0.1), released on 2026-10-17 at `fda29ac63bc306b7f97f3b86b4b63d44f7f40cf2`, with the active 1.0.0 experiment. The SDK package version advances, while the stable request schema stays `1.0.0`; Hyperlight remains experimental. This refresh changes the source-only experiment in [mxc_v1_patch](../../../scripts/experiments/mxc_v1_patch/README.md), inherited by the stream/file and cross-runner harnesses. It does not add a shipped `maf-sandbox-mxc` package or change the suite's separate direct Hyperlight backend.
+
+| Upstream change | Effect on this solution |
+|---|---|
+| Hyperlight removes legacy network-policy wiring and validates supported policies before execution | Aligns with the experiment's closed-network baseline; it does not deliver enforced allowlisting |
+| WSLC fixes image-store/session-name failures and permits up to eight concurrent lifecycle executions, refusing a second execution on a busy container | Useful for a future MXC WSLC adapter; the suite's current WSLC backend uses its own integration and does not acquire these fixes from this pin |
+| ProcessContainer fixes PSEC 1.0 host-loopback routing and WFP denial reporting | Improves the Windows SDK surface; it does not add LPAC support to the public V1 request contract |
+| Bubblewrap fixes stub-resolver DNS and loopback-startup races; Seatbelt denies metadata reads for denied paths | Improves future backend options; not exercised by this Hyperlight qualification |
+| PTY and telemetry fixes | Relevant to the broader SDK; no new persistence, ownership or checkpoint-publication contract |
+
+The [tagged Hyperlight source](https://github.com/microsoft/mxc/blob/fda29ac63bc306b7f97f3b86b4b63d44f7f40cf2/src/mxc-sdk/src/backends/hyperlight/common/mod.rs) still rewinds the warm baseline for fresh execution. Session continuity therefore retains the session overlay. [SDK dependencies](https://github.com/microsoft/mxc/blob/fda29ac63bc306b7f97f3b86b4b63d44f7f40cf2/src/mxc-sdk/Cargo.toml) still pin Unikraft 0.17.0, so bounded capture/export and the separate byte-stream/file layers also remain required. Only the session patch's surrounding import context changes; its state machine and the other patch contents are unchanged. The wrapper still uses internal SDK compatibility exports rather than claiming that the stable V1 contract supplies these features.
+
+The runtime pin `8f636e00cdf29e6c33ba0f578482c595d7827cf6`, Hyperlight host/common pin `388ea8ebd88639a062f7a87f477db2930605a307`, verified agent rootfs and custom kernel pins remain unchanged. In particular, Hyperlight's CPU-vendor restore guard remains: upgrading MXC does not repair the cross-runner compatibility-admission gap in #1671. Independently passing Linux/KVM and Windows/WHP controls would not establish cross-platform or cross-vendor snapshot portability.
+
+New sessions use the updated SDK only after qualification. Existing durable sessions retain their exact helper and profile assets: a changed SDK source or rebuilt helper must not silently reopen a stored profile, even when kernel/rootfs identities remain the same. The retained 0.9-to-1.0 migration control checks the old incompatible kernel contract; it is not evidence of in-place 1.0.0-to-1.0.1 session migration. Historical reports retain their original sources and are not relabeled as 1.0.1 results.
+
+Local source checks confirmed that the session/output/storage, byte-stream and bounded-file layers apply and reverse without tracked content changes or leftover files. [Lock-resolution run 40082278659](https://github.com/sokolaidev/maf-extensions/actions/runs/40082278659) produced byte-identical Linux and Windows locks, changing only `mxc-sdk` from 1.0.0 to 1.0.1; all transitive dependency versions remain retained. The new lock SHA-256 is `fd2ab5121a94260ba44501b782f2cf6504dc247c6a6c549dfc9d200974c054be`. Native Linux/Windows qualification is pending; resolved dependencies alone are not a native pass.
+
 ## Capabilities MXC adds
 
 The platform inventory comes from the tagged README and [schema guide](https://github.com/microsoft/mxc/blob/86fb3d2abaf9c431556692037bff881830b543a5/docs/schema.md). These are upstream-described capabilities, not capabilities established for a suite adapter.
