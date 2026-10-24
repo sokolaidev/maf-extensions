@@ -20,6 +20,11 @@ from agent_framework import (
     ResponseStream,
 )
 from agent_framework._compaction import EXCLUDED_KEY, included_token_count
+from agent_framework._sessions import (
+    _CURRENT_RUN_IDENTITY,
+    _defer_run_persistence,
+    _RunPersistenceGate,
+)
 from agent_framework.exceptions import ChatClientException, ChatClientInvalidRequestException
 
 from maf_compaction import (
@@ -84,6 +89,174 @@ def record_call():
     return Content.from_function_call(
         call_id="record", name=RECALL_TOOL_NAME, arguments={"values": "SKU-123"}
     )
+
+
+@pytest.mark.parametrize("refused", [False, True])
+@pytest.mark.parametrize("release", [False, True])
+async def test_recall_persistence_remains_subject_to_enclosing_gate(refused, release):
+    middleware, gate = recall()
+    context = ChatContext(None, [], {"tools": [make_recall_tool(gate)]})
+    saved = []
+    calls = 0
+    outer = _RunPersistenceGate()
+    outer.bind_owner(_CURRENT_RUN_IDENTITY.get())
+
+    async def send():
+        nonlocal calls
+        calls += 1
+        current = calls
+
+        async def persist():
+            saved.append(current)
+
+        assert _defer_run_persistence(persist)
+        contents = [record_call()]
+        if refused and current == 1:
+            contents.append(
+                Content.from_text(
+                    "refusal", additional_properties={"core": {"model_output_kind": "refusal"}}
+                )
+            )
+        context.result = ChatResponse(messages=Message("assistant", contents))
+
+    with outer:
+        await middleware.process(context, send)
+        assert saved == []
+    if release:
+        await outer.flush()
+    else:
+        outer.drop()
+    assert saved == ([2 if refused else 1] if release else [])
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("prompted", [False, True])
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("arguments", [{"values": "SKU-123"}, "{", None])
+async def test_refused_recall_discards_calls_and_backs_off_across_restore(
+    stream, prompted, legacy, arguments, caplog
+):
+    middleware, gate = recall(supports_tool_choice=not prompted)
+    for index in range(2):
+        middleware._force_next = True
+        tool = make_recall_tool(gate)
+        question = Message("user", ["question"])
+        options = {"tools": [tool], "max_tokens": 1234, "temperature": 0.3}
+        context = ChatContext(None, [question], options, stream=stream)
+        sent = []
+        closed = []
+
+        async def send():
+            sent.append(dict(context.options or {}))
+            if len(sent) == 1:
+                marker = {"model_output_kind": "refusal"}
+                contents = [
+                    Content.from_text(
+                        "private provider refusal",
+                        additional_properties=marker if legacy else {"core": marker},
+                    )
+                ]
+                if arguments is not None:
+                    call = record_call()
+                    call.arguments = arguments
+                    contents.insert(0, call)
+                response = ChatResponse(messages=Message("assistant", contents))
+            else:
+                assert len(sent) == 2
+                assert context.options is options
+                assert context.messages == [question]
+                assert RECORD_MARKER not in tool("SKU-123")
+                response = ChatResponse(messages=Message("assistant", ["ordinary answer"]))
+            if stream:
+
+                async def updates():
+                    try:
+                        for update in response.to_updates():
+                            yield update
+                    finally:
+                        closed.append(True)
+
+                context.result = ResponseStream(updates(), finalizer=lambda _: response)
+            else:
+                context.result = response
+
+        with caplog.at_level(logging.WARNING, logger="maf_compaction._toolsummary"):
+            await middleware.process(context, send)
+        if stream:
+            assert isinstance(context.result, ResponseStream)
+            updates = [update async for update in context.result]
+            assert all(c.type != "function_call" for u in updates for c in u.contents)
+            response = await context.result.get_final_response()
+            assert len(closed) == 2
+        else:
+            response = context.result
+        assert isinstance(response, ChatResponse)
+        assert response.text == "ordinary answer"
+        assert len(sent) == 2
+        assert middleware.value_free_record_streak == index + 1
+        assert middleware.failed_forced_calls == 1
+        assert middleware.ignored_forced_calls == 0
+        assert middleware.records_forced == 0
+        assert not middleware.session_state()["awaiting_record"]
+        assert middleware.recall_disabled == (index == 1)
+        snapshot = json.loads(json.dumps(middleware.session_state()))
+        middleware, gate = recall(supports_tool_choice=not prompted)
+        middleware.restore_session_state(snapshot)
+    assert middleware.pin_disabled_reason == "value_free"
+    assert "private provider refusal" not in caplog.text
+
+
+@pytest.mark.parametrize("marker_in", ["update", "final"])
+async def test_refusal_in_either_stream_or_final_response_rejects_recall(marker_in):
+    middleware, gate = recall()
+    context = ChatContext(None, [], {"tools": [make_recall_tool(gate)]}, stream=True)
+    refusal = Content.from_text(
+        "refused", additional_properties={"core": {"model_output_kind": "refusal"}}
+    )
+    calls = 0
+
+    async def send():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            context.result = ChatResponse(messages=Message("assistant", ["answer"]))
+            return
+        response = ChatResponse(
+            messages=Message(
+                "assistant", [record_call(), *([refusal] if marker_in == "final" else [])]
+            )
+        )
+
+        async def updates():
+            yield ChatResponseUpdate(role="assistant", contents=[record_call()])
+            if marker_in == "update":
+                yield ChatResponseUpdate(role="assistant", contents=[refusal])
+
+        context.result = ResponseStream(updates(), finalizer=lambda _: response)
+
+    await middleware.process(context, send)
+    assert calls == 2
+    assert middleware.value_free_record_streak == 1
+    assert not gate.take()
+
+
+@pytest.mark.parametrize("forced", [False, True])
+async def test_ordinary_refusal_text_is_not_a_provider_refusal(forced):
+    middleware, gate = recall()
+    middleware._force_next = forced
+    context = ChatContext(None, [], {"tools": [make_recall_tool(gate)]})
+    contents = [record_call(), Content.from_text("refusal")]
+    if not forced:
+        contents[-1].additional_properties = {"core": {"model_output_kind": "refusal"}}
+    response = ChatResponse(messages=Message("assistant", contents))
+
+    async def send():
+        context.result = response
+
+    await middleware.process(context, send)
+    assert context.result is response
+    assert middleware.failed_forced_calls == 0
+    assert middleware.value_free_record_streak == 0
 
 
 @pytest.mark.parametrize("forced", [False, True])
