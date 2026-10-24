@@ -1757,7 +1757,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-shell"
-version = "0.0.0"
+version = "0.1.0"
 source = { editable = "packages/maf-sandbox-shell" }
 dependencies = [
     { name = "agent-framework-core" },
