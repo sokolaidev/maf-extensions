@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.6.7...maf-compaction-v0.7.0) (2026-10-24)
+
+
+### Features
+
+* **compaction:** allow per-call instructions for pinned recall records ([#2121](https://github.com/sokolaidev/maf-extensions/issues/2121)) ([da0711c](https://github.com/sokolaidev/maf-extensions/commit/da0711c63570c0801bd2adc3a28371a6f293c5eb))
+* **compaction:** preserve_prompt_cache recall ask that keeps tools and tool_choice ([#2117](https://github.com/sokolaidev/maf-extensions/issues/2117)) ([6cfba96](https://github.com/sokolaidev/maf-extensions/commit/6cfba96330d162d9774ad94d18f3e0376d25b379))
+
+
+### Fixes
+
+* **compaction:** leave headroom after overflow shedding ([#2124](https://github.com/sokolaidev/maf-extensions/issues/2124)) ([0969fdd](https://github.com/sokolaidev/maf-extensions/commit/0969fdda89aeb1f51c97eb19ae5d96c23b24b58d))
+* **compaction:** reject refused recall records and limit requests to tool results ([#2123](https://github.com/sokolaidev/maf-extensions/issues/2123)) ([733dea1](https://github.com/sokolaidev/maf-extensions/commit/733dea1e89c98b086f8d9bbd3546f1a68b573fa9))
+
 ## [0.6.7](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.6.6...maf-compaction-v0.6.7) (2026-10-23)
 
 
