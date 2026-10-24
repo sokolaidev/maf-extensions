@@ -119,3 +119,147 @@ def test_origin_redirect_cannot_inject_response_header_lines(monkeypatch, host, 
     assert lines[4] == "Content-Length: " + str(len(body))
     assert len(lines) == 5
     assert json.loads(body)["host"] == host
+
+
+@pytest.fixture
+def native_probe(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts/experiments"))
+    return importlib.import_module("openshell_egress_probe")
+
+
+def test_suite_wildcard_and_prefix_require_recursive_upstream_patterns(native_probe):
+    from maf_sandbox import EgressRule
+
+    assert native_probe.rule_plan(
+        (EgressRule("*.Example.COM", methods=("GET",), paths=("/v1/*",)),)
+    ) == [{"host": "**.example.com", "methods": ["GET"], "paths": ["/v1", "/v1/**"]}]
+    assert native_probe.rule_plan(()) == []
+
+
+@pytest.mark.parametrize("value", ["127.0.0.1", "169.254.1.1", "8.8.8.8", "::1"])
+def test_origin_must_be_private_nonlocal_ipv4(native_probe, value):
+    with pytest.raises(ValueError):
+        native_probe.native_origin_ip(value)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {},
+        {"methods": ("PUT",), "paths": ("/a",)},
+        {"methods": ("GET",), "paths": ("/a%2fb",)},
+        {"methods": ("GET",), "paths": ("/a//b",)},
+        {"methods": ("GET",), "paths": ("/a",), "authority": "audience"},
+    ],
+)
+def test_unqualified_rules_are_refused_before_compilation(native_probe, options):
+    from maf_sandbox import EgressRule
+
+    with pytest.raises(ValueError):
+        native_probe.rule_plan((EgressRule("example.com", **options),))
+
+
+def test_provider_and_overlapping_host_authority_are_not_silently_widened(native_probe):
+    from maf_sandbox import EgressRule
+
+    rule = EgressRule("example.com", methods=("GET",), paths=("/a",))
+    with pytest.raises(ValueError, match="provider authority"):
+        native_probe.rule_plan((rule,), providers=("additional-authority",))
+    with pytest.raises(ValueError, match="duplicate host"):
+        native_probe.rule_plan((rule, rule))
+
+
+def test_inflight_completion_is_not_instant_revocation(native_probe):
+    first = dict(REQUEST, path="/allowed/hold?case=fixture")
+    observed = [
+        {"status": 200, "body": json.dumps(first)},
+        {"status": 403, "body": '{"error":"policy_denied"}'},
+    ]
+    result = native_probe.inflight_observation(observed, [first], first)
+    assert result["response_completed_after_loaded"]
+    assert result["later_outcome"] == "explicit_policy_refusal"
+    assert not result["instant_revocation_qualified"]
+    observed[1] = {"error": "ConnectionResetError"}
+    assert native_probe.inflight_observation(observed, [first], first)["later_outcome"].startswith(
+        "connection_closed"
+    )
+
+
+@pytest.mark.parametrize(
+    "failure", ["unrelated_echo", "extra_hit", "wrong_host", "missing_response", "timeout"]
+)
+def test_inflight_evidence_refuses_unattributed_outcomes(native_probe, failure):
+    first = dict(REQUEST, path="/allowed/hold?case=fixture")
+    observed = [{"status": 200, "body": json.dumps(first)}, {"errno": 13}]
+    hits = [first]
+    if failure == "unrelated_echo":
+        observed[0]["body"] = "{}"
+    elif failure == "extra_hit":
+        hits.append(first)
+    elif failure == "wrong_host":
+        hits = [dict(first, host="other.example")]
+    elif failure == "missing_response":
+        observed.pop()
+    else:
+        observed[1] = {"error": "TimeoutError"}
+    with pytest.raises(RuntimeError):
+        native_probe.inflight_observation(observed, hits, first)
+
+
+def test_origin_holds_response_until_independent_release(native_probe, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    waiting = threading.Event()
+    handlers = []
+
+    class Release:
+        def __init__(self):
+            self.event = threading.Event()
+
+        def wait(self, timeout):
+            waiting.set()
+            return self.event.wait(5)
+
+        def set(self):
+            self.event.set()
+
+    monkeypatch.setattr(
+        native_probe,
+        "threading",
+        SimpleNamespace(Event=Release, Lock=threading.Lock, Thread=threading.Thread),
+    )
+
+    def server(address, handler):
+        handlers.append(handler)
+        return SimpleNamespace(serve_forever=lambda: None)
+
+    monkeypatch.setattr(native_probe, "ThreadingHTTPServer", server)
+    native_probe.serve_origin(revocation_controls=True)
+
+    def request(path, response):
+        raw = f"GET {path} HTTP/1.1\r\nHost: allowed.example:8000\r\nConnection: close\r\n\r\n".encode()
+
+        class Connection:
+            def makefile(self, *args):
+                return io.BytesIO(raw)
+
+            def sendall(self, data):
+                response.write(data)
+
+            def getsockname(self):
+                return ("127.0.0.1", 8000)
+
+        handlers[0](Connection(), ("127.0.0.1", 12345), None)
+
+    held, journal, released = io.BytesIO(), io.BytesIO(), io.BytesIO()
+    with ThreadPoolExecutor() as pool:
+        pending = pool.submit(request, "/allowed/hold?case=barrier", held)
+        assert waiting.wait(2)
+        assert held.getvalue() == b""
+        request("/__events", journal)
+        hits = json.loads(journal.getvalue().split(b"\r\n\r\n", 1)[1])
+        assert hits[0]["path"] == "/allowed/hold?case=barrier"
+        request("/__release?case=barrier", released)
+        pending.result(timeout=2)
+    assert json.loads(held.getvalue().split(b"\r\n\r\n", 1)[1]) == hits[0]
