@@ -176,7 +176,7 @@ def test_hosted_comparison_is_opt_in_and_retains_only_markdown():
     assert job["runs-on"] == "windows-latest"
     assert job["strategy"]["matrix"] == {
         "mode": ["none", "ro", "rw"],
-        "preparation": ["unprepared", "prepared"],
+        "preparation": "${{ fromJSON(inputs.openclaw_mxc_phase == 'prerequisites' && '[\"unprepared\"]' || '[\"unprepared\", \"prepared\"]') }}",
     }
     for step in job["steps"]:
         assert "github.event_name == 'workflow_dispatch' && inputs.openclaw_mxc" in step["if"]
@@ -184,3 +184,71 @@ def test_hosted_comparison_is_opt_in_and_retains_only_markdown():
     artifact = job["steps"][-1]
     assert "always()" in artifact["if"]
     assert all(path.endswith(".md") for path in artifact["with"]["path"].splitlines())
+
+
+def test_preparation_receives_system_drive_from_windows_root(
+    runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.delenv("SystemDrive", raising=False)
+    original = host.capture
+
+    def capture(args, root, env, *positional, **kwargs):
+        assert env["SystemDrive"] == (tmp_path / "Windows").anchor.removesuffix("\\")
+        return original(args, root, env, *positional, **kwargs)
+
+    monkeypatch.setattr(host, "capture", capture)
+    assert host.observe(tmp_path / "installation", tmp_path / "output", prepare=True)
+
+
+def test_failed_preparation_retains_bounded_redacted_stderr(
+    runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    original = host.capture
+    output = tmp_path / "output"
+
+    def capture(args, root, *positional, **kwargs):
+        result = original(args, root, *positional, **kwargs)
+        with (root / "setup.log").open("ab") as log:
+            if args[-1] == "prepare-system-drive":
+                log.write(f"cannot prepare {root}\n".encode() + b"x" * 16384 + b"omitted suffix")
+                result.returncode = 1
+            else:
+                log.write(b"earlier diagnostic\n")
+        return result
+
+    monkeypatch.setattr(host, "capture", capture)
+    assert not host.observe(tmp_path / "installation", output, prepare=True)
+    report = (output / "host.md").read_text(encoding="utf-8")
+    last = report.split("## Disposable host preparation", 1)[1]
+    assert "cannot prepare <host-diagnostic>" in last
+    assert "Stderr exceeded 16 KiB" in last
+    assert "earlier diagnostic" not in last
+    assert "omitted suffix" not in last
+    assert str(output) not in report
+    assert "completed: `False`" in report
+
+
+def test_timed_out_preparation_keeps_step_and_stderr(
+    runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    original = host.capture
+    output = tmp_path / "output"
+
+    def capture(args, root, *positional, **kwargs):
+        if args[-1] == "prepare-system-drive":
+            (root / "setup.log").write_bytes(b"preparer diagnostic before timeout\n")
+            raise host.CaptureRefused("setup_command_timeout", f"preparing {root}\n".encode())
+        return original(args, root, *positional, **kwargs)
+
+    monkeypatch.setattr(host, "capture", capture)
+    assert not host.observe(tmp_path / "installation", output, prepare=True)
+    report = (output / "host.md").read_text(encoding="utf-8")
+    assert "## Disposable host preparation" in report
+    assert "exit status unavailable" in report
+    assert "preparer diagnostic before timeout" in report
+    assert "preparing <host-diagnostic>" in report
+    assert str(output) not in report
+    assert "Retained output may be partial" in report
+    assert "setup_command_timeout" in report
+    assert "completed: `False`" in report
+    assert "## Prepared native readiness" not in report

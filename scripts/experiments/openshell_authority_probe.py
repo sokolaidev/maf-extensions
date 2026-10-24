@@ -394,7 +394,9 @@ def gateway_fixture(config_path: Path, *, control: dict | None = None):
                     log,
                 )
                 if control is not None:
-                    control.update(gateway=gateway, database=root / "gateway.db")
+                    control.update(
+                        gateway=gateway, database=root / "gateway.db", log=root / "gateway.log"
+                    )
                 try:
                     yield issuer
                 finally:

@@ -30,6 +30,7 @@ on:
       - "maf-sandbox-hyperlight-v*"
       - "maf-sandbox-otel-v*"
       - "maf-sandbox-terraform-v*"
+      - "maf-sandbox-shell-v*"
       - "maf-sandbox-mcp-v*"
       - "maf-sandbox-tui-v*"
       - "maf-sandbox-wslc-v*"
@@ -55,6 +56,7 @@ on:
           - maf-sandbox-hyperlight
           - maf-sandbox-otel
           - maf-sandbox-terraform
+          - maf-sandbox-shell
           - maf-sandbox-mcp
           - maf-sandbox-tui
           - maf-sandbox-wslc

@@ -767,7 +767,307 @@ The workflow retains only `host.md` and `report.md`. Raw native logs, runtime JS
 
 A local read-only check on Windows build 26220/x64 with Python 3.13.12 and Node 26.8.1 completed the identity checks, ACL fingerprint and exact executor readiness probe. Readiness again reported `base-container`, no DACL augmentation and no warnings. No preparer was executed. This verifies the diagnostic collection path only; it does not resolve the earlier runtime isolation-selection discrepancy or establish native execution.
 
-This increment provides the comparison harness; the six hosted campaigns have not been dispatched or qualified. No workstation ACLs were changed. Host selection/preparation remains pending explicit operator selection. After that selection, dispatch Tests on the reviewed branch with `openclaw_mxc=true`, inspect all six Markdown artifacts, and record image/candidate equality, native positive controls, per-mode results and cleanup before updating the qualification disposition. Retain the `rw` safe refusal if the protected generated subtree persists; do not suppress it or widen grants. Full #1974 acceptance, including deterministic replacement and multi-session lifecycle, remains open.
+At delivery of #2095, the comparison harness had not been dispatched or qualified. The operator selected disposable GitHub-hosted Windows runners on 2026-10-22; the resulting trials are recorded below. No workstation ACLs were changed. Compare image/candidate equality, native positive controls, per-mode results and cleanup before updating the qualification disposition. Retain the `rw` safe refusal if the protected generated subtree persists; do not suppress it or widen grants. Full #1974 acceptance, including deterministic replacement and multi-session lifecycle, remains open.
+
+## Hosted system-drive preparation comparison (2026-10-22)
+
+The operator-approved six-case [initial run 39853674592](https://github.com/sokolaidev/maf-extensions/actions/runs/39853674592) used merged commit `8e905bb395c79004cd05407ac040388615d97240`, OpenClaw/plugin 2026.10.5, bundled SDK 0.9.0, Node 26.8.1 and Python 3.12.10. All hosts were Windows Server 2025 build 26100/x64. Runner images differed: `none` used `win25-vs2026/20261007.264.1` for both preparations, `ro` used `win25-vs2026/20261018.275.1` for both, and `rw` used the newer image unprepared and the older image prepared. Do not aggregate those images as one equivalent host.
+
+| Initial case | Observation | Disposition |
+|---|---|---|
+| Unprepared `none` | Unrestricted fixture passed; native `cmd.exe` route returned access denied without fixture completion or a verified executor descendant; host-file read and denied-write controls passed | Unqualified |
+| Unprepared `ro` | Smoke prerequisite timed out before a completed unrestricted fixture or native case; phase not retained | Prerequisite unavailable; unqualified |
+| Unprepared `rw` | Unrestricted fixture passed; native route refused the generated read-only skills subtree beneath the writable agent root; ordinary host-file read/write controls passed | Safe refusal; permitted native control unavailable |
+| Prepared `none`/`ro`/`rw` | Selected identities and readiness passed, but the preparer exited 1; smoke step did not run | Preparation incomplete; no native result |
+
+The initial unprepared reports share npm lock SHA-256 `8d6cc586db51f456001b46160d4ab57be830196801b114f84d6d050d6d6fb4c5` and the selected package/executor identities recorded above. `none` and `rw` completed the post-case identity comparisons and reported no cleanup errors; `ro` timed out before that comparison and also reported no cleanup errors. Readiness selected `appcontainer-dacl`, with BaseContainer unavailable and BFS not compiled. In the `none` native attempt, diagnostic events reported both `host_prep_system_drive_missing` and `host_prep_null_device_missing`, then a child exit 1 and teardown success. Those events are not independent execution or cleanup qualification.
+
+The initial prepared reports retained no stderr and therefore do not identify the preparer's failure cause. Harness inspection found that its isolated environment omitted the helper's `SystemDrive` input. The follow-up derives that variable from `SYSTEMROOT` and retains only the current command's bounded, redacted stderr in `host.md`, with explicit truncation. It leaves native pass criteria and the requested system-drive-only preparation unchanged. The separate readiness warning recommends NUL-device preparation; that operation has not been added to this comparison.
+
+The six-case [retry 39854889313](https://github.com/sokolaidev/maf-extensions/actions/runs/39854889313) exercised the environment/stderr fix at `e5c9464f7f4faa77b91fa852977e7a1739e16526`. Preparation now exceeded the unchanged 60-second command deadline in all three prepared jobs, after initial readiness and before any prepared ACL fingerprint or native smoke. The reports do not establish whether the preparer changed permissions before cancellation; those hosts are unusable as either prepared or unchanged controls. This also exposed a report gap on capture exceptions: the final follow-up retains the attempted step and bounded stderr even on timeout. That reporting change was absent from these first two campaigns; its separate hosted retry is recorded below.
+
+| Retry case | Runner image version (`win25-vs2026`) | Observation | Disposition |
+|---|---|---|---|
+| Unprepared `none` | `20261021.278.1` | Smoke prerequisite timed out; phase not retained | Unqualified |
+| Prepared `none` | `20261021.278.1` | Host preparation deadline exceeded; smoke not run | Unqualified |
+| Unprepared `ro` | `20261021.278.1` | Smoke prerequisite timed out; phase not retained | Unqualified |
+| Prepared `ro` | `20261007.264.1` | Host preparation deadline exceeded; smoke not run | Unqualified; host image also differs |
+| Unprepared `rw` | `20261018.275.1` | Unrestricted fixture and ordinary host-file read/write controls passed; protected generated-skills overlap refused before native execution | Unqualified |
+| Prepared `rw` | `20261021.278.1` | Host preparation deadline exceeded; smoke not run | Unqualified; host image also differs |
+
+All three retry smoke reports retain the same npm lock and selected asset identities as the initial unprepared reports. Only `rw` reached its post-case identity comparison; `none`/`ro` have preflight identities only. Each smoke supervisor reported no cleanup errors. Neither timeout nor a successful job cleanup proves arbitrary descendant/resource cleanup. Both workflow runs correctly failed the native jobs and aggregate gate; their other validation jobs passed. No prepared native result exists, and there is no evidence that system-drive preparation fixes the access denial. The NUL-device warning is an independent lead, not an authorization to widen workload grants or a demonstrated cause.
+
+Markdown evidence remains in the workflow artifacts and external local copies; no experiment JSON was added. The table below binds each retained Markdown file to its downloaded bytes. Artifact names are `openclaw-mxc-<mode>-<preparation>-<run>-1`; `host.md` is under `oc-mxc-host/`, and `report.md` under `oc-mxc-smoke/`. An absent smoke report means the workflow stopped at host diagnostics.
+
+| Run | Case | File | SHA-256 |
+|---|---|---|---|
+| `39853674592` | `none-prepared` | `host.md` | `2b22b195808820b3718fdb88c87041bf32a1c824218761cd148c05202bbb8dad` |
+| `39853674592` | `ro-prepared` | `host.md` | `8556f87fbfc24405dec5f4f54fa9929402fd5db38b946960d3a07d7211d4c138` |
+| `39853674592` | `rw-prepared` | `host.md` | `2b22b195808820b3718fdb88c87041bf32a1c824218761cd148c05202bbb8dad` |
+| `39853674592` | `none-unprepared` | `host.md` | `d5da3e4109cffbf92ba59b05c0e2ef79ea1c1a8b7dc1dc5b1dc8ccb6a449cb55` |
+| `39853674592` | `none-unprepared` | `report.md` | `d709e1549015a5a93e1b317d90fef03b8196f4ef09c2ab4e660d2800bec364c3` |
+| `39853674592` | `ro-unprepared` | `host.md` | `5fbbed4d8f6fc8c802cca097e7e30730584a4dc0fdcbf537dd7c5c73cee67fcb` |
+| `39853674592` | `ro-unprepared` | `report.md` | `fd4bc6b0086869f8a300cdc8b71550c2422d67e18f6e0f59d89e526a1a576a1e` |
+| `39853674592` | `rw-unprepared` | `host.md` | `5fbbed4d8f6fc8c802cca097e7e30730584a4dc0fdcbf537dd7c5c73cee67fcb` |
+| `39853674592` | `rw-unprepared` | `report.md` | `493a43eb1c2ad580999e2edf2e0c3d087aee7060ee24484389033ffc83f73c55` |
+| `39854889313` | `none-prepared` | `host.md` | `8566d4cb776b3107e5a8205fb25e3c6b727171968ca9553c3f4bb65f58265a30` |
+| `39854889313` | `ro-prepared` | `host.md` | `7dc9a321413e0b8e6ef10a9fa50580abe4dd3710059cf946b8ba37df2fcd61a2` |
+| `39854889313` | `rw-prepared` | `host.md` | `8566d4cb776b3107e5a8205fb25e3c6b727171968ca9553c3f4bb65f58265a30` |
+| `39854889313` | `none-unprepared` | `host.md` | `8f76e2440e2defd5bfed37f4acfb78495c2f18574e01b54b32fed988134d983f` |
+| `39854889313` | `none-unprepared` | `report.md` | `510e64a04be5768ed305e9faf35a2f843c25280d546aef99c65c77b5f7bde32a` |
+| `39854889313` | `ro-unprepared` | `host.md` | `8f76e2440e2defd5bfed37f4acfb78495c2f18574e01b54b32fed988134d983f` |
+| `39854889313` | `ro-unprepared` | `report.md` | `991b07f7ce4f28c1464868e9b3026c8cf8cbc145dc6f3b8088ebd3880c95192f` |
+| `39854889313` | `rw-unprepared` | `host.md` | `88593736157f0137c3df8184809ca88d74b9fd611d15f92bd27374e9cd17c4cc` |
+| `39854889313` | `rw-unprepared` | `report.md` | `f9e18e843ca03cccd0535d02c9339accf9ddf28842f51855c7ba3752eba68702` |
+
+After these initial two attempts, the next #1974 increment was bounded diagnosis of the preparer timeout and smoke prerequisite timeouts, with command progress/exit evidence and a successful post-preparation check before a native campaign. The follow-ups below retain the preparer progress and refine the host prerequisite. Keep the 60-second host-command and 360-second CLI deadlines explicit; do not silently extend them or convert failures to skips. If a supported NUL-device preparation is subsequently selected, record it as a distinct preparation profile and run fresh controls. The generated-skills overlap still needs a supported workspace-layout resolution. Native execution, deterministic replacement, full hostile filesystem operations and multi-session lifetime remain unqualified; the bounded MCP adoption direction is unchanged.
+
+
+
+### Timeout-reporting retry (2026-10-22)
+
+[Run 39859863535](https://github.com/sokolaidev/maf-extensions/actions/runs/39859863535) used `6a34e0a12ba3418e7695906f5c24034f66612cd0`. All six native jobs failed. The prepared reports now identify the attempted preparation step on timeout, but contain no stderr; stdout was still unavailable in this revision. All three preparation commands hit the unchanged deadline, with no prepared smoke. Unprepared `none` and `ro` again reported a smoke prerequisite timeout without retaining its phase; `rw` passed the unrestricted fixture and ordinary host-file controls but refused the protected generated-skills overlap. The smoke reports list no cleanup errors; none qualifies native execution.
+
+Prepared `none`/`rw` and unprepared `none` used image `20261007.264.1`; both `ro` cases used `20261021.278.1`; unprepared `rw` used `20261018.275.1` (all `win25-vs2026`). The unchanged initial ACL fingerprint and fallback readiness warnings do not establish post-timeout permissions. The artifact layout is the same as above.
+
+| Case | File | SHA-256 |
+|---|---|---|
+| `none-prepared` | `host.md` | `65d63eb025ff06846a17215e8134175fe8533586e28852a18e17b01066228176` |
+| `none-unprepared` | `host.md` | `b02f209ecff2c5d982ebf271de79a29d2e3448bc0a4e1ded714ec78520778358` |
+| `none-unprepared` | `report.md` | `42a83ff37abd41e8586c6541fa13f402eda34c5c5b9755cc543b57d180cd484e` |
+| `ro-prepared` | `host.md` | `42d9188c6d08b4154b1281fa8b99aab983b155c547c7de99414fc606cedc78e0` |
+| `ro-unprepared` | `host.md` | `b6c21ff50bff43fa6e406a00b6dafe8996575ac16d811b047a0e4bf86ff25c0d` |
+| `ro-unprepared` | `report.md` | `4eaafac7e01387fdb69e7d3787ca9c97b9c345e1948ed488b2ed29d58efaa6b3` |
+| `rw-prepared` | `host.md` | `65d63eb025ff06846a17215e8134175fe8533586e28852a18e17b01066228176` |
+| `rw-unprepared` | `host.md` | `a73364778b602ae11df56d0d275b2aea31ce8fbbb2c089d4f25f23b1ddaf78c0` |
+| `rw-unprepared` | `report.md` | `7513e490ddddaf0a28f5a5e9c97265da3cfee580ab147ccabf6b4388087ad2e3` |
+
+### Preparer timeout source investigation (2026-10-22)
+
+The upstream [MXC issue 648](https://github.com/microsoft/mxc/issues/648) reports descendant ACL rewrites during system-drive preparation despite non-inheriting new ACEs. Its [closing maintainer comment](https://github.com/microsoft/mxc/issues/648#issuecomment-5670240787) says the AppContainer + DACL fallback is being deprecated; closure is not evidence of a fix. The `v0.9.0` tag resolves to `86fb3d2abaf9c431556692037bff881830b543a5`: its [system-drive preparation](https://github.com/microsoft/mxc/blob/86fb3d2abaf9c431556692037bff881830b543a5/src/host/wxc_host_prep/src/system_drive/mod.rs) still calls `apply_explicit_ace`, whose [implementation](https://github.com/microsoft/mxc/blob/86fb3d2abaf9c431556692037bff881830b543a5/src/core/wxc_common/src/filesystem_dacl.rs) uses `SetNamedSecurityInfoW`. This is a source-supported explanation to investigate, not proof that the hosted timeout occurred inside that API; the published binary was hash-identified but not reproducibly rebuilt from the tag.
+
+The helper prints each trustee before applying its ACE, so stdout is necessary to distinguish a launch failure from a wait after entering preparation. The capture supervisor now retains bounded stdout in its refusal exception after owned-process cleanup, and the host report redacts and labels that output as potentially partial. Timeout and overflow still fail; ACL output remains fingerprint-only and incomplete ACL output is not reported as a complete fingerprint. The 60-second deadline, disposable-runner guard and exact helper identity remain unchanged. No timeout extension, replacement ACL writer or additional preparation operation is introduced.
+
+The tagged [OS support matrix](https://github.com/microsoft/mxc/blob/86fb3d2abaf9c431556692037bff881830b543a5/docs/process-container/os-version-support.md) puts BaseContainer behind an enabled PSEC contract, cites internal build validation points rather than a public release-floor commitment, and says BFS is disabled in shipping builds because of host-deadlock risk. Its table still lists AppContainer + DACL, so the deprecation comment and the shipped support table must not be collapsed into a claim that the entire published SDK is unsupported. Runtime readiness and upstream clarification are needed for the replacement profile. The tagged [platform table](https://github.com/microsoft/mxc/blob/86fb3d2abaf9c431556692037bff881830b543a5/README.md#platforms) names Windows 11, while these runners are Windows Server 2025; matching build number 26100 alone does not establish support for the hosted configuration.
+
+This finding makes host isolation capability a qualification prerequisite. More repeated attempts on an image selecting the deprecated fallback cannot establish a supported native baseline. A subsequent native profile needs an explicitly supported isolation mode, a successful readiness/preparation result and fresh independent controls; a Windows runner label alone does not pin an image version or enable BaseContainer. The existing bounded MCP adoption remains independent of this native prerequisite.
+
+
+### Bounded preparer progress result (2026-10-22)
+
+[Run 39860888435](https://github.com/sokolaidev/maf-extensions/actions/runs/39860888435) exercised stdout retention at `2d9bbdaa78f1cadd20d9a8ab62381d59986c2c7c`. All three prepared reports retain the drive-root heading, metadata mask `0x00120088` and first trustee `ALL APPLICATION PACKAGES` (`S-1-15-2-1`), followed by the 60-second timeout. Neither the second trustee nor `Done.` was observed. Compared with the tagged source, this places the last observed progress immediately before the first `apply_explicit_ace` call. It is consistent with the upstream propagation report, but no call stack or filesystem trace establishes which API was running or which ACLs changed. No post-preparation check or prepared native fixture ran.
+
+All three unprepared cases reported a smoke prerequisite timeout without retaining its phase, including `rw` on image `20261018.275.1`, which had reached the generated-skills refusal on earlier attempts. This rules out treating image version alone as an explanation of the timeout; it does not identify its phase or cause. No unrestricted fixture completed and no native process/filesystem control ran in this campaign. The smoke reports list no cleanup errors and retain preflight identities only. All six native jobs failed. Ordinary pull-request CI remains separate from these opt-in failures.
+
+Prepared `none`/`ro` and unprepared `none` used `20261007.264.1`; prepared `rw` and unprepared `ro` used `20261021.278.1`; unprepared `rw` used `20261018.275.1` (all `win25-vs2026`). Initial readiness again selected AppContainer + DACL with both preparation warnings. The Markdown artifact layout is unchanged.
+
+| Case | File | SHA-256 |
+|---|---|---|
+| `none-prepared` | `host.md` | `5e587f2d614af409bfe5507503d455791043f50b59a19ed1d14d48198fcaf2d0` |
+| `none-unprepared` | `host.md` | `e1672e68099abbbf4a571da4a301e7433ff73d53d4bf12190e85fed731ec8f27` |
+| `none-unprepared` | `report.md` | `f6d62e122864bfe59dda6d1710b31698f73b98dc6225ff3c39778a0bc0af9235` |
+| `ro-prepared` | `host.md` | `5e587f2d614af409bfe5507503d455791043f50b59a19ed1d14d48198fcaf2d0` |
+| `ro-unprepared` | `host.md` | `a335a4e7570fbfdfa14163138dabb834808d4db41ff8a3009e57bab38f0a374f` |
+| `ro-unprepared` | `report.md` | `06398a305e8476e4247132c9371caeafeaed5f31945db3fa91407bca18545d49` |
+| `rw-prepared` | `host.md` | `a14c898a967d79ad65c8999d71ab6352581880b3923ed815161e3ee0e5034fc9` |
+| `rw-unprepared` | `host.md` | `ae560b1c0e7dde6bcd3ad8e56a653946d5b69bcc292037f31c0f2b3b8ed3b453` |
+| `rw-unprepared` | `report.md` | `99859f7c8e851f19de41c664dca43027d0826ad32e7ab3e9a3367c8d95c9a5a1` |
+
+The diagnostic increment is complete: the bounded supervisor now preserves the preparer's last progress without weakening timeout, ownership or qualification rules. Do not repeat the same preparation profile or extend its deadline as a qualification strategy. The next native increment must first establish a supported Windows host/isolation combination and resolve the smoke prerequisites with phase-specific bounded command output; the protected generated-skills layout remains unresolved as well. A successful readiness probe alone still cannot qualify native execution. #1974 remains open and the bounded MCP adoption work continues independently.
+
+
+### Smoke prerequisite phase audit (2026-10-23)
+
+The earlier narrative incorrectly attributed the hosted generic `setup_command_timeout` to the 360-second `sandbox explain` command. The same error code also covers the 30-second unrestricted PowerShell fixture, and the report did not retain the failing command. GitHub's step timestamps for the timed-out unprepared cases are only 55-60 seconds from start to finish: initial `ro` 58 seconds, first retry `none`/`ro` 57/58 seconds, timeout-report retry `none`/`ro` 58/55 seconds, and bounded-progress retry `none`/`ro`/`rw` 60/59/58 seconds. Those observations do not support a 360-second CLI timeout. The narrative above is corrected; original report bytes/hashes are unchanged. The exact failing phase requires new evidence.
+
+An isolated local CLI-only diagnostic against the same selected installed assets returned exit 0 after 187.8 seconds and an owned sandbox workspace explanation. It ran neither the unrestricted fixture nor Gateway/native execution and made no host-preparation call. Its redacted Markdown SHA-256 is `a1f4f7c6c46028e435ddfc4894cb2600e509ab9e5ba424e5df8f7221c5d9a28f`. This demonstrates local CLI completion only; it neither explains the hosted failure nor qualifies the local host.
+
+The runner now retains separate command labels, configured deadlines, elapsed times and bounded redacted stdout/stderr for `sandbox explain` and the unrestricted fixture, including refusal paths. Owned fixture markers are restored even when command capture refuses. The opt-in workflow's `openclaw_mxc_phase=prerequisites` selects only unprepared cases and stops after these two controls, before the Gateway or native workload. A successful diagnostic exit means its prerequisites completed; its report still says native smoke is unqualified. The default `smoke` phase preserves the original prepared/unprepared matrix and pass criteria.
+
+Host selection also remains bounded. The [GitHub-hosted runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) lists standard Windows 11 runners as ARM64, while standard x64 runners use Server images. The [Windows 11 image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows11-VS2026-Arm64-Readme.md) currently records build 26200.9457. This profile pins x64 native assets and explicitly refuses other architectures; ARM64 or emulated x64 is a distinct candidate, not an interchangeable qualification host. The MXC v0.9.0 support matrix does not promise an enabled BaseContainer contract on that build. No new host or isolation mode is qualified by these listings, and no runner label alone supplies the missing runtime capability.
+
+
+### Hosted prerequisite isolation result (2026-10-23)
+
+The prerequisites-only [run 39864079892](https://github.com/sokolaidev/maf-extensions/actions/runs/39864079892) used `684eedb5` and no preparation case. `sandbox explain` exited 0 for `none`, `ro` and `rw` in 27.250, 23.672 and 27.562 seconds respectively. The following unrestricted PowerShell fixture exceeded its unchanged 30-second deadline in every case (30.015, 30.031 and 30.032 seconds including capture cleanup). This newly instrumented campaign identifies the fixture as the failing prerequisite; it does not retroactively identify every earlier generic timeout.
+
+In `none` and `rw`, retained fixture stdout contains the start/PID, both read markers and all three allowed-write markers, but no final completion marker. In `ro`, no fixture stdout was retained. Partial markers cannot establish a completed control, and no native workload or Gateway was started. All three diagnostic jobs failed and reported no supervisor cleanup errors. The runner restores owned fixture write markers on capture refusal; the earlier immutable report bytes remain unchanged.
+
+| Case | File | SHA-256 |
+|---|---|---|
+| `none-unprepared` | `host.md` | `d11b3afff87e7183a7045c352a2e559acb7e10b138850a55e4ba2aded102080b` |
+| `none-unprepared` | `report.md` | `a13e039e68af58c0199f227542adcd1b0a068a944f009fb4537f566e5e1f08a4` |
+| `ro-unprepared` | `host.md` | `3de10294f331a98b135007dee4f63bfe441ccce3fdaeac6db09fc6a0449bdf54` |
+| `ro-unprepared` | `report.md` | `eac2e5f739b41050c51d043d988ce1b22a0efc3b76778af467723787daf81c41` |
+| `rw-unprepared` | `host.md` | `d11b3afff87e7183a7045c352a2e559acb7e10b138850a55e4ba2aded102080b` |
+| `rw-unprepared` | `report.md` | `20b60bba2a96b077dbf77fef98c6e712096979db7811085fbe25fb18b7e8680f` |
+
+The local unrestricted fixture-only check completed in 10.2 seconds with all three writes independently observed and restored (Markdown SHA-256 `c78dd2acd5539522db76608a964b339bab0c9304aec8f691082c6fb13f856da3`). A separate read-only readiness observation on Windows 11 build 26220/AMD64 reports BaseContainer plus native capture, deny-path, enumerate-path and ingress-host-loopback capabilities (Markdown SHA-256 `e80cd928e852c4b736be6022ae0f9e308a8a15ceac24fe637e14474525c51a52`). No host preparation or native workload was run for either observation. The workstation is a capability reference, not the approved disposable qualification environment, and readiness does not prove which isolation implementation the plugin would select for its full policy.
+
+The fixed probe now uses .NET console output and a five-second thread sleep with PowerShell module autoload disabled. [PowerShell documents module autoload](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_modules?view=powershell-5.1), and [Start-Sleep belongs to Microsoft.PowerShell.Utility](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/start-sleep?view=powershell-5.1). Removing these cmdlet dependencies is a bounded experiment, not proof that module discovery caused the hosted timeout. File operations, independently required markers, the five-second process-observation window and all deadlines are unchanged. A fresh prerequisite comparison is required for this implementation; it cannot promote an earlier failed native result.
+
+### Hosted revised fixture result (2026-10-23)
+
+The prerequisites-only [run 39865612032](https://github.com/sokolaidev/maf-extensions/actions/runs/39865612032) at `9658989b9feb8de4a9e0afcb872d0a9ec37d56af` passed all three unprepared diagnostic jobs. CLI explanation exited 0 in 27.297/27.453/24.203 seconds for `none`/`ro`/`rw`; the revised unrestricted fixture exited 0 in 5.312/5.313/5.281 seconds. All required read/write and completion markers were present, independent host checks confirmed every permitted write, owned marker restoration completed, and selected asset/configuration equality checks passed. Each report records no failure or cleanup error.
+
+The `none` runner used `win25-vs2026` image `20261021.278.1`; `ro` and `rw` used `20261007.264.1`. All were Windows Server 2025 build 26100/AMD64, Python 3.12.10 and Node 26.8.1 with official OpenClaw/plugin 2026.10.5 and bundled SDK 0.9.0. Native readiness still selected AppContainer + DACL with the system-drive and NUL-device warnings. No preparation, Gateway or native workload ran. The reports deliberately retain `Selected-mode smoke: unqualified` alongside the successful unrestricted control.
+
+| Case | File | SHA-256 |
+|---|---|---|
+| `none-unprepared` | `host.md` | `555f12e4bb7c2445351e9f0256a3aae3344dc4eb1527f190cceb990a004d6e88` |
+| `none-unprepared` | `report.md` | `831605e268bf79a55b7141e10a3f60dafc0713d539f6a346dd82425aa86801e3` |
+| `ro-unprepared` | `host.md` | `d142e8a7fb1754c6758d020e16c05efd586e951b28ed91725503f6620ab3529c` |
+| `ro-unprepared` | `report.md` | `2338e32f4729c480c424a6ac05209aad07e463e50d11366d97c5b84a61a5eae7` |
+| `rw-unprepared` | `host.md` | `d142e8a7fb1754c6758d020e16c05efd586e951b28ed91725503f6620ab3529c` |
+| `rw-unprepared` | `report.md` | `cc8541b8eacedc7e490e345c81f9c848fa5eba24c46b85dcbd5ded6d82423d67` |
+
+This removes the observed fixture prerequisite blocker for the tested candidate without extending its deadline. The result supports keeping the probe independent of PowerShell cmdlets; it does not identify the exact internal cause of the previous timeout, because fresh runners were used and no module-loading trace was captured. Native behavior of the revised probe is still untested. The next qualification prerequisite remains a disposable supported host/isolation combination; the unchanged preparer is not rerun as a fix, and the generated protected-skills layout still requires a supported resolution. #1974 remains open for permitted native execution, replacement races, hostile filesystem routes, execution bounds and multi-session lifetime.
+
+### Policy compatibility before host selection (2026-10-23)
+
+This records the original LPAC-preserving diagnosis. The [BaseContainer decision below](#basecontainer-direction-and-acceptance-plan-2026-10-23) supersedes its proposed LPAC requirement; the measured 0.9.0 results remain historical evidence.
+
+The next-host recommendation above was incomplete: for the pinned official plugin, host capability alone cannot select BaseContainer. The installed `dist/index.js` (SHA-256 `bdc382abc7db2e831479f2f287025e13c1452b802e4293329454baa3efd7fe77`) unconditionally sets `processContainer.leastPrivilege: true`. The matching [OpenClaw 2026.10.5 config builder](https://github.com/openclaw/openclaw/blob/1b58cb9a1b4f4353e1add63c8506db4d890962e8/extensions/mxc/src/mxc-container-config.ts) does the same. The pinned [MXC BaseContainer selector](https://github.com/microsoft/mxc/blob/86fb3d2abaf9c431556692037bff881830b543a5/src/backends/process_container/common/src/base_container_runner.rs) classifies `least_privilege_mode` as policy-incompatible: PSEC cannot provide the requested LPAC token. The [OS support contract](https://github.com/microsoft/mxc/blob/86fb3d2abaf9c431556692037bff881830b543a5/docs/process-container/os-version-support.md) explicitly sends that request to an AppContainer fallback, regardless of available PSEC APIs. The [plugin configuration](https://github.com/openclaw/openclaw/blob/1b58cb9a1b4f4353e1add63c8506db4d890962e8/extensions/mxc/src/config.ts) and strict [policy-layer schema](https://github.com/openclaw/openclaw/blob/1b58cb9a1b4f4353e1add63c8506db4d890962e8/extensions/mxc/src/sandbox-policy-loader.ts) expose no supported override for this field; policy files accept filesystem additions and process timeout only.
+
+A fresh local detection-only comparison used the exact pinned executor `819ecd9b08a8dcb2376d489c0352087468bf56800ab059f57d38901d7743049e` on Windows x64 build 26220 with Python 3.13.12. All calls used the existing bounded supervisor with a 60-second deadline and 16 KiB stdout limit. The bare `--probe` and two `--probe --config-base64 <encoded-config>` calls returned exit 0. The paired configurations differed only in `processContainer.leastPrivilege`:
+
+| Probe request | Selected isolation | DACL augmentation required |
+|---|---|---|
+| Default request, no config | BaseContainer | No |
+| Reduced policy, `leastPrivilege=false` | BaseContainer | No |
+| Same reduced policy, `leastPrivilege=true` | AppContainer/DACL | Yes |
+
+For reproduction, encode this reduced configuration in memory, replace the working directory with a fresh owned absolute path, and vary only the indicated boolean. The command name is deliberately not an executable; the probe must select policy without launching it. No JSON file is needed.
+
+```json
+{"version":"0.7.0-alpha","containerId":"openclaw-policy-probe","containment":"process","process":{"commandLine":"probe-only-must-not-run.exe","cwd":"<owned-root>"},"filesystem":{"readonlyPaths":["<owned-root>"],"readwritePaths":[]},"network":{"defaultPolicy":"block","enforcementMode":"capabilities"},"processContainer":{"leastPrivilege":true,"capabilities":[]}}
+```
+
+Use the harness's isolated environment and explicitly set `MXC_DACL_STATE_DIR` to a fresh absent directory beneath that owned root. Although the probe module performs detection only, the [executor entrypoint](https://github.com/microsoft/mxc/blob/86fb3d2abaf9c431556692037bff881830b543a5/src/core/wxc/src/main.rs) runs orphaned DACL recovery before the probe branch. The [recovery implementation](https://github.com/microsoft/mxc/blob/86fb3d2abaf9c431556692037bff881830b543a5/src/core/wxc_common/src/filesystem_dacl.rs) uses that override, otherwise isolated `LOCALAPPDATA`. In this comparison the explicit recovery directory remained absent before and after all calls, selected assets were unchanged, no preparer or sandbox workload ran, and no host ACL changes were requested. Do not describe an unrestricted invocation of this executor as side-effect-free merely because `--probe` is present.
+
+The retained Markdown report SHA-256 is `dadf3233485b99ea1b3f96ef50816936348301a6f6b49d0e58552aa4c9b79aaf`. The experiment demonstrates the policy-driven fallback on the actual binary. Combined with the installed config builder, it explains why a capability-only BaseContainer result does not imply BaseContainer execution for the plugin. It does not prove the cause of earlier native access-denied failures, reproduce the complete generated request, or qualify either isolation implementation. The `false` case is a diagnostic control, not a proposed silent reduction of the plugin's security policy.
+
+No disposable host has been selected. [Standard GitHub x64 runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) remain Server images; the Windows 11 standard labels are ARM64 and require a distinct candidate. [Windows Sandbox](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/) is disposable but provides no guarantee of the required PSEC contract, and it would not remove this policy incompatibility. Local read-only inventory found the Hyper-V service running but VM enumeration unavailable to the current operator; no Sandbox executable was found at the expected system location. No VM, Windows feature, image download or cloud resource was created. These inventory limits are secondary to the policy blocker and do not justify changing workstation permissions.
+
+On 2026-10-23 npm metadata reported plugin 2026.10.6 and SDK 1.0.1. Neither is a qualified replacement here. Current OpenClaw source [a68d0eb2](https://github.com/openclaw/openclaw/blob/a68d0eb252586b11412bced0ef41e41e5fc6e798/extensions/mxc/src/mxc-container-config.ts) still sets the flag, but that is a source observation rather than inspection of the 2026.10.6 published implementation.
+
+[Issue #2104](https://github.com/sokolaidev/maf-extensions/issues/2104), a child of #1974, now owns the first deliverable: establish a supported policy/runtime route, including checking current published candidates, before selecting another host. Preserve LPAC through a supported working fallback, or obtain an explicitly supported PSEC-compatible policy with documented security semantics and tests; do not edit the installed plugin or treat `leastPrivilege=false` as equivalent. Any upstream proposal must be prepared and tested before separate publication approval. Then select a disposable host, probe the complete actual request, and establish native positive controls. The generated-skills conflict and full #1974 matrix remain separate acceptance work; bounded MCP adoption continues independently.
+
+### Published candidate audit and upstream compatibility proposal (2026-10-23)
+
+This is the pre-reply artifact audit and proposal. Its LPAC-preserving acceptance plan is superseded by the [BaseContainer decision below](#basecontainer-direction-and-acceptance-plan-2026-10-23).
+
+The current published plugin does not remove the blocker. The npm `latest` metadata selects [@openclaw/mxc-sandbox 2026.10.6](https://www.npmjs.com/package/@openclaw/mxc-sandbox/v/2026.10.6), whose complete 54,651,288-byte tarball was inspected in memory after matching registry SHA-512 integrity. Its `dist/index.js` is byte-identical to the selected installed 2026.10.5 implementation; its manifest still pins `@microsoft/mxc-sdk` to exactly `0.9.0`, and its plugin configuration exposes the same six fields. Thus the published patch neither removes the hardcoded LPAC requirement nor adds a supported override. No package was installed or changed for this archive inspection.
+
+| Published artifact | Integrity or selected-file SHA-256 |
+|---|---|
+| Plugin 2026.10.6 tarball, SHA-512 SRI | `sha512-FPtgdw6M5uG4oWw304/5SecnCzJpW0ojqkxRqDY0m7OrDT/X7l3BNgfpEPepaZ8Nn5104nTnbtoNrv8bz7Qn9g==` |
+| Plugin `dist/index.js` | `bdc382abc7db2e831479f2f287025e13c1452b802e4293329454baa3efd7fe77` |
+| Plugin `package.json` | `385b6ad510cc8f609a4779335bd8b429488af023115506f0d0d7c17817d224b2` |
+| Plugin `openclaw.plugin.json` | `d4264961060829ecdefb37dcf1887d4d040f0a0ebd638a4b981097f58b9b101f` |
+| SDK 1.0.1 tarball, SHA-512 SRI | `sha512-2cP925G5+lQyKzjBVha8uNtVd7XESgDBtgi1yCYYSo9M3xiFyZWtCO4SWPGTk509rdI6nqjyGcZxvEP3t6l8Hg==` |
+| SDK `dist/v1/container.js` | `87cf73e5325ac8e9f5d356edf2c2272ed06421397f29bb04ca0d9d41af9ecda6` |
+| SDK `dist/v1/probe.js` | `c75f07b66ae9090e5f4e221ff3a7bfa2cd123193f08a5557d83c6832d84202fe` |
+| SDK `dist/v1/types.d.ts` | `f4bc3b3272a648a8a4677630d1bc66672765983a0c39a501d5226c407348a3e0` |
+| SDK `package.json` | `d6fa280a01408b6fb5be11c54009233ba8aab69e818614d90f55bb8d11108292` |
+
+The [SDK 1.0.1 release](https://github.com/microsoft/mxc/releases/tag/v1.0.1) is pinned to `fda29ac63bc306b7f97f3b86b4b63d44f7f40cf2`. Its complete 38,256,855-byte npm tarball was also integrity-verified and inspected in memory. The public v1 `probe(request)` calls the request mapper, and the mapper explicitly rejects the presence of `containment.config.leastPrivilege` with `malformed_request`, for either boolean value. The field still exists in the raw stable wire schema and native request model, which does not make it supported by the public v1 authoring API. A cast, private mapper import or raw-wire bypass is not the selected integration route. The tagged [BaseContainer selector](https://github.com/microsoft/mxc/blob/fda29ac63bc306b7f97f3b86b4b63d44f7f40cf2/src/mxc-sdk/src/backends/process_container/common/base_container_runner.rs) still rejects the LPAC requirement. This establishes a public-API gap in addition to the native PSEC limitation; replacing a dependency alone does not preserve the selected contract.
+
+The v1.0.1 [OS support table](https://github.com/microsoft/mxc/blob/fda29ac63bc306b7f97f3b86b4b63d44f7f40cf2/docs/backends/process-container/os-version-support.md) now documents serviced public Windows 11 release builds, including 26100.9278 and 26200.9278 for process isolation. This newer table supersedes assumptions that every future supported host must be a preview build; it does not retroactively qualify the pinned 0.9.0 plugin/runtime combination or make LPAC representable by PSEC. Actual request compatibility and independent execution controls remain necessary.
+
+A fresh published-SDK execution test was not performed: the proposed temporary installation would write package manifests/lockfiles and was refused under the no-JSON-experiment constraint. The artifact audit above reads archive members in memory and creates no installation, extracted package files or experiment JSON. Its conclusions are packaged-code/source findings, not observed SDK 1.0.1 API execution. The earlier paired 0.9.0 native probe remains separate runtime evidence.
+
+Existing upstream work already owns this migration and its missing contract:
+
+| Upstream item | Verified current state and boundary |
+|---|---|
+| [microsoft/mxc#1496](https://github.com/microsoft/mxc/issues/1496) | Open, no comments at inspection; asks how to obtain LPAC-compatible PSEC behavior without host DACL mutation. Its proposed OS/API mechanisms are questions, not supported capabilities. |
+| [openclaw/openclaw#167292](https://github.com/openclaw/openclaw/pull/167292) | Open draft at `ef89852e7e28416aca6efedfac0940242983df72`; migrates to SDK 1.0.0 and removes the LPAC request from the typed request builder. It discloses regular-AppContainer scope on fallback modes. |
+| [openclaw/openclaw#168499](https://github.com/openclaw/openclaw/issues/168499) | Open coordination issue; distinguishes Core command containment, Windows Node and whole-Gateway packaging, with an unresolved Core security-acceptance requirement. |
+
+The migration author's current-head VM results use a test-only packed artifact, with a disclosed local packaging-integrity waiver, and a source-built OpenClaw host. Historical DACL results on an older PR head report that an `ALL APPLICATION PACKAGES`-only outside-workspace canary was readable and that the token lacked `WIN://NOALLAPPPKG`. Those are author-reported observations, not results independently replayed here, current-head DACL proof, a published candidate, or acceptance of the changed contract. Ordinary private-file denials and an isolation-mode label cannot establish LPAC equivalence. Do not duplicate that migration or turn its successful execution reports into our qualification.
+
+#### Proposed contribution through the existing upstream work
+
+Preserve the selected contract while #1496 and the Core migration resolve the policy decision. The immediate proposal is a compatibility gate and evidence contract, not a silent toggle of `leastPrivilege`:
+
+1. The SDK owner must identify a supported public authoring route for the required LPAC semantics, or explicitly document that the route is unavailable. A compatible native implementation alone is insufficient if the supported Node API cannot express it.
+2. The existing Core migration should preserve the selected isolation requirement through request construction and admission. Probe the complete immutable request through a supported request-aware surface; reject missing/error/malformed/incompatible results before launch. A policy-free readiness probe is advisory only. If the requirement cannot be represented, report unavailable rather than dropping it. Runtime enforcement must still reject incompatible requests; a successful earlier probe is not an atomic launch guarantee.
+3. Any proposed replacement for LPAC requires an explicit security-contract decision and independent positive/negative controls. BaseContainer-only admission or an empty warning list is not evidence of equivalent token, file, registry, named-object and device access boundaries. DACL mutation consent and preparation support must be decided separately; this profile does not inherit consent from a newer SDK default.
+4. Once the supported route is accepted and published, pin the complete plugin/SDK/native tuple, select a disposable supported host, and replay native smoke before expanding #1974. The protected-skills overlap remains independent.
+
+The reviewable validation plan for that proposal is:
+
+| Case | Required result | Evidence still needed |
+|---|---|---|
+| Required LPAC field absent or rejected by the public mapper | Admission refuses; no launcher/workload starts | Public-API regression test on the selected published SDK |
+| Host advertises BaseContainer but full request is incompatible | Admission refuses despite capability-only success | Full generated-request probe and no-spawn assertion |
+| Probe errors, times out, returns malformed output or no selected mode | Admission refuses; owned diagnostics clean up | Unit failure injection plus supervisor coverage |
+| Probe succeeds but native creation later refuses | Failure remains visible; no host-execution fallback | Controlled runtime failure and process observation |
+| Supported LPAC route | Permitted workspace control succeeds; outside AAP-only canary remains inaccessible under the approved contract | Independent token query and file controls on a disposable host |
+| Proposed PSEC-equivalent replacement | Same approved access boundaries or an explicitly approved changed contract | AAP-only file plus relevant registry/object/device controls; ordinary user-private-file denial is insufficient |
+| DACL-based route | Explicit allowed scope, bounded preparation and exact cleanup/recovery evidence | Disposable-host ACL baselines and post-run comparison |
+| Candidate or policy changes | Prior admission/evidence cannot qualify the changed request | Identity/configuration binding regression coverage |
+
+These are acceptance tests to implement with the owning upstream change, not tests claimed to have passed here. The current repository delivery completes the published-artifact audit and this proposal. #2104 remains open and dependent on upstream policy/API support; #1974 remains unqualified. No upstream message or PR was posted, no installed plugin was patched, and no host or cloud environment was provisioned.
+
+### BaseContainer direction and acceptance plan (2026-10-23)
+
+Following our [public Node API question](https://github.com/microsoft/mxc/issues/1496#issuecomment-6354555439), the [MXC maintainer reply](https://github.com/microsoft/mxc/issues/1496#issuecomment-6356430169) confirms that LPAC is unsupported with BaseContainer in v1 and that DACL fallback is being removed because the older Windows builds it served are no longer supported. The repository maintainer selected the non-LPAC BaseContainer direction. LPAC preservation, LPAC equivalence and a DACL fallback solution are no longer requirements of #2104. This supersedes the preceding proposed LPAC admission matrix; it does not change historical test outcomes or qualify a new candidate.
+
+The selected profile uses the supported public Node v1 API and requires `base-container` execution on a supported Windows x64 release. It must refuse unsupported hosts, incompatible complete requests and other isolation modes rather than silently choosing a fallback or executing on the host. No host DACL preparation is part of this profile. Dropping LPAC does not imply a blanket grant to host resources: document the actual BaseContainer boundary, including any access outside explicit workspace grants, and measure it without asserting LPAC equivalence. An observed denial of a user-private file does not answer what resources granted to `ALL APPLICATION PACKAGES` can be reached.
+
+#### Existing migration and evidence boundary
+
+Use [OpenClaw PR #167292](https://github.com/openclaw/openclaw/pull/167292), coordinated by [#168499](https://github.com/openclaw/openclaw/issues/168499), rather than creating a competing migration. At this refresh it is an open draft at `0cbf9b5481de42e1ea4207c1b27fd50441e51c0b`. Its description reports acceptance of the changed boundary and 16 passing Windows checks, with runtime evidence bound to the earlier source candidate `6e69db30aa6bbbbb2454258a6b1f0b0008f86c52` (tree `dff5db0a2d539c550f70dc63d203198b83a7c78b`), Windows 26700.1001 x64 and BaseContainer. The reported plugin archive SHA-256 is `b1fe5b090a7cc593750a4d126d2649912e63844d2454d8d752d8baa16c40c450`. These are author-reported source-candidate results, not our independent replay, current-head runtime proof or published-package qualification. The description's reported acceptance is not independently verified maintainer approval here.
+
+The migration requires Windows Node `>=24.21.0 <25` or `>=26.8.0` and pairs `wxc-exec.exe` with `mxc_ffi.dll` from one architecture directory. Recheck these requirements and exact identities when selecting the candidate. The older published 2026.10.6/SDK 0.9.0 audit remains useful as a baseline but cannot be reused as evidence for the v1 request shape or native asset pair.
+
+#### Acceptance and gap comparison
+
+The following compares our required evidence with the current upstream PR description, not a complete audit of its test sources. A missing row means the description does not establish it; it does not assert that upstream has no corresponding test.
+
+| Acceptance | Upstream evidence reported | Remaining work and owner |
+|---|---|---|
+| Exact supported plugin/SDK/native pair, Node and Windows identities | Frozen source-candidate identities; missing-FFI and invalid-directory overrides refused; bundled execution restored | #2104: select and verify one complete tuple, including native DLL identity, supported host and generated policy; record source versus published provenance |
+| Supported public v1 request without LPAC, compatible with BaseContainer | Source migration and observed BaseContainer execution | #2104: capture the complete generated request through a supported surface, bind its identity to the candidate and demonstrate request-aware compatibility; capability-only readiness is insufficient |
+| Admission refuses unsupported mode, malformed/error/timeout results, and changed candidate/policy | Native override failures and protected-skills overlap refusal | #2104: no-workload-start assertions for remaining failure cases and identity changes; verify runtime refusal after a successful preflight remains visible with no host fallback |
+| Permitted command and workspace operations succeed | Plain command and bridge write/apply-patch passed | #2104: independent short native positive control on the selected tuple; #1974: replay `none`/`ro`/`rw` permitted and denied routes through official tools with host observation |
+| Protected roots remain immutable while usable layouts still execute | Skills overlap refused before exec; bridge write to the skills path denied | #1974: supported non-overlapping layout plus successful execution; safe refusal of every workload cannot qualify the positive route |
+| Ungranted host-private files remain inaccessible | One host-private file denied; AppContainer/Low token observed | #1974: independent positive reachability control and external marker observation; characterize AAP-granted file and relevant registry/object/device access without treating LPAC exclusion as the expected result |
+| Declared network restrictions hold | No network enforcement row in the reported 16-case run | #1974: controlled reachable endpoint outside the sandbox and denied connection from the native workload for `network=none`; distinguish enforcement from unavailable connectivity |
+| Timeout/cancellation remove descendants and owned resources | Tracked processes disappeared after cancel/timeout; no payload directories remained | #1974: independent process-tree and cleanup replay, including failure paths and a later successful call; arbitrary descendant/lifetime cases remain in the full matrix |
+| Installed distribution and upgrade work | Source-candidate installation passed; npm/updater and latest-stable upgrade explicitly excluded | #2104: source proof may establish preliminary compatibility; #1974: published installation/upgrade replay must precede an installed-profile claim |
+| Hostile paths, deterministic replacement races, bounds and session generations | Not established by the described runtime run | #1974: retain the existing full matrix and explicit unqualified rows; do not infer these from the 16 checks |
+
+An access surface that BaseContainer deliberately exposes must be documented as part of the selected contract before production acceptance. The decision to stop requiring LPAC is not evidence that every such exposure has been assessed or accepted. No token-bit assertion substitutes for testing the required file/network/process behavior.
+
+#### Delivery order and closure
+
+1. This first deliverable records the upstream answer, the non-LPAC decision and the evidence-gap comparison in #2104 and PR #2101. Both #2104 and #1974 remain open.
+2. Next implement the missing #2104 admission/evidence checks in the existing `scripts/openclaw_conformance/` harness: complete-request identity, the SDK v1 native pair, BaseContainer-only refusal and failure cases. Reuse existing candidate-change, owned-process, fixture-restoration and unqualified-report controls in `tests/test_openclaw_mxc_smoke.py` and `tests/test_openclaw_mxc_host.py`; these existing tests do not yet prove the new v1 contract. Verify a supported request-observation/admission surface in the owning migration before implementing an adapter; if absent, prepare a focused upstream contribution instead of a private mapper bypass.
+3. Select a pinned candidate and disposable supported Windows host, then run a bounded compatibility/positive-control campaign. A source candidate may establish preliminary compatibility, explicitly labeled as such. Select published artifacts for installed qualification when available; do not transplant historical runtime proof to a changed head or repeat the unchanged DACL preparation campaign.
+4. Close #2104 only after the supported contract, candidate identities, complete-request compatibility, refusal controls and short native positive control are evidenced. This acceptance plan alone does not close it. Continue the broader network/filesystem/lifecycle and published-profile work under #1974, including the unresolved skills layout and deterministic race controls.
+
+This increment adds no runtime implementation or native results, installs no SDK/plugin, provisions no host and sends no further upstream message. Evidence remains Markdown; no experiment JSON is added. The bounded MCP adoption direction and deferred additional tools are unchanged.
+
+### Public v1 admission surface audit and tested proposal (2026-10-23)
+
+The implementation prerequisite in the BaseContainer plan exposed two separate missing surfaces in [OpenClaw migration head `0cbf9b54`](https://github.com/openclaw/openclaw/tree/0cbf9b5481de42e1ea4207c1b27fd50441e51c0b/extensions/mxc/src): [readiness](https://github.com/openclaw/openclaw/blob/0cbf9b5481de42e1ea4207c1b27fd50441e51c0b/extensions/mxc/src/readiness.ts) runs a policy-free host probe and admits all three reported isolation modes, while the [launcher](https://github.com/openclaw/openclaw/blob/0cbf9b5481de42e1ea4207c1b27fd50441e51c0b/extensions/mxc/src/mxc-spawn-launcher.mjs) passes the generated request directly to `spawn`/`spawnWithPty` without a request-aware probe. The [backend](https://github.com/openclaw/openclaw/blob/0cbf9b5481de42e1ea4207c1b27fd50441e51c0b/extensions/mxc/src/mxc-backend.ts) builds a per-call request with runtime-derived paths, environment, container name and timeout, then transfers it through a temporary launcher payload. The strict public plugin config has no BaseContainer-only selector or generated-request diagnostic option. Copying the builder into our harness or harvesting internal payload files would not establish a supported operator contract.
+
+The migration pins SDK 1.0.0, so this audit also inspected its exact tag commit `7bf210247986cb73b1b314df60c2f1109c479c0b`, separately from the earlier published 1.0.1 audit. The SDK's public [probe(request)](https://github.com/microsoft/mxc/blob/7bf210247986cb73b1b314df60c2f1109c479c0b/sdk/node/src/v1/probe.ts) accepts the complete request and synchronously calls the native FFI. The public [request types](https://github.com/microsoft/mxc/blob/7bf210247986cb73b1b314df60c2f1109c479c0b/sdk/node/src/v1/types.ts) and [spawn mapper/options](https://github.com/microsoft/mxc/blob/7bf210247986cb73b1b314df60c2f1109c479c0b/sdk/node/src/v1/container.ts) expose no required BaseContainer mode or fallback policy that is forwarded to creation. The same gap was found in the inspected 1.0.1 source. A successful probe therefore cannot be promoted into an atomic creation-time requirement. Adding an invented field or inspecting warnings after execution is not an enforcement mechanism.
+
+A dependency-free [source audit and preflight proposal](../../../scripts/experiments/openclaw_mxc_admission_audit.mjs) now makes the launcher finding reproducible. Supply the unmodified launcher from the linked immutable revision to `node scripts/experiments/openclaw_mxc_admission_audit.mjs <launcher-source.mjs>`; it checks SHA-256 `dd70a621b515c8055368a86f42103dedbec864f5f346855b2213aa9a5c143510` before importing the source in memory, substitutes inert SDK/process/stdio doubles, and prints Markdown. It also evaluates an in-memory proposed edit at the actual `launchSandbox` call site: probe the effective request after the PTY timeout adjustment, require BaseContainer without DACL augmentation or an error, then call the original spawn path. No installed plugin is patched and no SDK, native library or native workload is executed. The proposal is a tested design fragment, not a production adapter or a claim that unsupported modes have run.
+
+On Node v26.8.1, all 36 admission cases and four creation-refusal cases passed their expected assertions; the retained Markdown report SHA-256 is `e97036c622fbfe1156a7bd2ead821d4790d8821f023a2aa7259ef7e0512f4062`. Changed launcher bytes were separately refused before import/report generation. Both upstream paths made zero probe calls and one mock spawn call for every supplied probe outcome. The proposal made one probe call and no mock spawn call for BFS, DACL, missing mode, null result, contradictory error, DACL-augmentation requirement, malformed warnings and thrown error. Only the BaseContainer success case reached mock spawn, with an identical effective request; the caller request stayed unchanged. On both variants and both paths, a native-creation error supplied by the double propagated after exactly one spawn attempt. These observations establish JavaScript control flow only; the mock SDK does not validate MXC request semantics or exercise an OS boundary.
+
+The actionable upstream contribution has three parts:
+
+1. At the launcher boundary, add an explicit opt-in BaseContainer requirement and request-aware diagnostics for the exact effective request used by both spawn paths. Bound the synchronous native probe with a supervised subprocess deadline; a JavaScript timer on the blocked event loop is insufficient. Retain request/candidate hashes and bounded redacted results rather than exporting commands or environment contents. The in-memory proposal above covers the refusal predicate and call ordering only, not this production integration.
+2. Obtain a supported creation-time requirement in MXC, or use a verified release that removes every fallback relevant to this profile. Enforce it on the same request in both FFI and PTY creation paths. Keep the preflight advisory with respect to later runtime changes; do not implement a harness claim stronger than the native API.
+3. Once the owning migration exposes that contract, wire the repository adapter to it, hash the SDK executable/DLL pair and all selected candidate assets before/after, run the refusal/deadline/changed-identity tests, then perform the bounded native positive control. Reuse the existing smoke harness rather than duplicating OpenClaw's request builder.
+
+The first next contribution is therefore the supported upstream admission/diagnostic contract, not a standalone harness probe of a reconstructed request. The local source reproducer and tested predicate are ready for upstream discussion; no additional upstream message or PR has been published. #2104 remains open for creation-time enforcement, request observation, bounded native-probe supervision, candidate binding and actual compatibility/positive-control evidence. #1974 retains its broader qualification scope. No installation, host provisioning, DACL change or experiment JSON was added by this audit.
 
 ## Status
 
@@ -788,5 +1088,6 @@ The Bicep workstream has a locally qualified installed worker and its historical
 | Conformance and installed-package qualification | Design complete; installed runner #1972 and bounded fault profile #1973 qualified, native profile #1974 conditional | [#1641](https://github.com/sokolaidev/maf-extensions/issues/1641) (closed) by [#1977](https://github.com/sokolaidev/maf-extensions/pull/1977) (merged) |
 | Installed Bicep conformance runner | Implemented; fresh published-candidate Windows profile qualified | [#1972](https://github.com/sokolaidev/maf-extensions/issues/1972) (closed) by [#1983](https://github.com/sokolaidev/maf-extensions/pull/1983) (merged) |
 | Bounded owner-loss qualification | Complete for the selected Windows/Docker candidate; fresh baseline and all fifteen cases passed independent evaluation | [#1973](https://github.com/sokolaidev/maf-extensions/issues/1973) (closed) by [#2066](https://github.com/sokolaidev/maf-extensions/pull/2066) (merged) |
-| Native MXC workspace and host-file qualification | Open; partial smoke runner and host-file observations recorded; native execution and full matrix unqualified | [#1974](https://github.com/sokolaidev/maf-extensions/issues/1974) (open) |
+| Native MXC workspace and host-file qualification | Open; four hosted comparison attempts recorded; first-trustee preparer progress retained; revised hosted prerequisites passed; BaseContainer direction selected without LPAC; v1 compatibility and usable skills layout pending; native execution and full matrix unqualified | [#1974](https://github.com/sokolaidev/maf-extensions/issues/1974) (open) |
+| Official MXC policy/runtime compatibility | Open; LPAC out of scope; BaseContainer acceptance plan and upstream evidence gaps recorded; tested source preflight proposal; supported request admission and creation-time enforcement pending | [#2104](https://github.com/sokolaidev/maf-extensions/issues/2104) (open) |
 | Full sandbox provider | Design assessed; implementation deferred pending a supported third-party SDK and process/file contracts | [#1642](https://github.com/sokolaidev/maf-extensions/issues/1642) (closed) by [#2073](https://github.com/sokolaidev/maf-extensions/pull/2073) (merged) |

@@ -589,3 +589,28 @@ def test_policy_input_responses_require_strict_json(tmp_path, monkeypatch, phase
         with pytest.raises((RuntimeError, ValueError)):
             asyncio.run(probe)
     assert host.should_exit is True
+
+
+@pytest.mark.parametrize("overflow", [False, True])
+def test_refused_command_retains_bounded_stdout_after_cleanup(tmp_path, overflow):
+    commands = importlib.import_module("openclaw_conformance.commands")
+    install = importlib.import_module("openclaw_conformance.install")
+    code = (
+        "import sys,time; print('progress', flush=True); "
+        + ("print('x'*64, flush=True); " if overflow else "")
+        + "time.sleep(120)"
+    )
+    reason = "setup_output_limit" if overflow else "setup_command_timeout"
+    with pytest.raises(commands.CaptureRefused, match=reason) as caught:
+        commands.capture(
+            [sys.executable, "-I", "-B", "-c", code],
+            tmp_path,
+            install.environment(tmp_path),
+            5,
+            diagnostics=True,
+            stdout_limit=32,
+        )
+    assert caught.value.stdout.startswith(b"progress")
+    assert len(caught.value.stdout) <= 32
+    if overflow:
+        assert len(caught.value.stdout) == 32

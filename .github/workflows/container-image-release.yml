@@ -23,6 +23,7 @@ on:
           - graphviz
           - drawio
           - drawio-export
+          - shell
           - terraform-random
           - opentofu-random
           - terraform-avm

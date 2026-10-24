@@ -90,6 +90,12 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             if profile == "bicep"
             else bicep_avm_qualification.command()
         )
+    elif profile == "shell":
+        command = [
+            "/usr/local/bin/python3",
+            "-c",
+            (ROOT / "images/shell-sandbox/test_runner.py").read_text(encoding="utf-8"),
+        ]
     elif profile == "graphviz":
         command = [
             "sh",

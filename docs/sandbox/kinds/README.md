@@ -11,6 +11,7 @@ These pages describe each kind's contract. Package READMEs cover installation an
 | [Bicep](bicep.md) | `bicep_validate` | Compile and lint templates and parameter files | Fixed restore allowlist by default; host can choose closed or unrestricted |
 | [CodeAct](codeact.md) | `execute_code` | Run Python, with optional files, artifacts and host tools | Closed by default; host can add allowed destinations |
 | [draw.io](drawio.md) | `create_drawio`, `export_drawio` | Validate and lay out editable diagrams; optionally export PNG/JPG/SVG | Closed |
+| [Shell](shell.md) | `bash_validate`, `pwsh_validate` | Parse and lint scripts with suppression auditing | Closed |
 | [Terraform / OpenTofu](terraform.md) | Validation and optional formatting tools | Check configuration offline; optionally return formatted files | Closed |
 
 ## Responsibilities
@@ -32,7 +33,7 @@ A kind is a source tool when it returns a result. It can also send data through 
 
 ![Source tools declare result integrity and confidentiality. Returned content items have individual effective labels. The framework shows text or a hidden reference to the model and tracks the conversation label. The model's next call is checked against the destination tool's integrity opt-in and confidentiality limit. Hidden items still contribute confidentiality, and an integrity opt-in does not bypass that limit.](../assets/information-flow.svg)
 
-All four kinds claim `untrusted` for workload output. Compiler diagnostics, guest programs, provider reports and layout output can carry content the host has not established as trusted.
+All kinds claim `untrusted` for workload output. Compiler diagnostics, guest programs, provider reports and layout output can carry content the host has not established as trusted.
 
 Bicep, Terraform and CodeAct's withholding mode also return fixed guidance. The wrapper keeps that guidance trusted and labels workload output separately. draw.io and CodeAct's showing mode have no guidance item.
 
