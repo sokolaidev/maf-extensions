@@ -123,7 +123,8 @@ class ClientPool:
                 # The shared bridge must not retain the request that first waits on it.
                 state.notification = Context().run(asyncio.wrap_future, changed)
             notification = state.notification
-        await asyncio.shield(notification)
+        # Shield callbacks can outlive the waiter on this shared notification.
+        await Context().run(asyncio.shield, notification)
 
     def _forget_empty(self, state: _LoopClients) -> None:
         if not state.entries and not state.retirements:

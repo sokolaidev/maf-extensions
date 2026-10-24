@@ -24,6 +24,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from types import MappingProxyType
 from typing import Any
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
@@ -3223,17 +3224,19 @@ class TestManifestOutputs:
         assert "Error:" in out
         assert sink.names == []
 
-    def test_a_deeply_nested_manifest_is_a_diagnostic_rather_than_a_dead_turn(self):
-        """`RecursionError` is neither a decode error nor a JSON one, and a few thousand nested
-        arrays fit in a fraction of the size ceiling — so it used to leave the tool body and
-        take the caller's turn with it, from a file the guest program chose to write."""
+    def test_manifest_decoding_recursion_is_a_diagnostic(self, monkeypatch):
+        """A decoder recursion failure must leave the turn alive without saving files."""
+        codec = Mock(wraps=json)
+        codec.loads.side_effect = RecursionError("decoder depth exceeded")
+        monkeypatch.setattr(_tool_module, "json", codec)
         sandbox = _ProducingSandbox()
         sink = _RecordingSink()
         tool = _pulling_tool(sandbox, CodeactOutputs.MANIFEST, sink)
-        nested = b"[" * 20_000 + b"]" * 20_000
+        nested = b"[[[]]]"
         assert len(nested) < _MANIFEST_MAX_BYTES
 
         out = _run_producing(tool, sandbox, {_MANIFEST_FILENAME: nested})
+        codec.loads.assert_called_once()
         assert "nested too deeply" in out
         assert sink.names == []
 

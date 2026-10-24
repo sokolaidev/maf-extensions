@@ -32,6 +32,7 @@ import unicodedata
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -2185,12 +2186,16 @@ class TestNamesThatAreNotWhatTheyLookLike:
 
 
 class TestWhatTheSupervisorRefusesToParse:
-    def test_a_deeply_nested_request_is_refused_rather_than_raised(self):
-        """`json.loads` raises `RecursionError`, not `ValueError`, and it is under the size cap."""
-        nested = ("[" * 60_000 + "]" * 60_000).encode("utf-8")
+    def test_request_decoding_recursion_is_refused(self, monkeypatch):
+        """A decoder recursion failure must not escape the supervisor."""
+        codec = Mock(wraps=json)
+        codec.loads.side_effect = RecursionError("decoder depth exceeded")
+        monkeypatch.setattr(host_tools_over_exec, "json", codec)
+        nested = b"[[[]]]"
         limits = TransferLimits(max_bytes_per_file=1 << 20, max_total_bytes=1 << 20, max_files=8)
         guest = _ScriptedGuest([("add", {"left": 1, "right": 1})], raw_request=nested)
         _run(guest, HostToolRun(_registry(response_limits=limits)))
+        codec.loads.assert_called_once()
         assert "not valid JSON" in guest.answers[0]["refusal"]
 
     def test_a_request_that_is_not_utf8_is_refused_rather_than_repaired(self):
