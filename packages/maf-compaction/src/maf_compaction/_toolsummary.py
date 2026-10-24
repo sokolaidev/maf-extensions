@@ -1772,6 +1772,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         prompt_tokens: int,
         trigger_tokens: int,
         fallback_after_record: bool = True,
+        fallback_without_record: bool = True,
         ceiling: int | None = None,
     ) -> bool:
         """Run one pass, judged against a size and a line the caller read rather than this pass.
@@ -1791,9 +1792,9 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 not freed enough. True, the default, is what this strategy's own row does and
                 what :meth:`__call__` passes. The composed row passes False and calls that
                 method itself, last, after everything else it can try: there the fallback is the
-                end of a chain rather than the step straight after the record. The give-up path
-                taken when no record ever arrived is not governed by this and runs here either
-                way.
+                end of a chain rather than the step straight after the record.
+            fallback_without_record: Run the give-up fallback when no record exists. The
+                composed row disables this so its overflow policy controls unrecorded loss.
 
         Returns:
             True if the outgoing messages changed.
@@ -1835,7 +1836,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             return changed
 
         self._capture_pending_value_targets(messages, ceiling)
-        if prompt_tokens < int(budget * self.fallback_fraction):
+        if not fallback_without_record or prompt_tokens < int(budget * self.fallback_fraction):
             # Still waiting for the middleware's forced call to come back. Nothing may be
             # dropped yet: the record is the only thing that would replace it.
             return repaired
@@ -2426,6 +2427,10 @@ class _RecallRefused(Exception):
     """A provider refusal cannot authorize a compaction record."""
 
 
+class _RecallTruncated(Exception):
+    """A length-limited response contains no usable recall record."""
+
+
 def _has_refusal(contents: Sequence[Content]) -> bool:
     return any(
         content.type == "text"
@@ -2810,15 +2815,10 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
     @property
     def records_truncated(self) -> int:
-        """Forced calls the provider cut short because they reached the cap.
+        """Forced responses cut short at the cap, including unusable recall arguments.
 
-        Non-zero means a record may be partial, and a partial record is the one failure mode
-        this design does not otherwise show. A tool call cut mid-arguments produces no record
-        at all, which is loud: the strategy waits, falls back and flags ``FALLBACK``. A call
-        cut just after a closing brace, or repaired by the provider, yields a record that
-        parses and looks complete -- and the strategy then drops every tool group behind
-        something that covers only part of them, scoring the loss as compaction damage rather
-        than as an instrument that ran out of room.
+        Parseable nonblank values can still form a partial record; coverage checks determine
+        what it permits removing. Unusable responses leave a shorter recall request pending.
         """
         return self._records_truncated
 
@@ -2857,7 +2857,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
     @property
     def ignored_forced_calls(self) -> int:
-        """Completed forced responses without a recall tool call, including truncated ones."""
+        """Completed forced responses without a recall tool call, excluding truncated ones."""
         return self._ignored_forced_calls
 
     @property
@@ -2938,6 +2938,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
     def _observe_forced(self, response: ChatResponse[Any]) -> bool:
         if any(_has_refusal(message.contents) for message in response.messages):
             raise _RecallRefused
+        truncated = response.finish_reason == "length"
+        if truncated:
+            self._records_truncated += 1
         normalized = False
         first_values: str | None = None
         for message in response.messages:
@@ -2946,8 +2949,15 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                     continue
                 arguments = content.arguments
                 if isinstance(arguments, str):
-                    arguments = json.loads(arguments)
+                    try:
+                        arguments = json.loads(arguments)
+                    except ValueError:
+                        if truncated:
+                            raise _RecallTruncated from None
+                        raise
                 if not isinstance(arguments, dict):
+                    if truncated:
+                        raise _RecallTruncated
                     raise ValueError("Forced recall requires a JSON object with string values.")
                 arguments = cast(dict[str, Any], arguments)
                 values = arguments.get("values")
@@ -2965,14 +2975,18 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                     content.arguments = {**arguments, "values": values}
                     normalized = True
                 if not isinstance(values, str):
+                    if truncated:
+                        raise _RecallTruncated
                     raise ValueError("Forced recall requires a JSON object with string values.")
+                if truncated and not values.strip():
+                    raise _RecallTruncated
                 if first_values is None:
                     first_values = values
+        if truncated and first_values is None:
+            raise _RecallTruncated
         if first_values is not None and not first_values.strip():
             # A forced response is observed once; blank calls never become record anchors.
             self._observe_record_values(None, False)
-        if response.finish_reason == "length":
-            self._records_truncated += 1
         if any(
             content.type == "function_call" and content.name == RECALL_TOOL_NAME
             for message in response.messages
@@ -2997,7 +3011,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
         Unsupported tool_choice falls back to a temporary trailing message and one tool.
         Two consecutive ignored requests, refusals or value-free records stop recall.
-        Refusals retry once with the original options; other failures also stop recall immediately.
+        Refusals and unusable length-limited records retry once with the original options.
+        Truncation leaves a shorter recall request pending; other failures stop recall immediately.
         Forced streams are buffered so failed updates cannot escape into that retry.
         Cancellation propagates and leaves the pending ask available for a later request.
         """
@@ -3030,6 +3045,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         forced_this_call = self._force_next and not self.recall_disabled and can_call_tools
         reforced_this_call = forced_this_call and self._reforce_next
         refused_this_call = False
+        truncated_this_call = False
         original_messages = list(context.messages)
         original_kwargs = dict(context.kwargs)
         if not forced_this_call and self.disarm is not None:
@@ -3173,6 +3189,24 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             if forced_this_call:
                 self._requeue_forced(reforced=reforced_this_call)
             raise
+        except _RecallTruncated:
+            truncated_this_call = True
+            self._force_next = True
+            self._reforce_next = reforced_this_call
+            self._awaiting_record = False
+            self._ignored_streak = 0
+            self._feedback = (
+                "The previous recall reached the response limit. Write a shorter record"
+                + (
+                    f", targeting at most {max(1, self.record_max_tokens // 4):,} tokens."
+                    if self.record_max_tokens is not None
+                    else "."
+                )
+            )
+            if self.disarm is not None:
+                self.disarm()
+            restore_request()
+            await call_next()
         except _RecallRefused:
             refused_this_call = True
             self._failed_forced_calls += 1
@@ -3222,6 +3256,8 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         # One trigger event, one record. A forced call's own history predates the record it
         # asked for, so there is nothing here to decide on; see :meth:`process`.
         if deferred:
+            return
+        if truncated_this_call:
             return
         self._awaiting_record = (
             forced_this_call and not refused_this_call and not self.recall_disabled
