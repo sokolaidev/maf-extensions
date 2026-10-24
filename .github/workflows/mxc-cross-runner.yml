@@ -144,5 +144,7 @@ jobs:
           path: |
             ${{ runner.temp }}/mxc-cross/report.json
             ${{ runner.temp }}/mxc-cross/service.log
+            ${{ runner.temp }}/mxc-cross/*/scratch/*/native.stdout
+            ${{ runner.temp }}/mxc-cross/*/scratch/*/native.stderr
           if-no-files-found: error
           retention-days: 14

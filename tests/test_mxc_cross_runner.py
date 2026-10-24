@@ -263,7 +263,11 @@ def test_workflow_requires_oidc_and_overlapping_roles():
     ]
     assert uploads == [
         "${{ runner.temp }}/mxc-cross/public/${{ matrix.role }}.json",
-        "${{ runner.temp }}/mxc-cross/report.json\n${{ runner.temp }}/mxc-cross/service.log\n",
+        (
+            "${{ runner.temp }}/mxc-cross/report.json\n${{ runner.temp }}/mxc-cross/service.log\n"
+            "${{ runner.temp }}/mxc-cross/*/scratch/*/native.stdout\n"
+            "${{ runner.temp }}/mxc-cross/*/scratch/*/native.stderr\n"
+        ),
     ]
 
 
