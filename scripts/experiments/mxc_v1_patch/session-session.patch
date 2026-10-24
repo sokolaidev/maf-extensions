@@ -10,9 +10,9 @@
  isolation_session = ["dep:windows-collections", "dep:windows-future"]
 --- a/src/mxc-sdk/src/backends/hyperlight/common/mod.rs
 +++ b/src/mxc-sdk/src/backends/hyperlight/common/mod.rs
-@@ -110,6 +110,9 @@
-     AllowList, AppSandbox, BlockList, Mount, SandboxBuilder, Snapshot, Yield,
- };
+@@ -108,6 +108,9 @@
+ use hyperlight_unikraft::hyperlight_host::HyperlightError;
+ use hyperlight_unikraft::{AppSandbox, Mount, SandboxBuilder, Snapshot, Yield};
  
 +#[cfg(feature = "maf-session-preview")]
 +pub mod session_preview;
