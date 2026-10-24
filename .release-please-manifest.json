@@ -15,5 +15,6 @@
   "packages/maf-sandbox-bubblewrap": "0.3.0",
   "packages/maf-compaction": "0.7.1",
   "packages/maf-cachebench": "0.3.0",
-  "packages/maf-sandbox-mcp": "0.2.0"
+  "packages/maf-sandbox-mcp": "0.2.0",
+  "packages/maf-sandbox-shell": "0.1.0"
 }
