@@ -286,7 +286,7 @@ def persistent_request_code(url):
     return (
         "import http.client,json,urllib.parse\n"
         "class TrackedConnection(http.client.HTTPConnection):\n"
-        " generation=0\n def connect(self):\n  super().connect(); self.generation+=1\n"
+        " generation=0\n def connect(self):\n  self.generation+=1; super().connect()\n"
         "p=urllib.parse.urlsplit("
         + repr(url)
         + "); c=TrackedConnection(p.hostname,p.port,timeout=40); results=[]\n"

@@ -270,44 +270,64 @@ def test_origin_holds_response_until_independent_release(native_probe, monkeypat
     assert json.loads(held.getvalue().split(b"\r\n\r\n", 1)[1]) == hits[0]
 
 
+@pytest.mark.parametrize(
+    "close_first,fail_reconnect", [(False, False), (True, False), (True, True)]
+)
 def test_persistent_guest_uses_hostname_without_proxy_environment(
-    native_probe, monkeypatch, capsys
+    native_probe, close_first, fail_reconnect
 ):
-    import http.client
-    import urllib.request
+    import os
+    import subprocess
+    import sys
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     calls = []
 
-    class Connection:
-        def __init__(self, host, port, timeout):
-            assert (host, port) == ("allowed.example", 8000)
-            self.connected = False
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
 
-        def connect(self):
-            self.connected = True
+        def do_GET(self):
+            calls.append((self.path, self.headers["Host"]))
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            if close_first and len(calls) == 1:
+                self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(b"{}")
 
-        def request(self, method, path, headers):
-            if not self.connected:
-                self.connect()
-            calls.append((method, path, headers))
+        def log_message(self, *args):
+            pass
 
-        def getresponse(self):
-            return SimpleNamespace(status=200, read=lambda size: b"{}")
-
-        def close(self):
-            self.connected = False
-
-    def no_proxy():
-        pytest.fail("native hostname interception must not depend on HTTP_PROXY")
-
-    monkeypatch.setattr(http.client, "HTTPConnection", Connection)
-    monkeypatch.setattr(urllib.request, "getproxies", no_proxy)
-    exec(
-        native_probe.persistent_request_code("http://allowed.example:8000/allowed/hold?case=x"), {}
-    )
-    observed = json.loads(capsys.readouterr().out)
-    assert [item["connection_generation"] for item in observed] == [1, 1]
-    assert calls == [
-        ("GET", "/allowed/hold?case=x", {"Host": "allowed.example:8000"}),
-        ("GET", "/allowed/after?case=x", {"Host": "allowed.example:8000"}),
-    ]
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        host = "localhost:" + str(server.server_port)
+        code = native_probe.persistent_request_code("http://" + host + "/allowed/hold?case=x")
+        if fail_reconnect:
+            code = (
+                "import socket\n_original=socket.create_connection; _attempts=0\n"
+                "def create(*args,**kwargs):\n global _attempts\n _attempts+=1\n"
+                " if _attempts>1: raise PermissionError(13,'refused')\n"
+                " return _original(*args,**kwargs)\nsocket.create_connection=create\n"
+            ) + code
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                env={key: value for key, value in os.environ.items() if "proxy" not in key.lower()},
+                check=True,
+                capture_output=True,
+                encoding="utf-8",
+                timeout=10,
+            )
+        finally:
+            server.shutdown()
+            worker.join(timeout=2)
+    observed = json.loads(result.stdout)
+    assert [item["connection_generation"] for item in observed] == [1, 2 if close_first else 1]
+    if fail_reconnect:
+        assert observed[1]["errno"] == 13
+        assert calls == [("/allowed/hold?case=x", host)]
+    else:
+        assert [item["status"] for item in observed] == [200, 200]
+        assert calls == [("/allowed/hold?case=x", host), ("/allowed/after?case=x", host)]
