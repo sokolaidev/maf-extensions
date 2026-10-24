@@ -23,8 +23,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+from . import cross_compat, remote_control, remote_host
 from . import remote_api as api
-from . import remote_control, remote_host
 from .remote_authority import Authority
 
 ROLES = ("a", "b", "coordinator")
@@ -46,7 +46,7 @@ def _save(path: Path, value: dict) -> None:
 
 
 def _binding() -> dict:
-    return {key: os.environ[key] for key in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")}
+    return cross_compat.binding()
 
 
 def _fingerprint(pem: str) -> str:
@@ -95,13 +95,8 @@ def bootstrap(root: Path, bundle: Path, role: str, address: str) -> None:
     os.chmod(root / "key.pem", 0o600)
     pem = certificate.public_bytes(serialization.Encoding.PEM).decode()
     (root / "certificate.pem").write_text(pem, encoding="ascii")
-    profile = {
-        "helper": remote_host.digest(bundle / "helper"),
-        "startup_index": remote_host.digest(bundle / "startup/index.json"),
-        "policy": "closed",
-        "platform": platform.system(),
-        "architecture": platform.machine(),
-    }
+    profile = cross_compat.load_fixture(bundle)
+    vendor = cross_compat.cpu_vendor() if role != "coordinator" else None
     _save(
         root / "public" / f"{role}.json",
         {
@@ -109,6 +104,7 @@ def bootstrap(root: Path, bundle: Path, role: str, address: str) -> None:
             "address": address,
             "certificate": pem,
             "profile": profile,
+            "cpu_vendor": vendor,
             "boot": _boot(),
             "binding": _binding(),
         },
@@ -120,7 +116,8 @@ def validate_peers(peers: dict[str, dict], expected: dict) -> None:
     _require(set(peers) == set(ROLES), "three roles are required")
     for role, peer in peers.items():
         _require(
-            set(peer) == {"role", "address", "certificate", "profile", "boot", "binding"},
+            set(peer)
+            == {"role", "address", "certificate", "profile", "cpu_vendor", "boot", "binding"},
             "unexpected discovery _fields",
         )
         _require(
@@ -135,7 +132,15 @@ def validate_peers(peers: dict[str, dict], expected: dict) -> None:
             len(peer["boot"]) == 64 and all(c in "0123456789abcdef" for c in peer["boot"]),
             "invalid boot identity",
         )
+        cross_compat.validate_profile(peer["profile"])
         _require(peer["profile"] == peers["a"]["profile"], "native profiles differ")
+        if role != "coordinator":
+            _require(
+                peer["cpu_vendor"] == peer["profile"]["cpu_vendor"],
+                f"{role}: execution CPU vendor differs from fixture producer",
+            )
+        else:
+            _require(peer["cpu_vendor"] is None, "coordinator must not claim native execution")
         certificate = x509.load_pem_x509_certificate(peer["certificate"].encode())
         names = certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
         _require(
@@ -146,6 +151,16 @@ def validate_peers(peers: dict[str, dict], expected: dict) -> None:
     _require(
         peers["a"]["profile"]["platform"] == "Linux", "only Linux is qualified by this harness"
     )
+
+
+def validate_local(bundle: Path, role: str, peer: dict) -> None:
+    """Recheck local fixture and CPU before opening an execution or coordinator endpoint."""
+    _require(cross_compat.load_fixture(bundle) == peer["profile"], "local fixture profile differs")
+    if role != "coordinator":
+        _require(
+            cross_compat.cpu_vendor() == peer["cpu_vendor"] == peer["profile"]["cpu_vendor"],
+            "local execution CPU vendor differs from admitted profile",
+        )
 
 
 def discover(root: Path, role: str) -> None:
@@ -235,6 +250,7 @@ class Worker:
     """Trusted test driver with fixed programs; only the coordinator certificate can drive it."""
 
     def __init__(self, root: Path, bundle: Path, role: str, peers: dict):
+        validate_local(bundle, role, peers[role])
         self.root, self.bundle, self.role, self.peers = root, bundle, role, peers
         self.grants = {_fingerprint(peers["coordinator"]["certificate"]): frozenset(SESSIONS)}
         self.config, self.scratch = _configuration(peers[role]["profile"])
@@ -560,25 +576,36 @@ def main() -> int:
     parser.add_argument("--role", choices=ROLES, required=True)
     parser.add_argument("--address")
     args = parser.parse_args()
-    if args.mode == "bootstrap":
-        bootstrap(args.root, args.bundle, args.role, args.address)
-        return 0
-    if args.mode == "discover":
-        discover(args.root, args.role)
-        return 0
-    peers = json.loads((args.root / "peers.json").read_text("utf-8"))
-    validate_peers(peers, _binding())
-    if args.mode == "service":
-        return 0 if serve(args.root, args.bundle, args.role, peers) else 1
-    report = {
+    report: dict = {
         "status": "failed",
+        "phase": args.mode,
         "role": args.role,
         "binding": _binding(),
-        "profile": peers[args.role]["profile"],
-        "distinct_boots": len({p["boot"] for p in peers.values()}),
         "python": platform.python_version(),
     }
     try:
+        if args.mode == "bootstrap":
+            bootstrap(args.root, args.bundle, args.role, args.address)
+            report["status"] = "pending"
+            return 0
+        if args.mode == "discover":
+            local = json.loads((args.root / "public" / f"{args.role}.json").read_text("utf-8"))
+            report.update(profile=local["profile"], cpu_vendor=local["cpu_vendor"])
+            discover(args.root, args.role)
+            report["status"] = "pending"
+            return 0
+        peers = json.loads((args.root / "peers.json").read_text("utf-8"))
+        report.update(
+            profile=peers[args.role]["profile"],
+            cpu_vendor=peers[args.role]["cpu_vendor"],
+            distinct_boots=len({p["boot"] for p in peers.values()}),
+        )
+        report["phase"] = "admission"
+        validate_peers(peers, _binding())
+        validate_local(args.bundle, args.role, peers[args.role])
+        if args.mode == "service":
+            return 0 if serve(args.root, args.bundle, args.role, peers) else 1
+        report["phase"] = "native"
         if args.role == "coordinator":
             report.update(orchestrate(args.root, args.bundle, peers))
         else:
@@ -588,8 +615,13 @@ def main() -> int:
             )
         report["status"] = "passed"
         return 0
+    except RuntimeError as error:
+        if report["phase"] != "native":
+            report["error"] = str(error)[:1024]
+        raise
     finally:
-        _save(args.root / "report.json", report)
+        if args.mode != "service":
+            _save(args.root / "report.json", report)
 
 
 if __name__ == "__main__":
