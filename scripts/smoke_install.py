@@ -841,7 +841,7 @@ def _smoke_maf_sandbox_mcp() -> str:
     assert len(value.digest) == 64
     app = asyncio.run(http_application("sha256:" + "a" * 64, "{}", "smoke", "a" * 64, 8765))
     assert list(app.service.bindings) == [TOOL]
-    assert app.service.bindings[TOOL].tool.outputSchema == OUTPUT_SCHEMA
+    assert app.service.bindings[TOOL].tool.output_schema == OUTPUT_SCHEMA
     executable = pathlib.Path(sys.executable).with_name(
         "maf-bicep-mcp.exe" if sys.platform == "win32" else "maf-bicep-mcp"
     )

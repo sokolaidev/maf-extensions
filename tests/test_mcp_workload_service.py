@@ -8,13 +8,16 @@ import os
 import socket
 import uuid
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 from pathlib import Path
 
 import httpx
+import httpx2
 import pytest
 from agent_framework import MCPStreamableHTTPTool
-from mcp import types
+from mcp import Client, types
+from mcp.client.streamable_http import streamable_http_client
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE = Path(__import__("maf_sandbox_mcp").__file__).parent
@@ -37,7 +40,7 @@ HEADERS = {
 def result(value):
     return types.CallToolResult(
         content=[types.TextContent(type="text", text=json.dumps(value, indent=2))],
-        structuredContent=value,
+        structured_content=value,
     )
 
 
@@ -88,12 +91,12 @@ class Harness:
             types.Tool(
                 name="echo",
                 description="Bounded test workload",
-                inputSchema={
+                input_schema={
                     "type": "object",
                     "properties": {"value": {"type": "string"}, "hold": {"type": "boolean"}},
                     "additionalProperties": False,
                 },
-                outputSchema={
+                output_schema={
                     "type": "object",
                     "properties": {"answer": {"type": "string"}},
                     "required": ["answer"],
@@ -110,13 +113,13 @@ class Harness:
             a,
             tool=types.Tool(
                 name="increment",
-                inputSchema={
+                input_schema={
                     "type": "object",
                     "properties": {"number": {"type": "integer"}},
                     "required": ["number"],
                     "additionalProperties": False,
                 },
-                outputSchema={
+                output_schema={
                     "type": "object",
                     "properties": {"total": {"type": "integer"}},
                     "required": ["total"],
@@ -127,10 +130,12 @@ class Harness:
         return core.WorkloadService([a, b], [resource])
 
 
-@pytest.mark.parametrize("sdk_version", ["1.26.0", "1.28.0", "1.28.1", "1.29.1", "2.0.0"])
+@pytest.mark.parametrize(
+    "sdk_version", ["1.26.0", "1.28.0", "1.28.1", "1.29.1", "1.30.0", "2.0.0", "2.1.0"]
+)
 def test_http_adapter_rejects_unqualified_sdk_versions(monkeypatch, sdk_version):
     monkeypatch.setattr(http, "version", lambda _: sdk_version)
-    with pytest.raises(RuntimeError, match=r"requires mcp==1\.30\.0"):
+    with pytest.raises(RuntimeError, match=r"requires mcp==2\.2\.0"):
         http.WorkloadHTTP(Harness().service(), TOKEN, 8765)
 
 
@@ -279,8 +284,8 @@ def test_two_maf_clients_discover_distinct_bindings_and_close_independently():
             )
             async with b:
                 async with a:
-                    assert a.session is not None
-                    assert {t.name for t in (await a.session.list_tools()).tools} == {
+                    assert a.is_connected
+                    assert {t.name for t in a.functions} == {
                         "echo",
                         "increment",
                     }
@@ -366,7 +371,7 @@ def test_registry_saturation_churn_and_idle_expiry(record_property):
                     await client.delete("/mcp", headers={"mcp-session-id": sid})
                 ).status_code == 200
                 await until(lambda: not app.sessions)
-            assert app.service._session_manager is None
+            assert app.service._lowlevel_server._session_manager is None
             sid = await initialize(client)
             retained.append(("idle", app.sessions[sid]))
             app.sessions[sid].touched -= app.idle_seconds
@@ -399,7 +404,9 @@ def test_registry_saturation_churn_and_idle_expiry(record_property):
                     observed["sdk_streams"] == observed["request_ids"] == observed["requests"] == 0
                 )
             assert not app.sessions and app.readers == 0 and app.service.active is None
-            assert not app.service.poisoned and app.service._session_manager is None
+            assert (
+                not app.service.poisoned and app.service._lowlevel_server._session_manager is None
+            )
             record_property("retirement_observations", observations)
             record_property(
                 "retirement_final_state",
@@ -408,7 +415,7 @@ def test_registry_saturation_churn_and_idle_expiry(record_property):
                     "body_readers": app.readers,
                     "active_call": app.service.active is not None,
                     "poisoned": app.service.poisoned,
-                    "default_manager_absent": app.service._session_manager is None,
+                    "default_manager_absent": app.service._lowlevel_server._session_manager is None,
                 },
             )
 
@@ -878,14 +885,14 @@ def test_request_deadline_and_repeated_direct_cancellation_hold_admission():
                 assert service.active is not None and not task.done()
             assert (
                 await service.invoke("increment", {"number": 1}, core.CallContext("b", "1"))
-            ).isError
+            ).is_error
             h.cleanup_hold.set()
             with pytest.raises(asyncio.CancelledError):
                 await task
             assert service.active is None
             assert not (
                 await service.invoke("increment", {"number": 1}, core.CallContext("b", "1"))
-            ).isError
+            ).is_error
 
     asyncio.run(scenario(False))
     asyncio.run(scenario(True))
@@ -943,10 +950,10 @@ def test_live_http_bicep_maf_cancel_and_owned_recovery(tmp_path):
                         request_timeout=240,
                     )
                     async with maf:
-                        assert maf.session is not None
-                        tools = await maf.session.list_tools()
                         original = await prototype.make_server(None).list_tools()
-                        assert tools.tools == original
+                        assert {t.name: t.parameters() for t in maf.functions} == {
+                            t.name: t.input_schema for t in original
+                        }
                         for source, verdict in [
                             ("output greeting string = 'hello'", "valid"),
                             ("output greeting int = 'wrong'", "invalid"),
@@ -1426,8 +1433,8 @@ def test_nonfinite_values_refused_at_shared_binding_boundary(value):
         h = Harness()
         service = h.service()
         tool = service.bindings["increment"].tool.model_copy(deep=True)
-        tool.inputSchema["properties"]["number"] = {"type": "number", "minimum": 0, "maximum": 10}
-        tool.outputSchema["properties"]["total"] = {"type": "number"}
+        tool.input_schema["properties"]["number"] = {"type": "number", "minimum": 0, "maximum": 10}
+        tool.output_schema["properties"]["total"] = {"type": "number"}
 
         async def execute(args, context):
             h.calls.append(context)
@@ -1441,11 +1448,11 @@ def test_nonfinite_values_refused_at_shared_binding_boundary(value):
             bad_input = await service.invoke(
                 "increment", {"number": value}, core.CallContext("a", "1")
             )
-            assert bad_input.isError and not h.calls
+            assert bad_input.is_error and not h.calls
             bad_output = await service.invoke(
                 "increment", {"number": 1}, core.CallContext("a", "2")
             )
-            assert bad_output.isError and len(h.calls) == 1
+            assert bad_output.is_error and len(h.calls) == 1
 
     asyncio.run(scenario())
 
@@ -1520,5 +1527,175 @@ def test_client_request_ids_cannot_replace_sdk_get_stream():
                     assert transport._request_streams[GET_STREAM_KEY] is get_stream
                 await client.delete("/mcp", headers={"mcp-session-id": sid})
                 await until(lambda: not app.sessions)
+
+    asyncio.run(scenario())
+
+
+def test_maf_owned_reset_retires_only_its_previous_session():
+    async def scenario():
+        h = Harness()
+        async with running(h.service()) as (app, client, server):
+            tool = MCPStreamableHTTPTool(
+                name="owned",
+                url=str(client.base_url) + "/mcp",
+                static_headers={"Authorization": f"Bearer {TOKEN}"},
+                load_prompts=False,
+            )
+            async with tool:
+                assert len(app.sessions) == 1
+                previous = next(iter(app.sessions))
+                await tool.connect(reset=True)
+                await until(lambda: previous not in app.sessions)
+                assert len(app.sessions) == 1
+                assert await tool.call_tool("echo", value="after reset")
+            await until(lambda: not app.sessions)
+        assert h.closes == 1 and not h.calls[0].session_id == previous
+
+    asyncio.run(scenario())
+
+
+def test_maf_wrapper_preserves_caller_owned_client_after_reset_and_close():
+    async def scenario():
+        h = Harness()
+        async with running(h.service()) as (app, client, server):
+            async with httpx2.AsyncClient(headers={"Authorization": f"Bearer {TOKEN}"}) as network:
+                transport = streamable_http_client(
+                    str(client.base_url) + "/mcp", http_client=network
+                )
+                async with Client(transport, mode="legacy") as owned:
+                    session = next(iter(app.sessions))
+                    tool = MCPStreamableHTTPTool(
+                        name="borrowed", mcp_client=owned, load_prompts=False
+                    )
+                    async with tool:
+                        assert await tool.call_tool("echo", value="through wrapper")
+                        await tool.connect(reset=True)
+                        assert set(app.sessions) == {session}
+                    response = await owned.call_tool("echo", {"value": "after wrapper close"})
+                    assert response.structured_content == {"answer": "after wrapper close"}
+                    assert set(app.sessions) == {session} and not network.is_closed
+                await until(lambda: not app.sessions)
+                assert not network.is_closed
+        assert h.closes == 1
+
+    asyncio.run(scenario())
+
+
+def test_successful_http_responses_close_connections_without_retiring_session():
+    async def scenario():
+        async with running(Harness().service()) as (app, client, server):
+            sid = await initialize(client)
+            for request_id in (10, 11):
+                response = await call(client, sid, request_id=request_id)
+                assert response.headers["connection"] == "close"
+                assert not response.json()["result"]["isError"]
+                assert set(app.sessions) == {sid}
+            response = await client.delete("/mcp", headers={"mcp-session-id": sid})
+            assert response.headers["connection"] == "close"
+            await until(lambda: not app.sessions)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("supplied_client", [False, True])
+def test_maf_response_cookie_policy_and_http_client_ownership(monkeypatch, supplied_client):
+    cookies = []
+    original = http.WorkloadHTTP.__call__
+
+    async def observe(self, scope, receive, send):
+        if scope["type"] != "http" or scope["path"] != "/mcp":
+            return await original(self, scope, receive, send)
+        cookies.append(dict(scope["headers"]).get(b"cookie"))
+
+        async def set_cookie(message):
+            if message["type"] == "http.response.start":
+                message["headers"].append((b"set-cookie", b"session_hint=present; Path=/"))
+            await send(message)
+
+        return await original(self, scope, receive, set_cookie)
+
+    monkeypatch.setattr(http.WorkloadHTTP, "__call__", observe)
+
+    async def scenario():
+        async with running(Harness().service()) as (app, client, server):
+            async with httpx2.AsyncClient() as network:
+                tool = MCPStreamableHTTPTool(
+                    name="cookies",
+                    url=str(client.base_url) + "/mcp",
+                    static_headers={"Authorization": f"Bearer {TOKEN}"},
+                    http_client=network if supplied_client else None,
+                    load_prompts=False,
+                )
+                async with tool:
+                    assert await tool.call_tool("echo", value="cookie policy")
+                await until(lambda: not app.sessions)
+                assert not network.is_closed
+        assert len(cookies) > 2
+        assert any(cookie is not None for cookie in cookies) is supplied_client
+
+    asyncio.run(scenario())
+
+
+def test_maf_lifecycle_can_cross_tasks_without_leaking_caller_context():
+    identity = ContextVar("adoption_identity", default="unbound")
+
+    async def scenario():
+        async with running(Harness().service()) as (app, client, server):
+            tool = MCPStreamableHTTPTool(
+                name="tasks",
+                url=str(client.base_url) + "/mcp",
+                static_headers={"Authorization": f"Bearer {TOKEN}"},
+                load_prompts=False,
+            )
+
+            async def operation(label, action):
+                token = identity.set(label)
+                try:
+                    result = await action()
+                    assert identity.get() == label
+                    return result
+                finally:
+                    identity.reset(token)
+
+            try:
+                await asyncio.create_task(operation("connect", tool.connect))
+                assert await asyncio.create_task(
+                    operation("call", lambda: tool.call_tool("echo", value="isolated"))
+                )
+            finally:
+                await asyncio.create_task(operation("close", tool.close))
+            assert identity.get() == "unbound"
+            await until(lambda: not app.sessions)
+
+    asyncio.run(scenario())
+
+
+def test_maf_discovery_failure_retires_partial_connection_and_allows_reconnect(monkeypatch):
+    async def scenario():
+        async with running(Harness().service()) as (app, client, server):
+            tool = MCPStreamableHTTPTool(
+                name="retry",
+                url=str(client.base_url) + "/mcp",
+                static_headers={"Authorization": f"Bearer {TOKEN}"},
+                load_prompts=False,
+            )
+            original = tool.load_tools
+
+            async def fail_after_discovery():
+                await original()
+                raise RuntimeError("discovery interrupted")
+
+            monkeypatch.setattr(tool, "load_tools", fail_after_discovery)
+            try:
+                with pytest.raises(RuntimeError, match="discovery interrupted"):
+                    await tool.connect()
+                await until(lambda: not app.sessions)
+                assert not tool.is_connected
+                monkeypatch.setattr(tool, "load_tools", original)
+                await tool.connect()
+                assert await tool.call_tool("echo", value="reconnected")
+            finally:
+                await tool.close()
+            await until(lambda: not app.sessions)
 
     asyncio.run(scenario())

@@ -26,8 +26,8 @@ def test_composition_is_inert_until_service_start():
         assert app.service.active is None
         assert app.sessions == {}
         binding = app.service.bindings["bicep_validate"]
-        assert binding.tool.outputSchema == server.OUTPUT_SCHEMA
-        assert binding.tool.inputSchema["additionalProperties"] is False
+        assert binding.tool.output_schema == server.OUTPUT_SCHEMA
+        assert binding.tool.input_schema["additionalProperties"] is False
 
     asyncio.run(check())
 

@@ -1,4 +1,4 @@
-"""Bounded stateful HTTP transport for the experimental workload service (MCP 1.30.0)."""
+"""Bounded stateful HTTP transport for the experimental workload service (MCP 2.2.0)."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import uvicorn
 from mcp import types
 from mcp.server.streamable_http import StreamableHTTPServerTransport
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
+from mcp.types.version import HANDSHAKE_PROTOCOL_VERSIONS
 from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.responses import Response
@@ -71,8 +71,8 @@ class WorkloadHTTP:
     """Authenticated ASGI endpoint owning the actual bounded SDK session registry."""
 
     def __init__(self, service: WorkloadService, token: str, port: int) -> None:
-        if version("mcp") != "1.30.0":
-            raise RuntimeError("This adapter requires mcp==1.30.0.")
+        if version("mcp") != "2.2.0":
+            raise RuntimeError("This adapter requires mcp==2.2.0.")
         if not re.fullmatch(r"[0-9a-f]{64}", token) or not 1 <= port <= 65535:
             raise ValueError("Expected a 256-bit hex credential and a valid loopback port.")
         self.service = service
@@ -164,8 +164,8 @@ class WorkloadHTTP:
         try:
             async with record.transport.connect() as streams:
                 record.started.set()
-                # FastMCP exposes custom session ownership through this pinned SDK boundary.
-                server = self.service._mcp_server  # pyright: ignore[reportPrivateUsage]
+                # MCPServer exposes custom session ownership through this pinned SDK boundary.
+                server = self.service._lowlevel_server  # pyright: ignore[reportPrivateUsage]
                 await server.run(*streams, server.create_initialization_options())
         except Exception:
             self.service.poisoned = True
@@ -190,6 +190,19 @@ class WorkloadHTTP:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        response_send = send
+
+        async def close_connection(message: Message) -> None:
+            # MCP sessions span sockets; successful responses must not retain idle sockets.
+            if message["type"] == "http.response.start" and 200 <= message["status"] < 300:
+                message["headers"] = [
+                    (name, value)
+                    for name, value in message.get("headers", [])
+                    if name.lower() != b"connection"
+                ] + [(b"connection", b"close")]
+            await response_send(message)
+
+        send = close_connection
         headers = scope.get("headers", [])
         grouped: dict[bytes, list[bytes]] = {}
         for name, value in headers:
@@ -233,7 +246,7 @@ class WorkloadHTTP:
             and grouped.get(b"mcp-protocol-version", [b"2025-03-26"])[0].decode(
                 "ascii", errors="replace"
             )
-            not in SUPPORTED_PROTOCOL_VERSIONS
+            not in HANDSHAKE_PROTOCOL_VERSIONS
         ):
             await Response(status_code=400)(scope, receive, send)
             return
@@ -309,13 +322,13 @@ class WorkloadHTTP:
             return
         try:
             raw = json.loads(body, parse_constant=_finite_float, parse_float=_finite_float)
-            message = types.JSONRPCMessage.model_validate(raw).root
+            message = types.jsonrpc_message_adapter.validate_python(raw)
             if isinstance(message, types.JSONRPCRequest):
-                types.ClientRequest.model_validate(raw)
+                types.client_request_adapter.validate_python(raw)
                 if isinstance(raw.get("id"), bool):
                     raise ValueError
             elif isinstance(message, types.JSONRPCNotification):
-                types.ClientNotification.model_validate(raw)
+                types.client_notification_adapter.validate_python(raw)
             else:
                 raise ValueError
             accept = b",".join(headers.get(b"accept", []))
@@ -340,8 +353,8 @@ class WorkloadHTTP:
                 raw["id"] = sdk_id
             elif message.method == "notifications/cancelled":
                 notification = types.CancelledNotification.model_validate(raw)
-                if notification.params.requestId is not None:
-                    raw["params"]["requestId"] = _sdk_request_id(notification.params.requestId)
+                if notification.params.request_id is not None:
+                    raw["params"]["requestId"] = _sdk_request_id(notification.params.request_id)
             body = json.dumps(
                 raw, ensure_ascii=False, allow_nan=False, separators=(",", ":")
             ).encode("utf-8")

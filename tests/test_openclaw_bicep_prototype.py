@@ -18,6 +18,7 @@ import anyio
 import jsonschema
 import pytest
 from agent_framework import Content, MCPStdioTool
+from agent_framework.exceptions import ToolExecutionException
 from maf_sandbox import (
     DisposalFailure,
     Egress,
@@ -31,15 +32,13 @@ from maf_sandbox.maf import COMPLETED_TEXT, NOT_COMPLETED_TEXT
 from maf_sandbox.testing import InProcessSandboxBackend
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 from maf_sandbox_mcp import server as prototype
-from mcp import ClientSession, StdioServerParameters, types
+from mcp import Client, ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.server.stdio import stdio_server
-from mcp.shared.exceptions import McpError
-from mcp.shared.memory import create_connected_server_and_client_session
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "samples/experimental/openclaw_bicep/server.py"
+SCRIPT = Path(prototype.__file__)
 
 IMAGE = "sha256:" + "a" * 64
 CONFIG = (ROOT / "images/bicep-sandbox/prepared.bicepconfig.json").read_text()
@@ -154,7 +153,7 @@ def test_framing_is_bounded_before_json_parse():
     assert prototype.BoundedInput(io.BytesIO(b'{"x":1}\n')).readline() == '{"x":1}\n'
 
 
-def test_fastmcp_schemas_dispatch_and_bounded_rejections():
+def test_mcpserver_schemas_dispatch_and_bounded_rejections():
     async def scenario():
         calls = []
 
@@ -172,21 +171,21 @@ def test_fastmcp_schemas_dispatch_and_bounded_rejections():
             }
 
         server = prototype.make_server(SimpleNamespace(call=validate))
-        assert isinstance(server, FastMCP)
-        async with create_connected_server_and_client_session(server) as client:
+        assert isinstance(server, MCPServer)
+        async with Client(server, mode="legacy") as client:
             tool = (await client.list_tools()).tools[0]
-            assert tool.outputSchema is not None
-            assert tool.outputSchema == prototype.OUTPUT_SCHEMA
-            assert tool.inputSchema["additionalProperties"] is False
-            jsonschema.validate(arguments(), tool.inputSchema)
+            assert tool.output_schema is not None
+            assert tool.output_schema == prototype.OUTPUT_SCHEMA
+            assert tool.input_schema["additionalProperties"] is False
+            jsonschema.validate(arguments(), tool.input_schema)
             response = await client.call_tool(prototype.TOOL, arguments())
-            assert not response.isError
-            assert response.structuredContent is not None
-            assert response.structuredContent["verdict"] == "valid"
-            jsonschema.validate(response.structuredContent, tool.outputSchema)
-            assert json.loads(response_text(response)) == response.structuredContent
+            assert not response.is_error
+            assert response.structured_content is not None
+            assert response.structured_content["verdict"] == "valid"
+            jsonschema.validate(response.structured_content, tool.output_schema)
+            assert json.loads(response_text(response)) == response.structured_content
             assert response_text(response) == json.dumps(
-                response.structuredContent, ensure_ascii=False, indent=2
+                response.structured_content, ensure_ascii=False, indent=2
             )
             assert calls == [arguments()]
 
@@ -203,13 +202,13 @@ def test_fastmcp_schemas_dispatch_and_bounded_rejections():
             for data in rejected:
                 if data != rejected[4]:
                     with pytest.raises(jsonschema.ValidationError):
-                        jsonschema.validate(data, tool.inputSchema)
+                        jsonschema.validate(data, tool.input_schema)
                 response = await client.call_tool(prototype.TOOL, data)
-                assert response.isError and response.structuredContent is None
+                assert response.is_error and response.structured_content is None
                 assert len(response_text(response)) < 256
                 assert marker not in response_text(response)
             unknown = await client.call_tool(marker, arguments())
-            assert unknown.isError and marker not in response_text(unknown)
+            assert unknown.is_error and marker not in response_text(unknown)
             assert calls == [arguments()]
             assert not (await client.list_resources()).resources
             assert not (await client.list_prompts()).prompts
@@ -253,15 +252,15 @@ def test_fastmcp_preserves_error_semantics_without_echoing_results(failure):
             }
 
         server = prototype.make_server(SimpleNamespace(call=validate))
-        async with create_connected_server_and_client_session(server) as client:
+        async with Client(server, mode="legacy") as client:
             response = await client.call_tool(prototype.TOOL, arguments())
-            assert response.isError
+            assert response.is_error
             if failure == "cleanup_failed":
-                assert response.structuredContent is not None
-                assert response.structuredContent["status"] == "cleanup_failed"
-                assert response.structuredContent["verdict"] is None
+                assert response.structured_content is not None
+                assert response.structured_content["status"] == "cleanup_failed"
+                assert response.structured_content["verdict"] is None
             else:
-                assert response.structuredContent is None
+                assert response.structured_content is None
                 assert "private-source-marker" not in response_text(response)
                 assert len(response_text(response)) < 256
             if failure == "busy":
@@ -746,11 +745,7 @@ def test_live_stdio_compiler_outcomes_and_cleanup(tmp_path):
             ],
         )
         async with client:
-            session = client.session
-            assert session is not None
-            tools = await session.list_tools()
-            assert [t.name for t in tools.tools] == [prototype.TOOL]
-            assert tools.tools[0].outputSchema == prototype.OUTPUT_SCHEMA
+            assert [t.name for t in client.functions] == [prototype.TOOL]
             for source, expected in [
                 ("output greeting string = 'hello'", "valid"),
                 ("output greeting int = 'wrong'", "invalid"),
@@ -771,8 +766,8 @@ def test_live_stdio_compiler_outcomes_and_cleanup(tmp_path):
                 assert answer["verdict"] == expected, answer
                 assert answer["completed"] == (expected is not None), answer
                 assert answer["cleanup"] == "confirmed", answer
-            rejected = await session.call_tool(prototype.TOOL, arguments(name="../escape.bicep"))
-            assert rejected.isError
+            with pytest.raises(ToolExecutionException, match="portable relative"):
+                await client.call_tool(prototype.TOOL, **arguments(name="../escape.bicep"))
         scope = "openclaw-bicep-" + (tmp_path / "owner").read_text()
         containers = subprocess.run(
             ["docker", "ps", "-aq", "--filter", f"label=maf-sandbox.scope={scope}"],
@@ -831,8 +826,6 @@ def test_live_cancel_active_compiler_and_recover_only_owned_scope(tmp_path):
                     await docker("ps", "-aq", "--filter", f"id={owned.instance_id}")
                 ).strip()
                 assert (await docker("ps", "-q", "--filter", f"id={unrelated.instance_id}")).strip()
-                # The pinned SDK assigns this ID to the next outgoing request.
-                request_id = session._request_id
                 task = asyncio.create_task(session.call_tool(prototype.TOOL, arguments()))
                 deadline = time.monotonic() + 40
                 container = ""
@@ -854,15 +847,8 @@ def test_live_cancel_active_compiler_and_recover_only_owned_scope(tmp_path):
                 assert limits["Memory"] == 1024**3 and limits["NanoCpus"] == 10**9
                 assert limits["PidsLimit"] == 128 and "ALL" in limits["CapDrop"]
                 assert inspection["Config"]["Labels"]["maf-sandbox.call"]
-                await session.send_notification(
-                    types.ClientNotification(
-                        types.CancelledNotification(
-                            method="notifications/cancelled",
-                            params=types.CancelledNotificationParams(requestId=request_id),
-                        )
-                    )
-                )
-                with pytest.raises(McpError, match="cancelled"):
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
                     await task
                 deadline = time.monotonic() + 45
                 while (await docker("ps", "-aq", "--filter", f"id={container}")).strip():
