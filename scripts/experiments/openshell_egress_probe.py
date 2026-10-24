@@ -281,16 +281,25 @@ def inflight_observation(observations, hits, first):
     }
 
 
-def persistent_request_code(url):
-    """Use native hostname connections and record any automatic reconnect."""
+def persistent_request_code(url, signal_path, signal_token):
+    """Keep one HTTP client and gate its follow-up on a separate controller signal."""
     return (
-        "import http.client,json,urllib.parse\n"
+        "import http.client,json,time,urllib.parse\nfrom pathlib import Path\n"
         "class TrackedConnection(http.client.HTTPConnection):\n"
         " generation=0\n def connect(self):\n  self.generation+=1; super().connect()\n"
         "p=urllib.parse.urlsplit("
         + repr(url)
         + "); c=TrackedConnection(p.hostname,p.port,timeout=40); results=[]\n"
         "for url in " + repr([url, url.replace("/hold?", "/after?")]) + ":\n"
+        " if results:\n  deadline=time.monotonic()+40\n  while True:\n"
+        "   try:\n    ready=Path("
+        + repr(signal_path)
+        + ").read_text()=="
+        + repr(signal_token)
+        + "\n   except FileNotFoundError:\n    ready=False\n"
+        "   if ready: break\n"
+        "   if time.monotonic()>=deadline: raise TimeoutError('controller signal absent')\n"
+        "   time.sleep(0.05)\n"
         " try:\n  p=urllib.parse.urlsplit(url); c.request('GET',p.path+'?'+p.query,headers={'Host':p.netloc}); r=c.getresponse(); results.append({'status':r.status,'body':r.read(4096).decode()})\n"
         " except Exception as e:\n  results.append({'error':type(e).__name__,'errno':getattr(e,'errno',None)})\n"
         " results[-1]['connection_generation']=c.generation\n"
@@ -344,9 +353,9 @@ async def measure_native(fixture, ip):
             row for row in rows if parse_qs(urlsplit(row["path"]).query).get("case") == [marker]
         ]
 
-    async def observe(code):
+    async def observe(code, *, timeout=45):
         response = await sandbox.exec(
-            ["python", "-c", code], working_directory="/sandbox", timeout=45
+            ["python", "-c", code], working_directory="/sandbox", timeout=timeout
         )
         if response.exit_code or response.stderr_bytes:
             raise RuntimeError("guest egress observation failed: " + response.stderr)
@@ -447,7 +456,11 @@ async def measure_native(fixture, ip):
             "host": allowed + ":8000",
             "port": 8000,
         }
-        pending = asyncio.create_task(observe(persistent_request_code(url)))
+        signal_path = "/sandbox/.egress-cutover-" + marker
+        signal_token = uuid.uuid4().hex
+        pending = asyncio.create_task(
+            observe(persistent_request_code(url, signal_path, signal_token), timeout=90)
+        )
         try:
             deadline = time.monotonic() + 15
             while not await journal(marker):
@@ -461,6 +474,15 @@ async def measure_native(fixture, ip):
             await update(())
             await check("closed_fresh_http", allowed, "/allowed", "EACCES")
             await check("closed_direct_socket", allowed, "/allowed", "EACCES", direct=True)
+            await observe(
+                "from pathlib import Path; import json; Path("
+                + repr(signal_path)
+                + ").write_text("
+                + repr(signal_token)
+                + "); print(json.dumps({'signalled':True}))"
+            )
+            evidence["followup_signal_after_loaded"] = evidence["loaded_revisions"][-1]
+            fixture.save()
             await asyncio.to_thread(origin_get, ip, "/__release?case=" + marker)
             observations = await pending
             hits = await journal(marker)

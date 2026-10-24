@@ -271,10 +271,11 @@ def test_origin_holds_response_until_independent_release(native_probe, monkeypat
 
 
 @pytest.mark.parametrize(
-    "close_first,fail_reconnect", [(False, False), (True, False), (True, True)]
+    "close_first,fail_reconnect,disconnect_first",
+    [(False, False, False), (True, False, False), (True, True, False), (True, False, True)],
 )
 def test_persistent_guest_uses_hostname_without_proxy_environment(
-    native_probe, close_first, fail_reconnect
+    native_probe, tmp_path, close_first, fail_reconnect, disconnect_first
 ):
     import os
     import subprocess
@@ -289,6 +290,9 @@ def test_persistent_guest_uses_hostname_without_proxy_environment(
 
         def do_GET(self):
             calls.append((self.path, self.headers["Host"]))
+            if disconnect_first and len(calls) == 1:
+                self.close_connection = True
+                return
             self.send_response(200)
             self.send_header("Content-Length", "2")
             if close_first and len(calls) == 1:
@@ -303,7 +307,15 @@ def test_persistent_guest_uses_hostname_without_proxy_environment(
         worker = threading.Thread(target=server.serve_forever, daemon=True)
         worker.start()
         host = "localhost:" + str(server.server_port)
-        code = native_probe.persistent_request_code("http://" + host + "/allowed/hold?case=x")
+        signal_path = tmp_path / "loaded"
+        code = native_probe.persistent_request_code(
+            "http://" + host + "/allowed/hold?case=x", str(signal_path), "exact-loaded"
+        )
+        code = (
+            "from pathlib import Path\n_read=Path.read_text\n"
+            "def read(self,*args,**kwargs):\n print('waiting',flush=True)\n"
+            " return _read(self,*args,**kwargs)\nPath.read_text=read\n"
+        ) + code
         if fail_reconnect:
             code = (
                 "import socket\n_original=socket.create_connection; _attempts=0\n"
@@ -312,22 +324,39 @@ def test_persistent_guest_uses_hostname_without_proxy_environment(
                 " return _original(*args,**kwargs)\nsocket.create_connection=create\n"
             ) + code
         try:
-            result = subprocess.run(
+            process = subprocess.Popen(
                 [sys.executable, "-c", code],
                 env={key: value for key, value in os.environ.items() if "proxy" not in key.lower()},
-                check=True,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 encoding="utf-8",
-                timeout=10,
             )
+            try:
+                assert process.stdout is not None
+                assert process.stdout.readline().strip() == "waiting"
+                signal_path.write_text("wrong-revision")
+                assert process.stdout.readline().strip() == "waiting"
+                assert calls == [("/allowed/hold?case=x", host)]
+                assert process.poll() is None
+                signal_path.write_text("exact-loaded")
+                output, error = process.communicate(timeout=10)
+                assert process.returncode == 0, error
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=5)
         finally:
             server.shutdown()
             worker.join(timeout=2)
-    observed = json.loads(result.stdout)
+    observed = json.loads(output.splitlines()[-1])
     assert [item["connection_generation"] for item in observed] == [1, 2 if close_first else 1]
     if fail_reconnect:
         assert observed[1]["errno"] == 13
         assert calls == [("/allowed/hold?case=x", host)]
     else:
-        assert [item["status"] for item in observed] == [200, 200]
+        if disconnect_first:
+            assert observed[0]["error"] == "RemoteDisconnected"
+            assert observed[1]["status"] == 200
+        else:
+            assert [item["status"] for item in observed] == [200, 200]
         assert calls == [("/allowed/hold?case=x", host), ("/allowed/after?case=x", host)]
