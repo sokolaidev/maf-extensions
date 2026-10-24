@@ -4,6 +4,13 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.31.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.31.0...maf-sandbox-acas-v0.31.1) (2026-10-24)
+
+
+### Fixes
+
+* **acas:** release waiter contexts and patch tooling vulnerabilities ([#2141](https://github.com/sokolaidev/maf-extensions/issues/2141)) ([9301156](https://github.com/sokolaidev/maf-extensions/commit/9301156b1c669c18523654ecd5859269ef20adfa))
+
 ## [0.31.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.30.0...maf-sandbox-acas-v0.31.0) (2026-10-19)
 
 
