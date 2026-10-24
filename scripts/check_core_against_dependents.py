@@ -19,7 +19,9 @@ A breaking core can make them disagree: published tests fail while adapted branc
 Inspect the failure diagnostics first; environment and test-collection errors do not establish
 a compatibility break.
 
-Both halves refuse. For a confirmed compatibility break, release at a version *outside* those
+Both halves refuse unaccounted failures. Historical test corrections and the named ACAS
+baseline defect are hash-bound and reported explicitly; installed wheels are never patched.
+For a confirmed compatibility break, release at a version *outside* those
 ceilings, with `Release-As:` in the commit footer, so the
 break is out of reach of everything already installed and each dependent adopts on its own
 schedule. See `docs/release-compatibility.md`.
@@ -52,11 +54,13 @@ from pathlib import Path
 
 from check_published_dependents_admit import dependent_distributions
 from check_published_dependents_work import at_risk, fetch_version_requirements
+from historical_dependent_tests import prepare_tests, verify_expected_failures
 from pypi_index import run_check, version
 
 _CORE = "maf-sandbox"
 _ROOT = Path(__file__).resolve().parent.parent
 _TEST_REQUIREMENTS = ("pytest",)
+_PYTHON = "3.14"
 
 
 @dataclass(frozen=True)
@@ -104,8 +108,24 @@ def recover_tests(tag: str, distribution: str, into: Path) -> Path | None:
     listed = subprocess.run(
         ["git", "tag", "--list", tag], cwd=_ROOT, capture_output=True, text=True, check=False
     )
-    if listed.returncode != 0 or not listed.stdout.strip():
+    if listed.returncode != 0:
         return None
+    if not listed.stdout.strip():
+        try:
+            fetched = subprocess.run(
+                ["git", "fetch", "--no-tags", "origin", f"refs/tags/{tag}:refs/tags/{tag}"],
+                cwd=_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"Timed out recovering release tag {tag}", file=sys.stderr)
+            return None
+        if fetched.returncode != 0:
+            print(f"Cannot recover release tag {tag}: {fetched.stderr.strip()}", file=sys.stderr)
+            return None
     test_path = f"packages/{distribution}/tests"
     paths = subprocess.run(
         ["git", "ls-tree", "--name-only", tag, "--", test_path, f"packages/{distribution}/scripts"],
@@ -134,7 +154,9 @@ def recover_tests(tag: str, distribution: str, into: Path) -> Path | None:
     return tests if tests.is_dir() else None
 
 
-def run_suite(requirements: list[str], core: Path, tests: Path) -> tuple[bool, str]:
+def run_suite(
+    requirements: list[str], core: Path, tests: Path, *, expected_failures: tuple[str, ...] = ()
+) -> tuple[bool, str]:
     """Install ``requirements`` beside ``core`` in a throwaway environment and run ``tests``.
 
     ``core`` is both an operand and an override, because an override rewrites a requirement and
@@ -146,10 +168,14 @@ def run_suite(requirements: list[str], core: Path, tests: Path) -> tuple[bool, s
     directory instead — so the two name the same file only once the path is absolute. The
     workflow passes ``dist/maf_sandbox-<version>-py3-none-any.whl``.
     """
+    print(f"Suite: {requirements} against {core.name} on Python {_PYTHON}", flush=True)
     with tempfile.TemporaryDirectory() as directory:
         environment = Path(directory) / "venv"
         created = subprocess.run(
-            ["uv", "venv", str(environment)], capture_output=True, text=True, check=False
+            ["uv", "venv", "--python", _PYTHON, str(environment)],
+            capture_output=True,
+            text=True,
+            check=False,
         )
         if created.returncode != 0:
             return False, (created.stdout + created.stderr).strip() or "no venv"
@@ -178,8 +204,30 @@ def run_suite(requirements: list[str], core: Path, tests: Path) -> tuple[bool, s
             return False, "the environment would not build: " + (
                 installed.stdout + installed.stderr
             ).strip()
+        for command in (
+            [str(python), "--version"],
+            ["uv", "pip", "freeze", "--python", str(python)],
+        ):
+            recorded = subprocess.run(command, capture_output=True, text=True, check=False)
+            if recorded.returncode != 0:
+                return (
+                    False,
+                    "cannot record suite environment: " + recorded.stdout + recorded.stderr,
+                )
+            print(recorded.stdout + recorded.stderr, flush=True)
+        report = Path(directory) / "results.xml"
         ran = subprocess.run(
-            [str(python), "-m", "pytest", str(tests), "-q", "-p", "no:cacheprovider"],
+            [
+                str(python),
+                "-m",
+                "pytest",
+                str(tests),
+                "-q",
+                "-p",
+                "no:cacheprovider",
+                "--junitxml",
+                str(report),
+            ],
             capture_output=True,
             text=True,
             cwd=_ROOT,
@@ -188,6 +236,14 @@ def run_suite(requirements: list[str], core: Path, tests: Path) -> tuple[bool, s
         output = (ran.stdout + ran.stderr).strip()
         if ran.returncode != 0:
             return False, output or f"pytest exited with code {ran.returncode}"
+        if expected_failures:
+            if error := verify_expected_failures(report, expected_failures):
+                return False, error + "\n" + output
+            return (
+                True,
+                f"accepted with known historical defect ({len(expected_failures)} xfails): "
+                + (output.splitlines()[-1] if output else ""),
+            )
         return True, output.splitlines()[-1] if output else ""
 
 
@@ -224,9 +280,17 @@ def assess_published(
                 Result("published", distribution, released_version, False, f"no test tree at {tag}")
             )
             continue
+        try:
+            expected_failures = prepare_tests(distribution, released_version, tests)
+        except (OSError, ValueError) as error:
+            results.append(Result("published", distribution, released_version, False, str(error)))
+            continue
         siblings = [str(other) for name, other in wheels.items() if name != distribution]
         passed, summary = run_suite(
-            [f"{distribution}=={released_version}", *siblings], core_wheel, tests
+            [f"{distribution}=={released_version}", *siblings],
+            core_wheel,
+            tests,
+            expected_failures=expected_failures,
         )
         results.append(Result("published", distribution, released_version, passed, summary))
     return results
@@ -270,7 +334,9 @@ def main(argv: list[str]) -> int:
             )
         print(f"{len(failed)} suite(s) failed against {_CORE} {parsed.released}", file=sys.stderr)
         return 1
-    print(f"OK  every dependent's suite passes against {_CORE} {parsed.released}")
+    print(
+        f"OK  every dependent's suite accepted against {_CORE} {parsed.released}; see recorded corrections and exceptions"
+    )
     return 0
 
 

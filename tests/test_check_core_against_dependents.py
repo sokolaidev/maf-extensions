@@ -92,6 +92,41 @@ class TestRecoveringAVersionsTests:
     _TAG = "maf-sandbox-bicep-v0.9.3"
     _DIST = "maf-sandbox-bicep"
 
+    def test_a_tag_created_after_checkout_is_fetched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        _repository_with_a_tag(origin, "initial", self._DIST)
+        checkout = tmp_path / "checkout"
+        subprocess.run(
+            ["git", "clone", "--no-tags", str(origin), str(checkout)],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(["git", "tag", self._TAG], cwd=origin, check=True, capture_output=True)
+        monkeypatch.setattr(check, "_ROOT", checkout)
+
+        recovered = check.recover_tests(self._TAG, self._DIST, tmp_path / "recovered")
+        assert recovered is not None
+        assert (recovered / "test_something.py").is_file()
+        tags = subprocess.check_output(["git", "tag", "--list"], cwd=checkout, text=True)
+        assert tags.splitlines() == [self._TAG]
+
+    def test_existing_tag_is_never_refetched(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        _repository_with_a_tag(origin, self._TAG, self._DIST)
+        monkeypatch.setattr(check, "_ROOT", origin)
+        run = subprocess.run
+
+        def guarded(command, **kwargs):
+            assert command[:2] != ["git", "fetch"]
+            return run(command, **kwargs)
+
+        monkeypatch.setattr(check.subprocess, "run", guarded)
+        assert check.recover_tests(self._TAG, self._DIST, tmp_path / "recovered") is not None
+
     def test_a_tag_yields_its_test_tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         origin = tmp_path / "origin"
         origin.mkdir()
@@ -195,17 +230,15 @@ class TestHowAVerdictReads:
 
 
 class _Recorder:
-    """Stands in for `subprocess.run`, so the install command can be read without a venv.
-
-    Every call succeeds. `run_suite` runs three — `uv venv`, `uv pip install`, then pytest —
-    and only the second is the subject, so the other two just have to not stop it.
-    """
+    """Record successful environment, dependency and test commands without creating a venv."""
 
     def __init__(self) -> None:
         self.install: list[str] = []
         self.overrides = ""
+        self.commands: list[list[str]] = []
 
     def __call__(self, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        self.commands.append(command)
         if command[:3] == ["uv", "pip", "install"]:
             self.install = list(command)
             if "--overrides" in command:
@@ -235,6 +268,12 @@ class TestWhichCoreTheEnvironmentGets:
     environment at all, and the gate reports that in the shape of a failing suite — over a
     version RELEASING.md permits a core to be released at.
     """
+
+    def test_python_and_resolved_dependencies_are_recorded(self, tmp_path, monkeypatch):
+        recorder = _install_command(monkeypatch, [], tmp_path / "core.whl")
+        assert recorder.commands[0][:4] == ["uv", "venv", "--python", "3.14"]
+        assert any(command[-1] == "--version" for command in recorder.commands)
+        assert any(command[:3] == ["uv", "pip", "freeze"] for command in recorder.commands)
 
     def test_the_core_is_forced_rather_than_resolved(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -278,7 +317,7 @@ class TestWhichCoreTheEnvironmentGets:
 
 
 class TestFailureDiagnostics:
-    @pytest.mark.parametrize("stage", [0, 1, 2])
+    @pytest.mark.parametrize("stage", [0, 1, 2, 3, 4])
     def test_failed_commands_retain_stdout_and_stderr(
         self, stage: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
@@ -317,7 +356,7 @@ class TestBothHalvesForceIt:
     def _capture(monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[str], Path]]:
         seen: list[tuple[list[str], Path]] = []
 
-        def _fake(requirements: list[str], core: Path, tests: Path) -> tuple[bool, str]:
+        def _fake(requirements: list[str], core: Path, tests: Path, **kwargs) -> tuple[bool, str]:
             seen.append((requirements, core))
             return True, "1 passed"
 
