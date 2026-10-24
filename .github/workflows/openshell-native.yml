@@ -48,6 +48,28 @@ jobs:
         run: |
           set -euo pipefail
           uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --report "$RUNNER_TEMP/openshell-evidence/report.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/probe.log"
+      - name: Measure native HTTP policy and in-flight cutover
+        shell: bash
+        env:
+          OTEL_SDK_DISABLED: 'true'
+        run: |
+          set -euo pipefail
+          origin_container=''
+          origin_network=''
+          cleanup_origin() {
+            if [ -n "$origin_container" ]; then
+              docker rm -f "$origin_container"
+            fi
+            if [ -n "$origin_network" ]; then
+              docker network rm "$origin_network"
+            fi
+          }
+          trap cleanup_origin EXIT
+          origin_network=$(docker network create --internal "openshell-origin-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}")
+          origin_container=$(docker create --network "$origin_network" --mount "type=bind,src=$GITHUB_WORKSPACE/scripts/experiments,dst=/probe,readonly" "$(cat "$RUNNER_TEMP/workload-id")" python /probe/openshell_egress_probe.py --serve-origin --revocation-controls)
+          docker start "$origin_container"
+          origin_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$origin_container")
+          uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --egress-origin-ip "$origin_ip" --report "$RUNNER_TEMP/openshell-evidence/egress.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/egress.log"
       - name: Record final engine inventory
         if: always()
         shell: bash

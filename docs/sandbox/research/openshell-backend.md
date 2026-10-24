@@ -465,6 +465,16 @@ Fifteen [egress evidence tests](../../../tests/test_openshell_egress_probe.py) r
 
 Next qualify HTTPS inspection with verified upstream certificates, then provider-composed policy and policy updates. IPv6, DNS changes/rebinding, alternate protocols and ports, encoded/canonicalized paths, case normalization, header/authority confusion, multi-hop redirects, unrestricted-mode fidelity and shared conformance remain untested. Egress declarations and method/path capabilities remain withheld. The lifecycle dependencies #1817/#1818 and native-file contract gaps remain independent of these HTTP observations.
 
+## Native HTTP translation and cutover - 2026-10-24
+
+The native workflow now also runs the [HTTP probe](../../../scripts/experiments/openshell_egress_probe.py) through the retained-ownership fixture, with a private recording origin on an internal Docker network. This is a fixed IPv4 HTTP-port experiment, not an implementation or declaration of a supported suite egress mode. Hosted measurements are pending.
+
+The fixture compiler accepts explicit uncredentialed `EgressRule` values with GET/POST methods and canonical ASCII paths. Suite `*.host` becomes OpenShell `**.host` so deeper subdomains remain included while the apex is excluded. Suite `/prefix/*` becomes the exact `/prefix` plus `/prefix/**`. It selects blocking `ENFORCE` explicitly and refuses attached providers, authority grants, duplicate host rules, unrestricted method/path requests and unqualified path encodings instead of silently broadening them. The selected HTTP port and executable are fixture restrictions, so this compiler cannot serve as a general suite allowlist translator.
+
+An independent origin barrier admits a request but withholds its response. The controller clears the base policy, waits for the exact active version/hash to report `LOADED`, checks fresh HTTP/direct TCP refusals, and then releases the origin response. The guest tries a second request through the same HTTP client. A matching origin journal and response echo establish completed traffic; connection closure is recorded separately from explicit policy refusal. No outcome from this bounded case establishes instantaneous revocation or production isolation. Policy restoration and a successful allowed request provide a final positive control.
+
+Trusted owned HTTPS, certificate/hostname validation, provider-composed authority, IPv6, DNS rebinding, alternate protocols, concurrent controllers and restart remain unqualified. The independent credential-lifecycle work stays in #1835; general lifecycle authority stays blocked by #1817/#1818. #1834 remains open.
+
 ## HTTPS policy and origin trust - 2026-10-11
 
 The opt-in [HTTPS probe](../../../scripts/experiments/openshell_https_probe.py) reuses the HTTP probe's owned-workspace lifecycle and independent Docker cleanup checks. All **9 HTTPS cases passed** with the same v0.1.2 gateway, SDK, unchanged official supervisor/runtime digests and sentinel workload image recorded above. The original **19 HTTP cases also passed** after adding the profile. These remain provider-free characterization fixtures rather than suite capability qualification.

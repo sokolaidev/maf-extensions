@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import http.client
 import ipaddress
@@ -29,12 +30,15 @@ from openshell_owned_probe import snapshot
 from openshell_replay_probe import wait_gateway
 
 
-def serve_origin(*, tls_events=None, record_authorization=False):
+def serve_origin(*, tls_events=None, record_authorization=False, revocation_controls=False):
     """Expose only fixture responses and a bounded request journal on the private Docker network."""
     events = []
     lock = threading.Lock()
+    releases = {}
 
     class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1" if revocation_controls else "HTTP/1.0"
+
         def do_GET(self):
             self.handle_request()
 
@@ -42,7 +46,17 @@ def serve_origin(*, tls_events=None, record_authorization=False):
             self.handle_request()
 
         def handle_request(self):
-            if self.path == "/__tls_events" and tls_events is not None:
+            parsed = urlsplit(self.path)
+            marker = parse_qs(parsed.query).get("case", [""])[0]
+            if revocation_controls and parsed.path == "/__release":
+                with lock:
+                    release = releases.get(marker)
+                if release is None:
+                    self.send_error(404)
+                    return
+                release.set()
+                body, status = b'{"released":true}', 200
+            elif self.path == "/__tls_events" and tls_events is not None:
                 body = json.dumps(tls_events).encode()
                 status = 200
             elif self.path == "/__events":
@@ -69,6 +83,12 @@ def serve_origin(*, tls_events=None, record_authorization=False):
                     if len(events) >= 1024:
                         raise RuntimeError("fixture journal capacity exceeded")
                     events.append(item)
+                    if revocation_controls and parsed.path == "/allowed/hold":
+                        releases[marker] = threading.Event()
+                if revocation_controls and parsed.path == "/allowed/hold":
+                    if not releases[marker].wait(60):
+                        self.send_error(504, "fixture barrier not released")
+                        return
                 status = 302 if urlsplit(self.path).path == "/allowed/redirect" else 200
                 body = json.dumps(item).encode()
             self.send_response(status)
@@ -153,6 +173,299 @@ def matches_observation(observed, hits, expected_status, expected_hits, expected
     if expected_status == 403:
         return isinstance(body, dict) and body.get("error") == "policy_denied"
     return expected_status == 200 and body == expected_request
+
+
+def native_origin_ip(value):
+    """Accept only an owned private IPv4 Docker origin for the native fixture."""
+    address = ipaddress.IPv4Address(value)
+    if not address.is_private or address.is_loopback or address.is_link_local:
+        raise ValueError("requires owned private Docker origin")
+    return str(address)
+
+
+def rule_plan(rules, *, providers=()):
+    """Translate a bounded suite-rule subset for the fixture's fixed HTTP port only."""
+    from maf_sandbox import EgressRule
+
+    if providers:
+        raise ValueError("provider authority is not representable by base rules alone")
+    result, hosts = [], set()
+    for rule in rules:
+        if not isinstance(rule, EgressRule) or rule.authority is not None:
+            raise ValueError("requires explicit uncredentialed EgressRule values")
+        host = rule.host.lower()
+        if host in hosts:
+            raise ValueError("duplicate host rules require explicit conflict resolution")
+        hosts.add(host)
+        if not rule.methods or set(rule.methods) - {"GET", "POST"} or not rule.paths:
+            raise ValueError("fixture requires explicit GET/POST methods and paths")
+        paths = []
+        for path in rule.paths:
+            if not re.fullmatch(r"/[A-Za-z0-9/_-]*(?:\*)?", path) or "//" in path:
+                raise ValueError("unqualified path encoding or pattern")
+            if path.endswith("/*"):
+                paths.extend([path[:-2] or "/", path[:-1] + "**"])
+            else:
+                paths.append(path)
+        result.append(
+            {
+                "host": "**." + host[2:] if host.startswith("*.") else host,
+                "methods": list(rule.methods),
+                "paths": list(dict.fromkeys(paths)),
+            }
+        )
+    return result
+
+
+def fixture_policy(image, rules, ip, *, providers=()):
+    """Compile the entire validated plan with explicit blocking L7 enforcement."""
+    from openshell_owned_probe import fixture_spec
+
+    plan = rule_plan(rules, providers=providers)
+    pb = import_module("openshell._proto.sandbox_pb2")
+    policy = fixture_spec(image).policy
+    for index, item in enumerate(plan):
+        rule = policy.network_policies["native_" + str(index)]
+        rule.name = "native_" + str(index)
+        rule.binaries.add(path="/usr/local/bin/python*")
+        endpoint = rule.endpoints.add(
+            host=item["host"], port=8000, protocol="rest", allowed_ips=[native_origin_ip(ip)]
+        )
+        endpoint.enforcement = pb.NETWORK_ENFORCEMENT_MODE_ENFORCE
+        for method in item["methods"]:
+            for path in item["paths"]:
+                endpoint.rules.add().allow.CopyFrom(pb.L7Allow(method=method, path=path))
+    return policy
+
+
+def inflight_observation(observations, hits, first):
+    """Attribute both responses to the held request and its same-client follow-up."""
+    second = dict(first, path=first["path"].replace("/hold?", "/after?"))
+    if len(observations) != 2 or hits not in ([first], [first, second]):
+        raise RuntimeError("in-flight origin attribution incomplete")
+    completed = matches_observation(observations[0], [first], 200, 1, first)
+    if not completed and observations[0].get("error") not in (
+        "RemoteDisconnected",
+        "ConnectionResetError",
+        "BrokenPipeError",
+    ):
+        raise RuntimeError("held response has no attributable completion or connection closure")
+    later = len(hits) == 2
+    if later:
+        if not matches_observation(observations[1], [second], 200, 1, second):
+            raise RuntimeError("follow-up reached origin without matching response")
+        outcome = "reached_origin"
+    elif (
+        matches_observation(observations[1], [], 403, 0, second)
+        or observations[1].get("errno") == 13
+    ):
+        outcome = "explicit_policy_refusal"
+    elif observations[1].get("error") in (
+        "RemoteDisconnected",
+        "ConnectionResetError",
+        "BrokenPipeError",
+    ):
+        outcome = "connection_closed; policy refusal not established"
+    else:
+        raise RuntimeError("follow-up outcome unattributed")
+    return {
+        "guest": observations,
+        "origin_hits": hits,
+        "response_completed_after_loaded": completed,
+        "later_request_reached_origin": later,
+        "later_outcome": outcome,
+        "instant_revocation_qualified": False,
+    }
+
+
+async def measure_native(fixture, ip):
+    """Measure translated HTTP rules and a held request across an installed policy change."""
+    from maf_sandbox import EgressRule
+    from openshell_composition_probe import revision_installed
+
+    ip = native_origin_ip(ip)
+    client, report = fixture.client, fixture.report
+    allowed, denied, wildcard = (
+        label + "." + ip + ".nip.io" for label in ("allowed", "denied", "wild")
+    )
+    rules = (
+        EgressRule(allowed, methods=("GET",), paths=("/allowed/*",)),
+        EgressRule("*." + wildcard, methods=("GET",), paths=("/allowed/*",)),
+    )
+    report["egress"] = {
+        "scope": "provider-free fixed IPv4 HTTP port 8000; not a supported suite egress mode",
+        "rule_plan": rule_plan(rules),
+        "origin_ip": ip,
+        "cases": [],
+        "unqualified": [
+            "HTTPS owned trust",
+            "IPv6",
+            "DNS rebinding",
+            "UDP",
+            "provider composition",
+            "concurrent controllers",
+            "restart",
+        ],
+    }
+    evidence = report["egress"]
+    hosts = (allowed, denied, wildcard, "one." + wildcard, "two.one." + wildcard)
+    for host in hosts:
+        addresses = await asyncio.to_thread(socket.getaddrinfo, host, 8000, socket.AF_INET)
+        if {address[4][0] for address in addresses} != {ip}:
+            raise RuntimeError("fixture DNS did not resolve to the owned origin")
+        for method in ("GET", "POST"):
+            await asyncio.to_thread(origin_get, ip, "/blocked", method=method, host=host)
+    await asyncio.to_thread(origin_get, ip, "/allowed", port=8001)
+    sandbox = await fixture.acquire(policy=fixture_policy(client.image, rules, ip))
+
+    async def journal(marker):
+        rows = await asyncio.to_thread(origin_get, ip, "/__events")
+        return [
+            row for row in rows if parse_qs(urlsplit(row["path"]).query).get("case") == [marker]
+        ]
+
+    async def observe(code):
+        response = await sandbox.exec(
+            ["python", "-c", code], working_directory="/sandbox", timeout=45
+        )
+        if response.exit_code or response.stderr_bytes:
+            raise RuntimeError("guest egress observation failed: " + response.stderr)
+        return json.loads(response.stdout)
+
+    async def check(label, host, path, expected, *, method="GET", port=8000, direct=False):
+        marker = uuid.uuid4().hex
+        url = f"http://{host}:{port}{path}?case={marker}"
+        code = guest_request(url, method)
+        if direct:
+            code = (
+                "import socket,json; s=socket.socket(); s.settimeout(3); print(json.dumps({'errno':s.connect_ex(("
+                + repr(ip)
+                + ",8000))})); s.close()"
+            )
+        observed = await observe(code)
+        hits = await journal(marker)
+        request = {
+            "method": method,
+            "path": path + "?case=" + marker,
+            "host": host + ":" + str(port),
+            "port": port,
+        }
+        expected_hits = int(expected == 200 or label == "redirect_denied")
+        row = {
+            "case": label,
+            "guest": observed,
+            "origin_hits": hits,
+            "passed": matches_observation(observed, hits, expected, expected_hits, request),
+        }
+        evidence["cases"].append(row)
+        fixture.save()
+        if not row["passed"]:
+            raise RuntimeError("unexpected native egress observation: " + label)
+
+    async def update(selected):
+        current = await asyncio.to_thread(
+            client.rpc,
+            "GetSandbox",
+            client.pb.GetSandboxRequest(name=sandbox.owner["name"], workspace_scope=client.scope),
+        )
+        if current.sandbox.metadata.id != sandbox.instance_id:
+            raise RuntimeError("refuse replaced fixture")
+        response = await asyncio.to_thread(
+            client.rpc,
+            "UpdateConfig",
+            client.pb.UpdateConfigRequest(
+                sandbox=sandbox.owner["name"],
+                workspace_scope=client.scope,
+                policy=fixture_policy(client.image, selected, ip),
+                expected_resource_version=current.sandbox.metadata.resource_version,
+                request_id=str(uuid.uuid4()),
+            ),
+        )
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            status = await asyncio.to_thread(
+                client.rpc,
+                "GetSandboxPolicyStatus",
+                client.pb.GetSandboxPolicyStatusRequest(
+                    sandbox=sandbox.owner["name"],
+                    workspace_scope=client.scope,
+                    version=response.version,
+                ),
+            )
+            if revision_installed(status, response, client.pb.POLICY_STATUS_LOADED):
+                evidence.setdefault("loaded_revisions", []).append(
+                    {"version": response.version, "policy_hash": response.policy_hash}
+                )
+                fixture.save()
+                return
+            await asyncio.sleep(0.1)
+        raise RuntimeError("policy installation unconfirmed")
+
+    try:
+        for label, host, path, expected in (
+            ("allowed_parent", allowed, "/allowed", 200),
+            ("allowed_child", allowed, "/allowed/child", 200),
+            ("allowed_deep_child", allowed, "/allowed/a/b", 200),
+            ("denied_prefix", allowed, "/allowedness", 403),
+            ("denied_path", allowed, "/blocked", 403),
+            ("denied_host", denied, "/allowed", "EACCES"),
+            ("wildcard_apex_refused", wildcard, "/allowed", "EACCES"),
+            ("wildcard_one_label", "one." + wildcard, "/allowed", 200),
+            ("wildcard_deep_label", "two.one." + wildcard, "/allowed", 200),
+            ("redirect_denied", allowed, "/allowed/redirect", "EACCES"),
+            ("uppercase_host", allowed.upper(), "/allowed", 200),
+        ):
+            await check(label, host, path, expected)
+        await check("denied_post", allowed, "/allowed", 403, method="POST")
+        await check("denied_port", allowed, "/allowed", "EACCES", port=8001)
+        await check("direct_socket_refused", allowed, "/allowed", "EACCES", direct=True)
+        marker = uuid.uuid4().hex
+        url = f"http://{allowed}:8000/allowed/hold?case={marker}"
+        first_request = {
+            "method": "GET",
+            "path": "/allowed/hold?case=" + marker,
+            "host": allowed + ":8000",
+            "port": 8000,
+        }
+        code = (
+            "import http.client,json,urllib.request,urllib.parse\n"
+            "p=urllib.parse.urlsplit(urllib.request.getproxies()['http']); c=http.client.HTTPConnection(p.hostname,p.port,timeout=40); results=[]\n"
+            "for url in " + repr([url, url.replace("/hold?", "/after?")]) + ":\n"
+            " try:\n  c.request('GET',url,headers={'Host':urllib.parse.urlsplit(url).netloc}); r=c.getresponse(); results.append({'status':r.status,'body':r.read(4096).decode()})\n"
+            " except Exception as e:\n  results.append({'error':type(e).__name__,'errno':getattr(e,'errno',None)})\n"
+            "c.close(); print(json.dumps(results))"
+        )
+        pending = asyncio.create_task(observe(code))
+        try:
+            deadline = time.monotonic() + 15
+            while not await journal(marker):
+                if pending.done():
+                    raise RuntimeError("held request never reached origin: " + str(await pending))
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("origin admission barrier unavailable")
+                await asyncio.sleep(0.1)
+            if await journal(marker) != [first_request]:
+                raise RuntimeError("held request admission has incorrect origin attribution")
+            await update(())
+            await check("closed_fresh_http", allowed, "/allowed", "EACCES")
+            await check("closed_direct_socket", allowed, "/allowed", "EACCES", direct=True)
+            await asyncio.to_thread(origin_get, ip, "/__release?case=" + marker)
+            observations = await pending
+            hits = await journal(marker)
+            evidence["in_flight"] = inflight_observation(observations, hits, first_request)
+            fixture.save()
+        finally:
+            if not pending.done():
+                pending.cancel()
+                try:
+                    await pending
+                except asyncio.CancelledError:
+                    # Observe the execution task's cancellation cleanup before final disposal.
+                    pass
+        await update(rules)
+        await check("restored_allowed_control", allowed, "/allowed", 200)
+    finally:
+        await sandbox.dispose()
 
 
 def measure(image, issuer, ip, *, profile=None):
@@ -382,13 +695,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serve-origin", action="store_true")
     parser.add_argument("--record-authorization", action="store_true")
+    parser.add_argument("--revocation-controls", action="store_true")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--image")
     parser.add_argument("--origin-ip")
     parser.add_argument("--config", type=Path)
     args = parser.parse_args()
     if args.serve_origin:
-        serve_origin(record_authorization=args.record_authorization)
+        serve_origin(
+            record_authorization=args.record_authorization,
+            revocation_controls=args.revocation_controls,
+        )
         return 0
     if (
         not args.execute
