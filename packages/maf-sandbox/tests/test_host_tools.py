@@ -20,6 +20,7 @@ import json
 import logging
 import time
 from collections.abc import Generator
+from unittest.mock import Mock
 
 import pytest
 
@@ -745,27 +746,6 @@ class TestHostToolCallResult:
 
 def _call_host_tool(run: HostToolRun, name: str, arguments=None) -> HostToolCallResult:
     return asyncio.run(run.call(name, arguments, publish=_accept))
-
-
-def _nesting_json_refuses_to_encode() -> list[object]:
-    """A structure whose only problem is depth, found rather than assumed.
-
-    How deep it takes is the platform's business — CPython's guard is a C-recursion budget,
-    and a depth that raises on Windows encodes happily on Linux — so a hard-coded number
-    would pin one runner and quietly prove nothing on the other.
-    """
-    for depth in (2_000, 12_000, 60_000):
-        deep: list[object] = []
-        node = deep
-        for _ in range(depth):
-            child: list[object] = []
-            node.append(child)
-            node = child
-        try:
-            json.dumps(deep)
-        except RecursionError:
-            return deep
-    raise AssertionError("json.dumps encoded 60k levels of nesting without a RecursionError")
 
 
 class TestRequiredFidesCoverage:
@@ -1509,18 +1489,20 @@ class TestHostToolCallFailureLadder:
         assert not result.ok
         assert result.refusal is not None and "cannot be carried as JSON" in result.refusal
 
-    def test_a_deeply_nested_result_is_refused_rather_than_escaping_the_ladder(self):
-        """`RecursionError` is not a `ValueError`, so the narrow guard let it past — and it
-        arrives before any byte cap has been consulted, since nothing was encoded at all."""
-        deep = _nesting_json_refuses_to_encode()
+    def test_result_encoding_recursion_is_refused(self, monkeypatch):
+        """Encoder failures must become refusals regardless of the interpreter's depth limit."""
+        codec = Mock(wraps=json)
+        codec.dumps.side_effect = RecursionError("encoder depth exceeded")
+        monkeypatch.setattr(host_tools_module, "json", codec)
 
         @sandbox_tool(source=None, sink=None, identity=None)
         def nested() -> list[object]:
-            return deep
+            return [[[]]]
 
         registry = HostToolRegistry()
         registry.register(nested)
         result = _call_host_tool(HostToolRun(registry), "nested")
+        codec.dumps.assert_called_once()
         assert not result.ok
         assert result.refusal is not None and "cannot be carried as JSON" in result.refusal
 

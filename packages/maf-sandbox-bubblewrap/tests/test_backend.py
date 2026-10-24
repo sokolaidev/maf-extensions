@@ -86,7 +86,9 @@ def test_control_roots_stay_outside_runtime(
     runtime.mkdir()
     cgroup = tmp_path / "cgroup"
     cgroup.mkdir()
-    settings = BubblewrapSandboxConfig(runtime, tmp_path / "state", cgroup, bwrap=Path("/bin/true"))
+    bwrap = tmp_path / "bwrap"
+    bwrap.touch()
+    settings = BubblewrapSandboxConfig(runtime, tmp_path / "state", cgroup, bwrap=bwrap)
     root = runtime
     if location == "alias":
         root = tmp_path / "alias"

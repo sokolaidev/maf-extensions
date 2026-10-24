@@ -56,8 +56,16 @@ class TestImportSurvivesDashWError:
     """The one hard requirement: `python -W error` must not turn this notice into a crash."""
 
     def test_import_exits_zero_under_dash_w_error(self):
+        # The warning contract belongs to this package, not its dependencies.
+        source = """
+import warnings
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    import deepagents
+import maf_sandbox_deepagents
+"""
         result = subprocess.run(
-            [sys.executable, "-W", "error", "-c", "import maf_sandbox_deepagents"],
+            [sys.executable, "-W", "error", "-c", source],
             capture_output=True,
             text=True,
             timeout=60,
