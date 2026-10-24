@@ -20,9 +20,15 @@ from agent_framework import (
     ResponseStream,
 )
 from agent_framework._compaction import EXCLUDED_KEY, included_token_count
+from agent_framework._sessions import (
+    _CURRENT_RUN_IDENTITY,
+    _defer_run_persistence,
+    _RunPersistenceGate,
+)
 from agent_framework.exceptions import ChatClientException, ChatClientInvalidRequestException
 
 from maf_compaction import (
+    DEFAULT_RECORD_INSTRUCTION,
     AnchoredCompactionStrategy,
     CompactionBudgetExceeded,
     MinimumGainAnchoredCompactionStrategy,
@@ -83,6 +89,174 @@ def record_call():
     return Content.from_function_call(
         call_id="record", name=RECALL_TOOL_NAME, arguments={"values": "SKU-123"}
     )
+
+
+@pytest.mark.parametrize("refused", [False, True])
+@pytest.mark.parametrize("release", [False, True])
+async def test_recall_persistence_remains_subject_to_enclosing_gate(refused, release):
+    middleware, gate = recall()
+    context = ChatContext(None, [], {"tools": [make_recall_tool(gate)]})
+    saved = []
+    calls = 0
+    outer = _RunPersistenceGate()
+    outer.bind_owner(_CURRENT_RUN_IDENTITY.get())
+
+    async def send():
+        nonlocal calls
+        calls += 1
+        current = calls
+
+        async def persist():
+            saved.append(current)
+
+        assert _defer_run_persistence(persist)
+        contents = [record_call()]
+        if refused and current == 1:
+            contents.append(
+                Content.from_text(
+                    "refusal", additional_properties={"core": {"model_output_kind": "refusal"}}
+                )
+            )
+        context.result = ChatResponse(messages=Message("assistant", contents))
+
+    with outer:
+        await middleware.process(context, send)
+        assert saved == []
+    if release:
+        await outer.flush()
+    else:
+        outer.drop()
+    assert saved == ([2 if refused else 1] if release else [])
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("prompted", [False, True])
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("arguments", [{"values": "SKU-123"}, "{", None])
+async def test_refused_recall_discards_calls_and_backs_off_across_restore(
+    stream, prompted, legacy, arguments, caplog
+):
+    middleware, gate = recall(supports_tool_choice=not prompted)
+    for index in range(2):
+        middleware._force_next = True
+        tool = make_recall_tool(gate)
+        question = Message("user", ["question"])
+        options = {"tools": [tool], "max_tokens": 1234, "temperature": 0.3}
+        context = ChatContext(None, [question], options, stream=stream)
+        sent = []
+        closed = []
+
+        async def send():
+            sent.append(dict(context.options or {}))
+            if len(sent) == 1:
+                marker = {"model_output_kind": "refusal"}
+                contents = [
+                    Content.from_text(
+                        "private provider refusal",
+                        additional_properties=marker if legacy else {"core": marker},
+                    )
+                ]
+                if arguments is not None:
+                    call = record_call()
+                    call.arguments = arguments
+                    contents.insert(0, call)
+                response = ChatResponse(messages=Message("assistant", contents))
+            else:
+                assert len(sent) == 2
+                assert context.options is options
+                assert context.messages == [question]
+                assert RECORD_MARKER not in tool("SKU-123")
+                response = ChatResponse(messages=Message("assistant", ["ordinary answer"]))
+            if stream:
+
+                async def updates():
+                    try:
+                        for update in response.to_updates():
+                            yield update
+                    finally:
+                        closed.append(True)
+
+                context.result = ResponseStream(updates(), finalizer=lambda _: response)
+            else:
+                context.result = response
+
+        with caplog.at_level(logging.WARNING, logger="maf_compaction._toolsummary"):
+            await middleware.process(context, send)
+        if stream:
+            assert isinstance(context.result, ResponseStream)
+            updates = [update async for update in context.result]
+            assert all(c.type != "function_call" for u in updates for c in u.contents)
+            response = await context.result.get_final_response()
+            assert len(closed) == 2
+        else:
+            response = context.result
+        assert isinstance(response, ChatResponse)
+        assert response.text == "ordinary answer"
+        assert len(sent) == 2
+        assert middleware.value_free_record_streak == index + 1
+        assert middleware.failed_forced_calls == 1
+        assert middleware.ignored_forced_calls == 0
+        assert middleware.records_forced == 0
+        assert not middleware.session_state()["awaiting_record"]
+        assert middleware.recall_disabled == (index == 1)
+        snapshot = json.loads(json.dumps(middleware.session_state()))
+        middleware, gate = recall(supports_tool_choice=not prompted)
+        middleware.restore_session_state(snapshot)
+    assert middleware.pin_disabled_reason == "value_free"
+    assert "private provider refusal" not in caplog.text
+
+
+@pytest.mark.parametrize("marker_in", ["update", "final"])
+async def test_refusal_in_either_stream_or_final_response_rejects_recall(marker_in):
+    middleware, gate = recall()
+    context = ChatContext(None, [], {"tools": [make_recall_tool(gate)]}, stream=True)
+    refusal = Content.from_text(
+        "refused", additional_properties={"core": {"model_output_kind": "refusal"}}
+    )
+    calls = 0
+
+    async def send():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            context.result = ChatResponse(messages=Message("assistant", ["answer"]))
+            return
+        response = ChatResponse(
+            messages=Message(
+                "assistant", [record_call(), *([refusal] if marker_in == "final" else [])]
+            )
+        )
+
+        async def updates():
+            yield ChatResponseUpdate(role="assistant", contents=[record_call()])
+            if marker_in == "update":
+                yield ChatResponseUpdate(role="assistant", contents=[refusal])
+
+        context.result = ResponseStream(updates(), finalizer=lambda _: response)
+
+    await middleware.process(context, send)
+    assert calls == 2
+    assert middleware.value_free_record_streak == 1
+    assert not gate.take()
+
+
+@pytest.mark.parametrize("forced", [False, True])
+async def test_ordinary_refusal_text_is_not_a_provider_refusal(forced):
+    middleware, gate = recall()
+    middleware._force_next = forced
+    context = ChatContext(None, [], {"tools": [make_recall_tool(gate)]})
+    contents = [record_call(), Content.from_text("refusal")]
+    if not forced:
+        contents[-1].additional_properties = {"core": {"model_output_kind": "refusal"}}
+    response = ChatResponse(messages=Message("assistant", contents))
+
+    async def send():
+        context.result = response
+
+    await middleware.process(context, send)
+    assert context.result is response
+    assert middleware.failed_forced_calls == 0
+    assert middleware.value_free_record_streak == 0
 
 
 @pytest.mark.parametrize("forced", [False, True])
@@ -634,7 +808,10 @@ async def test_missing_recall_tool_defers_prompt_without_hiding_other_tools():
 
 @pytest.mark.parametrize("mode", ["recompact", "boundary", "fold"])
 @pytest.mark.parametrize("tail", [1, 2])
-async def test_prompt_recall_preserves_real_user_anchors_during_composed_compaction(mode, tail):
+@pytest.mark.parametrize("instruction", [_RECALL_INSTRUCTION, DEFAULT_RECORD_INSTRUCTION])
+async def test_prompt_recall_preserves_real_user_anchors_during_composed_compaction(
+    mode, tail, instruction
+):
     tokenizer = CharacterEstimatorTokenizer()
     requests = []
 
@@ -661,7 +838,9 @@ async def test_prompt_recall_preserves_real_user_anchors_during_composed_compact
         ),
         user_turns=users,
     )
-    middleware, gate = recall(supports_tool_choice=False)
+    middleware, gate = recall(
+        supports_tool_choice=instruction != _RECALL_INSTRUCTION, record_instruction=instruction
+    )
     options = {"tools": [make_recall_tool(gate)]}
     head = Message("user", ["Keep this initial request verbatim."])
     band = [Message("user", [f"Earlier request {index}. " * 300]) for index in range(3)]
@@ -674,7 +853,6 @@ async def test_prompt_recall_preserves_real_user_anchors_during_composed_compact
 
     async def send():
         assert isinstance(context.messages, list)
-        assert context.messages[-1].text == _RECALL_INSTRUCTION
         assert await context.kwargs["compaction_strategy"](context.messages)
         assert requests and users.user_compactions == 1
         assert all(message.additional_properties.get(EXCLUDED_KEY) for message in band)
@@ -682,20 +860,23 @@ async def test_prompt_recall_preserves_real_user_anchors_during_composed_compact
             assert not anchor.additional_properties.get(EXCLUDED_KEY, False)
             assert anchor in context.messages
             assert all(anchor.text not in text for request in requests for text in request)
-        assert all(_RECALL_INSTRUCTION not in text for request in requests for text in request)
-        assert context.messages[-1].text == _RECALL_INSTRUCTION
+        assert all(instruction not in text for request in requests for text in request)
+        assert context.messages[-1].text == instruction
         assert not context.messages[-1].additional_properties.get(EXCLUDED_KEY, False)
         context.result = ChatResponse(messages=Message("assistant", [record_call()]))
 
     await middleware.process(context, send)
     assert middleware.failed_forced_calls == 0
-    assert all(message.text != _RECALL_INSTRUCTION for message in context.messages)
+    assert all(message.text != instruction for message in context.messages)
     assert context.options is options
 
 
-async def test_prompt_recall_message_still_counts_towards_the_composed_sending_budget():
+@pytest.mark.parametrize("instruction", [_RECALL_INSTRUCTION, DEFAULT_RECORD_INSTRUCTION])
+async def test_prompt_recall_message_still_counts_towards_the_composed_sending_budget(instruction):
     tokenizer = CharacterEstimatorTokenizer()
-    middleware, gate = recall(supports_tool_choice=False)
+    middleware, gate = recall(
+        supports_tool_choice=instruction != _RECALL_INSTRUCTION, record_instruction=instruction
+    )
     strategy = ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
         tokenizer=tokenizer,
         tool_results=ToolResultAnchoredSummarizationCompactionStrategy(
@@ -708,7 +889,7 @@ async def test_prompt_recall_message_still_counts_towards_the_composed_sending_b
     options = {"tools": [make_recall_tool(gate)]}
     budget = strategy.sending_budget(options)
     question = Message("user", ["x" * ((budget - 64) * 4)])
-    with_prompt = [question, Message("user", [_RECALL_INSTRUCTION])]
+    with_prompt = [question, Message("user", [instruction])]
     annotate_token_counts(with_prompt, tokenizer=tokenizer)
     assert included_token_count([question]) < budget < included_token_count(with_prompt)
     context = ChatContext(None, [question], options, kwargs={"compaction_strategy": strategy})
@@ -808,13 +989,18 @@ async def test_prompt_recall_preserves_the_latest_tool_group_in_fallback(
 
 @pytest.mark.parametrize("feedback", ["", "Retain SKU-123 from lookup."])
 @pytest.mark.parametrize("supports_tool_choice", [True, False])
+@pytest.mark.parametrize("record_instruction", [None, DEFAULT_RECORD_INSTRUCTION])
 async def test_preserved_prompt_cache_asks_without_changing_tools_or_tool_choice(
-    feedback, supports_tool_choice, caplog
+    feedback, supports_tool_choice, record_instruction, caplog
 ):
     # Anthropic drops cached message blocks when tool_choice or thinking changes and matches
     # nothing when tools change, so the ask must leave the agent's request as it was.
     caplog.set_level(logging.INFO, logger="maf_compaction")
-    middleware, gate = recall(preserve_prompt_cache=True, supports_tool_choice=supports_tool_choice)
+    middleware, gate = recall(
+        preserve_prompt_cache=True,
+        supports_tool_choice=supports_tool_choice,
+        record_instruction=record_instruction,
+    )
     middleware._feedback = feedback
     tool = make_recall_tool(gate)
     other = FunctionTool(name="lookup", func=lambda: "result")
