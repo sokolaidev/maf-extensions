@@ -2898,10 +2898,10 @@ def _firings(strategy: Any) -> list[tuple[bool, bool]]:
     log: list[tuple[bool, bool]] = []
     inner = strategy._last_resort
 
-    async def logged(messages: list[Message]) -> bool:
+    async def logged(messages: list[Message], **kwargs: Any) -> bool:
         started = strategy.chain_targets_reached + strategy.chain_targets_missed
         fallbacks = strategy.last_resort_fallbacks
-        changed = await inner(messages)
+        changed = await inner(messages, **kwargs)
         log.append(
             (
                 strategy.chain_targets_reached + strategy.chain_targets_missed > started,

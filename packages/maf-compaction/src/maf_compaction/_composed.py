@@ -952,7 +952,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return False
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
-        replay = self.user_turns.replay_summaries(messages)
         entry_tokens = included_token_count(messages)
 
         changed = await self.tool_results.compact_against(
@@ -969,6 +968,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             annotate_token_counts(messages, tokenizer=self.tokenizer, force_retokenize=True)
             self._removed_by_record += max(entry_tokens - included_token_count(messages), 0)
 
+        replay = self.user_turns.replay_summaries(messages)
         prompt_tokens = included_token_count(messages)
         compacted = False
         if (not replay.changed or replay.new_turns) and not self._holds_for_record(
