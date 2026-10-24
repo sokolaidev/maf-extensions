@@ -34,6 +34,7 @@ from agent_framework._compaction import (
 )
 
 from maf_compaction import (
+    DEFAULT_RECORD_INSTRUCTION,
     ChainDecisions,
     CompactionBudgetExceeded,
     CompactionStack,
@@ -72,7 +73,15 @@ class Summarizer:
         return ChatResponse(messages=Message("assistant", [self.text]))
 
 
-def build_stack(summarizer=None, *, budget=2000, composed=True, reforce="bound", **user_options):
+def build_stack(
+    summarizer=None,
+    *,
+    budget=2000,
+    composed=True,
+    reforce="bound",
+    record_instruction=None,
+    **user_options,
+):
     record = ToolResultAnchoredSummarizationCompactionStrategy(
         max_input_tokens=budget, tokenizer=TOKENIZER, keep_head_groups=1
     )
@@ -96,6 +105,7 @@ def build_stack(summarizer=None, *, budget=2000, composed=True, reforce="bound",
         tokenizer=TOKENIZER,
         arm=gate.arm,
         disarm=gate.disarm,
+        record_instruction=record_instruction,
         reforce=(
             record.take_reforce
             if reforce == "bound"
@@ -755,7 +765,8 @@ async def test_harness_prompt_recall_normalizes_values_and_strips_stale_asks(str
 
 
 @pytest.mark.parametrize("stream", [False, True])
-async def test_harness_never_executes_or_persists_refused_recall(stream):
+@pytest.mark.parametrize("prompted", [False, True])
+async def test_harness_never_executes_or_persists_refused_recall(stream, prompted):
     from maf_compaction._toolsummary import RECALL_TOOL_NAME
 
     class RefusingModel(Model):
@@ -786,12 +797,14 @@ async def test_harness_never_executes_or_persists_refused_recall(stream):
 
             return answer()
 
-    registry = SessionCompactionRegistry(lambda: build_stack(budget=100_000))
+    registry = SessionCompactionRegistry(
+        lambda: build_stack(budget=100_000, record_instruction=DEFAULT_RECORD_INSTRUCTION)
+    )
     model = RefusingModel()
     agent = harness(registry, model)
     session = AgentSession()
     with registry.activate(session) as stack:
-        stack.middleware.supports_tool_choice = False
+        stack.middleware.supports_tool_choice = not prompted
         stack.middleware._force_next = True
     result = agent.run("Recall SKU-123.", session=session, stream=stream)
     response = (
@@ -809,6 +822,37 @@ async def test_harness_never_executes_or_persists_refused_recall(stream):
         assert stack.middleware.value_free_record_streak == 1
         assert stack.middleware.records_forced == 0
         assert not stack.gate.take()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("composed", [False, True])
+async def test_harness_record_instruction_stays_out_of_history_and_cold_snapshots(stream, composed):
+    def build():
+        return build_stack(
+            budget=100_000, composed=composed, record_instruction=DEFAULT_RECORD_INSTRUCTION
+        )
+
+    session = AgentSession()
+    for _ in range(2):
+        registry = SessionCompactionRegistry(build, max_cached_sessions=0)
+        model = Model()
+        agent = harness(registry, model)
+        with registry.activate(session) as stack:
+            stack.middleware._force_next = True
+        result = agent.run("Only give the titles.", session=session, stream=stream)
+        response = (
+            await result.get_final_response()
+            if isinstance(result, ResponseStream)
+            else await result
+        )
+        assert response.text == "answer"
+        assert len(model.prompts) == 2
+        assert model.prompts[0][0][-1] == DEFAULT_RECORD_INSTRUCTION
+        assert DEFAULT_RECORD_INSTRUCTION not in model.prompts[1][0]
+        snapshot = session.to_dict()
+        assert DEFAULT_RECORD_INSTRUCTION not in json.dumps(snapshot)
+        assert "record_instruction" not in json.dumps(snapshot)
+        session = AgentSession.from_dict(round_trip(snapshot))
 
 
 @pytest.mark.parametrize("stream", [False, True])

@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import importlib
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -246,7 +247,14 @@ def test_workflow_requires_oidc_and_overlapping_roles():
     tailscale = next(s for s in participants["steps"] if s.get("uses", "").startswith("tailscale/"))
     assert tailscale["with"]["audience"] == "${{ secrets.MXC_TAILSCALE_AUDIENCE }}"
     assert "oauth-secret" not in tailscale["with"]
-    assert tailscale["with"]["args"] == "--accept-dns=false --accept-routes=false"
+    assert tailscale["with"]["args"] == "--accept-dns=false"
+    steps = participants["steps"]
+    route_guard = steps[steps.index(tailscale) + 1]
+    assert route_guard["name"] == "Disable tailnet DNS and subnet routes before discovery"
+    assert "if" not in route_guard and "continue-on-error" not in route_guard
+    assert steps[steps.index(route_guard) + 1]["name"] == (
+        "Create runner-local credentials and public discovery"
+    )
     assert participants["steps"][-1]["with"]["if-no-files-found"] == "error"
     uploads = [
         s["with"]["path"]
@@ -257,3 +265,50 @@ def test_workflow_requires_oidc_and_overlapping_roles():
         "${{ runner.temp }}/mxc-cross/public/${{ matrix.role }}.json",
         "${{ runner.temp }}/mxc-cross/report.json\n${{ runner.temp }}/mxc-cross/service.log\n",
     ]
+
+
+@pytest.mark.workflow
+@pytest.mark.skipif(sys.platform != "linux", reason="The participant jobs use Linux Bash")
+@pytest.mark.parametrize(
+    ("set_status", "route_all", "corp_dns", "succeeds"),
+    [
+        (0, False, False, True),
+        (7, False, False, False),
+        (0, True, False, False),
+        (0, False, True, False),
+    ],
+)
+def test_route_guard_refuses_failed_or_unapplied_preferences(
+    tmp_path, set_status, route_all, corp_dns, succeeds
+):
+    path = Path(__file__).parents[1] / ".github/workflows/mxc-cross-runner.yml"
+    steps = yaml.safe_load(path.read_text("utf-8-sig"))["jobs"]["participants"]["steps"]
+    guard = next(
+        s
+        for s in steps
+        if s.get("name") == "Disable tailnet DNS and subnet routes before discovery"
+    )
+    stub = r"""
+sudo() {
+  case "$*" in
+    "tailscale set --accept-dns=false --accept-routes=false") return "$SET_STATUS" ;;
+    "tailscale debug prefs") printf '%s\n' "$PREFS" ;;
+    *) return 99 ;;
+  esac
+}
+"""
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-c", stub + guard["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "SET_STATUS": str(set_status),
+            "PREFS": json.dumps({"RouteAll": route_all, "CorpDNS": corp_dns}),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert (result.returncode == 0) is succeeds, result.stderr
+    assert not result.stdout

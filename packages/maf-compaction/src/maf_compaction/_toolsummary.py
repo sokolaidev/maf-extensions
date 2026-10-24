@@ -93,6 +93,7 @@ __all__ = [
     "CONSOLIDATE_EXCLUDE_REASON",
     "DEFAULT_COVERAGE_SHARE",
     "DEFAULT_FALLBACK_FRACTION",
+    "DEFAULT_RECORD_INSTRUCTION",
     "DEFAULT_RECORD_MAX_TOKENS",
     "DEFAULT_RECORD_TARGET_TOKENS",
     "DEFAULT_TRIGGER_FRACTION",
@@ -128,6 +129,17 @@ _RECALL_INSTRUCTION: Final[str] = (
 PIN_REASON_PROMPT_CACHE: Final[str] = "prompt_cache"
 #: Reasons that stop pinning but keep prompt-based recall running.
 _PROMPTED_REASONS: Final[frozenset[str]] = frozenset({"unsupported", PIN_REASON_PROMPT_CACHE})
+
+#: Optional guidance for pinned recall calls; not enabled unless the host selects it.
+DEFAULT_RECORD_INSTRUCTION: Final[str] = (
+    "Write a compaction record of task-relevant information from earlier tool results. "
+    "Use only tool-returned information, not earlier assistant text. Page titles and URLs "
+    "alone are not a record. Preserve exact numbers, limits, quotas, sizes and identifiers "
+    "with the headings that give them meaning. Retain selected complete table rows unchanged "
+    "with their column headings; uncovered rows remain in the result. Retain the meaning of "
+    "tool-returned findings, conclusions and summaries. Keep applicable access and "
+    "confidentiality restrictions."
+)
 
 #: Prefix the recall tool puts on a result that counts as a record.
 #:
@@ -2552,6 +2564,11 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             ``None`` leaves whatever cap the run already sets, so the record inherits the cap
             sized for an ordinary answer and a record asked to summarise everything has no
             bound of its own at all.
+        record_instruction: Optional trailing user message on pinned recall requests only.
+            Use ``DEFAULT_RECORD_INSTRUCTION`` or custom text. It is removed after the request
+            and excluded from session state. Value-bearing records may need a much larger
+            ``record_max_tokens`` and matching tool/strategy targets; no budget is scaled
+            automatically. ``None`` leaves requests unchanged.
         supports_tool_choice: Set False for routes that cannot pin a tool. Recall uses a
             temporary trailing message with only the recall tool advertised. A tool_choice
             client rejection also selects this mode for the rest of the session.
@@ -2611,6 +2628,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         disarm: Callable[[], None] | None = None,
         trigger_fraction: float = DEFAULT_TRIGGER_FRACTION,
         record_max_tokens: int | None = DEFAULT_RECORD_MAX_TOKENS,
+        record_instruction: str | None = None,
         max_groups_before_record: int | None = None,
         min_groups_before_repeat: int = 4,
         repeat_records: bool = True,
@@ -2655,6 +2673,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         self.disarm = disarm
         self.trigger_fraction = trigger_fraction
         self.record_max_tokens = record_max_tokens
+        self.record_instruction = record_instruction
         self.max_groups_before_record = max_groups_before_record
         self.min_groups_before_repeat = min_groups_before_repeat
         self.repeat_records = repeat_records
@@ -2846,7 +2865,13 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         """Failed recall attempts that triggered an ordinary retry, excluding rejected pins."""
         return self._failed_forced_calls
 
-    def _disable_pin(self, reason: str, *, response: ChatResponse[Any] | None = None) -> None:
+    def _disable_pin(
+        self,
+        reason: str,
+        *,
+        response: ChatResponse[Any] | None = None,
+        error: Exception | None = None,
+    ) -> None:
         if not self._pin_disabled or self._pin_disabled_reason != reason:
             detail = ""
             if response is not None:
@@ -2870,6 +2895,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 self._session_id,
                 reason,
                 detail,
+                exc_info=error,
             )
         self._pin_disabled = True
         self._pin_disabled_reason = reason
@@ -3063,13 +3089,17 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
         async def attempt() -> None:
             nonlocal prompt
+            instruction = self._ask_text() if self._pin_disabled else self.record_instruction
             prompt = (
-                Message("user", [self._ask_text()], additional_properties={RECALL_PROMPT_KEY: True})
-                if forced_this_call and self._pin_disabled
+                Message("user", [instruction], additional_properties={RECALL_PROMPT_KEY: True})
+                if forced_this_call and instruction is not None
                 else None
             )
             if prompt is not None:
-                context.messages = [*context.messages, prompt]
+                # Pinned instructions enter after history captures inputs for persistence.
+                context.messages = list(context.messages)
+                if self._pin_disabled:
+                    context.messages.append(prompt)
             sent_messages = context.messages
             try:
                 await call_next()
@@ -3152,11 +3182,11 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 self.disarm()
             restore_request()
             await call_next()
-        except Exception:
+        except Exception as exc:
             if not forced_this_call:
                 raise
             self._failed_forced_calls += 1
-            self._disable_pin("failed")
+            self._disable_pin("failed", error=exc)
             restore_request()
             await call_next()
         except BaseException:
