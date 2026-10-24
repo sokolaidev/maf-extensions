@@ -92,7 +92,9 @@ class Fixture:
     def save(self) -> None:
         self.report_path.write_text(json.dumps(self.report, indent=2) + "\n", encoding="utf-8")
 
-    async def acquire(self, base: str = "/sandbox", *, key: SandboxKey | None = None) -> Candidate:
+    async def acquire(
+        self, base: str = "/sandbox", *, key: SandboxKey | None = None, policy=None
+    ) -> Candidate:
         if key is None:
             key = SandboxKey("q1833", self.client.scope.workspace, "probe", str(uuid.uuid4()))
         if key in self.by_key:
@@ -111,7 +113,9 @@ class Fixture:
         request = self.client.pb.CreateSandboxRequest.FromString(
             self.client.request(name, request_id)
         )
-        request.spec.template.labels["spike.issue"] = "1833"
+        if policy is not None:
+            request.spec.policy.CopyFrom(policy)
+        request.spec.template.labels["spike.issue"] = str(self.report.get("issue", 1833))
         self.report["policy_protobuf_hex"] = request.spec.policy.SerializeToString().hex()
         payload = request.SerializeToString()
         self.pending_creates[request_id] = {
@@ -500,6 +504,7 @@ def main() -> int:
     parser.add_argument("--image", required=True)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--egress-origin-ip")
     args = parser.parse_args()
     engine = docker_get("/info")
     if not isinstance(engine, dict):
@@ -514,6 +519,7 @@ def main() -> int:
         raise ValueError("requires the unprivileged pinned /sandbox workload recipe")
     report = {
         "format": 1,
+        "issue": 1834 if args.egress_origin_ip else 1833,
         "upstream_commit": PIN,
         "gateway_version": "0.1.2",
         "python": sys.version,
@@ -552,6 +558,15 @@ def main() -> int:
         "physical_cleanup_verified": False,
         "workspace_cleanup_verified": False,
     }
+    if args.egress_origin_ip:
+        from openshell_egress_probe import native_origin_ip
+
+        args.egress_origin_ip = native_origin_ip(args.egress_origin_ip)
+        report["capability_assessment"] = {
+            "EGRESS": "unqualified: fixed IPv4 HTTP fixture only; no backend declaration",
+            "EGRESS_METHODS": "measurement only; other protocols and authority remain unqualified",
+            "EGRESS_PATHS": "measurement only; normalization and origin interpretation differ",
+        }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     control = {}
     with signed_gateway(args.config, control=control) as issuer:
@@ -569,7 +584,12 @@ def main() -> int:
             created = True
             report["workspace_create"]["state"] = "confirmed"
             fixture.save()
-            asyncio.run(measure(fixture))
+            if args.egress_origin_ip:
+                from openshell_egress_probe import measure_native
+
+                asyncio.run(measure_native(fixture, args.egress_origin_ip))
+            else:
+                asyncio.run(measure(fixture))
             report["completed"] = True
         finally:
             errors = fixture.cleanup(workspace_created=created)

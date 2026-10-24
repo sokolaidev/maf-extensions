@@ -465,6 +465,31 @@ Fifteen [egress evidence tests](../../../tests/test_openshell_egress_probe.py) r
 
 Next qualify HTTPS inspection with verified upstream certificates, then provider-composed policy and policy updates. IPv6, DNS changes/rebinding, alternate protocols and ports, encoded/canonicalized paths, case normalization, header/authority confusion, multi-hop redirects, unrestricted-mode fidelity and shared conformance remain untested. Egress declarations and method/path capabilities remain withheld. The lifecycle dependencies #1817/#1818 and native-file contract gaps remain independent of these HTTP observations.
 
+## Native HTTP translation and cutover - 2026-10-24
+
+The native workflow now also runs the [HTTP probe](../../../scripts/experiments/openshell_egress_probe.py) through the retained-ownership fixture, with a private recording origin on an internal Docker network. [PR #2138](https://github.com/sokolaidev/maf-extensions/pull/2138) delivers this fixed IPv4 HTTP-port experiment. It is not an implementation or declaration of a supported suite egress mode.
+
+The fixture compiler accepts explicit uncredentialed `EgressRule` values with GET/POST methods and canonical ASCII paths. Suite `*.host` becomes OpenShell `**.host` so deeper subdomains remain included while the apex is excluded. Suite `/prefix/*` becomes the exact `/prefix` plus `/prefix/**`. It selects blocking `ENFORCE` explicitly and refuses attached providers, authority grants, duplicate host rules, unrestricted method/path requests and unqualified path encodings instead of silently broadening them. The selected HTTP port and executable are fixture restrictions, so this compiler cannot serve as a general suite allowlist translator.
+
+An independent origin barrier admits a request but withholds its response. The controller clears the base policy, waits for the exact active version/hash to report `LOADED`, checks fresh HTTP/direct TCP refusals, writes a unique local signal through a separate guest execution, and then releases the origin response. After either a response or an exception, the guest waits for that exact signal before trying a second request through the same HTTP client. The signal uses the execution transport rather than the network policy under test and fails closed if absent. A matching origin journal and response echo establish completed traffic; connection closure is recorded separately from explicit policy refusal. No outcome from this bounded case establishes instantaneous revocation or production isolation. Policy restoration and a successful allowed request provide a final positive control.
+
+[Hosted run 40109508741](https://github.com/sokolaidev/maf-extensions/actions/runs/40109508741) passed all 17 HTTP cases on native Linux with official OpenShell v0.1.2 at `6648bd0c290efbc41ba131ee9831ee45cd431f94` and the unchanged pinned images. The run tested PR head `d3c162769e98c3f5521c7cc67c69e86ae0ff96a1` through GitHub's merge revision `5837dedbb6b68eeec114e4102ae885f78b91da53`. The `egress.json` SHA-256 is `86e99ce6af129bf9b6340db57b44dcceba2ec95f64ffe7ce2ca5fcc4557ddb6c` in the workflow's 14-day artifact. Its `followup_signal_after_loaded` records revision 3 and policy hash `11eeb63cfbced79aeb1d82d4aaea33d8646c0ac02fc92e755c9e07f7627dda10`.
+
+Earlier runs [40084927200](https://github.com/sokolaidev/maf-extensions/actions/runs/40084927200) and [40085405533](https://github.com/sokolaidev/maf-extensions/actions/runs/40085405533) predate the separate follow-up signal. Their 17 serial cases remain valid, but an early disconnect could start the follow-up before exact-loaded confirmation, so neither historical follow-up establishes post-confirmation ordering. The matrix below uses the controller-gated run instead.
+
+| Measurement | Native observation |
+| --- | --- |
+| Exact and recursive host/path translation | Parent, child and deeper paths succeeded; prefix collision, denied path/host and wildcard apex were refused. One-label and deeper wildcard subdomains succeeded. |
+| Method, port and redirect boundaries | POST, the alternate port and direct IPv4 TCP were refused. Only the allowed first redirect hop reached the origin. Uppercase host access succeeded. |
+| Empty policy after exact loaded revision 3 | Fresh HTTP and direct TCP returned permission denial with no correlated origin request. |
+| Admitted request across cutover | The origin recorded the held request, but the guest received `RemoteDisconnected` rather than its response. After the controller signal, the follow-up attempted connection generation 2 and returned `PermissionError` (`errno=13`), with no second origin hit; `same_connection=false`. The follow-up is ordered after exact-loaded confirmation; the earlier disconnection's timing is not established. This did not exercise a surviving persistent connection. |
+| Restored policy at exact loaded revision 4 | The final allowed GET succeeded with matching independent origin evidence. |
+| Cleanup | The single captured sandbox was disposed, physical and workspace absence were verified, and no pending create remained. |
+
+The already-admitted request reached the origin before policy replacement, so response disconnection cannot establish rollback of origin-side effects. The fixture records `instant_revocation_qualified=false`. The controller-gated revision passes 92 focused tests; removing its signal gate fails all four real-subprocess cases, including early disconnect. The broader four-worker run completed with 23,630 passed, 936 skipped and four failures outside the changed files; all four passed on unchanged HEAD and with the fix restored, and the combined rerun passed 96 tests. This is not a green full local gate. Earlier mutation checks reject shallow wildcard translation, unrelated response echoes, a missing origin barrier, proxy-environment assumptions and miscounted refused reconnects.
+
+Trusted owned HTTPS, certificate/hostname validation, provider-composed authority, IPv6, DNS rebinding, alternate protocols, concurrent controllers and restart remain unqualified. The independent credential-lifecycle work stays in #1835; general lifecycle authority stays blocked by #1817/#1818. #1834 remains open.
+
 ## HTTPS policy and origin trust - 2026-10-11
 
 The opt-in [HTTPS probe](../../../scripts/experiments/openshell_https_probe.py) reuses the HTTP probe's owned-workspace lifecycle and independent Docker cleanup checks. All **9 HTTPS cases passed** with the same v0.1.2 gateway, SDK, unchanged official supervisor/runtime digests and sentinel workload image recorded above. The original **19 HTTP cases also passed** after adding the profile. These remain provider-free characterization fixtures rather than suite capability qualification.
@@ -717,7 +742,7 @@ Evaluation of OpenShell v0.1.2 at `6648bd0c290efbc41ba131ee9831ee45cd431f94` exe
 | Non-mutating original-create receipts | Blocked on official upstream recovery contract; local FR draft and offline model prepared | [#1817](https://github.com/sokolaidev/maf-extensions/issues/1817) (open) |
 | Conditional physical-instance deletion | Blocked on official upstream conditional deletion; offline barrier harness prepared | [#1818](https://github.com/sokolaidev/maf-extensions/issues/1818) (open) |
 | Native Linux runtime and file conformance | Native baseline measured; lifecycle and concurrent file confinement blocked | [#1833](https://github.com/sokolaidev/maf-extensions/issues/1833) (open); baseline by [#2115](https://github.com/sokolaidev/maf-extensions/pull/2115) (merged) |
-| Effective egress translation and revocation | Open; deferred from the spike | [#1834](https://github.com/sokolaidev/maf-extensions/issues/1834) (open) |
+| Effective egress translation and revocation | Open; native HTTP translation and one in-flight cutover measured, broader contracts unqualified | [#1834](https://github.com/sokolaidev/maf-extensions/issues/1834) (open) |
 | Provider credential lifecycle | Open; deferred from the spike | [#1835](https://github.com/sokolaidev/maf-extensions/issues/1835) (open) |
 
 ## Adoption follow-up
