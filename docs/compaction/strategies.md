@@ -139,6 +139,7 @@ Inside the context window nothing here beats not compacting: the best strategy c
 | Decision | State | Tracking |
 |---|---|---|
 | Position-only anchored trimming that honours preserved messages | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
+| Shed completed turns without losing their answer status | Implemented | [#2146](https://github.com/sokolaidev/maf-extensions/issues/2146) (closed) by [#2149](https://github.com/sokolaidev/maf-extensions/pull/2149) (merged) |
 | Text-only tool-result shortening updates both request content and token-count input | Implemented | [#1929](https://github.com/sokolaidev/maf-extensions/issues/1929) (closed) by [#1940](https://github.com/sokolaidev/maf-extensions/pull/1940) (merged) |
 | Host-directed shortening of labelled and mixed tool results with media retained | Implemented | [#1998](https://github.com/sokolaidev/maf-extensions/issues/1998) (closed) by [#2001](https://github.com/sokolaidev/maf-extensions/pull/2001) (merged) |
 | Minimum-gain floor at the break-even share | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
