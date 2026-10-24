@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import io
+import json
 import stat
 from contextlib import contextmanager
 from pathlib import Path
@@ -258,6 +259,90 @@ def test_create_identity_is_saved_before_readiness_failure(modules, tmp_path):
     assert len(fixture.owners) == 1
     assert "original" in fixture.report_path.read_text()
     assert fixture.owners[0]["key"]["call_id"]
+    assert fixture.pending_creates == {}
+    assert fixture.owners[0]["create_request_id"]
+
+
+@pytest.mark.parametrize("earlier_owner", [False, True])
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+def test_uncertain_create_retains_selector_and_blocks_cleanup(
+    modules, monkeypatch, tmp_path, earlier_owner, failure
+):
+    probe, _ = modules
+    report_path = tmp_path / "report.json"
+    selectors = {}
+    sent = []
+    deleted = []
+    request = SimpleNamespace(
+        spec=SimpleNamespace(
+            template=SimpleNamespace(labels={}),
+            policy=SimpleNamespace(SerializeToString=lambda: b"policy"),
+        ),
+        SerializeToString=lambda: b"request",
+    )
+
+    def serialize(name, request_id):
+        selectors.update(name=name, request_id=request_id)
+        return b"request"
+
+    def send(payload, *, on_created):
+        pending = json.loads(report_path.read_text())["pending_creates"]
+        retained = pending[selectors["request_id"]]
+        assert retained["name"] == selectors["name"]
+        assert retained["workspace"] == "workspace"
+        assert retained["key"]["call_id"]
+        sent.append(payload)
+        raise failure("create response lost")
+
+    def rpc(*args):
+        pytest.fail("uncertain creation must prevent workspace teardown")
+
+    client = SimpleNamespace(
+        scope=SimpleNamespace(workspace="workspace"),
+        pb=SimpleNamespace(
+            CreateSandboxRequest=SimpleNamespace(FromString=lambda payload: request),
+            DeleteWorkspaceRequest=lambda **kwargs: kwargs,
+        ),
+        request=serialize,
+        send=send,
+        rpc=rpc,
+    )
+    fixture = probe.Fixture(client, {}, report_path)
+    if earlier_owner:
+        fixture.owners.append({"sandbox_id": "earlier", "containers": [], "processes": {}})
+    monkeypatch.setattr(probe, "snapshot", lambda identity: {"containers": [], "processes": {}})
+    monkeypatch.setattr(
+        probe, "dispose_fixture", lambda client, owner: deleted.append(owner["sandbox_id"])
+    )
+    with pytest.raises(failure, match="create response lost"):
+        asyncio.run(fixture.acquire())
+    errors = fixture.cleanup(workspace_created=True)
+    assert len(errors) == 1 and "creation unresolved" in str(errors[0])
+    assert sent == [b"request"]
+    assert deleted == (["earlier"] if earlier_owner else [])
+    retained_report = json.loads(report_path.read_text())
+    assert selectors["request_id"] in retained_report["pending_creates"]
+    assert retained_report["physical_cleanup_verified"] is False
+    assert retained_report["workspace_cleanup_verified"] is False
+
+
+def test_confirmed_cleanup_can_delete_workspace(modules, monkeypatch, tmp_path):
+    probe, _ = modules
+    calls = []
+    client = SimpleNamespace(
+        scope=SimpleNamespace(workspace="workspace"),
+        pb=SimpleNamespace(DeleteWorkspaceRequest=lambda **kwargs: kwargs),
+        rpc=lambda method, request: calls.append((method, request)),
+    )
+    fixture = probe.Fixture(client, {}, tmp_path / "report.json")
+    fixture.owners.append({"sandbox_id": "confirmed", "containers": [], "processes": {}})
+    monkeypatch.setattr(probe, "snapshot", lambda identity: {"containers": [], "processes": {}})
+    monkeypatch.setattr(probe, "dispose_fixture", lambda *args: None)
+    monkeypatch.setattr(probe, "verify_workspace_absent", lambda *args: True)
+    assert fixture.cleanup(workspace_created=True) == []
+    assert fixture.report["physical_cleanup_verified"] is True
+    assert fixture.report["workspace_cleanup_verified"] is True
+    assert calls == [("DeleteWorkspace", {"name": "workspace", "allow_missing": True})]
 
 
 @pytest.mark.workflow

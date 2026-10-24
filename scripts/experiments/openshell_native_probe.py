@@ -86,6 +86,8 @@ class Fixture:
         self.owners: list[dict] = []
         self.disposed: set[str] = set()
         self.by_key: dict[SandboxKey, Candidate] = {}
+        self.pending_creates: dict[str, dict] = {}
+        self.report["pending_creates"] = self.pending_creates
 
     def save(self) -> None:
         self.report_path.write_text(json.dumps(self.report, indent=2) + "\n", encoding="utf-8")
@@ -98,19 +100,29 @@ class Fixture:
 
         def retain(owner):
             owner["key"] = asdict(key)
+            owner["create_request_id"] = request_id
             self.owners.append(owner)
             self.report["owners"] = self.owners
+            del self.pending_creates[request_id]
             self.save()
 
         name = "s1797-" + uuid.uuid4().hex[:12]
+        request_id = str(uuid.uuid4())
         request = self.client.pb.CreateSandboxRequest.FromString(
-            self.client.request(name, str(uuid.uuid4()))
+            self.client.request(name, request_id)
         )
         request.spec.template.labels["spike.issue"] = "1833"
         self.report["policy_protobuf_hex"] = request.spec.policy.SerializeToString().hex()
-        owner = await asyncio.to_thread(
-            self.client.send, request.SerializeToString(), on_created=retain
-        )
+        payload = request.SerializeToString()
+        self.pending_creates[request_id] = {
+            "name": name,
+            "workspace": self.client.scope.workspace,
+            "request_id": request_id,
+            "request_sha256": hashlib.sha256(payload).hexdigest(),
+            "key": asdict(key),
+        }
+        self.save()
+        owner = await asyncio.to_thread(self.client.send, payload, on_created=retain)
         observed = await asyncio.to_thread(snapshot, owner["sandbox_id"])
         if (
             len(observed["containers"]) != 2
@@ -149,6 +161,35 @@ class Fixture:
 
     def subject(self, sandbox: Candidate, path: str) -> Subject:
         return Subject(sandbox, path, MEASURED, exec_cleanup_timeout=30)
+
+    def cleanup(self, *, workspace_created: bool) -> list[Exception]:
+        """Dispose confirmed owners without treating uncertain admission as absence."""
+        errors: list[Exception] = []
+        self.report["workspace_cleanup_verified"] = False
+        for owner in self.owners:
+            try:
+                asyncio.run(self.dispose(owner))
+            except Exception as exc:
+                errors.append(exc)
+        if self.pending_creates:
+            errors.append(RuntimeError("sandbox creation unresolved; pending selectors retained"))
+        self.report["physical_cleanup_verified"] = (
+            not errors and bool(self.owners) and len(self.disposed) == len(self.owners)
+        )
+        if workspace_created and self.report["physical_cleanup_verified"]:
+            workspace = self.client.scope.workspace
+            try:
+                self.client.rpc(
+                    "DeleteWorkspace",
+                    self.client.pb.DeleteWorkspaceRequest(name=workspace, allow_missing=True),
+                )
+                self.report["workspace_cleanup_verified"] = verify_workspace_absent(
+                    self.client, workspace
+                )
+            except Exception as exc:
+                errors.append(exc)
+        self.save()
+        return errors
 
 
 def summarize(results) -> list[dict]:
@@ -522,33 +563,16 @@ def main() -> int:
         created = False
         try:
             wait_gateway(client)
+            report["workspace_create"] = {"name": workspace, "state": "pending"}
+            fixture.save()
             client.rpc("CreateWorkspace", client.pb.CreateWorkspaceRequest(name=workspace))
             created = True
+            report["workspace_create"]["state"] = "confirmed"
             fixture.save()
             asyncio.run(measure(fixture))
             report["completed"] = True
         finally:
-            errors = []
-            for owner in fixture.owners:
-                try:
-                    asyncio.run(fixture.dispose(owner))
-                except Exception as exc:
-                    errors.append(exc)
-            report["physical_cleanup_verified"] = (
-                not errors and bool(fixture.owners) and len(fixture.disposed) == len(fixture.owners)
-            )
-            if created and report["physical_cleanup_verified"]:
-                try:
-                    client.rpc(
-                        "DeleteWorkspace",
-                        client.pb.DeleteWorkspaceRequest(name=workspace, allow_missing=True),
-                    )
-                    report["workspace_cleanup_verified"] = verify_workspace_absent(
-                        client, workspace
-                    )
-                except Exception as exc:
-                    errors.append(exc)
-            fixture.save()
+            errors = fixture.cleanup(workspace_created=created)
             client.close()
             control["gateway"].stop()
             args.report.with_suffix(".gateway.log").write_bytes(control["log"].read_bytes())
