@@ -21,6 +21,7 @@ from agent_framework import (
     Content,
     FunctionInvocationContext,
     FunctionInvocationLayer,
+    InMemoryHistoryProvider,
     Message,
     ResponseStream,
     SessionContext,
@@ -668,7 +669,7 @@ class Model(FunctionInvocationLayer, ChatMiddlewareLayer, BaseChatClient):
         return answer()
 
 
-def harness(registry, model):
+def harness(registry, model, **kwargs):
     provider = SessionCompactionProvider(registry, tokenizer=TOKENIZER, before=False)
     agent = create_harness_agent(
         model,
@@ -680,6 +681,7 @@ def harness(registry, model):
         context_providers=[provider],
         middleware=[SessionToolResultRecallMiddleware(registry, compact_before=True)],
         tools=[make_session_recall_tool(registry)],
+        **kwargs,
     )
     agent.context_providers.remove(provider)
     agent.context_providers.insert(1, provider)
@@ -893,6 +895,40 @@ async def test_harness_compacts_loaded_history_before_the_first_model_request(st
     assert "merged facts" in first_prompt
     assert "fact123" not in first_prompt
     assert "fact456" not in first_prompt
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_harness_resends_original_history_across_replicas_without_resummarizing(stream):
+    class HostHistory(InMemoryHistoryProvider):
+        # Register a loading provider to suppress automatic history injection by the harness.
+        async def before_run(self, **kwargs):
+            pass
+
+    summarizer = Summarizer("Remembered user requirements.")
+    session = AgentSession()
+    original = [
+        Message("user", [f"Turn {i}: " + "x" * 4_000], message_id=f"u{i}") for i in range(6)
+    ]
+    for index in range(3):
+        registry = SessionCompactionRegistry(
+            lambda: build_stack(summarizer, budget=6_000), max_cached_sessions=0
+        )
+        model = Model()
+        agent = harness(registry, model, history_provider=HostHistory())
+        result = agent.run(deepcopy(original), session=session, stream=stream)
+        response = (
+            await result.get_final_response()
+            if isinstance(result, ResponseStream)
+            else await result
+        )
+        assert response.text == "answer"
+        assert len(summarizer.requests) == 1
+        assert len(model.prompts) == 1
+        prompt = "\n".join(model.prompts[0][0])
+        assert "Remembered user requirements." in prompt
+        assert "Turn 1:" not in prompt
+        session = AgentSession.from_dict(round_trip(session.to_dict()))
+        original.append(Message("user", ["Continue."], message_id=f"new{index}"))
 
 
 @pytest.mark.parametrize("stream", [False, True])
