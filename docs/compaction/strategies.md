@@ -152,6 +152,8 @@ Inside the context window nothing here beats not compacting: the best strategy c
 | Media preservation, configurable token estimates and optional descriptions with session replay | Implemented | [#1878](https://github.com/sokolaidev/maf-extensions/issues/1878) (closed) by [#1942](https://github.com/sokolaidev/maf-extensions/pull/1942) (merged) |
 | Composition judged after the record phase, with the chain working to a target | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
 | Overflow shedding leaves configurable headroom for subsequent calls | Implemented | [#2122](https://github.com/sokolaidev/maf-extensions/issues/2122) (closed) by [#2124](https://github.com/sokolaidev/maf-extensions/pull/2124) (merged) |
+| Truncated recall requests retry without disabling the session | Implemented | [#2143](https://github.com/sokolaidev/maf-extensions/issues/2143) (closed) by [#2147](https://github.com/sokolaidev/maf-extensions/pull/2147) (merged) |
+| No-record overflow sheds whole groups with headroom and preserves the prefix between passes | Implemented | [#2144](https://github.com/sokolaidev/maf-extensions/issues/2144) (closed) by [#2147](https://github.com/sokolaidev/maf-extensions/pull/2147) (merged) |
 | Chain decisions kept across both lists and restorable by a harness | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
 | One agent serves many sessions with JSON-safe compaction state and a bounded stack cache | Implemented | [#1827](https://github.com/sokolaidev/maf-extensions/issues/1827) (closed) by [#1830](https://github.com/sokolaidev/maf-extensions/pull/1830) (merged) |
 | The benchmark that produced the measurements | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
