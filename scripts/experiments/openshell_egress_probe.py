@@ -281,6 +281,23 @@ def inflight_observation(observations, hits, first):
     }
 
 
+def persistent_request_code(url):
+    """Use native hostname connections and record any automatic reconnect."""
+    return (
+        "import http.client,json,urllib.parse\n"
+        "class TrackedConnection(http.client.HTTPConnection):\n"
+        " generation=0\n def connect(self):\n  super().connect(); self.generation+=1\n"
+        "p=urllib.parse.urlsplit("
+        + repr(url)
+        + "); c=TrackedConnection(p.hostname,p.port,timeout=40); results=[]\n"
+        "for url in " + repr([url, url.replace("/hold?", "/after?")]) + ":\n"
+        " try:\n  p=urllib.parse.urlsplit(url); c.request('GET',p.path+'?'+p.query,headers={'Host':p.netloc}); r=c.getresponse(); results.append({'status':r.status,'body':r.read(4096).decode()})\n"
+        " except Exception as e:\n  results.append({'error':type(e).__name__,'errno':getattr(e,'errno',None)})\n"
+        " results[-1]['connection_generation']=c.generation\n"
+        "c.close(); print(json.dumps(results))"
+    )
+
+
 async def measure_native(fixture, ip):
     """Measure translated HTTP rules and a held request across an installed policy change."""
     from maf_sandbox import EgressRule
@@ -430,18 +447,7 @@ async def measure_native(fixture, ip):
             "host": allowed + ":8000",
             "port": 8000,
         }
-        code = (
-            "import http.client,json,urllib.request,urllib.parse\n"
-            "class TrackedConnection(http.client.HTTPConnection):\n"
-            " generation=0\n def connect(self):\n  super().connect(); self.generation+=1\n"
-            "p=urllib.parse.urlsplit(urllib.request.getproxies()['http']); c=TrackedConnection(p.hostname,p.port,timeout=40); results=[]\n"
-            "for url in " + repr([url, url.replace("/hold?", "/after?")]) + ":\n"
-            " try:\n  c.request('GET',url,headers={'Host':urllib.parse.urlsplit(url).netloc}); r=c.getresponse(); results.append({'status':r.status,'body':r.read(4096).decode()})\n"
-            " except Exception as e:\n  results.append({'error':type(e).__name__,'errno':getattr(e,'errno',None)})\n"
-            " results[-1]['connection_generation']=c.generation\n"
-            "c.close(); print(json.dumps(results))"
-        )
-        pending = asyncio.create_task(observe(code))
+        pending = asyncio.create_task(observe(persistent_request_code(url)))
         try:
             deadline = time.monotonic() + 15
             while not await journal(marker):

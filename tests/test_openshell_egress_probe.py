@@ -268,3 +268,46 @@ def test_origin_holds_response_until_independent_release(native_probe, monkeypat
         request("/__release?case=barrier", released)
         pending.result(timeout=2)
     assert json.loads(held.getvalue().split(b"\r\n\r\n", 1)[1]) == hits[0]
+
+
+def test_persistent_guest_uses_hostname_without_proxy_environment(
+    native_probe, monkeypatch, capsys
+):
+    import http.client
+    import urllib.request
+
+    calls = []
+
+    class Connection:
+        def __init__(self, host, port, timeout):
+            assert (host, port) == ("allowed.example", 8000)
+            self.connected = False
+
+        def connect(self):
+            self.connected = True
+
+        def request(self, method, path, headers):
+            if not self.connected:
+                self.connect()
+            calls.append((method, path, headers))
+
+        def getresponse(self):
+            return SimpleNamespace(status=200, read=lambda size: b"{}")
+
+        def close(self):
+            self.connected = False
+
+    def no_proxy():
+        pytest.fail("native hostname interception must not depend on HTTP_PROXY")
+
+    monkeypatch.setattr(http.client, "HTTPConnection", Connection)
+    monkeypatch.setattr(urllib.request, "getproxies", no_proxy)
+    exec(
+        native_probe.persistent_request_code("http://allowed.example:8000/allowed/hold?case=x"), {}
+    )
+    observed = json.loads(capsys.readouterr().out)
+    assert [item["connection_generation"] for item in observed] == [1, 1]
+    assert calls == [
+        ("GET", "/allowed/hold?case=x", {"Host": "allowed.example:8000"}),
+        ("GET", "/allowed/after?case=x", {"Host": "allowed.example:8000"}),
+    ]
