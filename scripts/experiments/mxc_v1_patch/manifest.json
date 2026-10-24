@@ -1,19 +1,19 @@
 {
-  "mxc_base": "7bf210247986cb73b1b314df60c2f1109c479c0b",
+  "mxc_base": "fda29ac63bc306b7f97f3b86b4b63d44f7f40cf2",
   "runtime_base": "8f636e00cdf29e6c33ba0f578482c595d7827cf6",
   "host_base": "388ea8ebd88639a062f7a87f477db2930605a307",
   "layers": {
     "session": {
       "session": {
-        "sha256": "a0618e04a2437c451f807abb4c0b0e77d2ee945b4e015872c2971cd34174356c",
+        "sha256": "38bcf88d57f618aa48be69eaaccec21308a031e31895e175f6d3b73e9aa581a0",
         "files": {
           "src/mxc-sdk/Cargo.toml": {
             "before": "9c9e8bf67eabb855046cb3377ff350b6bd02120be83ce52cd69fd006345a6746",
             "after": "99e91dcda3dc3c48cd5c923b820d22e8b16a31aa47fba39995fb03559cccb47d"
           },
           "src/mxc-sdk/src/backends/hyperlight/common/mod.rs": {
-            "before": "28790c392bddbb4ccfda4e959c77b04928887f58b9f2b2e0d7f9910f6b0bfdab",
-            "after": "f5ff7b1b16d9f8afb252d1ab8d87fb95a4b40c869e7ff0790b95b780e9af3351"
+            "before": "7ca97171dd607f293724638909a71fec7c5f59925a0c5b4fe4526086ed949334",
+            "after": "603f59cc3ff402fea38fa8ad98920495b7e2852c99785ec25a02bfc7c52c132b"
           },
           "src/mxc-sdk/src/backends/hyperlight/common/session_preview.rs": {
             "before": null,
