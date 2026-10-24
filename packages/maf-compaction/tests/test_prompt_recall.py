@@ -145,11 +145,13 @@ async def test_truncated_recall_retries_later_and_survives_restore(stream, mode,
 
     await middleware.process(context, send)
     if stream:
+        assert isinstance(context.result, ResponseStream)
         updates = [update async for update in context.result]
         assert all(c.type != "function_call" for u in updates for c in u.contents)
         response = await context.result.get_final_response()
     else:
         response = context.result
+    assert isinstance(response, ChatResponse)
     assert response.text == "ordinary answer"
     assert calls == 2 and saved == [2]
     assert middleware.records_truncated == 1
@@ -166,6 +168,7 @@ async def test_truncated_recall_retries_later_and_survives_restore(stream, mode,
         if mode == "prompt_cache":
             assert "1,000 tokens" in context.messages[-1].text
         else:
+            assert context.options is not None
             assert "1,000 tokens" in context.options["tools"][0].description
         context.result = ChatResponse(messages=Message("assistant", [record_call()]))
 
@@ -195,6 +198,7 @@ async def test_parseable_truncated_recall_keeps_usable_values(stream):
 
     await middleware.process(context, send)
     if stream:
+        assert isinstance(context.result, ResponseStream)
         updates = [update async for update in context.result]
         assert any(c.type == "function_call" for u in updates for c in u.contents)
     assert middleware.records_truncated == 1
