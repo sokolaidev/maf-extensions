@@ -116,8 +116,13 @@ jobs:
           audience: ${{ secrets.MXC_TAILSCALE_AUDIENCE }}
           tags: tag:mxc-ci
           version: '1.94.2'
-          args: --accept-dns=false --accept-routes=false
+          args: --accept-dns=false
           hostname: mxc-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.role }}
+      - name: Disable tailnet DNS and subnet routes before discovery
+        run: |
+          set -euo pipefail
+          sudo tailscale set --accept-dns=false --accept-routes=false
+          sudo tailscale debug prefs | jq -e '.RouteAll == false and .CorpDNS == false' >/dev/null
       - name: Create runner-local credentials and public discovery
         run: |
           set -euo pipefail
