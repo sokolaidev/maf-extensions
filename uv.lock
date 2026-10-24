@@ -1580,7 +1580,7 @@ requires-dist = [{ name = "agent-framework-core", specifier = ">=1.22.0,<1.23" }
 
 [[package]]
 name = "maf-sandbox-acas"
-version = "0.31.0"
+version = "0.31.1"
 source = { editable = "packages/maf-sandbox-acas" }
 dependencies = [
     { name = "azure-containerapps-sandbox" },
