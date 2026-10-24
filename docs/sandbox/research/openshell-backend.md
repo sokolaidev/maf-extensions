@@ -467,11 +467,24 @@ Next qualify HTTPS inspection with verified upstream certificates, then provider
 
 ## Native HTTP translation and cutover - 2026-10-24
 
-The native workflow now also runs the [HTTP probe](../../../scripts/experiments/openshell_egress_probe.py) through the retained-ownership fixture, with a private recording origin on an internal Docker network. This is a fixed IPv4 HTTP-port experiment, not an implementation or declaration of a supported suite egress mode. Hosted measurements are pending.
+The native workflow now also runs the [HTTP probe](../../../scripts/experiments/openshell_egress_probe.py) through the retained-ownership fixture, with a private recording origin on an internal Docker network. [PR #2138](https://github.com/sokolaidev/maf-extensions/pull/2138) delivers this fixed IPv4 HTTP-port experiment. It is not an implementation or declaration of a supported suite egress mode.
 
 The fixture compiler accepts explicit uncredentialed `EgressRule` values with GET/POST methods and canonical ASCII paths. Suite `*.host` becomes OpenShell `**.host` so deeper subdomains remain included while the apex is excluded. Suite `/prefix/*` becomes the exact `/prefix` plus `/prefix/**`. It selects blocking `ENFORCE` explicitly and refuses attached providers, authority grants, duplicate host rules, unrestricted method/path requests and unqualified path encodings instead of silently broadening them. The selected HTTP port and executable are fixture restrictions, so this compiler cannot serve as a general suite allowlist translator.
 
 An independent origin barrier admits a request but withholds its response. The controller clears the base policy, waits for the exact active version/hash to report `LOADED`, checks fresh HTTP/direct TCP refusals, and then releases the origin response. The guest tries a second request through the same HTTP client. A matching origin journal and response echo establish completed traffic; connection closure is recorded separately from explicit policy refusal. No outcome from this bounded case establishes instantaneous revocation or production isolation. Policy restoration and a successful allowed request provide a final positive control.
+
+[Hosted run 40084927200](https://github.com/sokolaidev/maf-extensions/actions/runs/40084927200) passed all 17 HTTP cases on Ubuntu 24.04.5 with native Docker 28.0.4, official OpenShell v0.1.2 at `6648bd0c290efbc41ba131ee9831ee45cd431f94`, and the unchanged pinned images. The run tested PR head `842b363bf983d359d541fb4236bf2221baad6d1c` through GitHub's merge revision `dcb984fe20508dc5e1db8de70b7da9745219caab`. The `egress.json` SHA-256 is `146e200cf9a5da4ae7a5b42c0a6d95d67a199897e43199292dac99327f3d7945` in the workflow's 14-day artifact.
+
+| Measurement | Native observation |
+| --- | --- |
+| Exact and recursive host/path translation | Parent, child and deeper paths succeeded; prefix collision, denied path/host and wildcard apex were refused. One-label and deeper wildcard subdomains succeeded. |
+| Method, port and redirect boundaries | POST, the alternate port and direct IPv4 TCP were refused. Only the allowed first redirect hop reached the origin. Uppercase host access succeeded. |
+| Empty policy after exact loaded revision 3 | Fresh HTTP and direct TCP returned permission denial with no correlated origin request. |
+| Admitted request across cutover | The origin recorded the held request, but the guest received `RemoteDisconnected` rather than its response. The follow-up attempted connection generation 2 and returned `PermissionError` (`errno=13`), with no second origin hit; `same_connection=false`. This did not exercise a surviving persistent connection. |
+| Restored policy at exact loaded revision 4 | The final allowed GET succeeded with matching independent origin evidence. |
+| Cleanup | The single captured sandbox was disposed, physical and workspace absence were verified, and no pending create remained. |
+
+The already-admitted request reached the origin before policy replacement, so response disconnection cannot establish rollback of origin-side effects. The fixture records `instant_revocation_qualified=false`. Local validation included 23,630 passed / 936 skipped before the final connection-accounting refinements, then 91 focused tests on the final code; mutation checks reject shallow wildcard translation, unrelated response echoes, a missing origin barrier, proxy-environment assumptions and miscounted refused reconnects.
 
 Trusted owned HTTPS, certificate/hostname validation, provider-composed authority, IPv6, DNS rebinding, alternate protocols, concurrent controllers and restart remain unqualified. The independent credential-lifecycle work stays in #1835; general lifecycle authority stays blocked by #1817/#1818. #1834 remains open.
 
@@ -727,7 +740,7 @@ Evaluation of OpenShell v0.1.2 at `6648bd0c290efbc41ba131ee9831ee45cd431f94` exe
 | Non-mutating original-create receipts | Blocked on official upstream recovery contract; local FR draft and offline model prepared | [#1817](https://github.com/sokolaidev/maf-extensions/issues/1817) (open) |
 | Conditional physical-instance deletion | Blocked on official upstream conditional deletion; offline barrier harness prepared | [#1818](https://github.com/sokolaidev/maf-extensions/issues/1818) (open) |
 | Native Linux runtime and file conformance | Native baseline measured; lifecycle and concurrent file confinement blocked | [#1833](https://github.com/sokolaidev/maf-extensions/issues/1833) (open); baseline by [#2115](https://github.com/sokolaidev/maf-extensions/pull/2115) (merged) |
-| Effective egress translation and revocation | Open; deferred from the spike | [#1834](https://github.com/sokolaidev/maf-extensions/issues/1834) (open) |
+| Effective egress translation and revocation | Open; native HTTP translation and one in-flight cutover measured, broader contracts unqualified | [#1834](https://github.com/sokolaidev/maf-extensions/issues/1834) (open) |
 | Provider credential lifecycle | Open; deferred from the spike | [#1835](https://github.com/sokolaidev/maf-extensions/issues/1835) (open) |
 
 ## Adoption follow-up
