@@ -250,6 +250,22 @@ with SharedStore(Path({str(root)!r}), 'one', {PROFILE!r}, {LIMITS!r}) as db:
 @pytest.mark.parametrize("boundary", ["before_launch_commit", "after_launch_commit"])
 def test_process_death_around_identity_commit_never_sends_header(tmp_path, boundary):
     root = tmp_path / "db"
+    observed = tmp_path / "helper-eof.json"
+    release = tmp_path / "release-helper"
+    helper = f"""
+import json, os, sys, time
+from pathlib import Path
+header = sys.stdin.buffer.read(8)
+report = Path({str(observed)!r})
+pending = report.with_suffix('.tmp')
+pending.write_text(json.dumps(dict(pid=os.getpid(), header=header.hex())), encoding='utf-8')
+pending.replace(report)
+deadline = time.monotonic() + 30
+while not Path({str(release)!r}).exists():
+    if time.monotonic() >= deadline:
+        sys.exit(75)
+    time.sleep(0.01)
+"""
     source = f"""
 import os, subprocess, sys
 from pathlib import Path
@@ -259,21 +275,52 @@ with SharedStore(Path({str(root)!r}), 'one', {PROFILE!r}, {LIMITS!r}) as db:
     db.begin('a', b'code', scratch={SCRATCH!r})
     journal = NativeJournal(db)
     work = journal.prepare('a')
-    child = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.buffer.read(8)'], stdin=subprocess.PIPE)
+    child = subprocess.Popen([sys.executable, '-c', {helper!r}], stdin=subprocess.PIPE,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     journal.arm('a', child, lambda point: os._exit(73) if point == {boundary!r} else None)
     raise AssertionError('crash boundary was skipped')
 """
-    result = subprocess.run([sys.executable, "-c", source], capture_output=True, timeout=20)
-    assert result.returncode == 73, result.stderr.decode()
-    with store.SharedStore(root, "one", PROFILE, LIMITS) as db:
-        assert scratch_usage(db) == SCRATCH.bytes
-        journal = native.NativeJournal(db)
-        if boundary == "before_launch_commit":
-            with pytest.raises(store.Refused, match="unidentified"):
+
+    def wait_for(condition):
+        deadline = time.monotonic() + 10
+        while not condition():
+            assert time.monotonic() < deadline, "helper did not reach the expected state"
+            time.sleep(0.01)
+
+    captured = None
+    try:
+        result = subprocess.run([sys.executable, "-c", source], capture_output=True, timeout=20)
+        assert result.returncode == 73, result.stderr.decode()
+        wait_for(observed.exists)
+        report = json.loads(observed.read_text(encoding="utf-8"))
+        assert report["header"] == ""
+        captured = identity.capture(report["pid"])
+        with store.SharedStore(root, "one", PROFILE, LIMITS) as db:
+            assert scratch_usage(db) == SCRATCH.bytes
+            journal = native.NativeJournal(db)
+            work = db.root / "scratch" / journal._row("a")["token"]
+            charged = db.usage()
+            reason = "unidentified" if boundary == "before_launch_commit" else "still alive"
+            with pytest.raises(store.Refused, match=reason):
                 journal.reclaim("a")
-        else:
-            journal.reclaim("a")
-            assert scratch_usage(db) == 0
+            assert work.exists()
+            assert db.usage() == charged
+            assert scratch_usage(db) == SCRATCH.bytes
+            release.touch()
+            wait_for(lambda: identity.stopped(captured))
+            if boundary == "before_launch_commit":
+                with pytest.raises(store.Refused, match="unidentified"):
+                    journal.reclaim("a")
+                assert work.exists()
+                assert scratch_usage(db) == SCRATCH.bytes
+            else:
+                journal.reclaim("a")
+                assert not work.exists()
+                assert scratch_usage(db) == 0
+    finally:
+        release.touch()
+        if captured is not None:
+            identity.terminate(captured)
 
 
 def test_supervisor_persists_identity_before_header_and_replay_skips_helper(tmp_path, monkeypatch):
