@@ -1,0 +1,137 @@
+{
+  "maf-sandbox-bubblewrap==0.3.0": {
+    "reason": "Test-only correction from PR #2141; published wheel unchanged.",
+    "source": "https://github.com/sokolaidev/maf-extensions/pull/2141",
+    "files": [
+      {
+        "name": "test_backend.py",
+        "sha256": "308daf69a4810192bec7a6c7ff2e0bb29d60f2c61d8765a04ce69420084d8148",
+        "replacements": [
+          [
+            "    runtime.mkdir()\n    cgroup = tmp_path / \"cgroup\"\n    cgroup.mkdir()\n    settings = BubblewrapSandboxConfig(runtime, tmp_path / \"state\", cgroup, bwrap=Path(\"/bin/true\"))\n    root = runtime\n    if location == \"alias\":\n        root = tmp_path / \"alias\"\n",
+            "    runtime.mkdir()\n    cgroup = tmp_path / \"cgroup\"\n    cgroup.mkdir()\n    bwrap = tmp_path / \"bwrap\"\n    bwrap.touch()\n    settings = BubblewrapSandboxConfig(runtime, tmp_path / \"state\", cgroup, bwrap=bwrap)\n    root = runtime\n    if location == \"alias\":\n        root = tmp_path / \"alias\"\n"
+          ]
+        ]
+      }
+    ]
+  },
+  "maf-sandbox-codeact==0.25.0": {
+    "reason": "Test-only correction from PR #2141; published wheel unchanged.",
+    "source": "https://github.com/sokolaidev/maf-extensions/pull/2141",
+    "files": [
+      {
+        "name": "test_codeact_workload.py",
+        "sha256": "f05497e81f9b0ea36c7378ca44289307a4adb73f11b9c12138cf369488a94745",
+        "replacements": [
+          [
+            "from dataclasses import replace\nfrom types import MappingProxyType\nfrom typing import Any\nfrom uuid import uuid4\n\nimport pytest\n",
+            "from dataclasses import replace\nfrom types import MappingProxyType\nfrom typing import Any\nfrom unittest.mock import Mock\nfrom uuid import uuid4\n\nimport pytest\n"
+          ],
+          [
+            "        assert \"Error:\" in out\n        assert sink.names == []\n\n    def test_a_deeply_nested_manifest_is_a_diagnostic_rather_than_a_dead_turn(self):\n        \"\"\"`RecursionError` is neither a decode error nor a JSON one, and a few thousand nested\n        arrays fit in a fraction of the size ceiling \u2014 so it used to leave the tool body and\n        take the caller's turn with it, from a file the guest program chose to write.\"\"\"\n        sandbox = _ProducingSandbox()\n        sink = _RecordingSink()\n        tool = _pulling_tool(sandbox, CodeactOutputs.MANIFEST, sink)\n        nested = b\"[\" * 20_000 + b\"]\" * 20_000\n        assert len(nested) < _MANIFEST_MAX_BYTES\n\n        out = _run_producing(tool, sandbox, {_MANIFEST_FILENAME: nested})\n        assert \"nested too deeply\" in out\n        assert sink.names == []\n\n",
+            "        assert \"Error:\" in out\n        assert sink.names == []\n\n    def test_manifest_decoding_recursion_is_a_diagnostic(self, monkeypatch):\n        \"\"\"A decoder recursion failure must leave the turn alive without saving files.\"\"\"\n        codec = Mock(wraps=json)\n        codec.loads.side_effect = RecursionError(\"decoder depth exceeded\")\n        monkeypatch.setattr(_tool_module, \"json\", codec)\n        sandbox = _ProducingSandbox()\n        sink = _RecordingSink()\n        tool = _pulling_tool(sandbox, CodeactOutputs.MANIFEST, sink)\n        nested = b\"[[[]]]\"\n        assert len(nested) < _MANIFEST_MAX_BYTES\n\n        out = _run_producing(tool, sandbox, {_MANIFEST_FILENAME: nested})\n        codec.loads.assert_called_once()\n        assert \"nested too deeply\" in out\n        assert sink.names == []\n\n"
+          ]
+        ]
+      }
+    ]
+  },
+  "maf-sandbox-deepagents==0.6.0": {
+    "reason": "Test-only correction from PR #2141; published wheel unchanged.",
+    "source": "https://github.com/sokolaidev/maf-extensions/pull/2141",
+    "files": [
+      {
+        "name": "test_maf_sandbox_deepagents_packaging.py",
+        "sha256": "3b98c2e723e8f2ce1ed4670c5c5f8134e4a10eb2eed64d0c400958bdf9a52249",
+        "replacements": [
+          [
+            "    \"\"\"The one hard requirement: `python -W error` must not turn this notice into a crash.\"\"\"\n\n    def test_import_exits_zero_under_dash_w_error(self):\n        result = subprocess.run(\n            [sys.executable, \"-W\", \"error\", \"-c\", \"import maf_sandbox_deepagents\"],\n            capture_output=True,\n            text=True,\n            timeout=60,\n",
+            "    \"\"\"The one hard requirement: `python -W error` must not turn this notice into a crash.\"\"\"\n\n    def test_import_exits_zero_under_dash_w_error(self):\n        # The warning contract belongs to this package, not its dependencies.\n        source = \"\"\"\nimport warnings\nwith warnings.catch_warnings():\n    warnings.simplefilter(\"ignore\", DeprecationWarning)\n    import deepagents\nimport maf_sandbox_deepagents\n\"\"\"\n        result = subprocess.run(\n            [sys.executable, \"-W\", \"error\", \"-c\", source],\n            capture_output=True,\n            text=True,\n            timeout=60,\n"
+          ]
+        ]
+      }
+    ]
+  },
+  "maf-sandbox-acas==0.31.0": {
+    "reason": "Known request-context retention on Python 3.14, fixed in 0.31.1; only the two named assertions may xfail.",
+    "source": "https://github.com/sokolaidev/maf-extensions/pull/2141",
+    "expected_failures": [
+      "test_acas_client_pool::test_completed_capacity_waiters_release_context_before_capacity_changes[timeout]",
+      "test_acas_client_pool::test_completed_capacity_waiters_release_context_before_capacity_changes[cancel]"
+    ],
+    "files": [
+      {
+        "name": "test_acas_client_pool.py",
+        "sha256": "ade12bad3313305faf95786713571575a7d2a092358970c335767528ccb153a4",
+        "replacements": [
+          [
+            "@pytest.mark.parametrize(\"outcome\", [\"timeout\", \"cancel\"])",
+            "class _HistoricalRequestContextRetention(AssertionError):\n    pass\n\n\n@pytest.mark.xfail(\n    sys.version_info[:2] == (3, 14),\n    raises=_HistoricalRequestContextRetention,\n    strict=True,\n    reason=\"ACAS 0.31.0 retains shield callback contexts on Python 3.14; fixed in 0.31.1 (#2141)\",\n)\n@pytest.mark.parametrize(\"outcome\", [\"timeout\", \"cancel\"])"
+          ],
+          [
+            "                    assert all(reference() is None for reference in references)",
+            "                    if not all(reference() is None for reference in references):\n                        retention_failures.append(\"request contexts remain alive\")"
+          ],
+          [
+            "    references = []\n",
+            "    references = []\n    retention_failures = []\n"
+          ],
+          [
+            "    asyncio.run(scenario())\n",
+            "    asyncio.run(scenario())\n    if retention_failures:\n        raise _HistoricalRequestContextRetention(\"; \".join(retention_failures))\n"
+          ]
+        ]
+      }
+    ],
+    "baseline_evidence": {
+      "date": "2026-10-24",
+      "python": "CPython 3.14.4 (Linux)",
+      "cores": [
+        "0.51.0",
+        "0.51.1"
+      ],
+      "result": "Both exact retention assertions fail with each core; only the core wheel was replaced (--no-deps).",
+      "dependencies": {
+        "agent-framework-core": "1.22.0",
+        "aiohappyeyeballs": "2.7.1",
+        "aiohttp": "3.14.5",
+        "aiosignal": "1.4.0",
+        "annotated-types": "0.8.0",
+        "attrs": "26.1.0",
+        "azure-containerapps-sandbox": "0.1.0b4",
+        "azure-core": "1.41.0",
+        "azure-identity": "1.26.0",
+        "azure-mgmt-core": "1.6.0",
+        "certifi": "2026.10.23",
+        "cffi": "2.1.1",
+        "charset-normalizer": "3.5.2",
+        "cryptography": "50.0.2",
+        "frozenlist": "1.8.0",
+        "idna": "3.20",
+        "iniconfig": "2.3.1",
+        "maf-sandbox-acas": "0.31.0",
+        "msal": "1.39.0",
+        "msal-extensions": "1.3.1",
+        "msgspec": "0.22.0",
+        "multidict": "7.2.1",
+        "opentelemetry-api": "1.45.1",
+        "packaging": "26.3",
+        "pluggy": "1.7.0",
+        "propcache": "0.5.4",
+        "pycparser": "3.12",
+        "pydantic": "2.14.1",
+        "pydantic-core": "2.50.1",
+        "pygments": "2.21.0",
+        "pyjwt": "2.15.1",
+        "pytest": "9.1.1",
+        "python-dotenv": "1.2.4",
+        "pyyaml": "6.0.3",
+        "regex": "2026.9.29",
+        "requests": "2.34.2",
+        "typing-extensions": "4.16.0",
+        "typing-inspection": "0.4.4",
+        "urllib3": "2.8.0",
+        "yarl": "1.25.1"
+      }
+    }
+  }
+}
