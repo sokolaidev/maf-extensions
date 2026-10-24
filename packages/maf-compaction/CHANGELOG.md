@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.1](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.7.0...maf-compaction-v0.7.1) (2026-10-24)
+
+
+### Fixes
+
+* **compaction:** keep completed requests visibly answered after shedding ([#2149](https://github.com/sokolaidev/maf-extensions/issues/2149)) ([ab0d4af](https://github.com/sokolaidev/maf-extensions/commit/ab0d4af1738495d863e196336ceb7e147ecc4935))
+* **compaction:** retry truncated recall and batch no-record overflow ([#2147](https://github.com/sokolaidev/maf-extensions/issues/2147)) ([4d21c31](https://github.com/sokolaidev/maf-extensions/commit/4d21c314ec36b4d8ffbeb7c2bc9d830529b8d8c1))
+
 ## [0.7.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.6.7...maf-compaction-v0.7.0) (2026-10-24)
 
 
