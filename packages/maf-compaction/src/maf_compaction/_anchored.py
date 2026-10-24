@@ -15,7 +15,9 @@ byte-identical output for the same prefix on every later turn, so the prefix sta
 **2. Mutations must march forward, never backward.** ``SlidingWindowStrategy`` drops the
 oldest group each turn, which changes the *start* of the prompt every time; it measured a
 1-9% hit rate, the worst of anything tested. Collapsing from the front once and leaving it
-collapsed means each turn only invalidates the small suffix that newly aged out.
+collapsed confines each edit to the newly aged-out suffix. Reuse still requires a provider
+cache breakpoint before that edit; end-of-request breakpoints alone can miss back to the
+system prefix. The composed strategy batches no-record loss through whole-group shedding.
 
 **3. What gets shed matters more than how much.** ``truncation`` left 29 of 53 planted facts
 in the prompt and the model used none of them, because the codes survived while the turns

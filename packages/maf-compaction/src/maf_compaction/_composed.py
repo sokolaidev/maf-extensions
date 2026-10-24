@@ -10,7 +10,8 @@ summaries, tries harder record rewrites, then runs the anchored fallback with
 unrecorded tool groups held. It aims to remove ``chain_gain_fraction`` of the
 tokens behind its earliest edit, accepting only non-empty, smaller replacements.
 If still over budget, the overflow policy sheds unrecorded groups or raises locally.
-The no-record give-up fallback remains part of the record phase.
+Without a record, the overflow policy also owns shedding; tool results are not shortened
+as they leave the tail.
 
 Each instance belongs to one conversation. It keeps record-wait state,
 accepted record replacements, shed-message ids, refusals and counters; the
@@ -769,8 +770,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         record phase and before the user phase or the chain, so it is the record phase's own work:
         the fallback runs at the end of the chain and is not in it. Read beside
         :attr:`user_messages_replaced` it says how the two halves divided the work. Floored at zero
-        per pass, because the give-up fallback inserts notes where it shed a group and a pass can
-        end larger than it started.
+        per pass, because removal markers can leave a pass larger than it started.
 
         Not a flag: it is a token count rather than an event count, and it moves with the
         workload rather than with the strategy.
@@ -959,12 +959,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             prompt_tokens=entry_tokens,
             trigger_tokens=int(self._budget * self.tool_results.trigger_fraction),
             fallback_after_record=False,
+            fallback_without_record=False,
             ceiling=self._request_budget.get(),
         )
         if changed:
-            # Forced, because the give-up fallback the record phase may still take rewrites tool
-            # results in place and the counts are cached per message: an incremental re-read
-            # would judge the user phase against text that is no longer in the conversation.
+            # Record compaction can rewrite results whose token counts are already cached.
             annotate_message_groups(messages)
             annotate_token_counts(messages, tokenizer=self.tokenizer, force_retokenize=True)
             self._removed_by_record += max(entry_tokens - included_token_count(messages), 0)
@@ -1139,9 +1138,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if self._short_of_target(messages, start):
             changed = await self._rewrite_records(messages, start) or changed
         if self._short_of_target(messages, start) and find_record_index(messages) is not None:
-            # Only behind a record. With none, the record phase has already taken its give-up
-            # fallback on this pass -- a prompt over the budget is over the give-up line -- and
-            # that path is not the chain's to repeat.
+            # With no record, budget enforcement owns unrecorded shedding and its headroom.
             self._last_resort_fallbacks += 1
             changed = await self._fall_back(messages, start) or changed
         if self._short_of_target(messages, start):

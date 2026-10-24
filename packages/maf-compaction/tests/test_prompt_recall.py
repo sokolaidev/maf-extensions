@@ -91,6 +91,154 @@ def record_call():
     )
 
 
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("mode", ["pinned", "unsupported", "prompt_cache"])
+@pytest.mark.parametrize(
+    "arguments", [{}, "{", [], {"values": " "}, {"values": []}, {"values": None}, None]
+)
+async def test_truncated_recall_retries_later_and_survives_restore(stream, mode, arguments):
+    settings = {
+        "supports_tool_choice": mode != "unsupported",
+        "preserve_prompt_cache": mode == "prompt_cache",
+        "record_max_tokens": 4000,
+    }
+    middleware, gate = recall(**settings)
+    tool = make_recall_tool(gate)
+    options = {"tools": [tool], "max_tokens": 6000}
+    question = Message("user", ["question"])
+    context = ChatContext(None, [question], options, stream=stream)
+    saved = []
+    calls = 0
+
+    async def send():
+        nonlocal calls
+        calls += 1
+        current = calls
+
+        async def persist():
+            saved.append(current)
+
+        if not _defer_run_persistence(persist):
+            await persist()
+        if current == 1:
+            contents = []
+            if arguments is not None:
+                content = record_call()
+                content.arguments = arguments
+                contents.append(content)
+            response = ChatResponse(messages=Message("assistant", contents), finish_reason="length")
+        else:
+            assert current == 2
+            assert context.options is options
+            assert context.messages == [question]
+            assert RECORD_MARKER not in tool("SKU-123")
+            response = ChatResponse(messages=Message("assistant", ["ordinary answer"]))
+        if stream:
+
+            async def updates():
+                for update in response.to_updates():
+                    yield update
+
+            context.result = ResponseStream(updates(), finalizer=lambda _: response)
+        else:
+            context.result = response
+
+    await middleware.process(context, send)
+    if stream:
+        updates = [update async for update in context.result]
+        assert all(c.type != "function_call" for u in updates for c in u.contents)
+        response = await context.result.get_final_response()
+    else:
+        response = context.result
+    assert response.text == "ordinary answer"
+    assert calls == 2 and saved == [2]
+    assert middleware.records_truncated == 1
+    assert middleware.failed_forced_calls == middleware.ignored_forced_calls == 0
+    assert middleware.value_free_record_streak == 0
+    assert not middleware.recall_disabled
+    state = json.loads(json.dumps(middleware.session_state()))
+    assert state["force_next"] and not state["awaiting_record"]
+    middleware, gate = recall(**settings)
+    middleware.restore_session_state(state)
+    context = ChatContext(None, [question], {"tools": [make_recall_tool(gate)]})
+
+    async def succeed():
+        if mode == "prompt_cache":
+            assert "1,000 tokens" in context.messages[-1].text
+        else:
+            assert "1,000 tokens" in context.options["tools"][0].description
+        context.result = ChatResponse(messages=Message("assistant", [record_call()]))
+
+    await middleware.process(context, succeed)
+    assert not middleware.recall_disabled
+    assert not middleware.session_state()["force_next"]
+    assert middleware.session_state()["awaiting_record"]
+    assert gate.take()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_parseable_truncated_recall_keeps_usable_values(stream):
+    middleware, gate = recall()
+    context = ChatContext(None, [], {"tools": [make_recall_tool(gate)]}, stream=stream)
+    response = ChatResponse(messages=Message("assistant", [record_call()]), finish_reason="length")
+
+    async def send():
+        if stream:
+
+            async def updates():
+                for update in response.to_updates():
+                    yield update
+
+            context.result = ResponseStream(updates(), finalizer=lambda _: response)
+        else:
+            context.result = response
+
+    await middleware.process(context, send)
+    if stream:
+        updates = [update async for update in context.result]
+        assert any(c.type == "function_call" for u in updates for c in u.contents)
+    assert middleware.records_truncated == 1
+    assert middleware.failed_forced_calls == 0
+    assert middleware.value_free_record_streak == 0
+    assert not middleware.recall_disabled
+    assert gate.take()
+
+
+@pytest.mark.parametrize("retry_fails", [False, True])
+async def test_repeated_truncation_never_disables_recall_or_loses_pending_ask(retry_fails):
+    middleware, gate = recall()
+    for _ in range(3):
+        context = ChatContext(None, [], {"tools": [make_recall_tool(gate)]})
+        calls = 0
+
+        async def send():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                call = record_call()
+                call.arguments = {}
+                context.result = ChatResponse(
+                    messages=Message("assistant", [call]), finish_reason="length"
+                )
+            elif retry_fails:
+                raise RuntimeError("ordinary retry failed")
+            else:
+                context.result = ChatResponse(messages=Message("assistant", ["answer"]))
+
+        if retry_fails:
+            with pytest.raises(RuntimeError, match="ordinary retry failed"):
+                await middleware.process(context, send)
+        else:
+            await middleware.process(context, send)
+        assert calls == 2
+        assert middleware.session_state()["force_next"]
+        assert not middleware.recall_disabled
+        assert not gate.take()
+    assert middleware.records_truncated == middleware.forced_calls == 3
+    assert middleware.failed_forced_calls == middleware.ignored_forced_calls == 0
+    assert middleware.value_free_record_streak == 0
+
+
 @pytest.mark.parametrize("refused", [False, True])
 @pytest.mark.parametrize("release", [False, True])
 async def test_recall_persistence_remains_subject_to_enclosing_gate(refused, release):
@@ -980,7 +1128,7 @@ async def test_prompt_recall_preserves_the_latest_tool_group_in_fallback(
         await middleware.process(context, send)
         assert completed == [True]
         assert middleware.failed_forced_calls == 0
-    assert records.fallbacks_used >= 1
+    assert records.fallbacks_used == 0 if composed else records.fallbacks_used >= 1
     assert result.result == payload
     assert all(not message.additional_properties.get(EXCLUDED_KEY, False) for message in messages)
     assert list(context.messages) == messages

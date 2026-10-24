@@ -67,13 +67,13 @@ async def test_call_overhead_and_margin_do_not_change_history_budget():
 
 
 @pytest.mark.parametrize("policy", ["raise", "shed"])
-async def test_no_record_fallback_shortens_to_the_sending_ceiling(policy):
+async def test_no_record_overflow_policy_uses_the_sending_ceiling(policy):
     ceilings = []
 
     class Fallback(AnchoredCompactionStrategy):
-        async def compact_to(self, messages, *, ceiling):
+        def shed_to(self, messages, *, ceiling):
             ceilings.append(ceiling)
-            return await super().compact_to(messages, ceiling=ceiling)
+            return super().shed_to(messages, ceiling=ceiling)
 
     strategy = composition()
     strategy.overflow_policy = policy
@@ -96,11 +96,18 @@ async def test_no_record_fallback_shortens_to_the_sending_ceiling(policy):
     assert 600 < included_token_count(messages) < 800
     assert not await strategy(deepcopy(messages))
     original = messages[2]
-    assert await strategy.compact_before(messages, options={"instructions": "x" * 1600})
-    assert ceilings == [600]
-    assert included_token_count(messages) <= 600
-    assert not original.additional_properties.get(EXCLUDED_KEY)
-    assert len(original.contents[0].result) < 2400
+    if policy == "raise":
+        with pytest.raises(CompactionBudgetExceeded) as failure:
+            await strategy.compact_before(messages, options={"instructions": "x" * 1600})
+        assert failure.value.budget == 600
+        assert ceilings == []
+        assert not original.additional_properties.get(EXCLUDED_KEY)
+    else:
+        assert await strategy.compact_before(messages, options={"instructions": "x" * 1600})
+        assert ceilings[0] == 600
+        assert included_token_count(messages) <= min(ceilings)
+        assert original.additional_properties.get(EXCLUDED_KEY)
+    assert original.contents[0].result == "x" * 2400
     assert strategy.max_input_tokens == strategy.tool_results.max_input_tokens == 1000
 
 
