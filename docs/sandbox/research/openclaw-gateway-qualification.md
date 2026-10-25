@@ -288,6 +288,7 @@ The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audi
 
 | Work | State | Tracking |
 |---|---|---|
+| Linux Gateway-to-Docker sample | Recorded deterministic Linux-on-Docker-Desktop run passed; native Linux host and real-model behavior remain unqualified | [#2185](https://github.com/sokolaidev/maf-extensions/issues/2185) (open) |
 | Installed worker | Published 0.1.0; historical and fresh fixed-profile qualifications recorded separately below | [#1898](https://github.com/sokolaidev/maf-extensions/issues/1898) (closed) by [#1920](https://github.com/sokolaidev/maf-extensions/pull/1920) (merged) |
 | Bicep host qualification | First-tool design and finite supervised qualification complete; installed worker delivered separately in #1898; actual LLM behavior and full crash recovery remain unqualified | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (closed) by [#1901](https://github.com/sokolaidev/maf-extensions/pull/1901) (merged) |
 | Multiple Gateway sessions | Finite acceptance reconciled across recorded Gateway evidence, five Bicep/MAF cases and 43 published transport cases with 109 SDK retirements; qualification complete. Active MAF callers can remain pending until their request timeout after service retirement; broader stress, crash and platform scenarios remain unqualified | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged); [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (closed) by [#1680](https://github.com/sokolaidev/maf-extensions/pull/1680) (merged); [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (closed) by [#1882](https://github.com/sokolaidev/maf-extensions/pull/1882) (merged); [#1850](https://github.com/sokolaidev/maf-extensions/issues/1850) (closed) by [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865) (merged); [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851) (closed) by [#1870](https://github.com/sokolaidev/maf-extensions/pull/1870) (merged) |
@@ -1223,3 +1224,58 @@ Final observer, transport, provider and client traces are parsed strictly after 
 Independent cleanup uses the case's isolated Docker environment for inventory, inspection, removal and the final empty-inventory check. Parent home-directory configuration, TLS variables and custom headers cannot silently select another engine for this observer; explicit host, context and config selections are retained consistently with the case launcher. The dedicated denial daemon continues to use its recorded local endpoint and verified ownership identity.
 
 An operator interrupt stops the campaign after the current cleanup attempt and retained failure record; no later case starts. Interruptions during process cleanup or independent resource cleanup are retained as unconfirmed cleanup, never success. A prior case failure cannot mask a later interrupt and allow the campaign to continue.
+
+
+## Linux Gateway-to-Docker sample (2026-10-26)
+
+The maintainer selected Docker adoption while #2104 waits upstream. [#2185](https://github.com/sokolaidev/maf-extensions/issues/2185) exercised the existing [two-turn sample](../../../samples/experimental/openclaw_bicep_e2e/README.md) through a real Linux OpenClaw Gateway, an installed MCP worker wheel and the Docker backend. The provider was deterministic; it supplied tool requests, while the actual compiler results came back through Gateway. No MXC component or new workload tool was involved.
+
+The accepted attempt ran from `2026-10-25T23:36:41.6010017Z` to `2026-10-25T23:40:08.2284338Z` and its controller exited zero. Its Linux controller used Docker Desktop on Windows, with Linux kernel `7.0.14-linuxkit`, x86-64 and glibc 2.36. The controller had two CPUs, 6 GiB memory, a 512-process limit and Docker's init process for orphan reaping. It had access to the Docker socket as a trusted operator; this controller is not a sandbox for untrusted code. The Bicep workloads retained the existing closed-network worker policy. No host checkout or credentials were mounted into the controller: selected sample files and the wheel were copied in, and runtime output stayed in a dedicated Docker volume outside the checkout.
+
+| Candidate | Observed identity |
+|---|---|
+| Repository source | `a9bf6d61f4425d2ab0d06d598744dc457e930e92`, with the sample dependency-pin correction; unchanged sample helpers and fixtures from that revision |
+| Executed `agent.py` SHA-256 | `46b7631f3cefb16b735fb30b0f89c13a2b03846e2501a2c5cb532f5a68152613` |
+| Built worker wheel | `maf-sandbox-mcp` 0.2.0; SHA-256 `05ffe6f84a82dc17d636f80486a4a1147b2f8ae3e2f44a02c0618e7790b9312d`; installed module hashes matched the wheel |
+| Published Python dependencies | Core 0.51.1, Bicep 0.24.0, Docker backend 0.29.0, MAF core 1.22.0, MCP 1.30.0, Uvicorn 0.54.0 and Starlette 1.7.0; complete resolved inventory retained in the private report |
+| Gateway and runtimes | OpenClaw 2026.9.7, Node 26.8.1, Python 3.13.15, uv 0.12.5 |
+| Docker client and daemon | 29.9.2; daemon `linux/amd64`, Docker Desktop |
+| Controller image | `sha256:f67493da09d9d71abf7fd706d16f7ab3a073aefdeff3f954dd1fed0a76062f53` |
+| Bicep image | `ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e` |
+| Compiler configuration SHA-256 | `d3f160d081dcf48e41f0f0cdf006595b380402ac9730f3ee920738ba616d87e1` |
+
+| Acceptance observation | Result |
+|---|---|
+| Original turn | One actual tool call, `completed: true`, `verdict: invalid`, `cleanup: confirmed`; source SHA-256 `91285d8d03f8c76ee86fddeab9f039132ebc75ddcc0f5dbd3a0f5e4bd7b4b0cf` |
+| Repair turn | One actual tool call, `completed: true`, `verdict: valid`, `cleanup: confirmed`; source SHA-256 `25a645af6181b25dc4727c19663a910c8c45d8ca84bf4db34548c16c11c301c7` |
+| Identity | Both projected results matched the submitted source, compiler configuration and selected image |
+| Final service cleanup | `processes_stopped: true`; absent owned POSIX process groups; `cleanup_errors: []` |
+| Owner cleanup | `owned_empty: true`, `owner_lock_released: true`; a separate host-side Docker inventory after controller exit also found zero containers in the exact worker scope |
+| Final sample result | `passed: true`, `mode: smoke`, `actual_model: false`; no emergency workload purge |
+
+The private final report SHA-256 is `d5d0c4628fe287814d9f3865b22375e27d97c959bad02ce114e82d05a65e341c`; the observed tool-evidence stream SHA-256 is `2b1fe8946784095a2045967c30fd9443f3de70b92ca888aa8461cde7f9987f12`. Raw credentials, session output and JSON remain outside the repository. These hashes identify retained evidence, not independently reproducible proofs by themselves. After retaining the diagnostics, the stopped controllers and dedicated output volume were removed after checking their ownership labels; final inventories found neither remaining.
+
+### Setup failures retained separately
+
+The unchanged sample pinned core 0.48.0, Bicep 0.22.2, Docker 0.27.0 and MAF 1.20.0, which cannot satisfy the current worker 0.2.0 wheel. A dry resolver run exited 1 before installation; its retained diagnostic SHA-256 is `a80447994ab857143ff6da5c17356620dcf615f8c07d7e4e3496a6e0554e45db`. The correction selects the published compatible versions in the candidate table. The subsequent clean Linux installation and wheel-to-installed-module comparison supplied compatibility evidence without tying sample pins to a future package release's unshipped metadata.
+
+The first controller creation stalled while using a Windows temporary-directory bind mount and was interrupted before a controller was available. Copying inputs avoided that delay; its cause was not established. The next controller exited 1 before setup because the copied sample directory was too shallow for its repository-relative output guard (`HERE.parents[2]`). That controller log has SHA-256 `8d3e1e4a5f79cf9e7147696ad53c853bce4c1998858c7b0fae57ad8480045a5e`. Preserving the sample's directory hierarchy fixed the test setup. Neither attempt started Gateway or a Bicep workload, and neither is counted as qualified execution.
+
+### Reproduction boundary
+
+Use the sample's documented POSIX command with its pinned dependencies and prepared image. To reproduce the recorded controller environment, build this Dockerfile in a private directory; the observed Python resolution was 3.13.15:
+
+```dockerfile
+FROM ghcr.io/astral-sh/uv@sha256:e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1 AS uv
+FROM docker@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb AS docker
+FROM node@sha256:367679cf9792759492a486e4aa4b421764d71a9546a6dae8aab81a99eb797b3e
+COPY --from=uv /uv /usr/local/bin/uv
+COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
+ENV UV_PYTHON_INSTALL_DIR=/opt/python
+RUN uv python install 3.13
+WORKDIR /work
+```
+
+Create a named controller with `--init --cpus 2 --memory 6g --pids-limit 512`, an exclusive output volume at `/work` and the operator's Docker socket. Copy the worker wheel to `/input/maf_sandbox_mcp-0.2.0-py3-none-any.whl` and the sample directory to `/input/checkout/samples/experimental/openclaw_bicep_e2e` before starting it. Run `uv run --no-project --python 3.13 /input/checkout/samples/experimental/openclaw_bicep_e2e/agent.py --wheel /input/maf_sandbox_mcp-0.2.0-py3-none-any.whl --image <the-pinned-image-above> --output /work/<fresh-attempt>`. The Bicep image must already exist on the selected daemon. Read the sample's final report and independently inspect the recorded owner scope before removing only the controller and volume created for this attempt; retain private diagnostics first. The copied layout, fresh output directory and init process are part of this tested profile.
+
+This establishes the complete deterministic sample path on the recorded Linux-on-Docker-Desktop candidate. It does not qualify a native Linux host, other POSIX systems, a real model, newer OpenClaw versions, arbitrary escaping descendants, host power loss, unattended recovery, delegated egress, additional tools or production operation. The Windows owner-loss campaign remains separate evidence and is not transplanted to this Linux profile.
