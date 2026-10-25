@@ -18,7 +18,7 @@ def install(component: str, destination: Path) -> None:
     spec = json.loads(Path("/recipe/image.json").read_text())[component]
     if urllib.parse.urlsplit(spec["url"]).scheme != "https":
         raise ValueError("component URLs must use HTTPS")
-    with tempfile.NamedTemporaryFile(delete=False) as temporary:
+    with tempfile.NamedTemporaryFile(suffix=".apk", delete=False) as temporary:
         archive = Path(temporary.name)
         # Only digest-verified HTTPS artifacts from the host-owned recipe reach extraction.
         with urllib.request.urlopen(spec["url"], timeout=120) as response:  # nosec B310
@@ -27,7 +27,10 @@ def install(component: str, destination: Path) -> None:
         raise ValueError("component digest mismatch")
     destination.mkdir(parents=True, exist_ok=True)
     if component in {"bash", "dash"}:
-        subprocess.run(["/usr/bin/dpkg", "--install", str(archive)], check=True)
+        # Local APK trust comes from the pinned SHA256; dependencies must already be installed.
+        subprocess.run(
+            ["/usr/bin/apk", "add", "--no-network", "--allow-untrusted", str(archive)], check=True
+        )
     elif component == "psscriptanalyzer":
         with zipfile.ZipFile(archive) as source:
             for member in source.infolist():

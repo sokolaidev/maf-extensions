@@ -2,6 +2,10 @@
 
 The `shell` release profile combines Bash, dash, ShellCheck, PowerShell and PSScriptAnalyzer in a Linux amd64 image. `image.json` pins each analyzer and interpreter by version and archive SHA256; the base image is pinned by digest. The normal image release pipeline builds, scans, signs and records this profile. Adding the profile does not publish an image.
 
+The runtime uses a patched Wolfi base, Bash 5.3-r14 and dash 0.5.13.5-r2. Interpreter APK archives are checked against their pinned SHA256 before offline installation; dependencies come from the base's authenticated package repository during the preceding build step. The launcher requires those exact installed interpreter versions. PowerShell 7.6.8 and PSScriptAnalyzer 1.25.0 remain pinned. The ShellCheck adapter builds in a separate Debian stage; only its executable and required source/license material enter the runtime, whose shared libraries come from Wolfi. Refresh the base digest for OS security updates: its internal package constraints can keep installed versions unchanged during a normal `apk upgrade`.
+
+Use the matching `maf-sandbox-shell` package release with this image: earlier packages reject the changed interpreter identities. Checkout qualification does not prove compatibility with previously published wheels. Repository-wide base and dependency-update standardization remains tracked separately in [#2178](https://github.com/sokolaidev/maf-extensions/issues/2178).
+
 ```bash
 docker build --platform linux/amd64 -t maf-shell:local images/shell-sandbox
 docker run --rm -i --network none --read-only --cap-drop ALL --tmpfs /tmp:rw,exec,size=512m maf-shell:local python3 - < images/shell-sandbox/test_runner.py
@@ -108,3 +112,21 @@ The final image passed all 15 analyzer fixtures and 11 public SDK cases on the s
 The update removes the three Critical matches and the bundled .NET findings from this assessment. The remaining High matches affect Debian packages, including libc, util-linux, ncurses, Perl, GCC runtime libraries, zlib and ACL libraries. No fixes are listed for the installed versions. The strict gate still **fails**; no exclusions or policy changes were applied.
 
 The local Docker store exposes an image index identity, distinct from the configuration identity in the exported archive. The export was scanned without claiming a registry publication identity or a protected retained-candidate round trip. No image was published or signed, and ACAS import and execution were not run. #2164 remains open for remediation, publication and ACAS qualification.
+
+### Wolfi runtime
+
+The shell-only remediation pins Wolfi base `sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7`, including Brotli 1.2.1-r1. Reusing the older base from other profiles retained Brotli 1.2.0-r5 and failed on three Critical matches for `CVE-2026-111497`; updating the base digest removed those findings. This change leaves other image profiles and the broader migration in #2178 for separate work.
+
+| Evidence | Observed value |
+|---|---|
+| Docker Desktop image identity used by the runtime checks | `sha256:bf77f6e6913962af3bb3425d574ca87a35d8cf89b23a1682e93640fe83d24ce2` |
+| Exported configuration digest, independently hashed and matched to both scanner targets | `sha256:885b9bcf8a5f1ea0a20ab2a512c7847f63bdedcd51bbb826de51797085214418` |
+| Inventory | Syft 1.54.0; 326 components |
+| Assessment | Grype 0.120.0; valid database built `2026-10-25T06:27:34Z` |
+| Match counts | 0 Critical, 0 High, 2 Medium, 0 Low, 0 Negligible, 0 Unknown |
+| Syft report SHA256 | `52c9f373b25de3271fd88635d908816fff95a95022f80664ca62fbbc932178f6` |
+| Grype report SHA256 | `10acb339fd16b698d3091a8d9b7b093523dd8ec972a2c8ea73626f7151751521` |
+
+The strict `grype --fail-on high` gate **passes** without exclusions or policy changes. The two remaining Medium matches are `CVE-2025-15367` and `CVE-2026-12345` in `python-3.13` 3.13.16_git20261016-r2, with no fixed version listed. A passing threshold does not mean the image has no vulnerability findings. The protected release workflow must assess its own retained candidate before publication; this local export was not published or signed, and ACAS remains unqualified.
+
+This candidate passed all 15 analyzer fixtures and 11 public SDK cases on Docker Desktop 29.9.2/Linux amd64, with closed networking, unchanged stores and no remaining containers. The checkout distribution versions were unchanged from the earlier local runs above. The derived-image fixtures also passed host module discovery, the managed assembly reference and submitted-module shadowing. These results qualify the tested checkout with the local image; they do not establish published-wheel compatibility, hosted CI, a protected retained-candidate round trip or ACAS qualification. #2164 remains open for publication and ACAS evidence.
