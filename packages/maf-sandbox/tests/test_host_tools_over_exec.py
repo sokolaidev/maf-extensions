@@ -31,6 +31,7 @@ import time
 import unicodedata
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
@@ -1233,33 +1234,39 @@ class TestTheSupervisorsOwnBounds:
 
         assert 0 < len(looks) <= 25, f"{len(looks)} marker looks in 0.25s at a 0.05s interval"
 
-    def test_what_a_timeout_quotes_is_capped(self):
-        """`output` and the message both quote the program, and both are bounded.
+    @pytest.mark.parametrize("during_probe", [False, True], ids=["loop-expiry", "probe-expiry"])
+    def test_what_a_timeout_quotes_is_capped(self, monkeypatch, during_probe):
+        """Both timeout paths cap diagnostics after the program has started."""
+        clock = {"now": 0.0}
+        monkeypatch.setattr(
+            host_tools_over_exec, "time", SimpleNamespace(monotonic=lambda: clock["now"])
+        )
 
-        Uncapped, a program that printed megabytes puts them whole into an exception a kind
-        renders for a model — "already capped" is the attribute's own contract, and it has
-        to hold on both give-up paths: the plain expiry, and the transport call that ran out.
-        """
+        class _ExpiresAfterLaunch(_ScriptedGuest):
+            expired = False
 
-        class _StallsOnTheFirstMarkerLook(_ScriptedGuest):
-            stalled = False
+            async def write_file(self, path: str, content: str | bytes, *, working_directory: str):
+                await super().write_file(path, content, working_directory=working_directory)
+                if path.endswith(".start") and not during_probe:
+                    self.expired = True
+                    clock["now"] = 11.0
 
             async def stat_file(self, path: str, *, working_directory: str):
-                if path.endswith("program_exit_code") and not self.stalled:
-                    self.stalled = True
-                    await asyncio.sleep(3600)
+                if during_probe and path.endswith("program_exit_code") and not self.expired:
+                    self.expired = True
+                    clock["now"] = 11.0
+                    raise host_tools_over_exec._DeadlineExpired("the marker read expired")
                 return await super().stat_file(path, working_directory=working_directory)
 
-        quiet = _ScriptedGuest([], finish=False)
-        held_up = _StallsOnTheFirstMarkerLook([], finish=False)
-        for guest in (quiet, held_up):
-            guest.files[_LAYOUT.output] = b"x" * 3000
-            with pytest.raises(SandboxProgramTimeout) as expired:
-                _run(guest, HostToolRun(_registry()), timeout=0.05)
+        guest = _ExpiresAfterLaunch([], finish=False)
+        guest.files[_LAYOUT.output] = b"x" * 3000
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=10.0)
 
-            assert expired.value.output == "x" * 2000
-            assert "x" * 2000 in str(expired.value), "the quote lost its label or its text"
-            assert "x" * 2001 not in str(expired.value), "the message quotes more than the cap"
+        assert guest.started and guest.expired
+        assert expired.value.output == "x" * 2000
+        assert "x" * 2000 in str(expired.value), "the quote lost its label or its text"
+        assert "x" * 2001 not in str(expired.value), "the message quotes more than the cap"
 
 
 def _branch(script: str, *, setsid: bool) -> str:

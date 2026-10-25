@@ -200,14 +200,20 @@ def test_provider_requires_current_turn_marker(provider: Any) -> None:
         provider.observe({"messages": [{"role": "user", "content": "It passed"}]})
 
 
-def post(provider: Any, body: dict[str, Any], *, token: str | None = None) -> tuple[int, bytes]:
+def post(
+    provider: Any, body: dict[str, Any] | None, *, token: str | None = None
+) -> tuple[int, bytes]:
     connection = http.client.HTTPConnection("127.0.0.1", provider.server.server_port, timeout=5)
+    headers = {"Authorization": "Bearer " + (provider.token if token is None else token)}
+    if body is None:
+        # A withheld body must pass the size check to exercise authorization ordering.
+        headers["Content-Length"] = "1"
     try:
         connection.request(
             "POST",
             "/v1/chat/completions",
-            json.dumps(body),
-            {"Authorization": "Bearer " + (provider.token if token is None else token)},
+            json.dumps(body) if body is not None else None,
+            headers,
         )
         response = connection.getresponse()
         return response.status, response.read()
@@ -249,7 +255,8 @@ def test_relay_forwards_to_configured_model_with_its_own_credentials(
 
 def test_provider_refuses_bad_auth_and_exhausted_budget(provider: Any) -> None:
     body = {"messages": messages(record())[:1]}
-    assert post(provider, body, token="wrong")[0] == 502
+    # Authorization is rejected before a body upload can complete.
+    assert post(provider, None, token="wrong")[0] == 502
     assert provider.requests == 0
     provider.requests = 32
     assert post(provider, body)[0] == 502

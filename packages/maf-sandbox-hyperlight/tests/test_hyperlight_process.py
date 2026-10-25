@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -148,7 +149,7 @@ def process_backend(monkeypatch: pytest.MonkeyPatch):
         ),
     )
     backend = HyperlightSandboxBackend(
-        HyperlightSandboxConfig(startup_timeout=1, cleanup_timeout=2, max_output_bytes=1024)
+        HyperlightSandboxConfig(cleanup_timeout=2, max_output_bytes=1024)
     )
     yield backend, mode, processes
     asyncio.run(backend.aclose())
@@ -202,6 +203,7 @@ def test_failure_reaps_process_and_closes_pipes(process_backend, code, exception
 @pytest.mark.parametrize("mode", ["hang_init", "fail_init"])
 def test_startup_failure_is_bounded_and_leaves_no_registry_entry(process_backend, mode):
     backend, selected, processes = process_backend
+    backend.config = replace(backend.config, startup_timeout=1)
     selected[0] = mode
     started = time.monotonic()
     with pytest.raises((TimeoutError, HyperlightWorkerError)):
