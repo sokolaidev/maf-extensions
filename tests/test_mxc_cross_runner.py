@@ -206,8 +206,10 @@ def test_three_endpoints_restore_replay_fence_and_reconcile(
         lambda: [
             sys.executable,
             "-c",
-            "import runpy, sys; from scripts.experiments.mxc_session_patch import cross_crash; "
-            "cross_crash.remote_host.execute = runpy.run_path(sys.argv[1])['_native_substitute']; cross_crash.main()",
+            (
+                "import runpy, sys; from scripts.experiments.mxc_session_patch import cross_crash; "
+                "cross_crash.remote_host.execute = runpy.run_path(sys.argv[1])['_native_substitute']; cross_crash.main()"
+            ),
             str(Path(__file__).resolve()),
         ],
     )
