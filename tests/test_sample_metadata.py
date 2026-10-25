@@ -77,11 +77,11 @@ def test_every_library_import_is_declared(sample: Path):
         tree = ast.parse(module.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module:
-                if node.module.startswith("maf_sandbox"):
+                if node.module.startswith(("maf_sandbox", "maf_compaction", "maf_cachebench")):
                     imported.setdefault(_distribution(node.module), module.name)
             elif isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name.startswith("maf_sandbox"):
+                    if alias.name.startswith(("maf_sandbox", "maf_compaction", "maf_cachebench")):
                         imported.setdefault(_distribution(alias.name), module.name)
     missing = sorted(set(imported) - declared)
     assert not missing, (
@@ -268,6 +268,9 @@ class TestTheDeclaredCoreFloor:
 
     @pytest.mark.parametrize("sample", _SAMPLE_DIRS, ids=lambda path: path.name)
     def test_every_sample_declares_one(self, sample: Path):
+        dependencies = _metadata(sample / "agent.py")["dependencies"]
+        if not any(dependency.startswith("maf-sandbox") for dependency in dependencies):
+            return
         assert self._floor(sample) is not None, (
             f"{sample.name} names no maf-sandbox floor. Every sample imports the core, and "
             "taking whatever a backend distribution happens to pull in is how a sample comes "

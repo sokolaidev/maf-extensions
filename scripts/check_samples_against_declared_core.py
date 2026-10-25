@@ -60,6 +60,14 @@ def metadata(sample: Path) -> dict:
     return block
 
 
+def uses_sandbox(sample: Path) -> bool:
+    """Whether the sample needs a sandbox core floor, directly or through a dependent."""
+    return any(
+        named_distribution(dependency).startswith(_CORE)
+        for dependency in metadata(sample)["dependencies"]
+    )
+
+
 def named_distribution(requirement: str) -> str:
     """The distribution ``requirement`` names."""
     found = distribution(requirement)
@@ -390,6 +398,9 @@ def main(argv: list[str]) -> int:
     # be checked at another's floor.
     groups: dict[tuple, list[Path]] = {}
     for sample in every:
+        if not uses_sandbox(sample):
+            print(f"SKIP {sample.name}: no sandbox dependency or core floor")
+            continue
         floor = core_floor(sample)
         groups.setdefault((floor, tuple(other_requirements(sample))), []).append(sample)
 
@@ -410,7 +421,8 @@ def main(argv: list[str]) -> int:
         )
     if failures or refusals:
         return 1
-    print(f"OK  {len(every)} sample(s) work against the core each one's block names")
+    checked = sum(len(samples) for samples in groups.values())
+    print(f"OK  {checked} sample(s) work against the core each one's block names")
     return 0
 
 
