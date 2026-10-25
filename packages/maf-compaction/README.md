@@ -226,6 +226,45 @@ The snapshot carries record decisions and outstanding re-force asks; the chain's
 
 Serialize requests for the same session in the host, including across replicas. The registry supports concurrent distinct sessions and rejects overlapping independent phases for the same session in one process; it does not supply a distributed lock or persist to an external store. Model quality, multi-process storage coordination and recovery from a crash between a model response and the host's session save are outside this adapter's guarantees.
 
+### Loading and saving a session
+
+`SessionPersistence` wraps the whole agent request around the registry above. Supply asynchronous `load(session_id)` and `save(session_id, snapshot)` callbacks and a `lease(session_id)` asynchronous context manager. `load` returns a framework session snapshot or `None`; `save` atomically replaces that snapshot. The lease must exclude every writer to that session, across replicas when applicable, from before loading until after stream cleanup and saving. A storage backend with expiring leases must fence writes and reject saves from an expired lease. This package supplies neither a database client nor a distributed lock. A local `asyncio.Lock` is sufficient only when every writer runs in that same process.
+
+```python
+from maf_compaction import SessionPersistence
+
+# `sessions` is the host's authorized storage and lease implementation.
+persistence = SessionPersistence(
+    registry,
+    load=sessions.load,
+    save=sessions.save,
+    lease=sessions.lease,
+)
+
+response = await persistence.run(
+    session_id,
+    lambda session: agent.run(messages, session=session),
+    create=True,
+)
+
+async with persistence.stream(
+    session_id,
+    lambda session: agent.run(messages, session=session, stream=True),
+) as response_stream:
+    async for update in response_stream:
+        await send_update(update)
+    final_response = await response_stream.get_final_response()
+# A successful exit means the save completed; receiving the last update alone does not.
+```
+
+The host must authorize `session_id` before passing it to the adapter; it is not a model-supplied argument. Stored snapshots must carry that same ID. An absent session raises `KeyError` unless `create=True` explicitly permits creation. A failed load, malformed envelope or incompatible compaction snapshot raises before the request runs; none is treated as an absent session. The adapter restores through `AgentSession.from_dict()` and saves through `to_dict()`, taking detached JSON snapshots in both directions. Register any custom framework serialization codecs on every replica. Keep the registry configuration and snapshot schema compatible, preserve stable message IDs, and apply the same retention and access policies as conversation history. User-summary replacements, pending decisions and cooldowns travel with the rest of the session.
+
+Only successfully completed requests are saved. Streaming requires `async with` and one consumer; full iteration or `get_final_response()` completes the response, including its final validation and provider hooks. The context closes the stream before saving and releasing the lease. An unused context never constructs the agent stream. Breaking early, explicitly closing an incomplete stream, leaving it unused, cancellation before saving, or a request/validation/cleanup error leaves the durable snapshot unchanged. A consumption failure prevents saving even if caught inside the block. Do not keep the stream or spawn consumers that outlive the block. Abandoning the entire context without closing it or terminating the process has no cleanup guarantee.
+
+Storage and serialization failures propagate. A streaming save failure can arrive after output has reached the caller. Once saving starts, cancellation, a lost acknowledgement or a lease-release failure can surface after the backend committed; the adapter does not retry model work. The host must define recovery for that uncertainty and for a crash between model work and saving. Failed or abandoned requests discard their in-memory compaction changes, including newly accepted summaries, so a later retry may repeat that work. Completed requests that internally recover from a refused recall still save their validated state; rejected history does not bypass the existing recall or enclosing agent gates.
+
+Use this as the single writer of the whole session snapshot. History providers can update the in-memory session during the request, but independent external session/history stores must participate in the host's lease and consistency policy. The adapter does not roll back tool side effects, provider-side conversations, or custom external writes. For hosts that already own the complete session lifecycle, the existing registry/provider/middleware wiring remains sufficient; do not add a second load/save owner. `SessionPersistence` is an outer request adapter rather than chat middleware because returning a `ResponseStream` from middleware does not mean its consumption, validation, or persistence has finished.
+
 The user strategy's `max_summary_input_tokens` bounds each summarizer request, including instructions and the numbered transcript, using the configured tokenizer. It defaults to half `max_input_tokens` (at least one token) and also bounds user-summary folds and the composition's record merges and harder rewrites. Set it for the summarizer's own input budget when that differs from the main model, reserving provider overhead and output space separately. A pass replaces only the oldest whole turns, summaries or records that fit; newer material stays for later passes. If no eligible prefix fits, the oldest item is retained without truncation or a request; a fold or merge needs at least two items to fit. The minimum user-band share is checked on the eligible band before limiting the request, so long histories can still make progress in bounded passes. Ordinary fold mode checks its break-even rule on the selected summary prefix; later summaries cannot fund that fold. The composition's emergency folds keep their smaller-result rule without this profitability gate. A partial replacement is kept only when it shrinks what it replaces; standalone compaction can still leave an oversized conversation, and the composition retains its configured overflow policy.
 
 Set `summary_timeout_seconds` to a positive finite number to time out each user-summary or fold request. A timeout cancels the request and counts as a failure; the client must honour cancellation, and cancellation cleanup can extend the elapsed time. Configure `max_consecutive_summary_failures` (a positive integer) together with `summary_backoff_seconds` (positive and finite) to skip fresh requests after that many consecutive failures. Exceptions, empty replies and rejected oversized summaries contribute to the streak. After the cooldown expires, the next eligible request retries; another failure renews the cooldown, while a fresh accepted summary resets the streak. Cached answers still replay during cooldown without resetting it. `user_summary_skips`, also exposed by the composition, counts withheld requests separately from `user_summary_failures`. All three settings default to `None` (off). Session snapshots retain the failure streak and a wall-clock cooldown deadline, so the cooldown follows a session across replica changes, restarts and stack-cache eviction when the host persists its state. Older snapshots default to no failures or cooldown. Expired deadlines or deadlines more than the configured backoff ahead are discarded, limiting the effect of clock differences between hosts. These settings cover user bands and user-summary folds, including emergency folds; record merges/rewrites and media-description hooks retain their own policies. A skipped or timed-out summary leaves its source material intact, and the composition continues to its configured overflow policy.
