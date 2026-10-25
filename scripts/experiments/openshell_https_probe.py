@@ -1,16 +1,19 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["openshell==0.1.2", "grpcio==1.84.0"]
+# dependencies = ["openshell==0.1.2", "grpcio==1.84.0", "cryptography==50.0.2"]
 # ///
 """Characterize HTTPS policy and origin verification with unchanged official images."""
 
 from __future__ import annotations
 
 import argparse
+import asyncio
+import hashlib
 import http.client
 import ipaddress
 import json
 import re
+import socket
 import ssl
 import sys
 import threading
@@ -18,6 +21,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import import_module
 from pathlib import Path
+from typing import cast
 
 from openshell_egress_probe import (
     guest_request,
@@ -205,10 +209,293 @@ def run_cases(client, name, owner, ip, mode):
     return results
 
 
+def prepare_native_tls(directory, ip):
+    """Create short-lived test certificates; only the public CA enters the workload image."""
+    from datetime import UTC, datetime, timedelta
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+    from openshell_egress_probe import native_origin_ip
+
+    ip = native_origin_ip(ip)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=False)
+    now = datetime.now(UTC)
+
+    def authority(name):
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(subject)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(days=1))
+            .not_valid_after(now + timedelta(days=2))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+            .add_extension(
+                x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False
+            )
+            .add_extension(
+                x509.KeyUsage(False, False, False, False, False, True, True, False, False),
+                critical=True,
+            )
+            .sign(key, hashes.SHA256())
+        )
+        return key, cert
+
+    trusted = authority("OpenShell ephemeral fixture CA")
+    unknown = authority("OpenShell untrusted fixture CA")
+    (directory / "ca.pem").write_bytes(trusted[1].public_bytes(serialization.Encoding.PEM))
+    host = "allowed." + ip + ".nip.io"
+    for label, dns, issuer, expired in (
+        ("valid", host, trusted, False),
+        ("hostname", "other." + ip + ".nip.io", trusted, False),
+        ("expired", host, trusted, True),
+        ("untrusted", host, unknown, False),
+    ):
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, dns)]))
+            .issuer_name(issuer[1].subject)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(days=2))
+            .not_valid_after(now - timedelta(days=1) if expired else now + timedelta(days=1))
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(
+                x509.AuthorityKeyIdentifier.from_issuer_public_key(issuer[0].public_key()),
+                critical=False,
+            )
+            .add_extension(
+                x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False
+            )
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName(dns)]), critical=False)
+            .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+            .sign(issuer[0], hashes.SHA256())
+        )
+        (directory / (label + ".pem")).write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        (directory / (label + ".key")).write_bytes(
+            key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        )
+        (directory / (label + ".key")).chmod(0o600)
+
+
+def native_tls_servers(directory, *, bind="127.0.0.1", ports=(8443, 8444, 8445, 8446)):
+    """Serve four independently identified TLS endpoints with one bounded journal."""
+    events = []
+    lock = threading.Lock()
+
+    def record(event):
+        with lock:
+            if len(events) >= 1024:
+                raise RuntimeError("TLS origin journal capacity exceeded")
+            events.append(event)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            row = {
+                "method": self.command,
+                "path": self.path,
+                "host": self.headers.get("Host"),
+                "port": cast(ThreadingHTTPServer, self.server).server_port,
+            }
+            record(row)
+            body = json.dumps(row).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        do_POST = do_GET
+
+        def log_message(self, format, *args):
+            pass
+
+    class Server(ThreadingHTTPServer):
+        context: ssl.SSLContext
+
+        def get_request(self):
+            connection, address = self.socket.accept()
+            connection.settimeout(3)
+            try:
+                return self.context.wrap_socket(connection, server_side=True), address
+            except ssl.SSLError as exc:
+                record({"handshake_error": exc.reason, "port": self.server_port})
+                connection.close()
+                raise
+
+        def handle_error(self, request, client_address):
+            pass
+
+    servers = []
+    try:
+        for label, port in zip(("valid", "hostname", "expired", "untrusted"), ports, strict=True):
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(directory / (label + ".pem"), directory / (label + ".key"))
+            server = Server((bind, port), Handler)
+            server.context = context
+            servers.append(server)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+    except BaseException:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+        raise
+    return servers, events
+
+
+def matches_native_https(observed, events, expected, request):
+    """Require exact origin attribution, including certificate alerts without HTTP side effects."""
+    if expected == "certificate_refused":
+        return (
+            observed.get("error") == "RemoteDisconnected"
+            and len(events) == 1
+            and events[0].get("port") == request["port"]
+            and set(events[0]) == {"port", "handshake_error"}
+            and events[0]["handshake_error"]
+            in {
+                "SSLV3_ALERT_CERTIFICATE_UNKNOWN",
+                "SSLV3_ALERT_BAD_CERTIFICATE",
+                "SSLV3_ALERT_CERTIFICATE_EXPIRED",
+            }
+        )
+    return matches_observation(observed, events, expected, int(expected == 200), request)
+
+
+async def measure_native_https(fixture, ip, ca_file):
+    """Measure owned HTTPS with normal verification and independent origin evidence."""
+    from openshell_egress_probe import native_origin_ip
+    from openshell_owned_probe import fixture_spec
+
+    ip = native_origin_ip(ip)
+    host = "allowed." + ip + ".nip.io"
+    context = ssl.create_default_context(cafile=str(ca_file))
+    evidence = {
+        "scope": "provider-free IPv4 HTTPS with an ephemeral workload-image trust anchor",
+        "ca_sha256": hashlib.sha256(ca_file.read_bytes()).hexdigest(),
+        "leaf_sha256": {
+            name: hashlib.sha256(ca_file.with_name(name + ".pem").read_bytes()).hexdigest()
+            for name in ("valid", "hostname", "expired", "untrusted")
+        },
+        "controls": [],
+        "cases": [],
+        "unqualified": [
+            "credential composition",
+            "IPv6",
+            "DNS rebinding",
+            "revocation",
+            "concurrent policy changes",
+            "restart",
+            "production trust management",
+        ],
+    }
+    fixture.report["https"] = evidence
+    fixture.save()
+    for dns in (host, "other." + ip + ".nip.io"):
+        addresses = await asyncio.to_thread(socket.getaddrinfo, dns, 8443, socket.AF_INET)
+        if {a[4][0] for a in addresses} != {ip}:
+            raise RuntimeError("TLS fixture DNS did not resolve to owned origin")
+    for method, path in (("GET", "/anything"), ("POST", "/anything"), ("GET", "/blocked")):
+        result = await asyncio.to_thread(
+            control_https, host, path, method=method, port=8443, context=context
+        )
+        if result != {"method": method, "path": path, "host": host + ":8443", "port": 8443}:
+            raise RuntimeError("owned HTTPS positive control failed")
+        evidence["controls"].append(result)
+    try:
+        await asyncio.to_thread(control_https, host, "/anything", port=8443)
+    except ssl.SSLCertVerificationError as exc:
+        if exc.verify_code != 20:
+            raise RuntimeError("unexpected default-trust failure") from exc
+        evidence["controls"].append({"port": 8443, "default_trust_verify_code": 20})
+    else:
+        raise RuntimeError("fixture CA unexpectedly trusted without explicit installation")
+    for port, code in ((8444, 62), (8445, 10), (8446, 20)):
+        try:
+            await asyncio.to_thread(control_https, host, "/anything", port=port, context=context)
+        except ssl.SSLCertVerificationError as exc:
+            if exc.verify_code != code:
+                raise RuntimeError("unexpected independent certificate failure") from exc
+            evidence["controls"].append({"port": port, "verify_code": code})
+        else:
+            raise RuntimeError("invalid certificate accepted by independent control")
+    await asyncio.to_thread(
+        control_https, "other." + ip + ".nip.io", "/anything", port=8444, context=context
+    )
+    fixture.save()
+    pb = import_module("openshell._proto.sandbox_pb2")
+    for closed in (False, True):
+        policy = fixture_spec(fixture.client.image).policy
+        if not closed:
+            rule = policy.network_policies["native_https"]
+            rule.name = "native_https"
+            rule.binaries.add(path="/usr/local/bin/python*")
+            for port in (8443, 8444, 8445, 8446):
+                endpoint = rule.endpoints.add(
+                    host=host, port=port, protocol="rest", allowed_ips=[ip]
+                )
+                endpoint.enforcement = pb.NETWORK_ENFORCEMENT_MODE_ENFORCE
+                endpoint.rules.add().allow.CopyFrom(pb.L7Allow(method="GET", path="/anything"))
+        sandbox = await fixture.acquire(policy=policy)
+        try:
+            cases = (
+                [("closed_https", 8443, "GET", "/anything", "EACCES")]
+                if closed
+                else [
+                    ("trusted_owned_get", 8443, "GET", "/anything", 200),
+                    ("denied_method", 8443, "POST", "/anything", 403),
+                    ("denied_path", 8443, "GET", "/blocked", 403),
+                    ("wrong_hostname", 8444, "GET", "/anything", "certificate_refused"),
+                    ("expired_certificate", 8445, "GET", "/anything", "certificate_refused"),
+                    ("unknown_issuer", 8446, "GET", "/anything", "certificate_refused"),
+                    ("trusted_after_failures", 8443, "GET", "/anything", 200),
+                ]
+            )
+            for label, port, method, path, expected in cases:
+                path += "?case=" + uuid.uuid4().hex
+                url = f"https://{host}:{port}{path}"
+                before = await asyncio.to_thread(origin_get, ip, "/__tls_events")
+                response = await sandbox.exec(
+                    ["python", "-c", guest_request(url, method)],
+                    working_directory="/sandbox",
+                    timeout=30,
+                )
+                if response.exit_code or response.stderr_bytes:
+                    raise RuntimeError("guest TLS measurement failed: " + response.stderr)
+                observed = json.loads(response.stdout)
+                after = await asyncio.to_thread(origin_get, ip, "/__tls_events")
+                if after[: len(before)] != before:
+                    raise RuntimeError("TLS origin journal continuity lost")
+                events = after[len(before) :]
+                request = {"method": method, "path": path, "host": f"{host}:{port}", "port": port}
+                row = {
+                    "case": label,
+                    "guest": observed,
+                    "origin_events": events,
+                    "passed": matches_native_https(observed, events, expected, request),
+                }
+                evidence["cases"].append(row)
+                fixture.save()
+                if not row["passed"]:
+                    raise RuntimeError("unexpected native HTTPS observation: " + label)
+        finally:
+            await fixture.dispose(sandbox.owner)
+
+
 def main():
     """Run an owned origin or the HTTPS profile of the existing cleanup-verified harness."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serve-origin", action="store_true")
+    parser.add_argument("--prepare-native-tls", type=Path)
+    parser.add_argument("--serve-native-tls", type=Path)
     parser.add_argument("--cert", type=Path)
     parser.add_argument("--key", type=Path)
     parser.add_argument("--execute", action="store_true")
@@ -216,6 +503,21 @@ def main():
     parser.add_argument("--origin-ip")
     parser.add_argument("--config", type=Path)
     args = parser.parse_args()
+    if args.prepare_native_tls:
+        prepare_native_tls(args.prepare_native_tls, args.origin_ip)
+        return 0
+    if args.serve_native_tls:
+        servers, events = native_tls_servers(
+            args.serve_native_tls,
+            bind="0.0.0.0",  # nosec B104 - isolated Docker origin network
+        )
+        try:
+            serve_origin(tls_events=events)
+        finally:
+            for server in servers:
+                server.shutdown()
+                server.server_close()
+        return 0
     if args.serve_origin:
         if not args.cert or not args.key:
             parser.error("origin requires --cert and --key")

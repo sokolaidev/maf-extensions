@@ -70,6 +70,43 @@ jobs:
           docker start "$origin_container"
           origin_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$origin_container")
           uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --egress-origin-ip "$origin_ip" --report "$RUNNER_TEMP/openshell-evidence/egress.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/egress.log"
+      - name: Measure owned HTTPS trust and certificate validation
+        shell: bash
+        env:
+          OTEL_SDK_DISABLED: 'true'
+        run: |
+          set -euo pipefail
+          origin_container=''
+          origin_network=''
+          trust_image=''
+          tls_dir="$RUNNER_TEMP/openshell-native-tls"
+          cleanup_tls() {
+            if [ -n "$origin_container" ]; then docker rm -f "$origin_container"; fi
+            if [ -n "$origin_network" ]; then docker network rm "$origin_network"; fi
+            if [ -n "$trust_image" ]; then docker image rm "$trust_image"; fi
+            rm -rf -- "$tls_dir"
+          }
+          trap cleanup_tls EXIT
+          origin_network=$(docker network create --internal "openshell-tls-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}")
+          origin_container=$(docker create --user root --network "$origin_network" --mount "type=bind,src=$GITHUB_WORKSPACE/scripts/experiments,dst=/probe,readonly" "$(cat "$RUNNER_TEMP/workload-id")" sleep 3600)
+          docker start "$origin_container"
+          origin_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$origin_container")
+          uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'cryptography==50.0.2' python scripts/experiments/openshell_https_probe.py --prepare-native-tls "$tls_dir" --origin-ip "$origin_ip"
+          docker cp "$tls_dir/." "$origin_container:/tls"
+          docker exec --detach "$origin_container" python /probe/openshell_https_probe.py --serve-native-tls /tls
+          cat > "$tls_dir/Dockerfile" <<'DOCKERFILE'
+          ARG WORKLOAD_IMAGE
+          FROM ${WORKLOAD_IMAGE}
+          USER root
+          COPY ca.pem /usr/local/share/ca-certificates/openshell-fixture.crt
+          RUN update-ca-certificates
+          USER sandbox
+          DOCKERFILE
+          printf '*\n!Dockerfile\n!ca.pem\n' > "$tls_dir/.dockerignore"
+          docker build --build-arg "WORKLOAD_IMAGE=$(cat "$RUNNER_TEMP/workload-id")" --iidfile "$tls_dir/image-id" "$tls_dir"
+          trust_image=$(cat "$tls_dir/image-id")
+          docker image inspect "$trust_image" > "$RUNNER_TEMP/openshell-evidence/https-image.json"
+          uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$trust_image" --config scripts/experiments/openshell-native.toml --egress-origin-ip "$origin_ip" --https-ca "$tls_dir/ca.pem" --report "$RUNNER_TEMP/openshell-evidence/https.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/https.log"
       - name: Record final engine inventory
         if: always()
         shell: bash
