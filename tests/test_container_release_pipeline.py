@@ -11,6 +11,7 @@ import sys
 import tarfile
 import urllib.error
 import zipfile
+from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -682,6 +683,126 @@ def test_monitor_rejects_forged_clean_observation(monkeypatch, tmp_path, monitor
     with pytest.raises(ValueError, match="scanner report"):
         monitor.finish(tmp_path)
     assert monitor_context.calls == ["456/1/monitor-start"]
+
+
+@pytest.mark.parametrize(
+    "operation,stage,error,fields",
+    [
+        (
+            "anonymous_pull",
+            "anonymous image pull",
+            urllib.error.HTTPError(
+                "https://example.invalid/secret", 403, "secret", Message(), None
+            ),
+            {"type": "HTTPError", "code": 403},
+        ),
+        (
+            "manifest",
+            "registry manifest lookup",
+            urllib.error.HTTPError(
+                "https://example.invalid/secret", 429, "secret", Message(), None
+            ),
+            {"type": "HTTPError", "code": 429},
+        ),
+        (
+            "anonymous_pull",
+            "anonymous image pull",
+            urllib.error.URLError(ConnectionResetError(104, "secret")),
+            {"type": "URLError"},
+        ),
+        (
+            "application_inventory",
+            "application inventory restore",
+            ValueError("secret"),
+            {"type": "ValueError"},
+        ),
+        (
+            "assess",
+            "vulnerability assessment",
+            subprocess.CalledProcessError(17, ["grype", "secret"], "secret", "secret"),
+            {"type": "CalledProcessError", "returncode": 17},
+        ),
+        (
+            "assess",
+            "vulnerability assessment",
+            subprocess.TimeoutExpired(["syft", "secret"], 30, "secret", "secret"),
+            {"type": "TimeoutExpired", "timeout": 30},
+        ),
+    ],
+)
+def test_monitor_retains_failure_diagnostics_without_credentials(
+    monkeypatch, tmp_path, monitor_context, capsys, operation, stage, error, fields
+):
+    monkeypatch.setattr(monitor, "anonymous_pull", lambda value: value["imageId"])
+    monkeypatch.setattr(monitor, "application_inventory", lambda *a, **k: None)
+    monkeypatch.setattr(monitor.subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(
+        monitor,
+        "Evidence",
+        lambda: SimpleNamespace(
+            ensure=lambda *a: {}, retain=lambda *a: None, publish=lambda *a: None
+        ),
+    )
+
+    def fail(*args, **kwargs):
+        raise error
+
+    if operation == "manifest":
+        monitor_context.catalogue = abandon(
+            monitor_context.catalogue, "bicep/0.1.0", "retained candidate lost", AT
+        )
+    emitted = []
+    monkeypatch.setattr(monitor, "outputs", emitted.append)
+    monitor.begin(tmp_path)
+    monkeypatch.setattr(monitor, operation, fail)
+    monkeypatch.setattr(monitor, "now", lambda: DONE)
+    monitor.scan(tmp_path, 0)
+    monitor.finish(tmp_path)
+    attempt = monitor_context.catalogue["releases"]["bicep/0.1.0"]["latestAttempt"]
+    diagnostic = attempt["diagnostic"]
+    assert attempt["outcome"] == "unavailable"
+    assert emitted[-1]["attention"] == "true"
+    assert diagnostic["stage"] == stage
+    assert diagnostic["errors"][0].items() >= fields.items()
+    assert diagnostic["errors"][0]["frames"][-1]["function"] == "fail"
+    if isinstance(error, urllib.error.URLError) and not isinstance(error, urllib.error.HTTPError):
+        assert diagnostic["errors"][1]["type"] == "ConnectionResetError"
+        assert diagnostic["errors"][1]["errno"] == 104
+    with zipfile.ZipFile(tmp_path / "retained/reports-0000.zip") as archive:
+        retained = json.loads(archive.read("bicep-0.1.0/observation.json"))
+    assert retained["assessment"]["diagnostic"] == diagnostic
+    logged = json.loads(capsys.readouterr().out)
+    assert logged == {"target": "bicep-0.1.0", "diagnostic": diagnostic}
+    assert attempt["reason"] in json.loads(emitted[-1]["notification"])["summary"]
+    serialized = json.dumps([retained, logged, emitted])
+    assert "secret" not in serialized
+    assert str(tmp_path) not in serialized
+    assert str(ROOT).replace("\\", "\\\\") not in serialized
+
+
+def test_monitor_diagnostic_bounds_chains_and_frames():
+    error = ValueError("unretained details")
+    error.__cause__ = error
+    assert len(monitor.failure_details("test", error)["errors"]) == 1
+    for _ in range(10):
+        outer = ValueError("unretained details")
+        outer.__cause__ = error
+        error = outer
+
+    def nested(depth):
+        if depth:
+            nested(depth - 1)
+        else:
+            raise error
+
+    with pytest.raises(ValueError) as caught:
+        nested(20)
+    diagnostic = monitor.failure_details("test", caught.value)
+    assert len(diagnostic["errors"]) == 4
+    assert len(diagnostic["errors"][0]["frames"]) == 8
+    reason = monitor.failure_reason(diagnostic)
+    diagnostic["errors"][0]["frames"] = []
+    assert monitor.failure_reason(diagnostic) == reason
 
 
 def test_failed_jobs_only_monitor_retry_cannot_claim_a_new_scan(
