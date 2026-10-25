@@ -11,8 +11,10 @@ RUN python3 /recipe/patch_shellcheck.py \
 
 FROM cgr.dev/chainguard/wolfi-base@sha256:9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03 AS shell
 RUN apk upgrade --no-cache \
-    && apk add --no-cache python-3.13 ca-certificates-bundle icu-libs libssl3 \
+    && apk add --no-cache python-3.13 'ca-certificates-bundle>=20260909-r3' icu-libs libssl3 \
        gmp ncurses numactl libstdc++ util-linux \
+       'glibc-2.44>=2.44-r8' 'glibc-2.44-locale-posix>=2.44-r8' \
+       'ld-linux-2.44>=2.44-r8' 'libcrypt1-2.44>=2.44-r8' \
        'libbrotlicommon1>=1.2.0-r7' 'libbrotlidec1>=1.2.0-r7' 'libbrotlienc1>=1.2.0-r7' \
     && mkdir -p /opt/maf-shell/modules /usr/local/bin \
     && ln -s /usr/bin/python3 /usr/local/bin/python3

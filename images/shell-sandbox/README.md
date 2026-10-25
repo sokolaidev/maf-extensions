@@ -2,7 +2,7 @@
 
 The `shell` release profile combines Bash, dash, ShellCheck, PowerShell and PSScriptAnalyzer in a Linux amd64 image. `image.json` pins each analyzer and interpreter by version and archive SHA256; the base image is pinned by digest. The normal image release pipeline builds, scans, signs and records this profile. Adding the profile does not publish an image.
 
-The runtime uses Wolfi with Bash 5.3-r14 and dash 0.5.13.5-r2. Interpreter archives are authenticated through the signed APK repository index and checksum-verified in an isolated cache before offline exact-version installation. The launcher checks installed package identities before analysis. PowerShell 7.6.8, PSScriptAnalyzer 1.25.0 and ShellCheck 0.11.0 remain pinned. A separate Debian build stage compiles the ShellCheck adapter; only the executable and required source/license material enter the runtime, which supplies its native libraries from Wolfi. Use the matching `maf-sandbox-shell` release or checkout: earlier interpreter identities are rejected.
+The runtime uses Wolfi with Bash 5.3-r14 and dash 0.5.13.5-r2. Interpreter archives are authenticated through the signed APK repository index and checksum-verified in an isolated cache before offline exact-version installation. The launcher checks installed package identities before analysis. PowerShell 7.6.8, PSScriptAnalyzer 1.25.0 and ShellCheck 0.11.0 remain pinned. Explicit security floors move all four glibc packages together beyond the base image's exact revision pins and require the patched certificate bundle. A separate Debian build stage compiles the ShellCheck adapter; only the executable and required source/license material enter the runtime, which supplies its native libraries from Wolfi. Use the matching `maf-sandbox-shell` release or checkout: earlier interpreter identities are rejected.
 
 ```bash
 docker build --platform linux/amd64 -t maf-shell:local images/shell-sandbox
@@ -113,12 +113,11 @@ The local Docker store exposes an image index identity, distinct from the config
 
 ### Wolfi image
 
-The Wolfi candidate from commit `8f3e7972598c44581ecedc4e792266bec4de48c1` passed [hosted qualification](https://github.com/sokolaidev/maf-extensions/actions/runs/40227832579) on 2026-10-25: all 15 real-analyzer fixtures and all 11 public SDK cases, including closed networking, unchanged stores and no remaining containers. An independent local build passed the same cases and the derived-image module, assembly and submitted-module shadowing fixture. The hosted Syft 1.54.0 inventory contains 325 components, and Grype 0.120.0 with its valid database built at `2026-10-25T06:27:34Z` reported **0 Critical, 0 High, 14 Medium, 4 Low and 18 Unknown** matches. The strict gate passed without exclusions or severity changes. This is candidate evidence from the matching checkout; published-wheel compatibility, publication and ACAS qualification remain outstanding under #2164.
+The patched Wolfi candidate built on 2026-10-25 passed all 15 real-analyzer fixtures and all 11 public SDK cases, including closed networking, unchanged stores and no remaining containers. The derived-image module, assembly and submitted-module shadowing fixture also passed. The local Syft 1.54.0 inventory contains 325 components, and Grype 0.120.0 with its valid database built at `2026-10-25T06:27:34Z` reported **0 Critical, 0 High, 2 Medium, 0 Low and 0 Unknown** matches. The remaining Python advisories, `CVE-2025-15367` and `CVE-2026-12345`, have no fixes listed in that report. The strict gate passed without exclusions or severity changes. [PR #2180](https://github.com/sokolaidev/maf-extensions/pull/2180) records the hosted validation. This is candidate evidence from the matching checkout; published-wheel compatibility, publication and ACAS qualification remain outstanding under #2164.
 
 | Evidence | Observed value |
 |---|---|
-| Local Docker Desktop runtime-test image identity | `sha256:c4ce3e349a56972304e73c1d2ebfa58dd1f5add7b0442144144ffd8e7670df6e` |
-| Hosted build configuration digest, matching its inventory and runtime target | `sha256:47db54b549232d44a583745a8c4c3e038f251d99c20be521636e2151165865a4` |
-| Hosted Syft report SHA256 | `944f5d4674cba3de7d4017eda200c8d33c7546973d836353eb121ceaf11ba068` |
-| Hosted Grype report SHA256 | `08cbc5345efb9f6ea6a4e3d463e0d8dc2bd0a5d2adee840326fc3aa70d4569bc` |
-| Hosted runtime report SHA256 | `1165a55dfb0bbf24b60ee002f1f47de267a2861d597c43a8e3039d01f9c511f6` |
+| Local Docker Desktop runtime-test image identity | `sha256:d4fdb68378e92a10e686e860c0d1e5a1228a02eb14dbb52f9f7f91be71cbfe4d` |
+| Build configuration digest, matching the inventory target | `sha256:3b8bf9db45a96027c3f0e73ae365200035f0d70c68c71b0c06af0051d08b3708` |
+| Syft report SHA256 | `46c8a9596b9c9cbb1a3a54cb112e2ef739df6b3ba175f4b5a76c967f23d1f054` |
+| Grype report SHA256 | `0cefb9d88e0f7942b7738d07869281443c7452b7d12c7a631554793da5a31e0c` |
