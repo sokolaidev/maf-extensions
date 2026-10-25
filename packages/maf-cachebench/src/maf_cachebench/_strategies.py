@@ -45,8 +45,8 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Final
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from agent_framework import (
     CompactionStrategy,
@@ -80,6 +80,8 @@ from maf_compaction import (
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     UserTurnAnchoredSummarizationCompactionStrategy,
 )
+
+from ._configuration import CompactionOptions
 
 if TYPE_CHECKING:
     from agent_framework._clients import SupportsChatGetResponse
@@ -202,6 +204,7 @@ class StrategyOptions:
     """
     token_budget_fraction: float = 0.5
     summarizer: SupportsChatGetResponse[Any] | None = None
+    compaction: CompactionOptions = field(default_factory=CompactionOptions)
 
     @property
     def input_budget_tokens(self) -> int:
@@ -404,6 +407,7 @@ def _build_user_summary_anchored(
         min_band_share=options.user_min_band_share,
         summary_mode=options.user_summary_mode,
         remembered_requests=remembered_requests,
+        **options.compaction.summary_kwargs(),
     )
 
 
@@ -443,6 +447,9 @@ def _build_tool_and_user_summary_anchored(options: StrategyOptions) -> Compactio
         ),
         harder_attempts=options.record_harder_attempts,
         chain_gain_fraction=options.chain_gain_fraction,
+        overflow_policy=cast(Literal["shed", "raise"], options.compaction.overflow_policy),
+        estimate_margin=options.compaction.estimate_margin,
+        merge_prompt=options.compaction.record_merge_prompt,
     )
 
 

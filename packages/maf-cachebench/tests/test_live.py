@@ -9320,7 +9320,13 @@ def test_every_boolean_flag_that_changes_a_run_is_recorded_somewhere() -> None:
         "no_temperature",
         "server_history",
     }
-    a_strategy_setting = {"record_repeats"}
+    a_strategy_setting = {
+        "record_repeats",
+        "preserve_prompt_cache",
+        "supports_tool_choice",
+        "retry_without_summary_options",
+        "stream",
+    }
     changes_nothing_measured = {"show_answers", "dry_run"}
 
     assert booleans == changes_the_conversation | a_strategy_setting | changes_nothing_measured, (

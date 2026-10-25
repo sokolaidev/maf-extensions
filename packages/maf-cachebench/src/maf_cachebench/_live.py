@@ -31,7 +31,7 @@ import asyncio
 import random
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from agent_framework import (
@@ -44,6 +44,7 @@ from agent_framework import (
     HistoryProvider,
     InMemoryHistoryProvider,
     Message,
+    ResponseStream,
     create_harness_agent,
 )
 
@@ -63,6 +64,9 @@ from maf_compaction import (
 )
 from maf_compaction import record_text as _record_text
 
+from ._behavior import BehaviorSnapshot, restore_behavior, snapshot_behavior
+from ._diagnostics import COUNTER_LABELS
+from ._lifecycle import LiveBinding, SessionExperiment
 from ._metrics import clamp_cached_tokens, serialize_message
 from ._recall import (
     COMBINED_SCOPE,
@@ -363,13 +367,22 @@ class UsageRecorder(ChatMiddleware):
             call_next: Continuation that performs the call.
         """
         await call_next()
+        if isinstance(context.result, ResponseStream):
+            context.result = context.result.with_result_hook(
+                lambda response: self._record(context, response)
+            )
+        else:
+            self._record(context, context.result)
+
+    def _record(self, context: ChatContext, response: Any) -> None:
+        """Capture one provider response before recall validation can discard it."""
         # Read after the call, not before: the history middleware replaces this attribute
         # with the loaded history, and compaction then flags that list in place.
         outgoing = list(context.messages)
         sent = project_included_messages(outgoing)
         # UsageDetails is a TypedDict, so it is read with .get() rather than getattr:
         # attribute access on it silently yields None and reports every call as free.
-        usage: dict[str, Any] = dict(getattr(context.result, "usage_details", None) or {})
+        usage: dict[str, Any] = dict(getattr(response, "usage_details", None) or {})
         # The provider reports the reasoning it billed on the response's usage, and the content
         # that carries the encrypted payload says nothing about its size. Stamping the count
         # here is what lets ReasoningStampTokenizer charge the replayed reasoning what the
@@ -379,9 +392,9 @@ class UsageRecorder(ChatMiddleware):
         # Stamped after the call, on the messages the session goes on to persist, so the next pass
         # over this conversation sees it.
         if (reasoning_tokens := usage.get("reasoning_output_token_count")) and isinstance(
-            context.result, ChatResponse
+            response, ChatResponse
         ):
-            stamp_reasoning_tokens(context.result.messages, int(reasoning_tokens))
+            stamp_reasoning_tokens(response.messages, int(reasoning_tokens))
         self.calls.append(
             ModelCall(
                 messages_sent=len(sent),
@@ -724,6 +737,7 @@ class LiveOutcome:
     ``USERCOMPACT``, which moves when it ran out or the record was not enough. ``USERWAIT`` in
     ``strategy_notes``; zero on every other strategy.
     """
+    compaction_diagnostics: dict[str, Any] = field(default_factory=lambda: dict[str, Any]())
     record_text: str = ""
     """The recall record the run produced, exactly as the model wrote it.
 
@@ -1268,10 +1282,18 @@ class IdentifiedHistoryProvider(InMemoryHistoryProvider):
             state: Provider-scoped session state.
             kwargs: Passed through.
         """
+        if state is not None:
+            self._issued = max(self._issued, state.get("cachebench_issued", 0))
+        for message in messages:
+            suffix = (message.message_id or "").removeprefix("cachebench_")
+            if suffix.isdecimal():
+                self._issued = max(self._issued, int(suffix))
         for message in messages:
             if not message.message_id:
                 self._issued += 1
                 message.message_id = f"cachebench_{self._issued}"
+        if state is not None:
+            state["cachebench_issued"] = self._issued
         await super().save_messages(session_id, messages, state=state, **kwargs)
 
 
@@ -1300,7 +1322,7 @@ def build_live_agent(
         tools: Tools the agent may call.
         recorder: Middleware capturing prompts and usage.
         extra_middleware: Further middleware a strategy needs, such as the one that forces the
-            recall call. Installed after the recorder so the recorder still sees every call.
+            recall call. Internal retries are metered individually inside these layers.
         instructions: System instructions for the agent.
         max_context_window_tokens: Window the harness variant sizes its default against.
         max_output_tokens: Output reservation.
@@ -1337,7 +1359,7 @@ def build_live_agent(
             disable_mode=True,
             disable_file_memory=True,
             disable_web_search=True,
-            middleware=[recorder, *extra_middleware],
+            middleware=[*extra_middleware, recorder],
             # Deliberately empty: every option travels per turn instead. An option baked
             # in here cannot be dropped when a provider rejects it without rebuilding the
             # agent, which would discard the session the conversation lives in.
@@ -1364,7 +1386,7 @@ def build_live_agent(
         context_providers=providers,
         compaction_strategy=strategy,
         require_per_service_call_history_persistence=True,
-        middleware=[recorder, *extra_middleware],
+        middleware=[*extra_middleware, recorder],
         default_options={},
     )
 
@@ -1479,22 +1501,11 @@ def snapshot_state(session: AgentSession) -> dict[str, Any]:
     return deepcopy(session.state)
 
 
-def snapshot_decisions(strategy: Any) -> Any | None:
-    """Take the decisions a strategy carries on its instance, to be put back with the session.
-
-    A strategy's decisions are conversation state that the session does not hold: the
-    composed chain's wait for a record, the record half's outstanding ask and the groups it
-    has settled. Restoring the session without them re-enters the conversation with the
-    decisions advanced by an attempt whose session state has been discarded.
-
-    Args:
-        strategy: The strategy under test, or None for the control.
-
-    Returns:
-        An opaque value for :func:`restore_state`, or None when the strategy carries nothing.
-    """
-    take = getattr(strategy, "decision_state", None)
-    return take() if callable(take) else None
+def snapshot_decisions(
+    strategy: Any, recall_middleware: ToolResultRecallMiddleware | None = None
+) -> BehaviorSnapshot:
+    """Copy strategy, recall and gate behavior independently of the session history."""
+    return snapshot_behavior(strategy, recall_middleware)
 
 
 def restore_state(
@@ -1504,32 +1515,18 @@ def restore_state(
     strategy: Any = None,
     decisions: Any | None = None,
 ) -> None:
-    """Put a session back to a snapshot, before the next probe is asked or a turn re-sent.
+    """Restore history and its behavioral snapshot before retrying or probing.
 
-    Copied again on every restore rather than assigned once: the run about to happen will
-    mutate what it is given, and a shared copy would leak that into the one after it.
-
-    The middleware is reset for the same reason the state is. Its pending decision to force a
-    recall call is conversation state -- it is made on one call and applied to the next -- so a
-    decision taken during seeding would fire on the first probe and on no other, giving that
-    one probe a different prompt from the rest. That is precisely the difference between
-    probes this design exists to remove. A retried turn wants it for the same reason: the
-    decision standing after a failed attempt was taken by that attempt, and the middleware
-    re-takes it at the end of the next call anyway, so clearing defers a forced record by one
-    call rather than losing it.
-
-    Args:
-        session: The session to restore.
-        snapshot: The state to restore it to.
-        recall_middleware: The middleware to clear, when the strategy under test installs one.
-        strategy: The strategy whose decisions ``decisions`` were taken from.
-        decisions: What :func:`snapshot_decisions` returned beside ``snapshot``, or None.
+    Without a behavioral snapshot, only pending recall is cleared for legacy callers.
     """
     session.state = deepcopy(dict(snapshot))
-    if recall_middleware is not None:
-        recall_middleware.forget_pending()
-    if decisions is not None:
-        strategy.restore_decisions(decisions)
+    if isinstance(decisions, BehaviorSnapshot):
+        restore_behavior(strategy, recall_middleware, decisions)
+    else:
+        if recall_middleware is not None:
+            recall_middleware.forget_pending()
+        if decisions is not None:
+            strategy.restore_decisions(decisions)
 
 
 def _retry_delay(attempt: int, requested: float | None, *, base: float, maximum: float) -> float:
@@ -1774,7 +1771,6 @@ async def run_live(
     if wants_client_side_history(runtime.client, allow_server_history=allow_server_history):
         runtime_options["store"] = False
     options = replace(options, record_target_tokens=record_target_tokens)
-    strategy = build_strategy(strategy_name, options)
     recorder = UsageRecorder()
     summarizer = options.summarizer if isinstance(options.summarizer, MeteredClient) else None
     tool_calls = 0
@@ -1799,66 +1795,52 @@ async def run_live(
         if (name := fn.__name__)
     ]
 
-    # The recall tool is registered only for the strategy that asks the model to call it.
-    # Adding it to every row would put an extra tool in every prompt and give unrelated
-    # strategies something new to call, which is a difference between rows that has nothing
-    # to do with compaction.
-    recall_middleware: ToolResultRecallMiddleware | None = None
-    # Kept as a narrowed reference rather than re-tested at the end of the run. The counters
-    # this outcome reports are read off the strategy object once the conversation is over, and
-    # a second test down there is a second place to keep in step with this one.
-    #
-    # Found rather than isinstance-tested, and that is the whole of what arms a composed row.
-    # A composition is not an instance of its parts, so a plain test would leave the middleware
-    # uninstalled for any strategy that merely *contains* the record one: no call pinned, no
-    # record written, the strategy waiting and then falling back, and a row carrying the
-    # composed name while measuring only the half of it that needs no middleware. Nothing in
-    # the table would say so, because FALLBACK is also what a model that never complied looks
-    # like. See ``find_nested_strategy``.
-    recording = find_nested_strategy(strategy, ToolResultAnchoredSummarizationCompactionStrategy)
-    # The same discovery for the other summarising strategy, and kept apart from the one above
-    # rather than folded into a single "does it have counters" test: the two report different
-    # numbers, and a composed row is both, so one shared reference could not answer for either.
-    user_compacting = find_nested_strategy(
-        strategy, UserTurnAnchoredSummarizationCompactionStrategy
-    )
-    if recording is not None:
-        gate = RecallGate()
-        # Registered like any other tool, because the harness must know it to run it, and
-        # inert until the middleware arms it, because it cannot be hidden from the model.
-        scope_tools = [*scope_tools, make_recall_tool(gate, target_tokens=record_target_tokens)]
-        recall_middleware = ToolResultRecallMiddleware(
-            max_input_tokens=recording.max_input_tokens,
-            tokenizer=options.tokenizer,
-            arm=gate.arm,
-            trigger_fraction=recording.trigger_fraction,
-            record_max_tokens=record_max_tokens,
-            max_groups_before_record=max_groups_before_record,
-            # The composed row asks for a record for every new batch of tool work, and says so
-            # on the object rather than through the flag, so its halves are configured for its
-            # purposes without moving the single row's default. Read off the outermost strategy:
-            # the record half itself reports nothing, so ``tool_summary_anchored`` follows
-            # --record-repeats / --no-record-repeats.
-            repeat_records=repeat_records or bool(getattr(strategy, "repeat_records", False)),
-            # The strategy's own ask for another record, made when a record leaves tool groups
-            # uncovered. Wired here because the middleware holds no reference to the strategy
-            # and the strategy none to the middleware; found through the same nested lookup as
-            # everything else, so a composed row's record phase can ask too.
-            reforce=recording.take_reforce,
+    def build_binding() -> LiveBinding:
+        strategy = build_strategy(strategy_name, options)
+        tools = list(scope_tools)
+        gate: RecallGate | None = None
+        recall_middleware: ToolResultRecallMiddleware | None = None
+        recording = find_nested_strategy(
+            strategy, ToolResultAnchoredSummarizationCompactionStrategy
         )
+        if recording is not None:
+            gate = RecallGate()
+            tools = [*tools, make_recall_tool(gate, target_tokens=record_target_tokens)]
+            recall_middleware = ToolResultRecallMiddleware(
+                max_input_tokens=recording.max_input_tokens,
+                tokenizer=options.tokenizer,
+                arm=gate.arm,
+                disarm=gate.disarm,
+                preserve_prompt_cache=options.compaction.preserve_prompt_cache,
+                record_instruction=options.compaction.record_instruction,
+                supports_tool_choice=options.compaction.supports_tool_choice,
+                forced_call_timeout_seconds=options.compaction.forced_call_timeout_seconds,
+                min_groups_before_repeat=options.compaction.min_groups_before_repeat,
+                trigger_fraction=recording.trigger_fraction,
+                record_max_tokens=record_max_tokens,
+                max_groups_before_record=max_groups_before_record,
+                repeat_records=repeat_records or bool(getattr(strategy, "repeat_records", False)),
+                reforce=recording.take_reforce,
+            )
 
-    agent = build_live_agent(
-        runtime,
-        kind=agent_kind,
-        strategy=strategy,
-        tokenizer=options.tokenizer,
-        tools=scope_tools,
-        recorder=recorder,
-        extra_middleware=[recall_middleware] if recall_middleware else [],
-        instructions=resolve_instructions(narration, retrieval_guidance=retrieval_guidance),
-        max_context_window_tokens=options.max_context_window_tokens,
-        max_output_tokens=options.max_output_tokens,
-    )
+        agent = build_live_agent(
+            runtime,
+            kind=agent_kind,
+            strategy=strategy,
+            tokenizer=options.tokenizer,
+            tools=tools,
+            recorder=recorder,
+            extra_middleware=[recall_middleware] if recall_middleware else [],
+            instructions=resolve_instructions(narration, retrieval_guidance=retrieval_guidance),
+            max_context_window_tokens=options.max_context_window_tokens,
+            max_output_tokens=options.max_output_tokens,
+        )
+        return LiveBinding(agent, strategy, recall_middleware, gate)
+
+    experiment = SessionExperiment(build_binding, options.compaction)
+    agent = experiment.binding.agent
+    strategy = experiment.binding.strategy
+    recall_middleware = experiment.binding.recall
     session = agent.create_session()
 
     turns = scenario.transcript.turns
@@ -1911,6 +1893,7 @@ async def run_live(
                 report the sweep as merely slow.
         """
         nonlocal retries, throttled, reconnects, reconnected_seconds
+        nonlocal agent, strategy, recall_middleware, session
         rate_limit_budget = _RetryBudget(
             attempts=RATE_LIMIT_ATTEMPTS,
             base_delay=RATE_LIMIT_BASE_DELAY,
@@ -1926,7 +1909,13 @@ async def run_live(
         try:
             while True:
                 try:
-                    return await agent.run(text, session=session, options=turn_options)
+                    try:
+                        response, session = await experiment.run(session, text, turn_options)
+                        return response
+                    finally:
+                        agent = experiment.binding.agent
+                        strategy = experiment.binding.strategy
+                        recall_middleware = experiment.binding.recall
                 except Exception as exc:
                     # Throttling first. The two predicates disagree about a 429 by
                     # construction -- a status the provider answered with is a decision, and
@@ -1976,7 +1965,7 @@ async def run_live(
         # Agent runs can persist incomplete tool exchanges before failing. Restore both
         # session and strategy state before retrying, so no unmatched tool call survives.
         before = snapshot_state(session)
-        before_decisions = snapshot_decisions(strategy)
+        before_decisions = snapshot_decisions(strategy, recall_middleware)
         # Allow one correction per runtime option, plus tool_choice and max_tokens, then success.
         # Restore the session before resending a turn that may have persisted a partial tool call.
         extra = runtime_options.get("extra_body")
@@ -2028,7 +2017,7 @@ async def run_live(
 
     seed_prompt_tokens = recorder.calls[-1].input_tokens if recorder.calls else 0
     snapshot = snapshot_state(session)
-    decided = snapshot_decisions(strategy)
+    decided = snapshot_decisions(strategy, recall_middleware)
     snapshot_prompt = serialize_history(agent, snapshot)
 
     probes: list[ProbeOutcome] = []
@@ -2087,7 +2076,11 @@ async def run_live(
     if usage_missing and error is None:
         error = "Incomplete pricing: missing or non-positive input usage."
 
-    return LiveOutcome(
+    recording = find_nested_strategy(strategy, ToolResultAnchoredSummarizationCompactionStrategy)
+    user_compacting = find_nested_strategy(
+        strategy, UserTurnAnchoredSummarizationCompactionStrategy
+    )
+    outcome = LiveOutcome(
         strategy=strategy_name,
         calls=tuple(recorder.calls),
         answer=chr(10).join(probe.answer for probe in probes),
@@ -2147,6 +2140,28 @@ async def run_live(
         summarizer_usage=tuple(summarizer.usage) if summarizer else (),
         error=error,
         replies=tuple(replies),
+    )
+    diagnostics: dict[str, Any] = dict(experiment.totals)
+    if recall_middleware is not None:
+        diagnostics.update(
+            pin_disabled=recall_middleware.pin_disabled,
+            pin_disabled_reason=recall_middleware.pin_disabled_reason,
+            recall_disabled=recall_middleware.recall_disabled,
+            value_free_record_streak=recall_middleware.value_free_record_streak,
+        )
+    labels = set(COUNTER_LABELS.values())
+    notes = [note for note in outcome.strategy_notes if note.partition(":")[0] not in labels]
+    notes.extend(
+        f"{COUNTER_LABELS[name]}:{value}" for name, value in experiment.totals.items() if value
+    )
+    if diagnostics.get("pin_disabled_reason"):
+        notes.append(f"RECALLMODE:{diagnostics['pin_disabled_reason']}")
+    measured = {field.name for field in fields(LiveOutcome)}
+    return replace(
+        outcome,
+        **{name: value for name, value in experiment.totals.items() if name in measured},
+        strategy_notes=tuple(notes),
+        compaction_diagnostics=diagnostics,
     )
 
 

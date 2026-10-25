@@ -16,6 +16,7 @@ import importlib.metadata
 from ._advise_cli import main as advise_main
 from ._advisor import ModelPricing, StrategyCost, Verdict, advise, cost_of, fetch_openrouter_pricing
 from ._cli import build_parser, main, run_benchmark
+from ._configuration import CompactionOptions
 from ._fill import FillPlan, plan_fill
 from ._live import (
     AGENT_KINDS,
@@ -110,6 +111,7 @@ except importlib.metadata.PackageNotFoundError:
     __version__ = "0.3.1"  # Fallback for development mode
 
 __all__ = [
+    "CompactionOptions",
     "AGENT_KINDS",
     "DEFAULT_COMBINED_REPEATS",
     "DEFAULT_PROBE_REPEATS",

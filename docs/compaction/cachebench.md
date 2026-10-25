@@ -466,6 +466,14 @@ Cost scales with `sizes` × `strategies` × `providers` × `repeats` in replay, 
 
 Concurrency has to be sized against **strategies per invocation**, not invocations. Five parallel runs of four rows each was clean; the same parallelism at eighteen rows each rate-limited 18 of 90 records, including the control in every seed, and cost that run its entire cost axis.
 
+## Compaction and session coverage
+
+The live runner exposes recall cache preservation, pin capability and timeout controls; bounded or chunked summaries, summary request options, retry/backoff and custom prompts; and the composed strategy's overflow policy and estimate margin. See the [control reference](../../packages/maf-cachebench/README.md#compaction-controls-and-session-experiments) for flags and version requirements. Existing record coverage, renewal, user retention and fold controls continue to select the strategy behavior.
+
+`--session-mode roundtrip` reloads detached JSON between requests; `restart` also rebuilds the agent and strategy objects. Record-bearing strategies use compaction's `SessionPersistence` adapter, which must be present in the installed version. The store and lease are local and in memory. These modes exercise serialization and reconstruction, not operating-system crash recovery or storage performance. `--history-mode replay` resubmits the original messages to exercise saved summaries against a caller's full history, and `--stream` consumes the response under the request's complete lifetime. Provider-side conversation storage remains a separate regime.
+
+Schema 23 separates these settings and installed package versions in the cell key. Its `compaction_diagnostics` includes cumulative recall failures, ignored forced calls, summary replay and skips, plus final pin/recall-disabled state. Usage is recorded inside recall middleware so internal retries retain each completed provider attempt's bill. Probe resets restore the full public behavioral state, including the gate and summary backoff. Earlier records remain readable but are not pooled with this measurement contract; absent new settings and diagnostics mean unknown.
+
 ## Development
 
 ```bash
@@ -480,6 +488,7 @@ Tests are offline; the provider call is stubbed. The [testing record](research/t
 |---|---|---|
 | Replay harness: deterministic scripts with per-cell cache isolation, comparable across providers | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
 | Live harness: seed, snapshot and probe, with the control as a price reference past the window | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
+| Current compaction controls, streaming, serialized sessions, object reconstruction and original-history replay | Implemented | [Control reference](../../packages/maf-cachebench/README.md#compaction-controls-and-session-experiments) |
 | Records keyed on every workload and strategy setting, with the schema refusing what it cannot read | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
 | Cost split into seeding and probing, ranking on the seeding half behind an accuracy bar | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
 | Per-request long-context pricing and cache-write rates | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
