@@ -112,6 +112,26 @@ jobs:
           git diff --name-only "$BASE_SHA" HEAD |
             python3 scripts/changed_paths.py >> "$GITHUB_OUTPUT"
 
+  kind-images:
+    name: Kind release image readiness
+    needs: changes
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require qualified matching images for kind version changes
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 scripts/check_kind_release_images.py --base "$BASE_SHA"
+
   # Repository and package tests have comparable measured work. Each gets its own
   # runner; pytest still discovers the whole suite before assigning every test.
   suite:
@@ -1183,7 +1203,7 @@ jobs:
   # and never themselves, so a skipped shard means something went wrong with the graph.
   tests:
     name: Python (pytest + ruff + pyright)
-    needs: [changes, openclaw-mxc, suite, hyperlight-worker, hyperlight-linux-worker, mxc-recovery, mxc-durability, mxc-v1, mxc-stream-kernel, mxc-streams, mxc-file-kernel, mxc-files, security, fast, pre-commit, types, packaging, published-cores]
+    needs: [changes, kind-images, openclaw-mxc, suite, hyperlight-worker, hyperlight-linux-worker, mxc-recovery, mxc-durability, mxc-v1, mxc-stream-kernel, mxc-streams, mxc-file-kernel, mxc-files, security, fast, pre-commit, types, packaging, published-cores]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
