@@ -779,3 +779,16 @@ def test_cli_refuses_combined_crash_modes(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as error:
         cross.main()
     assert error.value.code == 2
+
+
+@pytest.mark.workflow
+def test_hosted_ownership_matrix_exercises_cross_runner_controls():
+    path = Path(__file__).parents[1] / ".github/workflows/mxc-remote.yml"
+    workflow = yaml.safe_load(path.read_text("utf-8-sig"))
+    paths = workflow[True]["pull_request"]["paths"]
+    assert "tests/test_mxc_cross_runner.py" in paths
+    assert ".github/workflows/mxc-cross-runner.yml" in paths
+    job = workflow["jobs"]["qualify"]
+    assert set(job["strategy"]["matrix"]["os"]) == {"ubuntu-24.04", "windows-latest"}
+    run = next(step["run"] for step in job["steps"] if "uv run pytest" in step.get("run", ""))
+    assert "tests/test_mxc_cross_runner.py" in run.split()
