@@ -15,6 +15,7 @@ RUN python3 /recipe/build_terraform.py && go clean -cache -modcache
 
 FROM ${BASE_IMAGE} AS runtime
 RUN apk upgrade --no-cache && apk add --no-cache python-3.13 ca-certificates-bundle \
+       'libbrotlicommon1>=1.2.0-r7' 'libbrotlidec1>=1.2.0-r7' 'libbrotlienc1>=1.2.0-r7' \
     && mkdir -p /usr/local/bin \
     && ln -s /usr/bin/python3 /usr/local/bin/python3
 ARG TARGETARCH

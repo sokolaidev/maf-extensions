@@ -8,7 +8,7 @@ Use Draw.io Desktop's native exporter for PNG, JPG and SVG. Render the validated
 
 Bundle the renderer, stencils, cloud icons and fonts at build time. Runtime egress stays closed, updates are disabled and each export has a fresh profile. Only known bundled image paths and validated embedded images are accepted. The first profile refuses math, enabled label placeholders, links, background resources, external fonts and resource-bearing HTML. Unsupported input is a refusal; a missing runtime, corrupt runtime manifest or failed renderer is incomplete execution.
 
-Pin Desktop 32.4.1 and verify its distribution hash. The installer adds checks for failed image loading, unknown shapes and excessive export dimensions because upstream can otherwise complete with missing visual content. Retain the modified source scripts and upstream notices. Asset and renderer hashes describe installed content; they do not replace approval of the image distribution. Earlier candidate evidence below retains the versions actually tested.
+Pin Desktop 32.6.1 and verify its distribution hash. The installer adds checks for failed image loading, unknown shapes and excessive export dimensions because upstream can otherwise complete with missing visual content. Retain the modified source scripts and upstream notices. Asset and renderer hashes describe installed content; they do not replace approval of the image distribution. Earlier candidate evidence below retains the versions actually tested.
 
 Embed local images and fonts in SVG. Rich HTML labels use foreignObject and need a compatible browser viewer. The fixed DejaVu font profile deliberately substitutes common Arial/Helvetica, Times and Courier family requests; it does not promise identical typography to an arbitrary editor installation or glyph coverage for every language.
 
@@ -60,7 +60,7 @@ On 2026-10-16, both profiles below passed the complete suite. Each produced 31 r
 
 | Profile | Runtime identity | SDK evidence |
 | --- | --- | --- |
-| Docker, Linux amd64, network disabled | Desktop 32.4.1; image ID `sha256:28fe94a75dfb6d23f6c0fe6e636f55b5d0d0b0b9eb5c8d5f3e41d2163dedf1e7`, built from the current recipe | Clean-installed wheels: core 0.50.0, Draw.io 0.5.0, Docker 0.28.2 |
+| Docker, Linux amd64, network disabled | Desktop 32.4.1; image ID `sha256:28fe94a75dfb6d23f6c0fe6e636f55b5d0d0b0b9eb5c8d5f3e41d2163dedf1e7`, built from the then-current recipe | Clean-installed wheels: core 0.50.0, Draw.io 0.5.0, Docker 0.28.2 |
 | ACAS, existing imported runtime, explicit egress-policy denial | Desktop 31.7.0; manifest SHA-256 `01d0693f0c9eadcda9ac27eb045e9a224de10ee8ef7aaab5c751d5900b939565`; exporter SHA-256 `b1e728a9066e41ecb9ec89ad28bd264b327a939f18357e7fb830f9d64a264a2e` | Workspace source: core 0.50.0, Draw.io 0.5.0, ACAS 0.30.0 |
 
 The Docker report SHA-256 is `3a4bb86a0ef4653e8868c3e22df66b8eff1ead45d068a9aef0d43dbb1a61a760`; the ACAS report SHA-256 is `000864393a4b2029252d5cd6cf5b6e7ccfb4a45b721de5cc75145bbaca05c389`. Reports bind retained output hashes and acquisition observations to those runs. The Docker runtime's embedded fonts, cloud icons, rich labels and accented/Greek/Cyrillic text were inspected in a browser outside the sandbox; ACAS's two-page SVG and raster outputs were also inspected outside the sandbox. This is representative viewer coverage, not a guarantee for every glyph or SVG consumer.
@@ -71,7 +71,7 @@ These are local live runs, not hosted CI, image publication, security approval o
 
 ## Sources
 
-- [Current pinned Desktop distribution](https://github.com/jgraph/drawio-desktop/releases/tag/v32.4.1)
+- [Current pinned Desktop distribution](https://github.com/jgraph/drawio-desktop/releases/tag/v32.6.1)
 - [Initial Desktop distribution](https://github.com/jgraph/drawio-desktop/releases/tag/v31.7.0)
 - [Pinned Draw.io exporter](https://github.com/jgraph/drawio/blob/v31.7.0/src/main/webapp/js/export.js)
 - [Pinned placeholder label handling](https://github.com/jgraph/drawio/blob/v31.7.0/src/main/webapp/js/grapheditor/Graph.js)

@@ -65,6 +65,8 @@ jobs:
         with:
           docker-username: ${{ secrets.DOCKER_USERNAME }}
           docker-pat: ${{ secrets.DOCKER_PAT }}
+      - name: Require configuration-based Docker image IDs
+        uses: ./.github/actions/setup-classic-docker
       - name: Make room for the AVM provider toolchain and build cache
         if: matrix.profile == 'terraform-avm'
         run: |

@@ -122,10 +122,10 @@ def prepare() -> None:
         json.dumps(
             {
                 "name": "electron",
-                "version": "44.7.0",
+                "version": "44.9.3",
                 "license": "MIT",
                 "description": (
-                    "Bundled runtime identified by Draw.io Desktop v32.4.1 package-lock.json"
+                    "Bundled runtime identified by Draw.io Desktop v32.6.1 package-lock.json"
                 ),
             }
         ),
@@ -136,8 +136,8 @@ def prepare() -> None:
     ).hexdigest()
     manifest = {
         "version": 1,
-        "desktop": "32.4.1",
-        "electron": "44.7.0",
+        "desktop": "32.6.1",
+        "electron": "44.9.3",
         "electron_version_source": "upstream-release-metadata",
         "asar_sha256": hashlib.sha256(ASAR.read_bytes()).hexdigest(),
         "assets": assets,

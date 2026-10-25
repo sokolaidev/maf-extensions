@@ -4,6 +4,7 @@ LABEL org.opencontainers.image.description="Graphviz DOT-to-PNG renderer for Lin
 
 RUN apk upgrade --no-cache \
     && apk add --no-cache graphviz ttf-dejavu bash coreutils util-linux-misc mount \
+       'libbrotlicommon1>=1.2.0-r7' 'libbrotlidec1>=1.2.0-r7' 'libbrotlienc1>=1.2.0-r7' \
     && dot -c \
     && for tool in sh bash base64 setsid mount unshare mkdir cat rm sleep; do \
          command -v "$tool" >/dev/null || exit 1; \
