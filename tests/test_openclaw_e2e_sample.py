@@ -204,12 +204,16 @@ def post(
     provider: Any, body: dict[str, Any] | None, *, token: str | None = None
 ) -> tuple[int, bytes]:
     connection = http.client.HTTPConnection("127.0.0.1", provider.server.server_port, timeout=5)
+    headers = {"Authorization": "Bearer " + (provider.token if token is None else token)}
+    if body is None:
+        # A withheld body must pass the size check to exercise authorization ordering.
+        headers["Content-Length"] = "1"
     try:
         connection.request(
             "POST",
             "/v1/chat/completions",
             json.dumps(body) if body is not None else None,
-            {"Authorization": "Bearer " + (provider.token if token is None else token)},
+            headers,
         )
         response = connection.getresponse()
         return response.status, response.read()
