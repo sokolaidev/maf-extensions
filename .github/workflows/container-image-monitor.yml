@@ -83,6 +83,8 @@ jobs:
         with:
           name: monitor-plan
           path: ${{ runner.temp }}/monitor
+      - name: Require configuration-based Docker image IDs
+        uses: ./.github/actions/setup-classic-docker
       - name: Install pinned scanners
         run: python3 scripts/install_container_scanners.py --directory "$RUNNER_TEMP/scan-tools"
       - name: Assess every planned digest including unfixed findings

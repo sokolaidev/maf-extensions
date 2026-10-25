@@ -1,0 +1,22 @@
+name: Set up Docker's classic image store
+description: Require configuration-based image IDs on ephemeral GitHub-hosted Linux runners.
+runs:
+  using: composite
+  steps:
+    - name: Configure and verify the classic image store
+      shell: bash
+      run: |
+        set -euo pipefail
+        test "$RUNNER_ENVIRONMENT" = github-hosted
+        test "$RUNNER_OS" = Linux
+        config="$RUNNER_TEMP/classic-docker-daemon.json"
+        if sudo test -f /etc/docker/daemon.json; then
+          sudo cat /etc/docker/daemon.json > "$config"
+        else
+          printf '{}\n' > "$config"
+        fi
+        python3 scripts/classic_docker_store.py configure < "$config" > "$config.next"
+        sudo dockerd --validate --config-file "$config.next"
+        sudo install -D -m 0644 "$config.next" /etc/docker/daemon.json
+        sudo systemctl restart docker
+        docker info --format '{{json .}}' | python3 scripts/classic_docker_store.py verify
