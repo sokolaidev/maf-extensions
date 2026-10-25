@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.7.1...maf-compaction-v0.8.0) (2026-10-25)
+
+
+### Features
+
+* **compaction:** load and save sessions around complete agent requests ([#2169](https://github.com/sokolaidev/maf-extensions/issues/2169)) ([923e0ea](https://github.com/sokolaidev/maf-extensions/commit/923e0ea3b98e0cbe93451346a1b1358fe5ce6c2c))
+
+
+### Fixes
+
+* **compaction:** replay user summaries when hosts resend original history ([#2157](https://github.com/sokolaidev/maf-extensions/issues/2157)) ([a4fe368](https://github.com/sokolaidev/maf-extensions/commit/a4fe3686102069270ba67f1c12db13c6011dc5f8))
+
 ## [0.7.1](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.7.0...maf-compaction-v0.7.1) (2026-10-24)
 
 
