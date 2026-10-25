@@ -875,9 +875,10 @@ async def test_a_half_run_as_its_own_row_reads_its_own_trigger_before_and_after_
     )
 
     standalone_again = _conversation()
-    assert await user_phase(standalone_again) is False, "and is unchanged as its own row afterwards"
-    assert user_phase.user_passes_below_trigger == 2
-    assert "Turn 4:" in _rendered(standalone_again)
+    assert await user_phase(standalone_again) is True, "accepted edits replay below either trigger"
+    assert user_phase.user_passes_below_trigger == 1
+    assert user_phase.user_summaries_replayed == 1
+    assert "Turn 4:" not in _rendered(standalone_again)
     assert user_phase.trigger_fraction == DEFAULT_USER_TRIGGER_FRACTION, (
         "nothing wrote to the object"
     )

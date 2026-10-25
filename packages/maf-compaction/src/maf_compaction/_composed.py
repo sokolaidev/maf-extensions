@@ -968,9 +968,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             annotate_token_counts(messages, tokenizer=self.tokenizer, force_retokenize=True)
             self._removed_by_record += max(entry_tokens - included_token_count(messages), 0)
 
+        replay = self.user_turns.replay_summaries(messages)
         prompt_tokens = included_token_count(messages)
         compacted = False
-        if not self._holds_for_record(
+        if (not replay.changed or replay.new_turns) and not self._holds_for_record(
             messages, entry_tokens=entry_tokens, prompt_tokens=prompt_tokens
         ):
             compacted = await self.user_turns.compact_against(
@@ -978,9 +979,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 prompt_tokens=prompt_tokens,
                 trigger_tokens=int(self._budget * self.user_trigger_fraction),
             )
-        chained = await self._last_resort(messages)
+        chained = await self._last_resort(messages, replayed_user_fold=replay.chain_fold)
         fitted = self._enforce_budget(messages)
-        return changed or compacted or chained or fitted
+        return replay.changed or changed or compacted or chained or fitted
 
     def _enforce_budget(self, messages: list[Message]) -> bool:
         """Shed unrecorded groups as a last resort, or refuse an oversized prompt."""
@@ -1105,7 +1106,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._user_passes_waited += 1
         return True
 
-    async def _last_resort(self, messages: list[Message]) -> bool:
+    async def _last_resort(
+        self, messages: list[Message], *, replayed_user_fold: bool = False
+    ) -> bool:
         """Put back the chain's earlier decisions, then run its steps if the prompt is over.
 
         The chain starts only on a prompt over the input budget. Once started, each step runs
@@ -1128,7 +1131,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             True if anything changed the outgoing messages.
         """
-        changed = self._keep_decisions(messages)
+        changed = self._keep_decisions(messages, replayed_user_fold=replayed_user_fold)
         if not self._over(messages):
             return changed
         start = _ChainStart.take(messages)
@@ -1147,7 +1150,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._chain_targets_reached += 1
         return changed
 
-    def _keep_decisions(self, messages: list[Message]) -> bool:
+    def _keep_decisions(self, messages: list[Message], *, replayed_user_fold: bool = False) -> bool:
         """Put back on ``messages`` every decision the chain made on an earlier pass.
 
         **Why.** The framework runs this strategy over the copies a model call sends and then
@@ -1184,7 +1187,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
-        changed = self._keep_records(messages)
+        changed = self._keep_records(messages) or replayed_user_fold
         if changed:
             annotate_message_groups(messages)
             annotate_token_counts(messages, tokenizer=self.tokenizer)
