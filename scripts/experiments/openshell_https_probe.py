@@ -370,10 +370,33 @@ def matches_native_https(observed, events, expected, request):
     return matches_observation(observed, events, expected, int(expected == 200), request)
 
 
+def native_https_policy(image, host, ip, *, closed=False):
+    """Select explicit inspection for the owned endpoints or an empty network policy."""
+    from openshell_owned_probe import fixture_spec
+
+    pb = import_module("openshell._proto.sandbox_pb2")
+    policy = fixture_spec(image).policy
+    if not closed:
+        rule = policy.network_policies["native_https"]
+        rule.name = "native_https"
+        rule.binaries.add(path="/usr/local/bin/python*")
+        for port in (8443, 8444, 8445, 8446):
+            endpoint = rule.endpoints.add(host=host, port=port, protocol="rest", allowed_ips=[ip])
+            endpoint.enforcement = pb.NETWORK_ENFORCEMENT_MODE_ENFORCE
+            endpoint.rules.add().allow.CopyFrom(pb.L7Allow(method="GET", path="/anything"))
+    return policy
+
+
+def owned_trust_blocked(observed, events, request):
+    """Identify the pinned supervisor's missing trust anchor without accepting incidental failures."""
+    return observed.get("error") == "RemoteDisconnected" and events == [
+        {"port": request["port"], "handshake_error": "TLSV1_ALERT_UNKNOWN_CA"}
+    ]
+
+
 async def measure_native_https(fixture, ip, ca_file):
     """Measure owned HTTPS with normal verification and independent origin evidence."""
     from openshell_egress_probe import native_origin_ip
-    from openshell_owned_probe import fixture_spec
 
     ip = native_origin_ip(ip)
     host = "allowed." + ip + ".nip.io"
@@ -387,6 +410,8 @@ async def measure_native_https(fixture, ip, ca_file):
         },
         "controls": [],
         "cases": [],
+        "qualification_passed": False,
+        "unrun_cases": [],
         "unqualified": [
             "credential composition",
             "IPv6",
@@ -431,21 +456,31 @@ async def measure_native_https(fixture, ip, ca_file):
         control_https, "other." + ip + ".nip.io", "/anything", port=8444, context=context
     )
     fixture.save()
-    pb = import_module("openshell._proto.sandbox_pb2")
     for closed in (False, True):
-        policy = fixture_spec(fixture.client.image).policy
-        if not closed:
-            rule = policy.network_policies["native_https"]
-            rule.name = "native_https"
-            rule.binaries.add(path="/usr/local/bin/python*")
-            for port in (8443, 8444, 8445, 8446):
-                endpoint = rule.endpoints.add(
-                    host=host, port=port, protocol="rest", allowed_ips=[ip]
-                )
-                endpoint.enforcement = pb.NETWORK_ENFORCEMENT_MODE_ENFORCE
-                endpoint.rules.add().allow.CopyFrom(pb.L7Allow(method="GET", path="/anything"))
+        policy = native_https_policy(fixture.client.image, host, ip, closed=closed)
         sandbox = await fixture.acquire(policy=policy)
         try:
+            if not closed:
+                code = (
+                    "import hashlib,json,os,pathlib; "
+                    "ca=pathlib.Path('/usr/local/share/ca-certificates/openshell-fixture.crt').read_bytes(); "
+                    "bundle=pathlib.Path('/etc/ssl/certs/ca-certificates.crt').read_bytes(); "
+                    "effective=pathlib.Path(os.environ['SSL_CERT_FILE']).read_bytes(); "
+                    "print(json.dumps({'installed_ca_sha256':hashlib.sha256(ca).hexdigest(),"
+                    "'system_bundle_contains_ca':ca in bundle,'effective_bundle_contains_ca':ca in effective}))"
+                )
+                receipt = await sandbox.exec(
+                    ["python", "-c", code], working_directory="/sandbox", timeout=30
+                )
+                if receipt.exit_code or receipt.stderr_bytes:
+                    raise RuntimeError("cannot inspect workload trust material")
+                evidence["workload_trust"] = json.loads(receipt.stdout)
+                fixture.save()
+                if (
+                    evidence["workload_trust"]["installed_ca_sha256"] != evidence["ca_sha256"]
+                    or not evidence["workload_trust"]["system_bundle_contains_ca"]
+                ):
+                    raise RuntimeError("fixture CA not installed in workload system bundle")
             cases = (
                 [("closed_https", 8443, "GET", "/anything", "EACCES")]
                 if closed
@@ -485,9 +520,25 @@ async def measure_native_https(fixture, ip, ca_file):
                 evidence["cases"].append(row)
                 fixture.save()
                 if not row["passed"]:
+                    if label == "trusted_owned_get" and owned_trust_blocked(
+                        observed, events, request
+                    ):
+                        row["finding"] = (
+                            "workload CA is not trusted by the separate official supervisor"
+                        )
+                        evidence["blocked_by"] = (
+                            "supervisor destination CA delivery; NVIDIA/OpenShell#3295"
+                        )
+                        evidence["unrun_cases"] = [case[0] for case in cases[1:]]
+                        fixture.save()
+                        break
                     raise RuntimeError("unexpected native HTTPS observation: " + label)
         finally:
             await fixture.dispose(sandbox.owner)
+    evidence["qualification_passed"] = not evidence["unrun_cases"] and all(
+        row["passed"] for row in evidence["cases"]
+    )
+    fixture.save()
 
 
 def main():

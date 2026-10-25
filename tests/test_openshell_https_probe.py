@@ -177,3 +177,137 @@ def test_native_tls_refusal_needs_certificate_alert_without_http_side_effects(or
     assert not probe.matches_native_https(
         {"status": 403, "body": '{"error":"policy_denied"}'}, [{"path": "/anything"}], 403, {}
     )
+
+
+@pytest.mark.parametrize(
+    "observed,events,blocked",
+    [
+        (
+            {"error": "RemoteDisconnected"},
+            [{"port": 8443, "handshake_error": "TLSV1_ALERT_UNKNOWN_CA"}],
+            True,
+        ),
+        (
+            {"error": "TimeoutError"},
+            [{"port": 8443, "handshake_error": "TLSV1_ALERT_UNKNOWN_CA"}],
+            False,
+        ),
+        ({"error": "RemoteDisconnected"}, [], False),
+        (
+            {"error": "RemoteDisconnected"},
+            [{"port": 8444, "handshake_error": "TLSV1_ALERT_UNKNOWN_CA"}],
+            False,
+        ),
+        (
+            {"error": "RemoteDisconnected"},
+            [{"port": 8443, "handshake_error": "SSLV3_ALERT_CERTIFICATE_EXPIRED"}],
+            False,
+        ),
+        (
+            {"error": "RemoteDisconnected"},
+            [{"port": 8443, "handshake_error": "TLSV1_ALERT_UNKNOWN_CA"}, {"path": "/anything"}],
+            False,
+        ),
+    ],
+)
+def test_missing_supervisor_trust_is_a_specific_finding_not_a_qualification_pass(
+    oracle, observed, events, blocked
+):
+    probe = importlib.import_module("openshell_https_probe")
+    request = {"port": 8443}
+    assert probe.owned_trust_blocked(observed, events, request) is blocked
+    assert not probe.matches_native_https(observed, events, 200, request)
+
+
+@pytest.mark.parametrize("failure", ["RemoteDisconnected", "TimeoutError"])
+def test_native_trust_finding_preserves_failed_qualification_and_unrun_cases(
+    oracle, monkeypatch, tmp_path, failure
+):
+    import asyncio
+    import hashlib
+    import ssl
+    from types import SimpleNamespace
+
+    probe = importlib.import_module("openshell_https_probe")
+    for name in ("ca", "valid", "hostname", "expired", "untrusted"):
+        (tmp_path / (name + ".pem")).write_bytes(b"public fixture certificate")
+    fingerprint = hashlib.sha256(b"public fixture certificate").hexdigest()
+    monkeypatch.setattr(probe.ssl, "create_default_context", lambda **kwargs: object())
+    monkeypatch.setattr(
+        probe.socket, "getaddrinfo", lambda *args: [(None, None, None, None, ("10.23.45.67", 8443))]
+    )
+
+    def control(host, path, *, method="GET", port=443, context=None):
+        code = None
+        if context is None or port == 8446:
+            code = 20
+        elif port == 8445:
+            code = 10
+        elif port == 8444 and host.startswith("allowed."):
+            code = 62
+        if code is not None:
+            error = ssl.SSLCertVerificationError(1, "fixture verification refusal")
+            error.verify_code = code
+            raise error
+        return {"method": method, "path": path, "host": host + ":" + str(port), "port": port}
+
+    monkeypatch.setattr(
+        probe,
+        "native_https_policy",
+        lambda *args, closed: SimpleNamespace(network_policies=not closed),
+    )
+    monkeypatch.setattr(probe, "control_https", control)
+    events = []
+    monkeypatch.setattr(probe, "origin_get", lambda *args: list(events))
+    monkeypatch.setattr(probe, "guest_request", lambda url, method: "request")
+    disposed = []
+    created = []
+
+    class Sandbox:
+        def __init__(self, closed):
+            self.closed = closed
+            self.owner = {"closed": closed}
+
+        async def exec(self, command, **kwargs):
+            if command[-1] != "request":
+                body = {
+                    "installed_ca_sha256": fingerprint,
+                    "system_bundle_contains_ca": True,
+                    "effective_bundle_contains_ca": False,
+                }
+            elif self.closed:
+                body = {"errno": 13}
+            else:
+                events.append({"port": 8443, "handshake_error": "TLSV1_ALERT_UNKNOWN_CA"})
+                body = {"error": failure}
+            return SimpleNamespace(exit_code=0, stderr_bytes=b"", stdout=json.dumps(body))
+
+    async def acquire(*, policy):
+        sandbox = Sandbox(not policy.network_policies)
+        created.append(sandbox)
+        return sandbox
+
+    async def dispose(owner):
+        disposed.append(owner)
+
+    fixture = SimpleNamespace(
+        report={},
+        client=SimpleNamespace(image="fixture"),
+        save=lambda: None,
+        acquire=acquire,
+        dispose=dispose,
+    )
+    if failure == "TimeoutError":
+        with pytest.raises(RuntimeError, match="unexpected native HTTPS"):
+            asyncio.run(probe.measure_native_https(fixture, "10.23.45.67", tmp_path / "ca.pem"))
+        assert "blocked_by" not in fixture.report["https"]
+        assert len(created) == len(disposed) == 1
+    else:
+        asyncio.run(probe.measure_native_https(fixture, "10.23.45.67", tmp_path / "ca.pem"))
+        report = fixture.report["https"]
+        assert report["qualification_passed"] is False
+        assert [row["passed"] for row in report["cases"]] == [False, True]
+        assert report["cases"][0]["finding"]
+        assert len(report["unrun_cases"]) == 6
+        assert "wrong_hostname" in report["unrun_cases"]
+        assert len(created) == len(disposed) == 2
