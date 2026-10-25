@@ -94,16 +94,15 @@ jobs:
           uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'cryptography==50.0.2' python scripts/experiments/openshell_https_probe.py --prepare-native-tls "$tls_dir" --origin-ip "$origin_ip"
           docker cp "$tls_dir/." "$origin_container:/tls"
           docker exec --detach "$origin_container" python /probe/openshell_https_probe.py --serve-native-tls /tls
-          cat > "$tls_dir/Dockerfile" <<'DOCKERFILE'
-          ARG WORKLOAD_IMAGE
-          FROM ${WORKLOAD_IMAGE}
+          cat scripts/experiments/openshell-native.Dockerfile > "$tls_dir/Dockerfile"
+          cat >> "$tls_dir/Dockerfile" <<'DOCKERFILE'
           USER root
           COPY ca.pem /usr/local/share/ca-certificates/openshell-fixture.crt
           RUN update-ca-certificates
           USER sandbox
           DOCKERFILE
           printf '*\n!Dockerfile\n!ca.pem\n' > "$tls_dir/.dockerignore"
-          docker build --build-arg "WORKLOAD_IMAGE=$(cat "$RUNNER_TEMP/workload-id")" --iidfile "$tls_dir/image-id" "$tls_dir"
+          docker build --iidfile "$tls_dir/image-id" "$tls_dir"
           trust_image=$(cat "$tls_dir/image-id")
           docker image inspect "$trust_image" > "$RUNNER_TEMP/openshell-evidence/https-image.json"
           uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$trust_image" --config scripts/experiments/openshell-native.toml --egress-origin-ip "$origin_ip" --https-ca "$tls_dir/ca.pem" --report "$RUNNER_TEMP/openshell-evidence/https.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/https.log"
