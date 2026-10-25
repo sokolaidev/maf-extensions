@@ -9,6 +9,7 @@ import json
 import sys
 import zipfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -722,12 +723,16 @@ def test_opentofu_generation_resolves_graphs_and_catalog_exclusions(monkeypatch,
     listing = json.loads(
         table.get(f"{REGISTRY_MODULES}?namespace=Azure&limit=100&offset=0", b'{"modules": []}')
     )
-    converted = {
-        url.replace("registry.terraform.io", "registry.opentofu.org").replace("/Azure/", "/azure/")
-        if "registry.terraform.io" in url
-        else url: value
-        for url, value in table.items()
-    }
+
+    def tofu_url(url):
+        parsed = urlsplit(url)
+        if parsed.hostname != "registry.terraform.io":
+            return url
+        return parsed._replace(
+            netloc="registry.opentofu.org", path=parsed.path.replace("/Azure/", "/azure/")
+        ).geturl()
+
+    converted = {tofu_url(url): value for url, value in table.items()}
     converted["https://api.opentofu.org/registry/docs/modules/index.json"] = json.dumps(
         {
             "modules": [
@@ -742,18 +747,13 @@ def test_opentofu_generation_resolves_graphs_and_catalog_exclusions(monkeypatch,
             ]
         }
     ).encode()
-    gets = {
-        url.replace("registry.terraform.io", "registry.opentofu.org").replace(
-            "/Azure/", "/azure/"
-        ): value
-        for url, value in gets.items()
-    }
+    gets = {tofu_url(url): value for url, value in gets.items()}
     install(monkeypatch, converted, gets)
     document = generator.generate(policy)
     prep.checked_manifest(document)
     assert document["registry_modules"]
     assert all(
-        item["source"].startswith("registry.opentofu.org/")
+        item["source"].partition("/")[0] == "registry.opentofu.org"
         for item in document["providers"] + document["registry_modules"]
     )
     assert generator.render(generator.generate(policy)) == generator.render(document)
