@@ -54,6 +54,47 @@ jobs:
           git diff --name-only "$BASE_SHA" HEAD |
             python3 scripts/changed_paths.py --workflows >> "$GITHUB_OUTPUT"
 
+  classic-docker:
+    name: Configuration-based Docker IDs on ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-classic-docker
+      - name: Verify saved configuration identity across a Docker reload
+        run: |
+          set -euo pipefail
+          tar -cf "$RUNNER_TEMP/empty.tar" --files-from /dev/null
+          docker image import --platform linux/amd64 "$RUNNER_TEMP/empty.tar" maf-store-probe:ci
+          docker image save --output "$RUNNER_TEMP/probe.tar" maf-store-probe:ci
+          docker image rm maf-store-probe:ci
+          docker image load --input "$RUNNER_TEMP/probe.tar"
+          IMAGE_ID=$(docker image inspect --format '{{.Id}}' maf-store-probe:ci)
+          export IMAGE_ID
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import tarfile
+          from pathlib import Path
+
+          with tarfile.open(Path(os.environ["RUNNER_TEMP"]) / "probe.tar") as archive:
+              manifest = json.load(archive.extractfile("manifest.json"))
+              config = archive.extractfile(manifest[0]["Config"]).read()
+          expected = "sha256:" + hashlib.sha256(config).hexdigest()
+          if os.environ["IMAGE_ID"] != expected:
+              raise SystemExit("Reloaded Docker image ID does not match its saved configuration")
+          print(f"Verified configuration-based image ID: {expected}")
+          PY
+
   portable:
     name: Workflow behavior on ${{ matrix.os }}
     needs: changes
