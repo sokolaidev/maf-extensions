@@ -172,6 +172,20 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
         ("Database built at (UTC)", database.get("built", UNAVAILABLE)),
         ("Database valid", database.get("valid", UNAVAILABLE)),
     ]
+    if candidate["profile"] == "shell":
+        shell = runtime.get("shell", {})
+        for check in shell.get("checks", []):
+            rows.append(("Shell check", check))
+        if not shell.get("checks"):
+            rows.append(("Shell check", UNAVAILABLE))
+        for label, key in (
+            ("Shell analyzer fixtures passed", "analyzerFixturesPassed"),
+            ("Shell SDK packages (checkout)", "packages"),
+            ("Shell Docker engine", "docker"),
+            ("Shell container observations", "observations"),
+            ("Shell ACAS verified", "acasVerified"),
+        ):
+            rows.append((label, shell.get(key, UNAVAILABLE)))
     if candidate["profile"] in {"drawio", "drawio-export"}:
         drawio = runtime.get("drawio", {})
         for check in drawio.get("checks", []):

@@ -1,6 +1,6 @@
-FROM python:3.13-slim-bookworm@sha256:73aa5faee130c60da030e105ec971ccf57473fbd22ce73bd6fc9ba99a40b838d AS runtime
+FROM python:3.13-slim-trixie@sha256:d98cc29d3266e535dd9da1099688d9cb3ca4753813571e071763d17725460962 AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates libicu72 libssl3 libgmp10 bash dash util-linux \
+    ca-certificates libicu76 libssl3t64 libgmp10 bash dash util-linux \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /opt/maf-shell/modules
 COPY image.json install.py /recipe/
@@ -21,7 +21,7 @@ RUN python3 /recipe/install.py shellcheck /build
 COPY patch_shellcheck.py ShellAudit.hs /recipe/
 RUN python3 /recipe/patch_shellcheck.py \
     && cd /build/shellcheck-0.11.0 \
-    && ghc -O1 -threaded -rtsopts -isrc -o /usr/local/bin/maf-shell-audit /recipe/ShellAudit.hs
+    && ghc -XHaskell98 -O1 -threaded -rtsopts -isrc -o /usr/local/bin/maf-shell-audit /recipe/ShellAudit.hs
 
 FROM runtime AS shell
 COPY --from=compiler /usr/local/bin/maf-shell-audit /usr/local/bin/maf-shell-audit
@@ -29,4 +29,6 @@ COPY --from=compiler /usr/share/maf-shell/shellcheck-source.tar.gz /usr/share/ma
 COPY --from=compiler /build/shellcheck-0.11.0/LICENSE /usr/share/licenses/shellcheck/LICENSE
 COPY ShellAudit.hs patch_shellcheck.py /usr/share/maf-shell/
 COPY runner.py analyze.ps1 analysis-output.ps1 dependencies.json prepare_dependencies.py /opt/maf-shell/
-RUN mkdir -p /opt/maf-shell/dependencies/modules /opt/maf-shell/dependencies/assemblies
+RUN apt-get update && apt-get install -y --no-install-recommends libnuma1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /opt/maf-shell/dependencies/modules /opt/maf-shell/dependencies/assemblies
