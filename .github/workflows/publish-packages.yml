@@ -92,6 +92,9 @@ jobs:
   build:
     name: Build + verify
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     outputs:
       package: ${{ steps.resolve.outputs.package }}
       version: ${{ steps.resolve.outputs.version }}
@@ -247,6 +250,12 @@ jobs:
       # ran it on the branch, but a tag can point anywhere.
       - name: Sync workspace
         run: uv sync --locked
+
+      - name: Require qualified matching kind images before building
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE: ${{ steps.resolve.outputs.package }}
+        run: python3 scripts/check_kind_release_images.py --package "$PACKAGE"
 
       - name: Tests
         run: uv run pytest -q
@@ -537,6 +546,7 @@ jobs:
     permissions:
       # Mints the OIDC token that IS the credential. No secrets involved.
       id-token: write
+      actions: read
       # A job-level block replaces the workflow's outright, so anything unlisted here is
       # `none` — without this the sparse checkout below cannot read the repository.
       contents: read
@@ -546,17 +556,15 @@ jobs:
       # position — is one reordering away from deleting the `dist/` this job exists to
       # upload. `path:` puts that beyond reach rather than relying on step order.
       #
-      # Sparse, because this job mints the publishing credential: the two paths the check
-      # reads, and nothing else.
+      # Keep the publishing checkout limited to guard code and release metadata.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: >-
-          needs.build.outputs.package == 'maf-sandbox'
-          && needs.build.outputs.target == 'pypi'
         with:
           path: release-guard
+          fetch-depth: 0
           sparse-checkout: |
             scripts
             packages/*/pyproject.toml
+            images/release-profiles.json
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -612,6 +620,12 @@ jobs:
           python3 release-guard/scripts/release_workflow.py pre-upload "$PACKAGE" "$VERSION" -- \
             python3 release-guard/scripts/check_published_dependents_work.py "$VERSION" \
             "dist/maf_sandbox-${VERSION}-py3-none-any.whl" --since-snapshot admitting-snapshot.json
+
+      - name: Recheck kind image readiness after the approval wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE: ${{ needs.build.outputs.package }}
+        run: python3 release-guard/scripts/check_kind_release_images.py --package "$PACKAGE"
 
       - name: Publish
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
