@@ -2,6 +2,11 @@ name: MXC native recovery between Linux runners
 
 on:
   workflow_dispatch:
+    inputs:
+      worker_crash:
+        description: Kill A's call worker before publication and require verified fencing
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -86,6 +91,7 @@ jobs:
         role: [a, b, coordinator]
     env:
       ROLE: ${{ matrix.role }}
+      WORKER_CRASH: ${{ inputs.worker_crash }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -136,7 +142,11 @@ jobs:
       - name: Discover this run's three independent machines
         run: uv run --locked python -m scripts.experiments.mxc_session_patch.cross_runner discover --root "$RUNNER_TEMP/mxc-cross" --bundle "$RUNNER_TEMP/mxc-fixture/bundle" --role "$ROLE"
       - name: Exercise native recovery and trusted fencing over mutual TLS
-        run: uv run --locked python -m scripts.experiments.mxc_session_patch.cross_runner node --root "$RUNNER_TEMP/mxc-cross" --bundle "$RUNNER_TEMP/mxc-fixture/bundle" --role "$ROLE"
+        run: |
+          set -euo pipefail
+          options=()
+          if [ "$WORKER_CRASH" = true ]; then options+=(--worker-crash); fi
+          uv run --locked python -m scripts.experiments.mxc_session_patch.cross_runner node --root "$RUNNER_TEMP/mxc-cross" --bundle "$RUNNER_TEMP/mxc-fixture/bundle" --role "$ROLE" "${options[@]}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
