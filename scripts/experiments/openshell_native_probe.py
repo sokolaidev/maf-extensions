@@ -505,7 +505,10 @@ def main() -> int:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--egress-origin-ip")
+    parser.add_argument("--https-ca", type=Path)
     args = parser.parse_args()
+    if args.https_ca and not args.egress_origin_ip:
+        parser.error("--https-ca requires --egress-origin-ip")
     engine = docker_get("/info")
     if not isinstance(engine, dict):
         raise RuntimeError("Docker observer did not return engine metadata")
@@ -563,7 +566,7 @@ def main() -> int:
 
         args.egress_origin_ip = native_origin_ip(args.egress_origin_ip)
         report["capability_assessment"] = {
-            "EGRESS": "unqualified: fixed IPv4 HTTP fixture only; no backend declaration",
+            "EGRESS": "unqualified: fixed IPv4 HTTP(S) fixture only; no backend declaration",
             "EGRESS_METHODS": "measurement only; other protocols and authority remain unqualified",
             "EGRESS_PATHS": "measurement only; normalization and origin interpretation differ",
         }
@@ -584,7 +587,11 @@ def main() -> int:
             created = True
             report["workspace_create"]["state"] = "confirmed"
             fixture.save()
-            if args.egress_origin_ip:
+            if args.https_ca:
+                from openshell_https_probe import measure_native_https
+
+                asyncio.run(measure_native_https(fixture, args.egress_origin_ip, args.https_ca))
+            elif args.egress_origin_ip:
                 from openshell_egress_probe import measure_native
 
                 asyncio.run(measure_native(fixture, args.egress_origin_ip))
