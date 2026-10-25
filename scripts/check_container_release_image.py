@@ -178,7 +178,14 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
         subprocess.run(
             ["docker", "rm", "--force", name], check=True, capture_output=True, timeout=30
         )
-    if profile in {"bicep", "bicep-avm", "terraform-avm", "opentofu-random", "terraform-random"}:
+    if profile in {
+        "bicep",
+        "bicep-avm",
+        "terraform-avm",
+        "opentofu-random",
+        "terraform-random",
+        "shell",
+    }:
         remaining = subprocess.run(
             ["docker", "ps", "--all", "--quiet", "--filter", f"name=^/{name}$"],
             check=True,
@@ -188,6 +195,21 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
         ).stdout.strip()
         if remaining:
             raise ValueError(f"{profile} qualification left its container behind")
+    if profile == "shell":
+        import shell_qualification
+
+        result = asyncio.run(shell_qualification.check(image_id))
+        result["analyzerFixturesPassed"] = True
+        return {
+            "imageId": image_id,
+            "profile": profile,
+            "checkedAt": now(),
+            "kind": "offline-sdk-consumer",
+            "passed": True,
+            "shell": result,
+            "containersRemaining": result["containersRemaining"],
+            "liveDeploymentVerified": False,
+        }
     return {
         "imageId": image_id,
         "profile": profile,

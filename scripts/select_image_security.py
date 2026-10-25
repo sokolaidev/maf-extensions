@@ -64,6 +64,7 @@ CONSUMER_GUIDES = {
 }
 SCRIPT_INPUTS = {
     "scripts/check_shell_image.py": ("shell",),
+    "scripts/shell_qualification.py": ("shell",),
     "scripts/build_bicep_image.py": ("bicep", "bicep-avm", "bicep-docker-sbx"),
     "scripts/bicep_source.py": ("bicep", "bicep-avm", "bicep-docker-sbx"),
     "LICENSE": ("egress-proxy", "bicep-docker-sbx"),

@@ -156,6 +156,21 @@ jobs:
           directory = Path(os.environ["RUNNER_TEMP"]) / "image-security"
           write(directory / "runtime.json", check("terraform-random", os.environ["IMAGE_ID"], directory))
           PY
+      - name: Qualify both public shell tools
+        if: steps.identity.outcome == 'success' && matrix.profile == 'shell'
+        env:
+          IMAGE_ID: ${{ steps.identity.outputs.image_id }}
+        run: |
+          uv run --locked python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          from check_container_release_image import check
+          from container_release import write
+          directory = Path(os.environ["RUNNER_TEMP"]) / "image-security"
+          write(directory / "runtime.json", check("shell", os.environ["IMAGE_ID"], directory))
+          PY
       - name: Inventory the exact built image
         if: steps.build.outcome == 'success'
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3

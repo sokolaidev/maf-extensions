@@ -182,6 +182,11 @@ def test_hyperlight_release_transition_defers_the_entire_scan_evidence_chain():
     assert 'check("terraform-random", os.environ["IMAGE_ID"], directory)' in tofu["run"]
     assert 'write(directory / "runtime.json"' in tofu["run"]
     evidence_steps.remove(tofu)
+    shell = next(
+        step for step in evidence_steps if step["name"] == "Qualify both public shell tools"
+    )
+    assert shell["if"] == "steps.identity.outcome == 'success' && matrix.profile == 'shell'"
+    evidence_steps.remove(shell)
     assert {step["name"] for step in evidence_steps} == {
         "Record the immutable local image identity",
         "Inventory the exact built image",

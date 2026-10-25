@@ -20,10 +20,10 @@ OUTPUT_LIMIT = 1024 * 1024
 INPUT_LIMIT = 16 * 1024 * 1024
 IDENTITY = {
     "launcher": "maf-shell-v1",
-    "bash": "5.2.15-2+b13",
-    "dash": "0.5.12-2",
+    "bash": "5.2.37-2+b10",
+    "dash": "0.5.12-12",
     "shellcheck": "0.11.0",
-    "powershell": "7.6.7",
+    "powershell": "7.6.8",
     "psscriptanalyzer": "1.25.0",
 }
 
