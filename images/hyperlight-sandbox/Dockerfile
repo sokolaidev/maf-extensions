@@ -5,6 +5,7 @@ LABEL org.opencontainers.image.title="Hyperlight AKS probe" \
 
 RUN apk upgrade --no-cache \
     && apk add --no-cache python-3.13 py3.13-pip libstdc++ openssl \
+       'libbrotlicommon1>=1.2.0-r7' 'libbrotlidec1>=1.2.0-r7' 'libbrotlienc1>=1.2.0-r7' \
     && python3.13 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 

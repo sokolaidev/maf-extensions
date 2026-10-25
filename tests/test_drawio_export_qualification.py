@@ -216,8 +216,8 @@ def test_assessment_refuses_os_only_sbom_before_scanning(monkeypatch, tmp_path):
         "drawio": {
             "versions": {
                 "packageInventory": [
-                    {"name": "electron", "version": "44.7.0"},
-                    {"name": "draw.io", "version": "32.4.1"},
+                    {"name": "electron", "version": "44.9.3"},
+                    {"name": "draw.io", "version": "32.6.1"},
                 ]
             }
         },
