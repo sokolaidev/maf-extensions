@@ -20,8 +20,8 @@ OUTPUT_LIMIT = 1024 * 1024
 INPUT_LIMIT = 16 * 1024 * 1024
 IDENTITY = {
     "launcher": "maf-shell-v1",
-    "bash": "5.2.37-2+b10",
-    "dash": "0.5.12-12",
+    "bash": "5.3-r14",
+    "dash": "0.5.13.5-r2",
     "shellcheck": "0.11.0",
     "powershell": "7.6.8",
     "psscriptanalyzer": "1.25.0",
@@ -152,8 +152,12 @@ def analyze(request: dict[str, Any], supervisor: Supervisor) -> list[dict[str, A
     sources = request["files"]
     if request["flavor"] == "bash":
         for interpreter in ("bash", "dash"):
-            phase = supervisor.execute(["/usr/bin/dpkg-query", "-W", "-f=${Version}", interpreter])
-            if phase != {"exit_code": 0, "stdout": IDENTITY[interpreter], "stderr": ""}:
+            phase = supervisor.execute(["/usr/bin/apk", "info", "--installed", "-v", interpreter])
+            if phase != {
+                "exit_code": 0,
+                "stdout": f"{interpreter}-{IDENTITY[interpreter]}\n",
+                "stderr": "",
+            }:
                 raise ValueError("interpreter identity mismatch")
         syntax = []
         for source in sources:

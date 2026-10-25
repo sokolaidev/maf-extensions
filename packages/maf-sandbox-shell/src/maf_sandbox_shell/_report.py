@@ -14,8 +14,8 @@ MAX_REPORT_BYTES = 1024 * 1024
 EMPTY_INVENTORY_SHA256 = hashlib.sha256(b"{}\n").hexdigest()
 IDENTITY = {
     "launcher": "maf-shell-v1",
-    "bash": "5.2.37-2+b10",
-    "dash": "0.5.12-12",
+    "bash": "5.3-r14",
+    "dash": "0.5.13.5-r2",
     "shellcheck": "0.11.0",
     "powershell": "7.6.8",
     "psscriptanalyzer": "1.25.0",
