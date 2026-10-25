@@ -106,8 +106,8 @@ def route_cases(ip, *, closed=False):
             "unqualified_rejection",
             host=denied + ":8000",
         )
-        add("host_mismatch", "/allowed/child", "refused", host=denied + ":8000")
-        add("host_port_mismatch", "/allowed/child", "refused", host=allowed + ":8001")
+        add("host_mismatch", "/allowed/child", "authority_refused", host=denied + ":8000")
+        add("host_port_mismatch", "/allowed/child", "authority_refused", host=allowed + ":8001")
     add("direct_ipv4_with_allowed_host", "/allowed/child", "EACCES", destination=ip)
     add("direct_ipv4_literal_host", "/allowed/child", "EACCES", destination=ip, host=ip + ":8000")
     add("denied_hostname", "/allowed/child", "EACCES", destination=denied, host=denied + ":8000")
@@ -138,14 +138,24 @@ def route_observation(observed, hits, expected, request):
     """Do not turn a parser disconnect or arbitrary HTTP error into policy qualification."""
     if expected == 200 and matches_observation(observed, hits, 200, 1, request):
         return "forwarded_exactly"
-    if expected in (403, "refused") and matches_observation(observed, hits, 403, 0, request):
+    if expected == 403 and matches_observation(observed, hits, 403, 0, request):
         return "explicit_policy_refusal"
     if (
-        expected in ("EACCES", "refused")
+        expected == "EACCES"
         and matches_observation(observed, hits, "EACCES", 0, request)
         and observed.get("phase") == "connect"
     ):
         return "connect_permission_refusal"
+    if expected == "authority_refused" and not hits and observed.get("status") == 403:
+        try:
+            body = json.loads(observed.get("body", ""))
+        except (TypeError, ValueError):
+            body = None
+        if body == {
+            "error": "request_authority_mismatch",
+            "message": "HTTP request authority does not match the authorized tunnel endpoint",
+        }:
+            return "explicit_authority_refusal"
     if expected == "unqualified_rejection" and not hits:
         if observed.get("phase") == "response" and observed.get("error") in (
             "RemoteDisconnected",

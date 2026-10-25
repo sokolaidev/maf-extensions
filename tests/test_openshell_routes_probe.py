@@ -132,7 +132,7 @@ def test_forwarding_requires_exact_canonical_origin_and_echo(probe, mutation):
         {"errno": 13, "phase": "response"},
     ],
 )
-@pytest.mark.parametrize("expected", ["EACCES", "refused", "unqualified_rejection"])
+@pytest.mark.parametrize("expected", ["EACCES", "authority_refused", "unqualified_rejection"])
 def test_incidental_failure_cannot_complete_characterization(probe, observed, expected):
     with pytest.raises(RuntimeError):
         probe.route_observation(observed, [], expected, REQUEST)
@@ -150,7 +150,11 @@ def test_parser_observation_is_explicitly_unqualified(probe, observed):
     assert probe.route_observation(observed, [], "unqualified_rejection", REQUEST).endswith(
         "_unqualified"
     )
-    for expected, hits in [("refused", []), ("EACCES", []), ("unqualified_rejection", [REQUEST])]:
+    for expected, hits in [
+        ("authority_refused", []),
+        ("EACCES", []),
+        ("unqualified_rejection", [REQUEST]),
+    ]:
         with pytest.raises(RuntimeError):
             probe.route_observation(observed, hits, expected, REQUEST)
 
@@ -226,7 +230,17 @@ def test_report_never_promotes_parser_closures_and_always_disposes(probe, monkey
                     suffix = target[target.index("?") :]
                     wire = wire.replace(target, case["forwarded"].split("?")[0] + suffix, 1)
                     observed = record(destination, port, wire)
-                elif case["expected"] in (403, "refused"):
+                elif case["expected"] == "authority_refused":
+                    observed = {
+                        "status": 403,
+                        "body": json.dumps(
+                            {
+                                "error": "request_authority_mismatch",
+                                "message": "HTTP request authority does not match the authorized tunnel endpoint",
+                            }
+                        ),
+                    }
+                elif case["expected"] == 403:
                     observed = {"status": 403, "body": '{"error":"policy_denied"}'}
                 elif case["expected"] == "EACCES":
                     observed = {"error": "PermissionError", "errno": 13, "phase": "connect"}
@@ -253,3 +267,31 @@ def test_report_never_promotes_parser_closures_and_always_disposes(probe, monkey
         assert len(fixture.report["routes"]["cases"]) == 28
         assert len(fixture.report["routes"]["controls"]) == 28
     assert not fixture.report["routes"]["qualification_passed"]
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "wrong_message", "extra_field", "side_effect", "policy_denied"]
+)
+def test_authority_refusal_requires_exact_pinned_response(probe, failure):
+    body = {
+        "error": "request_authority_mismatch",
+        "message": "HTTP request authority does not match the authorized tunnel endpoint",
+    }
+    hits = []
+    if failure == "wrong_message":
+        body["message"] = "unrelated"
+    elif failure == "extra_field":
+        body["other"] = "unexpected"
+    elif failure == "side_effect":
+        hits = [REQUEST]
+    elif failure == "policy_denied":
+        body = {"error": "policy_denied"}
+    observed = {"status": 403, "body": json.dumps(body)}
+    if failure:
+        with pytest.raises(RuntimeError):
+            probe.route_observation(observed, hits, "authority_refused", REQUEST)
+    else:
+        assert (
+            probe.route_observation(observed, hits, "authority_refused", REQUEST)
+            == "explicit_authority_refusal"
+        )
