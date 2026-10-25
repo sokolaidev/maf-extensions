@@ -113,7 +113,7 @@ The local Docker store exposes an image index identity, distinct from the config
 
 ### Wolfi image
 
-The Wolfi candidate built on 2026-10-25 passed all 15 real-analyzer fixtures. Syft 1.54.0 inventoried 325 components, and Grype 0.120.0 with its valid database built at `2026-10-25T06:27:34Z` reported **0 Critical, 0 High, 14 Medium, 4 Low and 18 Unknown** matches. The strict gate passed without exclusions or severity changes. This is candidate evidence; publication and ACAS qualification remain outstanding under #2164.
+The Wolfi candidate built on 2026-10-25 passed all 15 real-analyzer fixtures and all 11 public SDK cases, including closed networking, unchanged stores and no remaining containers. The derived-image module and assembly fixture also passed, including submitted-module shadowing protection. Syft 1.54.0 inventoried 325 components, and Grype 0.120.0 with its valid database built at `2026-10-25T06:27:34Z` reported **0 Critical, 0 High, 14 Medium, 4 Low and 18 Unknown** matches. The strict gate passed without exclusions or severity changes. This is candidate evidence from the matching checkout; published-wheel compatibility, publication and ACAS qualification remain outstanding under #2164.
 
 | Evidence | Observed value |
 |---|---|
