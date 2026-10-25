@@ -198,7 +198,9 @@ def test_retry_recovers_original_source_candidate_without_building(
 ):
     selected = candidate()
     monkeypatch.setattr(dispatch, "context", lambda: (selected["sourceCommit"], "123", "2"))
-    monkeypatch.setattr(dispatch, "History", lambda: SimpleNamespace(head=lambda: None))
+    monkeypatch.setattr(
+        "container_release_preflight.History", lambda: SimpleNamespace(head=lambda: None)
+    )
     monkeypatch.setattr(dispatch, "retained_available", lambda *_: True)
     monkeypatch.setattr(dispatch, "run", lambda *a, **kw: None)
     monkeypatch.setattr(dispatch, "read", lambda *_: selected)

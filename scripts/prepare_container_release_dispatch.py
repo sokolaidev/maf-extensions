@@ -18,8 +18,9 @@ from container_release import (
     version,
     write,
 )
-from container_release_history import GitHub, History
+from container_release_history import GitHub
 from container_release_oci import validate_layout
+from container_release_preflight import preflight
 from container_release_publish import context, outputs
 from container_release_registry import validate_preparation
 from prepare_container_release import prepare, run
@@ -69,12 +70,8 @@ def dispatch(
         raise ValueError("Unknown release profile")
     version(release_version)
     validate_route(bicep_route, profile)
-    head = History().head()
-    record = head.catalogue["releases"].get(f"{profile}/{release_version}") if head else None
-    if record and (record["sourceCommit"] != source or record["attemptId"] != run_id):
-        raise ValueError("This version belongs to another workflow run; select an unused version")
-    if record and record["state"] == "abandoned":
-        raise ValueError("This version is permanently retired")
+    catalogue = preflight(profile, release_version, source, run_id)
+    record = catalogue["releases"].get(f"{profile}/{release_version}")
     if record and record["state"] == "completed":
         candidate = record["candidate"]
         mode = "delivery"

@@ -900,7 +900,7 @@ def test_rerun_never_rebuilds_when_original_artifact_is_lost(monkeypatch, tmp_pa
     history = MemoryHistory()
     if completed:
         history.catalogue = complete(history.catalogue, CANDIDATE, "sha256:" + "d" * 64, LATER)
-    monkeypatch.setattr(dispatcher, "History", lambda: history)
+    monkeypatch.setattr("container_release_preflight.History", lambda: history)
     monkeypatch.setattr(dispatcher, "context", lambda: (CANDIDATE["sourceCommit"], "123", "2"))
     monkeypatch.setattr(dispatcher, "retained_available", lambda run_id: False)
     monkeypatch.setattr(dispatcher, "prepare", lambda *a: pytest.fail("rerun must never rebuild"))

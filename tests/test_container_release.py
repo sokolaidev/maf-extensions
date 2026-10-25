@@ -459,6 +459,7 @@ def test_preparation_scans_and_tests_reloaded_image(tmp_path, monkeypatch):
 
     monkeypatch.setattr(preparation, "run", run)
     monkeypatch.setattr(preparation, "require_source", lambda revision: None)
+    monkeypatch.setattr("container_release_preflight.History.head", lambda self: None)
     monkeypatch.setattr(preparation, "retain", retain)
     monkeypatch.setattr(
         preparation, "check", lambda profile, image, directory: checked.append(image)

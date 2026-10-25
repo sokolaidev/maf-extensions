@@ -126,8 +126,8 @@ def version(value: Any) -> tuple[int, int, int]:
     return parsed
 
 
-def validate_identity(candidate: dict[str, Any]) -> None:
-    """Refuse unreviewed scope, mutable references and ambiguous source identities."""
+def validate_request(candidate: dict[str, Any]) -> None:
+    """Require a reviewed profile, stable version and protected dispatch identity."""
     if candidate.get("profile") not in profiles():
         raise ValueError("Unrecognized release profile")
     version(candidate.get("version"))
@@ -137,6 +137,15 @@ def validate_identity(candidate: dict[str, Any]) -> None:
         raise ValueError("Expected a full source commit")
     if candidate.get("sourceRef") != "refs/heads/main":
         raise ValueError("Only protected main can publish images")
+    if not isinstance(candidate.get("attemptId"), str) or not re.fullmatch(
+        r"[1-9][0-9]*", candidate["attemptId"]
+    ):
+        raise ValueError("Expected the originating workflow run ID")
+
+
+def validate_identity(candidate: dict[str, Any]) -> None:
+    """Refuse unreviewed scope, mutable references and ambiguous source identities."""
+    validate_request(candidate)
     for field in ("registryDigest", "assessedManifestDigest", "imageId"):
         require_digest(candidate.get(field))
     for field in OPTIONAL_IDENTITY_FIELDS:
@@ -150,10 +159,6 @@ def validate_identity(candidate: dict[str, Any]) -> None:
                     raise ValueError("Invalid Bicep acquisition route")
             else:
                 require_digest(candidate[field])
-    if not isinstance(candidate.get("attemptId"), str) or not re.fullmatch(
-        r"[1-9][0-9]*", candidate["attemptId"]
-    ):
-        raise ValueError("Expected the originating workflow run ID")
 
 
 def key(candidate: dict[str, Any]) -> str:
@@ -358,36 +363,55 @@ def validate_transition(before: dict[str, Any], after: dict[str, Any]) -> None:
             raise ValueError("Known vulnerability history cannot be erased")
 
 
+def validate_eligibility(catalogue: dict[str, Any], request: dict[str, Any]) -> None:
+    """Check catalogue-dependent rules without reserving a version or requiring built bytes."""
+    validate_request(request)
+    profile, requested = request["profile"], request["version"]
+    label = f"{profile}:{requested}"
+    existing = catalogue["releases"].get(f"{profile}/{requested}")
+    if existing:
+        if existing.get("unexpectedDigests"):
+            raise ValueError(
+                f"{label}: Unexpected public bytes permanently retire the reserved version"
+            )
+        if any(
+            existing.get(field) != request[field]
+            for field in ("sourceCommit", "sourceRef", "attemptId")
+        ):
+            raise ValueError(f"{label}: A reserved version cannot change identity or owner")
+        if existing["state"] == "abandoned":
+            raise ValueError(f"{label}: An abandoned version is permanently retired")
+        if existing["state"] == "completed":
+            return
+    current = catalogue["current"].get(profile)
+    if current and version(requested) <= version(catalogue["releases"][current]["version"]):
+        raise ValueError(f"{label}: Incomplete release was overtaken by a completed version")
+    if (
+        not current
+        and not any(r["profile"] == profile for r in catalogue["releases"].values())
+        and requested != "0.1.0"
+    ):
+        raise ValueError(f"{label}: The first reserved version must be 0.1.0")
+
+
 def reserve(catalogue: dict[str, Any], candidate: dict[str, Any], at: str) -> dict[str, Any]:
     """Reserve a version before registry writes; retries must retain every identity."""
     timestamp(at)
     result = copy.deepcopy(catalogue)
     name = key(candidate)
+    validate_eligibility(catalogue, candidate)
     retained = {field: candidate[field] for field in IDENTITY_FIELDS}
     retained.update(
         {field: candidate[field] for field in OPTIONAL_IDENTITY_FIELDS if field in candidate}
     )
     existing = result["releases"].get(name)
     if existing:
-        if existing.get("unexpectedDigests"):
-            raise ValueError("Unexpected public bytes permanently retire the reserved version")
         if any(existing.get(field) != candidate.get(field) for field in IDENTITY_FIELDS):
             raise ValueError("A reserved version cannot change identity or owner")
         if existing.get("candidate", retained) != retained:
             raise ValueError("Reserved preparation evidence cannot change")
-        if existing["state"] == "abandoned":
-            raise ValueError("An abandoned version is permanently retired")
         if existing["state"] == "completed":
             return result
-    current = result["current"].get(candidate["profile"])
-    if current and version(candidate["version"]) <= version(result["releases"][current]["version"]):
-        raise ValueError("Incomplete release was overtaken by a completed version")
-    if (
-        not current
-        and not any(r["profile"] == candidate["profile"] for r in result["releases"].values())
-        and candidate["version"] != "0.1.0"
-    ):
-        raise ValueError("The first reserved version must be 0.1.0")
     if not existing:
         result["releases"][name] = {field: candidate[field] for field in IDENTITY_FIELDS} | {
             "state": "incomplete",
