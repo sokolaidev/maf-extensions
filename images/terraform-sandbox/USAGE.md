@@ -100,7 +100,7 @@ The six Docker cases use `--network=none`: one root per line, a supplied `h1:` l
 
 ## Build an image with Azure Verified Modules
 
-Terraform only. [dependencies.terraform-avm.policy.json](dependencies.terraform-avm.policy.json) is the whole catalog. [dependencies.terraform-avm-network.policy.json](dependencies.terraform-avm-network.policy.json) is the small graph CI builds; the steps are the same with its file names.
+For the OpenTofu network image and catalog generation, see [OpenTofu AVM](OPENTOFU-AVM.md). The Terraform instructions below use [dependencies.terraform-avm.policy.json](dependencies.terraform-avm.policy.json) is the whole catalog. [dependencies.terraform-avm-network.policy.json](dependencies.terraform-avm-network.policy.json) is the small graph CI builds; the steps are the same with its file names.
 
 ### 1. Change the policy
 
@@ -182,7 +182,7 @@ Configure the ACAS backend with that registry and pass `image="maf-terraform:1.1
 
 ## Build an OpenTofu image with pinned providers
 
-OpenTofu only, and providers only: preparation bakes registry modules for Terraform alone. [dependencies.opentofu-providers.policy.json](dependencies.opentofu-providers.policy.json) names the providers, on `registry.opentofu.org`. The steps are those of the section above, without the module review.
+This profile contains OpenTofu providers only. Use the [OpenTofu AVM profile](OPENTOFU-AVM.md) for baked registry modules. [dependencies.opentofu-providers.policy.json](dependencies.opentofu-providers.policy.json) names the providers, on `registry.opentofu.org`. The steps are those of the section above, without the module review.
 
 ### 1. Change the policy
 

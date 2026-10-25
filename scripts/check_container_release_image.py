@@ -102,8 +102,8 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             "-ec",
             "printf 'digraph { a -> b }' | dot -Tpng -o /tmp/render.png; test -s /tmp/render.png",
         ]
-    elif profile == "terraform-avm":
-        command = terraform_avm_qualification.command()
+    elif profile in {"terraform-avm", "opentofu-avm"}:
+        command = terraform_avm_qualification.command(profile.split("-")[0])
     elif profile == "terraform-random":
         command = terraform_random_qualification.command()
     elif profile == "opentofu-random":
@@ -139,9 +139,9 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
         "--cpus",
         "2",
         "--tmpfs",
-        "/tmp:rw,exec,size=512m",
+        "/tmp:rw,exec,size=512m",  # nosec B108 # Private container tmpfs.
         "--workdir",
-        "/tmp",
+        "/tmp",  # nosec B108 # Workdir in the private container tmpfs.
         "--entrypoint",
         command[0],
         image_id,
@@ -156,7 +156,7 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
         start = ["docker", "start", "--attach", name]
         output = asyncio.run(
             _smoke_output(start, timeout=360)
-            if profile in {"terraform-avm", "opentofu-random", "terraform-random"}
+            if profile in {"terraform-avm", "opentofu-avm", "opentofu-random", "terraform-random"}
             else _smoke_output(start)
         )
         result = None
@@ -166,8 +166,9 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             result = bicep_qualification.evidence(output)
         elif profile == "bicep-avm":
             result = bicep_avm_qualification.evidence(output)
-        elif profile == "terraform-avm":
-            result = terraform_avm_qualification.evidence(output)
+        elif profile in {"terraform-avm", "opentofu-avm"}:
+            evidence_key = "terraformAvm" if profile == "terraform-avm" else "opentofuAvm"
+            result = terraform_avm_qualification.evidence(output, profile.split("-")[0])
         elif profile == "terraform-random":
             evidence_key = "terraformRandom"
             result = terraform_random_qualification.evidence(output)
@@ -182,6 +183,7 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
         "bicep",
         "bicep-avm",
         "terraform-avm",
+        "opentofu-avm",
         "opentofu-random",
         "terraform-random",
         "shell",

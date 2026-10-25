@@ -1224,22 +1224,6 @@
     "count": 1
   },
   {
-    "filename": "scripts/check_container_release_image.py",
-    "test_id": "B108",
-    "issue_severity": "MEDIUM",
-    "issue_confidence": "MEDIUM",
-    "code": "        \"--tmpfs\",\n        \"/tmp:rw,exec,size=512m\",\n        \"--workdir\",\n        \"/tmp\",\n        \"--entrypoint\",\n        command[0],\n        image_id,\n        *command[1:],\n    ]\n    if profile in {\"bicep\", \"bicep-avm\"}:\n        create[2:2] = [\"--env\", \"DOTNET_BUNDLE_EXTRACT_BASE_DIR=/tmp/dotnet-bundle\"]\n    if profile == \"bicep\":\n        create[2:2] = [\"--tmpfs\", f\"{bicep_qualification.WORK}:rw,noexec,size=16m\"]\n    subprocess.run(create, check=True, capture_output=True, timeout=30)\n    try:\n        start = [\"docker\", \"start\", \"--attach\", name]\n        output = asyncio.run(\n            _smoke_output(start, timeout=360)\n            if profile in {\"terraform-avm\", \"opentofu-random\", \"terraform-random\"}\n            else _smoke_output(start)\n        )\n        result = None\n        evidence_key = \"bicepAvm\" if profile == \"bicep-avm\" else \"terraformAvm\"\n        if profile == \"bicep\":\n            evidence_key = \"bicep\"\n            result = bicep_qualification.evidence(output)\n        elif profile == \"bicep-avm\":\n            result = bicep_avm_qualification.evidence(output)\n        elif profile == \"terraform-avm\":\n            result = terraform_avm_qualification.evidence(output)\n        elif profile == \"terraform-random\":\n            evidence_key = \"terraformRandom\"\n",
-    "count": 1
-  },
-  {
-    "filename": "scripts/check_container_release_image.py",
-    "test_id": "B108",
-    "issue_severity": "MEDIUM",
-    "issue_confidence": "MEDIUM",
-    "code": "        \"--workdir\",\n        \"/tmp\",\n        \"--entrypoint\",\n        command[0],\n        image_id,\n        *command[1:],\n    ]\n    if profile in {\"bicep\", \"bicep-avm\"}:\n        create[2:2] = [\"--env\", \"DOTNET_BUNDLE_EXTRACT_BASE_DIR=/tmp/dotnet-bundle\"]\n    if profile == \"bicep\":\n        create[2:2] = [\"--tmpfs\", f\"{bicep_qualification.WORK}:rw,noexec,size=16m\"]\n    subprocess.run(create, check=True, capture_output=True, timeout=30)\n    try:\n        start = [\"docker\", \"start\", \"--attach\", name]\n        output = asyncio.run(\n            _smoke_output(start, timeout=360)\n            if profile in {\"terraform-avm\", \"opentofu-random\", \"terraform-random\"}\n            else _smoke_output(start)\n        )\n        result = None\n        evidence_key = \"bicepAvm\" if profile == \"bicep-avm\" else \"terraformAvm\"\n        if profile == \"bicep\":\n            evidence_key = \"bicep\"\n            result = bicep_qualification.evidence(output)\n        elif profile == \"bicep-avm\":\n            result = bicep_avm_qualification.evidence(output)\n        elif profile == \"terraform-avm\":\n            result = terraform_avm_qualification.evidence(output)\n        elif profile == \"terraform-random\":\n            evidence_key = \"terraformRandom\"\n            result = terraform_random_qualification.evidence(output)\n        elif profile == \"opentofu-random\":\n",
-    "count": 1
-  },
-  {
     "filename": "scripts/check_doc_trackers.py",
     "test_id": "B310",
     "issue_severity": "MEDIUM",
@@ -1589,14 +1573,6 @@
     "issue_severity": "MEDIUM",
     "issue_confidence": "HIGH",
     "code": "            request = Request(url, headers={\"User-Agent\": USER_AGENT, **(headers or {})})\n            with urlopen(request, timeout=120) as response:\n                data = response.read(MAX_BODY + 1)\n",
-    "count": 1
-  },
-  {
-    "filename": "scripts/terraform_manifest.py",
-    "test_id": "B310",
-    "issue_severity": "MEDIUM",
-    "issue_confidence": "HIGH",
-    "code": "    \"\"\"Return the X-Terraform-Get location of one registry module download.\"\"\"\n    with urlopen(Request(url, headers={\"User-Agent\": USER_AGENT}), timeout=120) as response:\n        return response.headers.get(\"X-Terraform-Get\", \"\")\n",
     "count": 1
   },
   {

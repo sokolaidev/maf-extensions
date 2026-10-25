@@ -128,7 +128,7 @@ def test_every_scan_profile_is_named_in_the_documented_scope():
         "profile": "${{ fromJSON(needs.select.outputs.profiles) }}"
     }
     names = PROFILES
-    assert len(names) == len(set(names)) == 12
+    assert len(names) == len(set(names)) == 13
     scope = (ROOT / "docs/security/container-images.md").read_text()
     for profile in names:
         assert f"| `{profile}` |" in scope
@@ -182,6 +182,15 @@ def test_hyperlight_release_transition_defers_the_entire_scan_evidence_chain():
     assert 'check("terraform-random", os.environ["IMAGE_ID"], directory)' in tofu["run"]
     assert 'write(directory / "runtime.json"' in tofu["run"]
     evidence_steps.remove(tofu)
+    avm = next(
+        step
+        for step in evidence_steps
+        if step["name"] == "Qualify the prepared OpenTofu AVM consumer"
+    )
+    assert avm["if"] == "steps.identity.outcome == 'success' && matrix.profile == 'opentofu-avm'"
+    assert 'check("opentofu-avm", os.environ["IMAGE_ID"], directory)' in avm["run"]
+    assert 'write(directory / "runtime.json"' in avm["run"]
+    evidence_steps.remove(avm)
     shell = next(
         step for step in evidence_steps if step["name"] == "Qualify both public shell tools"
     )

@@ -405,3 +405,34 @@ def test_source_build_lock_refuses_missing_or_ambiguous_selection(change):
         lock = lock.replace(" hashes =", ' hashes = ["h1:ours"]\n hashes =')
     with pytest.raises(ValueError):
         runner.verify_source_build_locks(lock, [provider])
+
+
+@pytest.mark.parametrize("suffix", ["", ".json"])
+def test_opentofu_module_records_follow_extension_precedence_and_registry(tmp_path, suffix):
+    packages = json.loads(
+        json.dumps(PACKAGES).replace("registry.terraform.io", "registry.opentofu.org")
+    )
+
+    def content(source, version):
+        if suffix:
+            return json.dumps({"module": {"network": {"source": source, "version": version}}})
+        return f'module "network" {{\n source = "{source}"\n version = "{version}"\n}}\n'
+
+    (tmp_path / ("main.tf" + suffix)).write_text(content("Azure/network/azurerm", "0.0.0"))
+    (tmp_path / ("main.tofu" + suffix)).write_text(content("Azure/network/azurerm", "1.2.3"))
+    records = runner.module_records(tmp_path, tmp_path, packages, "opentofu")
+    assert records[1]["Source"] == "registry.opentofu.org/Azure/network/azurerm"
+    assert records[1]["Version"] == "1.2.3"
+    assert records[2]["Source"] == SHARED.replace("terraform.io", "opentofu.org")
+    assert runner.module_records(tmp_path, tmp_path, packages) == [
+        {"Key": "", "Source": "", "Dir": "."}
+    ]
+    (tmp_path / ("selected_override.tofu" + suffix)).write_text(
+        content("registry.terraform.io/Azure/network/azurerm", "1.2.3")
+    )
+    assert len(runner.module_records(tmp_path, tmp_path, packages, "opentofu")) == 1
+
+
+@pytest.mark.parametrize("name", ["override.tofu.tf", "override.tf.tofu", "override.tf.json.tofu"])
+def test_only_the_final_configuration_extension_marks_an_override(name):
+    assert not runner.is_override(name)

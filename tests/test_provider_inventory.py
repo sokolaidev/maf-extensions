@@ -45,7 +45,7 @@ def components(item, suffix=None):
         {
             "type": "go-module",
             "name": "stdlib",
-            "version": item["source_build"]["go_version"],
+            "version": item.get("source_build", {}).get("go_version", "go1.27.2"),
             "locations": [{"path": guest_path}],
         },
     ]
@@ -139,7 +139,9 @@ def test_empty_manifest_cannot_disable_provider_coverage(providers):
         evidence.verify_providers(sbom(components(provider())), {"providers": providers})
 
 
-@pytest.mark.parametrize("profile", ["terraform-random", "opentofu-random", "terraform-avm"])
+@pytest.mark.parametrize(
+    "profile", ["terraform-random", "opentofu-random", "terraform-avm", "opentofu-avm"]
+)
 def test_cli_requires_every_provider_from_the_selected_manifest(tmp_path, monkeypatch, profile):
     manifest = json.loads(
         (ROOT / "images/terraform-sandbox" / evidence.PROVIDER_MANIFESTS[profile]).read_text()

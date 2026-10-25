@@ -657,10 +657,9 @@ def test_platform_policy_keeps_its_pins_when_new_releases_appear(monkeypatch):
         {"catalog": {"namespace": "Azure", "prefixes": ["avm-"]}},
     ],
 )
-def test_registry_modules_are_refused_for_opentofu(field):
+def test_opentofu_registry_module_policies_are_accepted(field):
     policy = copy.deepcopy(OPENTOFU_POLICY) | field
-    with pytest.raises(ValueError, match="cannot be baked for opentofu"):
-        generator.Resolution(policy)
+    assert generator.Resolution(policy).host == "registry.opentofu.org"
 
 
 def test_an_address_on_the_other_registry_is_refused():
@@ -710,3 +709,132 @@ def test_every_request_names_this_client(monkeypatch):
     generator.http_bytes("https://api.github.com/repos/opentofu/x", generator.github_headers())
     assert [request.get_header("User-agent") for request in seen] == [generator.USER_AGENT] * 2
     assert seen[1].get_header("Accept") == "application/vnd.github+json"
+
+
+@pytest.mark.parametrize("catalog", [False, True])
+def test_opentofu_generation_resolves_graphs_and_catalog_exclusions(monkeypatch, catalog):
+    table, gets = catalog_routes() if catalog else (routes(), GETS)
+    policy = copy.deepcopy(CATALOG_POLICY if catalog else POLICY)
+    policy = json.loads(
+        json.dumps(policy).replace("registry.terraform.io", "registry.opentofu.org")
+    )
+    policy["engine"] = "opentofu"
+    listing = json.loads(
+        table.get(f"{REGISTRY_MODULES}?namespace=Azure&limit=100&offset=0", b'{"modules": []}')
+    )
+    converted = {
+        url.replace("registry.terraform.io", "registry.opentofu.org").replace("/Azure/", "/azure/")
+        if "registry.terraform.io" in url
+        else url: value
+        for url, value in table.items()
+    }
+    converted["https://api.opentofu.org/registry/docs/modules/index.json"] = json.dumps(
+        {
+            "modules": [
+                {
+                    "addr": {
+                        "namespace": item["namespace"].lower(),
+                        "name": item["name"],
+                        "target": item["provider"],
+                    }
+                }
+                for item in listing["modules"]
+            ]
+        }
+    ).encode()
+    gets = {
+        url.replace("registry.terraform.io", "registry.opentofu.org").replace(
+            "/Azure/", "/azure/"
+        ): value
+        for url, value in gets.items()
+    }
+    install(monkeypatch, converted, gets)
+    document = generator.generate(policy)
+    prep.checked_manifest(document)
+    assert document["registry_modules"]
+    assert all(
+        item["source"].startswith("registry.opentofu.org/")
+        for item in document["providers"] + document["registry_modules"]
+    )
+    assert generator.render(generator.generate(policy)) == generator.render(document)
+    if catalog:
+        assert {item["source"].split("/")[2] for item in document["excluded"]} == {
+            "avm-ptn-community",
+            "avm-ptn-stateful",
+            "avm-ptn-skipped",
+        }
+
+
+@pytest.mark.parametrize("header", [True, False])
+def test_module_download_accepts_header_and_json_location(monkeypatch, header):
+    location = next(iter(GETS.values()))
+
+    class Response(io.BytesIO):
+        headers: dict[str, str]
+
+    response = Response(json.dumps({"location": location}).encode())
+    response.headers = {"X-Terraform-Get": location} if header else {}
+    monkeypatch.setattr(generator, "urlopen", lambda *args, **kwargs: response)
+    assert (
+        generator.terraform_get("https://registry.opentofu.org/v1/modules/a/b/c/1.0.0/download")
+        == location
+    )
+
+
+def test_generator_reads_opentofu_overrides_before_resolving_dependencies():
+    data = archive_bytes(
+        {
+            "root/main.tf": 'module "x" { source = "unapproved" }',
+            "root/main.tofu": 'module "x" {\n source = "Azure/network/azurerm"\n version = "1.0.0"\n}',
+            "root/override.tofu": 'module "x" { version = "2.0.0" }',
+        }
+    )
+    calls, _, _ = generator.read_directory(data, "root/", ".", "test", "opentofu")
+    assert calls == {"x": {"source": "Azure/network/azurerm", "version": "2.0.0"}}
+
+
+@pytest.mark.parametrize("required", [False, True])
+def test_unavailable_catalog_archive_is_excluded_but_explicit_module_fails(monkeypatch, required):
+    from email.message import Message
+    from urllib.error import HTTPError
+
+    table, gets = catalog_routes()
+    install(monkeypatch, table, gets)
+    original = generator.download_module
+
+    def download(source, version, host):
+        if "avm-res-network-virtualnetwork" in source:
+            raise HTTPError(
+                "https://codeload.github.com/Azure/missing", 404, "Not Found", Message(), None
+            )
+        return original(source, version, host)
+
+    monkeypatch.setattr(generator, "download_module", download)
+    policy = copy.deepcopy(CATALOG_POLICY)
+    if required:
+        policy["registry_modules"] = [POLICY["registry_modules"][0]]
+        with pytest.raises(HTTPError):
+            generator.generate(policy)
+    else:
+        document = generator.generate(policy)
+        unavailable = {
+            item["source"].split("/")[2] for item in document["excluded"] if "404" in item["reason"]
+        }
+        assert unavailable == {"avm-res-network-virtualnetwork", "avm-ptn-legacy"}
+        assert [item["name"] for item in document["registry_modules"]] == [INTERFACES_NAME]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///tmp/module",
+        "http://registry.opentofu.org/v1/modules/a/b/c/1.0.0/download",
+        "https://registry.opentofu.org.invalid/v1/modules/a/b/c/1.0.0/download",
+    ],
+)
+def test_module_download_refuses_unapproved_registry_before_opening(monkeypatch, url):
+    monkeypatch.setattr(
+        generator, "urlopen", lambda *args, **kwargs: pytest.fail("must refuse before opening")
+    )
+    with pytest.raises(ValueError, match="approved HTTPS registry"):
+        generator.terraform_get(url)

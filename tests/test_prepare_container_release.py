@@ -52,6 +52,7 @@ def test_source_cannot_be_selected_independently_of_dispatch(monkeypatch, change
         "terraform-random",
         "opentofu-random",
         "terraform-avm",
+        "opentofu-avm",
     ],
 )
 def test_runtime_probe_is_offline_bounded_and_removed_on_failure(monkeypatch, tmp_path, profile):

@@ -175,3 +175,26 @@ def test_refusals_tolerate_line_wrapping_but_require_the_expected_reason(
     name, diagnostics, expected
 ):
     assert avm.expected_refusal(name, diagnostics) is expected
+
+
+@pytest.mark.parametrize("failure", [None, "receipt", "copies", "missing-case"])
+def test_opentofu_release_evidence_is_bound_to_its_own_manifest(failure):
+    data = report()
+    data["receipt"] = avm.expected_receipt("dependencies.opentofu-avm-network.json")
+    data["checks"] = data["checks"][:-1]
+    for check in data["checks"]:
+        check["version"] = avm.read(avm.CONTEXT / "image.json")["engines"]["opentofu"]["version"]
+    if failure == "receipt":
+        data["receipt"] = avm.expected_receipt()
+    elif failure == "copies":
+        data["checks"][0]["providerCopies"] = 1
+    elif failure == "missing-case":
+        data["checks"].pop()
+    if failure:
+        with pytest.raises(ValueError):
+            avm.evidence(json.dumps(data).encode(), "opentofu")
+    else:
+        assert (
+            avm.evidence(json.dumps(data).encode(), "opentofu")["receipt"]["engine"] == "opentofu"
+        )
+        compile(avm.command("opentofu")[-1], "opentofu-avm-probe", "exec")

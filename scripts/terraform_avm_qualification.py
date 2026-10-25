@@ -1,4 +1,4 @@
-"""Offline release qualification for the pinned Terraform AVM catalogue."""
+"""Offline release qualification for pinned Terraform and OpenTofu AVM profiles."""
 
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ summary["artifacts"] = {
     kind: fingerprint([{key: item[key] for key in (*fields, "sha256", "decision")} for item in receipt[kind]])
     for kind, fields in FIELDS.items()
 }
-assert metadata["engine"] == "terraform" and metadata["profile"] == "prepared"
+assert metadata["engine"] == ENGINE and metadata["profile"] == "prepared"
 assert metadata["dependencies_manifest_sha256"] == summary["manifest_sha256"]
 assert metadata["dependencies_policy_sha256"] == summary["policy_sha256"]
 source = """module "network" {
@@ -118,14 +118,14 @@ for case in CASES:
         before = {path.name: path.read_bytes() for path in project.iterdir()}
         os.chdir(call)
         try:
-            result = runner.execute("terraform", ".", 60)
+            result = runner.execute(ENGINE, ".", 60)
             phases = result["phases"]
             init = phases.get("init", {})
             validate = phases.get("validate", {})
             diagnostics = init.get("stdout", "") + init.get("stderr", "")
             providers = call / ".runner/data/providers"
             links = [path for path in providers.rglob("*") if path.is_symlink()]
-            files = [path for path in providers.rglob("*") if path.is_file() and not path.is_symlink()]
+            files = [path for path in providers.rglob("*") if path.is_file() and not path.is_symlink() and not (ENGINE == "opentofu" and path.name.endswith(".lock") and path.stat().st_size == 0 and path.with_suffix("").is_symlink())]
             module_file = call / ".runner/data/modules/modules.json"
             modules = json.loads(module_file.read_text())["Modules"] if module_file.is_file() else []
             checks.append({
@@ -160,25 +160,34 @@ def expected_refusal(name: str, diagnostics: str) -> bool:
     return False
 
 
-def command() -> list[str]:
+def command(engine: str = "terraform") -> list[str]:
     """Run representative validation and refusal probes without registry access."""
+    cases = CASES if engine == "terraform" else CASES[:-1]
     return [
         "/usr/local/bin/python3",
         "-c",
-        f"FIELDS = {FIELDS!r}\nCASES = {CASES!r}\n" + inspect.getsource(expected_refusal) + _GUEST,
+        f"FIELDS = {FIELDS!r}\nCASES = {cases!r}\nENGINE = {engine!r}\n"
+        + inspect.getsource(expected_refusal)
+        + _GUEST,
     ]
 
 
-def evidence(output: bytes) -> dict[str, Any]:
+def evidence(output: bytes, engine: str = "terraform") -> dict[str, Any]:
     """Refuse receipt drift, incomplete checks and false-positive validation."""
     result = json.loads(output)
-    if result["receipt"] != expected_receipt():
+    cases = CASES if engine == "terraform" else CASES[:-1]
+    manifest = (
+        "dependencies.terraform-avm.json"
+        if engine == "terraform"
+        else "dependencies.opentofu-avm-network.json"
+    )
+    if result["receipt"] != expected_receipt(manifest):
         raise ValueError("Terraform AVM receipt differs from the selected release policy")
     checks = result["checks"]
-    version = read(CONTEXT / "image.json")["engines"]["terraform"]["version"]
-    if not isinstance(checks, list) or len(checks) != len(CASES):
+    version = read(CONTEXT / "image.json")["engines"][engine]["version"]
+    if not isinstance(checks, list) or len(checks) != len(cases):
         raise ValueError("Terraform AVM qualification cases are incomplete")
-    for actual, name in zip(checks, CASES, strict=True):
+    for actual, name in zip(checks, cases, strict=True):
         success = name not in {"uncached-version", "wrong-lock", "upstream-lock"}
         if (
             actual["name"] != name
@@ -209,7 +218,7 @@ def evidence(output: bytes) -> dict[str, Any]:
         ):
             raise ValueError(f"Terraform AVM consumer probe failed: {name}")
     return {
-        "terraformVersion": version,
+        ("terraformVersion" if engine == "terraform" else "opentofuVersion"): version,
         **result,
         "checks": [item | {"passed": True} for item in checks],
     }

@@ -144,6 +144,8 @@ def module_versions(source: str, host: str) -> list[str]:
 
 def module_address(source: str, host: str) -> str:
     """Return the registry's own spelling of a module address."""
+    if host == "registry.opentofu.org":
+        return source.lower()
     namespace, name, system = source.split("/")[-3:]
     body = http_json(f"https://{host}/v1/modules/{namespace}/{name}/{system}")
     return f"{host}/{body['namespace']}/{body['name']}/{body['provider']}"
@@ -152,6 +154,15 @@ def module_address(source: str, host: str) -> str:
 def catalog_sources(namespace: str, prefixes: list[str], host: str) -> list[str]:
     """List every module in a namespace whose name starts with one of the prefixes."""
     found: set[str] = set()
+    if host == "registry.opentofu.org":
+        body = http_json("https://api.opentofu.org/registry/docs/modules/index.json")
+        for item in body["modules"]:
+            address = item["addr"]
+            if address["namespace"].casefold() == namespace.casefold() and address[
+                "name"
+            ].startswith(tuple(prefixes)):
+                found.add(f"{host}/{address['namespace']}/{address['name']}/{address['target']}")
+        return sorted(found)
     offset = 0
     while True:
         body = http_json(
@@ -209,9 +220,19 @@ def resolve_provider(address: str, version: str, host: str) -> dict[str, Any]:
 
 
 def terraform_get(url: str) -> str:
-    """Return the X-Terraform-Get location of one registry module download."""
-    with urlopen(Request(url, headers={"User-Agent": USER_AGENT}), timeout=120) as response:
-        return response.headers.get("X-Terraform-Get", "")
+    """Return a registry module location from its header or JSON response."""
+    if not any(url.startswith(f"https://{host}/v1/modules/") for host in REGISTRY_HOSTS.values()):
+        raise ValueError("module metadata must use an approved HTTPS registry")
+    with urlopen(  # nosec B310 # Only the approved HTTPS registries above.
+        Request(url, headers={"User-Agent": USER_AGENT}), timeout=120
+    ) as response:
+        location = response.headers.get("X-Terraform-Get", "")
+        if location:
+            return location
+        data = response.read(MAX_BODY + 1)
+        if len(data) > MAX_BODY:
+            raise ValueError("module download response too large")
+        return json.loads(data)["location"]
 
 
 def download_module(source: str, version: str, host: str) -> dict[str, Any]:
@@ -230,10 +251,15 @@ def download_module(source: str, version: str, host: str) -> dict[str, Any]:
     return {"owner": owner, "repo": repo, "revision": revision, "data": data}
 
 
-def read_directory(data: bytes, prefix: str, directory: str, context: str) -> Any:
+def read_directory(
+    data: bytes, prefix: str, directory: str, context: str, engine: str = "terraform"
+) -> Any:
     """Read one package directory as preparation will: calls, requirements, implied names."""
     texts: list[tuple[str, str]] = []
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        selected = prep.runner.configuration_names(
+            [item.filename for item in archive.infolist() if not item.is_dir()], engine
+        )
         for item in archive.infolist():
             name = item.filename.removeprefix(prefix)
             if (
@@ -241,7 +267,7 @@ def read_directory(data: bytes, prefix: str, directory: str, context: str) -> An
                 and not item.is_dir()
                 and (posixpath.dirname(name) or ".") == directory
                 and not posixpath.basename(name).startswith(".")
-                and name.endswith((".tf", ".tf.json"))
+                and item.filename in selected
             ):
                 try:
                     texts.append((posixpath.basename(name), archive.read(item).decode("utf-8")))
@@ -250,7 +276,7 @@ def read_directory(data: bytes, prefix: str, directory: str, context: str) -> An
     if not texts:
         raise ValueError(f"{context}: directory {directory} has no configuration files")
     try:
-        return prep.directory_configuration(texts)
+        return prep.directory_configuration(texts, engine)
     except ValueError as error:
         raise ValueError(f"{context}: cannot read directory {directory}: {error}") from None
 
@@ -271,9 +297,6 @@ class Resolution:
         if not isinstance(self.engine, str) or self.engine not in REGISTRY_HOSTS:
             raise ValueError(f"policy engine must be one of {sorted(REGISTRY_HOSTS)}")
         self.host = REGISTRY_HOSTS[self.engine]
-        # Preparation bakes registry modules for Terraform only, so a policy may not ask.
-        if self.engine != "terraform" and (policy["registry_modules"] or "catalog" in policy):
-            raise ValueError(f"registry modules cannot be baked for {self.engine}")
         self.bounds: dict[str, list[str]] = {}
         for entry in policy["providers"]:
             exact_keys(entry, {"address", "constraint"}, "provider")
@@ -348,7 +371,7 @@ class Resolution:
             archive = self.archive(key)
             prefix = f"{archive['repo']}-{archive['revision']}/"
             self.directories[key, directory] = read_directory(
-                archive["data"], prefix, directory, f"{key[0]} {key[1]}"
+                archive["data"], prefix, directory, f"{key[0]} {key[1]}", self.engine
             )
         return self.directories[key, directory]
 
@@ -425,7 +448,7 @@ class Resolution:
             for directory in directories:
                 _, required, implied = self.directory(package, directory)
                 try:
-                    found = prep.provider_needs(required, implied)
+                    found = prep.provider_needs(required, implied, self.engine)
                 except prep.Refused:
                     raise ValueError(
                         f"{package[0]} {package[1]}: a provider requirement in {directory} "
@@ -541,7 +564,7 @@ class Resolution:
             data = self.archive(keys[item["name"]])["data"]
             try:
                 sources[item["name"]] = prep.registry_module_files(
-                    item, data, catalog, document["providers"]
+                    item, data, catalog, document["providers"], self.engine
                 )[1]
             except prep.Refused as error:
                 refused[item["name"]] = str(error)
@@ -597,15 +620,29 @@ def generate(policy: dict[str, Any]) -> dict[str, Any]:
                 )
             else:
                 optional.append((source, version))
+
+    def fetch_archive(key: Key) -> tuple[Key, str | None]:
+        try:
+            resolution.archive(key)
+            return key, None
+        except (ValueError, HTTPError) as error:
+            if key in required:
+                raise
+            return key, reason(error)
+
+    unavailable: set[Key] = set()
     with ThreadPoolExecutor(8) as pool:
-        list(pool.map(resolution.archive, sorted(set(required + optional))))
+        for key, error in pool.map(fetch_archive, sorted(set(required + optional))):
+            if error is not None:
+                unavailable.add(key)
+                excluded.append({"source": key[0], "version": key[1], "reason": error})
     kept: dict[Key, tuple[dict[Key, set[str]], dict[str, str]]] = {}
     for key in sorted(set(required)):
         kept[key] = resolution.root(key)
-    for key in sorted(set(optional) - set(required)):
+    for key in sorted(set(optional) - set(required) - unavailable):
         try:
             kept[key] = resolution.root(key)
-        except ValueError as error:
+        except (ValueError, HTTPError) as error:
             excluded.append({"source": key[0], "version": key[1], "reason": reason(error)})
     while True:
         document = resolution.document(kept, excluded)
