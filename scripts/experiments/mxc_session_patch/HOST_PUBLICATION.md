@@ -360,3 +360,19 @@ gh workflow run mxc-cross-runner.yml --repo sokolaidev/maf-extensions --ref main
 ```
 
 This is a call-worker process crash after native capture, with A's machine and trusted driver/controller still available. The native helper has finished by this boundary. It does not simulate an unreachable machine, loss during live guest execution, power loss or destruction of the host journal. Local regression controls use a substitute helper with real subprocess termination, SQLite and mutual TLS. The [2026-10-25 native run](../../../docs/sandbox/research/mxc-backend.md#qualified-worker-process-crash-before-publication-2026-10-25) passed all 13 scenario controls on compatible AMD/Linux execution hosts at merged source `33b9eb7dc4571359f322007fc21de4986a205a12`, including unpublished-state discard, takeover refusal across pending-fence restart, saved-result replay and scratch reconciliation. Whole-machine loss still requires an independent infrastructure termination verifier. Automatic shutdown remains disabled, and neither a worker exit nor a pending fence authorizes takeover by itself.
+
+### Worker-process loss during guest execution
+
+The opt-in `active_guest_crash` workflow input selects a second fixed failure boundary and cannot be combined with `worker_crash`. Both default to false, preserving the ordinary recovery baseline. A first commits 41 and reconciles its scratch. The separate call worker then uses the existing remote admission, restore and native journal hooks with the native helper's `call-owned` mode. Its fixed program asserts the restored value 41, sets it to 99, prints `MXC_ACTIVE_READY:99`, and loops without returning. This probe uses live stdout because the normal bounded-output mode exposes its payload only after execution; it accepts only the fixed source and never returns a publishable result. It does not change the normal bounded call path.
+
+The trusted driver reads a host-written helper creation identity and at most 1,025 bytes of stdout, refusing output beyond the 1,024-byte readiness allowance. The guest marker synchronizes this fixed test only; it is neither completion nor termination evidence. The driver requires the recorded helper to remain alive at that marker and refuses an existing candidate or native completion report. It kills and reaps the call worker, then requires that same helper identity to stop within five seconds, without first invoking controller termination. The private owner-pipe watcher supplies native retirement. A missing marker, premature helper exit, surviving helper, stale scratch or completion artifact fails qualification. Failure cleanup may terminate the exact recorded helper, but cannot turn the failed observation into a pass.
+
+After helper retirement, the existing coordinator controls still require the committed checkpoint and interrupted scratch charge to survive pending-fence restart. Worker death and the local helper observation do not confirm the distributed fence. Only trusted controller verification and reconciliation permit B's newer generation, saved-result replay, interrupted-call refusal and restoration of 41 to 42. Successful reports contain `boundary: during_guest_execution`, `helper_stopped_after_owner_loss: true` and 14 scenario controls.
+
+After merging this candidate into the trusted workflow ref, run all participants together:
+
+```bash
+gh workflow run mxc-cross-runner.yml --repo sokolaidev/maf-extensions --ref main -f active_guest_crash=true
+```
+
+Ordinary controls retain real worker/helper processes, private pipe EOF, process identities, SQLite and mutual TLS while substituting native guest execution. Native active-guest loss remains unqualified until the explicit hosted run passes. A's machine and trusted controller remain available. Whole-machine loss, coordinator-storage loss, network-authority revocation and production integration remain outside this candidate; automatic shutdown remains disabled.

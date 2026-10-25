@@ -1,4 +1,4 @@
-"""Kill a disposable native worker after capture and before coordinator publication."""
+"""Kill a disposable call worker at one explicit native execution boundary."""
 
 from __future__ import annotations
 
@@ -9,8 +9,9 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
+from . import cross_active, remote_host
+from . import process_identity as identity
 from . import remote_api as api
-from . import remote_host
 from .remote_authority import Authority
 
 CODE = b"assert remote_counter == 41; remote_counter = 99; print(remote_counter)"
@@ -20,17 +21,36 @@ READY = {"boundary": "before_remote_publication", "native_counter": 99}
 
 def command() -> list[str]:
     """Launch the isolated call worker with configuration on stdin."""
-    return [sys.executable, "-m", "scripts.experiments.mxc_session_patch.cross_crash"]
+    # A venv launcher can outlive or detach its Python payload on Windows.
+    return [
+        getattr(sys, "_base_executable", sys.executable),
+        "-c",
+        (
+            f"import runpy, sys; sys.path[:] = {[str(Path(__file__).resolve().parents[3]), *sys.path]!r}; "
+            "runpy.run_module('scripts.experiments.mxc_session_patch.cross_crash', run_name='__main__')"
+        ),
+    ]
 
 
-def interrupt(host: remote_host.Host, client: api.Client, root: Path, bundle: Path) -> dict:
-    """Require a captured native candidate, then kill and reap its worker process."""
+def interrupt(
+    host: remote_host.Host,
+    client: api.Client,
+    root: Path,
+    bundle: Path,
+    *,
+    active_guest: bool = False,
+) -> dict:
+    """Require the selected native boundary, then kill and reap its worker process."""
     if host.owner is None:
         raise api.Refused("crash worker requires an owned generation")
     ready = root / "worker-crash-ready.json"
     if ready.exists():
         raise api.Refused("crash worker readiness already exists")
+    if active_guest and list((host.root / "scratch").glob("*")):
+        raise api.Refused("active crash requires reconciled scratch")
+    active = None
     config = {
+        "active_guest": active_guest,
         "root": str(root),
         "host_root": str(host.root),
         "bundle": str(bundle),
@@ -47,23 +67,49 @@ def interrupt(host: remote_host.Host, client: api.Client, root: Path, bundle: Pa
             worker.stdin.write(json.dumps(config).encode())
             worker.stdin.close()
             deadline = time.monotonic() + WAIT_SECONDS
-            while not ready.exists():
+            while True:
+                if active_guest:
+                    active = cross_active.observe(host.root)
+                    if active is not None:
+                        if identity.stopped(active[0]):
+                            raise api.Refused("active helper exited before worker termination")
+                        if active[2]:
+                            break
+                elif ready.exists():
+                    break
                 if worker.poll() is not None or time.monotonic() >= deadline:
-                    raise api.Refused("crash worker did not reach native publication")
+                    raise api.Refused("crash worker did not reach the selected native boundary")
                 time.sleep(0.02)
-            if ready.stat().st_size > 1024 or json.loads(ready.read_bytes()) != READY:
+            if not active_guest and (
+                ready.stat().st_size > 1024 or json.loads(ready.read_bytes()) != READY
+            ):
                 raise api.Refused("crash worker readiness differs")
             if worker.poll() is not None:
                 raise api.Refused("crash worker exited before forced termination")
+            stopped_by = time.monotonic() + cross_active.STOP_SECONDS
             worker.kill()
             worker.wait(timeout=15)
             if worker.returncode == 0:
                 raise api.Refused("crash worker exited successfully")
+            if active_guest:
+                assert active is not None
+                while True:
+                    stopped = identity.stopped(active[0])
+                    if time.monotonic() >= stopped_by:
+                        raise api.Refused("native helper survived owner loss deadline")
+                    if stopped:
+                        break
+                    time.sleep(0.02)
+                if (active[1] / "candidate").exists() or (active[1] / "native.json").exists():
+                    raise api.Refused("active helper produced completion after owner loss")
+                return dict(cross_active.RESULT)
             return {**READY, "worker_killed": True}
         finally:
             if worker.poll() is None:
                 worker.kill()
                 worker.wait(timeout=15)
+            if active is not None:
+                identity.terminate(active[0])
 
 
 class PausedClient(api.Client):
@@ -89,7 +135,7 @@ class PausedClient(api.Client):
 
 
 def main() -> int:
-    """Execute only the fixed unpublished-state control in a disposable child process."""
+    """Execute one fixed crash probe in a disposable call worker."""
     config = json.load(sys.stdin)
     root, bundle = Path(config["root"]), Path(config["bundle"])
     owner = Authority._decode_owner(config["owner"])
@@ -109,7 +155,18 @@ def main() -> int:
         "mxc-coordinator",
     )
     client.ready = root / "worker-crash-ready.json"
-    host.call(client, config["owner"], "crash", CODE, bundle / "helper", bundle / "startup", 1024)
+    active_guest = config.get("active_guest", False)
+    if active_guest:
+        remote_host.execute = cross_active.execute
+    host.call(
+        client,
+        config["owner"],
+        "active-crash" if active_guest else "crash",
+        cross_active.CODE if active_guest else CODE,
+        bundle / "helper",
+        bundle / "startup",
+        1024,
+    )
     raise api.Refused("crash worker returned without forced termination")
 
 

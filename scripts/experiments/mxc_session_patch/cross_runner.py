@@ -314,19 +314,38 @@ class Worker:
             host.execute(
                 self.transport,
                 receipt,
-                cross_crash.CODE if receipt.call == "crash" else SEED,
+                cross_crash.cross_active.CODE
+                if receipt.call == "active-crash"
+                else cross_crash.CODE
+                if receipt.call == "crash"
+                else SEED,
                 self.bundle / "helper",
                 self.bundle / "startup",
                 1024,
             )
             raise RuntimeError("retired generation executed a receipt")
-        if operation == "crash":
+        if operation in {"crash", "active-crash"}:
             if self.role != "a" or session != "session":
                 raise api.Refused("crash control requires the primary A generation")
-            return cross_crash.interrupt(host, self.transport, self.root, self.bundle)
-        if operation not in {"seed", "next", "replay", "stale", "retry-crash"}:
+            return cross_crash.interrupt(
+                host,
+                self.transport,
+                self.root,
+                self.bundle,
+                active_guest=operation == "active-crash",
+            )
+        if operation not in {
+            "seed",
+            "next",
+            "replay",
+            "stale",
+            "retry-crash",
+            "retry-active-crash",
+        }:
             raise api.Refused("unsupported test operation")
-        if operation == "retry-crash":
+        if operation == "retry-active-crash":
+            code, call_id = cross_crash.cross_active.CODE, "active-crash"
+        elif operation == "retry-crash":
             code, call_id = cross_crash.CODE, "crash"
         else:
             code = NEXT if operation == "next" else SEED
@@ -482,8 +501,12 @@ def scenario(
     restart: Callable[[], None],
     *,
     worker_crash: bool = False,
+    active_guest_crash: bool = False,
 ) -> dict:
     """Exercise recovery through the actual API; artifact handoff never transports call state."""
+    _require(not (worker_crash and active_guest_crash), "select one crash boundary")
+    crashing = worker_crash or active_guest_crash
+    crash_call = "active-crash" if active_guest_crash else "crash"
     owner_a = call(a, "acquire")["owner"]
     _refused(lambda: call(b, "acquire"), "already has an owner")
     seed = call(a, "seed")
@@ -497,11 +520,16 @@ def scenario(
     _refused(lambda: call(admin, "fence-owner", "missing", owner=missing), "journal is unavailable")
     _refused(lambda: call(b, "acquire", "missing"), "termination is not confirmed")
     crash = {}
-    if worker_crash:
+    if crashing:
         call(admin, "reconcile", receipt=state_a["receipts"][0])
-        crash = call(a, "crash")
+        crash = call(a, crash_call)
         _require(
-            crash == {**cross_crash.READY, "worker_killed": True},
+            crash
+            == (
+                cross_crash.cross_active.RESULT
+                if active_guest_crash
+                else {**cross_crash.READY, "worker_killed": True}
+            ),
             "worker crash was not established",
         )
         _refused(lambda: call(b, "acquire"), "already has an owner")
@@ -511,7 +539,7 @@ def scenario(
             "unpublished candidate changed the checkpoint",
         )
         _require(
-            len(pending["receipts"]) == 1 and pending["receipts"][0]["call"] == "crash",
+            len(pending["receipts"]) == 1 and pending["receipts"][0]["call"] == crash_call,
             "crash scratch charge was lost",
         )
         _require(
@@ -535,8 +563,8 @@ def scenario(
         "replacement generation did not advance",
     )
     _require(call(b, "replay") == seed, "replacement reexecuted or lost saved result")
-    if worker_crash:
-        _refused(lambda: call(b, "retry-crash"), "explicit recovery")
+    if crashing:
+        _refused(lambda: call(b, "retry-" + crash_call), "explicit recovery")
     _output(call(b, "next"), b"42")
     state_b = call(admin, "inspect", owner=owner_b)
     _require(
@@ -547,7 +575,7 @@ def scenario(
     call(admin, "reconcile", receipt=state_b["receipts"][0])
     _require(call(admin, "inspect", owner=owner_b)["receipts"] == [], "scratch charges remain")
     return {
-        **({"worker_crash": crash} if worker_crash else {}),
+        **({"worker_crash": crash} if crashing else {}),
         "seed_checkpoint_bytes": state_a["bytes"],
         "replacement_checkpoint_bytes": state_b["bytes"],
         "controls": [
@@ -560,21 +588,31 @@ def scenario(
             "native-state-restored",
             "scratch-reconciled",
         ]
+        + (["active-helper-stopped-after-owner-loss"] if active_guest_crash else [])
         + (
             [
-                "worker-process-killed-before-publication",
+                "worker-process-killed-during-guest-execution"
+                if active_guest_crash
+                else "worker-process-killed-before-publication",
                 "takeover-blocked-without-proof",
                 "pending-fence-survived-restart",
                 "unpublished-state-discarded",
                 "interrupted-call-refused",
             ]
-            if worker_crash
+            if crashing
             else []
         ),
     }
 
 
-def orchestrate(root: Path, bundle: Path, peers: dict, *, worker_crash: bool = False) -> dict:
+def orchestrate(
+    root: Path,
+    bundle: Path,
+    peers: dict,
+    *,
+    worker_crash: bool = False,
+    active_guest_crash: bool = False,
+) -> dict:
     """Restart the coordinator process while both execution hosts remain available."""
     transports = {role: _client(root, peers, role) for role in ROLES}
     process = None
@@ -624,6 +662,7 @@ def orchestrate(root: Path, bundle: Path, peers: dict, *, worker_crash: bool = F
             transports["coordinator"],
             restart,
             worker_crash=worker_crash,
+            active_guest_crash=active_guest_crash,
         )
         passed = True
         return report
@@ -654,7 +693,9 @@ def main() -> int:
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--role", choices=ROLES, required=True)
     parser.add_argument("--address")
-    parser.add_argument("--worker-crash", action="store_true")
+    crashes = parser.add_mutually_exclusive_group()
+    crashes.add_argument("--worker-crash", action="store_true")
+    crashes.add_argument("--active-guest-crash", action="store_true")
     args = parser.parse_args()
     report: dict = {
         "status": "failed",
@@ -688,7 +729,13 @@ def main() -> int:
         report["phase"] = "native"
         if args.role == "coordinator":
             report.update(
-                orchestrate(args.root, args.bundle, peers, worker_crash=args.worker_crash)
+                orchestrate(
+                    args.root,
+                    args.bundle,
+                    peers,
+                    worker_crash=args.worker_crash,
+                    active_guest_crash=args.active_guest_crash,
+                )
             )
         else:
             _require(
