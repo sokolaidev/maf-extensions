@@ -14,7 +14,7 @@ from typing import Any
 from container_release import PREFIX, ROOT, read
 from container_release_history import GitHub, History
 from container_release_status import report
-from image_release_needed import baseline
+from image_release_needed import baseline, changed_inputs
 from select_image_security import metadata_only
 
 KIND_IMAGES = {
@@ -66,8 +66,8 @@ def releasing(root: Path, base: str, head: str) -> list[str]:
     return result
 
 
-def matching_source(root: Path, source: str, head: str, package: str) -> None:
-    """Require the qualified SDK implementation and environment, allowing version-only bumps."""
+def matching_source(root: Path, source: str, head: str, package: str, profile: str) -> None:
+    """Require qualified SDK and image inputs, allowing version-only metadata bumps."""
     if not re.fullmatch(r"[0-9a-f]{40}", source):
         raise ValueError("Image qualification has no immutable source commit")
     packages = (package, "maf-sandbox", "maf-sandbox-docker")
@@ -84,6 +84,13 @@ def matching_source(root: Path, source: str, head: str, package: str) -> None:
         raise ValueError(
             f"{package}: image qualification has different dependency/build inputs: "
             + ", ".join(sorted(changed))
+        )
+
+    image_inputs = changed_inputs(root, source, head, profile)
+    if image_inputs:
+        raise ValueError(
+            f"{package}: image qualification predates changed {profile} image inputs: "
+            + ", ".join(image_inputs)
         )
 
 
@@ -127,7 +134,7 @@ def check(root: Path, head: str, packages: list[str]) -> list[dict[str, Any]]:
             record = snapshot.catalogue["releases"][name]
             if record["profile"] != profile:
                 raise ValueError("Current catalogue entry identifies another profile")
-            matching_source(root, record["sourceCommit"], head, package)
+            matching_source(root, record["sourceCommit"], head, package, profile)
             with tempfile.TemporaryDirectory(prefix="kind-release-image-") as temporary:
                 directory = Path(temporary)
                 evidence = baseline(client, record, directory)

@@ -57,7 +57,7 @@ def test_version_only_release_preserves_qualified_environment(repo):
     (metadata.parent / "CHANGELOG.md").write_text("New release\n")
     head = commit(root)
     assert guard.releasing(root, base, head) == [PACKAGE]
-    guard.matching_source(root, base, head, PACKAGE)
+    guard.matching_source(root, base, head, PACKAGE, "shell")
 
 
 @pytest.mark.parametrize(
@@ -76,7 +76,7 @@ def test_implementation_pr_can_merge_but_old_image_cannot_qualify_release(repo, 
     head = commit(root)
     assert guard.releasing(root, base, head) == []
     with pytest.raises(ValueError, match="qualification"):
-        guard.matching_source(root, base, head, PACKAGE)
+        guard.matching_source(root, base, head, PACKAGE, "shell")
 
 
 def test_dependency_change_is_not_a_version_only_bump(repo):
@@ -84,7 +84,62 @@ def test_dependency_change_is_not_a_version_only_bump(repo):
     path = root / "packages" / PACKAGE / "pyproject.toml"
     path.write_text(path.read_text().replace("dependencies = []", 'dependencies = ["new>=1"]'))
     with pytest.raises(ValueError, match="dependency/build"):
-        guard.matching_source(root, base, commit(root), PACKAGE)
+        guard.matching_source(root, base, commit(root), PACKAGE, "shell")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "images/shell-sandbox/image.json",
+        "images/shell-sandbox/runner.py",
+        "images/shell-sandbox/Dockerfile",
+        "images/shell-sandbox/dependencies.json",
+        "scripts/shell_qualification.py",
+    ],
+)
+def test_image_payload_or_dependency_changes_require_new_qualification(repo, path):
+    root, base = repo
+    target = root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("changed input\n")
+    head = commit(root)
+    assert guard.releasing(root, base, head) == []
+    with pytest.raises(ValueError, match="shell image inputs"):
+        guard.matching_source(root, base, head, PACKAGE, "shell")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "images/graphviz-sandbox/image.json",
+        "images/shell-sandbox/README.md",
+    ],
+)
+def test_unrelated_images_and_consumer_guides_do_not_invalidate_shell(repo, path):
+    root, base = repo
+    target = root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("unrelated change\n")
+    guard.matching_source(root, base, commit(root), PACKAGE, "shell")
+
+
+@pytest.mark.parametrize(
+    "package,profile",
+    [(package, profile) for package, profiles in guard.KIND_IMAGES.items() for profile in profiles],
+)
+def test_every_required_profile_is_compared(evidence, monkeypatch, package, profile):
+    catalogue, _, qualification, _ = evidence
+    record = catalogue["releases"].pop("shell/0.1.0")
+    record["profile"] = profile
+    record["candidate"]["profile"] = profile
+    qualification["runtime"]["profile"] = profile
+    catalogue["current"] = {profile: f"{profile}/0.1.0"}
+    catalogue["releases"] = {f"{profile}/0.1.0": record}
+    monkeypatch.setattr(guard, "KIND_IMAGES", {package: (profile,)})
+    comparisons = []
+    monkeypatch.setattr(guard, "matching_source", lambda *args: comparisons.append(args))
+    guard.check(Path("."), SOURCE, [package])
+    assert comparisons == [(Path("."), SOURCE, SOURCE, package, profile)]
 
 
 def test_first_kind_release_is_selected_and_removed_metadata_fails(repo):
