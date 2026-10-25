@@ -757,3 +757,23 @@ This qualifies the fixed workload with producer-to-execution CPU admission enfor
 The next #1671 case is [worker-process death after native capture and before publication](../../../scripts/experiments/mxc_session_patch/HOST_PUBLICATION.md#worker-process-crash-before-publication), selected before whole-machine loss. The opt-in `worker_crash` workflow mode starts A's fixed 41-to-99 call in a separate process, waits for successful native capture, and kills the process before the coordinator can receive the candidate. The coordinator retains the committed value 41 and the interrupted call's scratch charge. B remains blocked before trusted fencing and across a restart with a pending fence; after controller verification and cleanup, it must replay the saved result, refuse the interrupted identity and restore 41-to-42.
 
 This candidate leaves the existing successful baseline selectable and changes no published package. Ordinary controls exercise real process death and TLS/SQLite orchestration with a substitute helper. Native failure-case qualification requires an explicit run from the merged trusted workflow ref with `worker_crash=true`; the preceding successful repeat did not exercise this case. A's machine and controller remain available, and the native helper has exited before the crash. Loss during guest execution, an unreachable machine, coordinator-storage loss and infrastructure termination verification remain separate requirements. #1671 stays open.
+
+#### Qualified worker-process crash before publication (2026-10-25)
+
+[Run 40208706071, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/40208706071/attempts/1) passed preflight, native fixture construction and all three participant jobs at merged source `33b9eb7dc4571359f322007fc21de4986a205a12`, with `worker_crash=true` from [#2167](https://github.com/sokolaidev/maf-extensions/pull/2167). The three reports agree on source, workflow attempt, closed-policy Linux/x86-64 fixture, Python 3.12.3 and `distinct_boots: 3`; each records `status: passed` and `phase: native`. The fixture producer and execution hosts A/B recorded `AuthenticAMD`; the coordinator's local CPU vendor is null under its existing exemption. The run uses the pinned MXC 1.0.1 experiment and removable overlays.
+
+| Retained measurement | Value |
+|---|---|
+| Helper SHA-256 | `57af6fb00392e9325fcf80a9e8e0304cb17bee357c46a1df9f55275bdf59ed55` |
+| Startup index SHA-256 | `2e692d7e1fc4a8329363e22bc11cf22eee1350cb99f91d598388065c1af6e54c` |
+| Committed seed checkpoint | 862,313,680 bytes |
+| Replacement checkpoint | 862,334,160 bytes |
+| A report SHA-256 | `97ad6349994dbf4d6fb905745dc0b824500abb879c8816796a2dc36be359f83b` |
+| B report SHA-256 | `42d0a60439c8c30b028e23232369503c88f9a65540942c79a358f344be7baea6` |
+| Coordinator report SHA-256 | `01fe0335ef3ff4bef1406f1df0cda047cc04c925d0b92d9084db80bcd2461a0d` |
+
+The coordinator report records `worker_killed: true`, `boundary: before_remote_publication` and `native_counter: 99`, together with all 13 scenario controls. A's worker completed native capture and was forcibly killed before sending the candidate publication. The coordinator retained the seed checkpoint with value 41 and the interrupted call's scratch receipt. B was refused while A remained owner, after the fence request without confirmation, and after coordinator restart with that pending fence. Only trusted controller verification and scratch reconciliation permitted B's newer generation. B replayed the saved seed result without a helper, refused retry of the interrupted call identity, restored 41 and advanced it to 42. Stale-owner and retired-receipt controls passed, and both execution generations were fenced and reconciled before completion.
+
+The checkpoint sizes exceed the small-frame API bound and crossed the mutual-TLS streaming API. The downloaded report archives matched GitHub's advertised SHA-256 digests and contained only the three reports and an empty coordinator service log; no helper streams survived successful cleanup. The report hashes above bind the retained measurements to those original artifacts.
+
+This qualifies worker-process loss after native capture and before publication for this fixed AMD/Linux workload. A's machine and trusted driver/controller remained available, and the native helper had finished before the crash. It does not qualify loss during guest execution, an unreachable or terminated machine, coordinator-storage loss, power loss, arbitrary CPU features, cross-vendor or cross-OS restoration, network-enabled guests or production integration. Whole-machine loss still needs independent infrastructure termination evidence; automatic shutdown remains disabled. #1671 stays open for those separate failure cases.
