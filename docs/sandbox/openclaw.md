@@ -205,7 +205,7 @@ The [2026-10-12 consolidated reconciliation](research/openclaw-qualification-clo
 
 | Decision | State | Tracking |
 |---|---|---|
-| Linux Gateway-to-Docker sample | Recorded deterministic Linux-on-Docker-Desktop run passed; native Linux host and real-model behavior remain unqualified | [#2185](https://github.com/sokolaidev/maf-extensions/issues/2185) (open) |
+| Linux Gateway-to-Docker sample | Recorded deterministic Linux-on-Docker-Desktop run passed; native Linux host and real-model behavior remain unqualified | [#2185](https://github.com/sokolaidev/maf-extensions/issues/2185) (closed) by [#2191](https://github.com/sokolaidev/maf-extensions/pull/2191) (merged) |
 | First Bicep operation | Design decisions and follow-ups complete; supervised source implementation and finite qualification delivered | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (closed) by [#1901](https://github.com/sokolaidev/maf-extensions/pull/1901) (merged); [#1651](https://github.com/sokolaidev/maf-extensions/pull/1651) (merged) |
 | Shared service lifecycle | Design delivered; stdio default and opt-in HTTP | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged) |
 | Shared HTTP implementation | Reusable service and Bicep binding implemented; Docker/MAF and bounded Gateway checks passed on the recorded 2026-10-05 candidate; finite lifecycle/recovery acceptance is reconciled below | [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (closed) by [#1680](https://github.com/sokolaidev/maf-extensions/pull/1680) (merged) |
