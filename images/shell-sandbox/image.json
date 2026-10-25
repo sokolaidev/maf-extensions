@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
   "platform": "linux/amd64",
-  "baseImage": "python:3.13-slim-trixie@sha256:d98cc29d3266e535dd9da1099688d9cb3ca4753813571e071763d17725460962",
+  "baseImage": "cgr.dev/chainguard/wolfi-base@sha256:9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03",
   "bash": {
-    "version": "5.2.37-2+b10",
-    "url": "https://deb.debian.org/debian/pool/main/b/bash/bash_5.2.37-2+b10_amd64.deb",
-    "sha256": "2fd7b04f1b7caa29c4e683f5216e6af354a41e3cdcf6e75394d7cda680f9ab82"
+    "version": "5.3-r14",
+    "url": "https://apk.cgr.dev/chainguard/x86_64/bash-5.3-r14.apk",
+    "sha256": "28274b1abce489dd947e0b517935992a3b069647b7f3a4d8eb95bb262c0751d1"
   },
   "dash": {
-    "version": "0.5.12-12",
-    "url": "https://deb.debian.org/debian/pool/main/d/dash/dash_0.5.12-12_amd64.deb",
-    "sha256": "a8902cb6d8650134764a25fb80aec8589d858ef71ece1680a62e84816c37bb04"
+    "version": "0.5.13.5-r2",
+    "url": "https://apk.cgr.dev/chainguard/x86_64/dash-0.5.13.5-r2.apk",
+    "sha256": "40c8bd58257143ef93547cd485bccd749c48e70884f7f2555b9c4d2d10f6a495"
   },
   "shellcheck": {
     "version": "0.11.0",

@@ -27,7 +27,10 @@ def install(component: str, destination: Path) -> None:
         raise ValueError("component digest mismatch")
     destination.mkdir(parents=True, exist_ok=True)
     if component in {"bash", "dash"}:
-        subprocess.run(["/usr/bin/dpkg", "--install", str(archive)], check=True)
+        # APKs are authenticated by the signed repository index, not a detached file signature.
+        subprocess.run(
+            ["/sbin/apk", "add", "--no-cache", f"{component}={spec['version']}"], check=True
+        )
     elif component == "psscriptanalyzer":
         with zipfile.ZipFile(archive) as source:
             for member in source.infolist():

@@ -2,6 +2,8 @@
 
 The `shell` release profile combines Bash, dash, ShellCheck, PowerShell and PSScriptAnalyzer in a Linux amd64 image. `image.json` pins each analyzer and interpreter by version and archive SHA256; the base image is pinned by digest. The normal image release pipeline builds, scans, signs and records this profile. Adding the profile does not publish an image.
 
+The runtime uses Wolfi with Bash 5.3-r14 and dash 0.5.13.5-r2. Interpreter archives are checksum-verified before exact-version installation through the signed APK repository index, and the launcher checks installed package identities before analysis. PowerShell 7.6.8, PSScriptAnalyzer 1.25.0 and ShellCheck 0.11.0 remain pinned. A separate Debian build stage compiles the ShellCheck adapter; only the executable and required source/license material enter the runtime, which supplies its native libraries from Wolfi. Use the matching `maf-sandbox-shell` release or checkout: earlier interpreter identities are rejected.
+
 ```bash
 docker build --platform linux/amd64 -t maf-shell:local images/shell-sandbox
 docker run --rm -i --network none --read-only --cap-drop ALL --tmpfs /tmp:rw,exec,size=512m maf-shell:local python3 - < images/shell-sandbox/test_runner.py
@@ -88,9 +90,9 @@ The image sources at `759517296717310172e7d768bb4e13550005a5f4`, tested with the
 
 The strict publication gate **failed**. The Critical matches were `CVE-2026-5450` in `libc6` and `libc-bin`, and `CVE-2025-7458` in `libsqlite3-0`, all without a listed fix for the installed Debian packages. The four fixable matches affected bundled `System.Security.Cryptography.Xml` and `System.Security.Cryptography.Pkcs` 10.0.10, with 10.0.13 listed as fixed. Updating those assemblies alone cannot clear the remaining OS findings. Base/package remediation and a fresh complete assessment are required; no exclusions were applied.
 
-### Updated image
+### Debian 13 image
 
-The updated recipe uses Debian 13, Bash 5.2.37, dash 0.5.12-12 and PowerShell 7.6.8. ShellCheck 0.11.0 and PSScriptAnalyzer 1.25.0 remain pinned. The ShellCheck adapter selects its upstream Haskell 98 language and includes the NUMA runtime library required by the newer compiler. The kind's expected analyzer identities change with the recipe: the published `maf-sandbox-shell` 0.1.0 rejects this image. Use the matching updated checkout for qualification and wait for its normal package release before using published wheels; the checkout's unchanged version metadata does not establish published-wheel compatibility.
+The Debian 13 recipe used Bash 5.2.37, dash 0.5.12-12 and PowerShell 7.6.8. ShellCheck 0.11.0 and PSScriptAnalyzer 1.25.0 remain pinned. The ShellCheck adapter selects its upstream Haskell 98 language and includes the NUMA runtime library required by the newer compiler. The kind's expected analyzer identities change with the recipe: the published `maf-sandbox-shell` 0.1.0 rejects this image. Use the matching updated checkout for qualification and wait for its normal package release before using published wheels; the checkout's unchanged version metadata does not establish published-wheel compatibility.
 
 The final image passed all 15 analyzer fixtures and 11 public SDK cases on the same Docker engine, including network and disposal observations. The exported configuration was independently hashed and matched to both scanner reports.
 
@@ -108,3 +110,14 @@ The final image passed all 15 analyzer fixtures and 11 public SDK cases on the s
 The update removes the three Critical matches and the bundled .NET findings from this assessment. The remaining High matches affect Debian packages, including libc, util-linux, ncurses, Perl, GCC runtime libraries, zlib and ACL libraries. No fixes are listed for the installed versions. The strict gate still **fails**; no exclusions or policy changes were applied.
 
 The local Docker store exposes an image index identity, distinct from the configuration identity in the exported archive. The export was scanned without claiming a registry publication identity or a protected retained-candidate round trip. No image was published or signed, and ACAS import and execution were not run. #2164 remains open for remediation, publication and ACAS qualification.
+
+### Wolfi image
+
+The Wolfi candidate built on 2026-10-25 passed all 15 real-analyzer fixtures. Syft 1.54.0 inventoried 325 components, and Grype 0.120.0 with its valid database built at `2026-10-25T06:27:34Z` reported **0 Critical, 0 High, 14 Medium, 4 Low and 18 Unknown** matches. The strict gate passed without exclusions or severity changes. This is candidate evidence; publication and ACAS qualification remain outstanding under #2164.
+
+| Evidence | Observed value |
+|---|---|
+| Docker Desktop image identity | `sha256:e0f8cd5c366f6da749987b0698af84ce05a5aff310e8ab4e2d25304567f39451` |
+| Build configuration digest, matching the inventory target | `sha256:a1efecde503da5aa97b8e54d064a26c8429ce8d853b0cbcb1e06da06d9b08c2b` |
+| Syft report SHA256 | `535ae522638ed21fce1c83118682880d248b2649d32c194579bc6b0f6b916fe8` |
+| Grype report SHA256 | `ceca96073cf25f3d09e568aa004e2af662d442215d91cb17798c03e49c0da413` |

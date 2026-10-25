@@ -4,7 +4,9 @@ import json
 import re
 import runpy
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from maf_sandbox_shell._report import IDENTITY
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,3 +28,31 @@ def test_recipe_and_kind_agree_on_analyzer_identities():
 def test_shell_sources_select_only_the_shell_image():
     assert affected("images/shell-sandbox/runner.py") == ("shell",)
     assert affected("images/shell-sandbox/README.md") == ()
+
+
+@pytest.mark.parametrize("fault", [None, "version", "missing", "stderr"])
+def test_interpreter_identity_is_verified_before_analysis(fault):
+    launcher = runpy.run_path(str(CONTEXT / "runner.py"))
+    calls = []
+
+    def execute(command, data=b""):
+        calls.append(command)
+        if command[0] == "/sbin/apk":
+            name = command[-1]
+            return {
+                "exit_code": 1 if fault == "missing" else 0,
+                "stdout": f"{name}-{IDENTITY[name] if fault != 'version' else '0.0-r0'}\n",
+                "stderr": "warning" if fault == "stderr" else "",
+            }
+        return {"exit_code": 0, "stdout": '{"protocol": 1, "files": []}', "stderr": ""}
+
+    request = {"flavor": "bash", "files": []}
+    supervisor = SimpleNamespace(execute=execute)
+    if fault is not None:
+        with pytest.raises(ValueError, match="interpreter identity mismatch"):
+            launcher["analyze"](request, supervisor)
+        assert len(calls) == 1
+    else:
+        assert launcher["analyze"](request, supervisor) == []
+        assert [command[-1] for command in calls[:2]] == ["bash", "dash"]
+        assert calls[-1] == ["/usr/local/bin/maf-shell-audit"]
