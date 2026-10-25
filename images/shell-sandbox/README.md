@@ -2,7 +2,7 @@
 
 The `shell` release profile combines Bash, dash, ShellCheck, PowerShell and PSScriptAnalyzer in a Linux amd64 image. `image.json` pins each analyzer and interpreter by version and archive SHA256; the base image is pinned by digest. The normal image release pipeline builds, scans, signs and records this profile. Adding the profile does not publish an image.
 
-The runtime uses Wolfi with Bash 5.3-r14 and dash 0.5.13.5-r2. Interpreter archives are checksum-verified before exact-version installation through the signed APK repository index, and the launcher checks installed package identities before analysis. PowerShell 7.6.8, PSScriptAnalyzer 1.25.0 and ShellCheck 0.11.0 remain pinned. A separate Debian build stage compiles the ShellCheck adapter; only the executable and required source/license material enter the runtime, which supplies its native libraries from Wolfi. Use the matching `maf-sandbox-shell` release or checkout: earlier interpreter identities are rejected.
+The runtime uses Wolfi with Bash 5.3-r14 and dash 0.5.13.5-r2. Interpreter archives are authenticated through the signed APK repository index and checksum-verified in an isolated cache before offline exact-version installation. The launcher checks installed package identities before analysis. PowerShell 7.6.8, PSScriptAnalyzer 1.25.0 and ShellCheck 0.11.0 remain pinned. A separate Debian build stage compiles the ShellCheck adapter; only the executable and required source/license material enter the runtime, which supplies its native libraries from Wolfi. Use the matching `maf-sandbox-shell` release or checkout: earlier interpreter identities are rejected.
 
 ```bash
 docker build --platform linux/amd64 -t maf-shell:local images/shell-sandbox
@@ -113,11 +113,12 @@ The local Docker store exposes an image index identity, distinct from the config
 
 ### Wolfi image
 
-The Wolfi candidate built on 2026-10-25 passed all 15 real-analyzer fixtures and all 11 public SDK cases, including closed networking, unchanged stores and no remaining containers. The derived-image module and assembly fixture also passed, including submitted-module shadowing protection. Syft 1.54.0 inventoried 325 components, and Grype 0.120.0 with its valid database built at `2026-10-25T06:27:34Z` reported **0 Critical, 0 High, 14 Medium, 4 Low and 18 Unknown** matches. The strict gate passed without exclusions or severity changes. This is candidate evidence from the matching checkout; published-wheel compatibility, publication and ACAS qualification remain outstanding under #2164.
+The Wolfi candidate from commit `8f3e7972598c44581ecedc4e792266bec4de48c1` passed [hosted qualification](https://github.com/sokolaidev/maf-extensions/actions/runs/40227832579) on 2026-10-25: all 15 real-analyzer fixtures and all 11 public SDK cases, including closed networking, unchanged stores and no remaining containers. An independent local build passed the same cases and the derived-image module, assembly and submitted-module shadowing fixture. The hosted Syft 1.54.0 inventory contains 325 components, and Grype 0.120.0 with its valid database built at `2026-10-25T06:27:34Z` reported **0 Critical, 0 High, 14 Medium, 4 Low and 18 Unknown** matches. The strict gate passed without exclusions or severity changes. This is candidate evidence from the matching checkout; published-wheel compatibility, publication and ACAS qualification remain outstanding under #2164.
 
 | Evidence | Observed value |
 |---|---|
-| Docker Desktop image identity | `sha256:e0f8cd5c366f6da749987b0698af84ce05a5aff310e8ab4e2d25304567f39451` |
-| Build configuration digest, matching the inventory target | `sha256:a1efecde503da5aa97b8e54d064a26c8429ce8d853b0cbcb1e06da06d9b08c2b` |
-| Syft report SHA256 | `535ae522638ed21fce1c83118682880d248b2649d32c194579bc6b0f6b916fe8` |
-| Grype report SHA256 | `ceca96073cf25f3d09e568aa004e2af662d442215d91cb17798c03e49c0da413` |
+| Local Docker Desktop runtime-test image identity | `sha256:c4ce3e349a56972304e73c1d2ebfa58dd1f5add7b0442144144ffd8e7670df6e` |
+| Hosted build configuration digest, matching its inventory and runtime target | `sha256:47db54b549232d44a583745a8c4c3e038f251d99c20be521636e2151165865a4` |
+| Hosted Syft report SHA256 | `944f5d4674cba3de7d4017eda200c8d33c7546973d836353eb121ceaf11ba068` |
+| Hosted Grype report SHA256 | `08cbc5345efb9f6ea6a4e3d463e0d8dc2bd0a5d2adee840326fc3aa70d4569bc` |
+| Hosted runtime report SHA256 | `1165a55dfb0bbf24b60ee002f1f47de267a2861d597c43a8e3039d01f9c511f6` |
