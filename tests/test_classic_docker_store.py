@@ -1,4 +1,4 @@
-"""Keep configuration-ID release jobs on the effective classic Docker image store."""
+"""Keep configuration-ID image jobs on the effective classic Docker image store."""
 
 from __future__ import annotations
 
@@ -94,9 +94,10 @@ def test_json_pipeline_cli(operation, payload, succeeds):
         ("container-image-release.yml", "prepare", "scripts/prepare_container_release_dispatch.py"),
         ("container-image-release.yml", "promote", "scripts/container_release_publish.py promote"),
         ("container-image-release.yml", "qualify", "scripts/container_release_publish.py qualify"),
+        ("image-security.yml", "scan", "scripts/build_scan_image.sh"),
     ],
 )
-def test_release_jobs_configure_the_store_before_using_image_ids(filename, job_name, command):
+def test_image_jobs_configure_the_store_before_using_image_ids(filename, job_name, command):
     workflow = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text("utf-8"))
     steps = workflow["jobs"][job_name]["steps"]
     setup = [i for i, step in enumerate(steps) if step.get("uses") == ACTION]
