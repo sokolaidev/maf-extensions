@@ -7,7 +7,7 @@
 #     "azure-core[aio]",
 #     "azure-identity",
 #     "maf-cachebench>=0.3.0",
-#     "maf-compaction>=0.8.0",
+#     "maf-compaction>=0.6.0",
 # ]
 # ///
 

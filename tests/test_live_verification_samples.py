@@ -166,6 +166,24 @@ def test_prose_cannot_impersonate_shell_verdict(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("fault", [None, "error", "unmatched", "endpoint"])
+def test_learn_grounding_requires_a_successful_matching_result(monkeypatch, fault):
+    module = load_sample("21_shell_storage", monkeypatch)
+    request = SimpleNamespace(type="function_call", name="microsoft_docs_search", call_id="search")
+    result = SimpleNamespace(
+        type="function_result",
+        call_id="other" if fault == "unmatched" else "search",
+        exception="failed" if fault == "error" else None,
+        result=(
+            "https://learn.microsoft.com/api/mcp"
+            if fault == "endpoint"
+            else "https://learn.microsoft.com/en-us/cli/azure/storage/account"
+        ),
+    )
+    reply = SimpleNamespace(messages=[SimpleNamespace(contents=[request, result])])
+    assert module.learn_searches(reply) == int(fault is None)
+
+
 @pytest.mark.parametrize("fault", [None, "findings", "purge", "cancel", "exception"])
 def test_shell_pipeline_cleans_storage_and_never_publishes_failed_output(
     monkeypatch,
@@ -245,8 +263,8 @@ def test_shell_pipeline_cleans_storage_and_never_publishes_failed_output(
     monkeypatch.setattr(module, "make_shell_tools", tools)
     monkeypatch.setattr(
         module,
-        "tool_results",
-        lambda *args: ["https://learn.microsoft.com/en-us/cli/azure/storage/account"],
+        "learn_searches",
+        lambda *args: 1,
     )
     monkeypatch.setattr(module, "require_env_vars", lambda names: dict.fromkeys(names, "fixture"))
     output = tmp_path / "deploy.sh"

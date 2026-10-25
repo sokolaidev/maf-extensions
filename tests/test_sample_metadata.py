@@ -56,6 +56,20 @@ def test_the_block_parses_and_names_a_python_floor(sample: Path):
 
 
 @pytest.mark.parametrize("sample", _SAMPLE_DIRS, ids=lambda path: path.name)
+def test_remote_mcp_samples_declare_the_optional_transport(sample: Path):
+    tree = ast.parse((sample / "agent.py").read_text("utf-8"))
+    uses_mcp = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "agent_framework"
+        and any(alias.name == "MCPStreamableHTTPTool" for alias in node.names)
+        for node in ast.walk(tree)
+    )
+    if uses_mcp:
+        dependencies = _metadata(sample / "agent.py")["dependencies"]
+        assert any(re.match(r"mcp(?:[<>=!~\[]|$)", dependency) for dependency in dependencies)
+
+
+@pytest.mark.parametrize("sample", _SAMPLE_DIRS, ids=lambda path: path.name)
 def test_every_library_import_is_declared(sample: Path):
     """The check prose could not do.
 

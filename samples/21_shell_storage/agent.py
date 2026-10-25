@@ -9,6 +9,7 @@
 #     "maf-sandbox-docker",
 #     "maf-sandbox-shell>=0.1.0",
 #     "maf-sandbox>=0.51",
+#     "mcp>=1.24,<2",
 # ]
 # ///
 
@@ -30,7 +31,6 @@ from _scaffold import (
     quoted,
     require_env_vars,
     result_text,
-    tool_results,
 )
 from agent_framework import Agent, InMemoryAgentFileStore, MCPStreamableHTTPTool
 from agent_framework.openai import OpenAIChatClient
@@ -59,6 +59,31 @@ not executed. Do not claim a deployment occurred."""
 def measure(stage: str, **values: object) -> None:
     """Print host observations with untrusted strings confined inside JSON."""
     print(f"{MEASURED}{json.dumps({'stage': stage, **values})}")
+
+
+def learn_searches(reply: object) -> int:
+    """Count successful search results linked to actual Microsoft Learn tool calls."""
+    contents = [
+        content for message in getattr(reply, "messages", []) for content in message.contents
+    ]
+    calls = {
+        content.call_id
+        for content in contents
+        if getattr(content, "type", None) == "function_call"
+        and getattr(content, "name", None) == "microsoft_docs_search"
+        and content.call_id
+    }
+    return sum(
+        getattr(content, "type", None) == "function_result"
+        and getattr(content, "call_id", None) in calls
+        and not getattr(content, "exception", None)
+        and re.search(
+            r"https://learn\.microsoft\.com/(?!api/)[a-z]{2}-[a-z]{2}/",
+            result_text(getattr(content, "result", "")),
+        )
+        is not None
+        for content in contents
+    )
 
 
 def script_text(answer: str) -> str:
@@ -183,8 +208,7 @@ async def run(output: Path) -> int:
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 reply = await agent.run(request, session=session)
                 print(quoted(reply.text))
-                searches = tool_results(reply, "microsoft_docs_search")
-                docs += sum("https://learn.microsoft.com/" in result for result in searches)
+                docs += learn_searches(reply)
                 measure("learn", results=docs)
                 if not docs:
                     request = "Call microsoft_docs_search successfully before writing the script."
