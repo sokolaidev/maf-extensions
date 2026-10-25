@@ -168,6 +168,12 @@ def test_native_tls_refusal_needs_certificate_alert_without_http_side_effects(or
     observed = {"error": "RemoteDisconnected"}
     alert = {"port": 8444, "handshake_error": "SSLV3_ALERT_CERTIFICATE_UNKNOWN"}
     assert probe.matches_native_https(observed, [alert], "certificate_refused", {"port": 8444})
+    assert probe.matches_native_https(
+        observed,
+        [dict(alert, handshake_error="TLSV1_ALERT_UNKNOWN_CA")],
+        "certificate_refused",
+        {"port": 8444},
+    )
     assert not probe.matches_native_https(
         observed, [alert, alert], "certificate_refused", {"port": 8444}
     )

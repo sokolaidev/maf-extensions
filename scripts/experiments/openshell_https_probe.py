@@ -365,6 +365,7 @@ def matches_native_https(observed, events, expected, request):
                 "SSLV3_ALERT_CERTIFICATE_UNKNOWN",
                 "SSLV3_ALERT_BAD_CERTIFICATE",
                 "SSLV3_ALERT_CERTIFICATE_EXPIRED",
+                "TLSV1_ALERT_UNKNOWN_CA",
             }
         )
     return matches_observation(observed, events, expected, int(expected == 200), request)
