@@ -1,5 +1,6 @@
 """Keep analyzer identities, verified component pins and release routing consistent."""
 
+import hashlib
 import json
 import re
 import runpy
@@ -28,6 +29,30 @@ def test_recipe_and_kind_agree_on_analyzer_identities():
 def test_shell_sources_select_only_the_shell_image():
     assert affected("images/shell-sandbox/runner.py") == ("shell",)
     assert affected("images/shell-sandbox/README.md") == ()
+
+
+@pytest.mark.parametrize("cached", [b"pinned archive", b"substituted archive", None])
+def test_apk_install_refuses_unverified_cached_bytes(monkeypatch, cached):
+    installer = runpy.run_path(str(CONTEXT / "install.py"))
+    installed = []
+
+    def apk(command, *, check):
+        cache = Path(command[2])
+        if "download" in command and cached is not None:
+            (cache / "bash-5.3-r14.089044a4.apk").write_bytes(cached)
+        if "add" in command:
+            assert "--no-network" in command
+            installed.append((cache / "bash-5.3-r14.089044a4.apk").read_bytes())
+
+    monkeypatch.setattr(installer["subprocess"], "run", apk)
+    digest = hashlib.sha256(b"pinned archive").hexdigest()
+    if cached == b"pinned archive":
+        installer["install_apk"]("bash", "5.3-r14", digest)
+        assert installed == [b"pinned archive"]
+    else:
+        with pytest.raises(ValueError, match="cached component digest mismatch"):
+            installer["install_apk"]("bash", "5.3-r14", digest)
+        assert installed == []
 
 
 @pytest.mark.parametrize("fault", [None, "version", "missing", "stderr"])

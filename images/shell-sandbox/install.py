@@ -13,6 +13,19 @@ import zipfile
 from pathlib import Path
 
 
+def install_apk(component: str, version: str, digest: str) -> None:
+    """Authenticate the repository package and verify its bytes before offline installation."""
+    with tempfile.TemporaryDirectory() as cache:
+        apk = ["/sbin/apk", "--cache-dir", cache]
+        package = f"{component}={version}"
+        subprocess.run([*apk, "update"], check=True)
+        subprocess.run([*apk, "cache", "download", package], check=True)
+        archives = list(Path(cache).glob(f"{component}-{version}.*.apk"))
+        if len(archives) != 1 or hashlib.sha256(archives[0].read_bytes()).hexdigest() != digest:
+            raise ValueError("cached component digest mismatch")
+        subprocess.run([*apk, "--no-network", "add", package], check=True)
+
+
 def install(component: str, destination: Path) -> None:
     """Verify the complete archive before extracting it into the image."""
     spec = json.loads(Path("/recipe/image.json").read_text())[component]
@@ -27,10 +40,7 @@ def install(component: str, destination: Path) -> None:
         raise ValueError("component digest mismatch")
     destination.mkdir(parents=True, exist_ok=True)
     if component in {"bash", "dash"}:
-        # APKs are authenticated by the signed repository index, not a detached file signature.
-        subprocess.run(
-            ["/sbin/apk", "add", "--no-cache", f"{component}={spec['version']}"], check=True
-        )
+        install_apk(component, spec["version"], spec["sha256"])
     elif component == "psscriptanalyzer":
         with zipfile.ZipFile(archive) as source:
             for member in source.infolist():
