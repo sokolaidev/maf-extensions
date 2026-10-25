@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import subprocess
+import urllib.error
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,54 @@ from image_security_evidence import verify_inventory
 from prepare_container_release import assess
 
 BATCH_SIZE = 6
+
+
+def failure_details(stage: str, error: BaseException | None) -> dict[str, Any]:
+    """Retain bounded error metadata without URLs, arguments, output or credentials."""
+    errors = []
+    seen: set[int] = set()
+    while error is not None and id(error) not in seen and len(errors) < 4:
+        seen.add(id(error))
+        detail: dict[str, Any] = {"type": type(error).__name__}
+        for field in ("code", "errno", "returncode", "timeout"):
+            value = getattr(error, field, None)
+            if type(value) in (int, float):
+                detail[field] = value
+        frames = []
+        tb = error.__traceback__
+        while tb is not None:
+            code = tb.tb_frame.f_code
+            frames.append(
+                {
+                    "file": Path(code.co_filename).name,
+                    "function": code.co_name,
+                    "line": tb.tb_lineno,
+                }
+            )
+            frames = frames[-8:]
+            tb = tb.tb_next
+        detail["frames"] = frames
+        errors.append(detail)
+        cause = error.__cause__
+        if cause is None and isinstance(error, urllib.error.URLError):
+            cause = error.reason if isinstance(error.reason, BaseException) else None
+        if cause is None and not error.__suppress_context__:
+            cause = error.__context__
+        error = cause
+    return {"stage": stage, "errors": errors}
+
+
+def failure_reason(diagnostic: dict[str, Any]) -> str:
+    """Keep notification identity independent of source lines and workflow attempts."""
+    errors = []
+    for error in diagnostic["errors"]:
+        codes = ", ".join(
+            f"{key}={error[key]}"
+            for key in ("code", "errno", "returncode", "timeout")
+            if key in error
+        )
+        errors.append(error["type"] + (f" ({codes})" if codes else ""))
+    return f"{diagnostic['stage']} failed: " + " caused by ".join(errors)
 
 
 def assessment_details(attempt: dict[str, Any]) -> list[str]:
@@ -283,6 +332,7 @@ def scan(directory: Path, batch: int) -> None:
             "outcome": "unavailable",
             "assessedAt": now(),
         }
+        stage = "registry manifest lookup"
         try:
             absent = False
             selected_candidate = candidate
@@ -316,15 +366,21 @@ def scan(directory: Path, batch: int) -> None:
                     "checkedAt": now(),
                 }
             else:
+                stage = "anonymous image pull"
                 image_id = anonymous_pull(selected_candidate)
+                stage = "application inventory restore"
                 application_inventory(root, candidate, image_id, restore=True)
+                stage = "vulnerability assessment"
                 result.update(assess(root, image_id, require_clean=False))
-        except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError):
+        except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
+            diagnostic = failure_details(stage, error)
             result.update(
                 outcome="unavailable",
                 assessedAt=now(),
-                reason="Registry or scanner assessment unavailable",
+                reason=failure_reason(diagnostic),
+                diagnostic=diagnostic,
             )
+            print(json.dumps({"target": target_name(target), "diagnostic": diagnostic}), flush=True)
         finally:
             if image_id:
                 try:
