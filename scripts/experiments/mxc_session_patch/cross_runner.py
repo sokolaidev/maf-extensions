@@ -23,7 +23,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from . import cross_compat, remote_control, remote_host
+from . import cross_compat, cross_crash, remote_control, remote_host
 from . import remote_api as api
 from .remote_authority import Authority
 
@@ -312,13 +312,25 @@ class Worker:
                 _require(host.reconcile(receipt) is True, "scratch proof failed")
                 return {"receipt": asdict(receipt)}
             host.execute(
-                self.transport, receipt, SEED, self.bundle / "helper", self.bundle / "startup", 1024
+                self.transport,
+                receipt,
+                cross_crash.CODE if receipt.call == "crash" else SEED,
+                self.bundle / "helper",
+                self.bundle / "startup",
+                1024,
             )
             raise RuntimeError("retired generation executed a receipt")
-        if operation not in {"seed", "next", "replay", "stale"}:
+        if operation == "crash":
+            if self.role != "a" or session != "session":
+                raise api.Refused("crash control requires the primary A generation")
+            return cross_crash.interrupt(host, self.transport, self.root, self.bundle)
+        if operation not in {"seed", "next", "replay", "stale", "retry-crash"}:
             raise api.Refused("unsupported test operation")
-        code = NEXT if operation == "next" else SEED
-        call_id = "seed" if operation == "replay" else operation
+        if operation == "retry-crash":
+            code, call_id = cross_crash.CODE, "crash"
+        else:
+            code = NEXT if operation == "next" else SEED
+            call_id = "seed" if operation == "replay" else operation
         helper = self.root / "absent-helper" if operation == "replay" else self.bundle / "helper"
         if host.owner is None:
             raise api.Refused("generation ownership is missing")
@@ -364,7 +376,7 @@ class Service:
         args = _fields(
             request,
             {"owner"}
-            if operation in {"inspect", "fence-owner"}
+            if operation in {"inspect", "fence-owner", "request-fence"}
             else {"receipt"}
             if operation == "reconcile"
             else set(),
@@ -390,9 +402,13 @@ class Service:
                 ),
             )
             return {"released": True}
-        if operation not in {"inspect", "fence-owner"}:
+        if operation not in {"inspect", "fence-owner", "request-fence"}:
             raise api.Refused("unsupported test orchestration")
         owner = Authority._decode_owner(args["owner"])
+        if operation == "request-fence":
+            with self.db.authority() as authority:
+                authority.request_fence(owner, f"stop-{owner.session}-{owner.generation}")
+            return {"pending": True}
         if operation == "fence-owner":
             proof = remote_control.Verifier(
                 _client(self.root, self.peers, owner.resource.host), owner
@@ -404,7 +420,14 @@ class Service:
             "SELECT coalesce(sum(size),0) FROM files WHERE session=? AND call=(SELECT current_call FROM sessions WHERE id=?)",
             (owner.session, owner.session),
         ).fetchone()[0]
-        return {"bytes": size, "receipts": [asdict(r) for r in self.db.pending_scratch()]}
+        current = store.db.execute(
+            "SELECT current_call FROM sessions WHERE id=?", (owner.session,)
+        ).fetchone()[0]
+        return {
+            "bytes": size,
+            "current_call": current,
+            "receipts": [asdict(r) for r in self.db.pending_scratch()],
+        }
 
 
 def serve(root: Path, bundle: Path, role: str, peers: dict) -> bool:
@@ -452,7 +475,14 @@ def _output(result: dict, expected: bytes) -> None:
     )
 
 
-def scenario(a: api.Client, b: api.Client, admin: api.Client, restart: Callable[[], None]) -> dict:
+def scenario(
+    a: api.Client,
+    b: api.Client,
+    admin: api.Client,
+    restart: Callable[[], None],
+    *,
+    worker_crash: bool = False,
+) -> dict:
     """Exercise recovery through the actual API; artifact handoff never transports call state."""
     owner_a = call(a, "acquire")["owner"]
     _refused(lambda: call(b, "acquire"), "already has an owner")
@@ -466,6 +496,35 @@ def scenario(a: api.Client, b: api.Client, admin: api.Client, restart: Callable[
     missing = call(a, "acquire", "missing")["owner"]
     _refused(lambda: call(admin, "fence-owner", "missing", owner=missing), "journal is unavailable")
     _refused(lambda: call(b, "acquire", "missing"), "termination is not confirmed")
+    crash = {}
+    if worker_crash:
+        call(admin, "reconcile", receipt=state_a["receipts"][0])
+        crash = call(a, "crash")
+        _require(
+            crash == {**cross_crash.READY, "worker_killed": True},
+            "worker crash was not established",
+        )
+        _refused(lambda: call(b, "acquire"), "already has an owner")
+        pending = call(admin, "inspect", owner=owner_a)
+        _require(
+            pending["bytes"] == state_a["bytes"] and pending["current_call"] == "seed",
+            "unpublished candidate changed the checkpoint",
+        )
+        _require(
+            len(pending["receipts"]) == 1 and pending["receipts"][0]["call"] == "crash",
+            "crash scratch charge was lost",
+        )
+        _require(
+            call(admin, "request-fence", owner=owner_a) == {"pending": True},
+            "termination request was not pending",
+        )
+        _refused(lambda: call(b, "acquire"), "termination is not confirmed")
+        restart()
+        _refused(lambda: call(b, "acquire"), "termination is not confirmed")
+        _require(
+            call(admin, "inspect", owner=owner_a) == pending, "pending fence changed retained state"
+        )
+        state_a = pending
     call(admin, "fence-owner", owner=owner_a)
     _refused(lambda: call(a, "stale"), "revoked")
     _refused(lambda: call(a, "late", receipt=state_a["receipts"][0]), "explicit recovery")
@@ -476,6 +535,8 @@ def scenario(a: api.Client, b: api.Client, admin: api.Client, restart: Callable[
         "replacement generation did not advance",
     )
     _require(call(b, "replay") == seed, "replacement reexecuted or lost saved result")
+    if worker_crash:
+        _refused(lambda: call(b, "retry-crash"), "explicit recovery")
     _output(call(b, "next"), b"42")
     state_b = call(admin, "inspect", owner=owner_b)
     _require(
@@ -486,6 +547,7 @@ def scenario(a: api.Client, b: api.Client, admin: api.Client, restart: Callable[
     call(admin, "reconcile", receipt=state_b["receipts"][0])
     _require(call(admin, "inspect", owner=owner_b)["receipts"] == [], "scratch charges remain")
     return {
+        **({"worker_crash": crash} if worker_crash else {}),
         "seed_checkpoint_bytes": state_a["bytes"],
         "replacement_checkpoint_bytes": state_b["bytes"],
         "controls": [
@@ -497,11 +559,22 @@ def scenario(a: api.Client, b: api.Client, admin: api.Client, restart: Callable[
             "saved-result-without-helper",
             "native-state-restored",
             "scratch-reconciled",
-        ],
+        ]
+        + (
+            [
+                "worker-process-killed-before-publication",
+                "takeover-blocked-without-proof",
+                "pending-fence-survived-restart",
+                "unpublished-state-discarded",
+                "interrupted-call-refused",
+            ]
+            if worker_crash
+            else []
+        ),
     }
 
 
-def orchestrate(root: Path, bundle: Path, peers: dict) -> dict:
+def orchestrate(root: Path, bundle: Path, peers: dict, *, worker_crash: bool = False) -> dict:
     """Restart the coordinator process while both execution hosts remain available."""
     transports = {role: _client(root, peers, role) for role in ROLES}
     process = None
@@ -545,7 +618,13 @@ def orchestrate(root: Path, bundle: Path, peers: dict) -> dict:
         process = start()
         for role in ("a", "b"):
             _ready(transports[role])
-        report = scenario(transports["a"], transports["b"], transports["coordinator"], restart)
+        report = scenario(
+            transports["a"],
+            transports["b"],
+            transports["coordinator"],
+            restart,
+            worker_crash=worker_crash,
+        )
         passed = True
         return report
     finally:
@@ -575,6 +654,7 @@ def main() -> int:
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--role", choices=ROLES, required=True)
     parser.add_argument("--address")
+    parser.add_argument("--worker-crash", action="store_true")
     args = parser.parse_args()
     report: dict = {
         "status": "failed",
@@ -607,7 +687,9 @@ def main() -> int:
             return 0 if serve(args.root, args.bundle, args.role, peers) else 1
         report["phase"] = "native"
         if args.role == "coordinator":
-            report.update(orchestrate(args.root, args.bundle, peers))
+            report.update(
+                orchestrate(args.root, args.bundle, peers, worker_crash=args.worker_crash)
+            )
         else:
             _require(
                 serve(args.root, args.bundle, args.role, peers),

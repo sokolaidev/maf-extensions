@@ -12,6 +12,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 from queue import Queue
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -36,8 +37,13 @@ def participants(tmp_path, monkeypatch):
     (bundle / "startup").mkdir(parents=True)
     (bundle / "startup/index.json").write_text("startup", encoding="utf-8")
     (bundle / "helper").write_bytes(b"test helper")
-    monkeypatch.setattr(cross.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(cross.platform, "machine", lambda: "x86_64")
+    profile_platform = SimpleNamespace(
+        system=lambda: "Linux",
+        machine=lambda: "x86_64",
+        python_version=cross.platform.python_version,
+    )
+    monkeypatch.setattr(cross, "platform", profile_platform)
+    monkeypatch.setattr(cross.cross_compat, "platform", profile_platform)
     monkeypatch.setattr(cross.cross_compat, "cpu_vendor", lambda: "GenuineIntel")
     cross.cross_compat.record_fixture(bundle, "GenuineIntel")
     peers, roots = {}, {}
@@ -143,7 +149,37 @@ def endpoint(factory, root, address=("127.0.0.1", 0)):
         assert not errors
 
 
-def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkeypatch):
+def _native_substitute(
+    helper, startup, work, code, output_limit, *, before_spawn, before_start, checkpoint_limits
+):
+    """Use real journaled child lifecycles with small, distinguishable checkpoint contents."""
+    before_spawn()
+    with subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.buffer.read()"], stdin=subprocess.PIPE
+    ) as child:
+        try:
+            before_start(child)
+            if code == cross.SEED:
+                assert (startup / "index.json").read_text("utf-8") == "startup"
+                state = 41
+            else:
+                assert (startup / "index.json").read_text("utf-8") == "41"
+                assert code in {cross.NEXT, cross.cross_crash.CODE}
+                state = 99 if code == cross.cross_crash.CODE else 42
+            candidate = work / "candidate"
+            candidate.mkdir()
+            (candidate / "index.json").write_text(str(state), encoding="utf-8")
+            (candidate / "memory.bin").write_bytes(b"x" * 128_000)
+        finally:
+            child.kill()
+            child.wait(timeout=10)
+    return json.dumps({"console_base64": cross.api._encoded(str(state).encode())}).encode()
+
+
+@pytest.mark.parametrize("worker_crash", [False, True])
+def test_three_endpoints_restore_replay_fence_and_reconcile(
+    participants, monkeypatch, worker_crash
+):
     roots, bundle, peers = participants
     addresses = {}
     original_client = cross._client
@@ -157,32 +193,26 @@ def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkey
     monkeypatch.setattr(cross.api, "MAX_FRAME", 100_000)
     executions = []
 
-    def execute(
-        helper, startup, work, code, output_limit, *, before_spawn, before_start, checkpoint_limits
-    ):
-        before_spawn()
-        with subprocess.Popen(
-            [sys.executable, "-c", "import sys; sys.stdin.buffer.read()"], stdin=subprocess.PIPE
-        ) as child:
-            try:
-                before_start(child)
-                if code == cross.SEED:
-                    assert (startup / "index.json").read_text("utf-8") == "startup"
-                    state = 41
-                else:
-                    assert code == cross.NEXT
-                    assert (startup / "index.json").read_text("utf-8") == "41"
-                    state = 42
-                candidate = work / "candidate"
-                candidate.mkdir()
-                (candidate / "index.json").write_text(str(state), encoding="utf-8")
-                (candidate / "memory.bin").write_bytes(b"x" * 128_000)
-                executions.append((work, state))
-            finally:
-                child.kill()
-                child.wait(timeout=10)
-        return json.dumps({"console_base64": cross.api._encoded(str(state).encode())}).encode()
+    def execute(*args, **kwargs):
+        result = _native_substitute(*args, **kwargs)
+        executions.append(
+            (args[2], int(cross.api._bytes(json.loads(result)["console_base64"], 1024)))
+        )
+        return result
 
+    monkeypatch.setattr(
+        cross.cross_crash,
+        "command",
+        lambda: [
+            sys.executable,
+            "-c",
+            (
+                "import runpy, sys; from scripts.experiments.mxc_session_patch import cross_crash; "
+                "cross_crash.remote_host.execute = runpy.run_path(sys.argv[1])['_native_substitute']; cross_crash.main()"
+            ),
+            str(Path(__file__).resolve()),
+        ],
+    )
     monkeypatch.setattr(cross.remote_host, "execute", execute)
     service_context = endpoint(
         lambda: cross.Service(roots["coordinator"], peers), roots["coordinator"]
@@ -212,9 +242,16 @@ def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkey
 
             transports = {r: client(roots["coordinator"], peers, r) for r in cross.ROLES}
             report = cross.scenario(
-                transports["a"], transports["b"], transports["coordinator"], restart
+                transports["a"],
+                transports["b"],
+                transports["coordinator"],
+                restart,
+                worker_crash=worker_crash,
             )
-            assert len(report["controls"]) == 8
+            assert len(report["controls"]) == (13 if worker_crash else 8)
+            if worker_crash:
+                assert report["worker_crash"] == {**cross.cross_crash.READY, "worker_killed": True}
+                assert "interrupted-call-refused" in report["controls"]
             assert report["seed_checkpoint_bytes"] == 128_002
             assert report["replacement_checkpoint_bytes"] == 128_002
             assert [state for _, state in executions] == [41, 42]
@@ -241,6 +278,15 @@ def test_workflow_requires_oidc_and_overlapping_roles():
     assert set(workflow[True]) == {"workflow_dispatch"}
     participants = workflow["jobs"]["participants"]
     assert participants["needs"] == "fixture"
+    assert workflow[True]["workflow_dispatch"]["inputs"]["worker_crash"]["default"] is False
+    assert participants["env"]["WORKER_CRASH"] == "${{ inputs.worker_crash }}"
+    native_step = next(
+        s
+        for s in participants["steps"]
+        if s.get("name") == "Exercise native recovery and trusted fencing over mutual TLS"
+    )
+    assert 'if [ "$WORKER_CRASH" = true ]; then options+=(--worker-crash); fi' in native_step["run"]
+    assert '"${options[@]}"' in native_step["run"]
     assert participants["strategy"]["max-parallel"] == 3
     assert set(participants["strategy"]["matrix"]["role"]) == set(cross.ROLES)
     assert participants["permissions"] == {
@@ -415,8 +461,13 @@ def test_fixture_provenance_is_bound_to_content_and_attempt(participants, change
     ],
 )
 def test_cpu_probe_requires_recognized_unambiguous_vendor(monkeypatch, content, expected):
-    monkeypatch.setattr(cross.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(cross.platform, "machine", lambda: "x86_64")
+    profile_platform = SimpleNamespace(
+        system=lambda: "Linux",
+        machine=lambda: "x86_64",
+        python_version=cross.platform.python_version,
+    )
+    monkeypatch.setattr(cross, "platform", profile_platform)
+    monkeypatch.setattr(cross.cross_compat, "platform", profile_platform)
     monkeypatch.setattr(Path, "read_text", lambda *args, **kwargs: content)
     if expected is None:
         with pytest.raises(RuntimeError, match="CPU vendor"):
@@ -426,8 +477,13 @@ def test_cpu_probe_requires_recognized_unambiguous_vendor(monkeypatch, content, 
 
 
 def test_cpu_probe_refuses_unavailable_proc_data(monkeypatch):
-    monkeypatch.setattr(cross.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(cross.platform, "machine", lambda: "x86_64")
+    profile_platform = SimpleNamespace(
+        system=lambda: "Linux",
+        machine=lambda: "x86_64",
+        python_version=cross.platform.python_version,
+    )
+    monkeypatch.setattr(cross, "platform", profile_platform)
+    monkeypatch.setattr(cross.cross_compat, "platform", profile_platform)
 
     def unavailable(*args, **kwargs):
         raise OSError("unavailable")
@@ -518,3 +574,59 @@ def test_fixture_producer_vendor_cannot_change_during_build(participants, monkey
     with pytest.raises(RuntimeError, match="producer CPU vendor changed"):
         cross.cross_compat.record_fixture(bundle, "GenuineIntel")
     assert (bundle / "fixture.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("failure", ["early-exit", "bad-marker", "stale-marker", "timeout"])
+def test_crash_supervisor_never_accepts_unproven_native_boundary(
+    participants, monkeypatch, failure
+):
+    roots, bundle, peers = participants
+    config, scratch = cross._configuration(peers["a"]["profile"])
+    with cross.Authority(roots["coordinator"] / "authority", enabled=True) as authority:
+        owner = authority.acquire(
+            "session", config.digest, cross.api.Resource("a", peers["a"]["boot"], "session")
+        )
+    host = cross.remote_host.Host(
+        roots["a"] / "session",
+        "a",
+        peers["a"]["boot"],
+        "session",
+        config,
+        scratch,
+        cross.remote_host.physical.Policy(1024**2, 1024**2, 0),
+        owner=owner,
+    )
+    ready = roots["a"] / "worker-crash-ready.json"
+    if failure == "stale-marker":
+        ready.write_text(json.dumps(cross.cross_crash.READY))
+        monkeypatch.setattr(
+            cross.cross_crash, "command", lambda: pytest.fail("launched with stale readiness")
+        )
+    else:
+        script = "import json, sys; from pathlib import Path; c=json.load(sys.stdin); "
+        if failure == "timeout":
+            monkeypatch.setattr(cross.cross_crash, "WAIT_SECONDS", 0)
+            script += "import time; time.sleep(60)"
+        if failure == "bad-marker":
+            script += "import time; (Path(c['root'])/'worker-crash-ready.json').write_text('{}'); time.sleep(60)"
+        monkeypatch.setattr(cross.cross_crash, "command", lambda: [sys.executable, "-c", script])
+    with pytest.raises(cross.api.Refused, match="crash worker"):
+        cross.cross_crash.interrupt(
+            host, cross._client(roots["a"], peers, "coordinator"), roots["a"], bundle
+        )
+
+
+@pytest.mark.parametrize("output", [b"41", b"42", b"999"])
+def test_crash_boundary_requires_unpublished_native_mutation(tmp_path, output):
+    client = object.__new__(cross.cross_crash.PausedClient)
+    client.ready = tmp_path / "ready.json"
+    with pytest.raises(cross.api.Refused, match="native state differs"):
+        client.publish(
+            "session",
+            "owner",
+            "crash",
+            cross.cross_crash.CODE,
+            tmp_path,
+            json.dumps({"console_base64": cross.api._encoded(output)}).encode(),
+        )
+    assert not client.ready.exists()

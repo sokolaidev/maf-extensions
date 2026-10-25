@@ -248,10 +248,13 @@ with SharedStore(Path({str(root)!r}), 'one', {PROFILE!r}, {LIMITS!r}) as db:
 
 
 @pytest.mark.parametrize("boundary", ["before_launch_commit", "after_launch_commit"])
-def test_process_death_around_identity_commit_never_sends_header(tmp_path, boundary):
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_process_death_around_identity_commit_never_sends_header(tmp_path, boundary, wrapped):
     root = tmp_path / "db"
     observed = tmp_path / "helper-eof.json"
     release = tmp_path / "release-helper"
+    wrapper_waiting = tmp_path / "wrapper-waiting"
+    release_wrapper = tmp_path / "release-wrapper"
     helper = f"""
 import json, os, sys, time
 from pathlib import Path
@@ -266,6 +269,20 @@ while not Path({str(release)!r}).exists():
         sys.exit(75)
     time.sleep(0.01)
 """
+    command = helper
+    if wrapped:
+        command = f"""
+import subprocess, sys, time
+from pathlib import Path
+child = subprocess.Popen([sys.executable, '-c', {helper!r}], stdin=sys.stdin)
+child.wait(timeout=35)
+Path({str(wrapper_waiting)!r}).touch()
+deadline = time.monotonic() + 30
+while not Path({str(release_wrapper)!r}).exists():
+    if time.monotonic() >= deadline:
+        sys.exit(75)
+    time.sleep(0.01)
+"""
     source = f"""
 import os, subprocess, sys
 from pathlib import Path
@@ -275,7 +292,7 @@ with SharedStore(Path({str(root)!r}), 'one', {PROFILE!r}, {LIMITS!r}) as db:
     db.begin('a', b'code', scratch={SCRATCH!r})
     journal = NativeJournal(db)
     work = journal.prepare('a')
-    child = subprocess.Popen([sys.executable, '-c', {helper!r}], stdin=subprocess.PIPE,
+    child = subprocess.Popen([sys.executable, '-c', {command!r}], stdin=subprocess.PIPE,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     journal.arm('a', child, lambda point: os._exit(73) if point == {boundary!r} else None)
     raise AssertionError('crash boundary was skipped')
@@ -287,7 +304,7 @@ with SharedStore(Path({str(root)!r}), 'one', {PROFILE!r}, {LIMITS!r}) as db:
             assert time.monotonic() < deadline, "helper did not reach the expected state"
             time.sleep(0.01)
 
-    captured = None
+    captured = recorded = None
     try:
         result = subprocess.run([sys.executable, "-c", source], capture_output=True, timeout=20)
         assert result.returncode == 73, result.stderr.decode()
@@ -298,7 +315,10 @@ with SharedStore(Path({str(root)!r}), 'one', {PROFILE!r}, {LIMITS!r}) as db:
         with store.SharedStore(root, "one", PROFILE, LIMITS) as db:
             assert scratch_usage(db) == SCRATCH.bytes
             journal = native.NativeJournal(db)
-            work = db.root / "scratch" / journal._row("a")["token"]
+            row = journal._row("a")
+            if row["identity"] is not None:
+                recorded = identity.Identity.decode(row["identity"])
+            work = db.root / "scratch" / row["token"]
             charged = db.usage()
             reason = "unidentified" if boundary == "before_launch_commit" else "still alive"
             with pytest.raises(store.Refused, match=reason):
@@ -308,6 +328,16 @@ with SharedStore(Path({str(root)!r}), 'one', {PROFILE!r}, {LIMITS!r}) as db:
             assert scratch_usage(db) == SCRATCH.bytes
             release.touch()
             wait_for(lambda: identity.stopped(captured))
+            if wrapped:
+                wait_for(wrapper_waiting.exists)
+                if recorded is not None:
+                    assert recorded != captured
+                    with pytest.raises(store.Refused, match="still alive"):
+                        journal.reclaim("a")
+                    assert scratch_usage(db) == SCRATCH.bytes
+            release_wrapper.touch()
+            if recorded is not None:
+                wait_for(lambda: identity.stopped(recorded))
             if boundary == "before_launch_commit":
                 with pytest.raises(store.Refused, match="unidentified"):
                     journal.reclaim("a")
@@ -319,8 +349,11 @@ with SharedStore(Path({str(root)!r}), 'one', {PROFILE!r}, {LIMITS!r}) as db:
                 assert scratch_usage(db) == 0
     finally:
         release.touch()
+        release_wrapper.touch()
         if captured is not None:
             identity.terminate(captured)
+        if recorded is not None:
+            identity.terminate(recorded)
 
 
 def test_supervisor_persists_identity_before_header_and_replay_skips_helper(tmp_path, monkeypatch):
