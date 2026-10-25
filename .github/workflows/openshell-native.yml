@@ -48,7 +48,7 @@ jobs:
         run: |
           set -euo pipefail
           uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --report "$RUNNER_TEMP/openshell-evidence/report.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/probe.log"
-      - name: Measure native HTTP policy and in-flight cutover
+      - name: Measure native HTTP policy, cutover and raw routes
         shell: bash
         env:
           OTEL_SDK_DISABLED: 'true'
