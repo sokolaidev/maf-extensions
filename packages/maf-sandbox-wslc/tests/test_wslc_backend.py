@@ -3718,7 +3718,10 @@ class TestTheSeam:
     def test_a_bounded_read_drains_full_pipes(self, full_pipe):
         async def scenario():
             fd = 1 if full_pipe == "stdout" else 2
-            script = f"import os; os.write({fd}, b'x' * 1000000); os.write(1, b'ok')"
+            script = (
+                f"import os; os.write(1, b'ready\\n'); "
+                f"os.write({fd}, b'x' * 1000000); os.write(1, b'ok')"
+            )
             process = await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-c",
@@ -3727,8 +3730,12 @@ class TestTheSeam:
                 stderr=asyncio.subprocess.PIPE,
             )
             try:
+                assert process.stdout is not None
+                assert (
+                    await asyncio.wait_for(process.stdout.readexactly(6), timeout=10) == b"ready\n"
+                )
                 stdout, stderr = await asyncio.wait_for(
-                    WslcSandboxBackend._read_bounded(process, 64, 1), timeout=5
+                    WslcSandboxBackend._read_bounded(process, 64, None), timeout=5
                 )
                 if full_pipe == "stdout":
                     assert stdout == b"x" * 64
