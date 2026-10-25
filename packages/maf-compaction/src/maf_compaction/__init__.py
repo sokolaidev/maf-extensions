@@ -60,6 +60,7 @@ from ._composed import (
 )
 from ._media import MediaTokenEstimator
 from ._nested import find_nested_strategy
+from ._persistence import SessionPersistence, SessionResponseStream
 from ._preserve import (
     PRESERVE_REASON_KEY,
     PRESERVED_KEY,
@@ -158,6 +159,8 @@ __all__ = [
     "ResultTextRewriter",
     "SessionCompactionProvider",
     "SessionCompactionRegistry",
+    "SessionPersistence",
+    "SessionResponseStream",
     "SessionToolResultRecallMiddleware",
     "ToolResultAnchoredSummarizationCompactionStrategy",
     "ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy",
