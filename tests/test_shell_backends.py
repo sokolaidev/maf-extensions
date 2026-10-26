@@ -151,7 +151,7 @@ def observe_wslc(identity, image):
 def require_wslc_absent(identities):
     """Check all engine containers, including stopped ones, independently of the SDK."""
     result = subprocess.run(
-        ["wslc", "container", "list", "-a", "--format", "json"],
+        ["wslc", "container", "list", "-a", "--no-trunc", "--format", "json"],
         check=True,
         capture_output=True,
         text=True,
@@ -166,3 +166,30 @@ def require_wslc_absent(identities):
     )
     assert isinstance(rows, list) and all(isinstance(row, dict) for row in rows)
     assert not any(identity in json.dumps(rows) for identity in identities)
+
+
+@pytest.mark.parametrize("state", ["running", "exited"])
+@pytest.mark.parametrize("format", ["array", "lines"])
+def test_wslc_cleanup_detects_surviving_full_identity(monkeypatch, state, format):
+    identity = "a" * 64
+
+    def inventory(command, **kwargs):
+        row = {"ID": identity if "--no-trunc" in command else identity[:12], "State": state}
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps([row] if format == "array" else row)
+        )
+
+    monkeypatch.setattr(subprocess, "run", inventory)
+    with pytest.raises(AssertionError):
+        require_wslc_absent([identity])
+
+
+def test_wslc_cleanup_accepts_only_unrelated_containers(monkeypatch):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, json.dumps([{"ID": "b" * 64, "State": "exited"}])
+        ),
+    )
+    require_wslc_absent(["a" * 64])
