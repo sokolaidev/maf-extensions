@@ -87,6 +87,8 @@ def interrupt(
             if worker.poll() is not None:
                 raise api.Refused("crash worker exited before forced termination")
             stopped_by = time.monotonic() + cross_active.STOP_SECONDS
+            if active is not None and identity.stopped(active[0]):
+                raise api.Refused("active helper exited before worker termination")
             worker.kill()
             worker.wait(timeout=15)
             if worker.returncode == 0:

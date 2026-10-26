@@ -673,6 +673,7 @@ def test_crash_boundary_requires_unpublished_native_mutation(tmp_path, output):
     [
         "missing-marker",
         "early-exit",
+        "marker-then-exit",
         "surviving-helper",
         "completion",
         "oversized-marker",
@@ -701,6 +702,24 @@ def test_active_crash_refuses_unproven_or_surviving_execution(
             return observe(*args)
 
         monkeypatch.setattr(active, "observe", observe_invalid)
+    if failure == "marker-then-exit":
+        observe = active.observe
+
+        def observe_then_exit(path):
+            ready = observe(path)
+            if ready:
+                (work / "exit-helper").touch()
+                deadline = time.monotonic() + 10
+                while not (work / "helper-exited").exists():
+                    assert time.monotonic() < deadline
+                    time.sleep(0.01)
+                captured = active.identity.Identity.decode(
+                    (work / "active-helper.json").read_text()
+                )
+                assert active.identity.stopped(captured)
+            return ready
+
+        monkeypatch.setattr(active, "observe", observe_then_exit)
     if failure == "stale-scratch":
         work.mkdir(parents=True)
         monkeypatch.setattr(
@@ -720,6 +739,8 @@ def test_active_crash_refuses_unproven_or_surviving_execution(
             )
         if invalid_survivor:
             helper += "Path('invalid-ready').touch(); time.sleep(60)"
+        elif failure == "marker-then-exit":
+            helper += "\nwhile not Path('exit-helper').exists(): time.sleep(0.01)\n"
         elif failure == "early-exit":
             helper += "sys.exit(0)"
         elif failure == "surviving-helper":
@@ -731,9 +752,18 @@ def test_active_crash_refuses_unproven_or_surviving_execution(
             "from pathlib import Path; from scripts.experiments.mxc_session_patch import cross_active as a; "
             "c=json.load(sys.stdin); work=Path(c['host_root'])/'scratch'/('1'*32); work.mkdir(parents=True); "
             f"a.command=lambda *args: [{getattr(sys, '_base_executable', sys.executable)!r}, '-c', {helper!r}]; "
+        )
+        execute = (
             "a.execute(Path(c['bundle'])/'helper', Path(c['bundle'])/'startup', work, a.CODE, 1024, "
             "before_spawn=lambda: None, before_start=lambda child: None, checkpoint_limits=(1,1))"
         )
+        if failure == "marker-then-exit":
+            script += (
+                "\ntry:\n    " + execute + "\nexcept a.Refused:\n"
+                "    import time\n    (work / 'helper-exited').touch()\n    time.sleep(60)\n"
+            )
+        else:
+            script += execute
         monkeypatch.setattr(
             cross.cross_crash,
             "command",
@@ -741,7 +771,9 @@ def test_active_crash_refuses_unproven_or_surviving_execution(
         )
         monkeypatch.setattr(cross.cross_crash, "WAIT_SECONDS", 5)
         monkeypatch.setattr(active, "STOP_SECONDS", 0.5)
-    expected = None
+    expected = (
+        "active helper exited before worker termination" if failure == "marker-then-exit" else None
+    )
     if invalid_survivor:
         expected = (
             "readiness exceeds its bound"
