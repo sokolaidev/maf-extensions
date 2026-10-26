@@ -11,12 +11,6 @@ from typing import Any, cast
 
 import maf_compaction
 from agent_framework import Agent, AgentSession, HistoryProvider, Message
-from maf_compaction import (
-    CompactionStack,
-    RecallGate,
-    SessionCompactionRegistry,
-    ToolResultRecallMiddleware,
-)
 
 from ._behavior import restore_behavior, snapshot_behavior
 from ._configuration import CompactionOptions, validate_session_support
@@ -29,14 +23,14 @@ class LiveBinding:
 
     agent: Agent[Any]
     strategy: Any
-    recall: ToolResultRecallMiddleware | None
-    gate: RecallGate | None
+    recall: maf_compaction.ToolResultRecallMiddleware | None
+    gate: maf_compaction.RecallGate | None
 
-    def stack(self) -> CompactionStack:
+    def stack(self) -> maf_compaction.CompactionStack:
         """Return the native persistence stack for a record-bearing strategy."""
         if self.recall is None or self.gate is None:
             raise ValueError("This strategy has no recall stack.")
-        return CompactionStack(self.strategy, self.gate, self.recall)
+        return maf_compaction.CompactionStack(self.strategy, self.gate, self.recall)
 
 
 class SessionExperiment:
@@ -54,12 +48,12 @@ class SessionExperiment:
         self.registry = self._registry()
         validate_session_support(options, has_recall=self.binding.recall is not None)
 
-    def _registry(self) -> SessionCompactionRegistry:
-        def build() -> CompactionStack:
+    def _registry(self) -> maf_compaction.SessionCompactionRegistry:
+        def build() -> maf_compaction.CompactionStack:
             self.binding = self.build()
             return self.binding.stack()
 
-        return SessionCompactionRegistry(build, max_cached_sessions=1)
+        return maf_compaction.SessionCompactionRegistry(build, max_cached_sessions=1)
 
     async def run(
         self, session: AgentSession, text: str, options: dict[str, Any]

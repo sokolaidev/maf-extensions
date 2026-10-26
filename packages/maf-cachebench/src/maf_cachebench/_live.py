@@ -737,7 +737,7 @@ class LiveOutcome:
     ``USERCOMPACT``, which moves when it ran out or the record was not enough. ``USERWAIT`` in
     ``strategy_notes``; zero on every other strategy.
     """
-    compaction_diagnostics: dict[str, Any] = field(default_factory=lambda: dict[str, Any]())
+    compaction_diagnostics: dict[str, Any] = field(default_factory=dict[str, Any])
     record_text: str = ""
     """The recall record the run produced, exactly as the model wrote it.
 

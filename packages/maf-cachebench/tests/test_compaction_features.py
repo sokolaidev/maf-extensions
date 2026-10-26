@@ -21,15 +21,6 @@ from agent_framework import (
     Message,
     ResponseStream,
 )
-from maf_compaction import (
-    RECALL_TOOL_NAME,
-    RecallGate,
-    ToolResultAnchoredSummarizationCompactionStrategy,
-    ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
-    ToolResultRecallMiddleware,
-    find_nested_strategy,
-    make_recall_tool,
-)
 
 from maf_cachebench import (
     CompactionOptions,
@@ -82,12 +73,16 @@ class Model(FunctionInvocationLayer[Any], ChatMiddlewareLayer[Any], BaseChatClie
             )
         elif index == 1 and self.truncated:
             content = Content.from_function_call(
-                call_id="cut", name=RECALL_TOOL_NAME, arguments='{"values": "unfinished'
+                call_id="cut",
+                name=maf_compaction.RECALL_TOOL_NAME,
+                arguments='{"values": "unfinished',
             )
             finish = "length"
         elif index == 1 and self.record:
             content = Content.from_function_call(
-                call_id="record", name=RECALL_TOOL_NAME, arguments='{"values":"CODE-123456"}'
+                call_id="record",
+                name=maf_compaction.RECALL_TOOL_NAME,
+                arguments='{"values":"CODE-123456"}',
             )
             finish = "tool_calls"
         response = ChatResponse(
@@ -147,12 +142,12 @@ def binding_factory(
                 user_min_band_share=0,
             ),
         )
-        gate = RecallGate()
-        recording = find_nested_strategy(
-            strategy, ToolResultAnchoredSummarizationCompactionStrategy
+        gate = maf_compaction.RecallGate()
+        recording = maf_compaction.find_nested_strategy(
+            strategy, maf_compaction.ToolResultAnchoredSummarizationCompactionStrategy
         )
         assert recording is not None
-        recall = ToolResultRecallMiddleware(
+        recall = maf_compaction.ToolResultRecallMiddleware(
             max_input_tokens=budget - 1000,
             tokenizer=tokenizer,
             arm=gate.arm,
@@ -171,7 +166,7 @@ def binding_factory(
             kind=kind,
             strategy=strategy,
             tokenizer=tokenizer,
-            tools=[make_recall_tool(gate)],
+            tools=[maf_compaction.make_recall_tool(gate)],
             recorder=recorder,
             extra_middleware=[recall],
             max_context_window_tokens=budget,
@@ -501,7 +496,9 @@ def test_summary_and_overflow_controls_reach_both_strategy_halves():
             compaction=controls,
         ),
     )
-    assert isinstance(strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy)
+    assert isinstance(
+        strategy, maf_compaction.ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+    )
     assert strategy.overflow_policy == "raise"
     assert strategy.estimate_margin == 0.1
     assert strategy.user_turns.max_summary_input_tokens == 1234
