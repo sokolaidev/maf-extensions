@@ -26,9 +26,12 @@ assert _SPEC is not None and _SPEC.loader is not None
 runner = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(runner)
 
-PREPARED = Path(os.environ.get("MAF_TERRAFORM_AVM_DIR", "")).resolve()
-DOCKER_IMAGE = os.environ.get("MAF_TERRAFORM_AVM_IMAGE", "")
-ACAS_IMAGE = os.environ.get("MAF_TERRAFORM_AVM_ACAS_IMAGE", "")
+ENGINE = "opentofu" if os.environ.get("MAF_AVM_ENGINE") == "opentofu" else "terraform"
+PREFIX = "MAF_" + ENGINE.upper() + "_AVM"
+HOST = "registry.opentofu.org" if ENGINE == "opentofu" else "registry.terraform.io"
+PREPARED = Path(os.environ.get(PREFIX + "_DIR", "")).resolve()
+DOCKER_IMAGE = os.environ.get(PREFIX + "_IMAGE", "")
+ACAS_IMAGE = os.environ.get(PREFIX + "_ACAS_IMAGE", "")
 ACAS_ENDPOINT = os.environ.get("ACAS_SANDBOX_ENDPOINT", "")
 NETWORK = "Azure/avm-res-network-virtualnetwork/azurerm"
 CONSTRAINTS = {"azapi": "~> 2.4, ~> 2.12", "modtm": "~> 0.3", "random": "~> 3.5, ~> 3.6"}
@@ -67,8 +70,9 @@ REGISTRY = "/opt/maf-terraform/registry"
 EGRESS_PROBE = (
     "import urllib.request\n"
     "try:\n"
-    " url = 'https://registry.terraform.io/.well-known/terraform.json'\n"
-    " body = urllib.request.urlopen(url, timeout=15).read(4096)\n"
+    f" url = 'https://{HOST}/.well-known/terraform.json'\n"
+    " request = urllib.request.Request(url, headers={'User-Agent': 'maf-avm-egress-probe/1'})\n"
+    " body = urllib.request.urlopen(request, timeout=15).read(4096)\n"
     "except Exception:\n"
     " body = b''\n"
     "print('connected' if b'modules.v1' in body else 'refused')\n"
@@ -108,7 +112,9 @@ def retain_failure(case: str, backend: str, launcher: dict[str, Any]) -> None:
         try:
             destination = Path(directory)
             destination.mkdir(parents=True, exist_ok=True)
-            (destination / f"{case}-{backend}.json").write_text(payload + "\n", encoding="utf-8")
+            (destination / f"{ENGINE}-{case}-{backend}.json").write_text(
+                payload + "\n", encoding="utf-8"
+            )
         except OSError as exc:
             print("AVM diagnostic artifact could not be written: " + type(exc).__name__)
 
@@ -133,13 +139,13 @@ def network_module(version: str = "0.22.2", source: str = NETWORK) -> str:
 def removal(case: str, receipt: dict[str, Any]) -> str | None:
     """The baked dependency a case deletes in the guest after acquire and before staging."""
     if case == "missing-provider":
-        return "/opt/maf-terraform/mirror/registry.terraform.io/azure/azapi"
+        return f"/opt/maf-terraform/mirror/{HOST}/azure/azapi"
     if case != "missing-child":
         return None
     network = next(
         item
         for item in receipt["registry_modules"]
-        if item["source"].endswith(NETWORK) and item["version"] == "0.22.2"
+        if item["source"].casefold().endswith(NETWORK.casefold()) and item["version"] == "0.22.2"
     )
     return f"{REGISTRY}/{network['graph']['.']['interfaces']['registry']}"
 
@@ -196,6 +202,12 @@ def project(case: str, receipt: dict[str, Any]) -> tuple[dict[str, str], str]:
             "root/main.tf": 'module "wrapper" {\n  source = "../wrapper"\n}\n',
             "wrapper/main.tf": network_module(),
         }
+    elif case == "tofu-precedence":
+        files = {"root/main.tf": network_module("0.0.1"), "root/main.tofu": network_module()}
+    elif case == "invalid-argument":
+        files["root/main.tf"] = network_module().replace(
+            "  location", "  unsupported_argument = true\n  location"
+        )
     elif case in ("correct-lock", "wrong-lock"):
         files["root/.terraform.lock.hcl"] = lock_file(receipt, broken=case == "wrong-lock")
     return files, root
@@ -227,6 +239,12 @@ async def create_backend(name: str) -> Any:
         ("constraint", (PASSED,)),
         ("local-wrapper", (PASSED,)),
         ("correct-lock", (PASSED,)),
+        ("invalid-argument", ("Unsupported argument",)),
+        pytest.param(
+            "tofu-precedence",
+            (PASSED,),
+            marks=pytest.mark.skipif(ENGINE != "opentofu", reason="OpenTofu extension precedence"),
+        ),
         ("incompatible-version", (UNLOADED, NO_REGISTRY, 'module "network"')),
         ("unbaked-module", (UNLOADED, NO_REGISTRY, 'module "network"')),
         ("missing-child", (UNLOADED, NO_REGISTRY, 'module "interfaces"')),
@@ -284,9 +302,7 @@ def test_avm_graph_validates_offline(backend_name, case, expected, monkeypatch):
 
         monkeypatch.setattr(backend, "acquire", checked_acquire)
         image = DOCKER_IMAGE if backend_name == "docker" else ACAS_IMAGE
-        tool = make_terraform_tools(
-            router, store, "live", context, engine="terraform", image=image
-        )[0]
+        tool = make_terraform_tools(router, store, "live", context, engine=ENGINE, image=image)[0]
         try:
             result = await tool.func(files=list(files), root_module=root)
             text = "\n".join(item.text or "" for item in result)
@@ -341,14 +357,14 @@ LINK_PROBE = (
     "runner = importlib.util.module_from_spec(spec)\n"
     "spec.loader.exec_module(runner)\n"
     "os.chdir(call)\n"
-    "result = runner.execute('terraform', '.', 300)\n"
+    f"result = runner.execute({ENGINE!r}, '.', 300)\n"
     "providers = call / '.runner' / 'data' / 'providers'\n"
     "copied = links = outside = 0\n"
     "for path in providers.rglob('*') if providers.is_dir() else ():\n"
     "    if path.is_symlink():\n"
     "        links += 1\n"
     "        outside += 0 if str(path.resolve()).startswith('/opt/maf-terraform/mirror') else 1\n"
-    "    elif path.is_file():\n"
+    "    elif path.is_file() and not (path.name.endswith('.lock') and path.stat().st_size == 0 and path.with_suffix('').is_symlink()):\n"
     "        copied += 1\n"
     "print(json.dumps({'error': result['error'], 'init': result['phases'].get('init', {}).get("
     "'exit_code'), 'copied': copied, 'links': links, 'outside': outside}))\n"

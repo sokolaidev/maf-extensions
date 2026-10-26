@@ -64,6 +64,10 @@ PROFILE_GUIDES = {
         "Offline OpenTofu initialization and validation with the verified random provider and example module.",
         "images/terraform-sandbox/OPENTOFU.md",
     ),
+    "opentofu-avm": (
+        "Offline OpenTofu validation with the pinned AVM virtual-network graph and provider mirror.",
+        "images/terraform-sandbox/OPENTOFU-AVM.md",
+    ),
     "terraform-avm": (
         "Offline Terraform initialization and validation with the pinned Azure Verified Modules catalogue and provider mirror.",
         "images/terraform-sandbox/AVM.md",
@@ -278,6 +282,14 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
             rows.append(("Terraform AVM check", UNAVAILABLE))
         rows.append(("Prepared Terraform version", avm.get("terraformVersion", UNAVAILABLE)))
         rows.append(("Prepared Terraform receipt", avm.get("receipt", UNAVAILABLE)))
+    if candidate["profile"] == "opentofu-avm":
+        avm = runtime.get("opentofuAvm", {})
+        rows.append(("Prepared OpenTofu version", avm.get("opentofuVersion", UNAVAILABLE)))
+        rows.append(("Prepared OpenTofu receipt", avm.get("receipt", UNAVAILABLE)))
+        for check in avm.get("checks", []):
+            rows.append(("OpenTofu AVM check", check))
+        if not avm.get("checks"):
+            rows.append(("OpenTofu AVM check", UNAVAILABLE))
     if candidate["profile"] == "opentofu-random":
         tofu = runtime.get("opentofuRandom", {})
         rows.append(("Prepared OpenTofu version", tofu.get("opentofuVersion", UNAVAILABLE)))

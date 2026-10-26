@@ -24,6 +24,7 @@ PROFILES = (
     "terraform-random",
     "opentofu-random",
     "terraform-avm",
+    "opentofu-avm",
     "hyperlight-aks-probe",
     "egress-proxy",
 )
@@ -40,6 +41,7 @@ IMAGE_INPUTS = {
         "terraform-random",
         "opentofu-random",
         "terraform-avm",
+        "opentofu-avm",
     ),
     "images/hyperlight-sandbox/": ("hyperlight-aks-probe",),
     "packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/": ("egress-proxy",),
@@ -59,6 +61,7 @@ CONSUMER_GUIDES = {
     "images/terraform-sandbox/README.md",
     "images/terraform-sandbox/AVM.md",
     "images/terraform-sandbox/OPENTOFU.md",
+    "images/terraform-sandbox/OPENTOFU-AVM.md",
     "images/terraform-sandbox/TERRAFORM.md",
     "images/hyperlight-sandbox/README.md",
 }
@@ -78,10 +81,12 @@ SCRIPT_INPUTS = {
     "scripts/terraform_dependencies.py": (
         "terraform-random",
         "terraform-avm",
+        "opentofu-avm",
         "opentofu-random",
     ),
     "scripts/terraform_avm_qualification.py": (
         "terraform-avm",
+        "opentofu-avm",
         "opentofu-random",
         "terraform-random",
     ),

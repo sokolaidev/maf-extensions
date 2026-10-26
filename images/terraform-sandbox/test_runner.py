@@ -133,15 +133,23 @@ class LauncherTests(unittest.TestCase):
         """A generated lock works on the next call; a wrong-registry lock cannot be repaired."""
         metadata = json.loads((runner.INSTALL / "engine.json").read_text())
         engine = metadata["engine"]
-        source = """terraform {
-  required_providers {
-    random = { source = "hashicorp/random", version = "3.9.1" }
-  }
-}
-resource "random_integer" "r" {
+        dependencies = runner.INSTALL / "dependencies.json"
+        if not dependencies.is_file():
+            # Direct random-profile images carry their installation manifest instead.
+            dependencies = runner.INSTALL / f"dependencies.{engine}.json"
+        receipt = json.loads(dependencies.read_text())
+        provider = next(
+            item for item in receipt["providers"] if item["source"].endswith("/hashicorp/random")
+        )
+        source = f"""terraform {{
+  required_providers {{
+    random = {{ source = "{provider["source"]}", version = "{provider["version"]}" }}
+  }}
+}}
+resource "random_integer" "r" {{
   min = 1
   max = 10
-}
+}}
 """
         original_cwd = Path.cwd()
         try:
@@ -154,7 +162,7 @@ resource "random_integer" "r" {
                     project.mkdir(parents=True)
                     (project / "main.tf").write_text(source)
                     if number == 2:
-                        self.assertIsNotNone(lock)
+                        assert lock is not None
                         lock = lock.replace("registry.terraform.io", "wrong.invalid").replace(
                             "registry.opentofu.org", "wrong.invalid"
                         )
@@ -172,6 +180,7 @@ resource "random_integer" "r" {
                         self.assertNotEqual(result["phases"]["init"]["exit_code"], 0)
                         self.assertNotIn("validate", result["phases"])
                     else:
+                        self.assertEqual(result["phases"]["init"]["exit_code"], 0, result)
                         self.assertEqual(result["phases"]["validate"]["exit_code"], 0, result)
                     current_lock = (project / ".terraform.lock.hcl").read_text()
                     if lock is not None:

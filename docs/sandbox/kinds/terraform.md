@@ -101,8 +101,8 @@ Dependency preparation is a host-controlled image-build step. It downloads only 
 | Providers | Full identity, version, platform, digest and source reference are pinned |
 | Multiple provider versions | Policy may approve several version ranges; duplicate resolved versions are refused |
 | Local module bundles | A complete graph is included in the image |
-| Registry modules, including Azure Verified Modules | Terraform only; pinned graphs and catalog selections are baked into the image |
-| OpenTofu registry modules | Not provided by preparation |
+| Registry modules, including Azure Verified Modules | Both engines; pinned graphs and catalog selections use the selected engine's registry |
+| OpenTofu AVM image | [Pinned virtual-network graph](../../../images/terraform-sandbox/OPENTOFU-AVM.md); broader catalogs require separate qualification |
 
 Only preparation has network access. Validation stays offline and gives the model no download interface. Missing modules leave initialization incomplete; other remote or dynamic module sources are refused.
 
@@ -134,7 +134,8 @@ All four combinations also passed in the [all-sample published-package dispatch]
 | Contract | State | Details |
 |---|---|---|
 | Offline validation and optional formatting | Implemented | [Package README](../../../packages/maf-sandbox-terraform/README.md) |
-| Approved providers, local modules and Terraform registry modules | Implemented; support depends on the selected image | [Image guide](../../../images/terraform-sandbox/README.md) |
+| Approved providers, local modules and registry modules for both engines | Implemented; support depends on the selected image | [Image guide](../../../images/terraform-sandbox/README.md) |
+| OpenTofu AVM network image | Implemented; bounded local Docker qualification, publication pending | [#2182](https://github.com/sokolaidev/maf-extensions/issues/2182) (closed) by [#2186](https://github.com/sokolaidev/maf-extensions/pull/2186) (merged); [Image guide](../../../images/terraform-sandbox/OPENTOFU-AVM.md) |
 | Plan, apply, state operations and warm reuse | Outside the supported contract | [Package README](../../../packages/maf-sandbox-terraform/README.md) |
 | Four-field result contract | Implemented for Terraform and OpenTofu, including live checks | [#1367](https://github.com/sokolaidev/maf-extensions/pull/1367) (merged); migration completed in [#1357](https://github.com/sokolaidev/maf-extensions/issues/1357) (closed) by [#1369](https://github.com/sokolaidev/maf-extensions/pull/1369) (merged) |
 | Trusted diagnostic summaries for repair loops | Implemented for Terraform and OpenTofu | [#1390](https://github.com/sokolaidev/maf-extensions/issues/1390) (closed) by [#1394](https://github.com/sokolaidev/maf-extensions/pull/1394) (merged) |

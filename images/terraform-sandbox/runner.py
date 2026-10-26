@@ -18,7 +18,7 @@ from typing import Any
 
 OUTPUT_LIMIT = 128 * 1024
 INSTALL = Path("/opt/maf-terraform")
-REGISTRY_HOST = "registry.terraform.io"
+REGISTRY_HOSTS = {"terraform": "registry.terraform.io", "opentofu": "registry.opentofu.org"}
 MAX_RECORDS = 1024
 _LABEL = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
 _WORD = re.compile(r"[^\W\d][\w-]*")
@@ -332,7 +332,10 @@ def _json_module_calls(text: str) -> dict[str, dict[str, str | None] | None]:
 
 def is_override(name: str) -> bool:
     """Terraform merges these files into a directory's primary configuration."""
-    stem = name.removesuffix(".json").removesuffix(".tf")
+    suffix = next(
+        (item for item in (".tf.json", ".tofu.json", ".tf", ".tofu") if name.endswith(item)), ""
+    )
+    stem = name.removesuffix(suffix)
     return stem == "override" or stem.endswith("_override")
 
 
@@ -359,12 +362,35 @@ def merge_module_calls(
     return merged
 
 
-def directory_module_calls(directory: Path) -> dict[str, dict[str, str | None]]:
+def configuration_names(names: list[str], engine: str = "terraform") -> set[str]:
+    """Select configuration files using the engine's extension precedence."""
+    suffixes = (
+        (".tf", ".tf.json", ".tofu", ".tofu.json") if engine == "opentofu" else (".tf", ".tf.json")
+    )
+    selected = {
+        name for name in names if not Path(name).name.startswith(".") and name.endswith(suffixes)
+    }
+    if engine == "opentofu":
+        for name in list(selected):
+            for suffix in (".tf", ".tf.json"):
+                if (
+                    name.endswith(suffix)
+                    and name.removesuffix(suffix) + suffix.replace(".tf", ".tofu") in selected
+                ):
+                    selected.remove(name)
+    return selected
+
+
+def directory_module_calls(
+    directory: Path, engine: str = "terraform"
+) -> dict[str, dict[str, str | None]]:
     """Read and merge a directory's module calls, dropping files this reader cannot follow."""
     found: list[tuple[str, dict[str, dict[str, str | None] | None]]] = []
-    for path in sorted(directory.iterdir()):
+    paths = sorted(directory.iterdir())
+    selected = configuration_names([path.name for path in paths if path.is_file()], engine)
+    for path in paths:
         name = path.name
-        if not (path.is_file() and not name.startswith(".") and name.endswith((".tf", ".tf.json"))):
+        if name not in selected:
             continue
         try:
             if path.stat().st_size > 8 * 1024 * 1024:
@@ -431,13 +457,14 @@ def _newest_admitted(
 
 
 def module_records(
-    root: Path, project: Path, packages: list[dict[str, Any]]
+    root: Path, project: Path, packages: list[dict[str, Any]], engine: str = "terraform"
 ) -> list[dict[str, str]]:
     """Record baked registry packages for the authored calls whose source they match.
 
     Terraform still compares each record's source and version with the configuration and
     falls back to the disabled registry on any mismatch, so a missed call stays incomplete.
     """
+    host = REGISTRY_HOSTS[engine]
     catalog: dict[str, list[dict[str, Any]]] = {}
     for package in packages:
         catalog.setdefault(package["source"].casefold(), []).append(package)
@@ -445,7 +472,7 @@ def module_records(
     records = [{"Key": "", "Source": "", "Dir": "."}]
 
     def visit(directory: Path, recorded: str, prefix: str, depth: int) -> None:
-        for label, arguments in sorted(directory_module_calls(directory).items()):
+        for label, arguments in sorted(directory_module_calls(directory, engine).items()):
             source = arguments.get("source")
             if source is None or not _LABEL.fullmatch(label) or depth > 32:
                 continue
@@ -464,12 +491,12 @@ def module_records(
                     visit(resolved, child, key, depth + 1)
                 continue
             match = _REGISTRY_SOURCE.fullmatch(source)
-            if match is None or (match.group(1) or REGISTRY_HOST).lower() != REGISTRY_HOST:
+            if match is None or (match.group(1) or host).lower() != host:
                 continue
             subdir = match.group(3)
             if subdir is not None and any(part in (".", "..") for part in subdir.split("/")):
                 continue
-            address = f"{REGISTRY_HOST}/{match.group(2)}"
+            address = f"{host}/{match.group(2)}"
             package = _newest_admitted(catalog.get(address.casefold(), []), arguments)
             inventory = None if package is None else package["inventories"].get(subdir or ".")
             if package is None or inventory is None or len(records) + len(inventory) >= MAX_RECORDS:
@@ -652,7 +679,7 @@ def execute(
         if packages:
             modules = private / "data" / "modules"
             modules.mkdir()
-            records = module_records(root, project.resolve(strict=True), packages)
+            records = module_records(root, project.resolve(strict=True), packages, engine)
             (modules / "modules.json").write_text(json.dumps({"Modules": records}))
         lock = root / ".terraform.lock.hcl"
         original_lock = lock.read_bytes() if lock.is_file() else None

@@ -119,8 +119,9 @@ def test_setup_failure_and_formatting_failure_remain_incomplete(launcher, monkey
     assert not format_outcome(json.dumps(result).encode(), "terraform", {}).completed
 
 
-@pytest.fixture
-def live_suite():
+@pytest.fixture(params=["terraform", "opentofu"])
+def live_suite(request, monkeypatch):
+    monkeypatch.setenv("MAF_AVM_ENGINE", request.param)
     return load("diagnostic_live_suite", ROOT / "tests/test_terraform_avm_offline.py")
 
 
@@ -148,7 +149,7 @@ def test_capture_preserves_result_and_bounds_both_streams(
     assert not capsys.readouterr().out and not list(tmp_path.iterdir())
     monkeypatch.setenv("MAF_TERRAFORM_DIAGNOSTICS_DIR", str(tmp_path))
     live_suite.retain_failure("pinned", "docker", record)
-    artifact = tmp_path / "pinned-docker.json"
+    artifact = tmp_path / f"{live_suite.ENGINE}-pinned-docker.json"
     assert artifact.stat().st_size < 64 * 1024
     assert json.loads(artifact.read_text())["launcher"] == record
     assert "guest output is untrusted" in capsys.readouterr().out
@@ -240,7 +241,7 @@ def test_live_case_retains_only_failures_after_cleanup(
             live_suite.test_avm_graph_validates_offline(
                 "acas", "pinned", (live_suite.PASSED,), monkeypatch
             )
-        retained = json.loads((output / "pinned-acas.json").read_text())
+        retained = json.loads((output / f"{live_suite.ENGINE}-pinned-acas.json").read_text())
         assert retained["launcher"]["stdout_tail"] == raw.stdout
         assert "failure diagnostics" in capsys.readouterr().out
     else:
@@ -269,6 +270,12 @@ def test_workflow_retains_diagnostics_only_after_avm_failure():
     check = next(step for step in steps if step.get("id") == "avm")
     upload = next(step for step in steps if "actions/upload-artifact@" in step.get("uses", ""))
     assert steps.index(upload) > steps.index(check)
-    assert upload["if"] == "failure() && steps.avm.outcome == 'failure'"
+    tofu = next(step for step in steps if step.get("id") == "opentofu-avm")
+    assert steps.index(upload) > steps.index(tofu)
+    assert upload["if"] == (
+        "failure() && (steps.avm.outcome == 'failure' || steps.opentofu-avm.outcome == 'failure')"
+    )
+    assert upload["with"]["path"] == tofu["env"]["MAF_TERRAFORM_DIAGNOSTICS_DIR"]
+    assert not tofu.get("continue-on-error")
     assert upload["with"]["path"] == check["env"]["MAF_TERRAFORM_DIAGNOSTICS_DIR"]
     assert not check.get("continue-on-error")

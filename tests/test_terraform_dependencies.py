@@ -1433,7 +1433,7 @@ CODELOAD = "https://codeload.github.com/Azure/terraform-network/zip/"
 @pytest.mark.parametrize(
     "change,decision",
     [
-        (_set(["engine"], "opentofu"), "registry-engine"),
+        (_set(["engine"], "opentofu"), "registry-source"),
         (_set(["registry_modules", 0, "source"], "Azure/network/azurerm"), "registry-source"),
         (_set(["registry_modules", 0, "source"], "example.com/Azure/x/azurerm"), "registry-source"),
         (
@@ -1791,3 +1791,51 @@ def test_provider_archives_are_checked_without_retaining_content():
     }
     with pytest.raises(prep.Refused, match="archive-expansion"):
         prep.zip_files(data, limit=4999, retain=False)
+
+
+@pytest.mark.parametrize("suffix", ["", ".json"])
+def test_opentofu_registry_graph_uses_selected_files_and_provider_identity(suffix):
+    policy = json.loads(
+        json.dumps(registry_policy()).replace("registry.terraform.io", "registry.opentofu.org")
+    )
+    policy["engine"] = "opentofu"
+    policy["excluded"] = [
+        {
+            "source": "registry.opentofu.org/Azure/excluded/azure",
+            "version": "1.0.0",
+            "reason": "unsupported",
+        }
+    ]
+    prep.checked_manifest(policy)
+    catalog = {item["name"]: item for item in policy["registry_modules"]}
+    files = {
+        name: content.replace("registry.terraform.io", "registry.opentofu.org")
+        for name, content in network_files().items()
+    }
+    if suffix:
+        files[NETWORK_ROOT + "main.tofu.json"] = json.dumps(
+            {
+                "module": {
+                    "shared": {"source": "Azure/shared/azure", "version": "0.6.0"},
+                    "subnet": {"source": "./modules/subnet"},
+                }
+            }
+        )
+        del files[NETWORK_ROOT + "main.tf"]
+        files[NETWORK_ROOT + "main.tf.json"] = (
+            '{"module": {"wrong": {"source": "https://example.com/unapproved"}}}'
+        )
+    else:
+        files[NETWORK_ROOT + "main.tofu"] = files[NETWORK_ROOT + "main.tf"]
+        files[NETWORK_ROOT + "main.tf"] = (
+            'module "wrong" { source = "https://example.com/unapproved" }'
+        )
+    baked, sources = prep.registry_module_files(
+        catalog["network"], bundle(files), catalog, policy["providers"], "opentofu"
+    )
+    assert "main.tofu" + suffix in baked
+    assert sources["."]["shared"] == "registry.opentofu.org/Azure/shared/azure"
+    with pytest.raises(prep.Refused):
+        prep.registry_module_files(
+            catalog["network"], bundle(files), catalog, policy["providers"], "terraform"
+        )

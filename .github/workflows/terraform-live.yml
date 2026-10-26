@@ -74,8 +74,20 @@ jobs:
         env:
           MAF_TERRAFORM_DIAGNOSTICS_DIR: ${{ runner.temp }}/terraform-avm-diagnostics
         run: uv run pytest -q tests/test_terraform_avm_offline.py
+      - name: Build and validate the OpenTofu AVM graph offline
+        id: opentofu-avm
+        env:
+          MAF_AVM_ENGINE: opentofu
+          MAF_OPENTOFU_AVM_IMAGE: maf-opentofu:ci-avm
+          MAF_OPENTOFU_AVM_DIR: dist/dependencies/opentofu-avm
+          MAF_TERRAFORM_DIAGNOSTICS_DIR: ${{ runner.temp }}/terraform-avm-diagnostics
+        run: |
+          build=(docker build --platform linux/amd64 --build-context scripts=scripts --build-arg BASE_IMAGE=maf-opentofu:ci-builtin --build-arg MANIFEST=dependencies.opentofu-avm-network.json -f images/terraform-sandbox/prepared.Dockerfile)
+          "${build[@]}" -t "$MAF_OPENTOFU_AVM_IMAGE" images/terraform-sandbox
+          "${build[@]}" --target prepared --output "type=local,dest=$MAF_OPENTOFU_AVM_DIR" images/terraform-sandbox
+          uv run pytest -q tests/test_terraform_avm_offline.py
       - name: Retain AVM failure diagnostics
-        if: failure() && steps.avm.outcome == 'failure'
+        if: failure() && (steps.avm.outcome == 'failure' || steps.opentofu-avm.outcome == 'failure')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: terraform-avm-failure-diagnostics
