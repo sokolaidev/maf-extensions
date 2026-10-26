@@ -72,9 +72,9 @@ def test_shell_acas_checks_published_packages_and_preserves_failure_evidence():
     workflow = yaml.safe_load((ROOT / ".github/workflows/verify-live.yml").read_text("utf-8"))
     job = workflow["jobs"]["shell-acas"]
     assert selected(job["if"]) == {"maf-sandbox", "maf-sandbox-acas", "maf-sandbox-shell"}
-    assert job["needs"] == "acas-images"
+    assert "needs" not in job
     assert job["environment"] == "live-verify"
-    assert job["timeout-minutes"] == 25
+    assert job["timeout-minutes"] == "${{ inputs.import_shell_image && 55 || 25 }}"
     steps = job["steps"]
     run = next(step["run"] for step in steps if "qualify_shell_acas.py" in step.get("run", ""))
     assert 'uv run --no-project "${source_args[@]}" "$HARNESS"/scripts/qualify_shell_acas.py' in run
@@ -92,11 +92,8 @@ def test_shell_import_is_explicit_manual_setup_and_precedes_the_read_only_check(
     triggers = workflow.get("on", workflow.get(True))
     assert triggers["workflow_dispatch"]["inputs"]["import_shell_image"]["default"] is False
     assert "import_shell_image" not in triggers["workflow_call"]["inputs"]
-    assert (
-        workflow["jobs"]["acas-images"]["timeout-minutes"]
-        == "${{ inputs.import_shell_image && 30 || 10 }}"
-    )
-    steps = workflow["jobs"]["acas-images"]["steps"]
+    assert workflow["jobs"]["acas-images"]["timeout-minutes"] == 10
+    steps = workflow["jobs"]["shell-acas"]["steps"]
     importer = next(
         i for i, step in enumerate(steps) if "import_disk_image.py" in step.get("run", "")
     )
@@ -104,8 +101,29 @@ def test_shell_import_is_explicit_manual_setup_and_precedes_the_read_only_check(
         i for i, step in enumerate(steps) if "check_acas_live_images.py" in step.get("run", "")
     )
     assert importer < checker
+    assert steps[importer]["timeout-minutes"] == 30
+    assert steps[checker]["timeout-minutes"] == 10
+    assert "--package maf-sandbox-shell" in steps[checker]["run"]
+    assert "continue-on-error" not in steps[checker]
     assert steps[importer]["if"] == (
         "github.event_name == 'workflow_dispatch' && inputs.import_shell_image "
         "&& inputs.package == 'maf-sandbox-shell'"
     )
     assert 'image_reference(os.environ["MAF_SHELL_ACAS_IMAGE"])' in steps[importer]["run"]
+
+
+def test_shell_setup_is_isolated_from_shared_and_daily_prerequisites():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/verify-live.yml").read_text("utf-8"))
+    shared = workflow["jobs"]["acas-images"]
+    shell = workflow["jobs"]["shell-acas"]
+    assert "maf-sandbox-shell" not in selected(shared["if"])
+    assert "needs" not in shell
+    assert "MAF_SHELL_ACAS_IMAGE" not in shared["env"]
+    assert all("import_disk_image.py" not in step.get("run", "") for step in shared["steps"])
+    harness = next(
+        step for step in shell["steps"] if step.get("with", {}).get("path") == ".harness"
+    )
+    assert "sparse-checkout" not in harness["with"]
+    daily = yaml.safe_load((ROOT / ".github/workflows/conformance-live.yml").read_text("utf-8"))
+    for step in daily["jobs"]["acas-conformance"]["steps"]:
+        assert "MAF_SHELL_ACAS_IMAGE" not in step.get("env", {})

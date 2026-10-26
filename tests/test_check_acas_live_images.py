@@ -70,7 +70,6 @@ def test_all_images_are_collected_with_shared_consumers_and_an_optional_skip():
         _DRAWIO,
         _TERRAFORM,
         _OPENTOFU,
-        _SHELL,
         _CODEACT,
         "python-3.13",
     }
@@ -82,10 +81,10 @@ def test_all_images_are_collected_with_shared_consumers_and_an_optional_skip():
 @pytest.mark.parametrize(
     ("package", "references"),
     [
-        ("maf-sandbox", {_BICEP, _DRAWIO, _TERRAFORM, _OPENTOFU, _SHELL, _CODEACT, "python-3.13"}),
+        ("maf-sandbox", {_BICEP, _DRAWIO, _TERRAFORM, _OPENTOFU, _CODEACT, "python-3.13"}),
         (
             "maf-sandbox-acas",
-            {_BICEP, _DRAWIO, _TERRAFORM, _OPENTOFU, _SHELL, _CODEACT, "python-3.13"},
+            {_BICEP, _DRAWIO, _TERRAFORM, _OPENTOFU, _CODEACT, "python-3.13"},
         ),
         ("maf-sandbox-shell", {_SHELL}),
         ("maf-sandbox-drawio", {_DRAWIO}),
@@ -115,6 +114,21 @@ def test_shell_requires_its_digest_without_other_kind_configuration():
 
 def test_source_without_shell_package_does_not_require_its_image(tmp_path):
     assert check.required_images(tmp_path, "maf-sandbox-shell", {}) == ({}, [])
+
+
+@pytest.mark.parametrize("package", ["", "maf-sandbox", "maf-sandbox-acas"])
+@pytest.mark.parametrize("shell_reference", [None, "not-a-digest", _SHELL])
+def test_shared_preflight_does_not_depend_on_shell_import(package, shell_reference):
+    env = {key: value for key, value in _ENV.items() if key != "MAF_SHELL_ACAS_IMAGE"}
+    if shell_reference is not None:
+        env["MAF_SHELL_ACAS_IMAGE"] = shell_reference
+    required, _ = check.required_images(_ROOT, package, env)
+    client = _Group(
+        [_disk(image) for image in (_BICEP, _DRAWIO, _TERRAFORM, _OPENTOFU, _CODEACT)],
+        [PublicDiskImage(name="python-3.13")],
+    )
+    assert _SHELL not in required
+    assert check.check_images(client, required)[1] == []
 
 
 def test_codeact_does_not_require_bicep_configuration_or_inspect_optional_nonroot():
@@ -192,11 +206,11 @@ def test_tags_without_sample_18_do_not_require_its_image(tmp_path, monkeypatch):
 def test_inventory_reads_once_per_namespace_and_matches_spec_base():
     required, _ = check.required_images(_ROOT, "", _ENV)
     client = _Group(
-        [_disk(image) for image in (_BICEP, _DRAWIO, _TERRAFORM, _OPENTOFU, _SHELL, _CODEACT)],
+        [_disk(image) for image in (_BICEP, _DRAWIO, _TERRAFORM, _OPENTOFU, _CODEACT)],
         [PublicDiskImage(name="python-3.13")],
     )
     present, failures = check.check_images(client, required)
-    assert len(present) == 7
+    assert len(present) == 6
     assert failures == []
     assert client.calls == ["imports", "catalogue"]
 
@@ -204,7 +218,7 @@ def test_inventory_reads_once_per_namespace_and_matches_spec_base():
 def test_all_missing_assets_report_consumers_import_command_or_catalogue():
     required, _ = check.required_images(_ROOT, "", _ENV)
     _, failures = check.check_images(_Group(prebuilt=[PublicDiskImage(name="ubuntu")]), required)
-    assert len(failures) == 7
+    assert len(failures) == 6
     imported = next(failure for failure in failures if _CODEACT in failure)
     assert "14_acas_codeact_files, 15_acas_codeact_host_tools" in imported
     assert "packages/maf-sandbox-acas/scripts/import_disk_image.py" in imported
@@ -251,7 +265,7 @@ def cli(monkeypatch):
     monkeypatch.delenv("ACAS_SANDBOX_NONROOT_IMAGE", raising=False)
     monkeypatch.delenv("MAF_SANDBOX_ACAS_E2E_PREBUILT", raising=False)
     client = _Group(
-        [_disk(image) for image in (_BICEP, _DRAWIO, _TERRAFORM, _OPENTOFU, _SHELL, _CODEACT)],
+        [_disk(image) for image in (_BICEP, _DRAWIO, _TERRAFORM, _OPENTOFU, _CODEACT)],
         [PublicDiskImage(name="python-3.13")],
     )
     events = []
@@ -295,7 +309,7 @@ def test_cli_missing_images_fails_and_writes_actionable_summary(cli, tmp_path, c
     client.images = []
     summary = tmp_path / "summary.md"
     assert check.main(["--source-root", str(_ROOT), "--summary", str(summary)]) == 1
-    assert capsys.readouterr().out.count("::error::") == 6
+    assert capsys.readouterr().out.count("::error::") == 5
     assert "import_disk_image.py" in summary.read_text("utf-8")
 
 
@@ -344,7 +358,6 @@ def test_preflight_blocks_exactly_the_acas_jobs_and_admits_their_package_union()
         "sample-20-acas-terraform",
         "sample-20-acas-opentofu",
         "acas-e2e",
-        "shell-acas",
     }
     for name, job in jobs.items():
         assert (job.get("needs") == "acas-images") == (name in consumers)
@@ -358,7 +371,7 @@ def test_preflight_blocks_exactly_the_acas_jobs_and_admits_their_package_union()
             _admits(jobs[name], package) for name in consumers
         )
         required, _ = check.required_images(_ROOT, package, _ENV)
-        assert bool(required) == _admits(preflight, package)
+        assert bool(required) == (_admits(preflight, package) or package == "maf-sandbox-shell")
         selected = {consumer for consumers in required.values() for consumer in consumers}
         for job, consumer in [
             ("sample-03", "03_acas_codeact"),
@@ -411,7 +424,7 @@ def test_daily_check_covers_all_images_before_any_sandbox_is_created():
     env = steps[preflight]["env"]
     assert set(check._CONFIG.values()) <= set(env)
     assert env["ACAS_SANDBOX_NONROOT_IMAGE"] == "${{ vars.ACAS_SANDBOX_NONROOT_IMAGE }}"
-    for variable in sorted(_ENV):
+    for variable in sorted(set(_ENV) - {"MAF_SHELL_ACAS_IMAGE"}):
         reduced = {key: value for key, value in _ENV.items() if key != variable}
         with pytest.raises(ValueError, match=variable):
             check.required_images(_ROOT, "", reduced)

@@ -67,7 +67,7 @@ def _image_constant(path: Path, name: str, env: Mapping[str, str]) -> str:
 def required_images(
     root: Path, package: str, env: Mapping[str, str]
 ) -> tuple[dict[str, list[str]], list[str]]:
-    """Collect only images used by the selected live jobs, with their consumers and skips."""
+    """Collect shared prerequisites, or one kind's images when explicitly selected."""
     all_jobs = package in ("", "maf-sandbox", "maf-sandbox-acas")
     bicep = all_jobs or package == "maf-sandbox-bicep"
     codeact = all_jobs or package == "maf-sandbox-codeact"
@@ -77,9 +77,10 @@ def required_images(
     terraform = (all_jobs or package == "maf-sandbox-terraform") and (
         root / "samples/20_terraform_validation/agent.py"
     ).is_file()
-    shell = (all_jobs or package == "maf-sandbox-shell") and (
-        root / "packages/maf-sandbox-shell/pyproject.toml"
-    ).is_file()
+    shell = (
+        package == "maf-sandbox-shell"
+        and (root / "packages/maf-sandbox-shell/pyproject.toml").is_file()
+    )
     required: dict[str, list[str]] = {}
     skipped: list[str] = []
     missing = []
@@ -196,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", type=Path, default=Path.cwd())
     parser.add_argument(
-        "--package", default="", help="release package; empty checks every ACAS job"
+        "--package", default="", help="release package; empty checks shared ACAS prerequisites"
     )
     parser.add_argument("--summary", type=Path)
     args = parser.parse_args(argv)

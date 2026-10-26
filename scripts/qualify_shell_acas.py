@@ -146,7 +146,9 @@ async def qualify(report: dict[str, Any]) -> None:
                     report["cases"].append({"case": name, "result": expected, "disposed": True})
             finally:
                 try:
-                    await router.dispose_scope(scope, "test")
+                    purge = await router.dispose_scope(scope, "test")
+                    if purge.undisposed is not None:
+                        raise ValueError(f"Shell scope purge incomplete: {purge.undisposed}")
                     if backend.observed:
                         await require_absent(client, backend.observed)
                 finally:

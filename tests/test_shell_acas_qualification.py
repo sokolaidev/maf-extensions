@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
+from maf_sandbox import DisposalFailure, ScopePurge
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import qualify_shell_acas as check  # noqa: E402
@@ -66,7 +67,9 @@ def test_only_a_service_404_proves_disposal(monkeypatch, outcome):
         assert get.await_count == 12
 
 
-@pytest.mark.parametrize("failure", [None, "result", "source", "cleanup", "ambiguous", "missing"])
+@pytest.mark.parametrize(
+    "failure", [None, "result", "source", "cleanup", "purge", "ambiguous", "missing"]
+)
 def test_qualification_requires_results_unchanged_sources_and_cleanup(monkeypatch, failure):
     for key in ("ENDPOINT", "SUBSCRIPTION_ID", "RESOURCE_GROUP", "GROUP"):
         monkeypatch.setenv("ACAS_SANDBOX_" + key, "test")
@@ -106,6 +109,11 @@ def test_qualification_requires_results_unchanged_sources_and_cleanup(monkeypatc
 
         async def dispose_scope(self, *args):
             state.purged = True
+            return ScopePurge(
+                undisposed=DisposalFailure("unknown", "purge failed")
+                if failure == "purge"
+                else None
+            )
 
     def tools(router, store, *args, **kwargs):
         assert kwargs["image"] == REFERENCE
