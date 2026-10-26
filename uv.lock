@@ -1523,6 +1523,7 @@ dependencies = [
 [package.optional-dependencies]
 foundry = [
     { name = "agent-framework-foundry" },
+    { name = "aiohttp" },
     { name = "azure-identity" },
 ]
 mistral = [
@@ -1534,6 +1535,7 @@ ollama = [
 ]
 openai = [
     { name = "agent-framework-openai" },
+    { name = "aiohttp" },
     { name = "azure-identity" },
 ]
 tiktoken = [
@@ -1547,6 +1549,8 @@ requires-dist = [
     { name = "agent-framework-mistral", marker = "extra == 'mistral'", specifier = ">=1.0.0b261015,<2" },
     { name = "agent-framework-ollama", marker = "extra == 'ollama'", specifier = ">=1.0.0b261015,<2" },
     { name = "agent-framework-openai", marker = "extra == 'openai'", specifier = ">=1.17.0,<2" },
+    { name = "aiohttp", marker = "extra == 'foundry'", specifier = ">=3.9,<4" },
+    { name = "aiohttp", marker = "extra == 'openai'", specifier = ">=3.9,<4" },
     { name = "azure-identity", marker = "extra == 'foundry'", specifier = ">=1.17,<2" },
     { name = "azure-identity", marker = "extra == 'openai'", specifier = ">=1.17,<2" },
     { name = "httpx", specifier = ">=0.27,<1" },

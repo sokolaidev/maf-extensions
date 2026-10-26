@@ -61,6 +61,34 @@ cachebench_live --from-jsonl runs/cell.jsonl
 
 `--results-jsonl` is not optional in practice: a cell runs for hours, and the file is appended one record per seed the moment it is scored, so a stopped run keeps what it paid for. `--from-jsonl` rebuilds the table and the verdict from the records with no provider configured, and files that measured the same cell merge into one table.
 
+## Compaction controls and session experiments
+
+`cachebench_live` supports `maf-compaction>=0.8.0,<0.9`, including the `SessionPersistence` API used by record-bearing `roundtrip` and `restart` experiments. Persistence support is checked before any model calls.
+
+```bash
+cachebench_live foundry:gpt-5.6-luna --dry-run \
+  --strategies none,tool_and_user_summary_anchored --summarizer-provider foundry:gpt-5.6-luna \
+  --preserve-prompt-cache --session-mode restart --history-mode replay --stream \
+  --max-summary-input-tokens 12000 --summary-input-policy chunk \
+  --summary-options-json '{"max_tokens": 1024}' --summary-timeout-seconds 60
+```
+
+| Area | Controls |
+|---|---|
+| Recall | `--preserve-prompt-cache`, `--record-instruction`, `--no-supports-tool-choice`, `--forced-call-timeout-seconds`, `--min-groups-before-repeat` |
+| Summary input | `--max-summary-input-tokens`, `--summary-input-policy skip\|chunk`, `--chunk-cache-size` (zero disables the cache) |
+| Summary requests | `--summary-options-json`, `--retry-without-summary-options`, `--summary-timeout-seconds` |
+| Summary backoff | `--max-consecutive-summary-failures` and `--summary-backoff-seconds`, set together |
+| Summary prompts | `--user-summary-prompt`, `--user-fold-prompt`, `--record-merge-prompt` |
+| Composed overflow | `--overflow-policy shed\|raise`, `--estimate-margin` |
+| Request lifecycle | `--session-mode memory\|roundtrip\|restart`, `--history-mode incremental\|replay`, `--stream` |
+
+`roundtrip` serializes and reloads the whole framework session between requests. `restart` also reconstructs the agent and compaction objects. Record-bearing strategies use the native persistence adapter with detached JSON snapshots and an exclusive local lease, saving only completed requests; other strategies restore their available decision state. These experiments use an in-memory store and rebuild objects in the same process: they do not measure disk latency, process crashes or distributed locking. `replay` resubmits the original conversation, including previously summarized messages, so replayed summaries and restored recall identities are exercised without duplicating stored history. `--stream` consumes the complete response within the persistence lifetime.
+
+Programmatic callers pass `CompactionOptions(...)` through `StrategyOptions(compaction=...)`. Existing record, user-summary, fold, coverage and chain controls remain available. Each option and the installed CacheBench, compaction and framework versions become part of the recorded cell identity. Schema 23 records also contain `compaction_diagnostics`, including forced-call failures, ignored pins, summary replay/skips and final recall-disabled state. Older records remain readable with unknown new settings and diagnostics; they are grouped separately.
+
+Each completed provider attempt is metered, including an attempt rejected and retried by recall middleware. Independent probes restore the complete supported strategy, middleware and gate state, including pin disablement and summary backoff. Costs from older schemas can undercount internal retries and should not be pooled with new runs.
+
 ## Reading the table
 
 Rows that keep at least `--min-correctness` of the control's accuracy come first, cheapest first; the rest follow below a line. The columns to read, in order:

@@ -8,6 +8,7 @@ import logging
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from importlib.metadata import version
 from pathlib import Path
 from statistics import fmean
 from typing import TYPE_CHECKING, Any, Final, cast
@@ -38,6 +39,11 @@ from ._cli_selection import (
     validate_recall_counts,
     validate_summarizer_selector,
     validate_unique_selection,
+)
+from ._configuration import (
+    add_compaction_arguments,
+    compaction_options,
+    validate_session_support,
 )
 from ._fill import ASSUMED_REPLY_TOKENS, MAX_FILL_FRACTION, FillPlan, plan_fill
 from ._live import (
@@ -880,6 +886,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run", action="store_true", help="Print the plan and its rough size, call nothing."
     )
+    add_compaction_arguments(parser)
     return parser
 
 
@@ -1152,6 +1159,7 @@ def _seed_record(
         answer=outcome.answer,
         error=outcome.error,
         cache_reported=outcome.cache_reported,
+        compaction_diagnostics=outcome.compaction_diagnostics,
     )
 
 
@@ -3078,6 +3086,7 @@ def _strategy_options(
         chain_gain_fraction=args.chain_gain_fraction,
         token_budget_fraction=args.budget_fraction,
         summarizer=summarizer,
+        compaction=compaction_options(args),
     )
 
 
@@ -3132,6 +3141,11 @@ def _strategy_settings(
         answer_max_tokens=args.answer_max_tokens,
         tokenizer=args.tokenizer,
         summarizer=summarizer,
+        compaction=options.compaction,
+        package_versions=tuple(
+            (name, version(name))
+            for name in ("maf-cachebench", "maf-compaction", "agent-framework-core")
+        ),
         # 0 is the absence of a bound on all three, the convention --fill and --keep-tokens
         # share. Resolved here so that the value recorded and the value passed to run_live are
         # one expression rather than two that have to agree.
@@ -3930,6 +3944,10 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
         raise SystemExit(
             "A provider is required, unless --from-jsonl is rebuilding a table from a results file."
         )
+    try:
+        compaction_options(args)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
     validate_recall_counts(args)
     validate_generation_caps(args)
     validate_pricing_options(args)
@@ -3947,6 +3965,10 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
         raise SystemExit(f"Unknown strategies: {', '.join(sorted(unknown))}.")
     if "none" not in strategies:
         raise SystemExit("The 'none' control must be included; every comparison is relative to it.")
+    try:
+        validate_session_support(compaction_options(args), has_recall=forces_records(strategies))
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
     mute_unrooted_summary_warnings()
 
     min_correctness = (

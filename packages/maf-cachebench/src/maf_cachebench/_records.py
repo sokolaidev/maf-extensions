@@ -19,6 +19,7 @@ from maf_compaction import (
 )
 
 from ._advisor import ModelPricing
+from ._configuration import CompactionOptions
 from ._fill import FillPlan
 from ._summary import DEFAULT_MIN_CORRECTNESS
 
@@ -258,7 +259,9 @@ __all__ = [
 #: token counts as zero -- every call was billed at the one rate, which is what those say.
 #: Version 22 records whether every agent and summarizer call reported cache reads.
 #: Older records retain unknown telemetry and their original stored costs.
-SCHEMA_VERSION: Final[int] = 22
+# Schema 23 meters every recall attempt and restores full behavioral state between probes.
+# Older costs and decisions cannot be pooled with these measurements.
+SCHEMA_VERSION: Final[int] = 23
 
 #: Versions this reader accepts, which is not only the current one.
 #:
@@ -349,7 +352,7 @@ SCHEMA_VERSION: Final[int] = 22
 #:
 #: Version 20 joins on the same argument: it priced no long-context tier, so the tier reads back
 #: as absent and its token counts as zero.
-_READABLE_SCHEMAS: Final[frozenset[int]] = frozenset({*range(2, 22), SCHEMA_VERSION})
+_READABLE_SCHEMAS: Final[frozenset[int]] = frozenset({*range(2, 23), SCHEMA_VERSION})
 
 #: The parameters that make two records the same cell, and so aggregable into one row.
 #:
@@ -700,6 +703,8 @@ class StrategySettings:
     record_target_tokens: int | None
     max_groups_before_record: int | None
     repeat_records: bool
+    compaction: CompactionOptions | None = None
+    package_versions: tuple[tuple[str, str], ...] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable mapping of these settings."""
@@ -777,6 +782,10 @@ def _settings_from_dict(data: Mapping[str, Any]) -> StrategySettings:
             else int(data["max_groups_before_record"])
         ),
         repeat_records=bool(data["repeat_records"]),
+        compaction=CompactionOptions(**data["compaction"]) if data.get("compaction") else None,
+        package_versions=tuple(tuple(pair) for pair in data["package_versions"])
+        if data.get("package_versions")
+        else None,
     )
 
 
@@ -1397,6 +1406,7 @@ class SeedRecord:
     cache_reported: bool | None = None
     """Whether every call reported cache reads; unknown on records before schema 22."""
     error: str | None = None
+    compaction_diagnostics: dict[str, Any] | None = None
     schema: int = SCHEMA_VERSION
 
     @property
