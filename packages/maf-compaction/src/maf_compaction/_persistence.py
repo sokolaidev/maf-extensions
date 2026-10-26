@@ -80,9 +80,11 @@ class SessionPersistence:
     """Load and save whole framework sessions under a host-supplied exclusive lease.
 
     ``lease(id)`` must exclude every writer to that session through load, execution, cleanup,
-    and save. Storage callbacks must use detached JSON snapshots and propagate failures;
-    ``save`` must atomically replace the snapshot and reject an expired lease. The adapter
-    supplies no storage backend, distributed lock, or retry of model work.
+    save, and ``after_save``. A non-None lease token is passed to ``save(..., lease=token)``;
+    storage must atomically fence and replace detached JSON snapshots. ``save_as`` passes
+    both IDs to ``lease(id, save_as=...)``. ``migrate(snapshot)`` runs before validation;
+    ``after_save(id, snapshot)`` is awaited after a successful save, inside the lease.
+    The adapter supplies no storage backend, distributed lock, or retry of model work.
     """
 
     def __init__(
@@ -90,27 +92,43 @@ class SessionPersistence:
         registry: SessionCompactionRegistry,
         *,
         load: Callable[[str], Awaitable[dict[str, Any] | None]],
-        save: Callable[[str, dict[str, Any]], Awaitable[None]],
-        lease: Callable[[str], AbstractAsyncContextManager[None]],
+        save: Callable[..., Awaitable[None]],
+        lease: Callable[..., AbstractAsyncContextManager[Any]],
+        after_save: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+        migrate: Callable[[dict[str, Any]], dict[str, Any] | Awaitable[dict[str, Any]]]
+        | None = None,
     ) -> None:
         self.registry = registry
         self._load = load
         self._save = save
         self._lease = lease
+        self._after_save = after_save
+        self._migrate = migrate
 
     @asynccontextmanager
-    async def _session(self, session_id: str, *, create: bool) -> AsyncGenerator[AgentSession]:
+    async def _session(
+        self, session_id: str, *, create: bool, save_as: str | None
+    ) -> AsyncGenerator[tuple[AgentSession, Any]]:
         if not isinstance(session_id, str) or not session_id:  # pyright: ignore[reportUnnecessaryIsInstance]
             raise ValueError("session_id must be a non-empty host-authorized string.")
-        async with self._lease(session_id):
+        if save_as is not None and (not isinstance(save_as, str) or not save_as):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise ValueError("save_as must be a non-empty host-authorized string.")
+        lease = (
+            self._lease(session_id) if save_as is None else self._lease(session_id, save_as=save_as)
+        )
+        async with lease as token:
             data = await self._load(session_id)
             if data is None:
                 if not create:
                     raise KeyError("Session does not exist; use create=True to allow creation.")
                 session = AgentSession(session_id=session_id)
             else:
+                if self._migrate is not None:
+                    migrated = self._migrate(_snapshot(data))
+                    data = await migrated if isinstance(migrated, Awaitable) else migrated
                 if (
-                    data.get("type") != "session"
+                    not isinstance(data, dict)  # pyright: ignore[reportUnnecessaryIsInstance]
+                    or data.get("type") != "session"
                     or data.get("session_id") != session_id
                     or not isinstance(data.get("state"), dict)
                 ):
@@ -119,7 +137,17 @@ class SessionPersistence:
             # Validate compaction state before any provider can observe the session.
             with self.registry.activate(session):
                 pass
-            yield session
+            yield session, token
+
+    async def _commit(self, session: AgentSession, session_id: str, token: Any) -> None:
+        data = _snapshot(session.to_dict())
+        data["session_id"] = session_id
+        if token is None:
+            await self._save(session_id, data)
+        else:
+            await self._save(session_id, data, lease=token)
+        if self._after_save is not None:
+            await self._after_save(session_id, data)
 
     async def run[ResultT](
         self,
@@ -127,13 +155,15 @@ class SessionPersistence:
         call: Callable[[AgentSession], Awaitable[ResultT]],
         *,
         create: bool = False,
+        save_as: str | None = None,
     ) -> ResultT:
         """Run a non-streaming request and save only after successful completion.
 
-        Load, request, serialization, and save failures propagate. ``create`` permits a
-        missing session, never replacement of corrupt or incompatible stored state.
+        ``save_as`` rewrites only the saved envelope's ID. ``create`` permits a missing
+        session, never state that remains invalid after migration. All callback failures
+        propagate; save or post-save errors can occur after the snapshot commits.
         """
-        async with self._session(session_id, create=create) as session:
+        async with self._session(session_id, create=create, save_as=save_as) as (session, token):
             pending = call(session)
             if isinstance(pending, ResponseStream):
                 await pending.close()
@@ -142,7 +172,7 @@ class SessionPersistence:
             if isinstance(result, ResponseStream):
                 await result.close()
                 raise TypeError("Use SessionPersistence.stream for streaming requests.")
-            await self._save(session_id, _snapshot(session.to_dict()))
+            await self._commit(session, session_id if save_as is None else save_as, token)
             return result
 
     @asynccontextmanager
@@ -152,13 +182,14 @@ class SessionPersistence:
         call: Callable[[AgentSession], ResponseStream[UpdateT, ResultT]],
         *,
         create: bool = False,
+        save_as: str | None = None,
     ) -> AsyncGenerator[SessionResponseStream[UpdateT, ResultT]]:
         """Lease a session until stream cleanup and save on a clean, fully consumed exit.
 
         Use ``async with`` and one consumer. Only a completed, clean exit attempts a save.
-        Save failures propagate after output may be delivered; their commit outcome is uncertain.
+        Save and post-save failures propagate after output may be delivered or committed.
         """
-        async with self._session(session_id, create=create) as session:
+        async with self._session(session_id, create=create, save_as=save_as) as (session, token):
             # Defer construction too: an unused framework stream can own unawaited coroutines.
             response = SessionResponseStream(lambda: call(session))
             try:
@@ -166,7 +197,7 @@ class SessionPersistence:
             finally:
                 await response.close()
             if response.completed:
-                await self._save(session_id, _snapshot(session.to_dict()))
+                await self._commit(session, session_id if save_as is None else save_as, token)
 
 
 def _snapshot(data: dict[str, Any]) -> dict[str, Any]:

@@ -259,9 +259,34 @@ async with persistence.stream(
 
 The host must authorize `session_id` before passing it to the adapter; it is not a model-supplied argument. Stored snapshots must carry that same ID. An absent session raises `KeyError` unless `create=True` explicitly permits creation. A failed load, malformed envelope or incompatible compaction snapshot raises before the request runs; none is treated as an absent session. The adapter restores through `AgentSession.from_dict()` and saves through `to_dict()`, taking detached JSON snapshots in both directions. Register any custom framework serialization codecs on every replica. Keep the registry configuration and snapshot schema compatible, preserve stable message IDs, and apply the same retention and access policies as conversation history. User-summary replacements, pending decisions and cooldowns travel with the rest of the session.
 
+Four optional hooks extend that lifecycle; existing callbacks keep their signatures when these options are unused:
+
+- **Fence writes:** `lease(session_id)` may yield an opaque token. When it yields anything other than `None` (including `0` or `False`), the adapter calls `save(session_id, snapshot, lease=token)`. When it yields `None`, `save` receives only its two positional arguments. The host must validate the token and commit the snapshot atomically in its storage backend; a separate in-process lease check cannot prevent a stale writer from overwriting a later holder's save. Callback failures propagate without a retry using a different signature.
+- **Save a branch:** pass `save_as=new_id` to `run` or `stream`. The adapter loads `session_id`, calls `lease(session_id, save_as=new_id)`, and saves only under `new_id`, rewriting the saved envelope's `session_id` so that it can be resumed. The in-memory session keeps its original ID. The host must authorize both non-empty IDs and supply a lease callback accepting the `save_as` keyword, even when both IDs are equal. That callback must exclude conflicting readers/writers for the source and destination, for example with a shared conversation lock or ordered locks for both IDs. Existing destinations follow the host's atomic replacement or collision-rejection policy; this option does not itself enforce immutability. Omitting `save_as` keeps the one-ID lease call.
+- **Finish under the lease:** supply an asynchronous constructor callback `after_save(saved_id, snapshot)`. It is awaited only after `save` returns successfully and before releasing the lease, including for a fully consumed stream. It receives the destination ID and saved envelope when `save_as` is used. Its return value is ignored; edits to the snapshot do not trigger another save. Failure or cancellation propagates without rollback or retry, even though the snapshot has already committed. The host owns lease renewal and any fencing or idempotency needed for external acknowledgements.
+- **Migrate stored data:** supply `migrate(snapshot)`, returning a snapshot directly or asynchronously. It receives a detached JSON copy after loading and inside the lease, before envelope and compaction-state validation. It can remove obsolete provider fields or upgrade a known schema. It is skipped for missing sessions. Migration errors or results that remain invalid stop the request even with `create=True`; a migration is saved only as part of a successful request, under the destination ID if supplied.
+
+For a host that chains response IDs, the callbacks can be composed as follows:
+
+```python
+persistence = SessionPersistence(
+    registry,
+    load=sessions.load,
+    save=sessions.save,  # Accepts lease=token and atomically fences the write.
+    lease=sessions.lease,  # Accepts save_as= and covers both IDs.
+    after_save=sessions.acknowledge,
+    migrate=sessions.migrate,
+)
+response = await persistence.run(
+    previous_response_id,
+    lambda session: agent.run(messages, session=session),
+    save_as=new_response_id,
+)
+```
+
 Only successfully completed requests are saved. Streaming requires `async with` and one consumer; full iteration or `get_final_response()` completes the response, including its final validation and provider hooks. The context closes the stream before saving and releasing the lease. An unused context never constructs the agent stream. Breaking early, explicitly closing an incomplete stream, leaving it unused, cancellation before saving, or a request/validation/cleanup error leaves the durable snapshot unchanged. A consumption failure prevents saving even if caught inside the block. Do not keep the stream or spawn consumers that outlive the block. Abandoning the entire context without closing it or terminating the process has no cleanup guarantee.
 
-Storage and serialization failures propagate. A streaming save failure can arrive after output has reached the caller. Once saving starts, cancellation, a lost acknowledgement or a lease-release failure can surface after the backend committed; the adapter does not retry model work. The host must define recovery for that uncertainty and for a crash between model work and saving. Failed or abandoned requests discard their in-memory compaction changes, including newly accepted summaries, so a later retry may repeat that work. Completed requests that internally recover from a refused recall still save their validated state; rejected history does not bypass the existing recall or enclosing agent gates.
+Storage, migration, serialization and post-save failures propagate. A streaming save or post-save failure can arrive after output has reached the caller. Once saving starts, cancellation, a lost acknowledgement, an `after_save` failure or a lease-release failure can surface after the backend committed; the adapter does not retry model work. The host must define recovery for that uncertainty and for a crash between model work and saving. Failed or abandoned requests discard their in-memory compaction changes, including newly accepted summaries, so a later retry may repeat that work. Completed requests that internally recover from a refused recall still save their validated state; rejected history does not bypass the existing recall or enclosing agent gates.
 
 Use this as the single writer of the whole session snapshot. History providers can update the in-memory session during the request, but independent external session/history stores must participate in the host's lease and consistency policy. The adapter does not roll back tool side effects, provider-side conversations, or custom external writes. For hosts that already own the complete session lifecycle, the existing registry/provider/middleware wiring remains sufficient; do not add a second load/save owner. `SessionPersistence` is an outer request adapter rather than chat middleware because returning a `ResponseStream` from middleware does not mean its consumption, validation, or persistence has finished.
 

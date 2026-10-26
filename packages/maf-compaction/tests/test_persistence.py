@@ -52,12 +52,13 @@ class Store:
             raise OSError("save failed")
         self.data[key] = json.loads(json.dumps(data))
 
-    def adapter(self, registry=None):
+    def adapter(self, registry=None, **options):
         return SessionPersistence(
             registry or SessionCompactionRegistry(build_stack, max_cached_sessions=0),
             load=self.load,
             save=self.save,
             lease=self.lease,
+            **options,
         )
 
 
@@ -446,7 +447,8 @@ async def test_two_adapters_serialize_one_session_while_another_session_proceeds
 
 
 @pytest.mark.parametrize("stream", [False, True])
-async def test_original_history_replays_after_durable_save_into_fresh_registry(stream):
+@pytest.mark.parametrize("branched", [False, True])
+async def test_original_history_replays_after_durable_save_into_fresh_registry(stream, branched):
     class HostHistory(InMemoryHistoryProvider):
         async def before_run(self, **kwargs):
             pass
@@ -463,6 +465,15 @@ async def test_original_history_replays_after_durable_save_into_fresh_registry(s
         model = Model()
         agent = harness(registry, model, history_provider=HostHistory())
         persistence = store.adapter(registry)
+        session_id = f"response-{index}" if branched else "a"
+        save_as = f"response-{index + 1}" if branched else None
+        if branched:
+            persistence = SessionPersistence(
+                registry,
+                load=store.load,
+                save=store.save,
+                lease=lambda key, save_as: store.lease("conversation"),
+            )
         replayed = []
 
         # Keep a reference only to read this request's diagnostic after cache eviction.
@@ -476,16 +487,18 @@ async def test_original_history_replays_after_durable_save_into_fresh_registry(s
         registry.build = observed_build
         if stream:
             async with persistence.stream(
-                "a",
+                session_id,
                 lambda session: agent.run(deepcopy(original), session=session, stream=True),
                 create=index == 0,
+                save_as=save_as,
             ) as response:
                 assert (await response.get_final_response()).text == "answer"
         else:
             response = await persistence.run(
-                "a",
+                session_id,
                 lambda session: agent.run(deepcopy(original), session=session),
                 create=index == 0,
+                save_as=save_as,
             )
             assert response.text == "answer"
         assert len(summarizer.requests) == 1
@@ -631,3 +644,378 @@ async def test_lost_save_acknowledgement_does_not_trigger_rollback_or_retry():
     assert calls == [True]
     assert store.data["a"]["state"]["answer"] == "completed"
     assert store.events.count(("a", "save")) == 1
+
+
+async def persisted_request(adapter, call, *, stream, session_id="a", **options):
+    if not stream:
+        return await adapter.run(session_id, call, **options)
+
+    def response(session):
+        async def updates():
+            yield await call(session)
+
+        return ResponseStream(updates(), finalizer=lambda parts: parts[0])
+
+    async with adapter.stream(session_id, response, **options) as result:
+        return await result.get_final_response()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("token", [None, 0, "fence", object()])
+async def test_lease_token_reaches_save_without_changing_legacy_callbacks(stream, token):
+    store = Store()
+
+    @asynccontextmanager
+    async def lease(key):
+        async with store.lease(key):
+            yield token
+
+    async def save(key, data, **kwargs):
+        assert kwargs == ({} if token is None else {"lease": token})
+        if token is not None:
+            assert kwargs["lease"] is token
+        await store.save(key, data)
+
+    adapter = SessionPersistence(
+        SessionCompactionRegistry(build_stack), load=store.load, save=save, lease=lease
+    )
+    await persisted_request(adapter, lambda session: asyncio.sleep(0), stream=stream, create=True)
+    assert "a" in store.data
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_expired_writer_cannot_overwrite_next_lease_holders_save(stream):
+    store = Store()
+    current_token = 0
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+    after = []
+
+    @asynccontextmanager
+    async def lease(key):
+        nonlocal current_token
+        current_token += 1
+        yield current_token
+
+    async def save(key, data, *, lease):
+        if lease != current_token:
+            raise RuntimeError("lease expired")
+        store.data[key] = deepcopy(data)
+
+    async def after_save(key, data):
+        after.append(data["state"]["owner"])
+
+    async def stale(session):
+        calls.append("stale")
+        session.state["owner"] = "stale"
+        entered.set()
+        await release.wait()
+
+    async def fresh(session):
+        calls.append("fresh")
+        session.state["owner"] = "fresh"
+
+    adapter = SessionPersistence(
+        SessionCompactionRegistry(build_stack),
+        load=store.load,
+        save=save,
+        lease=lease,
+        after_save=after_save,
+    )
+    task = asyncio.create_task(persisted_request(adapter, stale, stream=stream, create=True))
+    try:
+        await entered.wait()
+        await persisted_request(adapter, fresh, stream=stream, create=True)
+    finally:
+        release.set()
+    with pytest.raises(RuntimeError, match="lease expired"):
+        await task
+    assert calls == ["stale", "fresh"]
+    assert after == ["fresh"]
+    assert store.data["a"]["state"]["owner"] == "fresh"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_save_as_preserves_source_and_resumes_compaction_under_destination(stream):
+    store = Store()
+    session = AgentSession(session_id="a")
+    registry = SessionCompactionRegistry(build_stack)
+    with registry.activate(session) as stack:
+        state = stack.middleware.session_state()
+        state["value_free_streak"] = 1
+        stack.middleware.restore_session_state(state)
+    store.data["a"] = session.to_dict()
+    original = deepcopy(store.data["a"])
+    ids = []
+    token = object()
+
+    @asynccontextmanager
+    async def lease(key, *, save_as):
+        ids.append((key, save_as))
+        async with store.lease("conversation"):
+            yield token
+
+    async def save(key, data, *, lease):
+        assert lease is token
+        await store.save(key, data)
+
+    async def after_save(key, data):
+        assert key == data["session_id"] == "b"
+        assert store.locks["conversation"].locked()
+        assert store.data[key] == data
+        store.events.append((key, "after_save"))
+
+    async def call(loaded):
+        assert loaded.session_id == "a"
+        loaded.state["answer"] = "new response"
+        return loaded
+
+    adapter = SessionPersistence(
+        registry, load=store.load, save=save, lease=lease, after_save=after_save
+    )
+    loaded = await persisted_request(adapter, call, stream=stream, save_as="b")
+    assert loaded.session_id == "a"
+    assert ids == [("a", "b")]
+    assert store.data["a"] == original
+    assert store.events[-3:] == [("b", "save"), ("b", "after_save"), ("conversation", "unlock")]
+
+    async def resume(restored):
+        assert restored.session_id == "b"
+        assert restored.state["answer"] == "new response"
+        with fresh_registry.activate(restored) as restored_stack:
+            assert restored_stack.middleware.value_free_record_streak == 1
+
+    fresh_registry = SessionCompactionRegistry(build_stack)
+    await persisted_request(store.adapter(fresh_registry), resume, stream=stream, session_id="b")
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("save_as", ["", 0, False, []])
+async def test_invalid_save_as_never_acquires_lease(stream, save_as):
+    store = Store()
+    with pytest.raises(ValueError, match="save_as"):
+        await persisted_request(
+            store.adapter(), lambda session: asyncio.sleep(0), stream=stream, save_as=save_as
+        )
+    assert not store.events
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("failure", ["after", "cancel", "save"])
+async def test_post_save_failure_propagates_inside_lease_without_retry(stream, failure):
+    store = Store()
+    store.save_error = failure == "save"
+    calls = []
+
+    async def call(session):
+        calls.append(True)
+        session.state["accepted"] = True
+
+    async def after_save(key, data):
+        assert store.locks[key].locked()
+        assert store.data[key] == data
+        store.events.append((key, "after_save"))
+        if failure == "cancel":
+            raise asyncio.CancelledError
+        raise OSError("after failed")
+
+    with pytest.raises(asyncio.CancelledError if failure == "cancel" else OSError):
+        await persisted_request(
+            store.adapter(after_save=after_save), call, stream=stream, create=True
+        )
+    assert calls == [True]
+    assert store.events[-1] == ("a", "unlock")
+    assert store.events.count(("a", "save")) == 1
+    if failure == "save":
+        assert ("a", "after_save") not in store.events
+        assert not store.data
+    else:
+        assert store.data["a"]["state"]["accepted"]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_migration_precedes_envelope_and_compaction_validation(stream, asynchronous):
+    store = Store()
+    session = AgentSession(session_id="a", service_session_id="obsolete")
+    registry = SessionCompactionRegistry(build_stack)
+    with registry.activate(session):
+        pass
+    store.data["a"] = session.to_dict()
+    store.data["a"]["type"] = "legacy"
+    store.data["a"]["state"]["maf_compaction"]["version"] = 999
+    before = deepcopy(store.data["a"])
+
+    def migrate(data):
+        assert store.locks["a"].locked()
+        store.events.append(("a", "migrate"))
+        data["type"] = "session"
+        data.pop("service_session_id")
+        data["state"]["maf_compaction"]["version"] = 5
+        return data
+
+    async def migrate_async(data):
+        return migrate(data)
+
+    async def call(loaded):
+        assert loaded.service_session_id is None
+        assert store.data["a"] == before
+        with registry.activate(loaded):
+            pass
+        store.events.append(("a", "call"))
+
+    await persisted_request(
+        store.adapter(registry, migrate=migrate_async if asynchronous else migrate),
+        call,
+        stream=stream,
+    )
+    assert store.events == [("a", e) for e in ["lock", "load", "migrate", "call", "save", "unlock"]]
+    assert store.data["a"].get("service_session_id") is None
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("failure", ["error", "cancel", "id", "schema", "none", "json"])
+async def test_migration_failure_never_replaces_or_mutates_storage_even_with_create(
+    stream, failure
+):
+    store = Store()
+    store.data["a"] = AgentSession(session_id="a").to_dict()
+    before = deepcopy(store.data)
+
+    def migrate(data):
+        data["state"]["changed"] = True
+        if failure == "error":
+            raise ValueError("migration failed")
+        if failure == "cancel":
+            raise asyncio.CancelledError
+        if failure == "id":
+            data["session_id"] = "b"
+        if failure == "schema":
+            data["state"]["maf_compaction"] = {"version": 999}
+        if failure == "none":
+            return None
+        if failure == "json":
+            data["state"]["invalid"] = float("nan")
+        return data
+
+    async def call(session):
+        pytest.fail("Invalid migration reached the agent")
+
+    async def after_save(key, data):
+        pytest.fail("Invalid migration reached after_save")
+
+    with pytest.raises(asyncio.CancelledError if failure == "cancel" else ValueError):
+        await persisted_request(
+            store.adapter(migrate=migrate, after_save=after_save),
+            call,
+            stream=stream,
+            create=True,
+        )
+    assert store.data == before
+    assert store.events == [("a", e) for e in ["lock", "load", "unlock"]]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_migration_is_not_called_for_missing_session(stream):
+    store = Store()
+
+    def migrate(data):
+        pytest.fail("Missing sessions must not be migrated")
+
+    await persisted_request(
+        store.adapter(migrate=migrate), lambda session: asyncio.sleep(0), stream=stream, create=True
+    )
+    assert "a" in store.data
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_after_save_blocks_next_request_until_callback_finishes(stream):
+    store = Store()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    waiting = asyncio.Event()
+
+    async def after_save(key, data):
+        entered.set()
+        await release.wait()
+        store.events.append((key, "after_save"))
+
+    async def next_request():
+        waiting.set()
+        await store.adapter().run("a", lambda session: asyncio.sleep(0))
+
+    async with asyncio.TaskGroup() as tasks:
+        tasks.create_task(
+            persisted_request(
+                store.adapter(after_save=after_save),
+                lambda session: asyncio.sleep(0),
+                stream=stream,
+                create=True,
+            )
+        )
+        await entered.wait()
+        tasks.create_task(next_request())
+        await waiting.wait()
+        assert store.events == [("a", e) for e in ["lock", "load", "save"]]
+        release.set()
+    assert store.events == [
+        ("a", e)
+        for e in ["lock", "load", "save", "after_save", "unlock", "lock", "load", "save", "unlock"]
+    ]
+
+
+@pytest.mark.parametrize("failure", ["unused", "abandoned", "request", "cleanup", "consumer"])
+async def test_unsaved_branch_never_runs_after_save(failure):
+    store = Store()
+    store.data["a"] = AgentSession(session_id="a").to_dict()
+    before = deepcopy(store.data)
+
+    @asynccontextmanager
+    async def lease(key, *, save_as):
+        assert (key, save_as) == ("a", "b")
+        async with store.lease(key):
+            yield
+
+    async def after_save(key, data):
+        pytest.fail("Uncommitted branches must not run after_save")
+
+    def call(session):
+        async def updates():
+            try:
+                session.state["partial"] = True
+                yield "partial"
+                if failure == "request":
+                    raise RuntimeError("request failed")
+            finally:
+                if failure == "cleanup":
+                    raise RuntimeError("cleanup failed")
+
+        return ResponseStream(updates(), finalizer=lambda parts: parts)
+
+    adapter = SessionPersistence(
+        SessionCompactionRegistry(build_stack),
+        load=store.load,
+        save=store.save,
+        lease=lease,
+        after_save=after_save,
+    )
+
+    async def consume():
+        async with adapter.stream("a", call, save_as="b") as response:
+            if failure == "unused":
+                return
+            if failure == "abandoned":
+                await anext(response)
+                return
+            await response.get_final_response()
+            if failure == "consumer":
+                raise RuntimeError("consumer failed")
+
+    if failure in ("unused", "abandoned"):
+        await consume()
+    else:
+        with pytest.raises(RuntimeError, match=failure):
+            await consume()
+    assert store.data == before
+    assert store.events == [("a", e) for e in ["lock", "load", "unlock"]]
