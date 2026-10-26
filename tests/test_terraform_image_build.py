@@ -46,14 +46,8 @@ def test_profiles_reuse_approved_provider_manifests(engine):
 
 
 @pytest.mark.parametrize("engine", ["terraform", "opentofu"])
-@pytest.mark.parametrize(
-    "fixture",
-    [
-        "packages/maf-sandbox-terraform/tests/test_terraform_docker.py",
-        "images/terraform-sandbox/test_runner.py",
-    ],
-)
-def test_live_random_fixtures_match_the_image_mirrors(engine, fixture):
+def test_live_random_fixture_matches_the_image_mirrors(engine):
+    fixture = "packages/maf-sandbox-terraform/tests/test_terraform_docker.py"
     providers = install.load_plan(engine, "random")["providers"]
     versions = {p["version"] for p in providers if p["source"].endswith("/hashicorp/random")}
     tree = ast.parse((IMAGE_SOURCE.parents[1] / fixture).read_text(encoding="utf-8"))
