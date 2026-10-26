@@ -677,6 +677,9 @@ def test_crash_boundary_requires_unpublished_native_mutation(tmp_path, output):
         "completion",
         "oversized-marker",
         "stale-scratch",
+        "completion-surviving",
+        "candidate-surviving",
+        "oversized-marker-surviving",
     ],
 )
 def test_active_crash_refuses_unproven_or_surviving_execution(
@@ -685,6 +688,19 @@ def test_active_crash_refuses_unproven_or_surviving_execution(
     roots, bundle, peers = participants
     active = cross.cross_crash.cross_active
     work = crash_host.root / "scratch" / ("1" * 32)
+    invalid_survivor = failure.endswith("-surviving")
+    failure = failure.removesuffix("-surviving")
+    if invalid_survivor:
+        observe = active.observe
+
+        def observe_invalid(*args):
+            deadline = time.monotonic() + 10
+            while not (work / "invalid-ready").exists():
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+            return observe(*args)
+
+        monkeypatch.setattr(active, "observe", observe_invalid)
     if failure == "stale-scratch":
         work.mkdir(parents=True)
         monkeypatch.setattr(
@@ -694,13 +710,17 @@ def test_active_crash_refuses_unproven_or_surviving_execution(
         helper = "import sys, time; from pathlib import Path; assert sys.stdin.buffer.read(8) == b'MXCOWN1\\n'; "
         if failure == "completion":
             helper += "Path('native.json').write_text('{}'); "
+        elif failure == "candidate":
+            helper += "Path('candidate').mkdir(); "
         if failure not in {"missing-marker", "early-exit"}:
             helper += (
                 "print("
                 + repr("x" * 1025 if failure == "oversized-marker" else "MXC_ACTIVE_READY:99")
                 + ", flush=True); "
             )
-        if failure == "early-exit":
+        if invalid_survivor:
+            helper += "Path('invalid-ready').touch(); time.sleep(60)"
+        elif failure == "early-exit":
             helper += "sys.exit(0)"
         elif failure == "surviving-helper":
             helper += "time.sleep(60)"
@@ -721,7 +741,14 @@ def test_active_crash_refuses_unproven_or_surviving_execution(
         )
         monkeypatch.setattr(cross.cross_crash, "WAIT_SECONDS", 5)
         monkeypatch.setattr(active, "STOP_SECONDS", 0.5)
-    with pytest.raises(cross.api.Refused):
+    expected = None
+    if invalid_survivor:
+        expected = (
+            "readiness exceeds its bound"
+            if failure == "oversized-marker"
+            else "probe already completed"
+        )
+    with pytest.raises(cross.api.Refused, match=expected):
         cross.cross_crash.interrupt(
             crash_host,
             cross._client(roots["a"], peers, "coordinator"),
@@ -731,10 +758,13 @@ def test_active_crash_refuses_unproven_or_surviving_execution(
         )
     if (work / "active-helper.json").exists():
         captured = active.identity.Identity.decode((work / "active-helper.json").read_text())
-        deadline = time.monotonic() + 5
-        while not active.identity.stopped(captured):
-            assert time.monotonic() < deadline
-            time.sleep(0.01)
+        try:
+            deadline = time.monotonic() + 5
+            while not active.identity.stopped(captured):
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+        finally:
+            active.identity.terminate(captured)
 
 
 def test_crash_modes_cannot_be_combined_before_admission():

@@ -69,11 +69,11 @@ def interrupt(
             deadline = time.monotonic() + WAIT_SECONDS
             while True:
                 if active_guest:
-                    active = cross_active.observe(host.root)
+                    active = cross_active.launch(host.root)
                     if active is not None:
                         if identity.stopped(active[0]):
                             raise api.Refused("active helper exited before worker termination")
-                        if active[2]:
+                        if cross_active.observe(active[1]):
                             break
                 elif ready.exists():
                     break

@@ -72,8 +72,8 @@ def execute(
             child.wait(timeout=15)
 
 
-def observe(root: Path):
-    """Read only the trusted launch record and bounded fixed-probe readiness output."""
+def launch(root: Path) -> tuple[identity.Identity, Path] | None:
+    """Read the trusted launch identity independently of guest readiness."""
     paths = list((root / "scratch").glob("*/active-helper.json"))
     if not paths:
         return None
@@ -83,11 +83,15 @@ def observe(root: Path):
     with path.open("rb") as stream:
         value = stream.read(1025)
     helper = identity.Identity.decode(value.decode("utf-8"))
-    work = path.parent
+    return helper, path.parent
+
+
+def observe(work: Path) -> bool:
+    """Validate bounded readiness output without granting completion authority."""
     with (work / "native.stdout").open("rb") as stream:
         output = stream.read(1025)
     if len(output) > 1024:
         raise Refused("active guest readiness exceeds its bound")
     if (work / "candidate").exists() or (work / "native.json").exists():
         raise Refused("active guest probe already completed")
-    return helper, work, MARKER in output.splitlines()
+    return MARKER in output.splitlines()
