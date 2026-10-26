@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-shell-v0.1.0...maf-sandbox-shell-v0.1.1) (2026-10-25)
+
+
+### Fixes
+
+* **shell:** support patched interpreters in the Wolfi validation image ([#2181](https://github.com/sokolaidev/maf-extensions/issues/2181)) ([6fe64b3](https://github.com/sokolaidev/maf-extensions/commit/6fe64b36ffbab1b864c3490b24c188789af90e72))
+* **shell:** update image dependencies and qualify both validation tools ([#2168](https://github.com/sokolaidev/maf-extensions/issues/2168)) ([c4e12b8](https://github.com/sokolaidev/maf-extensions/commit/c4e12b8c3594c7dccbebe3351b2924ca93072051))
+
 ## 0.1.0 (2026-10-24)
 
 
