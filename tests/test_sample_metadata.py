@@ -56,6 +56,20 @@ def test_the_block_parses_and_names_a_python_floor(sample: Path):
 
 
 @pytest.mark.parametrize("sample", _SAMPLE_DIRS, ids=lambda path: path.name)
+def test_remote_mcp_samples_declare_the_optional_transport(sample: Path):
+    tree = ast.parse((sample / "agent.py").read_text("utf-8"))
+    uses_mcp = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "agent_framework"
+        and any(alias.name == "MCPStreamableHTTPTool" for alias in node.names)
+        for node in ast.walk(tree)
+    )
+    if uses_mcp:
+        dependencies = _metadata(sample / "agent.py")["dependencies"]
+        assert any(re.match(r"mcp(?:[<>=!~\[]|$)", dependency) for dependency in dependencies)
+
+
+@pytest.mark.parametrize("sample", _SAMPLE_DIRS, ids=lambda path: path.name)
 def test_every_library_import_is_declared(sample: Path):
     """The check prose could not do.
 
@@ -77,11 +91,11 @@ def test_every_library_import_is_declared(sample: Path):
         tree = ast.parse(module.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module:
-                if node.module.startswith("maf_sandbox"):
+                if node.module.startswith(("maf_sandbox", "maf_compaction", "maf_cachebench")):
                     imported.setdefault(_distribution(node.module), module.name)
             elif isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name.startswith("maf_sandbox"):
+                    if alias.name.startswith(("maf_sandbox", "maf_compaction", "maf_cachebench")):
                         imported.setdefault(_distribution(alias.name), module.name)
     missing = sorted(set(imported) - declared)
     assert not missing, (
@@ -268,6 +282,9 @@ class TestTheDeclaredCoreFloor:
 
     @pytest.mark.parametrize("sample", _SAMPLE_DIRS, ids=lambda path: path.name)
     def test_every_sample_declares_one(self, sample: Path):
+        dependencies = _metadata(sample / "agent.py")["dependencies"]
+        if not any(dependency.startswith("maf-sandbox") for dependency in dependencies):
+            return
         assert self._floor(sample) is not None, (
             f"{sample.name} names no maf-sandbox floor. Every sample imports the core, and "
             "taking whatever a backend distribution happens to pull in is how a sample comes "

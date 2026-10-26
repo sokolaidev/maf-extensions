@@ -19,6 +19,7 @@ pull request.
 from __future__ import annotations
 
 import importlib.util
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -336,7 +337,16 @@ class TestTheTwoFileSetsNeverMoveTogether:
         # The parser here and the one in tests/test_sample_metadata.py read the same block by
         # different means. This is what keeps them honest about the real files: a sample the
         # script stops recognising would otherwise sail through every fixture above.
-        expected = sorted((REPO_ROOT / "samples").glob("[0-9][0-9]_*/agent.py"))
+        expected = []
+        for path in sorted((REPO_ROOT / "samples").glob("[0-9][0-9]_*/agent.py")):
+            block = path.read_text("utf-8").split("# /// script\n", 1)[1].split("# ///", 1)[0]
+            metadata = tomllib.loads(
+                "\n".join(line.removeprefix("# ") for line in block.splitlines())
+            )
+            if any(
+                dependency.startswith("maf-sandbox>=") for dependency in metadata["dependencies"]
+            ):
+                expected.append(path)
         planned = [path for path, _, _ in ranges.plan("9.9.0", REPO_ROOT, samples=True)]
         assert expected, "no samples found; this test is measuring nothing"
         assert planned == expected

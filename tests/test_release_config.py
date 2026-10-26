@@ -180,14 +180,14 @@ def dispatched_packages() -> set[str]:
 
 
 def packages_named_in_releasing() -> set[str]:
-    """Every maf-sandbox distribution RELEASING.md's live-check paragraph names."""
+    """Every maf distribution RELEASING.md's live-check paragraph names."""
     marker = "a live check runs on its own"
     line = next(
         (line for line in RELEASING.read_text("utf-8").splitlines() if marker in line),
         None,
     )
     assert line is not None, f"no paragraph in RELEASING.md says {marker!r}"
-    return set(re.findall(r"`(maf-sandbox[\w-]*)`", line))
+    return set(re.findall(r"`(maf-[\w-]+)`", line))
 
 
 def accepted_title_types() -> list[str]:

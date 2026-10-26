@@ -566,6 +566,23 @@ class TestTheSelection:
 
 
 class TestTheCommandLine:
+    def test_non_sandbox_sample_is_explicitly_outside_the_core_check(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        sample = _sample(tmp_path, "22_compaction", "maf-compaction>=0.8", "maf-cachebench")
+        monkeypatch.setattr(check, "sample_directories", lambda: [sample])
+        monkeypatch.setattr(check, "check_group", lambda *args: pytest.fail("no core to check"))
+        assert check.main(["prog"]) == 0
+        output = capsys.readouterr().out
+        assert "SKIP 22_compaction" in output
+        assert "OK  0 sample(s)" in output
+
+    def test_backend_without_a_core_floor_is_still_refused(self, tmp_path, monkeypatch):
+        sample = _sample(tmp_path, "21_shell", "maf-sandbox-shell")
+        monkeypatch.setattr(check, "sample_directories", lambda: [sample])
+        with pytest.raises(SystemExit):
+            check.main(["prog"])
+
     def test_local_core_with_no_wheel_after_it_is_a_usage_error(self):
         assert check.main(["prog", "--local-core"]) == 2
 
@@ -587,7 +604,8 @@ class TestItCoversTheRealTree:
         samples = check.sample_directories()
         assert len(samples) >= 10, f"found {len(samples)} sample directories"
         for sample in samples:
-            assert check.core_floor(sample) >= (0,)
+            if check.uses_sandbox(sample):
+                assert check.core_floor(sample) >= (0,)
 
     def test_every_sample_declares_the_core_exactly_once(self):
         """`other_requirements` drops one requirement, and it has to be the right one."""
@@ -598,8 +616,9 @@ class TestItCoversTheRealTree:
                 for dependency in declared
                 if check.named_distribution(dependency) == "maf-sandbox"
             ]
-            assert len(cores) == 1, f"{sample.name} names the core {len(cores)} times"
-            assert len(check.other_requirements(sample)) == len(declared) - 1
+            expected = int(check.uses_sandbox(sample))
+            assert len(cores) == expected, f"{sample.name} names the core {len(cores)} times"
+            assert len(check.other_requirements(sample)) == len(declared) - expected
 
     def test_every_sample_names_a_python_version_the_pass_can_pin(self):
         for sample in check.sample_directories():
