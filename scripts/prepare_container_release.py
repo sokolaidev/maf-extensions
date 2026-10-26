@@ -28,6 +28,7 @@ from container_release import (
     write,
 )
 from container_release_oci import blob, validate_layout
+from container_release_preflight import preflight
 from image_security_evidence import record, verify_inventory
 
 
@@ -200,6 +201,7 @@ def prepare(
     version(release_version)
     validate_route(bicep_route, profile)
     require_source(revision)
+    preflight(profile, release_version, revision, attempt)
     if output.exists():
         raise ValueError("Use a fresh candidate directory")
     output.mkdir(parents=True)

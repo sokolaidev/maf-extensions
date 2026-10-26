@@ -91,13 +91,15 @@ jobs:
           sys.path.insert(0, "scripts")
           from container_release import profiles, version
           from container_release_publish import context
+          from container_release_preflight import preflight
           from build_bicep_image import validate_route
-          context()
+          source, run_id, _ = context()
           if os.environ["PROFILE"] not in profiles():
               raise ValueError("Unknown release profile")
           version(os.environ["VERSION"])
           if os.environ["OPERATION"] == "release":
               validate_route(os.environ["BICEP_ROUTE"], os.environ["PROFILE"])
+              preflight(os.environ["PROFILE"], os.environ["VERSION"], source, run_id)
           if os.environ["OPERATION"] == "abandon" and not os.environ["REASON"].strip():
               raise ValueError("Abandonment requires a reason")
           PY
