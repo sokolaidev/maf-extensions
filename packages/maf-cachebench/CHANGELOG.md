@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.3.1...maf-cachebench-v0.4.0) (2026-10-26)
+
+
+### Features
+
+* **cachebench:** benchmark compaction recovery, replay and streaming ([#2179](https://github.com/sokolaidev/maf-extensions/issues/2179)) ([afbc4ba](https://github.com/sokolaidev/maf-extensions/commit/afbc4bac420f5447009d01caea9cd01db260e2e7))
+
 ## [0.3.1](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.3.0...maf-cachebench-v0.3.1) (2026-10-26)
 
 
