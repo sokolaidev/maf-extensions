@@ -78,6 +78,11 @@ name: Verify (live)
 on:
   workflow_dispatch:
     inputs:
+      import_shell_image:
+        description: "Import the configured shell digest before verification (package must be maf-sandbox-shell)"
+        type: boolean
+        required: false
+        default: false
       package:
         description: "Package whose release to verify (empty runs every sample)"
         required: false
@@ -179,12 +184,17 @@ jobs:
       - name: Check the live configuration is present
         env:
           PACKAGE: ${{ inputs.package }}
+          IMPORT_SHELL_IMAGE: ${{ inputs.import_shell_image }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
           set -euo pipefail
           missing=()
+          if [ "$IMPORT_SHELL_IMAGE" = true ] && [ "$PACKAGE" != maf-sandbox-shell ]; then
+            echo "::error::Shell image import requires package=maf-sandbox-shell."
+            exit 1
+          fi
           for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
             ACAS_SANDBOX_ENDPOINT ACAS_SANDBOX_SUBSCRIPTION_ID \
             ACAS_SANDBOX_RESOURCE_GROUP ACAS_SANDBOX_GROUP; do
@@ -3216,6 +3226,96 @@ jobs:
           path: |
             wslc-probe.txt
             sample04-out.txt
+
+  shell-acas:
+    name: Published shell tools against ACAS
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-shell"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.import_shell_image && 55 || 25 }}
+    environment: live-verify
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
+      ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+      ACAS_SANDBOX_RESOURCE_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+      ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
+      MAF_SHELL_ACAS_IMAGE: ${{ vars.MAF_SHELL_ACAS_IMAGE }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Import the selected shell digest on explicit manual setup
+        if: github.event_name == 'workflow_dispatch' && inputs.import_shell_image && inputs.package == 'maf-sandbox-shell'
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          uv run --project "$HARNESS" --locked python -c \
+            'import os, sys; sys.path.insert(0, os.environ["HARNESS"] + "/scripts"); from qualify_shell_acas import image_reference; image_reference(os.environ["MAF_SHELL_ACAS_IMAGE"])'
+          uv run --project "$HARNESS" --locked python "$HARNESS"/packages/maf-sandbox-acas/scripts/import_disk_image.py \
+            --endpoint "$ACAS_SANDBOX_ENDPOINT" --subscription "$ACAS_SANDBOX_SUBSCRIPTION_ID" \
+            --resource-group "$ACAS_SANDBOX_RESOURCE_GROUP" --group "$ACAS_SANDBOX_GROUP" \
+            --image "$MAF_SHELL_ACAS_IMAGE"
+
+      - name: Check the shell image prerequisite
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          uv run --project "$HARNESS" --locked python "$HARNESS"/scripts/check_acas_live_images.py \
+            --source-root "$GITHUB_WORKSPACE" --package maf-sandbox-shell --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+      - name: Qualify both shell flavors and physical disposal
+        run: |
+          set -euo pipefail
+          source_args=()
+          if [ "$SOURCE" = branch ]; then
+            source_args=(--with ./packages/maf-sandbox --with ./packages/maf-sandbox-acas --with ./packages/maf-sandbox-shell)
+          fi
+          uv run --no-project "${source_args[@]}" "$HARNESS"/scripts/qualify_shell_acas.py \
+            --report "$RUNNER_TEMP/shell-acas.json" 2>&1 | tee "$RUNNER_TEMP/shell-acas.log"
+      - name: Assert the published version the qualification resolved
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/shell-acas.log" "$PACKAGE" "$VERSION"
+      - name: Retain ACAS qualification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: shell-acas-qualification
+          path: |
+            ${{ runner.temp }}/shell-acas.json
+            ${{ runner.temp }}/shell-acas.log
+          retention-days: 14
 
   sample-21:
     name: samples/21_shell_storage

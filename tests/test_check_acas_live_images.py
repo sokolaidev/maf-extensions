@@ -29,11 +29,13 @@ _ENV = {
     "DRAWIO_SANDBOX_IMAGE": "drawio:1",
     "TERRAFORM_SANDBOX_IMAGE": "terraform:1",
     "OPENTOFU_SANDBOX_IMAGE": "opentofu:1",
+    "MAF_SHELL_ACAS_IMAGE": "ghcr.io/sokolaidev/maf-extensions/shell@sha256:" + "a" * 64,
 }
 _BICEP = "example.azurecr.io/bicep:1"
 _DRAWIO = "example.azurecr.io/drawio:1"
 _TERRAFORM = "example.azurecr.io/terraform:1"
 _OPENTOFU = "example.azurecr.io/opentofu:1"
+_SHELL = _ENV["MAF_SHELL_ACAS_IMAGE"]
 _CODEACT = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 
 
@@ -63,7 +65,14 @@ def _disk(reference, id="disk"):
 
 def test_all_images_are_collected_with_shared_consumers_and_an_optional_skip():
     required, skipped = check.required_images(_ROOT, "", _ENV)
-    assert set(required) == {_BICEP, _DRAWIO, _TERRAFORM, _OPENTOFU, _CODEACT, "python-3.13"}
+    assert set(required) == {
+        _BICEP,
+        _DRAWIO,
+        _TERRAFORM,
+        _OPENTOFU,
+        _CODEACT,
+        "python-3.13",
+    }
     assert required[_CODEACT] == ["14_acas_codeact_files", "15_acas_codeact_host_tools"]
     assert required["python-3.13"] == ["03_acas_codeact", "acas-e2e prebuilt"]
     assert skipped == ["ACAS_SANDBOX_NONROOT_IMAGE is unset; the optional non-root leg skips."]
@@ -73,7 +82,11 @@ def test_all_images_are_collected_with_shared_consumers_and_an_optional_skip():
     ("package", "references"),
     [
         ("maf-sandbox", {_BICEP, _DRAWIO, _TERRAFORM, _OPENTOFU, _CODEACT, "python-3.13"}),
-        ("maf-sandbox-acas", {_BICEP, _DRAWIO, _TERRAFORM, _OPENTOFU, _CODEACT, "python-3.13"}),
+        (
+            "maf-sandbox-acas",
+            {_BICEP, _DRAWIO, _TERRAFORM, _OPENTOFU, _CODEACT, "python-3.13"},
+        ),
+        ("maf-sandbox-shell", {_SHELL}),
         ("maf-sandbox-drawio", {_DRAWIO}),
         ("maf-sandbox-terraform", {_TERRAFORM, _OPENTOFU}),
         ("maf-sandbox-bicep", {_BICEP}),
@@ -86,6 +99,36 @@ def test_all_images_are_collected_with_shared_consumers_and_an_optional_skip():
 def test_package_selection(package, references):
     required, _ = check.required_images(_ROOT, package, _ENV)
     assert set(required) == references
+
+
+def test_shell_requires_its_digest_without_other_kind_configuration():
+    with pytest.raises(ValueError, match="MAF_SHELL_ACAS_IMAGE"):
+        check.required_images(_ROOT, "maf-sandbox-shell", {})
+    with pytest.raises(ValueError, match="registry digest"):
+        check.required_images(_ROOT, "maf-sandbox-shell", {"MAF_SHELL_ACAS_IMAGE": "shell:0.1.0"})
+    assert check.required_images(_ROOT, "maf-sandbox-shell", {"MAF_SHELL_ACAS_IMAGE": _SHELL}) == (
+        {_SHELL: ["shell-acas"]},
+        [],
+    )
+
+
+def test_source_without_shell_package_does_not_require_its_image(tmp_path):
+    assert check.required_images(tmp_path, "maf-sandbox-shell", {}) == ({}, [])
+
+
+@pytest.mark.parametrize("package", ["", "maf-sandbox", "maf-sandbox-acas"])
+@pytest.mark.parametrize("shell_reference", [None, "not-a-digest", _SHELL])
+def test_shared_preflight_does_not_depend_on_shell_import(package, shell_reference):
+    env = {key: value for key, value in _ENV.items() if key != "MAF_SHELL_ACAS_IMAGE"}
+    if shell_reference is not None:
+        env["MAF_SHELL_ACAS_IMAGE"] = shell_reference
+    required, _ = check.required_images(_ROOT, package, env)
+    client = _Group(
+        [_disk(image) for image in (_BICEP, _DRAWIO, _TERRAFORM, _OPENTOFU, _CODEACT)],
+        [PublicDiskImage(name="python-3.13")],
+    )
+    assert _SHELL not in required
+    assert check.check_images(client, required)[1] == []
 
 
 def test_codeact_does_not_require_bicep_configuration_or_inspect_optional_nonroot():
@@ -328,7 +371,7 @@ def test_preflight_blocks_exactly_the_acas_jobs_and_admits_their_package_union()
             _admits(jobs[name], package) for name in consumers
         )
         required, _ = check.required_images(_ROOT, package, _ENV)
-        assert bool(required) == _admits(preflight, package)
+        assert bool(required) == (_admits(preflight, package) or package == "maf-sandbox-shell")
         selected = {consumer for consumers in required.values() for consumer in consumers}
         for job, consumer in [
             ("sample-03", "03_acas_codeact"),
@@ -381,7 +424,7 @@ def test_daily_check_covers_all_images_before_any_sandbox_is_created():
     env = steps[preflight]["env"]
     assert set(check._CONFIG.values()) <= set(env)
     assert env["ACAS_SANDBOX_NONROOT_IMAGE"] == "${{ vars.ACAS_SANDBOX_NONROOT_IMAGE }}"
-    for variable in sorted(_ENV):
+    for variable in sorted(set(_ENV) - {"MAF_SHELL_ACAS_IMAGE"}):
         reduced = {key: value for key, value in _ENV.items() if key != variable}
         with pytest.raises(ValueError, match=variable):
             check.required_images(_ROOT, "", reduced)
