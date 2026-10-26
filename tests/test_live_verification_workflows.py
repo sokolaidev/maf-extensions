@@ -66,3 +66,42 @@ def test_new_jobs_are_bounded_and_check_measured_output(job, packages, checker):
         step.get("if") == "always()" and "upload-artifact@" in step.get("uses", "")
         for step in steps
     )
+
+
+def test_shell_acas_checks_published_packages_and_preserves_failure_evidence():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/verify-live.yml").read_text("utf-8"))
+    job = workflow["jobs"]["shell-acas"]
+    assert selected(job["if"]) == {"maf-sandbox", "maf-sandbox-acas", "maf-sandbox-shell"}
+    assert job["needs"] == "acas-images"
+    assert job["environment"] == "live-verify"
+    assert job["timeout-minutes"] == 25
+    steps = job["steps"]
+    run = next(step["run"] for step in steps if "qualify_shell_acas.py" in step.get("run", ""))
+    assert 'uv run --no-project "${source_args[@]}" "$HARNESS"/scripts/qualify_shell_acas.py' in run
+    assert 'if [ "$SOURCE" = branch ]' in run
+    assert "set -euo pipefail" in run and "| tee" in run
+    version = next(step for step in steps if "check_live_versions.py" in step.get("run", ""))
+    assert "inputs.source != 'branch'" in version["if"]
+    artifact = next(step for step in steps if "upload-artifact@" in step.get("uses", ""))
+    assert artifact["if"] == "always()"
+    assert "shell-acas.json" in artifact["with"]["path"]
+
+
+def test_shell_import_is_explicit_manual_setup_and_precedes_the_read_only_check():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/verify-live.yml").read_text("utf-8"))
+    triggers = workflow.get("on", workflow.get(True))
+    assert triggers["workflow_dispatch"]["inputs"]["import_shell_image"]["default"] is False
+    assert "import_shell_image" not in triggers["workflow_call"]["inputs"]
+    steps = workflow["jobs"]["acas-images"]["steps"]
+    importer = next(
+        i for i, step in enumerate(steps) if "import_disk_image.py" in step.get("run", "")
+    )
+    checker = next(
+        i for i, step in enumerate(steps) if "check_acas_live_images.py" in step.get("run", "")
+    )
+    assert importer < checker
+    assert steps[importer]["if"] == (
+        "github.event_name == 'workflow_dispatch' && inputs.import_shell_image "
+        "&& inputs.package == 'maf-sandbox-shell'"
+    )
+    assert 'image_reference(os.environ["MAF_SHELL_ACAS_IMAGE"])' in steps[importer]["run"]

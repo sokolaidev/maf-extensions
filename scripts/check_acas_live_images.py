@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import ast
 import os
+import re
 import shlex
 from collections.abc import Mapping
 from pathlib import Path
@@ -76,6 +77,9 @@ def required_images(
     terraform = (all_jobs or package == "maf-sandbox-terraform") and (
         root / "samples/20_terraform_validation/agent.py"
     ).is_file()
+    shell = (all_jobs or package == "maf-sandbox-shell") and (
+        root / "packages/maf-sandbox-shell/pyproject.toml"
+    ).is_file()
     required: dict[str, list[str]] = {}
     skipped: list[str] = []
     missing = []
@@ -91,6 +95,14 @@ def required_images(
             for name in ("TERRAFORM_SANDBOX_IMAGE", "OPENTOFU_SANDBOX_IMAGE")
             if not env.get(name)
         )
+    if shell:
+        reference = env.get("MAF_SHELL_ACAS_IMAGE", "")
+        if not reference:
+            missing.append("MAF_SHELL_ACAS_IMAGE")
+        elif not re.fullmatch(
+            r"ghcr\.io/sokolaidev/maf-extensions/shell@sha256:[0-9a-f]{64}", reference
+        ):
+            raise ValueError("MAF_SHELL_ACAS_IMAGE must name the published shell registry digest")
     if missing:
         raise ValueError("the live-verify environment is missing: " + ", ".join(missing))
 
@@ -103,6 +115,8 @@ def required_images(
         add(env["BICEP_SANDBOX_IMAGE"], "sample-01 / acas-e2e" if all_jobs else "sample-01")
     if drawio:
         add(env["DRAWIO_SANDBOX_IMAGE"], "sample-18")
+    if shell:
+        add(env["MAF_SHELL_ACAS_IMAGE"], "shell-acas")
     if terraform:
         for engine in ("terraform", "opentofu"):
             add(env[f"{engine.upper()}_SANDBOX_IMAGE"], f"sample-20-acas-{engine}")
