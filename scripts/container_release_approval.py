@@ -184,6 +184,7 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
             rows.append(("Shell check", UNAVAILABLE))
         for label, key in (
             ("Shell analyzer fixtures passed", "analyzerFixturesPassed"),
+            ("Shell layer archive", "layerArchive"),
             ("Shell SDK packages (checkout)", "packages"),
             ("Shell Docker engine", "docker"),
             ("Shell container observations", "observations"),

@@ -121,6 +121,9 @@ def test_public_tools_require_each_result_and_cleanup(monkeypatch, fault):
     monkeypatch.setattr(
         shell, "docker", lambda *args: '{"Version":"test","Os":"linux","Arch":"amd64"}'
     )
+    monkeypatch.setattr(
+        shell, "check_image_layers", lambda _: {"layersChecked": 1, "deviceNodesPresent": False}
+    )
     monkeypatch.setattr(shell, "owned", lambda _: list(live))
     monkeypatch.setattr(shell, "observation", lambda *args: {"imageId": IMAGE, "network": "none"})
     monkeypatch.setattr(shell, "SandboxRouter", Router)
@@ -186,6 +189,7 @@ def test_missing_shell_evidence_is_unavailable():
     rows = evidence_rows({}, {"profile": "shell", "imageId": IMAGE})
     assert ("Shell check", UNAVAILABLE) in rows
     assert ("Shell analyzer fixtures passed", UNAVAILABLE) in rows
+    assert ("Shell layer archive", UNAVAILABLE) in rows
     assert ("Shell ACAS verified", UNAVAILABLE) in rows
 
 

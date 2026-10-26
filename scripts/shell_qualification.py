@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import tarfile
+import tempfile
 from importlib.metadata import version
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
@@ -64,6 +67,42 @@ def require(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
+def check_layer_archive(path: Path) -> int:
+    """Reject special-device entries in every saved layer, including hidden lower layers."""
+    with tarfile.open(path) as archive:
+        manifest_file = archive.extractfile("manifest.json")
+        if manifest_file is None:
+            raise ValueError("Missing Docker save manifest")
+        manifests = json.load(manifest_file)
+        require(len(manifests) == 1, "Expected one saved shell image")
+        layers = manifests[0]["Layers"]
+        require(isinstance(layers, list) and bool(layers), "Expected shell filesystem layers")
+        for name in layers:
+            layer_file = archive.extractfile(name)
+            if layer_file is None:
+                raise ValueError("Missing shell image layer")
+            with tarfile.open(fileobj=layer_file, mode="r|*") as layer:
+                for member in layer:
+                    require(
+                        not member.isdev(), f"Shell image contains a device node: {member.name}"
+                    )
+    return len(layers)
+
+
+def check_image_layers(image_id: str) -> dict[str, Any]:
+    """Inspect the saved image rather than Docker's runtime-provided /dev mount."""
+    require_digest(image_id)
+    with tempfile.TemporaryDirectory(prefix="shell-layers-") as temporary:
+        archive = Path(temporary) / "image.tar"
+        subprocess.run(
+            ["docker", "image", "save", "--output", str(archive), image_id],
+            check=True,
+            timeout=180,
+        )
+        count = check_layer_archive(archive)
+    return {"layersChecked": count, "deviceNodesPresent": False}
+
+
 def docker(*args: str) -> str:
     """Read bounded engine evidence from the SDK's Docker environment."""
     return subprocess.run(
@@ -97,6 +136,7 @@ def observation(scope: str, image_id: str) -> dict[str, Any]:
 async def check(image_id: str) -> dict[str, Any]:
     """Retain SDK results, engine observations and disposal for both shell flavors."""
     require_digest(image_id)
+    layer_evidence = await asyncio.to_thread(check_image_layers, image_id)
     server = json.loads(await asyncio.to_thread(docker, "version", "--format", "{{json .Server}}"))
     require(server["Os"] == "linux" and server["Arch"] == "amd64", "Requires Linux/amd64 Docker")
     scope = "shell-release-" + uuid4().hex
@@ -182,6 +222,7 @@ async def check(image_id: str) -> dict[str, Any]:
     return {
         "backend": "maf-sandbox-docker",
         "sdkSource": "checkout",
+        "layerArchive": layer_evidence,
         "packages": {
             name: version(name)
             for name in (
