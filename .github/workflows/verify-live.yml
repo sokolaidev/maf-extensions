@@ -185,13 +185,14 @@ jobs:
       - name: Check the live configuration is present
         env:
           PACKAGE: ${{ inputs.package }}
+          IMPORT_SHELL_IMAGE: ${{ inputs.import_shell_image }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
           set -euo pipefail
           missing=()
-          if [ "${{ inputs.import_shell_image }}" = true ] && [ "$PACKAGE" != maf-sandbox-shell ]; then
+          if [ "$IMPORT_SHELL_IMAGE" = true ] && [ "$PACKAGE" != maf-sandbox-shell ]; then
             echo "::error::Shell image import requires package=maf-sandbox-shell."
             exit 1
           fi
@@ -244,7 +245,7 @@ jobs:
           uv run --project "$HARNESS" --locked python "$HARNESS"/packages/maf-sandbox-acas/scripts/import_disk_image.py \
             --endpoint "$ACAS_SANDBOX_ENDPOINT" --subscription "$ACAS_SANDBOX_SUBSCRIPTION_ID" \
             --resource-group "$ACAS_SANDBOX_RESOURCE_GROUP" --group "$ACAS_SANDBOX_GROUP" \
-            --image "$MAF_SHELL_ACAS_IMAGE" --name shell-live-qualification
+            --image "$MAF_SHELL_ACAS_IMAGE"
 
       - name: Check the selected jobs' images
         env:
