@@ -75,6 +75,20 @@ The recipe assembles the runtime in an intermediate stage, then copies it into a
 
 The repaired local candidate passes all 15 analyzer fixtures and 11 public-SDK Docker cases, with closed networking, unchanged stores and no remaining containers. Its exact staged Linux/amd64 manifest `sha256:b54a83e675e58d8b0c098493417a432749c7907b34ce11902f6545a3535f4f8f` imported successfully into the ACAS test group and reached `Ready`. All five ACAS cases passed with published `maf-sandbox` 0.51.1, `maf-sandbox-acas` 0.31.1 and `maf-sandbox-shell` 0.1.1: Bash findings, PowerShell findings, both empty-file cases and PowerShell module findings. Every call preserved its store and was followed by independent service-observed deletion; final scope purge also succeeded. The local qualification harness used the same case and disposal logic as `qualify_shell_acas.py`, with its reference check restricted to that exact private candidate instead of the public GHCR release namespace. This is candidate compatibility evidence, not a public image release. Published-release ACAS qualification still requires a replacement image released through the protected pipeline and a successful run against that published digest.
 
+## Runtime devices across backends
+
+The image omits archived device nodes; each backend must supply usable devices when it starts a sandbox. The shared [runtime device probe](../../scripts/shell_runtime_devices.py) requires character devices at `/dev/null`, `/dev/zero`, `/dev/full`, `/dev/random`, `/dev/urandom` and `/dev/tty`. It checks null reads/writes, zero bytes, random reads and the expected full-device write refusal. It does not require a controlling terminal or `/dev/console` for these non-interactive calls. Missing or unusable devices fail qualification before analysis. Docker release evidence and the ACAS live report retain the probe result for each sandbox.
+
+The repaired candidate above passed the device probe on all three tested backends on 2026-10-26:
+
+| Backend | Execution and cleanup evidence |
+| --- | --- |
+| Docker 29.9.2 | All 15 analyzer fixtures and 11 public-SDK cases passed; every SDK sandbox supplied the devices, used the selected image with closed networking, and was removed. |
+| ACAS | All five cases passed again using published packages, with device evidence per sandbox, independent service-observed deletion and final purge. The temporary imported snapshot was removed. |
+| WSLC 3.0.4.0 | The same image was transferred by Docker save / WSLC load, then all five cases passed with checkout core 0.51.1, WSLC 0.30.0 and shell 0.1.1 packages. Engine inspection confirmed the exact configuration digest and closed networking; independent inventory checks included stopped containers and found no survivors. |
+
+WSLC selected configuration digest `sha256:fc9ac8c0bb9658f13a176ef9fc3cd24049d2425f7b157df075cd361922ddc6ce`. The live tests retain image, engine and device observations in JUnit properties. After loading the selected image into WSLC, reproduce with `MAF_SHELL_WSLC_IMAGE` set to its immutable configuration digest and `uv run pytest -q -n 0 -o junit_family=legacy tests/test_shell_backends.py -k wslc --junitxml=shell-wslc.xml`. The same suite supports `MAF_SHELL_DOCKER_IMAGE` and `MAF_SHELL_ACAS_IMAGE`; the ACAS workflow uses its dedicated harness for independent service disposal evidence. These are local candidate results, not a replacement public release or qualification of other engines and versions.
+
 ## Select and verify a published image
 
 Use the `shell` repository under `ghcr.io/sokolaidev/maf-extensions/`. Select a completed `image-shell-v<version>` entry in [GitHub Releases](https://github.com/sokolaidev/maf-extensions/releases), and review its source revision and the [current monitoring report](https://sokolaidev.github.io/maf-extensions/). A local build or a registered profile is not a completed release.

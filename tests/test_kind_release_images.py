@@ -95,6 +95,7 @@ def test_dependency_change_is_not_a_version_only_bump(repo):
         "images/shell-sandbox/Dockerfile",
         "images/shell-sandbox/dependencies.json",
         "scripts/shell_qualification.py",
+        "scripts/shell_runtime_devices.py",
     ],
 )
 def test_image_payload_or_dependency_changes_require_new_qualification(repo, path):

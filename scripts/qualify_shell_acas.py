@@ -34,6 +34,7 @@ from maf_sandbox.maf import COMPLETED_TEXT
 from maf_sandbox.testing import InMemoryStore
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig, disk_image_base
 from maf_sandbox_shell import ShellFlavor, make_shell_tools
+from shell_runtime_devices import check_runtime_devices
 
 if TYPE_CHECKING:
     from agent_framework import AgentFileStore
@@ -75,6 +76,7 @@ class ObservedBackend(AcasSandboxBackend):
     def __init__(self, config: AcasSandboxConfig, client: Any) -> None:
         super().__init__(config)
         self.observed: list[str] = []
+        self.runtime_devices: list[dict[str, Any]] = []
         self.client = client
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Any:
@@ -83,6 +85,9 @@ class ObservedBackend(AcasSandboxBackend):
         sandbox = await super().acquire(key, spec)
         self.observed.append(sandbox.instance_id)
         await self.client.get_sandbox_client(sandbox.instance_id).get()
+        self.runtime_devices.append(
+            {"sandbox": sandbox.instance_id, "devices": await check_runtime_devices(sandbox)}
+        )
         return sandbox
 
 
@@ -113,6 +118,7 @@ async def qualify(report: dict[str, Any]) -> None:
             report.update(image=reference, diskImage=matches[0])
             backend = ObservedBackend(config, client)
             report["sandboxes"] = backend.observed
+            report["runtimeDevices"] = backend.runtime_devices
             router = SandboxRouter([backend], min_isolation=backend.isolation)
             scope = "shell-qualification-" + uuid.uuid4().hex
             context = CallerContext(

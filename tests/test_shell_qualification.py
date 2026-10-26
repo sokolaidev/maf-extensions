@@ -65,6 +65,7 @@ def test_engine_observation_requires_selected_closed_container(monkeypatch, faul
         "purge",
         "no-observation",
         "exception",
+        "devices",
     ],
 )
 def test_public_tools_require_each_result_and_cleanup(monkeypatch, fault):
@@ -125,6 +126,11 @@ def test_public_tools_require_each_result_and_cleanup(monkeypatch, fault):
         shell, "check_image_layers", lambda _: {"layersChecked": 1, "deviceNodesPresent": False}
     )
     monkeypatch.setattr(shell, "owned", lambda _: list(live))
+    monkeypatch.setattr(
+        shell,
+        "check_runtime_devices",
+        AsyncMock(side_effect=ValueError("devices") if fault == "devices" else None),
+    )
     monkeypatch.setattr(shell, "observation", lambda *args: {"imageId": IMAGE, "network": "none"})
     monkeypatch.setattr(shell, "SandboxRouter", Router)
     monkeypatch.setattr(shell.DockerSandboxBackend, "create", AsyncMock())
@@ -205,3 +211,4 @@ def test_candidate_scan_uses_the_same_shell_qualification():
     assert 'check("shell", os.environ["IMAGE_ID"], directory)' in step["run"]
     assert 'write(directory / "runtime.json"' in step["run"]
     assert affected("scripts/shell_qualification.py") == ("shell",)
+    assert affected("scripts/shell_runtime_devices.py") == ("shell",)

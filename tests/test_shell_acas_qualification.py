@@ -30,23 +30,36 @@ def test_absence_requires_an_observed_identity():
         asyncio.run(check.require_absent(None, []))
 
 
-@pytest.mark.parametrize("closed", [True, False])
-def test_acquisition_observes_the_physical_instance_and_rejects_open_egress(monkeypatch, closed):
+@pytest.mark.parametrize("fault", [None, "egress", "devices"])
+def test_acquisition_observes_the_physical_instance_and_checks_runtime(monkeypatch, fault):
     acquire = AsyncMock(return_value=SimpleNamespace(instance_id="physical"))
     get = AsyncMock()
     monkeypatch.setattr(check.AcasSandboxBackend, "acquire", acquire)
     backend = object.__new__(check.ObservedBackend)
     backend.observed = []
+    backend.runtime_devices = []
+    monkeypatch.setattr(
+        check,
+        "check_runtime_devices",
+        AsyncMock(side_effect=ValueError("devices") if fault == "devices" else None),
+    )
     backend.client = SimpleNamespace(get_sandbox_client=lambda identity: SimpleNamespace(get=get))
-    spec = SimpleNamespace(egress=check.Egress.CLOSED if closed else check.Egress.UNRESTRICTED)
-    if closed:
+    spec = SimpleNamespace(
+        egress=check.Egress.UNRESTRICTED if fault == "egress" else check.Egress.CLOSED
+    )
+    if fault is None:
         asyncio.run(backend.acquire(None, spec))
         assert backend.observed == ["physical"]
         get.assert_awaited_once()
-    else:
+    elif fault == "egress":
         with pytest.raises(ValueError, match="closed egress"):
             asyncio.run(backend.acquire(None, spec))
         acquire.assert_not_awaited()
+    else:
+        with pytest.raises(ValueError, match="devices"):
+            asyncio.run(backend.acquire(None, spec))
+        assert backend.observed == ["physical"]
+        assert backend.runtime_devices == []
 
 
 @pytest.mark.parametrize("outcome", [None, HttpResponseError("denied"), ResourceNotFoundError()])
@@ -98,6 +111,7 @@ def test_qualification_requires_results_unchanged_sources_and_cleanup(monkeypatc
 
         def __init__(self, *args):
             self.observed = []
+            self.runtime_devices = []
             state.backend = self
 
         async def aclose(self):

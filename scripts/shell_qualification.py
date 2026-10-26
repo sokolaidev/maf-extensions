@@ -27,6 +27,7 @@ from maf_sandbox.maf import COMPLETED_TEXT, NOT_COMPLETED_TEXT
 from maf_sandbox.testing import InMemoryStore
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 from maf_sandbox_shell import ShellFlavor, make_shell_tools
+from shell_runtime_devices import check_runtime_devices
 
 if TYPE_CHECKING:
     from agent_framework import AgentFileStore
@@ -150,7 +151,9 @@ async def check(image_id: str) -> dict[str, Any]:
     class Router(SandboxRouter):
         async def acquire(self, key: SandboxKey, spec: SandboxSpec, **kwargs: Any) -> Sandbox:
             sandbox = await super().acquire(key, spec, **kwargs)
-            observations.append(await asyncio.to_thread(observation, scope, image_id))
+            observed = await asyncio.to_thread(observation, scope, image_id)
+            observed["runtimeDevices"] = await check_runtime_devices(sandbox)
+            observations.append(observed)
             return sandbox
 
     backend = await DockerSandboxBackend.create(DockerSandboxConfig(memory="1g", cpus=2))
