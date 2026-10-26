@@ -866,7 +866,7 @@ def test_module_download_refuses_redirect_before_contacting_target(monkeypatch, 
             headers = Message()
             headers["Location"] = target
             return RedirectResponse(io.BytesIO(), headers, request.full_url, code)
-        pytest.fail("redirect target was contacted")
+        raise AssertionError("redirect target was contacted")
 
     monkeypatch.setattr(HTTPSHandler, "https_open", respond)
     monkeypatch.setattr(HTTPHandler, "http_open", respond)
