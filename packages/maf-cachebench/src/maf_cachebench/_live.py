@@ -66,7 +66,12 @@ from maf_compaction import record_text as _record_text
 
 from ._behavior import BehaviorSnapshot, restore_behavior, snapshot_behavior
 from ._diagnostics import COUNTER_LABELS, OBSERVATION_LABELS
-from ._lifecycle import LiveBinding, SessionExperiment, capture_original_messages
+from ._lifecycle import (
+    LiveBinding,
+    SessionExperiment,
+    capture_original_messages,
+    update_original_reasoning,
+)
 from ._metrics import clamp_cached_tokens, serialize_message
 from ._recall import (
     COMBINED_SCOPE,
@@ -395,6 +400,7 @@ class UsageRecorder(ChatMiddleware):
             response, ChatResponse
         ):
             stamp_reasoning_tokens(response.messages, int(reasoning_tokens))
+            update_original_reasoning(response.messages)
         self.calls.append(
             ModelCall(
                 messages_sent=len(sent),
@@ -2123,15 +2129,11 @@ async def run_live(
         groups_preserved_uncovered=recording.groups_preserved_uncovered
         if recording is not None
         else 0,
-        records_in_conversation=recording.records_in_conversation if recording is not None else 0,
+        records_in_conversation=experiment.observations["records_in_conversation"],
         user_compactions=user_compacting.user_compactions if user_compacting is not None else 0,
         user_messages_replaced=experiment.observations["user_messages_replaced"],
-        user_summaries_in_conversation=(
-            user_compacting.user_summaries_in_conversation if user_compacting is not None else 0
-        ),
-        user_summary_tokens=user_compacting.user_summary_tokens
-        if user_compacting is not None
-        else 0,
+        user_summaries_in_conversation=experiment.observations["user_summaries_in_conversation"],
+        user_summary_tokens=experiment.observations["user_summary_tokens"],
         user_folds=user_compacting.user_folds if user_compacting is not None else 0,
         # The chain is the composed row's own, so it is read off the outermost strategy by name,
         # the way the flags column reads it, and is zero for every row that has none.

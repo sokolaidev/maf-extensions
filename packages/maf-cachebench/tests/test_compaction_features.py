@@ -53,7 +53,9 @@ def anyio_backend():
 
 
 class Model(FunctionInvocationLayer[Any], ChatMiddlewareLayer[Any], BaseChatClient[Any]):
-    def __init__(self, *, refusal=False, truncated=False, failure=False, record=False, tool=None):
+    def __init__(
+        self, *, refusal=False, truncated=False, failure=False, record=False, tool=None, reasoning=0
+    ):
         super().__init__()
         self.requests = []
         self.refusal = refusal
@@ -61,6 +63,7 @@ class Model(FunctionInvocationLayer[Any], ChatMiddlewareLayer[Any], BaseChatClie
         self.failure = failure
         self.record = record
         self.tool = tool
+        self.reasoning = reasoning
         self.closed = 0
 
     def _inner_get_response(self, *, messages, stream, options, **kwargs):
@@ -89,10 +92,19 @@ class Model(FunctionInvocationLayer[Any], ChatMiddlewareLayer[Any], BaseChatClie
                 arguments='{"values":"CODE-123456"}',
             )
             finish = "tool_calls"
+        contents = [content]
+        if self.reasoning:
+            contents.insert(
+                0,
+                Content.from_text_reasoning(
+                    id=f"reasoning_{index}", text="", protected_data="encrypted"
+                ),
+            )
         response = ChatResponse(
-            messages=Message("assistant", [content]),
+            messages=Message("assistant", contents),
             finish_reason=finish,
             usage_details={
+                "reasoning_output_token_count": self.reasoning,
                 "input_token_count": index * 100,
                 "output_token_count": index * 10,
                 "cache_read_input_token_count": index * 50,
@@ -102,7 +114,7 @@ class Model(FunctionInvocationLayer[Any], ChatMiddlewareLayer[Any], BaseChatClie
 
             async def updates():
                 try:
-                    yield ChatResponseUpdate(role="assistant", contents=[content])
+                    yield ChatResponseUpdate(role="assistant", contents=contents)
                     if self.failure:
                         raise asyncio.CancelledError()
                 finally:
@@ -621,7 +633,125 @@ async def test_restart_outcome_retains_latest_user_replacement_observation(strea
     assert outcome.error is None
     assert outcome.user_compactions > 0
     assert outcome.user_messages_replaced > 0
+    assert outcome.user_summaries_in_conversation > 0
+    assert outcome.user_summary_tokens > 0
     assert (
         outcome.compaction_diagnostics["user_messages_replaced"] == outcome.user_messages_replaced
     )
     assert f"USERREPLACED:{outcome.user_messages_replaced}" in outcome.strategy_notes
+
+
+@pytest.mark.parametrize("kind", ["plain", "harness"])
+@pytest.mark.parametrize("mode", ["memory", "roundtrip", "restart"])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_replay_retains_billed_reasoning_stamps(kind, mode, stream):
+    from maf_cachebench._tokenizers import REASONING_TOKENS_KEY, build_tokenizer
+
+    model = Model(reasoning=300)
+    tokenizer = build_tokenizer("estimator")
+
+    def build():
+        agent = build_live_agent(
+            ProviderRuntime(model, "stub", {}),
+            kind=kind,
+            strategy=None,
+            tokenizer=tokenizer,
+            tools=[],
+            recorder=UsageRecorder(),
+            max_context_window_tokens=100_000,
+            max_output_tokens=1000,
+        )
+        return LiveBinding(agent, None, None, None)
+
+    experiment = SessionExperiment(
+        build, CompactionOptions(session_mode=mode, history_mode="replay", stream=stream)
+    )
+    _, session = await experiment.run(AgentSession(), "First question.", {})
+    archive = session.to_dict()["state"]["cachebench_original_history"]
+    reasoning = [
+        part for item in archive for part in item["contents"] if part.get("protected_data")
+    ]
+    assert len(reasoning) == 1
+    assert reasoning[0]["additional_properties"][REASONING_TOKENS_KEY] == 300
+    _, session = await experiment.run(session, "Second question.", {})
+    retained = [
+        part for item in model.requests[-1][0] for part in item.contents if part.protected_data
+    ]
+    assert len(retained) == 1
+    assert retained[0].additional_properties[REASONING_TOKENS_KEY] == 300
+
+    from maf_cachebench._metrics import serialize_message
+
+    replayed = next(
+        item for item in model.requests[-1][0] if any(c.protected_data for c in item.contents)
+    )
+    unstamped = deepcopy(replayed)
+    for part in unstamped.contents:
+        part.additional_properties.pop(REASONING_TOKENS_KEY, None)
+    assert (
+        tokenizer.count_tokens(serialize_message(replayed))
+        == tokenizer.count_tokens(serialize_message(unstamped)) + 300
+    )
+
+
+def test_standing_summary_measurements_decrease_after_fold_and_removal():
+    from agent_framework._compaction import (
+        EXCLUDED_KEY,
+        GROUP_ANNOTATION_KEY,
+        SUMMARY_OF_GROUP_IDS_KEY,
+        SUMMARY_OF_MESSAGE_IDS_KEY,
+    )
+
+    from maf_cachebench._diagnostics import summary_measurements
+
+    def summary(identity, text):
+        return Message(
+            "user",
+            [maf_compaction.USER_SUMMARY_MARKER + "\n" + text],
+            message_id=identity,
+            additional_properties={
+                GROUP_ANNOTATION_KEY: {
+                    SUMMARY_OF_GROUP_IDS_KEY: ["source_group"],
+                    SUMMARY_OF_MESSAGE_IDS_KEY: ["source_message"],
+                }
+            },
+        )
+
+    messages = [summary("one", "long summary " * 100), summary("two", "another summary " * 100)]
+    before = deepcopy([item.to_dict() for item in messages])
+    tokenizer = CharacterEstimatorTokenizer()
+    measured = summary_measurements(messages, tokenizer)
+    assert measured["user_summaries_in_conversation"] == 2
+    assert [item.to_dict() for item in messages] == before
+    for item in messages:
+        item.additional_properties[EXCLUDED_KEY] = True
+    messages.append(summary("fold", "short folded summary"))
+    folded = summary_measurements(messages, tokenizer)
+    assert folded["user_summaries_in_conversation"] == 1
+    assert 0 < folded["user_summary_tokens"] < measured["user_summary_tokens"]
+    messages[-1].additional_properties[EXCLUDED_KEY] = True
+    messages.append(Message("user", [maf_compaction.USER_SUMMARY_MARKER + " ordinary user text"]))
+    assert summary_measurements(messages, tokenizer) == {
+        "user_summaries_in_conversation": 0,
+        "user_summary_tokens": 0,
+    }
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_restart_retains_peak_record_count_below_trigger(stream):
+    factory = binding_factory(Model(record=True), UsageRecorder(), force=True)
+    built = 0
+
+    def build():
+        nonlocal built
+        binding = factory()
+        binding.strategy.trigger_fraction = 0.001 if built < 2 else 0.9
+        built += 1
+        return binding
+
+    experiment = SessionExperiment(build, CompactionOptions(session_mode="restart", stream=stream))
+    _, session = await experiment.run(AgentSession(), "Remember CODE-123456.", {})
+    assert experiment.binding.strategy.records_in_conversation == 1
+    _, session = await experiment.run(session, "Continue below the trigger.", {})
+    assert experiment.binding.strategy.records_in_conversation == 0
+    assert experiment.observations["records_in_conversation"] == 1

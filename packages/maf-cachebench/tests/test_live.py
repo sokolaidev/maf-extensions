@@ -2129,17 +2129,7 @@ async def test_a_row_with_no_record_strategy_in_it_still_gets_no_middleware(
 async def test_both_halves_counters_are_read_off_the_composed_rows_own_parts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The eight columns a composed row owes the file, taken from two objects rather than one.
-
-    ``run_live`` reads them off a narrowed reference it resolves once, and that reference used
-    to be an ``isinstance`` test -- which a composition fails, so every one of these columns
-    would have been written as nought while the flags column, built by duck typing, showed the
-    same run's counts. A file disagreeing with its own table is worse than one saying nothing.
-
-    The counts are pinned on the parts rather than produced by compacting, deliberately: a
-    fixture that happened to slip under a trigger would assert zero against zero and pass,
-    which is the failure this whole family of tests exists to avoid.
-    """
+    """Composed diagnostics combine strategy counters with retained-history measurements."""
 
     class _CountedRecordPhase(ToolResultAnchoredSummarizationCompactionStrategy):
         @property
@@ -2210,7 +2200,7 @@ async def test_both_halves_counters_are_read_off_the_composed_rows_own_parts(
         outcome.user_summaries_in_conversation,
         outcome.user_summary_tokens,
         outcome.user_folds,
-    ) == (5, 777, 2), "and the floor and the folds the boundary modes added, read off the same part"
+    ) == (0, 0, 2), "no summaries remain in history, regardless of stale strategy observations"
 
 
 def _composed_over(

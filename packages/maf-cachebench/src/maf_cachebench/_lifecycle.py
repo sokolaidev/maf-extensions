@@ -16,7 +16,8 @@ from agent_framework import Agent, AgentSession, HistoryProvider, Message
 
 from ._behavior import restore_behavior, snapshot_behavior
 from ._configuration import CompactionOptions, validate_session_support
-from ._diagnostics import OBSERVATION_LABELS, counters
+from ._diagnostics import OBSERVATION_LABELS, counters, summary_measurements
+from ._tokenizers import REASONING_TOKENS_KEY
 
 _REPLAY_MESSAGES: ContextVar[dict[str, dict[str, Any]] | None] = ContextVar(
     "cachebench_replay_messages", default=None
@@ -30,6 +31,28 @@ def capture_original_messages(messages: Sequence[Message]) -> None:
         for message in messages:
             if message.message_id and message.message_id not in originals:
                 originals[message.message_id] = deepcopy(message.to_dict())
+
+
+def update_original_reasoning(messages: Sequence[Message]) -> None:
+    """Copy late usage stamps without overwriting original payloads or compaction metadata."""
+    originals = _REPLAY_MESSAGES.get()
+    if originals is None:
+        return
+    for message in messages:
+        original = originals.get(message.message_id or "")
+        if original is None:
+            continue
+        for content in message.contents:
+            stamp = content.additional_properties.get(REASONING_TOKENS_KEY)
+            if content.protected_data is None or not isinstance(stamp, int) or stamp <= 0:
+                continue
+            for part in original["contents"]:
+                if (
+                    part.get("id") == content.id
+                    and part.get("protected_data") == content.protected_data
+                ):
+                    part.setdefault("additional_properties", {})[REASONING_TOKENS_KEY] = stamp
+                    break
 
 
 @dataclass
@@ -94,6 +117,19 @@ class SessionExperiment:
         captured = {item["message_id"]: deepcopy(item) for item in original}
 
         def remember(active: AgentSession) -> None:
+            user_strategy = maf_compaction.find_nested_strategy(
+                self.binding.strategy,
+                maf_compaction.UserTurnAnchoredSummarizationCompactionStrategy,
+            )
+            for provider in self.binding.agent.context_providers:
+                if isinstance(provider, HistoryProvider):
+                    saved = active.state.get(provider.source_id, {}).get("messages", [])
+                    update_original_reasoning(saved)
+                    if user_strategy is not None:
+                        self.observations.update(
+                            summary_measurements(saved, user_strategy.tokenizer)
+                        )
+                    break
             if self.options.history_mode == "replay":
                 active.state[replay_key] = list(captured.values())
 
@@ -179,10 +215,14 @@ class SessionExperiment:
                         self.totals[name] = max(self.totals[name], value)
                     else:
                         self.totals[name] += max(0, value - before[name])
-                for name in self.observations:
-                    value = getattr(self.binding.strategy, name, 0)
-                    if isinstance(value, int) and value > 0:
-                        self.observations[name] = value
+                records = getattr(self.binding.strategy, "records_in_conversation", 0)
+                if isinstance(records, int):
+                    self.observations["records_in_conversation"] = max(
+                        self.observations["records_in_conversation"], records
+                    )
+                value = getattr(self.binding.strategy, "user_messages_replaced", 0)
+                if isinstance(value, int) and value > 0:
+                    self.observations["user_messages_replaced"] = value
 
 
 def _json_snapshot(data: dict[str, Any]) -> dict[str, Any]:

@@ -1,8 +1,20 @@
-"""Cumulative decisions independent of restored or rebuilt behavioral state."""
+"""Decision counters and measurements of the current history."""
 
 from __future__ import annotations
 
-from typing import Any
+from copy import deepcopy
+from typing import Any, cast
+
+from agent_framework import Message, TokenizerProtocol
+from agent_framework._compaction import (
+    EXCLUDED_KEY,
+    GROUP_ANNOTATION_KEY,
+    SUMMARY_OF_GROUP_IDS_KEY,
+    SUMMARY_OF_MESSAGE_IDS_KEY,
+    annotate_token_counts,
+    included_token_count,
+)
+from maf_compaction import USER_SUMMARY_MARKER
 
 COUNTER_LABELS = {
     "records_found": "REC",
@@ -41,7 +53,12 @@ COUNTER_LABELS = {
 }
 
 
-OBSERVATION_LABELS = {"user_messages_replaced": "USERREPLACED"}
+OBSERVATION_LABELS = {
+    "records_in_conversation": "RECORDS",
+    "user_messages_replaced": "USERREPLACED",
+    "user_summaries_in_conversation": "USERSUMMARIES",
+    "user_summary_tokens": "USERSUMMTOKENS",
+}
 
 
 def counters(strategy: Any, recall: Any) -> dict[str, int]:
@@ -51,3 +68,31 @@ def counters(strategy: Any, recall: Any) -> dict[str, int]:
         values = [getattr(source, name, 0) for source in (strategy, recall)]
         result[name] = max(value if isinstance(value, int) else 0 for value in values)
     return result
+
+
+def summary_measurements(messages: list[Message], tokenizer: TokenizerProtocol) -> dict[str, int]:
+    """Measure linked summaries still included in history, including decreases after folds."""
+    summaries: list[Message] = []
+    for message in messages:
+        if (
+            message.role != "user"
+            or not message.text.startswith(USER_SUMMARY_MARKER)
+            or message.additional_properties.get(EXCLUDED_KEY)
+        ):
+            continue
+        annotation = message.additional_properties.get(GROUP_ANNOTATION_KEY)
+        if not isinstance(annotation, dict):
+            continue
+        links = cast(dict[str, Any], annotation)
+        if all(
+            isinstance(ids := links.get(key), list)
+            and bool(cast(list[Any], ids))
+            and all(isinstance(value, str) and value for value in cast(list[Any], ids))
+            for key in (SUMMARY_OF_MESSAGE_IDS_KEY, SUMMARY_OF_GROUP_IDS_KEY)
+        ):
+            summaries.append(deepcopy(message))
+    annotate_token_counts(summaries, tokenizer=tokenizer, force_retokenize=True)
+    return {
+        "user_summaries_in_conversation": len(summaries),
+        "user_summary_tokens": included_token_count(summaries),
+    }
