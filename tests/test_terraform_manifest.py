@@ -8,8 +8,11 @@ import io
 import json
 import sys
 import zipfile
+from email.message import Message
 from pathlib import Path
 from urllib.parse import urlsplit
+from urllib.request import HTTPHandler, HTTPSHandler, OpenerDirector
+from urllib.response import addinfourl
 
 import pytest
 
@@ -774,7 +777,7 @@ def test_module_download_accepts_header_and_json_location(monkeypatch, header):
 
     response = Response(json.dumps({"location": location}).encode())
     response.headers = {"X-Terraform-Get": location} if header else {}
-    monkeypatch.setattr(generator, "urlopen", lambda *args, **kwargs: response)
+    monkeypatch.setattr(OpenerDirector, "open", lambda *args, **kwargs: response)
     assert (
         generator.terraform_get("https://registry.opentofu.org/v1/modules/a/b/c/1.0.0/download")
         == location
@@ -834,7 +837,39 @@ def test_unavailable_catalog_archive_is_excluded_but_explicit_module_fails(monke
 )
 def test_module_download_refuses_unapproved_registry_before_opening(monkeypatch, url):
     monkeypatch.setattr(
-        generator, "urlopen", lambda *args, **kwargs: pytest.fail("must refuse before opening")
+        generator, "build_opener", lambda *args: pytest.fail("must refuse before opening")
     )
     with pytest.raises(ValueError, match="approved HTTPS registry"):
         generator.terraform_get(url)
+
+
+@pytest.mark.parametrize("code", [301, 302, 303, 307, 308])
+@pytest.mark.parametrize("host", generator.REGISTRY_HOSTS.values())
+@pytest.mark.parametrize(
+    "target",
+    [
+        "https://unapproved.invalid/v1/modules/a/b/c/1.0.0/download",
+        "http://registry.opentofu.org/v1/modules/a/b/c/1.0.0/download",
+        "https://registry.opentofu.org/v1/modules/a/b/c/1.0.0/download",
+    ],
+)
+def test_module_download_refuses_redirect_before_contacting_target(monkeypatch, code, host, target):
+    url = f"https://{host}/v1/modules/a/b/c/1.0.0/download"
+    seen = []
+
+    class RedirectResponse(addinfourl):
+        msg = "Redirect"
+
+    def respond(handler, request):
+        seen.append(request.full_url)
+        if len(seen) == 1:
+            headers = Message()
+            headers["Location"] = target
+            return RedirectResponse(io.BytesIO(), headers, request.full_url, code)
+        pytest.fail("redirect target was contacted")
+
+    monkeypatch.setattr(HTTPSHandler, "https_open", respond)
+    monkeypatch.setattr(HTTPHandler, "http_open", respond)
+    with pytest.raises(ValueError, match="metadata redirects are not allowed"):
+        generator.terraform_get(url)
+    assert seen == [url]

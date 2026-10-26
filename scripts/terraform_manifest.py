@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import terraform_dependencies as prep  # noqa: E402
@@ -219,11 +219,18 @@ def resolve_provider(address: str, version: str, host: str) -> dict[str, Any]:
     return {"source": address, "version": version, "platform": "linux_amd64", "artifact": artifact}
 
 
+class _NoMetadataRedirects(HTTPRedirectHandler):
+    def redirect_request(
+        self, req: Request, fp: Any, code: int, msg: str, headers: Any, newurl: str
+    ) -> Request | None:
+        raise ValueError("module metadata redirects are not allowed")
+
+
 def terraform_get(url: str) -> str:
     """Return a registry module location from its header or JSON response."""
     if not any(url.startswith(f"https://{host}/v1/modules/") for host in REGISTRY_HOSTS.values()):
         raise ValueError("module metadata must use an approved HTTPS registry")
-    with urlopen(  # nosec B310 # Only the approved HTTPS registries above.
+    with build_opener(_NoMetadataRedirects()).open(
         Request(url, headers={"User-Agent": USER_AGENT}), timeout=120
     ) as response:
         location = response.headers.get("X-Terraform-Get", "")
