@@ -148,7 +148,7 @@ jobs:
       inputs.package == ''
       || contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-drawio", "maf-sandbox-terraform", "maf-sandbox-shell"]'), inputs.package)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: ${{ inputs.import_shell_image && 30 || 10 }}
     environment: live-verify
     permissions:
       contents: read

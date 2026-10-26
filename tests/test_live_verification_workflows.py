@@ -92,6 +92,10 @@ def test_shell_import_is_explicit_manual_setup_and_precedes_the_read_only_check(
     triggers = workflow.get("on", workflow.get(True))
     assert triggers["workflow_dispatch"]["inputs"]["import_shell_image"]["default"] is False
     assert "import_shell_image" not in triggers["workflow_call"]["inputs"]
+    assert (
+        workflow["jobs"]["acas-images"]["timeout-minutes"]
+        == "${{ inputs.import_shell_image && 30 || 10 }}"
+    )
     steps = workflow["jobs"]["acas-images"]["steps"]
     importer = next(
         i for i, step in enumerate(steps) if "import_disk_image.py" in step.get("run", "")
