@@ -136,10 +136,10 @@ def test_dependency_resolution_cannot_be_reported_as_native_qualification(tmp_pa
 @pytest.mark.workflow
 def test_migration_workflow_is_opt_in_and_retains_lock_and_reports():
     workflow = yaml.safe_load(
-        (Path(__file__).parents[1] / ".github/workflows/tests.yml").read_text(encoding="utf-8")
+        (Path(__file__).parents[1] / ".github/workflows/mxc-native.yml").read_text(encoding="utf-8")
     )
     job = workflow["jobs"]["mxc-v1"]
-    assert "if" not in job
+    assert job["if"] == "inputs.mxc_v1 != 'off'"
     assert job["strategy"]["fail-fast"] is False
     assert set(job["strategy"]["matrix"]["os"]) == {"ubuntu-24.04", "windows-latest"}
     assert all("inputs.mxc_v1 != 'off'" in step["if"] for step in job["steps"])

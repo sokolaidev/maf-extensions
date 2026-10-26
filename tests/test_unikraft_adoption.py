@@ -109,9 +109,9 @@ def test_old_run_measurement_refused_before_build(tmp_path, monkeypatch):
 
 
 @pytest.mark.workflow
-def test_native_assessment_runs_on_both_hosts_and_excludes_checkpoint_payloads():
+def test_archived_native_assessment_runs_on_both_hosts_and_excludes_checkpoint_payloads():
     workflow = yaml.safe_load(
-        (Path(__file__).parents[1] / ".github/workflows/unikraft-output.yml").read_text()
+        (Path(__file__).parents[1] / "scripts/experiments/unikraft_output/workflow.yml").read_text()
     )
     job = workflow["jobs"]["native"]
     assert set(job["strategy"]["matrix"]["os"]) == {"ubuntu-24.04", "windows-latest"}

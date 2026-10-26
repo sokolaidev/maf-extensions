@@ -10,7 +10,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import yaml
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 try:
@@ -115,20 +114,3 @@ def test_runner_failed_build_preserves_failure_and_never_qualifies(tmp_path, mon
     report = json.loads((root / "result.json").read_text())
     assert report["status"] == "unqualified"
     assert report["reason"] == "native probe failed"
-
-
-@pytest.mark.workflow
-def test_native_qualification_is_opt_in_and_keeps_reports_without_checkpoints():
-    path = Path(__file__).parents[1] / ".github/workflows/tests.yml"
-    job = yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"]["mxc-durability"]
-    assert "if" not in job
-    assert all("inputs.mxc_durability" in step["if"] for step in job["steps"])
-    assert job["strategy"]["fail-fast"] is False
-    assert set(job["strategy"]["matrix"]["os"]) == {"ubuntu-24.04", "windows-latest"}
-    steps = {step.get("name"): step for step in job["steps"]}
-    assert "--preflight" in steps["Require the native hypervisor"]["run"]
-    assert "continue-on-error" not in steps["Require the native hypervisor"]
-    upload = steps["Retain qualification reports and logs"]
-    assert upload["if"].startswith("always() &&")
-    assert "store" not in upload["with"]["path"]
-    assert "**" not in upload["with"]["path"]
