@@ -36,7 +36,25 @@ The linked adapter is GPL-3.0-or-later. The image includes the upstream source a
 
 The release pipeline runs the offline analyzer fixtures and eleven public SDK cases before approval and again against the anonymously pulled image after signature verification. Both flavors cover clean source, empty files, findings, syntax failures and suppression auditing; PowerShell also covers module-only findings. Each call verifies the selected immutable image, disabled networking, unchanged host store and disposal, including stopped containers. `runtime.json` retains these results under `shell`, with the tested checkout package versions and Docker engine. Post-publication evidence retains the same fields under `runtime.shell` in `qualification.json`. The approval summary presents the recorded cases and reports missing evidence as unavailable.
 
-The ACAS test is opt-in with `MAF_SHELL_ACAS_IMAGE` plus the existing `ACAS_SANDBOX_*` configuration and a previously imported host image. Neither unit tests nor Docker results establish ACAS qualification, publication or deployment success. Image delivery and ACAS qualification are tracked in [#2164](https://github.com/sokolaidev/maf-extensions/issues/2164).
+Docker qualification is accepted for the delivery tracked in [#2063](https://github.com/sokolaidev/maf-extensions/issues/2063) and [#2164](https://github.com/sokolaidev/maf-extensions/issues/2164). ACAS import and execution are outside this delivery's accepted scope and remain unverified. The opt-in test with `MAF_SHELL_ACAS_IMAGE`, the existing `ACAS_SANDBOX_*` configuration and a previously imported host image remains available for future ACAS qualification.
+
+## Published Docker qualification, 2026-10-26
+
+[Image release 0.1.0](https://github.com/sokolaidev/maf-extensions/releases/tag/image-shell-v0.1.0) completed publication, signing, anonymous-pull qualification and evidence delivery in [workflow run 40242032430](https://github.com/sokolaidev/maf-extensions/actions/runs/40242032430). Its retained assessment passed the strict High/Critical gate; the Grype report contains two Medium matches and no High or Critical matches. This records the release assessment, not a permanent claim about future monitoring.
+
+| Evidence | Released value |
+|---|---|
+| Registry reference | `ghcr.io/sokolaidev/maf-extensions/shell@sha256:3051b9c39e0f731836d5a30484c2f2cec3df5ae1031df3e73a9de18653250a31` |
+| Configuration identity | `sha256:3e90c0104d992953d72fb7c04d8268c842b3c891e9675179ac0f79ace5fb8456` |
+| Source revision | `a9bf6d61f4425d2ab0d06d598744dc457e930e92` |
+| Retained evidence | Release assets include `candidate.json`, `qualification.json`, `assessment.json`, `grype.json`, SBOM/provenance bundles and `completion.jsonl` |
+| Post-publication runtime | Analyzer fixtures and all 11 public SDK cases passed on Docker/Linux amd64; networking disabled, source stores unchanged and no remaining containers |
+
+The release's `qualification.json` records `sdkSource: checkout`: both Bash and PowerShell were exercised with the reviewed source at the recorded revision. Its checkout distribution reported version 0.1.0; that is not a test of the earlier PyPI 0.1.0 wheel. The compatible [package 0.1.1](https://pypi.org/project/maf-sandbox-shell/0.1.1/) was subsequently published through [#2173](https://github.com/sokolaidev/maf-extensions/pull/2173).
+
+The hosted [`samples/21_shell_storage` job](https://github.com/sokolaidev/maf-extensions/actions/runs/40351671594/job/121673094076) passed with published `maf-sandbox-shell` 0.1.1, `maf-sandbox` 0.51.1 and `maf-sandbox-docker` 0.29.0. It generated a Bash script and obtained `Result: clean` using an image built from the workflow checkout. This is published-package Docker sample evidence; it does not exercise PowerShell with the published wheel or pin that sample's image to the released registry digest. The overall workflow failed in three separate WSLC setup jobs; the shell job passed.
+
+The maintainer accepted this Docker evidence as sufficient for this delivery on 2026-10-26. The retained release report states `acasVerified: false`, and neither the image release nor the hosted sample establishes ACAS execution or deployment of the generated script.
 
 ## Select and verify a published image
 
@@ -111,7 +129,7 @@ The final image passed all 15 analyzer fixtures and 11 public SDK cases on the s
 
 The update removes the three Critical matches and the bundled .NET findings from this assessment. The remaining High matches affect Debian packages, including libc, util-linux, ncurses, Perl, GCC runtime libraries, zlib and ACL libraries. No fixes are listed for the installed versions. The strict gate still **fails**; no exclusions or policy changes were applied.
 
-The local Docker store exposes an image index identity, distinct from the configuration identity in the exported archive. The export was scanned without claiming a registry publication identity or a protected retained-candidate round trip. No image was published or signed, and ACAS import and execution were not run. #2164 remains open for remediation, publication and ACAS qualification.
+The local Docker store exposes an image index identity, distinct from the configuration identity in the exported archive. The export was scanned without claiming a registry publication identity or a protected retained-candidate round trip. No image was published or signed in this local check, and ACAS import and execution were not run. Remediation and publication were still pending at this stage of #2164.
 
 ### Wolfi runtime
 
@@ -129,4 +147,4 @@ The shell-only remediation pins Wolfi base `sha256:360896efb0753a5701c48f860e171
 
 The strict `grype --fail-on high` gate **passes** without exclusions or policy changes. The two remaining Medium matches are `CVE-2025-15367` and `CVE-2026-12345` in `python-3.13` 3.13.16_git20261016-r2, with no fixed version listed. A passing threshold does not mean the image has no vulnerability findings. The protected release workflow must assess its own retained candidate before publication; this local export was not published or signed, and ACAS remains unqualified.
 
-This candidate passed all 15 analyzer fixtures and 11 public SDK cases on Docker Desktop 29.9.2/Linux amd64, with closed networking, unchanged stores and no remaining containers. The checkout distribution versions were unchanged from the earlier local runs above. The derived-image fixtures also passed host module discovery, the managed assembly reference and submitted-module shadowing. These results qualify the tested checkout with the local image; they do not establish published-wheel compatibility, hosted CI, a protected retained-candidate round trip or ACAS qualification. #2164 remains open for publication and ACAS evidence.
+This candidate passed all 15 analyzer fixtures and 11 public SDK cases on Docker Desktop 29.9.2/Linux amd64, with closed networking, unchanged stores and no remaining containers. The checkout distribution versions were unchanged from the earlier local runs above. The derived-image fixtures also passed host module discovery, the managed assembly reference and submitted-module shadowing. These results qualify the tested checkout with the local image; they do not establish published-wheel compatibility, hosted CI, a protected retained-candidate round trip or ACAS qualification. Publication followed in the [Docker qualification record](#published-docker-qualification-2026-10-26) above.

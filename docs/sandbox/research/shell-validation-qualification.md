@@ -1,6 +1,6 @@
 # Shell validation qualification
 
-> Local observations through 2026-10-24 for [#2063](https://github.com/sokolaidev/maf-extensions/issues/2063). The accepted interface is in the [kind contract](../kinds/shell.md); reproducible image commands and dependency preparation are in the [image guide](../../../images/shell-sandbox/README.md).
+> Historical local observations through 2026-10-24 for [#2063](https://github.com/sokolaidev/maf-extensions/issues/2063). The accepted interface and Docker qualification scope are in the [kind contract](../kinds/shell.md); the [image guide](../../../images/shell-sandbox/README.md#published-docker-qualification-2026-10-26) records subsequent publication and hosted evidence alongside reproducible image commands and dependency preparation.
 
 ## Analysis-time execution
 
