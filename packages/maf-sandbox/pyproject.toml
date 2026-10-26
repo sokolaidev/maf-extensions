@@ -40,7 +40,7 @@ classifiers = [
 dependencies = [
     # The floor matches the locked core the framework-contract alarms run against.
     # Only the measured minor is admitted.
-    "agent-framework-core>=1.22.0,<1.23",
+    "agent-framework-core>=1.23.0,<1.24",
 ]
 
 [project.urls]
