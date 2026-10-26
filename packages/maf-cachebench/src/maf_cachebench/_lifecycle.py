@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -14,7 +16,20 @@ from agent_framework import Agent, AgentSession, HistoryProvider, Message
 
 from ._behavior import restore_behavior, snapshot_behavior
 from ._configuration import CompactionOptions, validate_session_support
-from ._diagnostics import counters
+from ._diagnostics import OBSERVATION_LABELS, counters
+
+_REPLAY_MESSAGES: ContextVar[dict[str, dict[str, Any]] | None] = ContextVar(
+    "cachebench_replay_messages", default=None
+)
+
+
+def capture_original_messages(messages: Sequence[Message]) -> None:
+    """Detach each identified message before compaction can mutate its payload."""
+    originals = _REPLAY_MESSAGES.get()
+    if originals is not None:
+        for message in messages:
+            if message.message_id and message.message_id not in originals:
+                originals[message.message_id] = deepcopy(message.to_dict())
 
 
 @dataclass
@@ -45,6 +60,7 @@ class SessionExperiment:
         self.binding = build()
         self.lock = asyncio.Lock()
         self.totals = counters(self.binding.strategy, self.binding.recall)
+        self.observations = {name: 0 for name in OBSERVATION_LABELS}
         self.registry = self._registry()
         validate_session_support(options, has_recall=self.binding.recall is not None)
 
@@ -75,25 +91,11 @@ class SessionExperiment:
 
         before: dict[str, int] | None = None
 
+        captured = {item["message_id"]: deepcopy(item) for item in original}
+
         def remember(active: AgentSession) -> None:
-            if self.options.history_mode != "replay":
-                return
-            # Stream aggregation can return different message objects from persisted history.
-            saved: list[Message] = []
-            for provider in self.binding.agent.context_providers:
-                if isinstance(provider, HistoryProvider):
-                    saved = active.state.get(provider.source_id, {}).get("messages", [])
-                    break
-            boundary = next(
-                index
-                for index, message in enumerate(saved)
-                if message.message_id == user.message_id
-            )
-            active.state[replay_key] = [
-                *original,
-                user.to_dict(),
-                *(message.to_dict() for message in saved[boundary + 1 :]),
-            ]
+            if self.options.history_mode == "replay":
+                active.state[replay_key] = list(captured.values())
 
         async def call(active: AgentSession) -> Any:
             nonlocal before
@@ -111,6 +113,7 @@ class SessionExperiment:
             remember(active)
             return result
 
+        token = _REPLAY_MESSAGES.set(captured if self.options.history_mode == "replay" else None)
         try:
             mode = self.options.session_mode
             if mode == "memory":
@@ -168,10 +171,18 @@ class SessionExperiment:
                 session = AgentSession.from_dict(data)
             return result, session
         finally:
+            _REPLAY_MESSAGES.reset(token)
             if before is not None:
                 after = counters(self.binding.strategy, self.binding.recall)
                 for name, value in after.items():
-                    self.totals[name] = self.totals.get(name, 0) + max(0, value - before[name])
+                    if name == "records_found":
+                        self.totals[name] = max(self.totals[name], value)
+                    else:
+                        self.totals[name] += max(0, value - before[name])
+                for name in self.observations:
+                    value = getattr(self.binding.strategy, name, 0)
+                    if isinstance(value, int) and value > 0:
+                        self.observations[name] = value
 
 
 def _json_snapshot(data: dict[str, Any]) -> dict[str, Any]:

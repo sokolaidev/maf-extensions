@@ -65,8 +65,8 @@ from maf_compaction import (
 from maf_compaction import record_text as _record_text
 
 from ._behavior import BehaviorSnapshot, restore_behavior, snapshot_behavior
-from ._diagnostics import COUNTER_LABELS
-from ._lifecycle import LiveBinding, SessionExperiment
+from ._diagnostics import COUNTER_LABELS, OBSERVATION_LABELS
+from ._lifecycle import LiveBinding, SessionExperiment, capture_original_messages
 from ._metrics import clamp_cached_tokens, serialize_message
 from ._recall import (
     COMBINED_SCOPE,
@@ -1282,6 +1282,19 @@ class IdentifiedHistoryProvider(InMemoryHistoryProvider):
             state: Provider-scoped session state.
             kwargs: Passed through.
         """
+        self._identify(messages, state)
+        capture_original_messages(messages)
+        await super().save_messages(session_id, messages, state=state, **kwargs)
+
+    async def before_run(
+        self, *, agent: Any, session: AgentSession, context: Any, state: dict[str, Any]
+    ) -> None:
+        """Capture new inputs before the per-model-call compaction phase."""
+        self._identify(context.input_messages, state)
+        capture_original_messages(context.input_messages)
+        await super().before_run(agent=agent, session=session, context=context, state=state)
+
+    def _identify(self, messages: Sequence[Message], state: dict[str, Any] | None) -> None:
         if state is not None:
             self._issued = max(self._issued, state.get("cachebench_issued", 0))
         for message in messages:
@@ -1294,7 +1307,6 @@ class IdentifiedHistoryProvider(InMemoryHistoryProvider):
                 message.message_id = f"cachebench_{self._issued}"
         if state is not None:
             state["cachebench_issued"] = self._issued
-        await super().save_messages(session_id, messages, state=state, **kwargs)
 
 
 def build_live_agent(
@@ -2113,9 +2125,7 @@ async def run_live(
         else 0,
         records_in_conversation=recording.records_in_conversation if recording is not None else 0,
         user_compactions=user_compacting.user_compactions if user_compacting is not None else 0,
-        user_messages_replaced=user_compacting.user_messages_replaced
-        if user_compacting is not None
-        else 0,
+        user_messages_replaced=experiment.observations["user_messages_replaced"],
         user_summaries_in_conversation=(
             user_compacting.user_summaries_in_conversation if user_compacting is not None else 0
         ),
@@ -2141,7 +2151,7 @@ async def run_live(
         error=error,
         replies=tuple(replies),
     )
-    diagnostics: dict[str, Any] = dict(experiment.totals)
+    diagnostics: dict[str, Any] = {**experiment.totals, **experiment.observations}
     if recall_middleware is not None:
         diagnostics.update(
             pin_disabled=recall_middleware.pin_disabled,
@@ -2149,10 +2159,15 @@ async def run_live(
             recall_disabled=recall_middleware.recall_disabled,
             value_free_record_streak=recall_middleware.value_free_record_streak,
         )
-    labels = set(COUNTER_LABELS.values())
+    labels = set(COUNTER_LABELS.values()) | set(OBSERVATION_LABELS.values())
     notes = [note for note in outcome.strategy_notes if note.partition(":")[0] not in labels]
     notes.extend(
         f"{COUNTER_LABELS[name]}:{value}" for name, value in experiment.totals.items() if value
+    )
+    notes.extend(
+        f"{OBSERVATION_LABELS[name]}:{value}"
+        for name, value in experiment.observations.items()
+        if value
     )
     if diagnostics.get("pin_disabled_reason"):
         notes.append(f"RECALLMODE:{diagnostics['pin_disabled_reason']}")

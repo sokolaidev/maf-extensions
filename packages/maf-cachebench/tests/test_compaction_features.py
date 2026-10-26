@@ -53,13 +53,14 @@ def anyio_backend():
 
 
 class Model(FunctionInvocationLayer[Any], ChatMiddlewareLayer[Any], BaseChatClient[Any]):
-    def __init__(self, *, refusal=False, truncated=False, failure=False, record=False):
+    def __init__(self, *, refusal=False, truncated=False, failure=False, record=False, tool=None):
         super().__init__()
         self.requests = []
         self.refusal = refusal
         self.truncated = truncated
         self.failure = failure
         self.record = record
+        self.tool = tool
         self.closed = 0
 
     def _inner_get_response(self, *, messages, stream, options, **kwargs):
@@ -78,6 +79,9 @@ class Model(FunctionInvocationLayer[Any], ChatMiddlewareLayer[Any], BaseChatClie
                 arguments='{"values": "unfinished',
             )
             finish = "length"
+        elif index == 1 and self.tool:
+            content = Content.from_function_call(call_id="payload", name=self.tool, arguments="{}")
+            finish = "tool_calls"
         elif index == 1 and self.record:
             content = Content.from_function_call(
                 call_id="record",
@@ -125,6 +129,7 @@ def binding_factory(
     strategy_name="tool_summary_anchored",
     summarizer=None,
     budget=100_000,
+    trigger_fraction=0.6,
 ):
     tokenizer = CharacterEstimatorTokenizer()
     controls = options or CompactionOptions()
@@ -135,6 +140,7 @@ def binding_factory(
             StrategyOptions(
                 tokenizer=tokenizer,
                 max_context_window_tokens=budget,
+                trigger_fraction=trigger_fraction,
                 max_output_tokens=1000,
                 compaction=controls,
                 summarizer=summarizer,
@@ -263,7 +269,7 @@ async def test_completed_recall_record_survives_restart_and_original_history_rep
     model = Model(record=True)
     recorder = UsageRecorder()
     experiment = SessionExperiment(
-        binding_factory(model, recorder, force=True),
+        binding_factory(model, recorder, force=True, trigger_fraction=0.001),
         CompactionOptions(session_mode="restart", history_mode="replay", stream=stream),
     )
     _, session = await experiment.run(AgentSession(), "Remember CODE-123456.", {})
@@ -275,6 +281,7 @@ async def test_completed_recall_record_survives_restart_and_original_history_rep
     assert experiment.binding.recall is not None
     assert experiment.binding.recall.session_state()["last_record"] == first["last_record"]
     assert experiment.totals["records_forced"] == 1
+    assert experiment.totals["records_found"] == 1
     assert len(model.requests) == len(recorder.calls) == 3
     assert model.requests[-1][1].get("tool_choice") in (None, "auto")
     assert any("CODE-123456" in message.text for message in model.requests[-1][0])
@@ -519,3 +526,102 @@ def test_missing_persistence_api_is_refused_before_contacting_model(monkeypatch)
             binding_factory(model, UsageRecorder()), CompactionOptions(session_mode="restart")
         )
     assert model.requests == []
+
+
+@pytest.mark.parametrize("mode", ["memory", "roundtrip", "restart"])
+@pytest.mark.parametrize("kind", ["plain", "harness"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("failure", [False, True])
+async def test_replay_archives_original_tool_payload_before_compaction(mode, kind, stream, failure):
+    model = Model(tool="payload")
+    original = "ORIGINAL-PAYLOAD " * 1000
+
+    def payload() -> str:
+        model.failure = failure
+        return original
+
+    tokenizer = CharacterEstimatorTokenizer()
+
+    def build():
+        strategy = build_strategy(
+            "anchored",
+            StrategyOptions(
+                tokenizer=tokenizer,
+                max_context_window_tokens=100_000,
+                max_output_tokens=1000,
+                keep_head_groups=0,
+                keep_tail_groups=0,
+                keep_tokens=10,
+            ),
+        )
+        agent = build_live_agent(
+            ProviderRuntime(model, "stub", {}),
+            kind=kind,
+            strategy=strategy,
+            tokenizer=tokenizer,
+            tools=[payload],
+            recorder=UsageRecorder(),
+            max_context_window_tokens=100_000,
+            max_output_tokens=1000,
+        )
+        return LiveBinding(agent, strategy, None, None)
+
+    experiment = SessionExperiment(
+        build, CompactionOptions(session_mode=mode, history_mode="replay", stream=stream)
+    )
+    session = AgentSession()
+    if failure:
+        before = deepcopy(session.to_dict())
+        with pytest.raises(asyncio.CancelledError if stream else RuntimeError):
+            await experiment.run(session, "Read the payload.", {})
+        assert session.to_dict() == before
+        model.failure = False
+        _, session = await experiment.run(session, "A fresh request.", {})
+        assert original not in str(session.to_dict())
+        assert "Read the payload." not in str(session.to_dict())
+        return
+    _, session = await experiment.run(session, "Read the payload.", {})
+    archive = deepcopy(session.to_dict()["state"]["cachebench_original_history"])
+    assert original in str(archive)
+    assert original not in str(session.to_dict()["state"]["in_memory"])
+    _, session = await experiment.run(session, "Continue.", {})
+    assert session.to_dict()["state"]["cachebench_original_history"][: len(archive)] == archive
+    ids = [
+        message["message_id"]
+        for message in session.to_dict()["state"]["cachebench_original_history"]
+    ]
+    assert all(ids) and len(ids) == len(set(ids))
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "strategy_name", ["user_summary_anchored", "tool_and_user_summary_anchored"]
+)
+async def test_restart_outcome_retains_latest_user_replacement_observation(stream, strategy_name):
+    scenario = build_live_scenario(salt="replaced", filler_turns=7, filler_tokens=400, tool_turns=0)
+    outcome = await run_live(
+        ProviderRuntime(Model(), "stub", {}),
+        strategy_name=strategy_name,
+        options=StrategyOptions(
+            tokenizer=CharacterEstimatorTokenizer(),
+            max_context_window_tokens=5000,
+            max_output_tokens=1000,
+            keep_head_user_turns=0,
+            user_min_band_share=0,
+            user_trigger_fraction=0.2,
+            keep_tail_user_turns=1,
+            compaction=CompactionOptions(session_mode="restart", stream=stream),
+            summarizer=Summarizer(),
+        ),
+        scenario=scenario,
+        force_tool_calls=False,
+        probe_repeats=1,
+        combined_repeats=1,
+    )
+    assert outcome.error is None
+    assert outcome.user_compactions > 0
+    assert outcome.user_messages_replaced > 0
+    assert (
+        outcome.compaction_diagnostics["user_messages_replaced"] == outcome.user_messages_replaced
+    )
+    assert f"USERREPLACED:{outcome.user_messages_replaced}" in outcome.strategy_notes

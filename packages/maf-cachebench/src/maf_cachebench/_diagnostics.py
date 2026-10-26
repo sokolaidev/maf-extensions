@@ -41,6 +41,9 @@ COUNTER_LABELS = {
 }
 
 
+OBSERVATION_LABELS = {"user_messages_replaced": "USERREPLACED"}
+
+
 def counters(strategy: Any, recall: Any) -> dict[str, int]:
     """Read cumulative counters without counting a composed proxy twice."""
     result: dict[str, int] = {}
