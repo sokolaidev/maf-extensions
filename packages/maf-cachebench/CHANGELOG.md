@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.3.0...maf-cachebench-v0.3.1) (2026-10-26)
+
+
+### Fixes
+
+* **cachebench:** admit compaction 0.8 and verify live integrations ([#2184](https://github.com/sokolaidev/maf-extensions/issues/2184)) ([5312cc7](https://github.com/sokolaidev/maf-extensions/commit/5312cc7164eb256c8b65dbeac7e32dbc79b3782b))
+
 ## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.2.0...maf-cachebench-v0.3.0) (2026-10-19)
 
 
