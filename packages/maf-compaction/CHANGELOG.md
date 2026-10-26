@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.8.0...maf-compaction-v0.9.0) (2026-10-26)
+
+
+### Features
+
+* **compaction:** add fenced saves, session branching and persistence hooks ([#2203](https://github.com/sokolaidev/maf-extensions/issues/2203)) ([99284ae](https://github.com/sokolaidev/maf-extensions/commit/99284ae1281387aecfd875ece1bd3f8f32dbae66))
+
 ## [0.8.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.7.1...maf-compaction-v0.8.0) (2026-10-25)
 
 
