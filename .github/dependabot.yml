@@ -1,6 +1,5 @@
-# Refreshes two things: the commit each workflow pins an action to, and the agent-framework
-# version `uv.lock` holds, which is the one the offline suite runs under `uv sync --locked` while
-# an adopter resolves the newest the declared range admits.
+# Refresh framework locks, Actions, Dockerfiles and build-consumed native manifests.
+# Image compatibility lines and manual exceptions are documented in images/DEPENDENCIES.md.
 #
 # **The uv entry is scoped by an allow list, to the framework only.** The dev group's `ruff`,
 # `pyright` and `pytest` bands are pinned so a new lint minor cannot drift findings across
@@ -65,3 +64,75 @@ updates:
     commit-message:
       prefix: "build"
       include: "scope"
+
+  - package-ecosystem: "docker"
+    directories:
+      - "/images/*"
+      - "/images/shell-sandbox/fixtures"
+      - "/packages/maf-sandbox-docker/tests/fixtures/missing-commands"
+      - "/packages/maf-sandbox-wslc/tests/fixtures/*"
+      - "/packages/maf-sandbox-docker-sbx/tests/images"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      wolfi-runtime:
+        patterns: ["chainguard/wolfi-base"]
+      go-toolchain:
+        patterns: ["golang"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    commit-message:
+      prefix: "build"
+
+  - package-ecosystem: "docker"
+    directories:
+      - "/packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy"
+      - "/packages/maf-sandbox-wslc/src/maf_sandbox_wslc/_proxy"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      proxy-images:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    commit-message:
+      prefix: "fix"
+
+  - package-ecosystem: "pip"
+    directory: "/images/drawio-export"
+    schedule:
+      interval: "weekly"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    commit-message:
+      prefix: "build"
+
+  - package-ecosystem: "nuget"
+    directory: "/images/bicep-sandbox"
+    schedule:
+      interval: "weekly"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    commit-message:
+      prefix: "build"
+
+  - package-ecosystem: "gomod"
+    directories:
+      - "/packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/dependencies"
+      - "/packages/maf-sandbox-wslc/src/maf_sandbox_wslc/_proxy/dependencies"
+    schedule:
+      interval: "weekly"
+    groups:
+      proxy-modules:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    commit-message:
+      prefix: "fix"

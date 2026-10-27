@@ -314,19 +314,24 @@ def test_runtime_checks_notices_and_actual_build_versions(monkeypatch, fault):
     pinned = proxy.re.search(r"FROM golang:([0-9.]+)-", recipe)
     assert pinned is not None
     compiler = pinned[1]
-    modules = proxy.re.findall(r"(google\.golang\.org/grpc|golang\.org/x/net)@(v[0-9.]+)", recipe)
+    manifest = (proxy.PROXY_SOURCE / "dependencies/go.mod").read_text(encoding="utf-8")
+    modules = proxy.re.findall(
+        r"^\s*(google\.golang\.org/grpc|golang\.org/x/net)\s+(v[0-9.]+)(?:\s|$)",
+        manifest,
+        proxy.re.MULTILINE,
+    )
     if fault in {"grpc-host", "net-host"}:
         module = "google.golang.org/grpc" if fault == "grpc-host" else "golang.org/x/net"
         lookalike = module.replace(".", "x")
         modules = [(lookalike if name == module else name, value) for name, value in modules]
-        recipe = recipe.replace(module, lookalike)
+        manifest = manifest.replace(module, lookalike)
         read_text = Path.read_text
         monkeypatch.setattr(
             Path,
             "read_text",
             lambda path, *args, **kwargs: (
-                recipe
-                if path == proxy.PROXY_SOURCE / "Dockerfile"
+                manifest
+                if path == proxy.PROXY_SOURCE / "dependencies/go.mod"
                 else read_text(path, *args, **kwargs)
             ),
         )

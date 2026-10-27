@@ -1,12 +1,5 @@
 {
   "version": "0.48.1",
   "sourceCommit": "cec7951cf694f1067eb17b5b062209fb66c710a9",
-  "sdkImage": "mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:3a48280a9a7c6276c3eeaba1efa6a08820f18c84fb9e6274c187719ecfaf9fbc",
-  "sdkVersion": "10.0.402",
-  "runtimeVersion": "10.0.13",
-  "packages": {
-    "MessagePack": "3.1.9",
-    "System.Security.Cryptography.Xml": "10.0.13",
-    "System.Security.Cryptography.Pkcs": "10.0.13"
-  }
+  "runtimeVersion": "10.0.13"
 }

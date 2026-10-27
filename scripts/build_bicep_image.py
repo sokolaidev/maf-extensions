@@ -42,8 +42,6 @@ def command(route: str, tag: str) -> list[str]:
             str(CONTEXT / "source.Dockerfile"),
             "--build-context",
             f"scripts={ROOT / 'scripts'}",
-            "--build-arg",
-            f"SDK_IMAGE={data['sdkImage']}",
         ]
     return [*command, str(CONTEXT)]
 

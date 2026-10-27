@@ -251,13 +251,28 @@ def runtime(proxy: str) -> dict[str, Any]:
     require(
         pinned is not None and compiler == "go" + pinned[1], "Proxy compiler differs from build pin"
     )
-    overrides = dict(re.findall(r"(google\.golang\.org/grpc|golang\.org/x/net)@(v[0-9.]+)", recipe))
+    manifest = (PROXY_SOURCE / "dependencies/go.mod").read_text(encoding="utf-8")
+    overrides = dict(
+        re.findall(
+            r"^\s*(google\.golang\.org/grpc|golang\.org/x/net)\s+(v[0-9.]+)(?:\s|$)",
+            manifest,
+            re.MULTILINE,
+        )
+    )
     require(
         len(overrides) == 2
         and all(modules.get(name) == value for name, value in overrides.items()),
         "Proxy modules differ from build pins",
     )
-    return {"sha256": recorded, "goVersion": compiler, "modules": modules}
+    return {
+        "sha256": recorded,
+        "goVersion": compiler,
+        "modules": modules,
+        "dependencyManifests": {
+            name: hashlib.sha256((PROXY_SOURCE / name).read_bytes()).hexdigest()
+            for name in ("dependencies/go.mod", "dependencies/go.sum", "dependencies/imports.go")
+        },
+    }
 
 
 def probe(

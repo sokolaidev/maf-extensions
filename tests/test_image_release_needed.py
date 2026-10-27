@@ -1499,10 +1499,11 @@ def test_git_helper_preserves_output_whitespace(tmp_path):
     assert tracker.git(tmp_path, "config", "--get", "test.value") == " value \t\n"
 
 
-def test_ci_has_no_automatic_image_builds_and_tracker_cannot_publish():
+def test_pr_scans_and_tracker_cannot_publish():
     scan = yaml.safe_load((ROOT / ".github/workflows/image-security.yml").read_text())
     triggers = scan.get("on", scan.get(True))
-    assert set(triggers) == {"schedule", "workflow_dispatch"}
+    assert set(triggers) == {"pull_request", "schedule", "workflow_dispatch"}
+    assert scan["permissions"] == {"contents": "read"}
     assert scan["jobs"]["scan"]["name"] == "Image security (${{ matrix.profile }})"
     workflow = yaml.safe_load((ROOT / ".github/workflows/image-release-needed.yml").read_text())
     trigger = workflow.get("on", workflow.get(True))["workflow_run"]
@@ -2006,7 +2007,9 @@ def bicep_scan(scan_artifact, monkeypatch, request):
     profile = request.param
     artifact["name"] = f"image-security-{profile}"
     files["build.json"]["profile"] = profile
-    packages = json.loads((ROOT / "images/bicep-sandbox/source.json").read_text())["packages"]
+    from bicep_source import policy
+
+    packages = policy(ROOT / "images/bicep-sandbox/source.json")["packages"]
     files["runtime.json"] = {
         "profile": profile,
         "imageId": RECORD["imageId"],

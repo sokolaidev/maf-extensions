@@ -1,6 +1,7 @@
 name: Image security
 
 on:
+  pull_request:
   schedule:
     - cron: "35 6 * * *"
   workflow_dispatch:
@@ -42,6 +43,8 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           SELECTED_PROFILE: ${{ inputs.profile || 'all' }}
         run: python3 scripts/select_image_security.py
+      - name: Check pinned image declarations
+        run: python3 scripts/container_image_inputs.py
 
   scan:
     name: Image security (${{ matrix.profile }})
@@ -120,6 +123,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/image-security"
           docker image inspect maf-image-scan:target > "$RUNNER_TEMP/image-security/image-inspect.json"
           python3 scripts/image_security_evidence.py "$RUNNER_TEMP/image-security"
+          python3 scripts/container_image_inputs.py > "$RUNNER_TEMP/image-security/declared-images.json"
           printf '{}\n' > "$RUNNER_TEMP/image-security/grype.yaml"
       - name: Qualify the selected Bicep compiler
         if: steps.identity.outcome == 'success' && contains(fromJSON('["bicep","bicep-avm","bicep-docker-sbx"]'), matrix.profile)
@@ -201,6 +205,26 @@ jobs:
           from container_release import write
           directory = Path(os.environ["RUNNER_TEMP"]) / "image-security"
           write(directory / "runtime.json", check("shell", os.environ["IMAGE_ID"], directory))
+          PY
+      - name: Qualify the remaining image consumers
+        if: steps.identity.outcome == 'success' && contains(fromJSON('["terraform-avm","graphviz","document","drawio","drawio-export","egress-proxy","hyperlight-aks-probe"]'), matrix.profile)
+        env:
+          IMAGE_ID: ${{ steps.identity.outputs.image_id }}
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          uv run --locked python - <<'PY'
+          import os
+          import shutil
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts")
+          from check_container_release_image import check
+          from container_release import write
+          directory = Path(os.environ["RUNNER_TEMP"]) / "image-security"
+          profile = os.environ["PROFILE"]
+          if profile == "hyperlight-aks-probe":
+              shutil.copyfile(directory.parent / "hyperlight-image/build-inputs.json", directory / "hyperlight-build-inputs.json")
+          write(directory / "runtime.json", check(profile, os.environ["IMAGE_ID"], directory))
           PY
       - name: Inventory the exact built image
         if: steps.build.outcome == 'success'

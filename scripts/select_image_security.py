@@ -47,10 +47,13 @@ IMAGE_INPUTS = {
     ),
     "images/hyperlight-sandbox/": ("hyperlight-aks-probe",),
     "packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/": ("egress-proxy",),
+    "packages/maf-sandbox-wslc/src/maf_sandbox_wslc/_proxy/": ("egress-proxy",),
 }
 # These exact consumer guides are not consumed by the image recipes or build helpers.
 CONSUMER_GUIDES = {
     "images/document-sandbox/README.md",
+    "images/DEPENDENCIES.md",
+    "images/README.md",
     "images/shell-sandbox/README.md",
     "images/egress-proxy/README.md",
     "images/bicep-sandbox/README.md",
@@ -117,6 +120,7 @@ SCRIPT_INPUTS = {
 }
 WHEEL_PACKAGES = {"maf-sandbox", "maf-sandbox-codeact", "maf-sandbox-hyperlight"}
 SHARED_INPUTS = {
+    ".github/dependabot.yml",
     "uv.lock",
     "uv.toml",
     "pyproject.toml",

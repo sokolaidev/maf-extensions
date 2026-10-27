@@ -1,0 +1,953 @@
+{
+  "observedAt": "2026-10-27",
+  "scope": "Local Docker Desktop Linux amd64 builds; no publication or production acceptance",
+  "baseline": "2a4fd61e Bicep upstream recipe with the formerly floating Azure Linux 3.0 base frozen at bd88359666e3f20296e7fe639a480dfd3c3c8eba299b21f26e4560353e21a656",
+  "images": {
+    "baseline": {
+      "scannerVersion": "0.120.0",
+      "database": {
+        "status": {
+          "schemaVersion": "v6.1.10",
+          "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.10_2026-10-26T00:32:02Z_1792996724.tar.zst?checksum=sha256%3A214b59fbe13608346ee1b22583ec0531083d6088c33891f3520d0fbdedb1b308",
+          "built": "2026-10-26T06:38:44Z",
+          "valid": true
+        },
+        "providers": {
+          "alma": {
+            "captured": "2026-10-26T00:32:26Z",
+            "input": "xxh64:36013c18ce235c0f"
+          },
+          "alpine": {
+            "captured": "2026-10-26T00:32:05Z",
+            "input": "xxh64:c888fcdab02a13c2"
+          },
+          "amazon": {
+            "captured": "2026-10-26T00:32:30Z",
+            "input": "xxh64:58e8e555c332b3ed"
+          },
+          "arch": {
+            "captured": "2026-10-26T00:32:02Z",
+            "input": "xxh64:094542fe047fe201"
+          },
+          "bitnami": {
+            "captured": "2026-10-26T00:32:09Z",
+            "input": "xxh64:2b1346dbed238663"
+          },
+          "chainguard": {
+            "captured": "2026-10-26T00:33:11Z",
+            "input": "xxh64:295353fa62c9d4af"
+          },
+          "chainguard-libraries": {
+            "captured": "2026-10-26T00:32:12Z",
+            "input": "xxh64:0cbed5b85b575a7e"
+          },
+          "debian": {
+            "captured": "2026-10-26T00:32:23Z",
+            "input": "xxh64:f7fd44b957373a62"
+          },
+          "echo": {
+            "captured": "2026-10-26T00:32:06Z",
+            "input": "xxh64:81300a7c37cf240d"
+          },
+          "eol": {
+            "captured": "2026-10-26T00:32:08Z",
+            "input": "xxh64:3b3dabae5f3c2274"
+          },
+          "epss": {
+            "captured": "2026-10-26T00:32:35Z",
+            "input": "xxh64:3c4d630d6a09436b"
+          },
+          "fedora": {
+            "captured": "2026-10-26T00:32:28Z",
+            "input": "xxh64:f46428ce19e4c846"
+          },
+          "github": {
+            "captured": "2026-10-26T00:32:20Z",
+            "input": "xxh64:a898b91897c2fff8"
+          },
+          "govulndb": {
+            "captured": "2026-10-26T00:32:06Z",
+            "input": "xxh64:c19a99a43955fa4d"
+          },
+          "hummingbird": {
+            "captured": "2026-10-26T00:35:04Z",
+            "input": "xxh64:85de8f51593c793e"
+          },
+          "kev": {
+            "captured": "2026-10-26T00:32:26Z",
+            "input": "xxh64:4c67d82913f456f9"
+          },
+          "mariner": {
+            "captured": "2026-10-26T00:32:36Z",
+            "input": "xxh64:031d4fdee3dbc81a"
+          },
+          "minimos": {
+            "captured": "2026-10-26T00:32:25Z",
+            "input": "xxh64:a297ad26e8284508"
+          },
+          "nvd": {
+            "captured": "2026-10-26T00:33:09Z",
+            "input": "xxh64:86bfe769a8571a97"
+          },
+          "oracle": {
+            "captured": "2026-10-26T00:32:23Z",
+            "input": "xxh64:fdaf1d830024bebf"
+          },
+          "photon": {
+            "captured": "2026-10-26T00:32:07Z",
+            "input": "xxh64:864e8c10f4986f96"
+          },
+          "rhel": {
+            "captured": "2026-10-26T00:33:29Z",
+            "input": "xxh64:5b85dcbb0eb4255b"
+          },
+          "secureos": {
+            "captured": "2026-10-26T00:32:16Z",
+            "input": "xxh64:83f8276a8b4d8bd2"
+          },
+          "sles": {
+            "captured": "2026-10-26T00:34:15Z",
+            "input": "xxh64:94555f904efd9f39"
+          },
+          "ubuntu": {
+            "captured": "2026-10-26T00:33:08Z",
+            "input": "xxh64:06429ecb88a98560"
+          },
+          "wolfi": {
+            "captured": "2026-10-26T00:32:09Z",
+            "input": "xxh64:87f5d5b78fc13a8b"
+          }
+        }
+      },
+      "packageCount": 189,
+      "matchesBySeverity": {
+        "High": 4,
+        "Medium": 2
+      },
+      "sbomSha256": "14b99ef35582dd01915d012dbe03ade772800f696b27b6101d47ed0396552ef7",
+      "scanSha256": "442f893d2edea4569e219e8b0248f1a211a14d6e1054d1a848774138163a0b7f",
+      "matches": [
+        {
+          "package": "System.Security.Cryptography.Xml",
+          "version": "10.0.10",
+          "id": "GHSA-7hqp-7c5m-4vq6",
+          "severity": "High"
+        },
+        {
+          "package": "System.Security.Cryptography.Xml",
+          "version": "10.0.10",
+          "id": "GHSA-r955-8q5j-3h83",
+          "severity": "High"
+        },
+        {
+          "package": "System.Security.Cryptography.Pkcs",
+          "version": "10.0.10",
+          "id": "GHSA-846f-f764-76mx",
+          "severity": "High"
+        },
+        {
+          "package": "System.Security.Cryptography.Xml",
+          "version": "10.0.10",
+          "id": "GHSA-c399-9853-6jmj",
+          "severity": "High"
+        },
+        {
+          "package": "System.Security.Cryptography.Pkcs",
+          "version": "10.0.10",
+          "id": "GHSA-2fmv-rv2c-59x7",
+          "severity": "Medium"
+        },
+        {
+          "package": "MessagePack",
+          "version": "3.1.7",
+          "id": "GHSA-qhrr-8q5h-9q3h",
+          "severity": "Medium"
+        }
+      ],
+      "configDigest": "sha256:305b36d1460467eead5da7315a05452018f2a93abc96edc00ea1a2f6bf1f0c70",
+      "deviceNodes": []
+    },
+    "upstream": {
+      "scannerVersion": "0.120.0",
+      "database": {
+        "status": {
+          "schemaVersion": "v6.1.10",
+          "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.10_2026-10-26T00:32:02Z_1792996724.tar.zst?checksum=sha256%3A214b59fbe13608346ee1b22583ec0531083d6088c33891f3520d0fbdedb1b308",
+          "built": "2026-10-26T06:38:44Z",
+          "valid": true
+        },
+        "providers": {
+          "alma": {
+            "captured": "2026-10-26T00:32:26Z",
+            "input": "xxh64:36013c18ce235c0f"
+          },
+          "alpine": {
+            "captured": "2026-10-26T00:32:05Z",
+            "input": "xxh64:c888fcdab02a13c2"
+          },
+          "amazon": {
+            "captured": "2026-10-26T00:32:30Z",
+            "input": "xxh64:58e8e555c332b3ed"
+          },
+          "arch": {
+            "captured": "2026-10-26T00:32:02Z",
+            "input": "xxh64:094542fe047fe201"
+          },
+          "bitnami": {
+            "captured": "2026-10-26T00:32:09Z",
+            "input": "xxh64:2b1346dbed238663"
+          },
+          "chainguard": {
+            "captured": "2026-10-26T00:33:11Z",
+            "input": "xxh64:295353fa62c9d4af"
+          },
+          "chainguard-libraries": {
+            "captured": "2026-10-26T00:32:12Z",
+            "input": "xxh64:0cbed5b85b575a7e"
+          },
+          "debian": {
+            "captured": "2026-10-26T00:32:23Z",
+            "input": "xxh64:f7fd44b957373a62"
+          },
+          "echo": {
+            "captured": "2026-10-26T00:32:06Z",
+            "input": "xxh64:81300a7c37cf240d"
+          },
+          "eol": {
+            "captured": "2026-10-26T00:32:08Z",
+            "input": "xxh64:3b3dabae5f3c2274"
+          },
+          "epss": {
+            "captured": "2026-10-26T00:32:35Z",
+            "input": "xxh64:3c4d630d6a09436b"
+          },
+          "fedora": {
+            "captured": "2026-10-26T00:32:28Z",
+            "input": "xxh64:f46428ce19e4c846"
+          },
+          "github": {
+            "captured": "2026-10-26T00:32:20Z",
+            "input": "xxh64:a898b91897c2fff8"
+          },
+          "govulndb": {
+            "captured": "2026-10-26T00:32:06Z",
+            "input": "xxh64:c19a99a43955fa4d"
+          },
+          "hummingbird": {
+            "captured": "2026-10-26T00:35:04Z",
+            "input": "xxh64:85de8f51593c793e"
+          },
+          "kev": {
+            "captured": "2026-10-26T00:32:26Z",
+            "input": "xxh64:4c67d82913f456f9"
+          },
+          "mariner": {
+            "captured": "2026-10-26T00:32:36Z",
+            "input": "xxh64:031d4fdee3dbc81a"
+          },
+          "minimos": {
+            "captured": "2026-10-26T00:32:25Z",
+            "input": "xxh64:a297ad26e8284508"
+          },
+          "nvd": {
+            "captured": "2026-10-26T00:33:09Z",
+            "input": "xxh64:86bfe769a8571a97"
+          },
+          "oracle": {
+            "captured": "2026-10-26T00:32:23Z",
+            "input": "xxh64:fdaf1d830024bebf"
+          },
+          "photon": {
+            "captured": "2026-10-26T00:32:07Z",
+            "input": "xxh64:864e8c10f4986f96"
+          },
+          "rhel": {
+            "captured": "2026-10-26T00:33:29Z",
+            "input": "xxh64:5b85dcbb0eb4255b"
+          },
+          "secureos": {
+            "captured": "2026-10-26T00:32:16Z",
+            "input": "xxh64:83f8276a8b4d8bd2"
+          },
+          "sles": {
+            "captured": "2026-10-26T00:34:15Z",
+            "input": "xxh64:94555f904efd9f39"
+          },
+          "ubuntu": {
+            "captured": "2026-10-26T00:33:08Z",
+            "input": "xxh64:06429ecb88a98560"
+          },
+          "wolfi": {
+            "captured": "2026-10-26T00:32:09Z",
+            "input": "xxh64:87f5d5b78fc13a8b"
+          }
+        }
+      },
+      "packageCount": 153,
+      "matchesBySeverity": {
+        "High": 4,
+        "Medium": 2
+      },
+      "sbomSha256": "465a1ca545c7e40b87b892aa0b74fdc0cf7e06f767ba85f237f6fcf29ba08969",
+      "scanSha256": "fb5973c2e6bb897e36f52aa2375c8ac03a82b3667653af1cfe23dfb9e7ae22c6",
+      "matches": [
+        {
+          "package": "System.Security.Cryptography.Xml",
+          "version": "10.0.10",
+          "id": "GHSA-7hqp-7c5m-4vq6",
+          "severity": "High"
+        },
+        {
+          "package": "System.Security.Cryptography.Xml",
+          "version": "10.0.10",
+          "id": "GHSA-r955-8q5j-3h83",
+          "severity": "High"
+        },
+        {
+          "package": "System.Security.Cryptography.Pkcs",
+          "version": "10.0.10",
+          "id": "GHSA-846f-f764-76mx",
+          "severity": "High"
+        },
+        {
+          "package": "System.Security.Cryptography.Xml",
+          "version": "10.0.10",
+          "id": "GHSA-c399-9853-6jmj",
+          "severity": "High"
+        },
+        {
+          "package": "System.Security.Cryptography.Pkcs",
+          "version": "10.0.10",
+          "id": "GHSA-2fmv-rv2c-59x7",
+          "severity": "Medium"
+        },
+        {
+          "package": "MessagePack",
+          "version": "3.1.7",
+          "id": "GHSA-qhrr-8q5h-9q3h",
+          "severity": "Medium"
+        }
+      ],
+      "configDigest": "sha256:88109c93f2fe943c7d28f92c7f21378ef49db5dfdfcec01587a6f2d0b1035dad",
+      "deviceNodes": [],
+      "runtime": {
+        "imageId": "sha256:1d15a8fd10262d51a4fa3dae2c68aafc55241886feb413dbc42a4c66d656ebd6",
+        "profile": "bicep",
+        "checkedAt": "2026-10-27T01:10:08.695846+00:00",
+        "bicep": {
+          "bicepVersion": "Bicep CLI version 0.48.1 (cec7951cf6)",
+          "compilerSha256": "b09ec25a9d376c1f8e33ede6ed22b587f915ad68488d5db77a6f9541748c7f6e",
+          "configSha256": "caa052745857e9769beafe74a11efc80cb62ca25c1b801b44bd8b25c9bfd364c",
+          "licenseSha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
+          "build": {
+            "route": "upstream",
+            "compilerSha256": "b09ec25a9d376c1f8e33ede6ed22b587f915ad68488d5db77a6f9541748c7f6e"
+          },
+          "backend": "docker-cli",
+          "network": "none",
+          "checks": [
+            {
+              "name": "valid-local",
+              "passed": true,
+              "error": [],
+              "warning": [],
+              "outputPresent": true
+            },
+            {
+              "name": "invalid-type",
+              "passed": true,
+              "error": [
+                "BCP033"
+              ],
+              "warning": [],
+              "outputPresent": false
+            },
+            {
+              "name": "fallback-config",
+              "passed": true,
+              "error": [
+                "no-unused-params"
+              ],
+              "warning": [],
+              "outputPresent": false
+            },
+            {
+              "name": "default-config-control",
+              "passed": true,
+              "error": [],
+              "warning": [
+                "no-unused-params"
+              ],
+              "outputPresent": true
+            },
+            {
+              "name": "staged-config",
+              "passed": true,
+              "error": [],
+              "warning": [],
+              "outputPresent": true
+            },
+            {
+              "name": "uncached-module",
+              "passed": true,
+              "error": [
+                "BCP190"
+              ],
+              "warning": [],
+              "outputPresent": false
+            }
+          ]
+        },
+        "containersRemaining": [],
+        "kind": "offline-packaging",
+        "passed": true,
+        "liveDeploymentVerified": false
+      }
+    },
+    "source": {
+      "scannerVersion": "0.120.0",
+      "database": {
+        "status": {
+          "schemaVersion": "v6.1.10",
+          "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.10_2026-10-26T00:32:02Z_1792996724.tar.zst?checksum=sha256%3A214b59fbe13608346ee1b22583ec0531083d6088c33891f3520d0fbdedb1b308",
+          "built": "2026-10-26T06:38:44Z",
+          "valid": true
+        },
+        "providers": {
+          "alma": {
+            "captured": "2026-10-26T00:32:26Z",
+            "input": "xxh64:36013c18ce235c0f"
+          },
+          "alpine": {
+            "captured": "2026-10-26T00:32:05Z",
+            "input": "xxh64:c888fcdab02a13c2"
+          },
+          "amazon": {
+            "captured": "2026-10-26T00:32:30Z",
+            "input": "xxh64:58e8e555c332b3ed"
+          },
+          "arch": {
+            "captured": "2026-10-26T00:32:02Z",
+            "input": "xxh64:094542fe047fe201"
+          },
+          "bitnami": {
+            "captured": "2026-10-26T00:32:09Z",
+            "input": "xxh64:2b1346dbed238663"
+          },
+          "chainguard": {
+            "captured": "2026-10-26T00:33:11Z",
+            "input": "xxh64:295353fa62c9d4af"
+          },
+          "chainguard-libraries": {
+            "captured": "2026-10-26T00:32:12Z",
+            "input": "xxh64:0cbed5b85b575a7e"
+          },
+          "debian": {
+            "captured": "2026-10-26T00:32:23Z",
+            "input": "xxh64:f7fd44b957373a62"
+          },
+          "echo": {
+            "captured": "2026-10-26T00:32:06Z",
+            "input": "xxh64:81300a7c37cf240d"
+          },
+          "eol": {
+            "captured": "2026-10-26T00:32:08Z",
+            "input": "xxh64:3b3dabae5f3c2274"
+          },
+          "epss": {
+            "captured": "2026-10-26T00:32:35Z",
+            "input": "xxh64:3c4d630d6a09436b"
+          },
+          "fedora": {
+            "captured": "2026-10-26T00:32:28Z",
+            "input": "xxh64:f46428ce19e4c846"
+          },
+          "github": {
+            "captured": "2026-10-26T00:32:20Z",
+            "input": "xxh64:a898b91897c2fff8"
+          },
+          "govulndb": {
+            "captured": "2026-10-26T00:32:06Z",
+            "input": "xxh64:c19a99a43955fa4d"
+          },
+          "hummingbird": {
+            "captured": "2026-10-26T00:35:04Z",
+            "input": "xxh64:85de8f51593c793e"
+          },
+          "kev": {
+            "captured": "2026-10-26T00:32:26Z",
+            "input": "xxh64:4c67d82913f456f9"
+          },
+          "mariner": {
+            "captured": "2026-10-26T00:32:36Z",
+            "input": "xxh64:031d4fdee3dbc81a"
+          },
+          "minimos": {
+            "captured": "2026-10-26T00:32:25Z",
+            "input": "xxh64:a297ad26e8284508"
+          },
+          "nvd": {
+            "captured": "2026-10-26T00:33:09Z",
+            "input": "xxh64:86bfe769a8571a97"
+          },
+          "oracle": {
+            "captured": "2026-10-26T00:32:23Z",
+            "input": "xxh64:fdaf1d830024bebf"
+          },
+          "photon": {
+            "captured": "2026-10-26T00:32:07Z",
+            "input": "xxh64:864e8c10f4986f96"
+          },
+          "rhel": {
+            "captured": "2026-10-26T00:33:29Z",
+            "input": "xxh64:5b85dcbb0eb4255b"
+          },
+          "secureos": {
+            "captured": "2026-10-26T00:32:16Z",
+            "input": "xxh64:83f8276a8b4d8bd2"
+          },
+          "sles": {
+            "captured": "2026-10-26T00:34:15Z",
+            "input": "xxh64:94555f904efd9f39"
+          },
+          "ubuntu": {
+            "captured": "2026-10-26T00:33:08Z",
+            "input": "xxh64:06429ecb88a98560"
+          },
+          "wolfi": {
+            "captured": "2026-10-26T00:32:09Z",
+            "input": "xxh64:87f5d5b78fc13a8b"
+          }
+        }
+      },
+      "packageCount": 130,
+      "matchesBySeverity": {},
+      "sbomSha256": "3364aa6c5c4f40904537f023fb9fecec26e1bf222dc3054c05f2b0dc5a6f40af",
+      "scanSha256": "da931ad266515ca88891d1d26924b7c60ccfc85a7c9814e87a0d62b2ab2a90c8",
+      "matches": [],
+      "configDigest": "sha256:ae33474cfc61ef1accd6f1fae78bad59613db0777739540f999923b244b0143e",
+      "deviceNodes": [],
+      "runtime": {
+        "bicep": {
+          "backend": "docker-cli",
+          "bicepVersion": "Bicep CLI version 0.48.1 (cec7951cf6)",
+          "build": {
+            "builderSha256": "37bcad8b10880df91cc977339b8058b318619663d256e9b5760255ed2ca14f73",
+            "compilerSha256": "4615c8d9d6598399fcbc7956c9fffa19cd1bd0c15a04027560cae198a1456717",
+            "packages": {
+              "MessagePack": "3.1.9",
+              "System.Security.Cryptography.Pkcs": "10.0.13",
+              "System.Security.Cryptography.Xml": "10.0.13"
+            },
+            "policySha256": "9071fe747c9efdf8b4f62a5b925bf2094b67238b886b7505d39ed0b89031a79b",
+            "route": "source",
+            "runtimeVersion": "10.0.13",
+            "sdkImage": "mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:3a48280a9a7c6276c3eeaba1efa6a08820f18c84fb9e6274c187719ecfaf9fbc",
+            "sdkVersion": "10.0.402",
+            "sourceCommit": "cec7951cf694f1067eb17b5b062209fb66c710a9",
+            "version": "0.48.1"
+          },
+          "checks": [
+            {
+              "error": [],
+              "name": "valid-local",
+              "outputPresent": true,
+              "passed": true,
+              "warning": []
+            },
+            {
+              "error": [
+                "BCP033"
+              ],
+              "name": "invalid-type",
+              "outputPresent": false,
+              "passed": true,
+              "warning": []
+            },
+            {
+              "error": [
+                "no-unused-params"
+              ],
+              "name": "fallback-config",
+              "outputPresent": false,
+              "passed": true,
+              "warning": []
+            },
+            {
+              "error": [],
+              "name": "default-config-control",
+              "outputPresent": true,
+              "passed": true,
+              "warning": [
+                "no-unused-params"
+              ]
+            },
+            {
+              "error": [],
+              "name": "staged-config",
+              "outputPresent": true,
+              "passed": true,
+              "warning": []
+            },
+            {
+              "error": [
+                "BCP190"
+              ],
+              "name": "uncached-module",
+              "outputPresent": false,
+              "passed": true,
+              "warning": []
+            }
+          ],
+          "compilerSha256": "4615c8d9d6598399fcbc7956c9fffa19cd1bd0c15a04027560cae198a1456717",
+          "configSha256": "caa052745857e9769beafe74a11efc80cb62ca25c1b801b44bd8b25c9bfd364c",
+          "licenseSha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
+          "network": "none"
+        },
+        "checkedAt": "2026-10-27T01:37:52.304856+00:00",
+        "containersRemaining": [],
+        "imageId": "sha256:e9d8b258cb3380f8eba701fbef176c7786cc111c0e6b56ec88b418f79adf5046",
+        "kind": "offline-packaging",
+        "liveDeploymentVerified": false,
+        "passed": true,
+        "profile": "bicep"
+      }
+    }
+  },
+  "sourceApplicationInventoryVerified": true,
+  "proxyRuntime": {
+    "imageId": "sha256:95a3e2f0fac747a9bbaad4d94a4a36cd504d66f3d9ab6f8d1023a0eb69ccce29",
+    "profile": "egress-proxy",
+    "checkedAt": "2026-10-27T01:16:11.890072+00:00",
+    "kind": "controlled-docker-consumer",
+    "passed": true,
+    "egressProxy": {
+      "backend": "maf-sandbox-docker",
+      "sdkSource": "checkout",
+      "packages": {
+        "maf-sandbox": "0.51.1",
+        "maf-sandbox-docker": "0.29.0"
+      },
+      "docker": {
+        "Version": "29.9.2",
+        "Os": "linux",
+        "Arch": "amd64"
+      },
+      "runtime": {
+        "sha256": {
+          "/usr/local/bin/iron-proxy": "499c283f5e91a0a240fc5fbabd04df29ea5f1a69cad16e9fe721f0c25237deca",
+          "/licenses/iron-proxy-LICENSE": "f1a78af3197c0b00175f19f18a65f537c957ff87c180997cf6a038f8aa6f0906",
+          "/licenses/maf-extensions-LICENSE": "a37bf24f2f2c5779823a7a2426a0dd5d10e9bb2c9b96d197cdf196c097e38d61",
+          "/usr/share/maf-egress-proxy/iron.patch": "27dad5818fcc21fed23ec826b85b8db53e467790ac0a2934520843c47b0bf89d",
+          "/usr/share/maf-egress-proxy/credential_gate.go": "4af0597eba4aa2a8b37d5b12698edb7f40d3cb113b98e6378e8d82d435062da4",
+          "/licenses/Go-LICENSE": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+          "/usr/share/maf-egress-proxy/build-info.txt": "c9c4b2a0d5a71d8383a0474dec5bc074d1ee0e1304d594e6574fd117897f9dd2"
+        },
+        "goVersion": "go1.26.9",
+        "modules": {
+          "cloud.google.com/go/compute/metadata": "v0.9.0",
+          "github.com/1Password/connect-sdk-go": "v1.5.3",
+          "github.com/1password/onepassword-sdk-go": "v0.4.0",
+          "github.com/aws/aws-sdk-go-v2": "v1.45.1",
+          "github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream": "v1.7.20",
+          "github.com/aws/aws-sdk-go-v2/config": "v1.33.1",
+          "github.com/aws/aws-sdk-go-v2/credentials": "v1.20.1",
+          "github.com/aws/aws-sdk-go-v2/feature/ec2/imds": "v1.19.1",
+          "github.com/aws/aws-sdk-go-v2/internal/configsources": "v1.5.1",
+          "github.com/aws/aws-sdk-go-v2/internal/endpoints/v2": "v2.8.1",
+          "github.com/aws/aws-sdk-go-v2/internal/v4a": "v1.5.1",
+          "github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding": "v1.13.19",
+          "github.com/aws/aws-sdk-go-v2/service/internal/checksum": "v1.11.1",
+          "github.com/aws/aws-sdk-go-v2/service/internal/presigned-url": "v1.14.1",
+          "github.com/aws/aws-sdk-go-v2/service/internal/s3shared": "v1.20.1",
+          "github.com/aws/aws-sdk-go-v2/service/s3": "v1.109.1",
+          "github.com/aws/aws-sdk-go-v2/service/secretsmanager": "v1.46.1",
+          "github.com/aws/aws-sdk-go-v2/service/signin": "v1.7.1",
+          "github.com/aws/aws-sdk-go-v2/service/ssm": "v1.75.1",
+          "github.com/aws/aws-sdk-go-v2/service/sso": "v1.35.1",
+          "github.com/aws/aws-sdk-go-v2/service/ssooidc": "v1.40.1",
+          "github.com/aws/aws-sdk-go-v2/service/sts": "v1.47.1",
+          "github.com/aws/smithy-go": "v1.28.1",
+          "github.com/cenkalti/backoff/v4": "v4.3.0",
+          "github.com/cenkalti/backoff/v5": "v5.0.3",
+          "github.com/cespare/xxhash/v2": "v2.3.0",
+          "github.com/dylibso/observe-sdk/go": "v0.0.0-20240828172851-9145d8ad07e1",
+          "github.com/extism/go-sdk": "v1.7.1",
+          "github.com/go-jose/go-jose/v4": "v4.1.4",
+          "github.com/go-logr/logr": "v1.4.3",
+          "github.com/go-logr/stdr": "v1.2.2",
+          "github.com/gobwas/glob": "v0.2.3",
+          "github.com/google/uuid": "v1.6.0",
+          "github.com/grpc-ecosystem/grpc-gateway/v2": "v2.29.0",
+          "github.com/hashicorp/errwrap": "v1.1.0",
+          "github.com/hashicorp/go-cleanhttp": "v0.5.2",
+          "github.com/hashicorp/go-multierror": "v1.1.1",
+          "github.com/hashicorp/go-retryablehttp": "v0.7.8",
+          "github.com/hashicorp/go-rootcerts": "v1.0.2",
+          "github.com/hashicorp/go-secure-stdlib/parseutil": "v0.2.0",
+          "github.com/hashicorp/go-secure-stdlib/strutil": "v0.1.2",
+          "github.com/hashicorp/go-sockaddr": "v1.0.7",
+          "github.com/hashicorp/golang-lru/v2": "v2.0.7",
+          "github.com/hashicorp/hcl": "v1.0.1-vault-7",
+          "github.com/hashicorp/vault/api": "v1.23.0",
+          "github.com/ianlancetaylor/demangle": "v0.0.0-20251118225945-96ee0021ea0f",
+          "github.com/jackc/pgpassfile": "v1.0.0",
+          "github.com/jackc/pgservicefile": "v0.0.0-20240606120523-5a60cdf6a761",
+          "github.com/jackc/pgx/v5": "v5.10.0",
+          "github.com/klauspost/cpuid/v2": "v2.0.12",
+          "github.com/miekg/dns": "v1.1.72",
+          "github.com/mitchellh/mapstructure": "v1.5.0",
+          "github.com/opentracing/opentracing-go": "v1.2.0",
+          "github.com/pganalyze/pg_query_go/v6": "v6.2.2",
+          "github.com/pkg/errors": "v0.9.1",
+          "github.com/ryanuber/go-glob": "v1.0.0",
+          "github.com/tetratelabs/wabin": "v0.0.0-20230304001439-f6f874872834",
+          "github.com/tetratelabs/wazero": "v1.11.0",
+          "github.com/uber/jaeger-client-go": "v2.30.0+incompatible",
+          "github.com/uber/jaeger-lib": "v2.4.1+incompatible",
+          "github.com/wasilibs/go-pgquery": "v0.0.0-20260428021157-dca720e45577",
+          "github.com/wasilibs/wazero-helpers": "v0.0.0-20250123031827-cd30c44769bb",
+          "github.com/zeebo/blake3": "v0.2.4",
+          "go.opentelemetry.io/auto/sdk": "v1.2.1",
+          "go.opentelemetry.io/otel": "v1.44.0",
+          "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc": "v0.20.0",
+          "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp": "v0.20.0",
+          "go.opentelemetry.io/otel/log": "v0.20.0",
+          "go.opentelemetry.io/otel/metric": "v1.44.0",
+          "go.opentelemetry.io/otel/sdk": "v1.44.0",
+          "go.opentelemetry.io/otel/sdk/log": "v0.20.0",
+          "go.opentelemetry.io/otel/trace": "v1.44.0",
+          "go.opentelemetry.io/proto/otlp": "v1.10.0",
+          "go.uber.org/atomic": "v1.9.0",
+          "golang.org/x/net": "v0.60.0",
+          "golang.org/x/oauth2": "v0.36.0",
+          "golang.org/x/sys": "v0.48.0",
+          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/time": "v0.12.0",
+          "google.golang.org/genproto/googleapis/api": "v0.0.0-20260526163538-3dc84a4a5aaa",
+          "google.golang.org/genproto/googleapis/rpc": "v0.0.0-20260526163538-3dc84a4a5aaa",
+          "google.golang.org/grpc": "v1.83.2",
+          "google.golang.org/protobuf": "v1.36.11",
+          "gopkg.in/yaml.v3": "v3.0.1"
+        },
+        "dependencyManifests": {
+          "go.mod": "f90ef34f9aec0ad12a47577527247e7261625bff176707771a3207f5a26ba14b",
+          "go.sum": "f09a707f8e7d2f04259d6c5d79b2c7609a840c3ed6a1db86f04d4bfc1934901a"
+        }
+      },
+      "observation": {
+        "proxyImageId": "sha256:95a3e2f0fac747a9bbaad4d94a4a36cd504d66f3d9ab6f8d1023a0eb69ccce29",
+        "guestImageId": "sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0",
+        "proxyContainerId": "bdc1ec50ede4f98031f0ffdffdfa08224220a98a79ca0ea6f43347b5d259b06a",
+        "guestContainerId": "5f98b14acd1086a92fabcf7ab30010b9d109efc0d0ad0a69ddea790e4223045e",
+        "internalBridge": true,
+        "hostGateway": false,
+        "proxyUser": "65532:65532",
+        "capabilitiesDropped": "ALL",
+        "capabilitiesAdded": [],
+        "privileged": false,
+        "noNewPrivileges": true
+      },
+      "checks": [
+        {
+          "name": "allowed-credential-replacement",
+          "passed": true
+        },
+        {
+          "name": "unbound-host-strips-authorization",
+          "passed": true
+        },
+        {
+          "name": "denied-path",
+          "passed": true
+        },
+        {
+          "name": "denied-method",
+          "passed": true
+        },
+        {
+          "name": "denied-host",
+          "passed": true
+        },
+        {
+          "name": "direct-origin-denied",
+          "passed": true
+        },
+        {
+          "name": "credential-not-in-guest-metadata-or-logs",
+          "passed": true
+        },
+        {
+          "name": "expired-grant-denied",
+          "passed": true
+        }
+      ],
+      "fixture": {
+        "image": "python@sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0",
+        "imageId": "sha256:8d9d0b8bcf6506481eae4907c18f5e3e7902e629f5f6d684f9e7c32e85e3ddf0",
+        "origin": "controlled HTTPS on Docker bridge",
+        "customCaAndHosts": true,
+        "credentials": "synthetic; values omitted",
+        "policy": {
+          "api.example.com": "GET /v1/* with bound authority",
+          "other.example.com": "unbound allowlisted host"
+        }
+      },
+      "containersRemaining": [],
+      "networksRemaining": []
+    },
+    "containersRemaining": [],
+    "liveDeploymentVerified": false
+  },
+  "dockerfileCompatibility": {
+    "frontend": "docker/dockerfile:1.18.0@sha256:dabfc0969b935b2080555ace70ee69a5261af8a8f1b4df97b9e7fbcf6722eddf",
+    "configDigest": "sha256:78305b46442920a8f3064bc6fe9e5685a66d0685a3ebdc541aa1adcef0ed90ae",
+    "comparedConfigDigest": "sha256:88109c93f2fe943c7d28f92c7f21378ef49db5dfdfcec01587a6f2d0b1035dad",
+    "filesystemEntriesCompared": 1052,
+    "fileBytesModesOwnersLinksEqual": true,
+    "deviceNodes": [],
+    "runtime": {
+      "imageId": "sha256:0a53b4327111762952bd14750d11a594d58d0adb814d5764fba3c25e53b9d377",
+      "profile": "bicep",
+      "checkedAt": "2026-10-27T01:51:19.579530+00:00",
+      "bicep": {
+        "bicepVersion": "Bicep CLI version 0.48.1 (cec7951cf6)",
+        "compilerSha256": "b09ec25a9d376c1f8e33ede6ed22b587f915ad68488d5db77a6f9541748c7f6e",
+        "configSha256": "caa052745857e9769beafe74a11efc80cb62ca25c1b801b44bd8b25c9bfd364c",
+        "licenseSha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
+        "build": {
+          "route": "upstream",
+          "compilerSha256": "b09ec25a9d376c1f8e33ede6ed22b587f915ad68488d5db77a6f9541748c7f6e"
+        },
+        "backend": "docker-cli",
+        "network": "none",
+        "checks": [
+          {
+            "name": "valid-local",
+            "passed": true,
+            "error": [],
+            "warning": [],
+            "outputPresent": true
+          },
+          {
+            "name": "invalid-type",
+            "passed": true,
+            "error": [
+              "BCP033"
+            ],
+            "warning": [],
+            "outputPresent": false
+          },
+          {
+            "name": "fallback-config",
+            "passed": true,
+            "error": [
+              "no-unused-params"
+            ],
+            "warning": [],
+            "outputPresent": false
+          },
+          {
+            "name": "default-config-control",
+            "passed": true,
+            "error": [],
+            "warning": [
+              "no-unused-params"
+            ],
+            "outputPresent": true
+          },
+          {
+            "name": "staged-config",
+            "passed": true,
+            "error": [],
+            "warning": [],
+            "outputPresent": true
+          },
+          {
+            "name": "uncached-module",
+            "passed": true,
+            "error": [
+              "BCP190"
+            ],
+            "warning": [],
+            "outputPresent": false
+          }
+        ]
+      },
+      "containersRemaining": [],
+      "kind": "offline-packaging",
+      "passed": true,
+      "liveDeploymentVerified": false
+    },
+    "scope": "Local build with the older Dockerfile frontend; previous scans remain bound to their original config identities"
+  },
+  "wolfiPreparedBicep": {
+    "scope": "Local upstream-binary route; offline AVM qualification, not a clean source-route scan or hosted sandbox qualification",
+    "runtime": {
+      "imageId": "sha256:5ffe00ff2d97ca8d34acd88f93c16a1f5ccf8e6f3670d6c1d4779234be30f2a6",
+      "profile": "bicep-avm",
+      "checkedAt": "2026-10-27T01:57:22.984241+00:00",
+      "bicepAvm": {
+        "bicepVersion": "Bicep CLI version 0.48.1 (cec7951cf6)",
+        "build": {
+          "route": "upstream",
+          "compilerSha256": "b09ec25a9d376c1f8e33ede6ed22b587f915ad68488d5db77a6f9541748c7f6e"
+        },
+        "manifestSha256": "2301f905b92de143110590f295b9fc863bab6a2bc304ff8a8ae29a4c4546b96e",
+        "policySha256": "c0d2336096427deecfd4f44e58fbf2a50068a3510bc083b3c846773d5e65efa8",
+        "modules": [
+          {
+            "manifest_sha256": "0e56bad0810f3f1d17306c6e29500664b8267322bed5efd730ac25fc3d450e1f",
+            "reference": "br/public:avm/res/network/virtual-network:0.7.2"
+          },
+          {
+            "manifest_sha256": "bd2a2a8bb43bc1ba6ce00c6ad49dba0111374133e76f52b0ece2418364da4a40",
+            "reference": "br/public:avm/res/storage/storage-account:0.31.0"
+          }
+        ],
+        "checks": [
+          {
+            "name": "virtual-network",
+            "passed": true,
+            "errors": [],
+            "outputPresent": true
+          },
+          {
+            "name": "storage-account",
+            "passed": true,
+            "errors": [],
+            "outputPresent": true
+          },
+          {
+            "name": "invalid-parameter",
+            "passed": true,
+            "errors": [
+              "BCP036"
+            ],
+            "outputPresent": false
+          },
+          {
+            "name": "uncached-version",
+            "passed": true,
+            "errors": [
+              "BCP190"
+            ],
+            "outputPresent": false
+          },
+          {
+            "name": "missing-cache-config",
+            "passed": true,
+            "errors": [
+              "BCP190"
+            ],
+            "outputPresent": false
+          }
+        ]
+      },
+      "containersRemaining": [],
+      "kind": "offline-packaging",
+      "passed": true,
+      "liveDeploymentVerified": false
+    }
+  }
+}

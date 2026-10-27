@@ -1,7 +1,6 @@
 {
   "schemaVersion": 1,
   "platform": "linux/amd64",
-  "baseImage": "cgr.dev/chainguard/wolfi-base@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7",
   "bash": {
     "version": "5.3-r14",
     "url": "https://apk.cgr.dev/chainguard/x86_64/bash-5.3-r14.apk",

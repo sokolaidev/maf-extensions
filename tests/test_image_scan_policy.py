@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -68,7 +67,9 @@ def test_selected_route_reaches_the_build_and_qualification(tmp_path, route, pur
 @pytest.mark.parametrize("profile", BICEP_ROUTES)
 @pytest.mark.parametrize("mutation", [None, "image", "profile", "route", "inventory"])
 def test_route_evidence_requires_matching_runtime_and_patched_inventory(profile, mutation):
-    packages = json.loads((ROOT / "images/bicep-sandbox/source.json").read_text())["packages"]
+    from bicep_source import policy
+
+    packages = policy(ROOT / "images/bicep-sandbox/source.json")["packages"]
     build = {"route": "source", "packages": packages}
     runtime = {
         "profile": profile,

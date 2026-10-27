@@ -1,0 +1,55 @@
+{
+  "observedAt": "2026-10-27",
+  "scope": "Local official Dependabot CLI grouped proposal from isolated native modules with the authentic earlier gRPC 1.83.0 pin; no GitHub PR or publication",
+  "cliVersion": "1.96.0",
+  "upstreamCommit": "5bd11abeb95ca734c767cfc992ea9be862700614",
+  "updaterImage": "ghcr.io/dependabot/dependabot-updater-gomod@sha256:ea2de44ce0ea7ff5b1bb602de5fce64e9445268951bf22844abd327be7c3020b",
+  "proxyImage": "ghcr.io/dependabot/proxy@sha256:e629bba0dcbf6752211e26d66de827beaac14441128b2d816339adec833f0371",
+  "rawOutputSha256": "bff3166094ff8fff0bac1d1112bd521924e6488126d3e3373442120ab266261f",
+  "proposal": {
+    "group": "proxy-modules",
+    "dependencies": [
+      {
+        "name": "google.golang.org/grpc",
+        "previous-version": "1.83.0",
+        "version": "1.83.2",
+        "directory": "/packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/dependencies"
+      },
+      {
+        "name": "google.golang.org/grpc",
+        "previous-version": "1.83.0",
+        "version": "1.83.2",
+        "directory": "/packages/maf-sandbox-wslc/src/maf_sandbox_wslc/_proxy/dependencies"
+      }
+    ],
+    "files": [
+      {
+        "name": "go.mod",
+        "directory": "/packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/dependencies",
+        "sha256": "f90ef34f9aec0ad12a47577527247e7261625bff176707771a3207f5a26ba14b"
+      },
+      {
+        "name": "go.sum",
+        "directory": "/packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/dependencies",
+        "sha256": "45dbb8ec88ad405bf1d2350a260b228d4cce378f652f2bb7434041effb7f5985"
+      },
+      {
+        "name": "go.mod",
+        "directory": "/packages/maf-sandbox-wslc/src/maf_sandbox_wslc/_proxy/dependencies",
+        "sha256": "f90ef34f9aec0ad12a47577527247e7261625bff176707771a3207f5a26ba14b"
+      },
+      {
+        "name": "go.sum",
+        "directory": "/packages/maf-sandbox-wslc/src/maf_sandbox_wslc/_proxy/dependencies",
+        "sha256": "45dbb8ec88ad405bf1d2350a260b228d4cce378f652f2bb7434041effb7f5985"
+      }
+    ]
+  },
+  "validation": {
+    "originalModuleResolution": "fails on missing internal/hostmatch and internal/transform",
+    "correctedModuleResolution": "both mirrors pass Linux go list -deps -mod=readonly ./...",
+    "strictTidy": "both mirrors pass go mod tidy -diff; official updater also reports successful tidy",
+    "proxyBuild": "read-only credential tests and compilation pass",
+    "controlledRuntime": "credential and egress qualification passes with verified container and network cleanup"
+  }
+}

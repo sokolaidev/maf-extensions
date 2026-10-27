@@ -67,7 +67,8 @@ def test_upstream_route_uses_existing_recipe_without_source_inputs(monkeypatch):
 def test_source_route_pins_sdk_and_requires_matching_compiler_version(monkeypatch):
     command = builder.command("source", "test:source")
     assert command[command.index("--file") + 1] == str(CONTEXT / "source.Dockerfile")
-    assert f"SDK_IMAGE={POLICY['sdkImage']}" in command
+    assert "--build-arg" not in command
+    assert POLICY["sdkImage"] in (CONTEXT / "source.Dockerfile").read_text()
     monkeypatch.setattr(builder, "read_pin", lambda *_: ("v99.0.0", "a" * 64))
     with pytest.raises(ValueError, match="Review"):
         builder.command("source", "test:source")
@@ -119,10 +120,17 @@ def test_restore_graph_must_contain_only_patched_versions(tmp_path, name, mode):
 
 
 def test_new_source_policy_requires_messagepack_override(tmp_path):
-    data = copy.deepcopy(POLICY)
-    del data["packages"]["MessagePack"]
+    data = json.loads((CONTEXT / "source.json").read_text())
     path = tmp_path / "source.json"
     path.write_text(json.dumps(data))
+    (tmp_path / "source.Dockerfile").write_bytes((CONTEXT / "source.Dockerfile").read_bytes())
+    project = ET.parse(CONTEXT / "dependencies.csproj")  # nosec B314 # Repository fixture.
+    group = project.find("./ItemGroup")
+    assert group is not None
+    package = group.find("./PackageReference[@Include='MessagePack']")
+    assert package is not None
+    group.remove(package)
+    project.write(tmp_path / "dependencies.csproj")
     with pytest.raises(ValueError, match="Invalid pinned"):
         source.policy(path)
 

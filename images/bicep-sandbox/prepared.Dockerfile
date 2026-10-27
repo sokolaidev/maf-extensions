@@ -1,7 +1,7 @@
 # Build the base from Dockerfile, then use the repository root as this build context.
 ARG BASE_IMAGE=scratch
 FROM ${BASE_IMAGE} AS prepare
-RUN tdnf install -y python3 && tdnf clean all
+RUN apk add --no-cache python-3.13
 COPY scripts/bicep_dependencies.py /src/scripts/bicep_dependencies.py
 COPY images/bicep-sandbox/dependencies.bicep-avm*.json /src/images/bicep-sandbox/
 RUN python3 /src/scripts/bicep_dependencies.py prepare

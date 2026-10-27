@@ -266,10 +266,14 @@ def test_source_unpack_skips_symlink_fixtures_and_refuses_other_symlinks(tmp_pat
             builder.unpack(data.getvalue(), tmp_path)
 
 
-def test_release_catalogue_requires_source_builds_with_distinct_reviewed_package_hashes():
-    manifest = prep.load_manifest(
-        (ROOT / "images/terraform-sandbox/dependencies.terraform-avm.json").read_bytes()
-    )
+@pytest.mark.parametrize(
+    "manifest_name",
+    ["dependencies.terraform-avm.json", "dependencies.opentofu-avm-network.json"],
+)
+def test_release_catalogue_requires_source_builds_with_distinct_reviewed_package_hashes(
+    manifest_name,
+):
+    manifest = prep.load_manifest((ROOT / "images/terraform-sandbox" / manifest_name).read_bytes())
     for item in manifest["providers"]:
         plan = item["source_build"]
         assert plan["sha256"] not in {"0" * 64, item["artifact"]["sha256"]}
