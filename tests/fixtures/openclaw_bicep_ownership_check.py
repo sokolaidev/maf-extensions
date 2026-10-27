@@ -578,13 +578,19 @@ class Check:
         await client.connect()
         sessions = set(self.app.sessions) - before
         require(
-            len(sessions) == 1 and client.session is not None,
+            len(sessions) == 1 and client.is_connected,
             "MAF did not establish one transport session",
         )
-        assert client.session is not None
-        tools = await client.session.list_tools()
         expected = await self.prototype.make_server(None).list_tools()
-        require(tools.tools == expected, "MAF discovery differs from the Bicep contract")
+        session = client.session
+        if session is not None:
+            tools = await session.list_tools()
+            matches = tools.tools == expected
+        else:
+            matches = [
+                (tool.name, tool.description, tool.parameters()) for tool in client.functions
+            ] == [(tool.name, tool.description or "", tool.input_schema) for tool in expected]
+        require(matches, "MAF discovery differs from the Bicep contract")
         return client, sessions.pop()
 
     async def maf_close(self, active_close: bool) -> None:

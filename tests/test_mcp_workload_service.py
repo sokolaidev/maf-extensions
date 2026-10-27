@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import httpx2
@@ -301,6 +302,36 @@ def test_two_maf_clients_discover_distinct_bindings_and_close_independently():
                 assert len(await b.call_tool("echo", value="still connected")) == 1
             await until(lambda: not app.sessions)
         assert h.closes == 1
+
+    asyncio.run(scenario())
+
+
+def test_ownership_checker_discovers_framework_owned_clients(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / "tests" / "fixtures"))
+    ownership = __import__("openclaw_bicep_ownership_check")
+    prototype = load("server")
+
+    async def scenario():
+        expected = await prototype.make_server(None).list_tools()
+        harness = Harness()
+        original = harness.service()
+        binding = replace(next(iter(original.bindings.values())), tool=expected[0])
+        service = core.WorkloadService([binding], list(original.resources.values()))
+        async with running(service) as (app, client, _):
+            probe = SimpleNamespace(app=app, client=client, prototype=prototype, clients=[])
+            try:
+                a, a_sid = await ownership.Check.maf(probe)
+                b, b_sid = await ownership.Check.maf(probe)
+                assert a.session is None and b.session is None
+                assert a.is_connected and b.is_connected and a_sid != b_sid
+                assert set(app.sessions) == {a_sid, b_sid}
+                await a.close()
+                await until(lambda: a_sid not in app.sessions)
+                assert b.is_connected and b_sid in app.sessions
+            finally:
+                for tool in reversed(probe.clients):
+                    await tool.close()
+            await until(lambda: not app.sessions)
 
     asyncio.run(scenario())
 
