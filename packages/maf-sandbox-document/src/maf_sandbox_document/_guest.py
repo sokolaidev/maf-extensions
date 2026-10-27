@@ -7,6 +7,7 @@ import io
 import json
 import math
 import re
+import struct
 import sys
 import xml.etree.ElementTree as ET
 import xml.parsers.expat
@@ -94,12 +95,7 @@ def guarded_zip(data: bytes, kind: str) -> io.BytesIO:
                 raise Refused("nested archive members are refused")
         actual_total = 0
         for member in members:
-            with archive.open(member) as source:
-                value = source.read(MAX_MEMBER_BYTES + 1)
-                if len(value) > MAX_MEMBER_BYTES:
-                    raise Refused("max_zip_member_bytes exceeded")
-                if len(value) != member.file_size or source.read(1):
-                    raise Refused("ZIP member size mismatch")
+            value = _zip_member(data, archive, member)
             actual_total += len(value)
             if actual_total > MAX_TOTAL_BYTES:
                 raise Refused("max_zip_total_bytes exceeded")
@@ -139,6 +135,33 @@ def guarded_zip(data: bytes, kind: str) -> io.BytesIO:
             raise Refused("document type does not match OOXML content type")
     rebuilt.seek(0)
     return rebuilt
+
+
+def _zip_member(data: bytes, archive: zipfile.ZipFile, member: zipfile.ZipInfo) -> bytes:
+    """Bound expansion independently of the ZIP member's declared uncompressed size."""
+    # ZipFile validates local headers and overlap; ZipExtFile truncates to the declared size.
+    with archive.open(member):
+        offset = member.header_offset
+        name_size, extra_size = struct.unpack_from("<HH", data, offset + 26)
+        start = offset + 30 + name_size + extra_size
+        stop = start + member.compress_size
+        if not 0 <= start <= stop <= len(data):
+            raise Refused("invalid ZIP member bounds")
+        value = data[start:stop]
+        if member.compress_type == zipfile.ZIP_DEFLATED:
+            decoder = zlib.decompressobj(-zlib.MAX_WBITS)
+            value = decoder.decompress(value, MAX_MEMBER_BYTES + 1)
+            if len(value) > MAX_MEMBER_BYTES or decoder.unconsumed_tail:
+                raise Refused("max_zip_member_bytes exceeded")
+            if not decoder.eof or decoder.unused_data:
+                raise Refused("invalid ZIP compressed stream")
+        if len(value) > MAX_MEMBER_BYTES:
+            raise Refused("max_zip_member_bytes exceeded")
+        if len(value) != member.file_size:
+            raise Refused("ZIP member size mismatch")
+        if zlib.crc32(value) != member.CRC:
+            raise Refused("ZIP member CRC mismatch")
+        return value
 
 
 def _bounded_text(text: str, maximum: int, *, page: bool = False) -> str:
@@ -220,6 +243,8 @@ def _pptx(archive: io.BytesIO, config: dict[str, Any]) -> tuple[int, list[int], 
     if count > config["max_pages"]:
         raise Refused("max_pages exceeded")
     chosen = selected_pages(count, config["pages"])
+    if not chosen:
+        raise Refused("document has no slides")
     chunks: list[str] = []
     for number in chosen:
         slide = presentation.slides[number - 1]
@@ -340,6 +365,7 @@ def main() -> int:
         IndexError,
         zipfile.BadZipFile,
         zlib.error,
+        ET.ParseError,
         xml.parsers.expat.ExpatError,
     ) as exc:
         metadata = {

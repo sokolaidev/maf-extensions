@@ -479,3 +479,92 @@ def test_corrupt_compression_produces_refusal_metadata(tmp_path, kind):
     assert metadata["verdict"] == "refused"
     assert metadata["reason"].startswith("invalid document:")
     assert metadata["files"] == [] and metadata["truncated"] is False
+
+
+def understated_zip_member(data=b"<a/>" + b" " * 2000):
+    raw = bytearray(archive_with("word/document.xml", data))
+    central = raw.index(b"PK\x01\x02")
+    prefix = b"<a/>"
+    for crc_offset, size_offset in ((14, 22), (central + 16, central + 24)):
+        struct.pack_into("<I", raw, crc_offset, zlib.crc32(prefix))
+        struct.pack_into("<I", raw, size_offset, len(prefix))
+    return raw
+
+
+def test_zip_actual_size_is_independent_of_declared_size():
+    raw = understated_zip_member()
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        assert archive.read("word/document.xml") == b"<a/>"
+    with pytest.raises(_guest.Refused, match="ZIP member size mismatch"):
+        _guest.guarded_zip(raw, "docx")
+
+
+def test_zip_understated_member_still_has_expansion_cap(monkeypatch):
+    monkeypatch.setattr(_guest, "MAX_MEMBER_BYTES", 1024)
+    with pytest.raises(_guest.Refused, match="max_zip_member_bytes"):
+        _guest.guarded_zip(understated_zip_member(), "docx")
+
+
+@pytest.mark.parametrize("corruption", ["truncated-stream", "crc"])
+def test_zip_complete_stream_and_crc_are_required(corruption):
+    raw = bytearray(archive_with("word/document.xml", b"<a/>"))
+    central = raw.index(b"PK\x01\x02")
+    if corruption == "truncated-stream":
+        size = struct.unpack_from("<I", raw, central + 20)[0]
+        struct.pack_into("<I", raw, central + 20, size - 1)
+        reason = "invalid ZIP compressed stream"
+    else:
+        struct.pack_into("<I", raw, central + 16, 0)
+        reason = "ZIP member CRC mismatch"
+    with pytest.raises(_guest.Refused, match=reason):
+        _guest.guarded_zip(raw, "docx")
+
+
+@pytest.mark.parametrize("member", ["word/document.xml", "[Content_Types].xml"])
+def test_unbound_ooxml_namespace_produces_refusal_metadata(tmp_path, member):
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(docx())) as source, zipfile.ZipFile(output, "w") as target:
+        for info in source.infolist():
+            target.writestr(
+                info.filename,
+                b"<w:document><w:body/></w:document>"
+                if info.filename == member
+                else source.read(info),
+            )
+    result, metadata = run_guest(tmp_path, output.getvalue(), kind="docx")
+    assert result.returncode == 2
+    assert metadata["verdict"] == "refused" and "unbound prefix" in metadata["reason"]
+    assert metadata["files"] == [] and metadata["truncated"] is False
+
+
+def test_zero_slide_pptx_is_explicitly_refused(tmp_path):
+    from pptx import Presentation
+
+    output = io.BytesIO()
+    Presentation().save(output)
+    result, metadata = run_guest(tmp_path, output.getvalue(), kind="pptx")
+    assert result.returncode == 2
+    assert metadata["verdict"] == "refused" and metadata["reason"] == "document has no slides"
+    assert metadata["files"] == [] and metadata["truncated"] is False
+
+
+@pytest.mark.parametrize("appearance", [b"/N", b"/R", b"/D"])
+@pytest.mark.parametrize("state_dictionary", [False, True])
+@pytest.mark.parametrize("inline_image", [False, True])
+def test_pdf_annotation_appearance_without_form_subtype(appearance, state_dictionary, inline_image):
+    value = b"<< /On 6 0 R >>" if state_dictionary else b"6 0 R"
+    raw = pdf_objects(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /Annots [4 0 R] >>",
+            b"<< /Type /Annot /Subtype /Widget /AP 5 0 R >>",
+            b"<< " + appearance + b" " + value + b" >>",
+            pdf_stream(b"BI /W 1 ID x EI" if inline_image else b"q Q"),
+        ]
+    )
+    if inline_image:
+        with pytest.raises(Refused, match="inline PDF images"):
+            check_pdf(raw)
+    else:
+        check_pdf(raw)

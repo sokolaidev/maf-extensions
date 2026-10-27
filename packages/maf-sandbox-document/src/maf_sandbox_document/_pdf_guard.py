@@ -330,6 +330,20 @@ def check_pdf(data: bytes) -> None:
         procedures = resolve(info.get(b"/CharProcs"))
         if isinstance(procedures, dict):
             groups.extend(content(item) for item in cast(dict[bytes, Any], procedures).values())
+        appearances = resolve(info.get(b"/AP"))
+        if isinstance(appearances, dict):
+            for key in (b"/N", b"/R", b"/D"):
+                appearance = cast(dict[bytes, Any], appearances).get(key)
+                if isinstance(appearance, tuple) and appearance in decoded_streams:
+                    groups.append(content(appearance))
+                else:
+                    states = resolve(appearance)
+                    if isinstance(states, dict):
+                        groups.extend(
+                            content(item) for item in cast(dict[bytes, Any], states).values()
+                        )
+                    elif states is not None:
+                        raise Refused("invalid PDF appearance reference")
     scanned = 0
     for chunks in groups:
         scanned += sum(map(len, chunks))
