@@ -207,7 +207,7 @@ jobs:
           write(directory / "runtime.json", check("shell", os.environ["IMAGE_ID"], directory))
           PY
       - name: Qualify the remaining image consumers
-        if: steps.identity.outcome == 'success' && contains(fromJSON('["terraform-avm","graphviz","drawio","drawio-export","egress-proxy","hyperlight-aks-probe"]'), matrix.profile)
+        if: steps.identity.outcome == 'success' && contains(fromJSON('["terraform-avm","graphviz","document","drawio","drawio-export","egress-proxy","hyperlight-aks-probe"]'), matrix.profile)
         env:
           IMAGE_ID: ${{ steps.identity.outputs.image_id }}
           PROFILE: ${{ matrix.profile }}

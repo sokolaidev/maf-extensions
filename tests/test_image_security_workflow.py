@@ -211,6 +211,7 @@ def test_hyperlight_release_transition_defers_the_entire_scan_evidence_chain():
     for profile in (
         "terraform-avm",
         "graphviz",
+        "document",
         "drawio",
         "drawio-export",
         "egress-proxy",

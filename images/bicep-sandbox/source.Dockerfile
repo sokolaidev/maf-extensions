@@ -7,7 +7,7 @@ RUN --mount=type=cache,target=/root/.nuget/packages \
     python3 /build/bicep_source.py --policy /build/source.json --output /out
 
 FROM cgr.dev/chainguard/wolfi-base:latest@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7 AS assembled
-RUN apk upgrade --no-cache && apk add --no-cache ca-certificates-bundle icu libstdc++
+RUN apk upgrade --no-cache && apk add --no-cache ca-certificates-bundle icu libstdc++ libssl3
 COPY --from=build /out/bicep /usr/local/bin/bicep
 COPY --from=build /out/build.json /usr/share/maf-bicep/build.json
 COPY --from=build /out/NOTICE /usr/share/licenses/bicep/NOTICE
