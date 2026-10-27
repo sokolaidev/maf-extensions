@@ -1,0 +1,246 @@
+{
+  "observedAt": "2026-10-27",
+  "scope": "Local Docker Desktop Linux amd64; no publication, deployment or production acceptance",
+  "failedCI": {
+    "head": "3625fe80e0c9f83674096a6b596ca5d3c7d92fbd",
+    "run": "https://github.com/sokolaidev/maf-extensions/actions/runs/40514661940",
+    "job": 122225444720,
+    "matchesBySeverity": {
+      "Critical": 19,
+      "High": 130,
+      "Low": 5,
+      "Medium": 74,
+      "Unknown": 7
+    }
+  },
+  "image": {
+    "dockerDesktopIndex": "sha256:c7c8a54c40751d9e85e9de25e3d1fa1d0c235ce64cd5a1cd328a4c869c8e6d82",
+    "exportedConfig": "sha256:975fed26888d7d1a08444703e4568b125001d11a62449030f540c7cb595dc9ba",
+    "exportedConfigMatchesInventory": true,
+    "inventoryPackages": 402,
+    "profileInventoryVerified": true
+  },
+  "scan": {
+    "syftVersion": "1.54.0",
+    "grypeVersion": "0.120.0",
+    "database": {
+      "schemaVersion": "v6.1.10",
+      "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.10_2026-10-27T00:30:54Z_1793082641.tar.zst?checksum=sha256%3A16a9163729d925edbf911db3542666748f06ddb2ce541211a4f1314349e20442",
+      "built": "2026-10-27T06:30:41Z",
+      "valid": true
+    },
+    "configuration": {},
+    "failureThreshold": "high",
+    "onlyFixed": false,
+    "matchesBySeverity": {
+      "Medium": 2,
+      "Unknown": 7
+    },
+    "files": {
+      "sbom.syft.json": "4c4b6d8cfe24b67b26a4ecdc993c5f496a69bb2a9837b9130a4964db9798da8a",
+      "grype.json": "2776b927d40d5bf5b9f710450aa1a1fee81e3dd87adfb0510cf55a8d5776f992"
+    },
+    "remainingMatches": [
+      {
+        "id": "CVE-2025-15367",
+        "severity": "Medium",
+        "package": "python-3.13",
+        "version": "3.13.17_git20261023-r1"
+      },
+      {
+        "id": "CVE-2026-12345",
+        "severity": "Medium",
+        "package": "python-3.13",
+        "version": "3.13.17_git20261023-r1"
+      },
+      {
+        "id": "GO-2026-6809",
+        "severity": "Unknown",
+        "package": "stdlib",
+        "version": "go1.27.2"
+      },
+      {
+        "id": "GO-2026-6809",
+        "severity": "Unknown",
+        "package": "stdlib",
+        "version": "go1.27.2"
+      },
+      {
+        "id": "GO-2026-6809",
+        "severity": "Unknown",
+        "package": "stdlib",
+        "version": "go1.27.2"
+      },
+      {
+        "id": "GO-2026-6809",
+        "severity": "Unknown",
+        "package": "stdlib",
+        "version": "go1.27.2"
+      },
+      {
+        "id": "GO-2026-5932",
+        "severity": "Unknown",
+        "package": "golang.org/x/crypto",
+        "version": "v0.57.0"
+      },
+      {
+        "id": "GO-2026-5932",
+        "severity": "Unknown",
+        "package": "golang.org/x/crypto",
+        "version": "v0.57.0"
+      },
+      {
+        "id": "GO-2026-5932",
+        "severity": "Unknown",
+        "package": "golang.org/x/crypto",
+        "version": "v0.57.0"
+      }
+    ]
+  },
+  "providers": [
+    {
+      "source": "registry.opentofu.org/azure/azapi",
+      "version": "2.12.0",
+      "revision": "52241c97e85e231e81ad57895080f38138236ad2",
+      "packageSha256": "cfab3ad07a1b1cb60c31ba7ced053cabb1471ebecfd92ef85990c22c5a750470",
+      "repeatBuildVerified": true
+    },
+    {
+      "source": "registry.opentofu.org/azure/modtm",
+      "version": "0.4.0",
+      "revision": "1fe2fcd0f69d697b6d3e3530835416ef2c7114e7",
+      "packageSha256": "6b74e2cad880e2bb5b1f66895d6d155ea862efa899942e5ab20e582bbfa3556b",
+      "repeatBuildVerified": true
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/random",
+      "version": "3.7.2",
+      "revision": "bc2ddb552b4676d16997987a9bf2875c7b98d342",
+      "packageSha256": "e11d1455df35c9e0ac2e05bbfecb75c4c6132612cd7a542fdffde59b0aa5c081",
+      "repeatBuildVerified": true
+    }
+  ],
+  "runtime": {
+    "checkedAt": "2026-10-27T14:22:53.235191+00:00",
+    "containersRemaining": [],
+    "imageId": "sha256:c7c8a54c40751d9e85e9de25e3d1fa1d0c235ce64cd5a1cd328a4c869c8e6d82",
+    "kind": "offline-packaging",
+    "liveDeploymentVerified": false,
+    "opentofuAvm": {
+      "checks": [
+        {
+          "error": null,
+          "expectedRefusal": false,
+          "initExitCode": 0,
+          "name": "pinned",
+          "nestedModuleLoaded": true,
+          "passed": true,
+          "providerCopies": 0,
+          "providerLinks": 3,
+          "providersInMirror": true,
+          "sourceUnchanged": true,
+          "validateExitCode": 0,
+          "validationValid": true,
+          "version": "1.13.1"
+        },
+        {
+          "error": null,
+          "expectedRefusal": false,
+          "initExitCode": 0,
+          "name": "constraint",
+          "nestedModuleLoaded": true,
+          "passed": true,
+          "providerCopies": 0,
+          "providerLinks": 3,
+          "providersInMirror": true,
+          "sourceUnchanged": true,
+          "validateExitCode": 0,
+          "validationValid": true,
+          "version": "1.13.1"
+        },
+        {
+          "error": null,
+          "expectedRefusal": false,
+          "initExitCode": 0,
+          "name": "correct-lock",
+          "nestedModuleLoaded": true,
+          "passed": true,
+          "providerCopies": 0,
+          "providerLinks": 3,
+          "providersInMirror": true,
+          "sourceUnchanged": true,
+          "validateExitCode": 0,
+          "validationValid": true,
+          "version": "1.13.1"
+        },
+        {
+          "error": null,
+          "expectedRefusal": true,
+          "initExitCode": 1,
+          "name": "uncached-version",
+          "nestedModuleLoaded": false,
+          "passed": true,
+          "providerCopies": 0,
+          "providerLinks": 0,
+          "providersInMirror": true,
+          "sourceUnchanged": true,
+          "validateExitCode": null,
+          "validationValid": null,
+          "version": "1.13.1"
+        },
+        {
+          "error": null,
+          "expectedRefusal": true,
+          "initExitCode": 1,
+          "name": "wrong-lock",
+          "nestedModuleLoaded": true,
+          "passed": true,
+          "providerCopies": 3,
+          "providerLinks": 0,
+          "providersInMirror": true,
+          "sourceUnchanged": true,
+          "validateExitCode": null,
+          "validationValid": null,
+          "version": "1.13.1"
+        },
+        {
+          "error": null,
+          "expectedRefusal": true,
+          "initExitCode": 1,
+          "name": "upstream-lock",
+          "nestedModuleLoaded": true,
+          "passed": true,
+          "providerCopies": 0,
+          "providerLinks": 3,
+          "providersInMirror": true,
+          "sourceUnchanged": true,
+          "validateExitCode": null,
+          "validationValid": null,
+          "version": "1.13.1"
+        }
+      ],
+      "opentofuVersion": "1.13.1",
+      "receipt": {
+        "artifacts": {
+          "modules": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "providers": "7188d8e3974e34e7eaf42730f5df7d40e5b55c0a2ee90a2f4e643bc7e147dbf4",
+          "registry_modules": "60478c27299bc52b5f7fc071f0d4e91f310d3ed26d456499208b171e75ef7b19"
+        },
+        "engine": "opentofu",
+        "manifest_sha256": "22724d0c15f0ed25c3a9a74833654e714518e43e3efcaccf434e74ca67f8070e",
+        "policy_sha256": "9d9938fb79fd32b219343bea530e508d6c343864f80bd433dbb2ad3781851e20",
+        "schema": 1
+      }
+    },
+    "passed": true,
+    "profile": "opentofu-avm"
+  },
+  "publicToolTests": {
+    "passed": 13,
+    "skipped": 11,
+    "skippedScope": "ACAS not configured",
+    "network": "none",
+    "sourceMutation": false,
+    "cleanupVerified": true
+  }
+}

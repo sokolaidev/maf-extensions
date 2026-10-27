@@ -162,7 +162,7 @@ def expected_refusal(name: str, diagnostics: str) -> bool:
 
 def command(engine: str = "terraform") -> list[str]:
     """Run representative validation and refusal probes without registry access."""
-    cases = CASES if engine == "terraform" else CASES[:-1]
+    cases = CASES
     return [
         "/usr/local/bin/python3",
         "-c",
@@ -175,7 +175,7 @@ def command(engine: str = "terraform") -> list[str]:
 def evidence(output: bytes, engine: str = "terraform") -> dict[str, Any]:
     """Refuse receipt drift, incomplete checks and false-positive validation."""
     result = json.loads(output)
-    cases = CASES if engine == "terraform" else CASES[:-1]
+    cases = CASES
     manifest = (
         "dependencies.terraform-avm.json"
         if engine == "terraform"
