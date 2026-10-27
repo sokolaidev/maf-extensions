@@ -48,7 +48,7 @@ jobs:
         run: uv run --no-project --python 3.12 python -m scripts.experiments.mxc_streams_patch.build_kernel --root "$RUNNER_TEMP/mxc-stream-kernel"
       - name: Retain kernel identity and diagnostics
         if: always() && github.event_name == 'workflow_dispatch' && (inputs.mxc_stream_kernel || inputs.mxc_streams)
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mxc-stream-kernel-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -109,7 +109,7 @@ jobs:
         run: uv run --no-project --python 3.12 python -m scripts.experiments.mxc_streams_patch.qualification_runner --root "$RUNNER_TEMP/mxc-streams" --kernel-dir "$RUNNER_TEMP/mxc-stream-kernel"
       - name: Retain byte-stream qualification evidence
         if: always() && github.event_name == 'workflow_dispatch' && inputs.mxc_streams
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mxc-streams-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -149,7 +149,7 @@ jobs:
         run: uv run --no-project --python 3.12 python -m scripts.experiments.mxc_files_patch.build_kernel --root "$RUNNER_TEMP/mxc-file-kernel"
       - name: Retain kernel identity and diagnostics
         if: always() && github.event_name == 'workflow_dispatch' && inputs.mxc_files
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mxc-file-kernel-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -226,7 +226,7 @@ jobs:
           phase: cleanup
       - name: Retain bounded-file qualification evidence
         if: always() && github.event_name == 'workflow_dispatch' && inputs.mxc_files
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mxc-files-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -306,7 +306,7 @@ jobs:
         run: uv run --no-project --python 3.12 python -m scripts.experiments.mxc_v1_patch.qualification_runner --root "$RUNNER_TEMP/mxc-v1" --mode "$MXC_V1_MODE"
       - name: Retain qualification reports and logs
         if: always() && github.event_name == 'workflow_dispatch' && inputs.mxc_v1 != 'off'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mxc-v1-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
