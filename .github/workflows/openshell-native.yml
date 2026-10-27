@@ -48,7 +48,7 @@ jobs:
         run: |
           set -euo pipefail
           uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --report "$RUNNER_TEMP/openshell-evidence/report.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/probe.log"
-      - name: Measure native HTTP policy, cutover and raw routes
+      - name: Measure native HTTP policy, routes and provider authority
         shell: bash
         env:
           OTEL_SDK_DISABLED: 'true'
@@ -71,6 +71,7 @@ jobs:
           origin_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$origin_container")
           uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --egress-origin-ip "$origin_ip" --report "$RUNNER_TEMP/openshell-evidence/egress.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/egress.log"
           uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --egress-routes --egress-origin-ip "$origin_ip" --report "$RUNNER_TEMP/openshell-evidence/routes.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/routes.log"
+          uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --egress-composition --egress-origin-ip "$origin_ip" --report "$RUNNER_TEMP/openshell-evidence/composition.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/composition.log"
       - name: Characterize owned HTTPS trust and certificate validation
         shell: bash
         env:

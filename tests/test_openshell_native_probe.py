@@ -363,3 +363,8 @@ def test_workflow_retains_evidence_on_failure():
     measure = next(s for s in job["steps"] if "openshell_native_probe.py" in s.get("run", ""))
     assert "set -euo pipefail" in measure["run"]
     assert "--with-editable ./packages/maf-sandbox" in measure["run"]
+    composition = next(s for s in job["steps"] if "--egress-composition" in s.get("run", ""))
+    assert "set -euo pipefail" in composition["run"]
+    assert "--egress-origin-ip" in composition["run"]
+    assert "composition.json" in composition["run"]
+    assert "composition.log" in composition["run"]

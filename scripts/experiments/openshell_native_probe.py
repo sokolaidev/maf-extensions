@@ -507,7 +507,12 @@ def main() -> int:
     parser.add_argument("--egress-origin-ip")
     parser.add_argument("--https-ca", type=Path)
     parser.add_argument("--egress-routes", action="store_true")
+    parser.add_argument("--egress-composition", action="store_true")
     args = parser.parse_args()
+    if args.egress_composition and (
+        not args.egress_origin_ip or args.https_ca or args.egress_routes
+    ):
+        parser.error("--egress-composition requires only --egress-origin-ip")
     if args.egress_routes and (not args.egress_origin_ip or args.https_ca):
         parser.error("--egress-routes requires --egress-origin-ip without --https-ca")
     if args.https_ca and not args.egress_origin_ip:
@@ -590,7 +595,11 @@ def main() -> int:
             created = True
             report["workspace_create"]["state"] = "confirmed"
             fixture.save()
-            if args.egress_routes:
+            if args.egress_composition:
+                from openshell_composition_probe import measure_native_composition
+
+                asyncio.run(measure_native_composition(fixture, args.egress_origin_ip))
+            elif args.egress_routes:
                 from openshell_routes_probe import measure_routes
 
                 asyncio.run(measure_routes(fixture, args.egress_origin_ip))

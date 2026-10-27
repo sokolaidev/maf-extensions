@@ -7,9 +7,12 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import hashlib
 import ipaddress
 import json
 import re
+import socket
 import time
 import uuid
 from importlib import import_module
@@ -72,12 +75,13 @@ class CompositionProfile:
             for method in ("GET", "POST"):
                 origin_get(ip, "/provider", method=method, host=host)
 
-    def endpoint(self, target, host, path):
+    def endpoint(self, target, host, path, methods=("GET",)):
         endpoint = target.endpoints.add(
             host=host, port=8000, protocol="rest", allowed_ips=[self.ip]
         )
         endpoint.enforcement = self.pb.NETWORK_ENFORCEMENT_MODE_ENFORCE
-        endpoint.rules.add().allow.CopyFrom(self.pb.L7Allow(method="GET", path=path))
+        for method in methods:
+            endpoint.rules.add().allow.CopyFrom(self.pb.L7Allow(method=method, path=path))
 
     def build_profile(self, client):
         profile = client.pb.ProviderProfile(
@@ -183,7 +187,15 @@ class CompositionProfile:
             raise RuntimeError("resource remains: " + method)
 
     def run_cases(self, client, name, owner, ip, mode):
+        return self._run_cases(client, name, owner, ip, mode)
+
+    def _run_cases(self, client, name, owner, ip, mode, *, observe=None, record=None):
         results = []
+
+        def retain(event):
+            print(json.dumps(event), flush=True)
+            if record is not None:
+                record("transitions", event)
 
         def current():
             sandbox = client.rpc(
@@ -195,6 +207,9 @@ class CompositionProfile:
 
         def check(label, host, path, expected, method="GET"):
             current()
+            if observe is not None:
+                results.append(observe(label, host, path, expected, method))
+                return
             marker = uuid.uuid4().hex
             url = f"http://{host}:8000{path}?case={marker}"
             status, output, error = execute(client, name, guest_request(url, method))
@@ -233,7 +248,21 @@ class CompositionProfile:
                 ),
             )
             receipt = response.receipt
-            if receipt.desired.sandbox_id != owner["id"] or not receipt.receipt_id:
+            retain({"provider_intent": prefix, "receipt_hex": receipt.SerializeToString().hex()})
+            if (
+                receipt.desired.sandbox_id != owner["id"]
+                or receipt.desired.sandbox != name
+                or receipt.provider != self.provider
+                or receipt.workspace != client.scope.workspace
+                or receipt.kind
+                != (
+                    client.pb.PROVIDER_MUTATION_KIND_ATTACH
+                    if attached
+                    else client.pb.PROVIDER_MUTATION_KIND_DETACH
+                )
+                or receipt.desired.provider_id != (self.provider_id if attached else "")
+                or not receipt.receipt_id
+            ):
                 raise RuntimeError("provider mutation identity mismatch")
             expected = (
                 client.pb.PROVIDER_READINESS_STATE_READY
@@ -254,30 +283,28 @@ class CompositionProfile:
                     ),
                 ).status
                 if receipt_installed(status, receipt, expected):
-                    print(
-                        json.dumps(
-                            {
-                                "provider_transition": prefix,
-                                "receipt": receipt.receipt_id,
-                                "state": client.pb.ProviderReadinessState.Name(status.state),
-                                "attachment_epoch": receipt.desired.attachment_epoch,
-                                "config_revision": receipt.desired.config_revision,
-                                "policy_hash": receipt.desired.policy_hash,
-                            }
-                        ),
-                        flush=True,
+                    retain(
+                        {
+                            "provider_transition": prefix,
+                            "receipt": receipt.receipt_id,
+                            "state": client.pb.ProviderReadinessState.Name(status.state),
+                            "attachment_epoch": receipt.desired.attachment_epoch,
+                            "config_revision": receipt.desired.config_revision,
+                            "policy_hash": receipt.desired.policy_hash,
+                            "status_hex": status.SerializeToString().hex(),
+                        }
                     )
                     return receipt
                 time.sleep(0.1)
             raise RuntimeError("provider installation unconfirmed: " + str(status))
 
-        def update(path, *, stale_version=None):
+        def update(path, *, stale_version=None, host=None, methods=("GET",)):
             policy = fixture_spec(client.image).policy
             if path:
                 rule = policy.network_policies["base_fixture"]
                 rule.name = "base_fixture"
                 rule.binaries.add(path="/usr/local/bin/python*")
-                self.endpoint(rule, self.base_host, path)
+                self.endpoint(rule, host or self.base_host, path, methods)
             request = client.pb.UpdateConfigRequest(
                 sandbox=name,
                 workspace_scope=client.scope,
@@ -291,10 +318,17 @@ class CompositionProfile:
                 except client.grpc.RpcError as exc:
                     if exc.code() != client.grpc.StatusCode.ABORTED:
                         raise
-                    print(json.dumps({"stale_policy_update": "ABORTED"}), flush=True)
+                    retain({"stale_policy_update": "ABORTED"})
                     return
                 raise RuntimeError("stale policy update accepted")
             response = client.rpc("UpdateConfig", request)
+            retain(
+                {
+                    "policy_intent": response.version,
+                    "request_hex": request.SerializeToString().hex(),
+                    "response_hex": response.SerializeToString().hex(),
+                }
+            )
             status = None
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
@@ -306,15 +340,15 @@ class CompositionProfile:
                     ),
                 )
                 if revision_installed(status, response, client.pb.POLICY_STATUS_LOADED):
-                    print(
-                        json.dumps(
-                            {
-                                "policy_loaded": response.version,
-                                "policy_hash": response.policy_hash,
-                                "base_path": path,
-                            }
-                        ),
-                        flush=True,
+                    retain(
+                        {
+                            "policy_loaded": response.version,
+                            "policy_hash": response.policy_hash,
+                            "base_path": path,
+                            "base_host": host or self.base_host,
+                            "base_methods": list(methods),
+                            "status_hex": status.SerializeToString().hex(),
+                        }
                     )
                     return
                 time.sleep(0.1)
@@ -328,6 +362,15 @@ class CompositionProfile:
         check("attached_provider_post_denied", provider, "/provider", 403, "POST")
         check("attached_provider_path_denied", provider, "/blocked", 403)
         check("attached_base_still_closed", base, "/base", "EACCES")
+        if observe is not None:
+            update("/provider", host=provider, methods=("POST",))
+            check("overlap_retains_provider_get", provider, "/provider", 200)
+            check("overlap_base_adds_post", provider, "/provider", 200, "POST")
+            check("overlap_post_path_denied", provider, "/blocked", 403, "POST")
+            check("overlap_distinct_host_closed", base, "/base", "EACCES")
+            update(None)
+            check("overlap_clear_retains_get", provider, "/provider", 200)
+            check("overlap_clear_removes_post", provider, "/provider", 403, "POST")
         update("/base")
         stale = current().metadata.resource_version
         check("base_added", base, "/base", 200)
@@ -362,14 +405,131 @@ class CompositionProfile:
         ).status
         if old.state != client.pb.PROVIDER_READINESS_STATE_SUPERSEDED:
             raise RuntimeError("old provider receipt not superseded")
-        print(
-            json.dumps({"old_attachment_receipt": "SUPERSEDED", "new_attachment_identity": True}),
-            flush=True,
+        retain(
+            {
+                "old_attachment_receipt": "SUPERSEDED",
+                "new_attachment_identity": True,
+                "status_hex": old.SerializeToString().hex(),
+            }
         )
         check("reattach_restores_provider", provider, "/provider", 200)
         attach(False)
         check("final_detach_closes_provider", provider, "/provider", "EACCES")
         return results
+
+
+def observe_native(client, name, ip, record, label, host, path, expected, method):
+    """Require a direct positive control and the entire journal delta for each guest request."""
+    from openshell_routes_probe import guest_code, raw_request, route_observation
+
+    target = path + "?case=" + uuid.uuid4().hex
+    request = {"method": method, "path": target, "host": host + ":8000", "port": 8000}
+    wire = f"{method} {target} HTTP/1.1\r\nHost: {host}:8000\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+    before = origin_get(ip, "/__events")
+    control = raw_request(ip, 8000, wire)
+    after = origin_get(ip, "/__events")
+    control_row = {"case": label, "response": control, "origin_hits": after[len(before) :]}
+    record("controls", control_row)
+    if after[: len(before)] != before:
+        raise RuntimeError("origin journal is not append-only")
+    route_observation(control, control_row["origin_hits"], 200, request)
+    before = after
+    status, output, error = execute(client, name, guest_code(host, 8000, wire))
+    after = origin_get(ip, "/__events")
+    row = {
+        "case": label,
+        "expected": expected,
+        "request": request,
+        "wire_sha256": hashlib.sha256(wire.encode("ascii")).hexdigest(),
+        "exit_code": status,
+        "stdout": output.decode("utf-8", errors="replace"),
+        "stderr": error.decode("utf-8", errors="replace"),
+        "origin_hits": after[len(before) :],
+        "observation": None,
+        "passed": False,
+    }
+    record("cases", row)
+    if status != 0 or error or after[: len(before)] != before:
+        raise RuntimeError("guest execution or independent journal failed")
+    row["guest"] = json.loads(output)
+    row["observation"] = route_observation(row["guest"], row["origin_hits"], expected, request)
+    row["passed"] = True
+    return row
+
+
+async def measure_native_composition(fixture, ip):
+    """Retain serial anonymous provider composition evidence without qualifying egress modes."""
+    from functools import partial
+
+    from openshell_egress_probe import fixture_policy, native_origin_ip
+
+    ip = native_origin_ip(ip)
+    evidence = fixture.report["composition"] = {
+        "scope": "one anonymous provider; serial IPv4 HTTP, distinct and overlapping endpoints",
+        "origin_ip": ip,
+        "cases": [],
+        "controls": [],
+        "transitions": [],
+        "characterization_completed": False,
+        "qualification_passed": False,
+        "provider_and_profile_cleanup_verified": False,
+        "unqualified": [
+            "credentials and multiple providers",
+            "profile edits and global overrides",
+            "concurrent controllers and in-flight requests",
+            "continuous guest process and persistent connections",
+            "restart and reconnect",
+            "HTTPS and broader protocols",
+            "complete CLOSED/allowlist conformance and backend adoption",
+        ],
+    }
+    fixture.save()
+
+    def record(kind, row):
+        evidence[kind].append(row)
+        fixture.save()
+
+    profile = CompositionProfile()
+    try:
+        await asyncio.to_thread(profile.preflight, ip)
+        for host in (profile.provider_host, profile.base_host):
+            addresses = await asyncio.to_thread(socket.getaddrinfo, host, 8000, socket.AF_INET)
+            if {address[4][0] for address in addresses} != {ip}:
+                raise RuntimeError("fixture DNS did not resolve to the owned origin")
+        evidence["profile"] = profile.profile_id
+        evidence["provider"] = profile.provider
+        evidence["provider_prepare_state"] = "pending"
+        fixture.save()
+        await asyncio.to_thread(profile.prepare_workspace, fixture.client)
+        evidence["provider_prepare_state"] = "confirmed"
+        evidence["provider_id"] = profile.provider_id
+        fixture.save()
+        await fixture.acquire(policy=fixture_policy(fixture.client.image, (), ip))
+        owner = fixture.owners[-1]
+        observe = partial(observe_native, fixture.client, owner["name"], ip, record)
+        results = await asyncio.to_thread(
+            profile._run_cases,
+            fixture.client,
+            owner["name"],
+            {"id": owner["sandbox_id"]},
+            ip,
+            "composition",
+            observe=observe,
+            record=record,
+        )
+        if len(results) != 25 or not all(row["passed"] for row in results):
+            raise RuntimeError("incomplete native provider matrix")
+        evidence["characterization_completed"] = True
+    finally:
+        try:
+            for owner in fixture.owners:
+                await fixture.dispose(owner)
+            await asyncio.to_thread(profile.cleanup_workspace, fixture.client)
+            evidence["provider_and_profile_cleanup_verified"] = (
+                evidence.get("provider_prepare_state") == "confirmed"
+            )
+        finally:
+            fixture.save()
 
 
 def main():
