@@ -22,7 +22,7 @@ uv build --package maf-sandbox-mcp
 $image = 'ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e'
 docker pull $image
 $output = Join-Path $env:TEMP ('openclaw-bicep-' + [guid]::NewGuid().ToString('N'))
-uv run --no-project samples/experimental/openclaw_bicep_e2e/agent.py --wheel dist/maf_sandbox_mcp-0.0.0-py3-none-any.whl --image $image --output $output
+uv run --no-project samples/experimental/openclaw_bicep_e2e/agent.py --wheel dist/maf_sandbox_mcp-0.2.0-py3-none-any.whl --image $image --output $output
 Get-Content (Join-Path $output 'report.json')
 ```
 
@@ -33,13 +33,13 @@ uv build --package maf-sandbox-mcp
 image='ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e'
 docker pull "$image"
 private_parent=$(mktemp -d)
-uv run --no-project samples/experimental/openclaw_bicep_e2e/agent.py --wheel dist/maf_sandbox_mcp-0.0.0-py3-none-any.whl --image "$image" --output "$private_parent/result"
+uv run --no-project samples/experimental/openclaw_bicep_e2e/agent.py --wheel dist/maf_sandbox_mcp-0.2.0-py3-none-any.whl --image "$image" --output "$private_parent/result"
 cat "$private_parent/result/report.json"
 ```
 
 Use the wheel filename produced by your build if its version differs. Setup can take several minutes. `setup.log`, `worker.log` and `gateway.log` are in the output directory. Every attempt needs a fresh output directory; the launcher refuses reuse. To reuse only an already provisioned OpenClaw package, add `--openclaw <previous-output>/openclaw/node_modules/openclaw`. Its version must still match the pin; configuration, sessions, owner state and the worker environment are always new. Gateway temporary storage is directed to the private output directory's `temp` child through `TEMP`, `TMP` and `TMPDIR`.
 
-The worker environment pins core 0.48.0, Bicep 0.22.2, Docker backend 0.27.0 and MAF 1.20.0, matching the installed qualification baseline. Other dependency versions are resolved at installation and recorded in the report; this is not a complete transitive lock. A worker or OpenClaw upgrade needs fresh qualification. npm dependency lifecycle scripts are disabled; the launcher explicitly runs the pinned OpenClaw package's bundled-plugin setup script.
+The worker environment pins core 0.51.1, Bicep 0.24.0, Docker backend 0.29.0 and MAF 1.22.0, compatible with the worker 0.2.0 wheel. Historical qualification below retains its original dependency versions. Other dependency versions are resolved at installation and recorded in the report; this is not a complete transitive lock. A worker or OpenClaw upgrade needs fresh qualification. npm dependency lifecycle scripts are disabled; the launcher explicitly runs the pinned OpenClaw package's bundled-plugin setup script.
 
 ## What passes
 
@@ -70,7 +70,7 @@ Then add `--mode model` and load the file through uv:
 
 ```powershell
 $modelOutput = Join-Path $env:TEMP ('openclaw-bicep-model-' + [guid]::NewGuid().ToString('N'))
-uv run --no-project --env-file C:/private/model.env samples/experimental/openclaw_bicep_e2e/agent.py --mode model --wheel dist/maf_sandbox_mcp-0.0.0-py3-none-any.whl --image $image --output $modelOutput
+uv run --no-project --env-file C:/private/model.env samples/experimental/openclaw_bicep_e2e/agent.py --mode model --wheel dist/maf_sandbox_mcp-0.2.0-py3-none-any.whl --image $image --output $modelOutput
 ```
 
 For a local compatible server, a loopback `http://localhost:<port>/v1` endpoint is allowed and the key may be omitted. Remote endpoints require HTTPS and a key. Provider-specific APIs, OAuth and existing OpenClaw login profiles are not supported by this sample. It never reads or rewrites your normal OpenClaw configuration. Model mode forwards prompts, tool schemas and results to the configured endpoint and may incur inference charges.
@@ -83,4 +83,6 @@ On 2026-10-13, the default installation path passed on Windows with Python 3.13.
 
 On 2026-10-14, a fresh Windows Gateway/Docker smoke passed with job-based process supervision, both compiler verdicts, zero owned containers and owner-lock release. All 40 focused tests passed on Windows; 39 passed and the Windows-only admission test skipped in a Linux container. The process tests cover a SIGTERM-ignoring descendant, cleanup after its leader exits, preservation of an unrelated process, and refusal to confirm cleanup when ownership inspection fails. Restoring whitespace normalization failed all three first-turn byte-identity regressions; restoring the exited-leader shortcut failed the live descendant test. This qualifies process-group cleanup on Linux, not the complete POSIX Gateway path.
 
-No real model was configured for this qualification. The relay's model-forwarding contract was tested with a local synthetic endpoint; that does not qualify any external model/provider. Full POSIX Gateway execution, arbitrary OpenClaw versions, production operation, file/artifact delivery and broader sandbox conformance remain unverified. This sample implements [#1932](https://github.com/sokolaidev/maf-extensions/issues/1932), a narrow follow-up under [#1641](https://github.com/sokolaidev/maf-extensions/issues/1641).
+On 2026-10-26, the complete deterministic Gateway path passed in a Linux controller hosted by Docker Desktop, using the worker 0.2.0 wheel and the dependency pins above. Both actual compiler results and per-call cleanup passed; final cleanup confirmed absent POSIX process groups, zero owned Docker containers and independent owner-lock reacquisition. The [retained qualification record](../../../docs/sandbox/research/openclaw-gateway-qualification.md#linux-gateway-to-docker-sample-2026-10-26) pins the controller, source, wheel, runtime versions and evidence hashes, and retains setup failures separately. This is a Linux-on-Docker-Desktop profile, not qualification of a native Linux host.
+
+No real model was configured for this qualification. The relay's model-forwarding contract was tested with a local synthetic endpoint; that does not qualify any external model/provider. Native Linux hosts, other POSIX systems, arbitrary OpenClaw versions, production operation, file/artifact delivery and broader sandbox conformance remain unverified. This sample implements [#1932](https://github.com/sokolaidev/maf-extensions/issues/1932), a narrow follow-up under [#1641](https://github.com/sokolaidev/maf-extensions/issues/1641).

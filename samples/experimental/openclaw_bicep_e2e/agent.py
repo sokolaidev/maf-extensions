@@ -31,6 +31,12 @@ from _provider import Provider
 from _windows_job import Job
 
 OPENCLAW = "2026.9.7"
+WORKER_REQUIREMENTS = (
+    "maf-sandbox==0.51.1",
+    "maf-sandbox-bicep==0.24.0",
+    "maf-sandbox-docker==0.29.0",
+    "agent-framework-core==1.22.0",
+)
 HERE = Path(__file__).resolve().parent
 FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -238,10 +244,7 @@ def install(args: argparse.Namespace, root: Path) -> tuple[Path, Path, dict[str,
             "--python",
             str(python),
             str(args.wheel),
-            "maf-sandbox==0.48.0",
-            "maf-sandbox-bicep==0.22.2",
-            "maf-sandbox-docker==0.27.0",
-            "agent-framework-core==1.20.0",
+            *WORKER_REQUIREMENTS,
         ],
         root,
     )
