@@ -38,12 +38,16 @@ updates:
     commit-message:
       prefix: "chore"
       include: "scope"
-    # Five distributions, so five is every proposal this can have open at once.
+    groups:
+      agent-framework:
+        patterns: ["agent-framework-*"]
+      agent-framework-security:
+        applies-to: security-updates
+        patterns: ["agent-framework-*"]
     open-pull-requests-limit: 5
 
-  # Every `uses:` is a commit with its version in a trailing comment, and this moves both, one
-  # pull request per action. Ungrouped: a group limited to minor and patch also takes the majors
-  # its patterns match and proposes none of them (dependabot-core#14202).
+  # Group all permitted versions; update-type filters can suppress unmatched majors
+  # (dependabot-core#14202).
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -53,6 +57,12 @@ updates:
     # A release has a week to be found bad before it is proposed. Security updates skip this.
     cooldown:
       default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
+      github-actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
     commit-message:
       prefix: "ci"
       include: "scope"
@@ -61,6 +71,12 @@ updates:
     directory: "/images/document-sandbox"
     schedule:
       interval: "weekly"
+    groups:
+      document-libraries:
+        patterns: ["*"]
+      document-libraries-security:
+        applies-to: security-updates
+        patterns: ["*"]
     commit-message:
       prefix: "build"
       include: "scope"
@@ -80,6 +96,11 @@ updates:
         patterns: ["chainguard/wolfi-base"]
       go-toolchain:
         patterns: ["golang"]
+      other-build-images:
+        patterns: ["*"]
+      build-images-security:
+        applies-to: security-updates
+        patterns: ["*"]
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
@@ -96,6 +117,9 @@ updates:
     groups:
       proxy-images:
         patterns: ["*"]
+      proxy-images-security:
+        applies-to: security-updates
+        patterns: ["*"]
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
@@ -106,6 +130,12 @@ updates:
     directory: "/images/drawio-export"
     schedule:
       interval: "weekly"
+    groups:
+      drawio-libraries:
+        patterns: ["*"]
+      drawio-libraries-security:
+        applies-to: security-updates
+        patterns: ["*"]
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
@@ -116,6 +146,12 @@ updates:
     directory: "/images/bicep-sandbox"
     schedule:
       interval: "weekly"
+    groups:
+      bicep-libraries:
+        patterns: ["*"]
+      bicep-libraries-security:
+        applies-to: security-updates
+        patterns: ["*"]
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
@@ -130,6 +166,9 @@ updates:
       interval: "weekly"
     groups:
       proxy-modules:
+        patterns: ["*"]
+      proxy-modules-security:
+        applies-to: security-updates
         patterns: ["*"]
     ignore:
       - dependency-name: "*"
