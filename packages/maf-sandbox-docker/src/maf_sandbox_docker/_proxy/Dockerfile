@@ -11,7 +11,8 @@ COPY dependencies/go.mod dependencies/go.sum /src/
 RUN go mod download && go mod verify
 ENV GOFLAGS=-mod=readonly
 COPY credential_gate.go credential_gate_test.go /src/internal/proxy/
-RUN go test ./internal/proxy -run '^TestMAFCredential' -count=1
+RUN go test ./internal/proxy -run '^TestMAFCredential' -count=1 \
+    && go test ./internal/transform -run '^(TestOTELAuditFunc|TestChainAuditFuncs)' -count=1
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /iron-proxy ./cmd/iron-proxy \
     && go version -m /iron-proxy > /iron-proxy-build-info.txt
 
