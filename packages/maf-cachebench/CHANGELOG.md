@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.4.0...maf-cachebench-v0.4.1) (2026-10-27)
+
+
+### Fixes
+
+* **deps-dev:** bump agent-framework-ollama from 1.0.0b261015 to 1.0.0b261022 ([#2193](https://github.com/sokolaidev/maf-extensions/issues/2193)) ([172fd85](https://github.com/sokolaidev/maf-extensions/commit/172fd85f82d5c806ad6dc56357a1924b54e5b1a5))
+
 ## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.3.1...maf-cachebench-v0.4.0) (2026-10-26)
 
 
