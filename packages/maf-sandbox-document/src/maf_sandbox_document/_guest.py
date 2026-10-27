@@ -117,7 +117,8 @@ def guarded_zip(data: bytes, kind: str) -> io.BytesIO:
             raise Refused("document type does not match OOXML content")
         if ("ppt/presentation.xml" if kind == "docx" else "word/document.xml") in names:
             raise Refused("ambiguous OOXML content")
-        document = ET.fromstring(archive.read(expected))
+        # Both XML members above passed the DTD/entity guard before these structural reads.
+        document = ET.fromstring(archive.read(expected))  # nosec B314
         namespace, local_name = (
             ("wordprocessingml/2006/main", "document")
             if kind == "docx"
@@ -125,7 +126,7 @@ def guarded_zip(data: bytes, kind: str) -> io.BytesIO:
         )
         if document.tag != f"{{http://schemas.openxmlformats.org/{namespace}}}{local_name}":
             raise Refused("document type does not match OOXML root")
-        types = ET.fromstring(archive.read("[Content_Types].xml"))
+        types = ET.fromstring(archive.read("[Content_Types].xml"))  # nosec B314
         expected_type = MEDIA_TYPES[kind].removesuffix(
             ".document" if kind == "docx" else ".presentation"
         )
