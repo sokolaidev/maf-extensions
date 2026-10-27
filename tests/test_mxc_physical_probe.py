@@ -167,7 +167,7 @@ def test_launch_requires_worker_success_and_report(tmp_path, monkeypatch):
 @pytest.mark.workflow
 def test_native_capacity_reports_retained_without_state_payloads():
     root = Path(__file__).parents[1]
-    job = yaml.safe_load((root / ".github/workflows/tests.yml").read_text(encoding="utf-8"))[
+    job = yaml.safe_load((root / ".github/workflows/mxc-native.yml").read_text(encoding="utf-8"))[
         "jobs"
     ]["mxc-files"]
     upload = next(
@@ -211,7 +211,7 @@ def test_native_volume_failure_frees_filler_without_claiming_qualification(tmp_p
 @pytest.mark.workflow
 def test_native_volume_setup_cleanup_and_evidence():
     root = Path(__file__).parents[1]
-    job = yaml.safe_load((root / ".github/workflows/tests.yml").read_text(encoding="utf-8"))[
+    job = yaml.safe_load((root / ".github/workflows/mxc-native.yml").read_text(encoding="utf-8"))[
         "jobs"
     ]["mxc-files"]
     steps = job["steps"]

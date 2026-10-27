@@ -8,7 +8,7 @@ The native helper writes two bounded byte files and a separate control record of
 
 ## Run on GitHub
 
-Dispatch `tests.yml` at the candidate branch with `mxc_streams=true`. The Linux kernel job builds from `kernel.json` source pins, applies `kernel.patch`, records the observed builder/toolchain identity, and reverses the patch. The two native jobs download that same run's kernel artifact, verify its hash and source metadata, then build the helper with the retained MXC 1.0 dependency lock. Linux requires KVM; Windows requires WHP. Setting only `mxc_stream_kernel=true` builds the kernel without qualifying execution.
+Dispatch `mxc-native.yml` at the candidate branch with `mxc_streams=true`. The Linux kernel job builds from `kernel.json` source pins, applies `kernel.patch`, records the observed builder/toolchain identity, and reverses the patch. The two native jobs download that same run's kernel artifact, verify its hash and source metadata, then build the helper with the retained MXC 1.0 dependency lock. Linux requires KVM; Windows requires WHP. Setting only `mxc_stream_kernel=true` builds the kernel without qualifying execution.
 
 A native job reports `qualified` only after byte probes, the Python state/restart controls, the format-4 crash matrix and overlay removal all pass. The crash matrix carries two full retained byte streams, checks omission counters and result replay, and reconciles SQLite charges. Failure leaves an `unqualified` report and logs. Compilation or a successful job whose opt-in steps were skipped does not qualify this profile.
 

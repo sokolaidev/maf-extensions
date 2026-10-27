@@ -168,7 +168,7 @@ def test_debug_is_explicitly_opt_in(tmp_path: Path):
 
 def test_hosted_comparison_is_opt_in_and_retains_only_markdown():
     workflow = yaml.safe_load(
-        (Path(__file__).resolve().parents[1] / ".github/workflows/tests.yml").read_text(
+        (Path(__file__).resolve().parents[1] / ".github/workflows/openclaw-mxc.yml").read_text(
             encoding="utf-8"
         )
     )

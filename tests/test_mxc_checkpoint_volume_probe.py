@@ -132,7 +132,7 @@ def test_failed_worker_removes_filler_and_never_claims_qualification(tmp_path, m
 
 @pytest.mark.workflow
 def test_checkpoint_volume_artifacts_exclude_retained_payloads():
-    path = Path(__file__).parents[1] / ".github/workflows/tests.yml"
+    path = Path(__file__).parents[1] / ".github/workflows/mxc-native.yml"
     job = yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"]["mxc-files"]
     upload = next(
         s for s in job["steps"] if s.get("uses", "").startswith("actions/upload-artifact@")

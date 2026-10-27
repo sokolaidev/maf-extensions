@@ -24,7 +24,7 @@ New shared-store sessions may set `idle_policy=Policy(timeout_seconds, grace_sec
 
 ## Run on GitHub
 
-Dispatch `tests.yml` at the candidate branch with `mxc_files=true`. The Linux job builds the pinned combined kernel and retains its source, builder and toolchain identity. Linux/KVM and Windows/WHP jobs consume the same kernel artifact, build the helper with the retained dependency lock, and run native file and recovery probes. No local Rust build is required. The [qualified candidate record](../../../docs/sandbox/research/mxc-backend.md#qualified-file-candidate) links the retained reports and [example chart](example-chart.png).
+Dispatch `mxc-native.yml` at the candidate branch with `mxc_files=true`. The Linux job builds the pinned combined kernel and retains its source, builder and toolchain identity. Linux/KVM and Windows/WHP jobs consume the same kernel artifact, build the helper with the retained dependency lock, and run native file and recovery probes. No local Rust build is required. The [qualified candidate record](../../../docs/sandbox/research/mxc-backend.md#qualified-file-candidate) links the retained reports and [example chart](example-chart.png).
 
 A native job reports `qualified` only after file probes, Python-state controls, the eight-boundary crash matrix, failed-artifact recovery, active deletion/restart controls, idle-expiry controls and overlay removal pass. The artifact includes bounded failure diagnostics and the collected CSV chart. Compilation or a successful job with opt-in steps skipped is not native qualification.
 

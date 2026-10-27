@@ -1,11 +1,6 @@
 name: MXC accounting scaling
 
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/mxc-accounting.yml'
-      - 'scripts/experiments/mxc_session_patch/**'
-      - 'tests/test_mxc_accounting.py'
   workflow_dispatch:
 
 permissions:

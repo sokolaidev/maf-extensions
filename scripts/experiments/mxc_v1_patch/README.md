@@ -12,7 +12,7 @@ After all layers are applied, use action `configure` with `--build-dir` naming a
 
 ## Hosted qualification
 
-Dispatch `tests.yml` on the candidate branch with `mxc_v1=resolve-lock` to prepare a dependency lock candidate. This mode reports `dependencies-resolved`, never `qualified`, and performs no native qualification. Review and commit the resulting `build/Cargo.lock` before dispatching `mxc_v1=qualify`. Qualification must use the retained lock with `--locked`.
+Dispatch `mxc-native.yml` on the candidate branch with `mxc_v1=resolve-lock` to prepare a dependency lock candidate. This mode reports `dependencies-resolved`, never `qualified`, and performs no native qualification. Review and commit the resulting `build/Cargo.lock` before dispatching `mxc_v1=qualify`. Qualification must use the retained lock with `--locked`.
 
 The native mode independently checks KVM or WHP, builds the new helper, runs collector/budget unit tests, prepares the verified rootfs, and runs the existing rich-state, bounded-output, bounded-export and format-4 durability controls. It then builds the old pinned helper and produces an old checkpoint. The new helper must refuse that incompatible checkpoint without changing it; the old helper must still restore it. All layers must be removable afterward. A failed stage retains an `unqualified` result and diagnostics.
 

@@ -13,7 +13,7 @@ cargo test --locked --manifest-path <generated-build>/Cargo.toml
 python scripts/experiments/mxc_session_patch/owner_probe.py --helper <built-helper> --startup <prepared-agent-snapshot> --state-dir <new-evidence-directory>
 ```
 
-The opt-in `mxc_recovery` workflow input runs these controls on the GitHub Linux/KVM runner after native recovery and host publication. Windows/WHP is independently qualified with the same fixed probe. Runtime reports are retained with the exact executable hash; only reports and diagnostics are uploaded, never checkpoints. Track completion in [#1669](https://github.com/sokolaidev/maf-extensions/issues/1669).
+The retired `mxc_recovery` workflow input ran these controls on the GitHub Linux/KVM runner after native recovery and host publication. Windows/WHP is independently qualified with the same fixed probe. Runtime reports are retained with the exact executable hash; only reports and diagnostics are uploaded, never checkpoints. The [workflow guide](WORKFLOWS.md) identifies current ownership and recovery checks. Track completion in [#1669](https://github.com/sokolaidev/maf-extensions/issues/1669).
 
 The [Windows owner report](windows-owner-result.json) records all five controls passing. Owner death, cancellation and an invalid command stopped the live helper within 0.18 seconds in this measurement; five seconds is the probe deadline, not a real-time production guarantee.
 
