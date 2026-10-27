@@ -798,5 +798,87 @@
     },
     "containersRemaining": [],
     "liveDeploymentVerified": false
+  },
+  "dockerfileCompatibility": {
+    "frontend": "docker/dockerfile:1.18.0@sha256:dabfc0969b935b2080555ace70ee69a5261af8a8f1b4df97b9e7fbcf6722eddf",
+    "configDigest": "sha256:78305b46442920a8f3064bc6fe9e5685a66d0685a3ebdc541aa1adcef0ed90ae",
+    "comparedConfigDigest": "sha256:88109c93f2fe943c7d28f92c7f21378ef49db5dfdfcec01587a6f2d0b1035dad",
+    "filesystemEntriesCompared": 1052,
+    "fileBytesModesOwnersLinksEqual": true,
+    "deviceNodes": [],
+    "runtime": {
+      "imageId": "sha256:0a53b4327111762952bd14750d11a594d58d0adb814d5764fba3c25e53b9d377",
+      "profile": "bicep",
+      "checkedAt": "2026-10-27T01:51:19.579530+00:00",
+      "bicep": {
+        "bicepVersion": "Bicep CLI version 0.48.1 (cec7951cf6)",
+        "compilerSha256": "b09ec25a9d376c1f8e33ede6ed22b587f915ad68488d5db77a6f9541748c7f6e",
+        "configSha256": "caa052745857e9769beafe74a11efc80cb62ca25c1b801b44bd8b25c9bfd364c",
+        "licenseSha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
+        "build": {
+          "route": "upstream",
+          "compilerSha256": "b09ec25a9d376c1f8e33ede6ed22b587f915ad68488d5db77a6f9541748c7f6e"
+        },
+        "backend": "docker-cli",
+        "network": "none",
+        "checks": [
+          {
+            "name": "valid-local",
+            "passed": true,
+            "error": [],
+            "warning": [],
+            "outputPresent": true
+          },
+          {
+            "name": "invalid-type",
+            "passed": true,
+            "error": [
+              "BCP033"
+            ],
+            "warning": [],
+            "outputPresent": false
+          },
+          {
+            "name": "fallback-config",
+            "passed": true,
+            "error": [
+              "no-unused-params"
+            ],
+            "warning": [],
+            "outputPresent": false
+          },
+          {
+            "name": "default-config-control",
+            "passed": true,
+            "error": [],
+            "warning": [
+              "no-unused-params"
+            ],
+            "outputPresent": true
+          },
+          {
+            "name": "staged-config",
+            "passed": true,
+            "error": [],
+            "warning": [],
+            "outputPresent": true
+          },
+          {
+            "name": "uncached-module",
+            "passed": true,
+            "error": [
+              "BCP190"
+            ],
+            "warning": [],
+            "outputPresent": false
+          }
+        ]
+      },
+      "containersRemaining": [],
+      "kind": "offline-packaging",
+      "passed": true,
+      "liveDeploymentVerified": false
+    },
+    "scope": "Local build with the older Dockerfile frontend; previous scans remain bound to their original config identities"
   }
 }

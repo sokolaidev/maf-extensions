@@ -7,9 +7,15 @@ RUN apk upgrade --no-cache \
 
 COPY DEJAVU-LICENSE /usr/share/licenses/drawio/DEJAVU-LICENSE
 
+FROM assembled AS flattened
+# Read the image snapshot rather than the build container's runtime device mounts.
+RUN --mount=type=bind,from=assembled,target=/source \
+    set -o pipefail && mkdir /rootfs \
+    && tar -C /source --exclude='./dev/*' -cf - . | tar -C /rootfs -xf -
+
 FROM scratch
 # ACAS supplies runtime devices and rejects device nodes embedded in image layers.
-COPY --from=assembled --exclude=dev/* / /
+COPY --from=flattened /rootfs/ /
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 LABEL org.opencontainers.image.description="Editable Draw.io authoring runtime with Python and Graphviz for Linux/amd64. Usage, verification and support: https://github.com/sokolaidev/maf-extensions/blob/main/images/drawio-sandbox/README.md"

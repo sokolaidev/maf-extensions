@@ -31,9 +31,15 @@ RUN python3 /opt/maf-drawio/install.py \
     && adduser -D -u 10001 -G renderer renderer \
     && mkdir -p /maf-sandbox/work /tmp/.X11-unix \
     && chmod 1777 /tmp/.X11-unix
+FROM assembled AS flattened
+# Read the image snapshot rather than the build container's runtime device mounts.
+RUN --mount=type=bind,from=assembled,target=/source \
+    set -o pipefail && mkdir /rootfs \
+    && tar -C /source --exclude='./dev/*' -cf - . | tar -C /rootfs -xf -
+
 FROM scratch
 # ACAS supplies runtime devices and rejects device nodes embedded in image layers.
-COPY --from=assembled --exclude=dev/* / /
+COPY --from=flattened /rootfs/ /
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt DRAWIO_DISABLE_UPDATE=true
 LABEL org.opencontainers.image.description="Editable Draw.io and native PNG, SVG and JPEG export for Linux/amd64. Usage, verification and sandbox requirements: https://github.com/sokolaidev/maf-extensions/blob/main/images/drawio-export/README.md"

@@ -30,9 +30,15 @@ COPY ShellAudit.hs patch_shellcheck.py /usr/share/maf-shell/
 COPY runner.py analyze.ps1 analysis-output.ps1 dependencies.json prepare_dependencies.py /opt/maf-shell/
 RUN mkdir -p /opt/maf-shell/dependencies/modules /opt/maf-shell/dependencies/assemblies
 
+FROM assembled AS flattened
+# Read the image snapshot rather than the build container's runtime device mounts.
+RUN --mount=type=bind,from=assembled,target=/source \
+    set -o pipefail && mkdir /rootfs \
+    && tar -C /source --exclude='./dev/*' -cf - . | tar -C /rootfs -xf -
+
 FROM scratch AS shell
 # ACAS supplies runtime devices and rejects device nodes embedded in image layers.
-COPY --from=assembled --exclude=dev/* / /
+COPY --from=flattened /rootfs/ /
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
     POWERSHELL_TELEMETRY_OPTOUT=1 DOTNET_CLI_TELEMETRY_OPTOUT=1

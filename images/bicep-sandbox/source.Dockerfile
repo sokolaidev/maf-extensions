@@ -14,9 +14,15 @@ COPY --from=build /out/NOTICE /usr/share/licenses/bicep/NOTICE
 COPY BICEP-LICENSE /usr/share/licenses/bicep/LICENSE
 COPY bicepconfig.json /maf-sandbox/work/bicepconfig.json
 
+FROM assembled AS flattened
+# Read the image snapshot rather than the build container's runtime device mounts.
+RUN --mount=type=bind,from=assembled,target=/source \
+    set -o pipefail && mkdir /rootfs \
+    && tar -C /source --exclude='./dev/*' -cf - . | tar -C /rootfs -xf -
+
 FROM scratch
 # ACAS supplies runtime devices and rejects device nodes embedded in image layers.
-COPY --from=assembled --exclude=dev/* / /
+COPY --from=flattened /rootfs/ /
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 LABEL dev.sokolai.maf.bicep.route="source"

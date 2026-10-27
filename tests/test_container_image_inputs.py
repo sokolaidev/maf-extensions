@@ -73,7 +73,10 @@ def test_acas_runtime_layers_exclude_build_time_devices(recipe):
     source = (ROOT / "images" / recipe).read_text()
     final = source.rsplit("FROM scratch", 1)
     assert len(final) == 2
-    assert "COPY --from=assembled --exclude=dev/* / /" in final[1]
+    assert "COPY --from=flattened /rootfs/ /" in final[1]
+    assert "--mount=type=bind,from=assembled,target=/source" in final[0]
+    assert "tar -C /source --exclude='./dev/*'" in final[0]
+    assert "COPY --from=assembled --exclude=" not in source
     assert "ENV PATH=" in final[1]
     assert "SSL_CERT_FILE=" in final[1]
 
