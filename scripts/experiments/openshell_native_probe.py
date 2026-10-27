@@ -506,7 +506,10 @@ def main() -> int:
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--egress-origin-ip")
     parser.add_argument("--https-ca", type=Path)
+    parser.add_argument("--egress-routes", action="store_true")
     args = parser.parse_args()
+    if args.egress_routes and (not args.egress_origin_ip or args.https_ca):
+        parser.error("--egress-routes requires --egress-origin-ip without --https-ca")
     if args.https_ca and not args.egress_origin_ip:
         parser.error("--https-ca requires --egress-origin-ip")
     engine = docker_get("/info")
@@ -587,7 +590,11 @@ def main() -> int:
             created = True
             report["workspace_create"]["state"] = "confirmed"
             fixture.save()
-            if args.https_ca:
+            if args.egress_routes:
+                from openshell_routes_probe import measure_routes
+
+                asyncio.run(measure_routes(fixture, args.egress_origin_ip))
+            elif args.https_ca:
                 from openshell_https_probe import measure_native_https
 
                 asyncio.run(measure_native_https(fixture, args.egress_origin_ip, args.https_ca))
