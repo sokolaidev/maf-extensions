@@ -18,4 +18,4 @@ Deterministic tests execute the fixed guest program against real small documents
 
 | Decision | State | Tracking |
 |---|---|---|
-| Fixed document kind, binary store reads and guarded image profile | Implemented; publication and ACAS qualification pending | [#2206](https://github.com/sokolaidev/maf-extensions/issues/2206) (open) |
+| Fixed document kind, binary store reads and guarded image profile | Implemented; publication and ACAS qualification pending | [#2206](https://github.com/sokolaidev/maf-extensions/issues/2206) (closed) by [#2215](https://github.com/sokolaidev/maf-extensions/pull/2215) (merged) |
