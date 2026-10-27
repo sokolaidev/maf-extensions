@@ -204,6 +204,20 @@ def test_hyperlight_release_transition_defers_the_entire_scan_evidence_chain():
     )
     assert shell["if"] == "steps.identity.outcome == 'success' && matrix.profile == 'shell'"
     evidence_steps.remove(shell)
+    remaining = next(
+        step for step in evidence_steps if step["name"] == "Qualify the remaining image consumers"
+    )
+    assert "check(profile, os.environ" in remaining["run"]
+    for profile in (
+        "terraform-avm",
+        "graphviz",
+        "drawio",
+        "drawio-export",
+        "egress-proxy",
+        "hyperlight-aks-probe",
+    ):
+        assert profile in remaining["if"]
+    evidence_steps.remove(remaining)
     assert {step["name"] for step in evidence_steps} == {
         "Record the immutable local image identity",
         "Inventory the exact built image",

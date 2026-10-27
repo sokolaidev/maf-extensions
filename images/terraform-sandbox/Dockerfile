@@ -1,5 +1,4 @@
 # The initial supported guest platform is Linux amd64. Build each engine separately.
-ARG BASE_IMAGE=scratch
 ARG ENGINE=terraform
 FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS opentofu-build
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local
@@ -13,7 +12,7 @@ RUN apk add --no-cache git python3
 COPY image.json build_terraform.py build_go.py /recipe/
 RUN python3 /recipe/build_terraform.py && go clean -cache -modcache
 
-FROM ${BASE_IMAGE} AS runtime
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7 AS runtime
 RUN apk upgrade --no-cache && apk add --no-cache python-3.13 ca-certificates-bundle \
        'libbrotlicommon1>=1.2.0-r7' 'libbrotlidec1>=1.2.0-r7' 'libbrotlienc1>=1.2.0-r7' \
     && mkdir -p /usr/local/bin \
@@ -23,9 +22,6 @@ ARG ENGINE=terraform
 ARG PROFILE=builtin
 ARG ENGINE_VERSION
 ARG PROVIDER_MANIFEST=image.json
-LABEL org.opencontainers.image.version="${ENGINE_VERSION}" \
-      ai.sokol.maf.engine="${ENGINE}" \
-      ai.sokol.maf.engine.version="${ENGINE_VERSION}"
 COPY image.json /opt/maf-terraform/
 COPY ${PROVIDER_MANIFEST} /opt/maf-terraform/
 COPY install.py /opt/maf-terraform/install.py
@@ -42,7 +38,18 @@ RUN test "$TARGETARCH" = amd64 \
     && python3 -I /opt/maf-terraform/install.py "$ENGINE" "$PROFILE" "$ENGINE_VERSION" /opt/maf-terraform/source-build \
     && rm /opt/maf-terraform/source-build/tofu /opt/maf-terraform/install.py
 
-FROM ${ENGINE}-image
+FROM ${ENGINE}-image AS assembled
 COPY runner.py /opt/maf-terraform/runner.py
+
+FROM scratch
+# ACAS supplies runtime devices and rejects device nodes embedded in image layers.
+COPY --from=assembled --exclude=dev/* / /
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ARG ENGINE=terraform
+ARG ENGINE_VERSION
+LABEL org.opencontainers.image.version="${ENGINE_VERSION}" \
+      ai.sokol.maf.engine="${ENGINE}" \
+      ai.sokol.maf.engine.version="${ENGINE_VERSION}"
 # docker exec invokes the launcher; the image entrypoint does not accept workload arguments.
 CMD ["sleep", "infinity"]

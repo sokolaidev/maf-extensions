@@ -13,6 +13,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+from container_image_inputs import stage_image
+
 RECEIPT = "/usr/share/maf-bicep/build.json"
 LEGACY_PACKAGES = {"System.Security.Cryptography.Xml", "System.Security.Cryptography.Pkcs"}
 PACKAGES = LEGACY_PACKAGES | {"MessagePack"}
@@ -79,6 +81,15 @@ def verify_inventory(sbom: dict[str, Any], runtime: dict[str, Any]) -> None:
 def policy(path: Path) -> dict[str, Any]:
     """Reject floating source, SDK and dependency inputs before executing build tools."""
     data = json.loads(path.read_bytes())
+    if set(data) != {"version", "sourceCommit", "runtimeVersion"}:
+        raise ValueError("Invalid pinned Bicep source policy")
+    sdk = stage_image(path.with_name("source.Dockerfile"), "build")
+    project = ET.parse(path.with_name("dependencies.csproj"))  # nosec B314 # Reviewed build manifest.
+    references = project.findall("./ItemGroup/PackageReference")
+    packages = {item.attrib["Include"]: item.attrib["Version"] for item in references}
+    if len(packages) != len(references):
+        raise ValueError("Duplicate Bicep package pin")
+    data.update(sdkImage=sdk, sdkVersion=sdk.split(":")[-2].split("@")[0], packages=packages)
     if (
         set(data)
         != {"version", "sourceCommit", "sdkImage", "sdkVersion", "runtimeVersion", "packages"}
@@ -151,6 +162,8 @@ def run(*command: str, cwd: Path, capture: bool = True) -> str:
 def build(policy_path: Path, output: Path) -> None:
     """Publish a self-contained compiler and record its resolved security dependencies."""
     data = policy(policy_path)
+    run("dotnet", "restore", "dependencies.csproj", cwd=policy_path.parent, capture=False)
+    resolved_packages(policy_path.parent / "obj/project.assets.json", data["packages"])
     output.mkdir(parents=True, exist_ok=False)
     with tempfile.TemporaryDirectory(prefix="bicep-source-") as temporary:
         source = Path(temporary)

@@ -17,8 +17,6 @@ def build_command(engine: str, profile: str, tag: str | None = None) -> list[str
         "--platform",
         plan["platform"],
         "--build-arg",
-        f"BASE_IMAGE={plan['base_image']}",
-        "--build-arg",
         f"ENGINE={engine}",
         "--build-arg",
         f"PROFILE={profile}",

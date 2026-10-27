@@ -465,7 +465,7 @@ def test_malformed_or_deleted_metadata_cannot_skip_scans(repository):
 def test_workflow_always_reports_selection_and_checks():
     workflow = yaml.safe_load((ROOT / ".github/workflows/image-security.yml").read_text())
     triggers = workflow.get("on", workflow.get(True))
-    assert "pull_request" not in triggers
+    assert "pull_request" in triggers
     assert "push" not in triggers
     assert "schedule" in triggers and "workflow_dispatch" in triggers
     assert "github.event_name" in workflow["concurrency"]["group"]
@@ -473,10 +473,11 @@ def test_workflow_always_reports_selection_and_checks():
     selector = jobs["select"]
     assert "if" not in selector
     assert selector["steps"][0]["with"]["fetch-depth"] == 0
-    assert selector["steps"][-1]["env"]["BASE_SHA"] == (
+    selection = next(step for step in selector["steps"] if step.get("id") == "select")
+    assert selection["env"]["BASE_SHA"] == (
         "${{ github.event.pull_request.base.sha || github.event.before }}"
     )
-    assert selector["steps"][-1]["run"] == "python3 scripts/select_image_security.py"
+    assert selection["run"] == "python3 scripts/select_image_security.py"
     assert jobs["scan"]["needs"] == "select"
     assert jobs["scan"]["if"] == "needs.select.outputs.scan == 'true'"
     assert jobs["check"]["needs"] == ["select", "scan"]

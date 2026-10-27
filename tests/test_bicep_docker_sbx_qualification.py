@@ -185,14 +185,14 @@ def test_release_dispatch_uses_sbx_evidence(monkeypatch, tmp_path):
     assert result["liveDeploymentVerified"] is False
 
 
-def test_release_and_scheduled_hosts_prepare_sbx_without_pr_builds():
+def test_release_and_scan_hosts_prepare_sbx_with_separate_triggers():
     root = Path(__file__).resolve().parents[1]
     for filename, jobs, expression in (
         ("container-image-release.yml", ["prepare", "qualify"], "inputs.profile"),
         ("image-security.yml", ["scan"], "matrix.profile"),
     ):
         workflow = yaml.safe_load((root / ".github/workflows" / filename).read_text())
-        assert "pull_request" not in workflow[True]
+        assert ("pull_request" in workflow[True]) == (filename == "image-security.yml")
         for name in jobs:
             job = workflow["jobs"][name]
             assert "ubuntu-24.04" in job["runs-on"]

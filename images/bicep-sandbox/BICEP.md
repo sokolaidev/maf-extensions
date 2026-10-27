@@ -10,7 +10,7 @@ Use `ghcr.io/sokolaidev/maf-extensions/bicep` to compile and validate local Bice
 |---|---|
 | Platform | Linux/amd64 |
 | Bicep compiler | Version and download SHA-256 pinned in the release source's [Dockerfile](Dockerfile) |
-| Operating system | Azure Linux 3.0 with ICU, CA certificates and curl; exact installed inventory retained in the release SBOM |
+| Operating system | New builds use digest-pinned Wolfi with ICU and CA certificates (curl on the upstream route); consult each published release's SBOM for its actual distribution and installed inventory |
 | Fallback configuration | `/maf-sandbox/work/bicepconfig.json`, from [bicepconfig.json](bicepconfig.json) |
 | Compiler license | `/usr/share/licenses/bicep/LICENSE`, from [BICEP-LICENSE](BICEP-LICENSE) |
 

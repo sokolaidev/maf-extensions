@@ -1,0 +1,591 @@
+{
+  "observedAt": "2026-10-27",
+  "scope": "Local official Dependabot CLI proposals from authentic earlier pins in an isolated Dockerfile snapshot; no GitHub pull request or publication",
+  "cliVersion": "1.96.0",
+  "updaterImage": "ghcr.io/dependabot/dependabot-updater-docker@sha256:58ef92cb779e4b67f1d752cdd6cb7b3d4f1cb1a4709360c6ac29fbc53848da2f",
+  "proxyImage": "ghcr.io/dependabot/proxy@sha256:e629bba0dcbf6752211e26d66de827beaac14441128b2d816339adec833f0371",
+  "runs": [
+    {
+      "rawOutputSha256": "af29be34ae15acb22afe2cd863efaba5e5b5ee1fd39861b91968d2203f456c6d",
+      "events": [
+        {
+          "type": "update_dependency_list",
+          "expect": {
+            "data": {
+              "dependencies": [
+                {
+                  "name": "chainguard/wolfi-base",
+                  "requirements": [
+                    {
+                      "file": "Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03",
+                        "registry": "cgr.dev",
+                        "tag": "latest"
+                      }
+                    },
+                    {
+                      "file": "source.Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03",
+                        "registry": "cgr.dev",
+                        "tag": "latest"
+                      }
+                    }
+                  ],
+                  "version": "latest"
+                },
+                {
+                  "name": "dotnet/sdk",
+                  "requirements": [
+                    {
+                      "file": "source.Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "3a48280a9a7c6276c3eeaba1efa6a08820f18c84fb9e6274c187719ecfaf9fbc",
+                        "registry": "mcr.microsoft.com",
+                        "tag": "10.0.402"
+                      }
+                    }
+                  ],
+                  "version": "10.0.402"
+                }
+              ],
+              "dependency_files": [
+                "/images/bicep-sandbox/Dockerfile",
+                "/images/bicep-sandbox/prepared.Dockerfile",
+                "/images/bicep-sandbox/source.Dockerfile"
+              ]
+            }
+          }
+        },
+        {
+          "type": "create_pull_request",
+          "expect": {
+            "data": {
+              "base-commit-sha": "3cfe1fdaebb71b2e865eccb38bf4e7f187e74a1f",
+              "dependencies": [
+                {
+                  "name": "chainguard/wolfi-base",
+                  "previous-requirements": [
+                    {
+                      "file": "Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03",
+                        "registry": "cgr.dev",
+                        "tag": "latest"
+                      }
+                    },
+                    {
+                      "file": "source.Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03",
+                        "registry": "cgr.dev",
+                        "tag": "latest"
+                      }
+                    }
+                  ],
+                  "previous-version": "latest",
+                  "requirements": [
+                    {
+                      "file": "Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "0feab531471d2edfcca55f18883441cb7df598e724fa2dedf9985273f532eed7",
+                        "registry": "cgr.dev",
+                        "tag": "latest"
+                      }
+                    },
+                    {
+                      "file": "source.Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "0feab531471d2edfcca55f18883441cb7df598e724fa2dedf9985273f532eed7",
+                        "registry": "cgr.dev",
+                        "tag": "latest"
+                      }
+                    }
+                  ],
+                  "version": "latest",
+                  "directory": "/images/bicep-sandbox"
+                }
+              ],
+              "updated-dependency-files": [
+                {
+                  "contentSha256": "782da8565b03352740e0c023e52845cbcb946d6ae3981992e99b6d121772f4fd",
+                  "content_encoding": "utf-8",
+                  "deleted": false,
+                  "directory": "/images/bicep-sandbox",
+                  "name": "Dockerfile",
+                  "operation": "update",
+                  "support_file": false,
+                  "type": "file"
+                },
+                {
+                  "contentSha256": "fda4547c4776e90caa18630c822de4df6ec04bc111bb1115da8c989176e73294",
+                  "content_encoding": "utf-8",
+                  "deleted": false,
+                  "directory": "/images/bicep-sandbox",
+                  "name": "source.Dockerfile",
+                  "operation": "update",
+                  "support_file": false,
+                  "type": "file"
+                }
+              ],
+              "pr-title": "build(deps): bump chainguard/wolfi-base from `9c2092b` to `0feab53` in /images/bicep-sandbox"
+            }
+          }
+        },
+        {
+          "type": "record_update_job_warning",
+          "expect": {
+            "data": {
+              "warn-type": "cooldown_date_unavailable",
+              "warn-title": "Cooldown was not applied",
+              "warn-description": "Cooldown could not be applied because no publication date was available from the registry."
+            }
+          }
+        },
+        {
+          "type": "mark_as_processed",
+          "expect": {
+            "data": {
+              "base-commit-sha": "3cfe1fdaebb71b2e865eccb38bf4e7f187e74a1f"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "rawOutputSha256": "5dba2c305ba6ed1f024b6ae02b4bda7f0fccdc4fbcdb37c9fb081a7f348298a9",
+      "events": [
+        {
+          "type": "update_dependency_list",
+          "expect": {
+            "data": {
+              "dependencies": [
+                {
+                  "name": "chainguard/wolfi-base",
+                  "requirements": [
+                    {
+                      "file": "Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03",
+                        "registry": "cgr.dev",
+                        "tag": "latest"
+                      }
+                    },
+                    {
+                      "file": "source.Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03",
+                        "registry": "cgr.dev",
+                        "tag": "latest"
+                      }
+                    }
+                  ],
+                  "version": "latest"
+                },
+                {
+                  "name": "dotnet/sdk",
+                  "requirements": [
+                    {
+                      "file": "source.Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "e70cdb7f80b0348f5cb85f19a8f670fca061f033d57eed12fa003d58b0e06317",
+                        "registry": "mcr.microsoft.com",
+                        "tag": "10.0.401"
+                      }
+                    }
+                  ],
+                  "version": "10.0.401"
+                },
+                {
+                  "name": "chainguard/wolfi-base",
+                  "requirements": [
+                    {
+                      "file": "Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03",
+                        "registry": "cgr.dev",
+                        "tag": "latest"
+                      }
+                    }
+                  ],
+                  "version": "latest"
+                }
+              ],
+              "dependency_files": [
+                "/images/bicep-sandbox/Dockerfile",
+                "/images/bicep-sandbox/prepared.Dockerfile",
+                "/images/bicep-sandbox/source.Dockerfile",
+                "/images/drawio-sandbox/Dockerfile"
+              ]
+            }
+          }
+        },
+        {
+          "type": "create_pull_request",
+          "expect": {
+            "data": {
+              "base-commit-sha": "55b0c343f045eb398965153bfebc3b2fc9e695cf",
+              "dependencies": [
+                {
+                  "name": "chainguard/wolfi-base",
+                  "previous-requirements": [
+                    {
+                      "file": "Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03",
+                        "registry": "cgr.dev",
+                        "tag": "latest"
+                      }
+                    },
+                    {
+                      "file": "source.Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03",
+                        "registry": "cgr.dev",
+                        "tag": "latest"
+                      }
+                    }
+                  ],
+                  "previous-version": "latest",
+                  "requirements": [
+                    {
+                      "file": "Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "0feab531471d2edfcca55f18883441cb7df598e724fa2dedf9985273f532eed7",
+                        "registry": "cgr.dev",
+                        "tag": "latest"
+                      }
+                    },
+                    {
+                      "file": "source.Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "0feab531471d2edfcca55f18883441cb7df598e724fa2dedf9985273f532eed7",
+                        "registry": "cgr.dev",
+                        "tag": "latest"
+                      }
+                    }
+                  ],
+                  "version": "latest",
+                  "directory": "/images/bicep-sandbox"
+                },
+                {
+                  "name": "chainguard/wolfi-base",
+                  "previous-requirements": [
+                    {
+                      "file": "Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03",
+                        "registry": "cgr.dev",
+                        "tag": "latest"
+                      }
+                    }
+                  ],
+                  "previous-version": "latest",
+                  "requirements": [
+                    {
+                      "file": "Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "0feab531471d2edfcca55f18883441cb7df598e724fa2dedf9985273f532eed7",
+                        "registry": "cgr.dev",
+                        "tag": "latest"
+                      }
+                    }
+                  ],
+                  "version": "latest",
+                  "directory": "/images/drawio-sandbox"
+                }
+              ],
+              "updated-dependency-files": [
+                {
+                  "contentSha256": "782da8565b03352740e0c023e52845cbcb946d6ae3981992e99b6d121772f4fd",
+                  "content_encoding": "utf-8",
+                  "deleted": false,
+                  "directory": "/images/bicep-sandbox",
+                  "name": "Dockerfile",
+                  "operation": "update",
+                  "support_file": false,
+                  "type": "file"
+                },
+                {
+                  "contentSha256": "79d1b5fe0fdd6db3003fbb44487cd2dc7da3d2890f4bbbb07737f3c9d21cae42",
+                  "content_encoding": "utf-8",
+                  "deleted": false,
+                  "directory": "/images/bicep-sandbox",
+                  "name": "source.Dockerfile",
+                  "operation": "update",
+                  "support_file": false,
+                  "type": "file"
+                },
+                {
+                  "contentSha256": "a0568e48fc38014d00c59aa60271310361d3afeead7623bfcb1334aa31195c90",
+                  "content_encoding": "utf-8",
+                  "deleted": false,
+                  "directory": "/images/drawio-sandbox",
+                  "name": "Dockerfile",
+                  "operation": "update",
+                  "support_file": false,
+                  "type": "file"
+                }
+              ],
+              "pr-title": "build(deps): bump the wolfi-runtime group across 2 directories with 1 update",
+              "dependency-group": {
+                "name": "wolfi-runtime"
+              }
+            }
+          }
+        },
+        {
+          "type": "create_pull_request",
+          "expect": {
+            "data": {
+              "base-commit-sha": "55b0c343f045eb398965153bfebc3b2fc9e695cf",
+              "dependencies": [
+                {
+                  "name": "dotnet/sdk",
+                  "previous-requirements": [
+                    {
+                      "file": "source.Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "e70cdb7f80b0348f5cb85f19a8f670fca061f033d57eed12fa003d58b0e06317",
+                        "registry": "mcr.microsoft.com",
+                        "tag": "10.0.401"
+                      }
+                    }
+                  ],
+                  "previous-version": "10.0.401",
+                  "requirements": [
+                    {
+                      "file": "source.Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "de4fe90a98845d75910b9769662465c84de1a934665c431279d1382b2bddc02b",
+                        "registry": "mcr.microsoft.com",
+                        "tag": "10.0.403"
+                      }
+                    }
+                  ],
+                  "version": "10.0.403",
+                  "directory": "/images/bicep-sandbox"
+                }
+              ],
+              "updated-dependency-files": [
+                {
+                  "contentSha256": "e86393b314e4104fe1d85f8bbb5bbc79a3ff9dfa057e75bbbe79fdd2e930ba57",
+                  "content_encoding": "utf-8",
+                  "deleted": false,
+                  "directory": "/images/bicep-sandbox",
+                  "name": "source.Dockerfile",
+                  "operation": "update",
+                  "support_file": false,
+                  "type": "file"
+                }
+              ],
+              "pr-title": "build(deps): bump dotnet/sdk from 10.0.401 to 10.0.403 in /images/bicep-sandbox"
+            }
+          }
+        },
+        {
+          "type": "record_update_job_warning",
+          "expect": {
+            "data": {
+              "warn-type": "cooldown_date_unavailable",
+              "warn-title": "Cooldown was not applied",
+              "warn-description": "Cooldown could not be applied because no publication date was available from the registry."
+            }
+          }
+        },
+        {
+          "type": "mark_as_processed",
+          "expect": {
+            "data": {
+              "base-commit-sha": "55b0c343f045eb398965153bfebc3b2fc9e695cf"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "rawOutputSha256": "e2f77f91c93ec29318da5148175f4acd3813664af04b650cfcae45116e0adc1e",
+      "events": [
+        {
+          "type": "update_dependency_list",
+          "expect": {
+            "data": {
+              "dependencies": [
+                {
+                  "name": "golang",
+                  "requirements": [
+                    {
+                      "file": "Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414",
+                        "tag": "1.27.1-alpine"
+                      }
+                    },
+                    {
+                      "file": "prepared.Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414",
+                        "tag": "1.27.1-alpine"
+                      }
+                    }
+                  ],
+                  "version": "1.27.1-alpine"
+                },
+                {
+                  "name": "chainguard/wolfi-base",
+                  "requirements": [
+                    {
+                      "file": "Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7",
+                        "registry": "cgr.dev",
+                        "tag": "latest"
+                      }
+                    }
+                  ],
+                  "version": "latest"
+                }
+              ],
+              "dependency_files": [
+                "/images/terraform-sandbox/Dockerfile",
+                "/images/terraform-sandbox/prepared.Dockerfile"
+              ]
+            }
+          }
+        },
+        {
+          "type": "create_pull_request",
+          "expect": {
+            "data": {
+              "base-commit-sha": "34fa7afdb0abe3cb87fadc977b1fc68b47481fa0",
+              "dependencies": [
+                {
+                  "name": "golang",
+                  "previous-requirements": [
+                    {
+                      "file": "Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414",
+                        "tag": "1.27.1-alpine"
+                      }
+                    },
+                    {
+                      "file": "prepared.Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414",
+                        "tag": "1.27.1-alpine"
+                      }
+                    }
+                  ],
+                  "previous-version": "1.27.1-alpine",
+                  "requirements": [
+                    {
+                      "file": "Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d",
+                        "tag": "1.27.2-alpine"
+                      }
+                    },
+                    {
+                      "file": "prepared.Dockerfile",
+                      "groups": [],
+                      "requirement": null,
+                      "source": {
+                        "digest": "f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d",
+                        "tag": "1.27.2-alpine"
+                      }
+                    }
+                  ],
+                  "version": "1.27.2-alpine",
+                  "directory": "/images/terraform-sandbox"
+                }
+              ],
+              "updated-dependency-files": [
+                {
+                  "contentSha256": "ae06f37221aa3cb2e87ae6d748d926ea76f64fc5be25f605992b820fdec34070",
+                  "content_encoding": "utf-8",
+                  "deleted": false,
+                  "directory": "/images/terraform-sandbox",
+                  "name": "Dockerfile",
+                  "operation": "update",
+                  "support_file": false,
+                  "type": "file"
+                },
+                {
+                  "contentSha256": "00fc2ed626a7f34de75defbdc2ae2400e5bd8ae3c7c5445aca6c7d0d66b73b52",
+                  "content_encoding": "utf-8",
+                  "deleted": false,
+                  "directory": "/images/terraform-sandbox",
+                  "name": "prepared.Dockerfile",
+                  "operation": "update",
+                  "support_file": false,
+                  "type": "file"
+                }
+              ],
+              "pr-title": "fix(deps): bump golang from 1.27.1-alpine to 1.27.2-alpine in /images/terraform-sandbox"
+            }
+          }
+        },
+        {
+          "type": "mark_as_processed",
+          "expect": {
+            "data": {
+              "base-commit-sha": "34fa7afdb0abe3cb87fadc977b1fc68b47481fa0"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

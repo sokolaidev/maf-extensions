@@ -305,7 +305,7 @@ def test_changed_json_pin_drives_download_metadata_and_build_tag(
     command = build_image.build_command(engine, "builtin")
     assert "ENGINE_VERSION=9.8.7" in command
     assert command[command.index("--tag") + 1] == f"maf-{engine}:9.8.7-builtin"
-    assert "BASE_IMAGE=" + config["base_image"] in command
+    assert not any(value.startswith("BASE_IMAGE=") for value in command)
     overridden = build_image.build_command(engine, "builtin", "custom:ci")
     assert "ENGINE_VERSION=9.8.7" in overridden and "custom:ci" in overridden
 

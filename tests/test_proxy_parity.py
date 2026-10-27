@@ -9,6 +9,8 @@ from maf_sandbox_docker import proxy_build_context
 
 _FILES = (
     "Dockerfile",
+    "go.mod",
+    "go.sum",
     "entrypoint.sh",
     "iron.patch",
     "policy.py",

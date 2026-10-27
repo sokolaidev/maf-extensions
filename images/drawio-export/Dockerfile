@@ -1,6 +1,4 @@
-FROM cgr.dev/chainguard/wolfi-base@sha256:9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03
-
-LABEL org.opencontainers.image.description="Editable Draw.io and native PNG, SVG and JPEG export for Linux/amd64. Usage, verification and sandbox requirements: https://github.com/sokolaidev/maf-extensions/blob/main/images/drawio-export/README.md"
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7 AS assembled
 
 ARG DRAWIO_VERSION=32.6.1
 ARG DRAWIO_SHA256=515a975fbdb982e0d736b6f99248dbbb856a8b07bb72d6d3648a54b850fa33db
@@ -33,7 +31,12 @@ RUN python3 /opt/maf-drawio/install.py \
     && adduser -D -u 10001 -G renderer renderer \
     && mkdir -p /maf-sandbox/work /tmp/.X11-unix \
     && chmod 1777 /tmp/.X11-unix
-ENV DRAWIO_DISABLE_UPDATE=true
+FROM scratch
+# ACAS supplies runtime devices and rejects device nodes embedded in image layers.
+COPY --from=assembled --exclude=dev/* / /
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt DRAWIO_DISABLE_UPDATE=true
+LABEL org.opencontainers.image.description="Editable Draw.io and native PNG, SVG and JPEG export for Linux/amd64. Usage, verification and sandbox requirements: https://github.com/sokolaidev/maf-extensions/blob/main/images/drawio-export/README.md"
 USER root
 WORKDIR /maf-sandbox/work
 CMD ["sleep", "infinity"]

@@ -23,7 +23,7 @@ def test_recipe_and_kind_agree_on_analyzer_identities():
         assert recipe[name]["version"] == IDENTITY[name]
         assert re.fullmatch(r"[a-f0-9]{64}", recipe[name]["sha256"])
         assert recipe[name]["url"].startswith("https://")
-    assert recipe["baseImage"] in (CONTEXT / "Dockerfile").read_text()
+    assert "baseImage" not in recipe
 
 
 def test_shell_sources_select_only_the_shell_image():

@@ -251,9 +251,10 @@ def prepare(
     validate_identity(candidate)
     write(output / "candidate.json", candidate)
     inputs = {"uv.lock": digest(ROOT / "uv.lock")}
-    for path in sorted((ROOT / "images").rglob("*")):
-        if path.is_file() and (path.name == "Dockerfile" or path.suffix == ".json"):
-            inputs[path.relative_to(ROOT).as_posix()] = digest(path)
+    from container_image_inputs import build_inputs
+
+    for path in build_inputs(ROOT):
+        inputs[path.relative_to(ROOT).as_posix()] = digest(path)
     write(output / "build-inputs.json", inputs)
     if profile == "hyperlight-aks-probe":
         for name in ("source.json", "build-inputs.json", "image-verification.json"):

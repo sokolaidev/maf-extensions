@@ -1,12 +1,12 @@
 # Container image security checks
 
-The [Image security workflow](https://github.com/sokolaidev/maf-extensions/actions/workflows/image-security.yml) builds the eligible profiles from the thirteen below on Linux/amd64, inventories each built image with Syft, and scans that retained inventory with Grype. It runs daily at 06:35 UTC and by manual dispatch, with a choice of all profiles or one profile. Pull requests and main-branch pushes retain code, workflow, lint, type and CodeQL checks without starting this image-build matrix. Daily builds refresh moving base tags and package-manager inputs; they are new candidates, not rescans of an earlier release's exact bytes.
+The [Image security workflow](https://github.com/sokolaidev/maf-extensions/actions/workflows/image-security.yml) builds the eligible profiles from the thirteen below on Linux/amd64, inventories each built image with Syft, and scans that retained inventory with Grype. It runs on pull requests for affected profiles, daily at 06:35 UTC, and by manual dispatch with a choice of all profiles or one profile. Tag changes and same-tag digest refreshes select every consumer of the changed declaration. Main-branch pushes retain code, workflow, lint, type and CodeQL checks without an additional image-build matrix. Daily builds use the reviewed image digests and refresh package-manager inputs; they are new candidates, not rescans of an earlier release's exact bytes. The [dependency inventory](../../images/DEPENDENCIES.md) records update ownership, compatibility lines and native manifest coverage.
 
 Failures outside pull requests open or update the workflow's tracking issue through the repository's existing reporter. The scanner jobs have read-only repository permissions; separate failure and recovery reporters have issue-write permission and never run on pull requests. A scheduled or manual all-profile run on the default branch automatically closes the tracking issue with a recovery link after all thirteen profiles complete their scans successfully in the same attempt. Single-profile runs, branch runs, scans superseded by a newer default-branch commit and deferred Hyperlight scans cannot close it. A tracker updated after the successful attempt started stays open for a later full run, so earlier recovery cannot dismiss a newer failure.
 
 The README badge shows the latest scheduled workflow status on `main`. Passing means every eligible profile in that scheduled run built, its inventory and scan completed, and Grype reported no High or Critical findings in that inventory. Manual scans do not update this badge; it does not establish scan freshness or the status of an already published image.
 
-Image publication is the mandatory image gate: its workflow builds the selected profile, retains its exact OCI bytes, checks runtime behavior, produces SBOMs and refuses High/Critical findings including unfixed ones before maintainer approval. Publication rechecks freshness, and independent signature, anonymous-pull and runtime verification precedes completed release evidence. Removing image builds from PR CI permits an image-build regression to merge; the publication gate prevents publishing it, while daily or manually requested scans detect it earlier. Python package publishing is a separate release path and does not publish these images.
+Image publication is the mandatory image gate: its workflow builds the selected profile, retains its exact OCI bytes, checks runtime behavior, produces SBOMs and refuses High/Critical findings including unfixed ones before maintainer approval. Publication rechecks freshness, and independent signature, anonymous-pull and runtime verification precedes completed release evidence. PR scans check dependency updates before merge; their results cannot replace the later publication gate for a different candidate. Python package publishing is a separate release path and does not publish these images.
 
 ## Release-needed issues
 
@@ -49,7 +49,7 @@ The inventory must contain components and identify the exact built image. For `t
 
 The scan covers the built runtime filesystem. Build-stage-only packages, other architectures, custom image arguments, externally supplied images, upstream device-plugin images and different prepared dependency manifests are outside this inventory. In particular, the broader OpenTofu AVM catalog and OpenTofu platform/provider/multiversion variants require separate scans. Applying the `sbx` template to another base also creates an unassessed image. Image scanning does not qualify sandbox confinement or backend lifecycle behavior.
 
-The Diagram, Draw.io, Terraform/OpenTofu and Hyperlight profiles use digest-pinned Wolfi bases with signed APK packages. Wolfi is a rolling distribution, so package updates and native-runtime compatibility are assessed by each build and scan. OpenTofu is rebuilt from a pinned upstream commit with explicit Go dependency updates; its retained source-build records distinguish it from the upstream release binary. These images still require deployment-specific qualification, including live AKS/ACAS checks where applicable.
+The Bicep, shell, Graphviz, Draw.io, Terraform/OpenTofu and Hyperlight recipes use digest-pinned Wolfi bases with signed APK packages. Wolfi is a rolling distribution, so package updates and native-runtime compatibility are assessed by each build and scan. ACAS consumer recipes omit build-time device nodes from their final layers and rely on runtime-provided devices. OpenTofu is rebuilt from a pinned upstream commit with explicit Go dependency updates; its retained source-build records distinguish it from the upstream release binary. These images still require deployment-specific qualification, including live AKS/ACAS checks where applicable.
 
 ## Reading the evidence
 
@@ -57,6 +57,8 @@ Each matrix job that reaches image identity recording retains an `image-security
 
 - `build.json`: source commit, profile, platform, observation time, run URL and immutable local image ID.
 - `image-inspect.json`: Docker's metadata for that exact built image.
+- `declared-images.json`: tagged, digest-pinned external Dockerfile references from the assessed checkout.
+- `runtime.json`: the selected profile's runtime or packaging qualification, with its own scope limits.
 - `sbom.syft.json`: the component inventory, source-image metadata and Syft version.
 - `grype.json`: findings, Grype version and vulnerability-database metadata.
 - `grype.yaml`: the empty configuration used to prevent repository-discovered exclusion rules.

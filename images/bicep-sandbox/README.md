@@ -2,7 +2,7 @@
 
 For the public `bicep` image, start with the [consumer guide](BICEP.md): contents, digest verification, offline usage and qualification limits. This page covers building the source image and backend integration.
 
-The base image has two layers on Azure Linux: a pinned Bicep CLI, and a [`bicepconfig.json`](bicepconfig.json) at `/maf-sandbox/work`. The optional [prepared profile](#prepared-avm-profile) adds a verified module cache for closed-network validation. Neither runtime image carries agent code or Python; files to compile arrive at run time.
+The base image uses digest-pinned Wolfi with a pinned Bicep CLI and a [`bicepconfig.json`](bicepconfig.json) at `/maf-sandbox/work`. The optional [prepared profile](#prepared-avm-profile) adds a verified module cache for closed-network validation. Neither runtime image carries agent code or Python; files to compile arrive at run time.
 
 Both samples run this one image. [`samples/01_acas_bicep`](../../samples/01_acas_bicep/) boots it as a disk image in an Azure Container Apps sandbox group; [`samples/02_wslc_bicep`](../../samples/02_wslc_bicep/) runs it as a local container under `wslc`. Sharing it is deliberate: the two samples exist to show that only the backend changes, and they would not be comparable if each validated against a compiler of its own.
 
@@ -10,7 +10,7 @@ Both samples run this one image. [`samples/01_acas_bicep`](../../samples/01_acas
 
 | | Why |
 |---|---|
-| `mcr.microsoft.com/azurelinux/base/core:3.0` | A small Microsoft-maintained base with `tdnf`. Nothing in the tool depends on the distribution — it runs `bicep` and reads SARIF back |
+| `cgr.dev/chainguard/wolfi-base:latest@sha256:…` | The suite's digest-pinned runtime base, with ICU and CA certificates; Dockerfiles own the image pins |
 | `icu` | Without it the CLI aborts at startup: `Couldn't find a valid ICU package`. It is not optional for a .NET single-file binary unless you set the invariant-globalization switch |
 | `ca-certificates` | Module restore is HTTPS to MCR. Without them every `br/public:` reference fails to restore |
 | Bicep CLI, version and checksum pinned in the [Dockerfile](Dockerfile) | The pin is the point. Diagnostic wording, built-in rule levels and the API-version cut-off all follow the compiler, so an unpinned image would let a sample's documented output drift underneath it |
@@ -44,7 +44,7 @@ The registry and import steps below apply to either profile.
 
 ### Choose the compiler route
 
-The **Container image release** and **Image security** workflows offer `bicep_route`: `upstream` (default) downloads the checksum-verified upstream executable; `source` compiles the pinned upstream commit with the dependency overrides in [`source.json`](source.json). The selection applies to `bicep`, `bicep-avm` and `bicep-docker-sbx`. A release rejects `source` for an unrelated profile; an all-profile security run applies it only to the Bicep profiles.
+The **Container image release** and **Image security** workflows offer `bicep_route`: `upstream` downloads the checksum-verified upstream executable; `source` compiles the pinned upstream commit in [`source.json`](source.json) with dependency overrides from [`dependencies.csproj`](dependencies.csproj). The release default is upstream; Image security defaults to its reviewed replacement policy. The selection applies to `bicep`, `bicep-avm` and `bicep-docker-sbx`. A release rejects `source` for an unrelated profile; an all-profile security run applies it only to the Bicep profiles.
 
 For a local Docker build, use the same helper as the GitHub runner:
 
@@ -56,7 +56,7 @@ uv run python scripts/build_bicep_prepared_image.py --base-image bicep-sandbox:s
 
 The source route uses a .NET SDK image pinned by digest and publishes a Linux x64 self-contained CLI. It pins `System.Security.Cryptography.Xml` and `System.Security.Cryptography.Pkcs` to `10.0.13` and `MessagePack` to `3.1.9`, and checks the resolved dependency graph. Only the compiler, build receipt, license notices and runtime files enter the final image. `/usr/share/maf-bicep/build.json` records the source commit, SDK image, runtime version, package overrides, policy and builder hashes, and compiler SHA-256. Qualification compares that receipt with the reviewed source and actual binary; scanning must inventory the patched application packages.
 
-Updating the upstream compiler does not silently move the source build. Review the source commit, SDK and overrides in `source.json` alongside an upgrade; the source route refuses a version that differs from the upstream recipe and AVM policy. An upstream upgrade can still use the standard route while that review is pending. Build inputs and resolved dependencies are recorded, but the floating Azure Linux base and package repositories mean this is not a promise of byte-for-byte reproducibility.
+Updating the upstream compiler does not silently move the source build. Review the source policy, SDK in `source.Dockerfile` and NuGet project alongside an upgrade; the source route refuses a version that differs from the upstream recipe and AVM policy. An upstream upgrade can still use the standard route while that review is pending. Build inputs and resolved dependencies are recorded; package repositories still prevent a promise of byte-for-byte reproducibility.
 
 Every new release candidate builds its selected route once. Retries recover the retained OCI bytes and reject a different route. Changing routes requires a new dispatch and an unused image version. Both routes retain the existing runtime, inventory, vulnerability, approval and signature gates; a successful source compilation alone does not establish remediation or publication.
 
@@ -103,7 +103,7 @@ To change the selected modules, edit the policy, regenerate the manifest, review
 uv run python scripts/bicep_dependencies.py lock
 ```
 
-Locking reaches MCR. Normal image builds use the committed lock and never refresh it automatically. The floating Azure Linux base and its package repositories mean the image is not byte-for-byte reproducible; the receipt pins the module content, not the whole operating system.
+Locking reaches MCR. Normal image builds use the committed lock and never refresh it automatically. Package repositories mean the image is not byte-for-byte reproducible; the receipt pins the module content, while the Dockerfile pins the base filesystem and the release inventory records the installed operating system.
 
 For full tool-call verification, set `MAF_BICEP_PREPARED_IMAGE` to the built image ID or tag and run `uv run pytest -q tests/test_bicep_prepared_offline.py`. The tests inspect Docker's `NetworkMode=none` and cover clean network/storage templates, module parameter errors, an unbaked version, omitted cache config, a custom host rule, nested sources, parameter files and repeated calls in one sandbox. The existing Docker live workflow builds this profile and runs those checks after merge and on its daily schedule. These checks do not establish an ACAS import or WSLC runtime result.
 
@@ -176,4 +176,4 @@ The image's [`bicepconfig.json`](bicepconfig.json) remains a fallback for older 
 
 ## Reproducibility
 
-The Bicep CLI is pinned by release tag and its asset does not move. The base image is not: `3.0` advances as Azure Linux is patched, so two builds a month apart are not byte-identical. Pin the base by digest if you need them to be.
+The Bicep CLI asset and base image are checksum-pinned. Dependabot proposes reviewed base digest changes; repository-resolved OS packages can still change between builds. See the [dependency inventory](../DEPENDENCIES.md) for update ownership and qualification.

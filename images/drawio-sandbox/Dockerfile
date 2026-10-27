@@ -1,6 +1,4 @@
-FROM cgr.dev/chainguard/wolfi-base@sha256:9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03
-
-LABEL org.opencontainers.image.description="Editable Draw.io authoring runtime with Python and Graphviz for Linux/amd64. Usage, verification and support: https://github.com/sokolaidev/maf-extensions/blob/main/images/drawio-sandbox/README.md"
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7 AS assembled
 
 RUN apk upgrade --no-cache \
     && apk add --no-cache python-3.13 graphviz ttf-dejavu \
@@ -9,4 +7,10 @@ RUN apk upgrade --no-cache \
 
 COPY DEJAVU-LICENSE /usr/share/licenses/drawio/DEJAVU-LICENSE
 
+FROM scratch
+# ACAS supplies runtime devices and rejects device nodes embedded in image layers.
+COPY --from=assembled --exclude=dev/* / /
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+LABEL org.opencontainers.image.description="Editable Draw.io authoring runtime with Python and Graphviz for Linux/amd64. Usage, verification and support: https://github.com/sokolaidev/maf-extensions/blob/main/images/drawio-sandbox/README.md"
 CMD ["sleep", "infinity"]

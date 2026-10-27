@@ -41,8 +41,8 @@ def load_plan(engine: str, profile: str, config_path: Path | None = None) -> dic
         or config["platform"] != "linux/amd64"
     ):
         raise ValueError("unsupported image build configuration")
-    if not re.fullmatch(r"[^\s]+@sha256:[0-9a-f]{64}", config["base_image"]):
-        raise ValueError("base image must be pinned by digest")
+    if "base_image" in config:
+        raise ValueError("Declare the base image only in Dockerfile")
     if engine not in {"terraform", "opentofu"}:
         raise ValueError("unsupported engine")
     selected = config["engines"][engine]
@@ -89,7 +89,6 @@ def load_plan(engine: str, profile: str, config_path: Path | None = None) -> dic
             identities.add(identity)
     return {
         **selected,
-        "base_image": config["base_image"],
         "platform": config["platform"],
         "providers": providers,
     }
