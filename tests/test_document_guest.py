@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import shutil
 import struct
 import subprocess
 import sys
 import zipfile
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
@@ -29,6 +31,13 @@ DEFAULTS = dict(
     max_image_pixels=16_000_000,
     max_image_pages=20,
 )
+
+
+def test_guest_tests_use_the_image_dependency_versions():
+    manifest = SOURCE.parents[3] / "images/document-sandbox/requirements.txt"
+    pins = re.findall(r"^([a-zA-Z0-9_-]+)==([0-9.]+)", manifest.read_text(), re.MULTILINE)
+    assert len(pins) == 9
+    assert all(version(name) == expected for name, expected in pins)
 
 
 def run_guest(directory: Path, data: bytes, **options):
