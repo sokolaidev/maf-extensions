@@ -28,7 +28,7 @@ the environment variables, before running this.
 #     "azure-identity",
 #     "maf-sandbox-bicep",
 #     "maf-sandbox-wslc",
-#     "maf-sandbox>=0.51",
+#     "maf-sandbox>=0.52",
 # ]
 # ///
 
