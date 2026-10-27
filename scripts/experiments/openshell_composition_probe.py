@@ -248,13 +248,22 @@ class CompositionProfile:
                 ),
             )
             receipt = response.receipt
+            retain({"provider_intent": prefix, "receipt_hex": receipt.SerializeToString().hex()})
             if (
                 receipt.desired.sandbox_id != owner["id"]
-                or receipt.desired.provider_id != self.provider_id
+                or receipt.desired.sandbox != name
+                or receipt.provider != self.provider
+                or receipt.workspace != client.scope.workspace
+                or receipt.kind
+                != (
+                    client.pb.PROVIDER_MUTATION_KIND_ATTACH
+                    if attached
+                    else client.pb.PROVIDER_MUTATION_KIND_DETACH
+                )
+                or receipt.desired.provider_id != (self.provider_id if attached else "")
                 or not receipt.receipt_id
             ):
                 raise RuntimeError("provider mutation identity mismatch")
-            retain({"provider_intent": prefix, "receipt_hex": receipt.SerializeToString().hex()})
             expected = (
                 client.pb.PROVIDER_READINESS_STATE_READY
                 if attached

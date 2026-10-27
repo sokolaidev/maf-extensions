@@ -244,7 +244,7 @@ def test_native_fixture_retains_limits_and_cleanup_failures(probe, monkeypatch, 
     )
 
 
-@pytest.mark.parametrize("wrong_provider", [False, True])
+@pytest.mark.parametrize("wrong_provider", [None, "attach", "detach", "selector", "kind"])
 def test_native_matrix_gates_requests_and_composes_overlapping_rules(
     probe, monkeypatch, wrong_provider
 ):
@@ -287,13 +287,22 @@ def test_native_matrix_gates_requests_and_composes_overlapping_rules(
             installed = False
             desired = NS(
                 sandbox_id="sandbox-id",
-                provider_id="wrong" if wrong_provider else "provider-id",
+                sandbox="sandbox",
+                provider_id="provider-id" if active else "",
                 attachment_epoch=str(epoch),
                 provider_env_revision=version,
                 config_revision=version,
                 policy_hash=str(version),
             )
-            receipt = Message(receipt_id=str(epoch), desired=desired)
+            if wrong_provider == ("attach" if active else "detach"):
+                desired.provider_id = "wrong"
+            receipt = Message(
+                receipt_id=str(epoch),
+                desired=desired,
+                provider="wrong" if wrong_provider == "selector" else "provider",
+                workspace="workspace",
+                kind=0 if wrong_provider == "kind" else 1 if active else 2,
+            )
             return NS(receipt=receipt)
         if method == "GetSandboxProviderStatus":
             if request.receipt_id != receipt.receipt_id:
@@ -343,6 +352,8 @@ def test_native_matrix_gates_requests_and_composes_overlapping_rules(
         PROVIDER_READINESS_STATE_READY=3,
         PROVIDER_READINESS_STATE_REVOKED=5,
         PROVIDER_READINESS_STATE_SUPERSEDED=6,
+        PROVIDER_MUTATION_KIND_ATTACH=1,
+        PROVIDER_MUTATION_KIND_DETACH=2,
         POLICY_STATUS_LOADED=2,
         ProviderReadinessState=NS(Name=str),
     )
@@ -350,7 +361,7 @@ def test_native_matrix_gates_requests_and_composes_overlapping_rules(
         pb=pb,
         rpc=rpc,
         image="image",
-        scope="workspace",
+        scope=NS(workspace="workspace"),
         grpc=NS(RpcError=Aborted, StatusCode=NS(ABORTED="ABORTED")),
     )
 
@@ -376,7 +387,7 @@ def test_native_matrix_gates_requests_and_composes_overlapping_rules(
             profile._run_cases(
                 client, "sandbox", {"id": "sandbox-id"}, "ip", "composition", observe=observe
             )
-        assert len(seen) == 2
+        assert len(seen) == (21 if wrong_provider == "detach" else 2)
     else:
         results = profile._run_cases(
             client,
