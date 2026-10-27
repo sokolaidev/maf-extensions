@@ -285,7 +285,7 @@ jobs:
           --title 'Container image security checks failed'
           --reproduce 'Re-run the linked attempt or dispatch image-security.yml against the failing commit. Inspect the failed profile and its retained inventory and Grype report; build and scanner errors also fail this workflow.'
           --expected 'All selected Linux/amd64 profiles build and produce matching nonempty inventories, with no High or Critical findings, including unfixed findings. Scheduled runs select all documented profiles; manual runs select all profiles or one chosen profile, subject to the documented Hyperlight release-transition preflight.'
-          --packages maf-sandbox maf-sandbox-docker maf-sandbox-bicep maf-sandbox-terraform maf-sandbox-drawio maf-sandbox-hyperlight
+          --packages maf-sandbox maf-sandbox-docker maf-sandbox-bicep maf-sandbox-terraform maf-sandbox-document maf-sandbox-drawio maf-sandbox-hyperlight
           --recovery 'A successful full-profile run on the default branch automatically closes this issue with a recovery link. Partial runs and deferred scans leave it open.'
 
   report-recovery:

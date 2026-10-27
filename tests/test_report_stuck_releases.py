@@ -43,6 +43,7 @@ _RELEASES = {
     "maf-sandbox-deepagents": "0.1.0",
     "maf-sandbox-docker": "0.8.1",
     "maf-sandbox-docker-sbx": "0.1.0",
+    "maf-sandbox-document": "0.1.0",
     "maf-sandbox-drawio": "0.1.0",
     "maf-sandbox-hyperlight": "0.1.0",
     "maf-sandbox-mcp": "0.1.0",

@@ -37,6 +37,7 @@ The inventory must contain components and identify the exact built image. For `t
 | `bicep-docker-sbx` | [Bicep and workspace utilities for Docker Sandboxes](../../images/bicep-docker-sbx/README.md) |
 | `graphviz` | Graphviz DOT rendering sandbox |
 | `drawio` | [Editable Draw.io authoring with Python and Graphviz](../../images/drawio-sandbox/README.md) |
+| `document` | [Guarded PDF, DOCX, PPTX and RTF extraction](../../images/document-sandbox/README.md) |
 | `drawio-export` | Draw.io Desktop export runtime |
 | `shell` | [Bash, sh, dash and PowerShell validation with suppression auditing](../../images/shell-sandbox/README.md) |
 | `terraform-random` | [Terraform with its verified random-provider preparation and local module bundle](../../images/terraform-sandbox/TERRAFORM.md) |

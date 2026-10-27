@@ -1,5 +1,9 @@
 # maf-sandbox-document
 
+[![PyPI](https://img.shields.io/pypi/v/maf-sandbox-document)](https://pypi.org/project/maf-sandbox-document/) [![Python](https://img.shields.io/pypi/pyversions/maf-sandbox-document)](https://pypi.org/project/maf-sandbox-document/) [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/sokolaidev/maf-extensions/blob/main/packages/maf-sandbox-document/LICENSE)
+
+> **Experimental.** Releases before 1.0 may change or remove APIs. Importing this package emits `MafSandboxDocumentExperimentalWarning`.
+
 Read PDF, DOCX, PPTX and RTF files through a fixed converter in a disposable sandbox. The model chooses a listed file, output format and optional page range; it supplies no converter code. Parsers and archive/XML guards run in the guest.
 
 This package is experimental and not yet published. Its first release requires the core release containing binary file-store reads; release core before this package. The image must also have a completed, currently eligible `document` release before the kind publishes.

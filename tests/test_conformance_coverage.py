@@ -396,6 +396,7 @@ NOT_BACKENDS = frozenset(
         "maf-sandbox-bicep",
         "maf-sandbox-codeact",
         "maf-sandbox-deepagents",
+        "maf-sandbox-document",  # Workload kind; provides no backend.
         "maf-sandbox-drawio",
         "maf-sandbox-mcp",  # Host composition; delegates execution to Docker.
         "maf-sandbox-otel",
