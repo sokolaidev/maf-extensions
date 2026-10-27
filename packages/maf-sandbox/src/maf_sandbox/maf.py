@@ -1481,6 +1481,7 @@ class SandboxToolSession:
     ) -> Content | str | None:
         """The content at ``listed``, as a labelled item — or ``None`` where the file is gone.
 
+        The store may return text or bytes; bytes become binary ``Content`` without decoding.
         The read surface a kind should use, in place of reaching for ``store.read`` itself.  It
         answers with an ``agent_framework`` ``Content`` carrying the listing's own label in
         ``additional_properties[SOURCE_INTEGRITY_PROPERTY]``, so what a kind holds says what it is
@@ -1570,11 +1571,17 @@ class SandboxToolSession:
             self._record_read(listed.name, integrity, 0, outcome="refused")
             shown = named if named is not None else echoed_name(listed.name, at=at, hidden=hidden)
             return f"Error: {shown} does not meet the required file integrity ({required})"
-        self._record_read(listed.name, integrity, len(text), outcome="read")
+        self._record_read(
+            listed.name, integrity, 0 if isinstance(text, bytes) else len(text), outcome="read"
+        )
         properties: dict[str, Any] = {}
         if integrity is not None:
             # Not `security_label` — see `SOURCE_INTEGRITY_PROPERTY` for why.
             properties[SOURCE_INTEGRITY_PROPERTY] = str(integrity)
+        if isinstance(text, bytes):
+            return Content.from_data(
+                text, media_type="application/octet-stream", additional_properties=properties
+            )
         return Content.from_text(text, additional_properties=properties)
 
     def _record_read(

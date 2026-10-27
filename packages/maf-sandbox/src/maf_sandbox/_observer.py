@@ -454,12 +454,11 @@ class StoreFileRead(SandboxEvent):
     listing key, never the model's spelling of it.
 
     ``characters`` is the length of the text that came back, not a byte count: the store answers
-    with ``str`` and nothing here encodes it to find out.  It is zero for a read that was
-    refused, and for one whose file had gone.
+    with text or binary bytes. It is zero for binary content, a refused read, and a missing file.
 
     ``outcome`` is what became of the read, and it is three values rather than a flag because
-    the three are genuinely different facts: ``"read"`` means text crossed — possibly empty
-    text, which is why a length cannot stand in for this — ``"absent"`` means the store
+    the three are genuinely different facts: ``"read"`` means content crossed — possibly empty
+    or binary content, which is why a length cannot stand in for this — ``"absent"`` means the store
     answered that there is no such file, and ``"refused"`` means no content reached the workload,
     because it raised, was cancelled, or failed integrity admission. A record that could not tell
     an empty file from a missing one could not answer whether anything crossed the boundary,

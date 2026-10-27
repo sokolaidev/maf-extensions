@@ -10,6 +10,7 @@ These pages describe each kind's contract. Package READMEs cover installation an
 |---|---|---|---|
 | [Bicep](bicep.md) | `bicep_validate` | Compile and lint templates and parameter files | Fixed restore allowlist by default; host can choose closed or unrestricted |
 | [CodeAct](codeact.md) | `execute_code` | Run Python, with optional files, artifacts and host tools | Closed by default; host can add allowed destinations |
+| [Document](document.md) | `document_read` | Extract document text, Markdown and PDF page images | Closed |
 | [draw.io](drawio.md) | `create_drawio`, `export_drawio` | Validate and lay out editable diagrams; optionally export PNG/JPG/SVG | Closed |
 | [Shell](shell.md) | `bash_validate`, `pwsh_validate` | Parse and lint scripts with suppression auditing | Closed |
 | [Terraform / OpenTofu](terraform.md) | Validation and optional formatting tools | Check configuration offline; optionally return formatted files | Closed |

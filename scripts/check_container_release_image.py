@@ -24,6 +24,20 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
     require_digest(image_id)
     if profile not in profiles():
         raise ValueError("Unknown image profile")
+    if profile == "document":
+        import document_qualification
+
+        result = asyncio.run(document_qualification.check(image_id))
+        return {
+            "imageId": image_id,
+            "profile": profile,
+            "checkedAt": now(),
+            "kind": "offline-sdk-consumer",
+            "passed": True,
+            "document": result,
+            "containersRemaining": result["containersRemaining"],
+            "liveDeploymentVerified": False,
+        }
     if profile == "egress-proxy":
         import egress_proxy_qualification
 

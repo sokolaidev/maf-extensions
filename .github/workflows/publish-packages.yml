@@ -26,6 +26,7 @@ on:
       - "maf-sandbox-deepagents-v*"
       - "maf-sandbox-docker-v*"
       - "maf-sandbox-docker-sbx-v*"
+      - "maf-sandbox-document-v*"
       - "maf-sandbox-drawio-v*"
       - "maf-sandbox-hyperlight-v*"
       - "maf-sandbox-otel-v*"
@@ -52,6 +53,7 @@ on:
           - maf-sandbox-deepagents
           - maf-sandbox-docker
           - maf-sandbox-docker-sbx
+          - maf-sandbox-document
           - maf-sandbox-drawio
           - maf-sandbox-hyperlight
           - maf-sandbox-otel

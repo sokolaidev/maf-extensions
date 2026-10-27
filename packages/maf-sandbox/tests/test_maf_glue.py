@@ -4540,6 +4540,50 @@ class TestReadFileRefoldsAgainstTheRecord:
 
 
 class TestFileIntegrityAdmission:
+    @pytest.mark.parametrize("content", [b"", b"\x00\xffbinary"])
+    @pytest.mark.parametrize("integrity", [None, *SourceIntegrity])
+    def test_binary_reads_preserve_bytes_and_listing_integrity(self, content, integrity):
+        import base64
+
+        class BinaryStore:
+            async def read(self, name):
+                return content
+
+        item = asyncio.run(_session().read_file(BinaryStore(), ListedFile("file.pdf", integrity)))
+        assert not isinstance(item, str) and item is not None
+        assert item.text is None
+        assert base64.b64decode(item.uri.split(",", 1)[1]) == content
+        assert item.additional_properties.get(SOURCE_INTEGRITY_PROPERTY) == integrity
+
+    def test_binary_read_changed_during_read_is_not_trusted(self):
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+
+        class BinaryStore:
+            async def read(self, name):
+                record.record(name)
+                return b"\xffchanged"
+
+        item = asyncio.run(
+            _session(file_store_provenance=record).read_file(
+                BinaryStore(), ListedFile("file.pdf", SourceIntegrity.TRUSTED)
+            )
+        )
+        assert not isinstance(item, str) and item is not None
+        assert SOURCE_INTEGRITY_PROPERTY not in item.additional_properties
+
+    def test_binary_read_requires_integrity_before_returning_bytes(self):
+        class BinaryStore:
+            async def read(self, name):
+                return b"\xffuntrusted"
+
+        result = asyncio.run(
+            _session(requires_file_integrity=SourceIntegrity.TRUSTED).read_file(
+                BinaryStore(), ListedFile("file.pdf", SourceIntegrity.UNTRUSTED)
+            )
+        )
+        assert isinstance(result, str) and "required file integrity" in result
+
     @pytest.mark.parametrize("required", [None, *SourceIntegrity])
     @pytest.mark.parametrize("integrity", [None, *SourceIntegrity])
     @pytest.mark.parametrize("text", ["", "file content"])
