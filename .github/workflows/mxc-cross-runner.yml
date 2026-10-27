@@ -68,14 +68,14 @@ jobs:
         run: rustup toolchain install 1.98.0 --profile minimal
       - name: Build the common helper and startup checkpoint
         run: uv run --locked python -m scripts.experiments.mxc_session_patch.cross_fixture --root "$RUNNER_TEMP/mxc-fixture"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mxc-native-fixture-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/mxc-fixture/bundle.tar.gz
           compression-level: 0
           if-no-files-found: error
           retention-days: 1
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: mxc-cross-build-${{ github.run_id }}-${{ github.run_attempt }}
@@ -145,7 +145,7 @@ jobs:
         run: |
           set -euo pipefail
           uv run --locked python -m scripts.experiments.mxc_session_patch.cross_runner bootstrap --root "$RUNNER_TEMP/mxc-cross" --bundle "$RUNNER_TEMP/mxc-fixture/bundle" --role "$ROLE" --address "$(tailscale ip -4)"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mxc-peer-${{ matrix.role }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/mxc-cross/public/${{ matrix.role }}.json
@@ -160,7 +160,7 @@ jobs:
           if [ "$WORKER_CRASH" = true ]; then options+=(--worker-crash); fi
           if [ "$ACTIVE_GUEST_CRASH" = true ]; then options+=(--active-guest-crash); fi
           uv run --locked python -m scripts.experiments.mxc_session_patch.cross_runner node --root "$RUNNER_TEMP/mxc-cross" --bundle "$RUNNER_TEMP/mxc-fixture/bundle" --role "$ROLE" "${options[@]}"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: mxc-cross-report-${{ matrix.role }}-${{ github.run_id }}-${{ github.run_attempt }}

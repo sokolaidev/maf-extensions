@@ -2520,7 +2520,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/drawio-live.log" "$PACKAGE" "$VERSION"
       - name: Retain call timings and verification result
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: drawio-live-log
           path: ${{ runner.temp }}/drawio-live.log
@@ -2716,7 +2716,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/terraform-docker-terraform-live.log" "$PACKAGE" "$VERSION"
       - name: Retain call timings and verification result
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: terraform-docker-terraform-live-log
           path: ${{ runner.temp }}/terraform-docker-terraform-live.log
@@ -2803,7 +2803,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/terraform-docker-opentofu-live.log" "$PACKAGE" "$VERSION"
       - name: Retain call timings and verification result
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: terraform-docker-opentofu-live-log
           path: ${{ runner.temp }}/terraform-docker-opentofu-live.log
@@ -2896,7 +2896,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/terraform-acas-terraform-live.log" "$PACKAGE" "$VERSION"
       - name: Retain call timings and verification result
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: terraform-acas-terraform-live-log
           path: ${{ runner.temp }}/terraform-acas-terraform-live.log
@@ -2989,7 +2989,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/terraform-acas-opentofu-live.log" "$PACKAGE" "$VERSION"
       - name: Retain call timings and verification result
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: terraform-acas-opentofu-live-log
           path: ${{ runner.temp }}/terraform-acas-opentofu-live.log
@@ -3031,7 +3031,7 @@ jobs:
           exit $LASTEXITCODE
       - name: Retain qualification results
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wslc-qualification
           path: |
@@ -3127,7 +3127,7 @@ jobs:
           python "$HARNESS"/scripts/check_live_versions.py sample02-out.txt "$PACKAGE" "$VERSION"
       - name: Retain sample evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sample02-wslc
           path: |
@@ -3220,7 +3220,7 @@ jobs:
           python "$HARNESS"/scripts/check_live_versions.py sample04-out.txt "$PACKAGE" "$VERSION"
       - name: Retain sample evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sample04-wslc
           path: |
@@ -3309,7 +3309,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/shell-acas.log" "$PACKAGE" "$VERSION"
       - name: Retain ACAS qualification evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: shell-acas-qualification
           path: |
@@ -3394,7 +3394,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/sample-21-live.log" "$PACKAGE" "$VERSION"
       - name: Retain call timings and verification result
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sample-21-live-log
           path: |
@@ -3478,7 +3478,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/sample-22-live.log" "$PACKAGE" "$VERSION"
       - name: Retain call timings and verification result
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sample-22-live-log
           path: ${{ runner.temp }}/sample-22-live.log

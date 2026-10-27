@@ -46,7 +46,7 @@ jobs:
           result = json.loads((Path(os.environ['RUNNER_TEMP']) / 'provider-builds/summary.json').read_text())
           assert result['hits'] == 0 and result['builds'] == 1, result
           PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: provider-cache-cold
@@ -78,7 +78,7 @@ jobs:
           random = next(p for p in result['providers'] if p['source'].endswith('/random'))
           assert random['cache'] == 'hit' and random['build_seconds'] == 0, random
           PY
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: provider-cache-warm

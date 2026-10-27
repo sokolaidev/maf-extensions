@@ -41,7 +41,7 @@ jobs:
           uv run python scripts/document_qualification.py --image maf-document:ci --output out/document
       - name: Retain document qualification
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: document-conformance-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/document/
@@ -101,7 +101,7 @@ jobs:
             --output out/capability-policy/exports | tee out/capability-policy/exports.log
       - name: Retain capability qualification evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: docker-capability-policy-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/capability-policy/
@@ -343,7 +343,7 @@ jobs:
           cat "$RUNNER_TEMP/openclaw-bicep-evidence.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Retain bounded Markdown evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: openclaw-bicep-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/openclaw-bicep-evidence.md
