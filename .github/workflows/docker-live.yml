@@ -25,6 +25,7 @@ concurrency:
 
 jobs:
   document:
+    if: github.event_name != 'workflow_dispatch' || !inputs.openclaw_bicep
     name: Document kind conformance
     runs-on: ubuntu-latest
     timeout-minutes: 30

@@ -94,6 +94,11 @@ def test_process_cleanup_runs_on_an_image_of_each_launcher_path():
 def test_openclaw_is_opt_in_and_only_uploads_bounded_evidence():
     live = workflow("docker-live.yml")
     assert live[True]["workflow_dispatch"]["inputs"]["openclaw_bicep"]["default"] is False
+    for name in ("docker-e2e", "capability-policy", "document"):
+        assert (
+            live["jobs"][name]["if"]
+            == "github.event_name != 'workflow_dispatch' || !inputs.openclaw_bicep"
+        )
     job = live["jobs"]["openclaw-bicep"]
     assert job["if"] == "github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep"
     assert job["runs-on"] == "ubuntu-24.04"
@@ -113,5 +118,5 @@ def test_failure_reporter_serializes_the_shared_tracker_without_locking_workload
         "cancel-in-progress": False,
     }
     assert "docker-live-failure-tracker" not in live["concurrency"]["group"]
-    for name in ("docker-e2e", "capability-policy", "openclaw-bicep"):
+    for name in ("docker-e2e", "capability-policy", "document", "openclaw-bicep"):
         assert "concurrency" not in live["jobs"][name]
