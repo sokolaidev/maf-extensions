@@ -20,6 +20,99 @@ from scripts import terraform_dependencies as prep  # noqa: E402
 from scripts.terraform_manifest import render  # noqa: E402
 
 
+def cache_key(provider: dict[str, Any]) -> str:
+    """Bind a package to its reviewed inputs and the implementation that builds it."""
+    root = Path(__file__).resolve().parents[2]
+    sources = (
+        "images/terraform-sandbox/build_providers.py",
+        "images/terraform-sandbox/prepared.Dockerfile",
+        "scripts/terraform_dependencies.py",
+        "scripts/terraform_manifest.py",
+        "images/terraform-sandbox/runner.py",
+    )
+    identity = {
+        "schema": 1,
+        "provider": provider,
+        "implementation": {
+            name: digest((root / name).read_text(encoding="utf-8").encode()) for name in sources
+        },
+    }
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+
+
+def atomic_write(target: Path, data: bytes) -> None:
+    """Publish complete bytes; concurrent writers of the same verified package are equivalent."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=target.parent, suffix=".partial", delete=False
+        ) as file:
+            temporary = Path(file.name)
+            file.write(data)
+            file.flush()
+            os.fsync(file.fileno())
+        temporary.chmod(0o644)
+        os.replace(temporary, target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def cached_build(provider: dict[str, Any], cache: Path | None) -> tuple[bytes, dict[str, Any]]:
+    """Reuse only authenticated packages, rebuilding on an unavailable or invalid cache."""
+    started = time.monotonic()
+    key = cache_key(provider) if cache is not None else None
+    target = cache / (str(key) + ".zip") if cache is not None else None
+    record: dict[str, Any] = {
+        "source": provider["source"],
+        "version": provider["version"],
+        "key": key,
+        "cache": "disabled" if cache is None else "miss",
+        "verification_seconds": 0.0,
+        "build_seconds": 0.0,
+    }
+    data = None
+    if target is not None:
+        try:
+            if target.is_symlink() or cache is not None and cache.is_symlink():
+                raise ValueError("Cache symlinks are not supported")
+            with target.open("rb") as file:
+                candidate = file.read(prep.MAX_ARCHIVE + 1)
+            verify_started = time.monotonic()
+            prep.verify_built_provider(provider, candidate)
+            record["verification_seconds"] = time.monotonic() - verify_started
+            data = candidate
+            record["cache"] = "hit"
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, zipfile.BadZipFile) as error:
+            record["cache"] = "rejected"
+            print(f"Provider cache rejected: {error}", flush=True)
+    if data is None:
+        build_started = time.monotonic()
+        with tempfile.TemporaryDirectory(prefix="provider-build-") as folder:
+            data, module_files = build(provider, Path(folder))
+        record["build_seconds"] = time.monotonic() - build_started
+        if module_files != provider["source_build"]["module_files"]:
+            raise ValueError("Provider build differs from reviewed module hashes")
+        verify_started = time.monotonic()
+        prep.verify_built_provider(provider, data)
+        record["verification_seconds"] += time.monotonic() - verify_started
+        if target is not None:
+            try:
+                if cache is not None and cache.is_symlink():
+                    raise ValueError("Cache symlinks are not supported")
+                atomic_write(target, data)
+            except (OSError, ValueError) as error:
+                record["write_error"] = str(error)
+                print(f"Provider cache write unavailable: {error}", flush=True)
+    record["bytes"] = len(data)
+    record["total_seconds"] = time.monotonic() - started
+    print(json.dumps(record, sort_keys=True), flush=True)
+    return data, record
+
+
 def digest(data: bytes) -> str:
     """Hash exact build or package bytes."""
     return hashlib.sha256(data).hexdigest()
@@ -172,28 +265,37 @@ def main() -> None:
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--update-lock", type=Path)
+    parser.add_argument("--cache-directory", type=Path)
+    parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     if args.update_lock is not None and args.update_lock.resolve() == args.manifest.resolve():
         raise ValueError("Write proposed locks to a separate manifest for review")
     manifest = prep.load_manifest(args.manifest.read_bytes())
     args.output.mkdir(parents=True, exist_ok=True)
+    if args.update_lock is not None and args.cache_directory is not None:
+        raise ValueError("Lock updates must build from source without a package cache")
+    if args.report is not None:
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text("", encoding="utf-8")
     for provider in manifest["providers"]:
         if "source_build" not in provider:
             continue
         print("Building", provider["source"], provider["version"], flush=True)
-        with tempfile.TemporaryDirectory(prefix="provider-build-") as folder:
-            data, module_files = build(provider, Path(folder))
         plan = provider["source_build"]
-        if args.update_lock is None and (
-            digest(data) != plan["sha256"] or module_files != plan["module_files"]
-        ):
-            raise ValueError("Provider build differs from reviewed package or module hashes")
-        plan["sha256"], plan["module_files"] = digest(data), module_files
+        if args.update_lock is None:
+            data, record = cached_build(provider, args.cache_directory)
+            if args.report is not None:
+                with args.report.open("a", encoding="utf-8") as report:
+                    report.write(json.dumps(record, sort_keys=True) + "\n")
+        else:
+            with tempfile.TemporaryDirectory(prefix="provider-build-") as folder:
+                data, module_files = build(provider, Path(folder))
+            plan["sha256"], plan["module_files"] = digest(data), module_files
         target = (
             args.output / provider["source"] / provider["version"] / (provider["platform"] + ".zip")
         )
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        atomic_write(target, data)
         if args.update_lock is not None:
             args.update_lock.with_suffix(".partial.json").write_text(
                 render(manifest) + "\n", encoding="utf-8"

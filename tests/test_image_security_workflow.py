@@ -110,7 +110,12 @@ def test_scans_fail_on_unfixed_high_findings_and_keep_failure_evidence():
     assert not any("continue-on-error" in step for step in steps)
     inventory = next(s for s in steps if s.get("uses", "").startswith("anchore/sbom-action@"))
     scan = next(s for s in steps if s.get("uses", "").startswith("anchore/scan-action@"))
-    upload = next(s for s in steps if s.get("uses", "").startswith("actions/upload-artifact@"))
+    upload = next(
+        s
+        for s in steps
+        if s.get("uses", "").startswith("actions/upload-artifact@")
+        and s.get("name") != "Retain provider preparation timings"
+    )
     assert inventory["with"]["image"] == "docker:${{ steps.identity.outputs.image_id }}"
     assert scan["with"]["sbom"] == inventory["with"]["output-file"]
     assert scan["with"]["severity-cutoff"] == "high"
@@ -156,6 +161,9 @@ def test_hyperlight_release_transition_defers_the_entire_scan_evidence_chain():
     )
     assert '"$GITHUB_STEP_SUMMARY"' in deferred["run"]
     evidence_steps = steps[steps.index(build) + 1 : -1]
+    timings = next(s for s in evidence_steps if s["name"] == "Retain provider preparation timings")
+    assert timings["if"] == "always() && steps.providers.outputs.directory != ''"
+    evidence_steps.remove(timings)
     qualification = next(
         step for step in evidence_steps if step["name"] == "Qualify the selected Bicep compiler"
     )

@@ -66,6 +66,12 @@ CONSUMER_GUIDES = {
     "images/hyperlight-sandbox/README.md",
 }
 SCRIPT_INPUTS = {
+    ".github/actions/prepare-provider-cache/action.yml": (
+        "terraform-random",
+        "opentofu-random",
+        "terraform-avm",
+        "opentofu-avm",
+    ),
     "scripts/check_shell_image.py": ("shell",),
     "scripts/shell_qualification.py": ("shell",),
     "scripts/shell_runtime_devices.py": ("shell",),
@@ -190,7 +196,14 @@ def affected(path: str) -> tuple[str, ...]:
 def _build_branches(source: str) -> tuple[str, dict[str, str]]:
     """Recognize only the literal, non-fallthrough dispatcher; keep all shared text."""
     prefix, separator, rest = source.partition('case "$1" in\n')
-    if not separator or prefix != "#!/usr/bin/env bash\nset -euo pipefail\n\n":
+    header = "#!/usr/bin/env bash\nset -euo pipefail\n\n"
+    provider_setup = (
+        "provider_args=()\n"
+        'if [ -n "${MAF_PROVIDER_BUILDS:-}" ]; then\n'
+        '  provider_args=(--build-context "provider-build=$MAF_PROVIDER_BUILDS")\n'
+        "fi\n\n"
+    )
+    if not separator or prefix not in {header, header + provider_setup}:
         raise ValueError("Unknown build dispatcher")
     lines = rest.splitlines(keepends=True)
     branches: dict[str, str] = {}
@@ -218,6 +231,8 @@ def _build_branches(source: str) -> tuple[str, dict[str, str]]:
             command = lines[index].removesuffix("\n")
             heredoc = re.fullmatch(r"(    docker .*) <<'([A-Z]+)'", command)
             parsed = heredoc[1] if heredoc else command
+            if prefix == header + provider_setup:
+                parsed = parsed.replace('"${provider_args[@]}"', "")
             if not parsed.startswith(("    docker ", "    uv ")) or any(
                 token in parsed for token in ("`", "$(", "${", "\\", "#")
             ):

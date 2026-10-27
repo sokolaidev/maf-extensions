@@ -1,0 +1,86 @@
+name: Provider package cache qualification
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/provider-cache.yml
+      - .github/actions/prepare-provider-cache/**
+      - images/terraform-sandbox/build_providers.py
+      - images/terraform-sandbox/prepare_providers.py
+      - images/terraform-sandbox/prepared.Dockerfile
+      - images/terraform-sandbox/dependencies.terraform-avm.json
+      - images/terraform-sandbox/runner.py
+      - scripts/terraform_dependencies.py
+      - scripts/terraform_manifest.py
+      - scripts/build_scan_image.sh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provider-cache-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cold:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select a bounded Terraform provider profile
+        run: python3 images/terraform-sandbox/prepare_providers.py benchmark --engine terraform --output dist/cache-benchmark.json
+      - uses: ./.github/actions/prepare-provider-cache
+        with:
+          manifest: dist/cache-benchmark.json
+          namespace: benchmark-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Verify exported packages through offline Docker preparation
+        run: python3 images/terraform-sandbox/prepare_providers.py verify --manifest dist/cache-benchmark.json --output "$RUNNER_TEMP/provider-builds"
+      - name: Require a verified cold build
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          result = json.loads((Path(os.environ['RUNNER_TEMP']) / 'provider-builds/summary.json').read_text())
+          assert result['hits'] == 0 and result['builds'] == 1, result
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: provider-cache-cold
+          path: ${{ runner.temp }}/provider-builds/*.json*
+          retention-days: 14
+  warm:
+    needs: cold
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select an overlapping OpenTofu provider profile
+        run: python3 images/terraform-sandbox/prepare_providers.py benchmark --engine opentofu --output dist/cache-benchmark.json
+      - uses: ./.github/actions/prepare-provider-cache
+        with:
+          manifest: dist/cache-benchmark.json
+          namespace: benchmark-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Verify reused packages through offline Docker preparation
+        run: python3 images/terraform-sandbox/prepare_providers.py verify --manifest dist/cache-benchmark.json --output "$RUNNER_TEMP/provider-builds"
+      - name: Require reuse on a fresh runner and compilation of the additional provider
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          result = json.loads((Path(os.environ['RUNNER_TEMP']) / 'provider-builds/summary.json').read_text())
+          assert result['hits'] == 1 and result['builds'] == 1, result
+          random = next(p for p in result['providers'] if p['source'].endswith('/random'))
+          assert random['cache'] == 'hit' and random['build_seconds'] == 0, random
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: provider-cache-warm
+          path: ${{ runner.temp }}/provider-builds/*.json*
+          retention-days: 14
