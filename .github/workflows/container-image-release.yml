@@ -255,7 +255,7 @@ jobs:
           path: ${{ runner.temp }}/candidate
       - name: Create repository-scoped release-writing token
         id: release-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.CONTAINER_RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.CONTAINER_RELEASE_APP_PRIVATE_KEY }}
@@ -409,7 +409,7 @@ jobs:
           gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$artifact" --dir "$RUNNER_TEMP/candidate"
       - name: Create repository-scoped release-writing token
         id: release-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.CONTAINER_RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.CONTAINER_RELEASE_APP_PRIVATE_KEY }}
@@ -504,7 +504,7 @@ jobs:
           path: ${{ runner.temp }}/candidate
       - name: Create repository-scoped release-writing token
         id: release-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.CONTAINER_RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.CONTAINER_RELEASE_APP_PRIVATE_KEY }}
@@ -546,7 +546,7 @@ jobs:
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: Create repository-scoped release-writing token
         id: release-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.CONTAINER_RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.CONTAINER_RELEASE_APP_PRIVATE_KEY }}
@@ -583,7 +583,7 @@ jobs:
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: Create repository-scoped release-writing token
         id: release-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.CONTAINER_RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.CONTAINER_RELEASE_APP_PRIVATE_KEY }}
