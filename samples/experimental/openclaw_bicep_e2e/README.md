@@ -56,6 +56,12 @@ Successful output includes two `[measured]` lines with the invalid/valid verdict
 
 On normal exit or Ctrl+C, the launcher stops the processes it started and checks its owner scope. Windows assigns a waiting wrapper to a private job before permitting it to start the service; descendants inherit that job. Cleanup terminates the job, waits on captured process handles and requires zero active processes. POSIX signals the original process group even if its leader has already exited, escalates surviving members to SIGKILL, and requires group absence. Processes that deliberately leave the POSIX group are outside this sample's supervision contract. This is not evidence of graceful Windows signals, independent crash recovery, or cleanup after the launcher itself is killed. Keep the private owner directory for diagnosis after interruption; do not delete ownership state as a recovery shortcut. The worker's [ownership contract](../../../packages/maf-sandbox-mcp/README.md) governs recovery.
 
+## GitHub-hosted Linux run
+
+Maintainers can run this sample directly on an `ubuntu-24.04` GitHub runner with `gh workflow run docker-live.yml --ref <branch-or-tag> -f openclaw_bicep=true`. This explicit mode skips the workflow's normal Docker suites; ordinary dispatches, scheduled runs and pushes retain them. It builds the worker wheel from the selected source and uses the pinned compiler image, Node 26.8.1, uv 0.12.5 and Python 3.13.15.
+
+The job stores private sample state under runner temporary storage and uploads only `openclaw-bicep-evidence.md`: selected compiler results, dependency and runtime identities, hashes and an independent final owner-scope inventory. Tokens, sessions, raw logs and assistant responses are not uploaded. A failed sample or incomplete collection fails the job. This deterministic run makes no external model request and does not qualify the broader owner-loss matrix or production use.
+
 ## Optional real model
 
 Use an endpoint that supports streaming OpenAI-compatible Chat Completions with function tools. Create a local env-file outside the repository with these variables, using your provider's endpoint, model and credential:

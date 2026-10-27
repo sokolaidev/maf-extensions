@@ -17,7 +17,7 @@ def workflow(name: str) -> dict:
 
 def test_capability_qualification_cannot_pass_by_skipping_or_losing_pipeline_failures():
     job = workflow("docker-live.yml")["jobs"]["capability-policy"]
-    assert "if" not in job
+    assert job["if"] == "github.event_name != 'workflow_dispatch' || !inputs.openclaw_bicep"
     steps = {step.get("name"): step for step in job["steps"]}
     matrix = steps["Qualify every capability combination"]["run"]
     assert "set -euo pipefail" in matrix
@@ -45,7 +45,7 @@ def test_live_checks_run_after_merge_daily_and_on_demand():
     job = live["jobs"]["docker-e2e"]
     assert job["timeout-minutes"] == 20
     assert "needs" not in job
-    assert "if" not in job
+    assert job["if"] == "github.event_name != 'workflow_dispatch' || !inputs.openclaw_bicep"
     assert all("if" not in step for step in job["steps"])
     suite = next(step["run"] for step in job["steps"] if step.get("name") == "Run the live suite")
     assert (
@@ -86,3 +86,18 @@ def test_process_cleanup_runs_on_an_image_of_each_launcher_path():
     assert "docker pull" not in step["run"]
     assert "python" in job["env"]["MAF_SANDBOX_CODEACT_E2E_IMAGE"]
     assert job["env"]["MAF_SANDBOX_DOCKER_E2E_IMAGE"] not in step["run"]
+
+
+def test_openclaw_is_opt_in_and_only_uploads_bounded_evidence():
+    live = workflow("docker-live.yml")
+    assert live[True]["workflow_dispatch"]["inputs"]["openclaw_bicep"]["default"] is False
+    job = live["jobs"]["openclaw-bicep"]
+    assert job["if"] == "github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep"
+    assert job["runs-on"] == "ubuntu-24.04"
+    assert "container" not in job
+    steps = {step.get("name"): step for step in job["steps"]}
+    assert "continue-on-error" not in steps["Run the installed sample"]
+    upload = steps["Retain bounded Markdown evidence"]
+    assert upload["if"] == "always()"
+    assert upload["with"]["path"] == "${{ runner.temp }}/openclaw-bicep-evidence.md"
+    assert steps["Record bounded evidence and independently check owner scope"]["if"] == "always()"
