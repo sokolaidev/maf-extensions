@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from queue import Queue
@@ -176,10 +177,25 @@ def _native_substitute(
     return json.dumps({"console_base64": cross.api._encoded(str(state).encode())}).encode()
 
 
-@pytest.mark.parametrize("worker_crash", [False, True])
-def test_three_endpoints_restore_replay_fence_and_reconcile(
-    participants, monkeypatch, worker_crash
-):
+def _active_command(helper, startup, work, request):
+    """Substitute only native execution, retaining actual owner-pipe EOF retirement."""
+    source = (
+        "import sys; from pathlib import Path; "
+        "assert Path(sys.argv[1]).read_text() == '41'; "
+        "assert sys.stdin.buffer.read(8) == b'MXCOWN1\\n'; "
+        "print('MXC_ACTIVE_READY:99', flush=True); "
+        "assert sys.stdin.buffer.read(1) == b''; sys.exit(74)"
+    )
+    return [
+        getattr(sys, "_base_executable", sys.executable),
+        "-c",
+        source,
+        str(startup / "index.json"),
+    ]
+
+
+@pytest.mark.parametrize("crash_mode", ["none", "captured", "active"])
+def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkeypatch, crash_mode):
     roots, bundle, peers = participants
     addresses = {}
     original_client = cross._client
@@ -204,11 +220,14 @@ def test_three_endpoints_restore_replay_fence_and_reconcile(
         cross.cross_crash,
         "command",
         lambda: [
-            sys.executable,
+            getattr(sys, "_base_executable", sys.executable),
             "-c",
             (
-                "import runpy, sys; from scripts.experiments.mxc_session_patch import cross_crash; "
-                "cross_crash.remote_host.execute = runpy.run_path(sys.argv[1])['_native_substitute']; cross_crash.main()"
+                f"import runpy, sys; sys.path[:] = {[str(Path(__file__).resolve().parents[1]), *sys.path]!r}; "
+                "from scripts.experiments.mxc_session_patch import cross_crash; "
+                "fakes = runpy.run_path(sys.argv[1]); "
+                "cross_crash.remote_host.execute = fakes['_native_substitute']; "
+                "cross_crash.cross_active.command = fakes['_active_command']; cross_crash.main()"
             ),
             str(Path(__file__).resolve()),
         ],
@@ -246,10 +265,14 @@ def test_three_endpoints_restore_replay_fence_and_reconcile(
                 transports["b"],
                 transports["coordinator"],
                 restart,
-                worker_crash=worker_crash,
+                worker_crash=crash_mode == "captured",
+                active_guest_crash=crash_mode == "active",
             )
-            assert len(report["controls"]) == (13 if worker_crash else 8)
-            if worker_crash:
+            assert len(report["controls"]) == {"none": 8, "captured": 13, "active": 14}[crash_mode]
+            if crash_mode == "active":
+                assert report["worker_crash"] == cross.cross_crash.cross_active.RESULT
+                assert "active-helper-stopped-after-owner-loss" in report["controls"]
+            if crash_mode == "captured":
                 assert report["worker_crash"] == {**cross.cross_crash.READY, "worker_killed": True}
                 assert "interrupted-call-refused" in report["controls"]
             assert report["seed_checkpoint_bytes"] == 128_002
@@ -279,6 +302,8 @@ def test_workflow_requires_oidc_and_overlapping_roles():
     participants = workflow["jobs"]["participants"]
     assert participants["needs"] == "fixture"
     assert workflow[True]["workflow_dispatch"]["inputs"]["worker_crash"]["default"] is False
+    assert workflow[True]["workflow_dispatch"]["inputs"]["active_guest_crash"]["default"] is False
+    assert participants["env"]["ACTIVE_GUEST_CRASH"] == "${{ inputs.active_guest_crash }}"
     assert participants["env"]["WORKER_CRASH"] == "${{ inputs.worker_crash }}"
     native_step = next(
         s
@@ -286,6 +311,10 @@ def test_workflow_requires_oidc_and_overlapping_roles():
         if s.get("name") == "Exercise native recovery and trusted fencing over mutual TLS"
     )
     assert 'if [ "$WORKER_CRASH" = true ]; then options+=(--worker-crash); fi' in native_step["run"]
+    assert (
+        'if [ "$ACTIVE_GUEST_CRASH" = true ]; then options+=(--active-guest-crash); fi'
+        in native_step["run"]
+    )
     assert '"${options[@]}"' in native_step["run"]
     assert participants["strategy"]["max-parallel"] == 3
     assert set(participants["strategy"]["matrix"]["role"]) == set(cross.ROLES)
@@ -576,11 +605,9 @@ def test_fixture_producer_vendor_cannot_change_during_build(participants, monkey
     assert (bundle / "fixture.json").read_bytes() == before
 
 
-@pytest.mark.parametrize("failure", ["early-exit", "bad-marker", "stale-marker", "timeout"])
-def test_crash_supervisor_never_accepts_unproven_native_boundary(
-    participants, monkeypatch, failure
-):
-    roots, bundle, peers = participants
+@pytest.fixture
+def crash_host(participants):
+    roots, _, peers = participants
     config, scratch = cross._configuration(peers["a"]["profile"])
     with cross.Authority(roots["coordinator"] / "authority", enabled=True) as authority:
         owner = authority.acquire(
@@ -596,6 +623,15 @@ def test_crash_supervisor_never_accepts_unproven_native_boundary(
         cross.remote_host.physical.Policy(1024**2, 1024**2, 0),
         owner=owner,
     )
+    return host
+
+
+@pytest.mark.parametrize("failure", ["early-exit", "bad-marker", "stale-marker", "timeout"])
+def test_crash_supervisor_never_accepts_unproven_native_boundary(
+    participants, monkeypatch, failure, crash_host
+):
+    roots, bundle, peers = participants
+    host = crash_host
     ready = roots["a"] / "worker-crash-ready.json"
     if failure == "stale-marker":
         ready.write_text(json.dumps(cross.cross_crash.READY))
@@ -630,3 +666,191 @@ def test_crash_boundary_requires_unpublished_native_mutation(tmp_path, output):
             json.dumps({"console_base64": cross.api._encoded(output)}).encode(),
         )
     assert not client.ready.exists()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "missing-marker",
+        "early-exit",
+        "marker-then-exit",
+        "surviving-helper",
+        "completion",
+        "oversized-marker",
+        "stale-scratch",
+        "completion-surviving",
+        "candidate-surviving",
+        "oversized-marker-surviving",
+    ],
+)
+def test_active_crash_refuses_unproven_or_surviving_execution(
+    participants, crash_host, monkeypatch, failure
+):
+    roots, bundle, peers = participants
+    active = cross.cross_crash.cross_active
+    work = crash_host.root / "scratch" / ("1" * 32)
+    invalid_survivor = failure.endswith("-surviving")
+    failure = failure.removesuffix("-surviving")
+    if invalid_survivor:
+        observe = active.observe
+
+        def observe_invalid(*args):
+            deadline = time.monotonic() + 10
+            while not (work / "invalid-ready").exists():
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+            return observe(*args)
+
+        monkeypatch.setattr(active, "observe", observe_invalid)
+    if failure == "marker-then-exit":
+        observe = active.observe
+
+        def observe_then_exit(path):
+            ready = observe(path)
+            if ready:
+                (work / "exit-helper").touch()
+                deadline = time.monotonic() + 10
+                while not (work / "helper-exited").exists():
+                    assert time.monotonic() < deadline
+                    time.sleep(0.01)
+                captured = active.identity.Identity.decode(
+                    (work / "active-helper.json").read_text()
+                )
+                assert active.identity.stopped(captured)
+            return ready
+
+        monkeypatch.setattr(active, "observe", observe_then_exit)
+    if failure == "stale-scratch":
+        work.mkdir(parents=True)
+        monkeypatch.setattr(
+            cross.cross_crash, "command", lambda: pytest.fail("started with stale scratch")
+        )
+    else:
+        helper = "import sys, time; from pathlib import Path; assert sys.stdin.buffer.read(8) == b'MXCOWN1\\n'; "
+        if failure == "completion":
+            helper += "Path('native.json').write_text('{}'); "
+        elif failure == "candidate":
+            helper += "Path('candidate').mkdir(); "
+        if failure not in {"missing-marker", "early-exit"}:
+            helper += (
+                "print("
+                + repr("x" * 1025 if failure == "oversized-marker" else "MXC_ACTIVE_READY:99")
+                + ", flush=True); "
+            )
+        if invalid_survivor:
+            helper += "Path('invalid-ready').touch(); time.sleep(60)"
+        elif failure == "marker-then-exit":
+            helper += "\nwhile not Path('exit-helper').exists(): time.sleep(0.01)\n"
+        elif failure == "early-exit":
+            helper += "sys.exit(0)"
+        elif failure == "surviving-helper":
+            helper += "time.sleep(60)"
+        else:
+            helper += "sys.stdin.buffer.read(1)"
+        script = (
+            f"import sys, json; sys.path[:] = {[str(Path(__file__).resolve().parents[1]), *sys.path]!r}; "
+            "from pathlib import Path; from scripts.experiments.mxc_session_patch import cross_active as a; "
+            "c=json.load(sys.stdin); work=Path(c['host_root'])/'scratch'/('1'*32); work.mkdir(parents=True); "
+            f"a.command=lambda *args: [{getattr(sys, '_base_executable', sys.executable)!r}, '-c', {helper!r}]; "
+        )
+        execute = (
+            "a.execute(Path(c['bundle'])/'helper', Path(c['bundle'])/'startup', work, a.CODE, 1024, "
+            "before_spawn=lambda: None, before_start=lambda child: None, checkpoint_limits=(1,1))"
+        )
+        if failure == "marker-then-exit":
+            script += (
+                "\ntry:\n    " + execute + "\nexcept a.Refused:\n"
+                "    import time\n    (work / 'helper-exited').touch()\n    time.sleep(60)\n"
+            )
+        else:
+            script += execute
+        monkeypatch.setattr(
+            cross.cross_crash,
+            "command",
+            lambda: [getattr(sys, "_base_executable", sys.executable), "-c", script],
+        )
+        monkeypatch.setattr(cross.cross_crash, "WAIT_SECONDS", 5)
+        monkeypatch.setattr(active, "STOP_SECONDS", 0.5)
+    expected = (
+        "active helper exited before worker termination" if failure == "marker-then-exit" else None
+    )
+    if invalid_survivor:
+        expected = (
+            "readiness exceeds its bound"
+            if failure == "oversized-marker"
+            else "probe already completed"
+        )
+    with pytest.raises(cross.api.Refused, match=expected):
+        cross.cross_crash.interrupt(
+            crash_host,
+            cross._client(roots["a"], peers, "coordinator"),
+            roots["a"],
+            bundle,
+            active_guest=True,
+        )
+    if (work / "active-helper.json").exists():
+        captured = active.identity.Identity.decode((work / "active-helper.json").read_text())
+        try:
+            deadline = time.monotonic() + 5
+            while not active.identity.stopped(captured):
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+        finally:
+            active.identity.terminate(captured)
+
+
+def test_crash_modes_cannot_be_combined_before_admission():
+    with pytest.raises(RuntimeError, match="select one crash boundary"):
+        cross.scenario(None, None, None, lambda: None, worker_crash=True, active_guest_crash=True)
+
+
+@pytest.mark.parametrize(
+    ("code", "limit"), [(b"print('other')", 1024), (cross.cross_crash.cross_active.CODE, 1025)]
+)
+def test_active_probe_rejects_arbitrary_programs_before_launch(tmp_path, code, limit):
+    with pytest.raises(cross.api.Refused, match="unexpected active guest probe"):
+        cross.cross_crash.cross_active.execute(
+            tmp_path / "helper",
+            tmp_path / "startup",
+            tmp_path / "work",
+            code,
+            limit,
+            before_spawn=lambda: pytest.fail("admitted an arbitrary program"),
+            before_start=lambda child: pytest.fail("launched an arbitrary program"),
+            checkpoint_limits=(1, 1),
+        )
+
+
+def test_cli_refuses_combined_crash_modes(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cross_runner",
+            "node",
+            "--root",
+            str(tmp_path),
+            "--bundle",
+            str(tmp_path),
+            "--role",
+            "coordinator",
+            "--worker-crash",
+            "--active-guest-crash",
+        ],
+    )
+    with pytest.raises(SystemExit) as error:
+        cross.main()
+    assert error.value.code == 2
+
+
+@pytest.mark.workflow
+def test_hosted_ownership_matrix_exercises_cross_runner_controls():
+    path = Path(__file__).parents[1] / ".github/workflows/mxc-remote.yml"
+    workflow = yaml.safe_load(path.read_text("utf-8-sig"))
+    paths = workflow[True]["pull_request"]["paths"]
+    assert "tests/test_mxc_cross_runner.py" in paths
+    assert ".github/workflows/mxc-cross-runner.yml" in paths
+    job = workflow["jobs"]["qualify"]
+    assert set(job["strategy"]["matrix"]["os"]) == {"ubuntu-24.04", "windows-latest"}
+    run = next(step["run"] for step in job["steps"] if "uv run pytest" in step.get("run", ""))
+    assert "tests/test_mxc_cross_runner.py" in run.split()
