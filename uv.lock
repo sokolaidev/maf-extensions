@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12, <3.15"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -34,7 +34,7 @@ members = [
 dev = [
     { name = "agent-framework-foundry", specifier = ">=1.15.0,<2" },
     { name = "agent-framework-mistral", specifier = ">=1.0.0b261015,<2" },
-    { name = "agent-framework-ollama", specifier = ">=1.0.0b261015,<2" },
+    { name = "agent-framework-ollama", specifier = ">=1.0.0b261022,<2" },
     { name = "agent-framework-openai", specifier = ">=1.17.0,<2" },
     { name = "anyio", specifier = ">=4.5,<5" },
     { name = "autogen-agentchat", specifier = ">=0.7.5,<0.8" },
@@ -112,15 +112,15 @@ wheels = [
 
 [[package]]
 name = "agent-framework-ollama"
-version = "1.0.0b261015"
+version = "1.0.0b261022"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "agent-framework-core" },
     { name = "ollama" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b9/5d/441423c7720c51f1fe0d5d313ae62a54cb6ccd5f145c6518b3657fc9d710/agent_framework_ollama-1.0.0b261015.tar.gz", hash = "sha256:3af9c21c51c63c0542eadd2f03cb34b401e7a0567eba079c987a7a26b29343e7", size = 12222, upload-time = "2026-10-15T09:59:46.249Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ea/9e/b443902ce073b037258f27c93115edbb52f8b4385793d99e70f6513d20f5/agent_framework_ollama-1.0.0b261022.tar.gz", hash = "sha256:2ad220104d08b497af832a5e7583d85ed5512dd57c6911c19fc61f42a3f36465", size = 12526, upload-time = "2026-10-22T17:01:30.269Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/63/e3/19e97d18bc7b89747c119e5309aaebabd375632d3df8b02f6ef633288fbf/agent_framework_ollama-1.0.0b261015-py3-none-any.whl", hash = "sha256:87ff325b462fcd7111f4f07b132b8790aac1002d563517a208553b4c09e57c28", size = 13907, upload-time = "2026-10-15T09:59:09.152Z" },
+    { url = "https://files.pythonhosted.org/packages/b5/98/47e7c3848fc614a2d063c4147fe14c57dc0d675d6734f22545b3ef602bf9/agent_framework_ollama-1.0.0b261022-py3-none-any.whl", hash = "sha256:b7271bf6ab11643c97ac1d7c4587d1c686c0dd3bf346aecd067a6b61a7409ea2", size = 14201, upload-time = "2026-10-22T17:01:13.086Z" },
 ]
 
 [[package]]
@@ -1547,7 +1547,7 @@ requires-dist = [
     { name = "agent-framework-core", specifier = ">=1.22.0,<1.23" },
     { name = "agent-framework-foundry", marker = "extra == 'foundry'", specifier = ">=1.15.0,<2" },
     { name = "agent-framework-mistral", marker = "extra == 'mistral'", specifier = ">=1.0.0b261015,<2" },
-    { name = "agent-framework-ollama", marker = "extra == 'ollama'", specifier = ">=1.0.0b261015,<2" },
+    { name = "agent-framework-ollama", marker = "extra == 'ollama'", specifier = ">=1.0.0b261022,<2" },
     { name = "agent-framework-openai", marker = "extra == 'openai'", specifier = ">=1.17.0,<2" },
     { name = "aiohttp", marker = "extra == 'foundry'", specifier = ">=3.9,<4" },
     { name = "aiohttp", marker = "extra == 'openai'", specifier = ">=3.9,<4" },
