@@ -362,9 +362,9 @@ def refuse_completed_cleanup(observer: ObserveHTTP, fault: Path) -> None:
         if fault.exists():
             from openclaw_gateway_http_check import workload_result
 
-            structured = workload_result(result.model_dump(mode="json"))
+            structured = workload_result(result.model_dump(mode="json", by_alias=True))
             if (
-                result.isError
+                result.model_dump(mode="json", by_alias=True).get("isError")
                 or structured.get("completed") is not True
                 or structured.get("cleanup") != "confirmed"
                 or structured.get("status") != "ok"

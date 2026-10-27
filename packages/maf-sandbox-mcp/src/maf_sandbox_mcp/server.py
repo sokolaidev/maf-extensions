@@ -13,7 +13,7 @@ import os
 import re
 import sys
 import uuid
-from collections.abc import Generator, Sequence
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Annotated, Any, BinaryIO, Literal, cast
@@ -30,8 +30,8 @@ from maf_sandbox.maf import (
 from maf_sandbox_bicep import make_bicep_tools
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 from mcp import types
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.stdio import stdio_server
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -377,41 +377,43 @@ class Validator:
             raise asyncio.CancelledError
 
 
-class BoundedFastMCP(FastMCP[None]):
-    """Keep framing and strict argument rejection ahead of FastMCP's coercion layer."""
+class BoundedMCPServer(MCPServer[None]):
+    """Keep framing and strict argument rejection ahead of MCPServer's coercion layer."""
 
     async def list_tools(self) -> list[types.Tool]:
         """Advertise the same top-level unknown-field rejection enforced at dispatch."""
         tools = await super().list_tools()
         for tool in tools:
-            tool.inputSchema["additionalProperties"] = False
+            tool.input_schema["additionalProperties"] = False
         return tools
 
     async def call_tool(
-        self, name: str, arguments: dict[str, Any]
-    ) -> Sequence[types.ContentBlock] | dict[str, Any]:
+        self, name: str, arguments: dict[str, Any], context: Context[None, Any] | None = None
+    ) -> types.CallToolResult | types.InputRequiredResult:
         """Reject raw arguments before coercion and keep SDK errors free of source content."""
         if name != TOOL:
             raise ValueError("Unknown tool.")
         snapshot(arguments)
         try:
-            return await super().call_tool(name, arguments)
+            return await super().call_tool(name, arguments, context)
         except ToolError as exc:
             if isinstance(exc.__cause__, CallRefused):
                 raise exc.__cause__ from None
             raise ValueError("Tool failed; no validation verdict is available.") from None
 
     async def run_stdio_async(self) -> None:
-        """Serve only bounded frames through the pinned SDK's FastMCP transport."""
+        """Serve only bounded frames through the pinned SDK's MCPServer transport."""
         bounded = cast(IO[str], BoundedInput(sys.stdin.buffer))
         async with stdio_server(stdin=anyio.wrap_file(bounded)) as streams:
             # Custom stdio requires access to the SDK's underlying server.
-            await self._mcp_server.run(*streams, self._mcp_server.create_initialization_options())
+            await self._lowlevel_server.run(
+                *streams, self._lowlevel_server.create_initialization_options()
+            )
 
 
-def make_server(validator: Validator) -> BoundedFastMCP:
+def make_server(validator: Validator) -> BoundedMCPServer:
     """Register one typed validation tool without resources, prompts, or filesystem routes."""
-    server = BoundedFastMCP("maf-bicep-prototype")
+    server = BoundedMCPServer("maf-bicep-prototype")
 
     @server.tool(
         name=TOOL,
@@ -432,8 +434,8 @@ def make_server(validator: Validator) -> BoundedFastMCP:
                     type="text", text=json.dumps(result, ensure_ascii=False, indent=2)
                 )
             ],
-            structuredContent=result,
-            isError=result["status"] in ("error", "timeout", "cleanup_failed"),
+            structured_content=result,
+            is_error=result["status"] in ("error", "timeout", "cleanup_failed"),
         )
 
     return server
@@ -468,8 +470,8 @@ def mcp_result(result: dict[str, Any]) -> types.CallToolResult:
         content=[
             types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))
         ],
-        structuredContent=result,
-        isError=result["status"] in ("error", "timeout", "cleanup_failed"),
+        structured_content=result,
+        is_error=result["status"] in ("error", "timeout", "cleanup_failed"),
     )
 
 
@@ -515,7 +517,7 @@ async def http_application(image: str, config: str, scope: str, token: str, port
         )
         return mcp_result(answer)
 
-    # Use the existing FastMCP signature to preserve the advertised Bicep input schema.
+    # Use the existing MCPServer signature to preserve the advertised Bicep input schema.
     schema_server = make_server(cast(Validator, None))
     tool = (await schema_server.list_tools())[0]
     resource = Resource("bicep-docker", start, cleanup, close, frozenset({"closed-container"}))

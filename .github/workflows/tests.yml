@@ -420,6 +420,10 @@ jobs:
         # nothing and suppresses inline instead â€” pyproject.toml says why (#334).
         run: uv run pyright
 
+      - name: Historical MCP sample in its declared environment
+        if: needs.changes.outputs.code == 'true'
+        run: uv run poe legacy-mcp-types
+
   # Wheel validation and sample compatibility run alongside dependent compatibility.
   packaging:
     name: Packaging & sample compatibility

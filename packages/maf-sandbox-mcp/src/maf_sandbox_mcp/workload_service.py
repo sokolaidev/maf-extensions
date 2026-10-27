@@ -14,7 +14,7 @@ from typing import Any
 import anyio
 import jsonschema
 from mcp import types
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 
 
 async def drain(task: asyncio.Task[Any]) -> bool:
@@ -35,7 +35,7 @@ async def drain(task: asyncio.Task[Any]) -> bool:
 def error(message: str) -> types.CallToolResult:
     """Return an authority-free, bounded MCP error."""
     return types.CallToolResult(
-        content=[types.TextContent(type="text", text=message)], isError=True
+        content=[types.TextContent(type="text", text=message)], is_error=True
     )
 
 
@@ -73,8 +73,8 @@ class Binding:
     failure: Callable[[str, dict[str, Any]], types.CallToolResult] | None = None
 
 
-class WorkloadService(FastMCP[None]):
-    """FastMCP host with one global active call across all registered bindings."""
+class WorkloadService(MCPServer[None]):
+    """MCPServer host with one global active call across all registered bindings."""
 
     def __init__(self, bindings: list[Binding], resources: list[Resource]) -> None:
         self.bindings = {b.tool.name: b for b in bindings}
@@ -98,28 +98,34 @@ class WorkloadService(FastMCP[None]):
                 or not 256 <= b.max_output_bytes <= 2 * 1024 * 1024
             ):
                 raise ValueError("Invalid binding limits.")
-            jsonschema.Draft202012Validator.check_schema(b.tool.inputSchema)
-            if b.tool.outputSchema is None:
+            jsonschema.Draft202012Validator.check_schema(b.tool.input_schema)
+            if b.tool.output_schema is None:
                 raise ValueError("A concrete output schema is required.")
-            jsonschema.Draft202012Validator.check_schema(b.tool.outputSchema)
+            jsonschema.Draft202012Validator.check_schema(b.tool.output_schema)
         self.active: tuple[CallContext, asyncio.Task[types.CallToolResult]] | None = None
         self.ready = False
         self.poisoned = False
         self.session_open: Callable[[str], bool] = lambda _: False
-        super().__init__("maf-workloads", json_response=True)
+        super().__init__("maf-workloads")
 
     async def list_tools(self) -> list[types.Tool]:
         """Expose only the immutable, operator-registered workload set."""
         return [b.tool.model_copy(deep=True) for b in self.bindings.values()]
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any], context: Context[None, Any] | None = None
+    ) -> types.CallToolResult:
         """Obtain transport identity separately from model-controlled arguments."""
-        ctx = self.get_context().request_context
+        if context is None:
+            return error("A transport context is required.")
+        ctx = context.request_context
         request = ctx.request
         session_id = request.headers.get("mcp-session-id", "") if request else ""
         request_id = (
             request.scope.get("workload_request_id", ctx.request_id) if request else ctx.request_id
         )
+        if not isinstance(request_id, (int, str)) or isinstance(request_id, bool):
+            return error("A transport request identity is required.")
         return await self.invoke(name, arguments, CallContext(session_id, request_id))
 
     async def cleanup(self, names: tuple[str, ...]) -> bool:
@@ -137,7 +143,7 @@ class WorkloadService(FastMCP[None]):
         if binding.failure:
             try:
                 result = self._bounded(binding, binding.failure(status, arguments))
-                result.isError = True
+                result.is_error = True
                 return result
             except Exception:
                 pass
@@ -145,13 +151,13 @@ class WorkloadService(FastMCP[None]):
 
     @staticmethod
     def _bounded(binding: Binding, result: types.CallToolResult) -> types.CallToolResult:
-        json.dumps(result.structuredContent, allow_nan=False)
-        if len(result.model_dump_json().encode("utf-8")) > binding.max_output_bytes:
+        json.dumps(result.structured_content, allow_nan=False)
+        if len(result.model_dump_json(by_alias=True).encode("utf-8")) > binding.max_output_bytes:
             return error("Workload result exceeds its response budget.")
-        if not result.isError:
-            assert binding.tool.outputSchema is not None
-            jsonschema.Draft202012Validator(binding.tool.outputSchema).validate(  # pyright: ignore[reportUnknownMemberType]
-                result.structuredContent
+        if not result.is_error:
+            assert binding.tool.output_schema is not None
+            jsonschema.Draft202012Validator(binding.tool.output_schema).validate(  # pyright: ignore[reportUnknownMemberType]
+                result.structured_content
             )
         return result
 
@@ -184,7 +190,7 @@ class WorkloadService(FastMCP[None]):
                 > b.max_input_bytes
             ):
                 return error("Tool input exceeds its byte budget.")
-            jsonschema.Draft202012Validator(b.tool.inputSchema).validate(arguments)  # pyright: ignore[reportUnknownMemberType]
+            jsonschema.Draft202012Validator(b.tool.input_schema).validate(arguments)  # pyright: ignore[reportUnknownMemberType]
         except Exception:
             return error("Invalid tool arguments.")
         task = asyncio.create_task(self._execute(b, arguments, ctx))

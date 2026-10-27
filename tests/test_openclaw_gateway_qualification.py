@@ -1439,8 +1439,8 @@ def test_completed_cleanup_fault_preserves_result_and_delegates_after_removal(
     structured = projected()["result"]["details"]["structuredContent"]
     structured["completed"] = completed
     result = CallToolResult(
-        isError=False,
-        structuredContent=structured,
+        is_error=False,
+        structured_content=structured,
         content=[TextContent(type="text", text=json.dumps(structured))],
     )
 
@@ -3722,6 +3722,74 @@ ownership = load("openclaw_bicep_ownership_check")
 )
 def test_ownership_requires_actual_offline_compiler(processes, expected):
     assert ownership.compiler_running(processes) is expected
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize(
+    "mutation",
+    [None, "disconnected", "missing_session", "extra_session", "name", "schema", "description"],
+)
+def test_ownership_maf_discovery_contract(monkeypatch, legacy, mutation):
+    async def scenario():
+        expected = SimpleNamespace(
+            name="bicep_validate",
+            description="Validate Bicep",
+            input_schema={"type": "object", "properties": {"files": {"type": "array"}}},
+        )
+        discovered = copy.deepcopy(expected)
+        if mutation == "name":
+            discovered.name = "other"
+        elif mutation == "schema":
+            discovered.input_schema["properties"] = {}
+        elif mutation == "description":
+            discovered.description = "Other contract"
+        app = SimpleNamespace(sessions={"existing": object()})
+
+        async def list_tools():
+            return SimpleNamespace(tools=[discovered])
+
+        async def expected_tools():
+            return [expected]
+
+        class Client:
+            def __init__(self, **kwargs):
+                self.session = SimpleNamespace(list_tools=list_tools) if legacy else None
+                self.is_connected = False
+                self.functions = []
+
+            async def connect(self):
+                self.is_connected = mutation != "disconnected"
+                if mutation != "missing_session":
+                    app.sessions["new"] = object()
+                if mutation == "extra_session":
+                    app.sessions["extra"] = object()
+                self.functions = [
+                    SimpleNamespace(
+                        name=discovered.name,
+                        description=discovered.description,
+                        parameters=lambda: discovered.input_schema,
+                    )
+                ]
+
+        monkeypatch.setattr(ownership, "MCPStreamableHTTPTool", Client)
+        probe = SimpleNamespace(
+            app=app,
+            client=SimpleNamespace(
+                base_url="http://127.0.0.1:8765", headers={"Authorization": "token"}
+            ),
+            prototype=SimpleNamespace(
+                make_server=lambda _: SimpleNamespace(list_tools=expected_tools)
+            ),
+            clients=[],
+        )
+        if mutation is None:
+            client, sid = await ownership.Check.maf(probe)
+            assert client is probe.clients[0] and sid == "new"
+        else:
+            with pytest.raises(RuntimeError, match="MAF"):
+                await ownership.Check.maf(probe)
+
+    asyncio.run(scenario())
 
 
 def ownership_controls():
