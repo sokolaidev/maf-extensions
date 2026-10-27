@@ -16,6 +16,7 @@ MAX_STREAM_TOTAL = 64 * 1024 * 1024
 MAX_OBJECTS = 100_000
 _SPACE = b"\x00\t\n\f\r "
 _DELIMITERS = _SPACE + b"()<>[]{}/%"
+_LINE_END = re.compile(rb"[\r\n]")
 
 
 class Refused(ValueError):
@@ -33,8 +34,8 @@ class _Tokens:
             if self.data[self.pos] in _SPACE:
                 self.pos += 1
             elif self.data[self.pos] == 37:
-                end = re.search(rb"[\r\n]", self.data[self.pos :])
-                self.pos += end.end() if end else len(self.data) - self.pos
+                end = _LINE_END.search(self.data, self.pos)
+                self.pos = end.end() if end else len(self.data)
             else:
                 break
 
@@ -100,7 +101,9 @@ class _Tokens:
             return None
         if data[start : start + 1] == b"<":
             end = data.find(b">", start + 1)
-            if end < 0 or re.search(rb"[^0-9a-fA-F\s]", data[start + 1 : end]):
+            if end < 0 or re.search(
+                rb"[^0-9a-fA-F]", data[start + 1 : end].translate(None, _SPACE)
+            ):
                 raise Refused("invalid PDF hex string")
             self.pos = end + 1
             return None
@@ -138,9 +141,14 @@ def _decode(data: bytes, filters: Any) -> bytes:
             if not decoder.eof or decoder.unused_data:
                 raise Refused("invalid PDF compressed stream")
         elif filter_name in (b"/ASCII85Decode", b"/A85"):
-            data = base64.a85decode(data.rstrip().removesuffix(b"~>"), adobe=False)
+            raw = data.translate(None, _SPACE).removesuffix(b"~>")
+            zeros = raw.count(b"z")
+            groups, remainder = divmod(len(raw) - zeros, 5)
+            if 4 * (zeros + groups) + max(0, remainder - 1) > MAX_STREAM_BYTES:
+                raise Refused("max_pdf_stream_bytes exceeded")
+            data = base64.a85decode(raw, adobe=False, ignorechars=_SPACE)
         elif filter_name in (b"/ASCIIHexDecode", b"/AHx"):
-            raw = re.sub(rb"\s", b"", data)
+            raw = data.translate(None, _SPACE)
             if not raw.endswith(b">"):
                 raise Refused("invalid PDF hex stream")
             raw = raw[:-1]

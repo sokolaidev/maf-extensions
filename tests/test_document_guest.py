@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import re
@@ -587,3 +588,70 @@ def test_pdf_annotation_appearance_without_form_subtype(appearance, state_dictio
             check_pdf(raw)
     else:
         check_pdf(raw)
+
+
+@pytest.mark.parametrize("encoded", [b"zzz", b"z!!!!!z", b"!!!!!!!!!!!!!!!"])
+def test_ascii85_expansion_is_refused_before_allocation(monkeypatch, encoded):
+    from maf_sandbox_document import _pdf_guard
+
+    monkeypatch.setattr(_pdf_guard, "MAX_STREAM_BYTES", 8)
+
+    def unexpected_decode(*args, **kwargs):
+        pytest.fail("oversized ASCII85 reached the allocating decoder")
+
+    monkeypatch.setattr(base64, "a85decode", unexpected_decode)
+    with pytest.raises(Refused, match="max_pdf_stream_bytes"):
+        _pdf_guard._decode(encoded + b"~>", b"/ASCII85Decode")
+
+
+@pytest.mark.parametrize(
+    "payload", [b"", b"a", b"ab", b"abc", b"abcd", b"\x00" * 8, b"\x00" * 4 + b"abc"]
+)
+def test_ascii85_exact_expansion_boundary(monkeypatch, payload):
+    from maf_sandbox_document import _pdf_guard
+
+    monkeypatch.setattr(_pdf_guard, "MAX_STREAM_BYTES", len(payload))
+    assert _pdf_guard._decode(base64.a85encode(payload) + b"~>", b"/A85") == payload
+
+
+@pytest.mark.parametrize("filter_name", [b"/ASCII85Decode", b"/ASCIIHexDecode"])
+@pytest.mark.parametrize("whitespace", [b"\x00", b"\t", b"\n", b"\f", b"\r", b" "])
+def test_pdf_filter_whitespace(filter_name, whitespace):
+    from maf_sandbox_document import _pdf_guard
+
+    payload = b"q Q"
+    encoded = (
+        base64.a85encode(payload) + b"~>"
+        if filter_name == b"/ASCII85Decode"
+        else payload.hex().encode() + b">"
+    )
+    encoded = encoded[:1] + whitespace + encoded[1:] + whitespace
+    assert _pdf_guard._decode(encoded, filter_name) == payload
+
+
+def test_pdf_comment_scanning_has_linear_copy_bound():
+    from maf_sandbox_document._pdf_guard import _Tokens
+
+    class MeasuredBytes(bytes):
+        copied = 0
+
+        def __getitem__(self, key):
+            value = super().__getitem__(key)
+            if isinstance(key, slice):
+                self.copied += len(value)
+            return value
+
+    data = MeasuredBytes(b"% comment\r\n" * 4096 + b"answer % final comment")
+    tokens = _Tokens(data)
+    assert tokens.word() == b"answer"
+    tokens.space()
+    assert tokens.pos == len(data)
+    assert data.copied <= len(data) * 2
+
+
+def test_pdf_hex_string_uses_pdf_whitespace():
+    from maf_sandbox_document._pdf_guard import _Tokens
+
+    assert _Tokens(b"<61\x00\f62>").value() is None
+    with pytest.raises(Refused, match="invalid PDF hex string"):
+        _Tokens(b"<61\x0b62>").value()
