@@ -11,6 +11,7 @@ import sys
 import xml.etree.ElementTree as ET
 import xml.parsers.expat
 import zipfile
+import zlib
 from contextlib import closing
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -338,6 +339,7 @@ def main() -> int:
         KeyError,
         IndexError,
         zipfile.BadZipFile,
+        zlib.error,
         xml.parsers.expat.ExpatError,
     ) as exc:
         metadata = {

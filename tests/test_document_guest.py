@@ -460,3 +460,22 @@ def test_pdf_content_reference_cycles_are_refused():
                 ]
             )
         )
+
+
+@pytest.mark.parametrize("kind", ["pdf", "docx"])
+def test_corrupt_compression_produces_refusal_metadata(tmp_path, kind):
+    if kind == "pdf":
+        raw = bytearray(pdf())
+        start = raw.index(b"stream\n") + len(b"stream\n")
+        raw[start] = 0
+    else:
+        raw = bytearray(docx())
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            offset = archive.getinfo("word/document.xml").header_offset
+        name_size, extra_size = struct.unpack_from("<HH", raw, offset + 26)
+        raw[offset + 30 + name_size + extra_size] = 7
+    result, metadata = run_guest(tmp_path, raw, kind=kind)
+    assert result.returncode == 2
+    assert metadata["verdict"] == "refused"
+    assert metadata["reason"].startswith("invalid document:")
+    assert metadata["files"] == [] and metadata["truncated"] is False
