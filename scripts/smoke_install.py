@@ -35,6 +35,7 @@ _PACKAGES = {
     "maf-sandbox-docker": "maf_sandbox_docker",
     "maf-sandbox-docker-sbx": "maf_sandbox_docker_sbx",
     "maf-sandbox-hyperlight": "maf_sandbox_hyperlight",
+    "maf-sandbox-document": "maf_sandbox_document",
     "maf-sandbox-drawio": "maf_sandbox_drawio",
     "maf-sandbox-otel": "maf_sandbox_otel",
     "maf-sandbox-terraform": "maf_sandbox_terraform",
@@ -930,6 +931,21 @@ def _smoke_maf_cachebench() -> str:
     return f"{len(names)} strategies registered, {len(TRANSCRIPT_PRESETS)} transcript presets"
 
 
+def _smoke_maf_sandbox_document() -> str:
+    from importlib.resources import files
+
+    from maf_sandbox import Capability, IsolationScope
+    from maf_sandbox_document import document_sandbox_spec
+
+    spec = document_sandbox_spec()
+    assert spec.isolation_scope == IsolationScope.CALL
+    assert Capability.FILES_OUT in spec.requires
+    for name in ("_guest.py", "_pdf_guard.py"):
+        source = files("maf_sandbox_document").joinpath(name).read_text("utf-8")
+        compile(source, name, "exec")
+    return "call-isolated document spec and both fixed guest programs are present"
+
+
 _SMOKES = {
     "maf-sandbox": _smoke_maf_sandbox,
     "maf-sandbox-acas": _smoke_maf_sandbox_acas,
@@ -938,6 +954,7 @@ _SMOKES = {
     "maf-sandbox-deepagents": _smoke_maf_sandbox_deepagents,
     "maf-sandbox-docker": _smoke_maf_sandbox_docker,
     "maf-sandbox-docker-sbx": _smoke_maf_sandbox_docker_sbx,
+    "maf-sandbox-document": _smoke_maf_sandbox_document,
     "maf-sandbox-drawio": _smoke_maf_sandbox_drawio,
     "maf-sandbox-hyperlight": _smoke_maf_sandbox_hyperlight,
     "maf-sandbox-otel": _smoke_maf_sandbox_otel,

@@ -21,6 +21,7 @@ on:
           - bicep-avm
           - bicep-docker-sbx
           - graphviz
+          - document
           - drawio
           - drawio-export
           - shell

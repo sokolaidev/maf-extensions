@@ -9,6 +9,11 @@ members = ["packages/*"]
 
 [dependency-groups]
 dev = [
+    # Fixed guest converters are exercised in subprocesses by document regression tests.
+    "pypdfium2==5.14.0",
+    "mammoth==1.13.0",
+    "python-pptx==1.0.2",
+    "striprtf==0.0.35",
     "pytest>=9.0.3,<10",
     # Distributes the suite across processes; tests.yml runs it with `-n auto`.
     "pytest-xdist>=3.8,<4",
@@ -178,6 +183,7 @@ testpaths = [
     "packages/maf-sandbox-docker-sbx/tests",
     "packages/maf-sandbox-hyperlight/tests",
     "packages/maf-sandbox-drawio/tests",
+    "packages/maf-sandbox-document/tests",
     "packages/maf-sandbox-otel/tests",
     "packages/maf-sandbox-mcp/tests",
     "packages/maf-sandbox-tui/tests",

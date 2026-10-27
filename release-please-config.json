@@ -96,6 +96,17 @@
         }
       ]
     },
+    "packages/maf-sandbox-document": {
+      "package-name": "maf-sandbox-document",
+      "exclude-paths": ["packages/maf-sandbox-document/tests"],
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "/uv.lock",
+          "jsonpath": "$.package[?(@.name.value=='maf-sandbox-document')].version"
+        }
+      ]
+    },
     "packages/maf-sandbox-drawio": {
       "package-name": "maf-sandbox-drawio",
       "exclude-paths": ["packages/maf-sandbox-drawio/tests"],

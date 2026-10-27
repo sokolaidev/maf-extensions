@@ -28,6 +28,10 @@ from prepare_container_release import run
 WEB = f"https://github.com/{REPOSITORY}"
 UNAVAILABLE = "Unavailable (not established by retained evidence)"
 PROFILE_GUIDES = {
+    "document": (
+        "Guarded PDF, DOCX, PPTX and RTF extraction in disposable sandboxes.",
+        "images/document-sandbox/README.md",
+    ),
     "shell": (
         "Offline Bash, sh, dash and PowerShell parsing, linting and suppression auditing.",
         "images/shell-sandbox/README.md",
@@ -176,6 +180,14 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
         ("Database built at (UTC)", database.get("built", UNAVAILABLE)),
         ("Database valid", database.get("valid", UNAVAILABLE)),
     ]
+    if candidate["profile"] == "document":
+        document = runtime.get("document", {})
+        for label, key in (
+            ("Document consumer checks", "checks"),
+            ("Document container observations", "observations"),
+            ("Document ACAS verified", "acasVerified"),
+        ):
+            rows.append((label, document.get(key, UNAVAILABLE)))
     if candidate["profile"] == "shell":
         shell = runtime.get("shell", {})
         for check in shell.get("checks", []):
