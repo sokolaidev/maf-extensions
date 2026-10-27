@@ -42,7 +42,7 @@ openai = ["agent-framework-openai>=1.17.0,<2", "azure-identity>=1.17,<2", "aioht
 foundry = ["agent-framework-foundry>=1.15.0,<2", "azure-identity>=1.17,<2", "aiohttp>=3.9,<4"]
 mistral = ["agent-framework-mistral>=1.0.0b261015,<2"]
 # The Ollama route builds the client's own async HTTP client, so that package is named too.
-ollama = ["agent-framework-ollama>=1.0.0b261015,<2", "ollama>=0.5.3,<0.6"]
+ollama = ["agent-framework-ollama>=1.0.0b261022,<2", "ollama>=0.5.3,<0.6"]
 tiktoken = ["tiktoken>=0.8,<1"]
 
 [project.scripts]
