@@ -2,6 +2,14 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.52.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.51.1...maf-sandbox-v0.52.0) (2026-10-27)
+
+
+### Features
+
+* add guarded document extraction and binary file-store reads ([#2215](https://github.com/sokolaidev/maf-extensions/issues/2215)) ([6ee1c50](https://github.com/sokolaidev/maf-extensions/commit/6ee1c500105e22a510dbd2dde46c23ed46686afa))
+* adopt MAF 1.23 and MCP 2 across the suite ([#2140](https://github.com/sokolaidev/maf-extensions/issues/2140)) ([9ea47ea](https://github.com/sokolaidev/maf-extensions/commit/9ea47eac75a81ef01361a99bc405465fb54733ac))
+
 ## [0.51.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.51.0...maf-sandbox-v0.51.1) (2026-10-19)
 
 
