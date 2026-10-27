@@ -537,6 +537,25 @@ def test_unbound_ooxml_namespace_produces_refusal_metadata(tmp_path, member):
     assert metadata["files"] == [] and metadata["truncated"] is False
 
 
+@pytest.mark.parametrize("member", ["ppt/slides/slide1.xml", "ppt/_rels/presentation.xml.rels"])
+def test_secondary_pptx_namespace_produces_refusal_metadata(tmp_path, member):
+    output = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(documents()["fixture.pptx"])) as source,
+        zipfile.ZipFile(output, "w") as target,
+    ):
+        assert member in source.namelist()
+        for info in source.infolist():
+            target.writestr(
+                info.filename,
+                b"<p:sld/>" if info.filename == member else source.read(info),
+            )
+    result, metadata = run_guest(tmp_path, output.getvalue(), kind="pptx")
+    assert result.returncode == 2
+    assert metadata["verdict"] == "refused" and "unbound prefix" in metadata["reason"]
+    assert metadata["files"] == [] and metadata["truncated"] is False
+
+
 def test_zero_slide_pptx_is_explicitly_refused(tmp_path):
     from pptx import Presentation
 

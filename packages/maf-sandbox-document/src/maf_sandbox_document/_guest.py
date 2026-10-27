@@ -49,7 +49,7 @@ def _xml_guard(data: bytes) -> None:
     def refuse(*args: Any) -> Any:
         raise Refused("XML DTDs and entities are refused")
 
-    parser = xml.parsers.expat.ParserCreate()
+    parser = xml.parsers.expat.ParserCreate(namespace_separator="}")
     parser.StartDoctypeDeclHandler = refuse
     parser.EntityDeclHandler = refuse
     parser.ExternalEntityRefHandler = refuse
