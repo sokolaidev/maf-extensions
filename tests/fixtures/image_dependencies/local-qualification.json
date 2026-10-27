@@ -880,5 +880,74 @@
       "liveDeploymentVerified": false
     },
     "scope": "Local build with the older Dockerfile frontend; previous scans remain bound to their original config identities"
+  },
+  "wolfiPreparedBicep": {
+    "scope": "Local upstream-binary route; offline AVM qualification, not a clean source-route scan or hosted sandbox qualification",
+    "runtime": {
+      "imageId": "sha256:5ffe00ff2d97ca8d34acd88f93c16a1f5ccf8e6f3670d6c1d4779234be30f2a6",
+      "profile": "bicep-avm",
+      "checkedAt": "2026-10-27T01:57:22.984241+00:00",
+      "bicepAvm": {
+        "bicepVersion": "Bicep CLI version 0.48.1 (cec7951cf6)",
+        "build": {
+          "route": "upstream",
+          "compilerSha256": "b09ec25a9d376c1f8e33ede6ed22b587f915ad68488d5db77a6f9541748c7f6e"
+        },
+        "manifestSha256": "2301f905b92de143110590f295b9fc863bab6a2bc304ff8a8ae29a4c4546b96e",
+        "policySha256": "c0d2336096427deecfd4f44e58fbf2a50068a3510bc083b3c846773d5e65efa8",
+        "modules": [
+          {
+            "manifest_sha256": "0e56bad0810f3f1d17306c6e29500664b8267322bed5efd730ac25fc3d450e1f",
+            "reference": "br/public:avm/res/network/virtual-network:0.7.2"
+          },
+          {
+            "manifest_sha256": "bd2a2a8bb43bc1ba6ce00c6ad49dba0111374133e76f52b0ece2418364da4a40",
+            "reference": "br/public:avm/res/storage/storage-account:0.31.0"
+          }
+        ],
+        "checks": [
+          {
+            "name": "virtual-network",
+            "passed": true,
+            "errors": [],
+            "outputPresent": true
+          },
+          {
+            "name": "storage-account",
+            "passed": true,
+            "errors": [],
+            "outputPresent": true
+          },
+          {
+            "name": "invalid-parameter",
+            "passed": true,
+            "errors": [
+              "BCP036"
+            ],
+            "outputPresent": false
+          },
+          {
+            "name": "uncached-version",
+            "passed": true,
+            "errors": [
+              "BCP190"
+            ],
+            "outputPresent": false
+          },
+          {
+            "name": "missing-cache-config",
+            "passed": true,
+            "errors": [
+              "BCP190"
+            ],
+            "outputPresent": false
+          }
+        ]
+      },
+      "containersRemaining": [],
+      "kind": "offline-packaging",
+      "passed": true,
+      "liveDeploymentVerified": false
+    }
   }
 }
