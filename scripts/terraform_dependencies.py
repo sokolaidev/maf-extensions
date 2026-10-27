@@ -371,6 +371,12 @@ def built_provider(provider: dict[str, Any], directory: Path | None) -> bytes:
     target = directory / provider["source"] / provider["version"] / (provider["platform"] + ".zip")
     require(target.resolve().is_relative_to(directory.resolve()), "file-path")
     data = target.read_bytes()
+    verify_built_provider(provider, data)
+    return data
+
+
+def verify_built_provider(provider: dict[str, Any], data: bytes) -> None:
+    """Authenticate a source-built package before reading its contents or executing it."""
     require(len(data) <= MAX_ARCHIVE, "archive-size")
     require(hashlib.sha256(data).hexdigest() == provider_digest(provider), "artifact-digest")
     zip_files(data, limit=MAX_PROVIDER_EXPANDED, retain=False)
@@ -400,7 +406,6 @@ def built_provider(provider: dict[str, Any], directory: Path | None) -> bytes:
         all(files.get(name) == value for name, value in plan["module_files"].items()),
         "artifact-mismatch",
     )
-    return data
 
 
 def checked_manifest(value: Any) -> dict[str, Any]:

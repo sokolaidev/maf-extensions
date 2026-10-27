@@ -180,6 +180,23 @@ aca sandboxgroup disk create --group <group> --image <registry>.azurecr.io/maf-t
 
 Configure the ACAS backend with that registry and pass `image="maf-terraform:1.16.6-avm-1"` to `make_terraform_tools`.
 
+## Reusing reviewed provider packages
+
+The container release and image-security workflows restore provider ZIP snapshots through GitHub Actions cache before building profiles with source-built providers. Individual ZIP names bind the complete provider lock (source revision/archive, platform, Go version, dependency overrides, module hashes and expected package hash) and the builder, toolchain recipe and verification code. Build flags and ZIP packaging are included through the builder's source digest. The cache identity is independent of the consuming engine and profile. Lock updates always compile from source and cannot use the package cache.
+
+A restored package is authenticated against its reviewed SHA-256 before its ZIP contents are read, then checked for archive limits, provenance and module-file hashes. Missing or rejected entries rebuild; unavailable cache writes do not discard a verified build. Atomic replacement exposes only complete ZIPs. Docker preparation checks the exported packages again through `built_provider`; the final image still runs its offline checks and fresh security assessment. No cache hit supplies release approval or security evidence.
+
+Snapshots use the `provider-packages-v1` prefix, runner OS/architecture and a digest of the requested provider keys. On a set miss, the latest accessible snapshot under that prefix seeds the local directory; new verified packages are added and saved under the new set key. This permits overlap across profiles, but it is not a global union of every snapshot: independent concurrent snapshots can omit each other's additions, causing later cold builds. Individual package verification is authoritative even on an exact snapshot hit. GitHub's normal branch visibility, repository cache quota and eviction policy apply; PR caches do not seed protected-main releases. These are disposable caches, not release artifacts. Maintainers can delete a broken or oversized `provider-packages-v1-*` snapshot through Actions cache management; deleting it makes the next consumer rebuild. Concurrent saves of the same immutable snapshot key may lose the save race without failing image preparation.
+
+For local reuse on a Docker host, keep the cache outside the checkout and export into an ignored directory:
+
+```bash
+python images/terraform-sandbox/prepare_providers.py prepare --profile terraform-avm --cache-directory "$HOME/.cache/maf-provider-packages" --output dist/provider-builds
+docker build --platform linux/amd64 --build-context scripts=scripts --build-context provider-build=dist/provider-builds --build-arg BASE_IMAGE=maf-terraform:1.16.6-builtin --build-arg MANIFEST=dependencies.terraform-avm.json -f images/terraform-sandbox/prepared.Dockerfile -t maf-terraform:1.16.6-avm-1 images/terraform-sandbox
+```
+
+The helper uses the pinned provider toolchain and writes `providers.jsonl` with each provider's hit/miss/rejection, verification/build/total seconds and byte count, plus `summary.json` with total provider preparation time including toolchain setup and cache size. Workflow timing artifacts are retained for 14 days. Cache transport time and complete image preparation time remain visible in the job's step timings. The separate `Provider package cache qualification` workflow measures a cold Terraform random-provider profile and an overlapping OpenTofu random/null-provider profile on a fresh runner; it requires the shared provider to skip compilation and the additional provider to build. This bounded benchmark verifies cross-profile package reuse, not full AVM image qualification or a promised speedup for the entire catalogue.
+
 ## Build an OpenTofu image with pinned providers
 
 This profile contains OpenTofu providers only. Use the [OpenTofu AVM profile](OPENTOFU-AVM.md) for baked registry modules. [dependencies.opentofu-providers.policy.json](dependencies.opentofu-providers.policy.json) names the providers, on `registry.opentofu.org`. The steps are those of the section above, without the module review.

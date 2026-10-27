@@ -88,13 +88,27 @@ jobs:
           PROFILE: ${{ matrix.profile }}
           REQUESTED_BICEP_ROUTE: ${{ inputs.bicep_route || 'policy' }}
         run: python3 scripts/image_scan_policy.py
+      - name: Prepare reusable provider packages
+        id: providers
+        if: startsWith(matrix.profile, 'terraform-') || startsWith(matrix.profile, 'opentofu-')
+        uses: ./.github/actions/prepare-provider-cache
+        with:
+          profile: ${{ matrix.profile }}
       - name: Build the selected image
         id: build
         if: matrix.profile != 'hyperlight-aks-probe' || steps.hyperlight-image.outputs.build == 'true'
         env:
           PROFILE: ${{ matrix.profile }}
           BICEP_ROUTE: ${{ steps.route.outputs.bicep_route }}
+          MAF_PROVIDER_BUILDS: ${{ steps.providers.outputs.directory }}
         run: bash scripts/build_scan_image.sh "$PROFILE"
+      - name: Retain provider preparation timings
+        if: always() && steps.providers.outputs.directory != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provider-preparation-${{ matrix.profile }}
+          path: ${{ runner.temp }}/provider-builds/*.json*
+          retention-days: 14
       - name: Record the immutable local image identity
         if: steps.build.outcome == 'success'
         id: identity

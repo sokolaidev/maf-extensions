@@ -225,6 +225,10 @@ def test_release_with_image_change_selects_that_image(repository):
             "images/terraform-sandbox/install.py",
             ["terraform-random", "opentofu-random", "terraform-avm", "opentofu-avm"],
         ),
+        (
+            ".github/actions/prepare-provider-cache/action.yml",
+            ["terraform-random", "opentofu-random", "terraform-avm", "opentofu-avm"],
+        ),
         ("images/hyperlight-sandbox/Dockerfile", ["hyperlight-aks-probe"]),
         ("samples/experimental/hyperlight-aks/probe.py", ["hyperlight-aks-probe"]),
         ("packages/maf-sandbox/src/maf_sandbox/router.py", ["hyperlight-aks-probe"]),
@@ -330,6 +334,8 @@ def test_changed_command_selects_its_profile(shared_inputs):
         "missing",
         "heredoc",
         "commented-heredoc",
+        "provider-setup",
+        "unknown-array",
     ],
 )
 def test_unknown_or_shared_shell_changes_keep_full_coverage(shared_inputs, mutation):
@@ -346,6 +352,8 @@ def test_unknown_or_shared_shell_changes_keep_full_coverage(shared_inputs, mutat
         "missing": None,
         "heredoc": builder.replace("\nPY\n", "\nMISSING\n"),
         "commented-heredoc": builder.replace(" <<'PY'", " # <<'PY'"),
+        "provider-setup": builder.replace("provider_args=()", "provider_args=(--pull)"),
+        "unknown-array": builder.replace("${provider_args[@]}", "${unknown_args[@]}"),
     }[mutation]
     head = commit(root, {path: changed})
     assert changed_profiles(root, base, head, path) == PROFILES

@@ -156,17 +156,31 @@ jobs:
           sudo apt-get "${apt_options[@]}" update --error-on=any
           sudo apt-get "${apt_options[@]}" install --yes skopeo
           python3 scripts/install_container_scanners.py --directory "$RUNNER_TEMP/scan-tools"
+      - name: Prepare reusable provider packages
+        id: providers
+        if: github.run_attempt == 1 && (startsWith(inputs.profile, 'terraform-') || startsWith(inputs.profile, 'opentofu-'))
+        uses: ./.github/actions/prepare-provider-cache
+        with:
+          profile: ${{ inputs.profile }}
       - name: Build once or recover original bytes
         id: candidate
         env:
           PROFILE: ${{ inputs.profile }}
           VERSION: ${{ inputs.version }}
           BICEP_ROUTE: ${{ inputs.bicep_route }}
+          MAF_PROVIDER_BUILDS: ${{ steps.providers.outputs.directory }}
         run: |
           uv run --locked python scripts/prepare_container_release_dispatch.py \
             --profile "$PROFILE" --version "$VERSION" \
             --bicep-route "$BICEP_ROUTE" \
             --directory "$RUNNER_TEMP/candidate" --selection "$RUNNER_TEMP/selection"
+      - name: Retain provider preparation timings
+        if: always() && steps.providers.outputs.directory != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provider-preparation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/provider-builds/*.json*
+          retention-days: 14
       - name: Retain the original OCI candidate
         if: steps.candidate.outputs.mode == 'built'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

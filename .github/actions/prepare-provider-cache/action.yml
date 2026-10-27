@@ -1,0 +1,56 @@
+name: Prepare verified provider packages
+description: Restore optional package snapshots and authenticate every reused provider against its reviewed lock.
+inputs:
+  profile:
+    description: Image profile whose providers should be prepared
+    default: terraform-avm
+  manifest:
+    description: Optional repository-relative manifest instead of profile
+    default: ''
+  namespace:
+    description: Cache namespace; benchmarks use a run-specific namespace
+    default: release
+outputs:
+  directory:
+    description: Directory containing builds/ and timing reports, empty when no source builds are needed
+    value: ${{ steps.prepare.outputs.directory }}
+runs:
+  using: composite
+  steps:
+    - name: Identify reviewed provider inputs
+      id: plan
+      shell: bash
+      env:
+        PROFILE: ${{ inputs.profile }}
+        MANIFEST: ${{ inputs.manifest }}
+      run: |
+        args=(--profile "$PROFILE")
+        if [ -n "$MANIFEST" ]; then args=(--manifest "$MANIFEST"); fi
+        python3 images/terraform-sandbox/prepare_providers.py plan "${args[@]}" >> "$GITHUB_OUTPUT"
+    - name: Restore provider package snapshot
+      id: restore
+      if: steps.plan.outputs.enabled == 'true'
+      continue-on-error: true
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/provider-cache
+        key: provider-packages-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.namespace }}-${{ steps.plan.outputs.key }}
+        restore-keys: |
+          provider-packages-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.namespace }}-
+    - name: Authenticate or compile providers
+      id: prepare
+      if: steps.plan.outputs.enabled == 'true'
+      shell: bash
+      env:
+        MANIFEST: ${{ steps.plan.outputs.manifest }}
+      run: |
+        echo "directory=$RUNNER_TEMP/provider-builds" >> "$GITHUB_OUTPUT"
+        python3 images/terraform-sandbox/prepare_providers.py prepare --manifest "$MANIFEST" \
+          --cache-directory "$RUNNER_TEMP/provider-cache" --output "$RUNNER_TEMP/provider-builds"
+    - name: Retain verified provider package snapshot
+      if: steps.prepare.outcome == 'success' && steps.restore.outputs.cache-hit != 'true'
+      continue-on-error: true
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/provider-cache
+        key: provider-packages-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.namespace }}-${{ steps.plan.outputs.key }}
