@@ -141,6 +141,9 @@ def _decode(data: bytes, filters: Any) -> bytes:
             if not decoder.eof or decoder.unused_data:
                 raise Refused("invalid PDF compressed stream")
         elif filter_name in (b"/ASCII85Decode", b"/A85"):
+            # PDFium stops decoding at these otherwise legal PDF whitespace bytes.
+            if b"\x00" in data or b"\f" in data:
+                raise Refused("unsupported PDF ASCII85 whitespace")
             raw = data.translate(None, _SPACE).removesuffix(b"~>")
             zeros = raw.count(b"z")
             groups, remainder = divmod(len(raw) - zeros, 5)

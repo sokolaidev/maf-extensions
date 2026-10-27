@@ -626,7 +626,49 @@ def test_pdf_filter_whitespace(filter_name, whitespace):
         else payload.hex().encode() + b">"
     )
     encoded = encoded[:1] + whitespace + encoded[1:] + whitespace
+    if filter_name == b"/ASCII85Decode" and whitespace in (b"\x00", b"\f"):
+        with pytest.raises(Refused, match="unsupported PDF ASCII85 whitespace"):
+            _pdf_guard._decode(encoded, filter_name)
+        return
     assert _pdf_guard._decode(encoded, filter_name) == payload
+
+
+@pytest.mark.parametrize("filter_name", [b"/ASCII85Decode", b"/ASCIIHexDecode"])
+@pytest.mark.parametrize("whitespace", [b"\x00", b"\f", b"\t", b"\n", b"\r", b" "])
+def test_pdf_filter_whitespace_matches_native_extraction(tmp_path, filter_name, whitespace):
+    content = b"BT /F1 12 Tf 10 40 Td (Document fixture) Tj ET"
+    encoded = (
+        base64.a85encode(content) + b"~>"
+        if filter_name == b"/ASCII85Decode"
+        else content.hex().encode() + b">"
+    )
+    encoded = encoded[:1] + whitespace + encoded[1:]
+    raw = pdf_objects(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            (
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 144 72] "
+                b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+            ),
+            b"<< /Filter "
+            + filter_name
+            + b" /Length "
+            + str(len(encoded)).encode()
+            + b" >>\nstream\n"
+            + encoded
+            + b"\nendstream",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        ]
+    )
+    result, metadata = run_guest(tmp_path, raw)
+    if filter_name == b"/ASCII85Decode" and whitespace in (b"\x00", b"\f"):
+        assert result.returncode == 2
+        assert metadata["reason"] == "unsupported PDF ASCII85 whitespace"
+        assert metadata["files"] == []
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "Document fixture" in (tmp_path / metadata["files"][0]).read_text("utf-8")
 
 
 def test_pdf_comment_scanning_has_linear_copy_bound():
