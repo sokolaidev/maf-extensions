@@ -9,17 +9,23 @@ on:
     # Offset from ACAS conformance at 03:20 UTC.
     - cron: "50 4 * * *"
   workflow_dispatch:
+    inputs:
+      openclaw_bicep:
+        description: "Run only the deterministic OpenClaw Gateway-to-Docker sample"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 # Serialize failure reports and let each active run finish its cleanup.
 concurrency:
-  group: docker-live
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep && 'openclaw-bicep-live' || 'docker-live' }}
   cancel-in-progress: false
 
 jobs:
   document:
+    if: github.event_name != 'workflow_dispatch' || !inputs.openclaw_bicep
     name: Document kind conformance
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -42,6 +48,7 @@ jobs:
           if-no-files-found: error
 
   capability-policy:
+    if: github.event_name != 'workflow_dispatch' || !inputs.openclaw_bicep
     name: Docker capability contract qualification
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -101,6 +108,7 @@ jobs:
           if-no-files-found: error
 
   docker-e2e:
+    if: github.event_name != 'workflow_dispatch' || !inputs.openclaw_bicep
     name: Docker backend live tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -298,10 +306,57 @@ jobs:
             -e MAF_SANDBOX_DOCKER_E2E_IMAGE="$workload" \
             "$engine" python3 -m pytest -q -ra /tmp/tests/test_docker_daemon_binding_e2e.py
 
+  openclaw-bicep:
+    name: OpenClaw Gateway-to-Docker on native Linux
+    if: github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      BICEP_IMAGE: ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: '0.12.5'
+          python-version: '3.13.15'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.8.1'
+      - name: Build worker and pull prepared compiler
+        run: |
+          uv build --package maf-sandbox-mcp --out-dir "$RUNNER_TEMP/openclaw-wheel"
+          docker pull "$BICEP_IMAGE"
+      - name: Run the installed sample
+        timeout-minutes: 18
+        run: |
+          set -euo pipefail
+          wheels=("$RUNNER_TEMP"/openclaw-wheel/*.whl)
+          test "${#wheels[@]}" -eq 1
+          uv run --no-project --python 3.13.15 samples/experimental/openclaw_bicep_e2e/agent.py \
+            --wheel "${wheels[0]}" --image "$BICEP_IMAGE" --output "$RUNNER_TEMP/openclaw-bicep-private"
+      - name: Record bounded evidence and independently check owner scope
+        if: always()
+        run: |
+          python3 scripts/report_openclaw_hosted.py --output "$RUNNER_TEMP/openclaw-bicep-evidence.md"
+          cat "$RUNNER_TEMP/openclaw-bicep-evidence.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain bounded Markdown evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openclaw-bicep-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/openclaw-bicep-evidence.md
+          if-no-files-found: error
+          retention-days: 30
+
   report-failure:
     name: Report Docker live failure
-    needs: [docker-e2e, capability-policy, document]
-    if: always() && (needs.docker-e2e.result == 'failure' || needs.capability-policy.result == 'failure' || needs.document.result == 'failure')
+    concurrency:
+      group: docker-live-failure-tracker
+      cancel-in-progress: false
+    needs: [docker-e2e, capability-policy, document, openclaw-bicep]
+    if: always() && (needs.docker-e2e.result == 'failure' || needs.capability-policy.result == 'failure' || needs.document.result == 'failure' || needs.openclaw-bicep.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -321,4 +376,4 @@ jobs:
           --title 'Docker live checks failed'
           --reproduce 'Re-run the linked attempt, or dispatch docker-live.yml against the failing commit. Inspect the first failed step for setup, registry, daemon, or test failures.'
           --expected 'All Docker live checks pass.'
-          --packages maf-sandbox maf-sandbox-docker maf-sandbox-codeact maf-sandbox-bicep maf-sandbox-deepagents maf-sandbox-document maf-sandbox-drawio
+          --packages maf-sandbox maf-sandbox-docker maf-sandbox-codeact maf-sandbox-bicep maf-sandbox-deepagents maf-sandbox-document maf-sandbox-drawio maf-sandbox-mcp

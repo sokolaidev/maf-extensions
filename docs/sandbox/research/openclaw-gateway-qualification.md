@@ -288,7 +288,8 @@ The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audi
 
 | Work | State | Tracking |
 |---|---|---|
-| Linux Gateway-to-Docker sample | Recorded deterministic Linux-on-Docker-Desktop run passed; native Linux host and real-model behavior remain unqualified | [#2185](https://github.com/sokolaidev/maf-extensions/issues/2185) (closed) by [#2191](https://github.com/sokolaidev/maf-extensions/pull/2191) (merged) |
+| GitHub-hosted Linux Gateway-to-Docker sample | Qualified on the recorded Ubuntu candidate with deterministic provider and independent cleanup; broader Linux and real-model claims remain unqualified | [#2214](https://github.com/sokolaidev/maf-extensions/issues/2214) (closed) by [#2217](https://github.com/sokolaidev/maf-extensions/pull/2217) (merged) |
+| Linux Gateway-to-Docker sample | Recorded deterministic Linux-on-Docker-Desktop run passed; real-model behavior remains unqualified | [#2185](https://github.com/sokolaidev/maf-extensions/issues/2185) (closed) by [#2191](https://github.com/sokolaidev/maf-extensions/pull/2191) (merged) |
 | Installed worker | Published 0.1.0; historical and fresh fixed-profile qualifications recorded separately below | [#1898](https://github.com/sokolaidev/maf-extensions/issues/1898) (closed) by [#1920](https://github.com/sokolaidev/maf-extensions/pull/1920) (merged) |
 | Bicep host qualification | First-tool design and finite supervised qualification complete; installed worker delivered separately in #1898; actual LLM behavior and full crash recovery remain unqualified | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (closed) by [#1901](https://github.com/sokolaidev/maf-extensions/pull/1901) (merged) |
 | Multiple Gateway sessions | Finite acceptance reconciled across recorded Gateway evidence, five Bicep/MAF cases and 43 published transport cases with 109 SDK retirements; qualification complete. Active MAF callers can remain pending until their request timeout after service retirement; broader stress, crash and platform scenarios remain unqualified | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged); [#1675](https://github.com/sokolaidev/maf-extensions/issues/1675) (closed) by [#1680](https://github.com/sokolaidev/maf-extensions/pull/1680) (merged); [#1676](https://github.com/sokolaidev/maf-extensions/issues/1676) (closed) by [#1882](https://github.com/sokolaidev/maf-extensions/pull/1882) (merged); [#1850](https://github.com/sokolaidev/maf-extensions/issues/1850) (closed) by [#1865](https://github.com/sokolaidev/maf-extensions/pull/1865) (merged); [#1851](https://github.com/sokolaidev/maf-extensions/issues/1851) (closed) by [#1870](https://github.com/sokolaidev/maf-extensions/pull/1870) (merged) |
@@ -1279,3 +1280,76 @@ WORKDIR /work
 Create a named controller with `--init --cpus 2 --memory 6g --pids-limit 512`, an exclusive output volume at `/work` and the operator's Docker socket. Copy the worker wheel to `/input/maf_sandbox_mcp-0.2.0-py3-none-any.whl` and the sample directory to `/input/checkout/samples/experimental/openclaw_bicep_e2e` before starting it. Run `uv run --no-project --python 3.13 /input/checkout/samples/experimental/openclaw_bicep_e2e/agent.py --wheel /input/maf_sandbox_mcp-0.2.0-py3-none-any.whl --image <the-pinned-image-above> --output /work/<fresh-attempt>`. The Bicep image must already exist on the selected daemon. Read the sample's final report and independently inspect the recorded owner scope before removing only the controller and volume created for this attempt; retain private diagnostics first. The copied layout, fresh output directory and init process are part of this tested profile.
 
 This establishes the complete deterministic sample path on the recorded Linux-on-Docker-Desktop candidate. It does not qualify a native Linux host, other POSIX systems, a real model, newer OpenClaw versions, arbitrary escaping descendants, host power loss, unattended recovery, delegated egress, additional tools or production operation. The Windows owner-loss campaign remains separate evidence and is not transplanted to this Linux profile.
+
+
+## GitHub-hosted Linux sample (2026-10-27)
+
+Following #2191, the maintainer requested the same sample on a GitHub-hosted runner. [#2214](https://github.com/sokolaidev/maf-extensions/issues/2214) tracks direct execution on `ubuntu-24.04`, using the existing Docker backend and deterministic provider. This is separate from the earlier Linux controller on Docker Desktop and from the Windows owner-loss campaign.
+
+The opt-in `openclaw_bicep=true` dispatch of `docker-live.yml` builds the worker wheel from the selected source and runs the sample outside a job container. Normal Docker suites remain the default. Private state stays under runner temporary storage; only selected result fields, runtime and artifact identities, hashes and an independent exact-owner Docker inventory are uploaded as Markdown. Raw reports and sessions are not retained as public artifacts.
+
+The first [dispatch, 40428384156](https://github.com/sokolaidev/maf-extensions/actions/runs/40428384156), at `ca01fab21de811d33df5ece3ba3e13d88407a521`, was cancelled while pending with no jobs created. A newer `main` run entered the shared Docker concurrency group immediately afterward. This supplied no workload evidence. The opt-in sample now uses its own concurrency group with cancellation of active runs disabled, preserving the normal Docker group's behavior.
+
+The replacement [run 40429831275, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/40429831275), passed at source `11f45bb15621442bd79d3e086170deca98883c17`. The [Ubuntu job](https://github.com/sokolaidev/maf-extensions/actions/runs/40429831275/job/121944537870) ran from `2026-10-27T00:59:24Z` to `2026-10-27T01:00:39Z`, including setup and collection. The normal Docker jobs and failure reporter were skipped as intended. A successful workflow result is accompanied by the measured sample observations below.
+
+| Candidate | Observed identity |
+|---|---|
+| Host | GitHub-hosted `ubuntu-24.04`, runner image `20261023.334.3`, Linux `6.17.0-1022-azure`, x86-64, glibc 2.39; no job container |
+| Gateway and runtimes | OpenClaw 2026.9.7, Node 26.8.1, worker Python 3.13.15, uv 0.12.5 |
+| Docker | Docker Engine Community 28.0.4, API 1.48; containerd v2.4.1 and runc 1.5.2 |
+| Executed sample SHA-256 | `46b7631f3cefb16b735fb30b0f89c13a2b03846e2501a2c5cb532f5a68152613` |
+| Built worker wheel | `maf-sandbox-mcp` 0.2.0, SHA-256 `05ffe6f84a82dc17d636f80486a4a1147b2f8ae3e2f44a02c0618e7790b9312d`; installed module hashes matched the wheel |
+| Pulled compiler reference | `ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e` |
+| Observed local compiler image ID | `sha256:fb02b2f79c7428f7595f1fa664cc4f240ed54c349e059d8e4a0dccb0e435fab3`; both tool results matched this local identity |
+| Compiler configuration SHA-256 | `d3f160d081dcf48e41f0f0cdf006595b380402ac9730f3ee920738ba616d87e1` |
+
+The first turn made one actual compiler call and returned `completed: true`, `verdict: invalid`, `cleanup: confirmed`, with source SHA-256 `91285d8d03f8c76ee86fddeab9f039132ebc75ddcc0f5dbd3a0f5e4bd7b4b0cf`. The second made one actual call and returned `completed: true`, `verdict: valid`, `cleanup: confirmed`, with repaired-source SHA-256 `25a645af6181b25dc4727c19663a910c8c45d8ca84bf4db34548c16c11c301c7`.
+
+Final sample flags were `passed: true`, `owned_empty: true`, `owner_lock_released: true` and `processes_stopped: true`, with zero cleanup errors. The existing POSIX supervisor required owned process-group absence, and the worker lock was independently reacquired. The hosted collector's separate Docker inventory also found zero containers in the exact owner scope. No emergency workload purge was needed. `mode: smoke` and `actual_model: false` remain explicit.
+
+The bounded Markdown artifact SHA-256 is `1adfb8c8f255f67c61fd5890221d96243eea93cda3e6278f9640c46fbecf94b2`. It records raw-report SHA-256 `85f0747d48022130bff31a1dec1e7856e29e028d6747e2a86d7503e1a5861b62` and tool-evidence SHA-256 `06601a78d305c50c4ab4facf9cbf19d65561fc2c606eda72a84fe3afd6ea280c` without publishing those private files. The Actions artifact has 30-day retention; the candidate and dependency inventory below remain in this document. Hashes identify observed bytes, not independent proof after private state is discarded.
+
+### Installed dependency inventory
+
+| Distribution | Version |
+|---|---|
+| `agent-framework-core` | `1.22.0` |
+| `annotated-types` | `0.8.0` |
+| `anyio` | `4.15.1` |
+| `attrs` | `26.1.0` |
+| `certifi` | `2026.10.23` |
+| `cffi` | `2.1.1` |
+| `click` | `8.5.0` |
+| `cryptography` | `50.0.2` |
+| `h11` | `0.16.0` |
+| `httpcore` | `1.0.9` |
+| `httpx` | `0.28.1` |
+| `httpx-sse` | `0.4.3` |
+| `idna` | `3.20` |
+| `jsonschema` | `4.26.0` |
+| `jsonschema-specifications` | `2025.9.1` |
+| `maf-sandbox` | `0.51.1` |
+| `maf-sandbox-bicep` | `0.24.0` |
+| `maf-sandbox-docker` | `0.29.0` |
+| `maf-sandbox-mcp` | `0.2.0` |
+| `mcp` | `1.30.0` |
+| `msgspec` | `0.22.0` |
+| `opentelemetry-api` | `1.45.1` |
+| `pycparser` | `3.12` |
+| `pydantic` | `2.14.1` |
+| `pydantic-settings` | `2.16.1` |
+| `pydantic_core` | `2.50.1` |
+| `PyJWT` | `2.15.1` |
+| `python-dotenv` | `1.2.4` |
+| `python-multipart` | `0.0.32` |
+| `PyYAML` | `6.0.3` |
+| `referencing` | `0.37.0` |
+| `regex` | `2026.9.29` |
+| `rpds-py` | `2026.9.1` |
+| `sse-starlette` | `3.6.0` |
+| `starlette` | `1.7.0` |
+| `typing-inspection` | `0.4.4` |
+| `typing_extensions` | `4.16.0` |
+| `uvicorn` | `0.54.0` |
+
+This qualifies the existing deterministic sample on the recorded GitHub-hosted Ubuntu candidate. It does not qualify every Linux host, a real model, newer OpenClaw or dependency versions, the Windows owner-loss matrix on Linux, arbitrary escaping descendants, unattended recovery, delegated egress, MXC or production operation. The earlier Docker Desktop and Windows records retain their own candidate boundaries.
