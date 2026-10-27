@@ -655,3 +655,46 @@ def test_pdf_hex_string_uses_pdf_whitespace():
     assert _Tokens(b"<61\x00\f62>").value() is None
     with pytest.raises(Refused, match="invalid PDF hex string"):
         _Tokens(b"<61\x0b62>").value()
+
+
+@pytest.mark.parametrize("media_box", [b"0 0 144. 72.", b".0 +0. +144.0 72.0"])
+def test_pdf_real_number_forms_reach_pdfium(tmp_path, media_box):
+    raw = pdf_objects(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [" + media_box + b"] /Contents 4 0 R >>",
+            pdf_stream(b"q Q"),
+        ]
+    )
+    check_pdf(raw)
+    result, metadata = run_guest(tmp_path, raw, format="images")
+    assert result.returncode == 0, result.stderr
+    assert metadata["files"] == ["page-1.png"]
+    assert struct.unpack(">II", (tmp_path / "page-1.png").read_bytes()[16:24]) == (192, 96)
+
+
+def test_pdf_tagged_content_dictionary_reaches_pdfium(tmp_path):
+    content = b"/Span << /MCID 0 /ActualText (BI report) >> BDC BT /F1 12 Tf (BI report) Tj ET EMC"
+    raw = pdf_objects(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            (
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 144 72] "
+                b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+            ),
+            pdf_stream(content),
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        ]
+    )
+    check_pdf(raw)
+    result, metadata = run_guest(tmp_path, raw)
+    assert result.returncode == 0, result.stderr
+    assert "BI report" in (tmp_path / metadata["files"][0]).read_text("utf-8")
+
+
+def test_pdf_inline_image_after_dictionary_remains_refused():
+    from maf_sandbox_document._pdf_guard import _has_inline_image
+
+    assert _has_inline_image(b"/Span << /MCID 0 >> BDC BI /W 1 ID x EI EMC")

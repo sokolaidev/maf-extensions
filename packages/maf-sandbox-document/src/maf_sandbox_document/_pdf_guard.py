@@ -120,7 +120,7 @@ class _Tokens:
                 pass
             self.pos = saved
             return number
-        if word in (b"true", b"false", b"null") or re.fullmatch(rb"[+-]?\d*\.\d+", word):
+        if word in (b"true", b"false", b"null") or re.fullmatch(rb"[+-]?(?:\d+\.\d*|\.\d+)", word):
             return None
         raise Refused("unsupported PDF value")
 
@@ -165,9 +165,7 @@ def _has_inline_image(data: bytes) -> bool:
     while tokens.pos < len(data):
         tokens.space()
         start = tokens.pos
-        if data[start : start + 1] in (b"(", b"/"):
-            tokens.value()
-        elif data[start : start + 1] == b"<" and data[start : start + 2] != b"<<":
+        if data[start : start + 1] in (b"(", b"/", b"<", b"["):
             tokens.value()
         elif start < len(data) and data[start] not in _DELIMITERS:
             word = tokens.word()
