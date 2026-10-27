@@ -187,3 +187,40 @@ def test_spec_requires_closed_egress_and_disposal():
     spec = document_sandbox_spec()
     assert spec.egress == Egress.CLOSED and spec.min_cleanup == Cleanup.DISPOSE
     assert spec.requires == {Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}
+
+
+def test_timeout_is_incomplete_and_disposes(tmp_path):
+    class TimeoutSandbox(InProcessSandbox):
+        async def exec(self, command, *, working_directory, timeout):
+            raise TimeoutError
+
+    tool, backend, _ = attach(tmp_path, TimeoutSandbox())
+    answer = invoke(tool)
+    assert answer[0].text != COMPLETED_TEXT and verdict(answer) is None
+    assert backend.disposed
+    assert any("timed out" in item.text for item in answer)
+
+
+@pytest.mark.parametrize(
+    "name", ["../input.bin", "/etc/passwd", "page-1.png", "document.txt/other"]
+)
+def test_guest_manifest_cannot_select_extra_paths(name):
+    from maf_sandbox_document._tool import _outputs
+
+    metadata = dict(
+        schema_version=1,
+        format="text",
+        verdict="extracted",
+        truncated=False,
+        pages=None,
+        selected_pages=[],
+        characters=5,
+        files=[name],
+        media_type="application/rtf",
+        supported_formats=["text", "markdown"],
+        range_clamped=False,
+        reason=None,
+    )
+    request = dict(kind="rtf", format="text", pages=None, max_chars=100)
+    with pytest.raises(ValueError, match="output manifest"):
+        _outputs(json.dumps(metadata).encode(), request, "call", False)
