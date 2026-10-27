@@ -7,7 +7,7 @@ RUN git clone --depth 1 --branch v0.50.0 https://github.com/paradigmxyz/iron-pro
     && test "$(git rev-parse HEAD)" = 5bd11abeb95ca734c767cfc992ea9be862700614
 COPY iron.patch /tmp/iron.patch
 RUN git apply --check /tmp/iron.patch && git apply /tmp/iron.patch
-COPY go.mod go.sum /src/
+COPY dependencies/go.mod dependencies/go.sum /src/
 RUN go mod download && go mod verify
 ENV GOFLAGS=-mod=readonly
 COPY credential_gate.go credential_gate_test.go /src/internal/proxy/

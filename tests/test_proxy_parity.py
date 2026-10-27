@@ -9,8 +9,9 @@ from maf_sandbox_docker import proxy_build_context
 
 _FILES = (
     "Dockerfile",
-    "go.mod",
-    "go.sum",
+    "dependencies/go.mod",
+    "dependencies/go.sum",
+    "dependencies/imports.go",
     "entrypoint.sh",
     "iron.patch",
     "policy.py",
@@ -47,5 +48,6 @@ class TestProxyIsByteIdenticalToWslc:
         )
 
     def test_the_build_context_holds_exactly_the_expected_files(self):
-        present = {p.name for p in proxy_build_context().iterdir() if p.is_file()}
+        context = proxy_build_context()
+        present = {p.relative_to(context).as_posix() for p in context.rglob("*") if p.is_file()}
         assert set(_FILES) <= present

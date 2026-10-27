@@ -101,12 +101,14 @@ def build_inputs(root: Path) -> list[Path]:
         and (
             (parent == "images" and path.suffix in {".json", ".csproj", ".props"})
             or path.name in {"go.mod", "go.sum", "requirements.txt"}
+            or (path.name == "imports.go" and path.parent.name == "dependencies")
         )
     ]
     helpers = [
         root / "scripts" / name
         for name in (
             "container_image_inputs.py",
+            "proxy_dependency_imports.go",
             "bicep_source.py",
             "build_bicep_image.py",
             "build_bicep_prepared_image.py",

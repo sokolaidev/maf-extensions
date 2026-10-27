@@ -314,7 +314,7 @@ def test_runtime_checks_notices_and_actual_build_versions(monkeypatch, fault):
     pinned = proxy.re.search(r"FROM golang:([0-9.]+)-", recipe)
     assert pinned is not None
     compiler = pinned[1]
-    manifest = (proxy.PROXY_SOURCE / "go.mod").read_text(encoding="utf-8")
+    manifest = (proxy.PROXY_SOURCE / "dependencies/go.mod").read_text(encoding="utf-8")
     modules = proxy.re.findall(
         r"^\s*(google\.golang\.org/grpc|golang\.org/x/net)\s+(v[0-9.]+)(?:\s|$)",
         manifest,
@@ -331,7 +331,7 @@ def test_runtime_checks_notices_and_actual_build_versions(monkeypatch, fault):
             "read_text",
             lambda path, *args, **kwargs: (
                 manifest
-                if path == proxy.PROXY_SOURCE / "go.mod"
+                if path == proxy.PROXY_SOURCE / "dependencies/go.mod"
                 else read_text(path, *args, **kwargs)
             ),
         )

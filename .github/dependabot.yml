@@ -124,8 +124,8 @@ updates:
 
   - package-ecosystem: "gomod"
     directories:
-      - "/packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy"
-      - "/packages/maf-sandbox-wslc/src/maf_sandbox_wslc/_proxy"
+      - "/packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/dependencies"
+      - "/packages/maf-sandbox-wslc/src/maf_sandbox_wslc/_proxy/dependencies"
     schedule:
       interval: "weekly"
     groups:

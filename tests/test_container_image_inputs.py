@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -92,8 +95,9 @@ def test_non_default_recipes_are_retained_as_build_inputs(name):
     [
         "images/bicep-sandbox/dependencies.csproj",
         "images/drawio-export/requirements.txt",
-        "packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/go.mod",
-        "packages/maf-sandbox-wslc/src/maf_sandbox_wslc/_proxy/go.sum",
+        "packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/dependencies/go.mod",
+        "packages/maf-sandbox-wslc/src/maf_sandbox_wslc/_proxy/dependencies/go.sum",
+        "packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/dependencies/imports.go",
     ],
 )
 def test_native_manifests_are_hashed_and_select_consumers(path):
@@ -191,6 +195,34 @@ def test_proxy_build_consumes_native_manifests_without_mutating_them():
     for package in ("docker", "wslc"):
         context = ROOT / f"packages/maf-sandbox-{package}/src/maf_sandbox_{package}/_proxy"
         recipe = (context / "Dockerfile").read_text()
-        assert "COPY go.mod go.sum /src/" in recipe
+        assert "COPY dependencies/go.mod dependencies/go.sum /src/" in recipe
         assert "go get " not in recipe
         assert "GOFLAGS=-mod=readonly" in recipe
+
+
+def test_proxy_import_anchors_include_external_test_dependencies(tmp_path):
+    go = shutil.which("go")
+    if go is None:
+        pytest.skip("Go is needed to exercise its source parser")
+    (tmp_path / "proxy.go").write_text(
+        'package proxy\nimport ("net/http"; alias "example.com/client"; '
+        '"github.com/ironsh/iron-proxy/internal/hostmatch")\n'
+        '// import "example.com/not-an-import"\n'
+    )
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "proxy_test.go").write_text('package proxy\nimport "example.com/test-only"\n')
+    result = subprocess.run(
+        [go, "run", str(ROOT / "scripts/proxy_dependency_imports.go"), str(tmp_path)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        timeout=60,
+        env={**os.environ, "GOTOOLCHAIN": "local", "GOPROXY": "off", "GOSUMDB": "off"},
+    )
+    assert '"example.com/client"' in result.stdout
+    assert '"example.com/test-only"' in result.stdout
+    assert "hostmatch" not in result.stdout
+    assert "net/http" not in result.stdout
+    assert "not-an-import" not in result.stdout

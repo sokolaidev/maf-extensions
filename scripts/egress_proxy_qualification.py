@@ -251,7 +251,7 @@ def runtime(proxy: str) -> dict[str, Any]:
     require(
         pinned is not None and compiler == "go" + pinned[1], "Proxy compiler differs from build pin"
     )
-    manifest = (PROXY_SOURCE / "go.mod").read_text(encoding="utf-8")
+    manifest = (PROXY_SOURCE / "dependencies/go.mod").read_text(encoding="utf-8")
     overrides = dict(
         re.findall(
             r"^\s*(google\.golang\.org/grpc|golang\.org/x/net)\s+(v[0-9.]+)(?:\s|$)",
@@ -270,7 +270,7 @@ def runtime(proxy: str) -> dict[str, Any]:
         "modules": modules,
         "dependencyManifests": {
             name: hashlib.sha256((PROXY_SOURCE / name).read_bytes()).hexdigest()
-            for name in ("go.mod", "go.sum")
+            for name in ("dependencies/go.mod", "dependencies/go.sum", "dependencies/imports.go")
         },
     }
 
