@@ -352,8 +352,12 @@ def image_pdf(pixels, *, content_reference=b"4 0 R"):
         [
             b"<< /Type /Catalog /Pages 2 0 R >>",
             b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Resources "
-            b"<< /XObject << /Im 5 0 R >> >> /Contents " + content_reference + b" >>",
+            (
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Resources "
+                b"<< /XObject << /Im 5 0 R >> >> /Contents "
+            )
+            + content_reference
+            + b" >>",
             pdf_stream(b"q 10 0 0 10 0 0 cm /Im Do Q"),
             pdf_stream(
                 pixels,
