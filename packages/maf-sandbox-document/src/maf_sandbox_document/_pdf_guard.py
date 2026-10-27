@@ -113,6 +113,7 @@ class _Tokens:
                 if generation.isdigit() and self.word() == b"R":
                     return (number, int(generation))
             except Refused:
+                # Failed lookahead leaves a plain integer, not an indirect reference.
                 pass
             self.pos = saved
             return number
@@ -156,7 +157,7 @@ def _has_inline_image(data: bytes) -> bool:
     while tokens.pos < len(data):
         tokens.space()
         start = tokens.pos
-        if data[start : start + 1] == b"(":
+        if data[start : start + 1] in (b"(", b"/"):
             tokens.value()
         elif data[start : start + 1] == b"<" and data[start : start + 2] != b"<<":
             tokens.value()
@@ -215,7 +216,7 @@ def check_pdf(data: bytes) -> None:
     if prefix.pos != len(prefix.data):
         raise Refused("unindexed PDF object")
     objects: dict[tuple[int, int], Any] = {}
-    streams: list[tuple[dict[bytes, Any], bytes]] = []
+    streams: dict[tuple[int, int], tuple[dict[bytes, Any], bytes]] = {}
     for index, (pos, number, generation) in enumerate(positions):
         stop = positions[index + 1][0] if index + 1 < len(positions) else offset
         if not 0 < pos < stop <= offset:
@@ -236,7 +237,7 @@ def check_pdf(data: bytes) -> None:
             if not tail.startswith((b"\r\n", b"\n")):
                 raise Refused("invalid PDF stream delimiter")
             tail = tail[2:] if tail.startswith(b"\r\n") else tail[1:]
-            streams.append((value, tail))
+            streams[(number, generation)] = (value, tail)
         else:
             tokens.space()
             if following != b"endobj" or tokens.pos != len(tokens.data):
@@ -263,7 +264,8 @@ def check_pdf(data: bytes) -> None:
     if not isinstance(root, dict) or cast(dict[bytes, Any], root).get(b"/Type") != b"/Catalog":
         raise Refused("invalid PDF catalog")
     total = 0
-    for info, tail in streams:
+    decoded_streams: dict[tuple[int, int], bytes] = {}
+    for identity, (info, tail) in streams.items():
         length = info.get(b"/Length")
         if isinstance(length, tuple):
             length = objects.get(cast(tuple[int, int], length))
@@ -278,8 +280,60 @@ def check_pdf(data: bytes) -> None:
         if any(key in info for key in (b"/F", b"/FFilter", b"/FDecodeParms")):
             raise Refused("external PDF streams are refused")
         decoded = _decode(tail[:length], info.get(b"/Filter"))
-        if _has_inline_image(decoded):
-            raise Refused("inline PDF images are refused")
         total += len(decoded)
         if total > MAX_STREAM_TOTAL:
             raise Refused("max_pdf_stream_total exceeded")
+        decoded_streams[identity] = decoded
+
+    lookups = 0
+
+    def resolve(value: Any, depth: int = 0) -> Any:
+        nonlocal lookups
+        lookups += 1
+        if depth > 32 or lookups > MAX_OBJECTS * 10:
+            raise Refused("max_pdf_structure exceeded")
+        if isinstance(value, tuple):
+            return resolve(objects[cast(tuple[int, int], value)], depth + 1)
+        return value
+
+    def content(value: Any, depth: int = 0) -> list[bytes]:
+        nonlocal lookups
+        lookups += 1
+        if depth > 32 or lookups > MAX_OBJECTS * 10:
+            raise Refused("max_pdf_structure exceeded")
+        if isinstance(value, tuple):
+            reference = cast(tuple[int, int], value)
+            if reference in decoded_streams:
+                return [decoded_streams[reference]]
+            return content(objects[reference], depth + 1)
+        if isinstance(value, list):
+            return [chunk for item in cast(list[Any], value) for chunk in content(item, depth + 1)]
+        if value is None:
+            return []
+        raise Refused("invalid PDF content reference")
+
+    groups: list[list[bytes]] = []
+    for identity, (info, _) in streams.items():
+        if resolve(info.get(b"/Subtype")) == b"/Form" or resolve(info.get(b"/PatternType")) == 1:
+            groups.append([decoded_streams[identity]])
+    pending = list(objects.values())
+    while pending:
+        value = pending.pop()
+        if isinstance(value, list):
+            pending.extend(cast(list[Any], value))
+        if not isinstance(value, dict):
+            continue
+        info = cast(dict[bytes, Any], value)
+        pending.extend(info.values())
+        if resolve(info.get(b"/Type")) == b"/Page":
+            groups.append(content(info.get(b"/Contents")))
+        procedures = resolve(info.get(b"/CharProcs"))
+        if isinstance(procedures, dict):
+            groups.extend(content(item) for item in cast(dict[bytes, Any], procedures).values())
+    scanned = 0
+    for chunks in groups:
+        scanned += sum(map(len, chunks))
+        if scanned > MAX_STREAM_TOTAL:
+            raise Refused("max_pdf_content_total exceeded")
+        if _has_inline_image(b"".join(chunks)):
+            raise Refused("inline PDF images are refused")

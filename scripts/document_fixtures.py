@@ -31,6 +31,11 @@ def pdf(pages: int = 2, text: str = "Document fixture", *, compressed: bool = Tr
             + content
             + b"\nendstream"
         )
+    return pdf_objects(objects)
+
+
+def pdf_objects(objects: list[bytes]) -> bytes:
+    """Serialize classic indirect objects with a catalog at object one."""
     data = bytearray(b"%PDF-1.7\n")
     offsets = []
     for number, value in enumerate(objects, 1):

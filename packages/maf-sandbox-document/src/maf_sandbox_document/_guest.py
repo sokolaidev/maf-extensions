@@ -223,14 +223,20 @@ def _pptx(archive: io.BytesIO, config: dict[str, Any]) -> tuple[int, list[int], 
     for number in chosen:
         slide = presentation.slides[number - 1]
         parts: list[str] = []
-        for shape in slide.shapes:
+        pending = list(reversed(slide.shapes))
+        while pending:
+            shape = pending.pop()
+            if hasattr(shape, "shapes"):
+                pending.extend(reversed(shape.shapes))
             if shape.has_text_frame:
                 parts.append(shape.text)
             if shape.has_table:
                 for row in shape.table.rows:
                     parts.append("\t".join(cell.text for cell in row.cells))
         if slide.has_notes_slide:
-            parts.append(slide.notes_slide.notes_text_frame.text)
+            notes = slide.notes_slide.notes_text_frame
+            if notes is not None:
+                parts.append(notes.text)
         text = _bounded_text("\n".join(parts), config["max_chars"], page=True)
         chunks.append(f"## Slide {number}\n\n{text}" if config["format"] == "markdown" else text)
         _bounded_text("\n\n".join(chunks), config["max_chars"])

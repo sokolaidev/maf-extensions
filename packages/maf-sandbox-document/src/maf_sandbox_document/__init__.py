@@ -29,4 +29,5 @@ try:
         stacklevel=2,
     )
 except MafSandboxDocumentExperimentalWarning:
+    # The pre-1.0 notice must not prevent imports under -W error.
     pass
