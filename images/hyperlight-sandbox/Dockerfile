@@ -1,4 +1,4 @@
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:0b179206ab162b12a43bacea1b525a4023e0272005c92d08555c61b1beaedc40
 LABEL org.opencontainers.image.title="Hyperlight AKS probe" \
       org.opencontainers.image.description="Scoped Hyperlight verification application with pinned workspace dependencies" \
       org.opencontainers.image.documentation="https://github.com/sokolaidev/maf-extensions/blob/main/images/hyperlight-sandbox/README.md"

@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:3a48280a9a7c6276c3eeaba1efa6a08820f18c84fb9e6274c187719ecfaf9fbc AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.403@sha256:de4fe90a98845d75910b9769662465c84de1a934665c431279d1382b2bddc02b AS build
 RUN apt-get update && apt-get install -y --no-install-recommends python3 \
     && rm -rf /var/lib/apt/lists/*
 COPY source.json source.Dockerfile dependencies.csproj /build/
@@ -6,7 +6,7 @@ COPY --from=scripts bicep_source.py container_image_inputs.py /build/
 RUN --mount=type=cache,target=/root/.nuget/packages \
     python3 /build/bicep_source.py --policy /build/source.json --output /out
 
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:360896efb0753a5701c48f860e17130c205eae5a264797aa3e7ea126ee2923a7 AS assembled
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:0b179206ab162b12a43bacea1b525a4023e0272005c92d08555c61b1beaedc40 AS assembled
 RUN apk upgrade --no-cache && apk add --no-cache ca-certificates-bundle icu libstdc++ libssl3
 COPY --from=build /out/bicep /usr/local/bin/bicep
 COPY --from=build /out/build.json /usr/share/maf-bicep/build.json
