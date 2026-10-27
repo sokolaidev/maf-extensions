@@ -2,7 +2,7 @@
 
 The `document` profile supplies Python 3.13, pypdfium2, Mammoth, python-pptx and striprtf for Linux/amd64. It has no office suite, OCR engine or SDK. The kind stages its fixed Python programs per call. See the [kind contract](../../packages/maf-sandbox-document/README.md) for supported PDF structures, output formats and guards.
 
-The Dockerfile uses the shared digest-pinned Wolfi base. Direct and transitive Python dependencies are pinned with SHA-256 hashes in [requirements.txt](requirements.txt); pip admits wheels only and is removed after installation. Dependabot watches this directory. After changing [requirements.in](requirements.in), regenerate the lock with `uv pip compile images/document-sandbox/requirements.in --generate-hashes --no-header --no-annotate --python-version 3.13 --python-platform x86_64-manylinux_2_28 --output-file images/document-sandbox/requirements.txt`. Review dependency versions and rerun the parser security fixtures.
+The Dockerfile uses a digest-pinned Wolfi base. Refresh that digest for OS security updates: the base pins installed APK versions, so a normal `apk upgrade` can retain vulnerable versions. Direct and transitive Python dependencies are pinned with SHA-256 hashes in [requirements.txt](requirements.txt); pip admits wheels only and is removed after installation. Dependabot watches this directory. After changing [requirements.in](requirements.in), regenerate the lock with `uv pip compile images/document-sandbox/requirements.in --generate-hashes --no-header --no-annotate --python-version 3.13 --python-platform x86_64-manylinux_2_28 --output-file images/document-sandbox/requirements.txt`. Review dependency versions and rerun the parser security fixtures.
 
 ## Build and qualify
 
