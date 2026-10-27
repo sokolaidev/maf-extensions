@@ -48,6 +48,8 @@ The proxy updater modules isolate their native manifests from the partial creden
 
 ## Update validation and evidence
 
+Dependabot groups scheduled version updates and security updates separately. Each native manifest family has both groups; proxy Go modules and proxy images each group across the Docker and WSLC copies so their declarations can advance together. Build images retain dedicated Wolfi and Go toolchain version groups, with remaining images grouped together. Existing compatibility-line restrictions still apply.
+
 Weekly Docker jobs cover every image directory and package-owned Dockerfile directory. Dependabot's [Docker file discovery](https://github.com/dependabot/dependabot-core/blob/main/docker/lib/dependabot/docker/file_fetcher.rb) includes non-default names containing `Dockerfile`. Shared Wolfi and Go references are grouped across directories. Native pip, NuGet and Go jobs consume the manifests the build actually reads. The [supported ecosystem list](https://docs.github.com/en/code-security/reference/supply-chain-security/supported-ecosystems-and-repositories) defines the automation boundary.
 
 PR Image security selects affected profiles from changed file paths, so tag changes and same-tag digest changes take the same build, runtime qualification, SBOM and High/Critical scan path. It has no publishing permissions or release dispatch. The selector maps both mirrored proxy contexts to the proxy profile; parity checks bind their build inputs. Docker Sandboxes consumer qualification needs Docker credentials configured for the actor, including Dependabot secrets for bot PRs. Missing credentials are a failure, not a successful sandbox qualification.
