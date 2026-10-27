@@ -190,7 +190,7 @@ def test_native_fixture_retains_limits_and_cleanup_failures(probe, monkeypatch, 
             if failure == "provider_cleanup":
                 raise RuntimeError("provider_cleanup")
 
-        def run_cases(self, *args, observe, record):
+        def _run_cases(self, *args, observe, record):
             row = {"passed": failure != "matrix"}
             record("cases", row)
             if failure == "matrix":
@@ -373,12 +373,12 @@ def test_native_matrix_gates_requests_and_composes_overlapping_rules(
 
     if wrong_provider:
         with pytest.raises(RuntimeError, match="identity mismatch"):
-            profile.run_cases(
+            profile._run_cases(
                 client, "sandbox", {"id": "sandbox-id"}, "ip", "composition", observe=observe
             )
         assert len(seen) == 2
     else:
-        results = profile.run_cases(
+        results = profile._run_cases(
             client,
             "sandbox",
             {"id": "sandbox-id"},

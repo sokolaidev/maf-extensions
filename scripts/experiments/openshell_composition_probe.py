@@ -186,7 +186,10 @@ class CompositionProfile:
         else:
             raise RuntimeError("resource remains: " + method)
 
-    def run_cases(self, client, name, owner, ip, mode, *, observe=None, record=None):
+    def run_cases(self, client, name, owner, ip, mode):
+        return self._run_cases(client, name, owner, ip, mode)
+
+    def _run_cases(self, client, name, owner, ip, mode, *, observe=None, record=None):
         results = []
 
         def retain(event):
@@ -496,7 +499,7 @@ async def measure_native_composition(fixture, ip):
         owner = fixture.owners[-1]
         observe = partial(observe_native, fixture.client, owner["name"], ip, record)
         results = await asyncio.to_thread(
-            profile.run_cases,
+            profile._run_cases,
             fixture.client,
             owner["name"],
             {"id": owner["sandbox_id"]},
