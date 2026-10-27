@@ -40,7 +40,10 @@ def test_live_checks_run_after_merge_daily_and_on_demand():
     assert triggers["push"] == {"branches": ["main"]}
     assert triggers["schedule"] == [{"cron": "50 4 * * *"}]
     assert triggers["schedule"] != workflow("conformance-live.yml")[True]["schedule"]
-    assert live["concurrency"] == {"group": "docker-live", "cancel-in-progress": False}
+    assert live["concurrency"] == {
+        "group": "${{ github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep && 'openclaw-bicep-live' || 'docker-live' }}",
+        "cancel-in-progress": False,
+    }
     assert "docker-e2e" not in workflow("tests.yml")["jobs"]
     job = live["jobs"]["docker-e2e"]
     assert job["timeout-minutes"] == 20

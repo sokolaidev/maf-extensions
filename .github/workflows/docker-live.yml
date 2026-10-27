@@ -20,7 +20,7 @@ permissions:
 
 # Serialize failure reports and let each active run finish its cleanup.
 concurrency:
-  group: docker-live
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep && 'openclaw-bicep-live' || 'docker-live' }}
   cancel-in-progress: false
 
 jobs:
