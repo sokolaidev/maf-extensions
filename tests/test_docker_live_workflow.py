@@ -104,3 +104,14 @@ def test_openclaw_is_opt_in_and_only_uploads_bounded_evidence():
     assert upload["if"] == "always()"
     assert upload["with"]["path"] == "${{ runner.temp }}/openclaw-bicep-evidence.md"
     assert steps["Record bounded evidence and independently check owner scope"]["if"] == "always()"
+
+
+def test_failure_reporter_serializes_the_shared_tracker_without_locking_workloads():
+    live = workflow("docker-live.yml")
+    assert live["jobs"]["report-failure"]["concurrency"] == {
+        "group": "docker-live-failure-tracker",
+        "cancel-in-progress": False,
+    }
+    assert "docker-live-failure-tracker" not in live["concurrency"]["group"]
+    for name in ("docker-e2e", "capability-policy", "openclaw-bicep"):
+        assert "concurrency" not in live["jobs"][name]

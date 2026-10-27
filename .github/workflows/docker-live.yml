@@ -351,6 +351,9 @@ jobs:
 
   report-failure:
     name: Report Docker live failure
+    concurrency:
+      group: docker-live-failure-tracker
+      cancel-in-progress: false
     needs: [docker-e2e, capability-policy, document, openclaw-bicep]
     if: always() && (needs.docker-e2e.result == 'failure' || needs.capability-policy.result == 'failure' || needs.document.result == 'failure' || needs.openclaw-bicep.result == 'failure')
     runs-on: ubuntu-latest
