@@ -31,11 +31,13 @@ def main() -> int:
             else "The finish job did not provide a valid health result."
         )
     try:
-        notification = json.loads(os.environ.get("MONITOR_NOTIFICATION", ""))
+        notification = json.loads(
+            Path(os.environ["MONITOR_DIAGNOSTICS"]).read_text(encoding="utf-8")
+        )
         details = notification["summary"]
         if not isinstance(details, str) or not details.strip():
             raise ValueError("Missing summary")
-    except (ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError):
         details = (
             "Image assessment details are unavailable; inspect the begin, scan and finish jobs."
         )
@@ -64,6 +66,13 @@ def main() -> int:
     print(report, flush=True)
     print(f"::{token}::", flush=True)
     if path := os.environ.get("GITHUB_STEP_SUMMARY"):
+        # GitHub limits each step summary to 1 MiB; the artifact and log retain every detail.
+        summary = report.encode("utf-8")
+        if len(summary) > 900_000:
+            report = summary[:900_000].decode("utf-8", errors="ignore") + (
+                "\n\nSummary shortened; full diagnostics are in this step's log and the "
+                "monitor-diagnostics artifact for this attempt.\n"
+            )
         with Path(path).open("a", encoding="utf-8") as stream:
             stream.write(report)
     for problem in problems:

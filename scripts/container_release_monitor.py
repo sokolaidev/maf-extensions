@@ -103,8 +103,10 @@ def assessment_details(attempt: dict[str, Any]) -> list[str]:
     return details
 
 
-def notification(catalogue: dict[str, Any], health: dict[str, Any]) -> str:
-    """Summarize actionable health without timestamps or historical-only findings in its identity."""
+def notification(
+    catalogue: dict[str, Any], health: dict[str, Any], *, truncate: bool = True
+) -> str:
+    """Build stable issue diagnostics; retain the full summary for artifact transport."""
     rows = []
     for scope in ("current", "historical", "publication"):
         for name, status in sorted(health[scope].items()):
@@ -143,10 +145,10 @@ def notification(catalogue: dict[str, Any], health: dict[str, Any]) -> str:
     )
     if rows:
         summary += "\n\nAffected images and reasons:\n\n" + "\n".join(rows)
-    if len(summary) > 32000:
+    if truncate and len(summary) > 32000:
         summary = (
             summary[:32000]
-            + "\n\nDetails truncated; see the finish job summary and retained evidence."
+            + "\n\nDetails truncated; see the result job log and monitor-diagnostics artifact."
         )
     return json.dumps({"attention": health["attention"], "problems": identity, "summary": summary})
 
@@ -532,6 +534,9 @@ def finish(directory: Path) -> None:
     )
     catalogue = snapshot.catalogue if snapshot else empty_catalogue()
     health = monitoring_health(catalogue, at)
+    (directory / "diagnostics.json").write_text(
+        notification(catalogue, health, truncate=False), encoding="utf-8"
+    )
     warnings = {name: state for name, state in health["historical"].items() if state != "clean"}
     summary = ["## Current release health", ""]
     for scope, heading in (

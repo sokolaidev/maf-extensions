@@ -145,6 +145,12 @@ jobs:
         env:
           CONTAINER_RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
         run: uv run --locked python scripts/container_release_monitor.py finish --directory "$RUNNER_TEMP/monitor"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: monitor-diagnostics-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/monitor/diagnostics.json
+          if-no-files-found: error
+          retention-days: 30
 
   result:
     needs: [begin, scan, finish]
@@ -156,6 +162,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.finish.result == 'success'
+        with:
+          name: monitor-diagnostics-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/monitor-diagnostics
       - name: Report historical release warnings
         if: needs.finish.result == 'success'
         env:
@@ -165,12 +176,13 @@ jobs:
             echo "::warning::$WARNINGS superseded releases need attention. See the finish job summary for replacements and monitoring end dates."
           fi
       - name: Require healthy current releases and complete monitoring delivery
+        if: always()
         env:
           BEGIN: ${{ needs.begin.result }}
           SCAN: ${{ needs.scan.result }}
           FINISH: ${{ needs.finish.result }}
           ATTENTION: ${{ needs.finish.outputs.attention }}
-          MONITOR_NOTIFICATION: ${{ needs.finish.outputs.notification }}
+          MONITOR_DIAGNOSTICS: ${{ runner.temp }}/monitor-diagnostics/diagnostics.json
         run: python3 scripts/check_container_monitor_result.py
 
   report-failure:

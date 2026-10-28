@@ -496,6 +496,61 @@ def test_monitor_delivery_failure_keeps_running_instead_of_clean(
     )
 
 
+def test_finish_preserves_diagnostics_beyond_issue_notification_limit(
+    monkeypatch, tmp_path, monitor_context
+):
+    from test_check_container_monitor_result import run_gate
+
+    history = monitor_context
+    second = CANDIDATE | {
+        "profile": "shell",
+        "registryDigest": "sha256:" + "e" * 64,
+        "assessedManifestDigest": "sha256:" + "e" * 64,
+    }
+    history.catalogue = reserve(history.catalogue, second, AT)
+    monkeypatch.setattr(
+        monitor,
+        "Evidence",
+        lambda: SimpleNamespace(
+            ensure=lambda *a: {}, retain=lambda *a: None, publish=lambda *a: None
+        ),
+    )
+    emitted = []
+    monkeypatch.setattr(monitor, "outputs", emitted.append)
+    monitor.begin(tmp_path)
+    for target in read(tmp_path / "plan.json")["targets"]:
+        candidate = target["candidate"]
+        reason = (
+            "Earlier diagnostic " * 2000
+            if candidate["profile"] == "bicep"
+            else "Final image failure reason"
+        )
+        write(
+            tmp_path / "reports" / monitor.target_name(target) / "observation.json",
+            {
+                "candidate": candidate,
+                "assessment": {
+                    "digest": candidate["registryDigest"],
+                    "monitorRunId": "456",
+                    "monitorRunAttempt": 1,
+                    "outcome": "unavailable",
+                    "assessedAt": DONE,
+                    "reason": reason,
+                },
+            },
+        )
+    monkeypatch.setattr(monitor, "now", lambda: DONE)
+    monitor.finish(tmp_path)
+    bounded = json.loads(emitted[-1]["notification"])
+    assert "Final image failure reason" not in bounded["summary"]
+    diagnostics = read(tmp_path / "diagnostics.json")
+    assert diagnostics["problems"] == bounded["problems"]
+    result, summary = run_gate(tmp_path, diagnostics["summary"], ATTENTION="true")
+    assert result.returncode == 1
+    for value in ("shell/0.1.0", second["registryDigest"], "Final image failure reason"):
+        assert value in result.stdout and value in summary
+
+
 def test_monitor_notification_identifies_findings_and_ignores_scan_timestamps():
     catalogue = complete(
         reserve(empty_catalogue(), CANDIDATE, AT), CANDIDATE, CANDIDATE["imageId"], AT
