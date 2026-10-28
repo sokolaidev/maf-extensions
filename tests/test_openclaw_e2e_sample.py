@@ -246,12 +246,19 @@ def test_relay_forwards_to_configured_model_with_its_own_credentials(
     provider.smoke = capture
     try:
         status, payload = post(
-            relay, {"model": "sample", "max_tokens": 100000, "messages": messages(record())[:1]}
+            relay,
+            {
+                "model": "sample",
+                "max_tokens": 100000,
+                "reasoning_effort": "none",
+                "messages": messages(record())[:1],
+            },
         )
         assert status == 200 and b"tool_calls" in payload
         assert captured[0]["model"] == "chosen-model"
         assert captured[0]["max_completion_tokens"] == 4096
         assert "max_tokens" not in captured[0]
+        assert "reasoning_effort" not in captured[0]
         observed = relay.observations()
         assert observed["requests"] == observed["forwarded_responses"] == 1
         assert observed["error_count"] == 0 and len(observed["response_model_sha256"]) == 1

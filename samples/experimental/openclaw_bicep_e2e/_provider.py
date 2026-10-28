@@ -178,6 +178,7 @@ class Provider:
         connection = factory(url.hostname or "", url.port, timeout=240)
         body["model"] = self.model
         body.pop("max_tokens", None)
+        body.pop("reasoning_effort", None)
         body["max_completion_tokens"] = MAX_COMPLETION_TOKENS
         try:
             connection.request(
