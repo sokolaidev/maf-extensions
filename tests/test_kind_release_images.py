@@ -245,8 +245,137 @@ def test_only_current_clean_monitoring_allows_a_release(evidence, status):
 )
 def test_monitoring_must_still_identify_the_completed_current_image(evidence, field, value):
     evidence[1][field] = value
-    with pytest.raises(ValueError, match="release refused"):
+    with pytest.raises(ValueError, match="release refused") as failure:
         guard.check(Path("."), SOURCE, [PACKAGE])
+    assert f"{field}: {value}" in str(failure.value)
+    assert "restore a completed, matching current image release" in str(failure.value)
+
+
+@pytest.mark.parametrize("workflow_status", ["queued", "in_progress", "waiting"])
+@pytest.mark.parametrize("recorded_outcome", ["clean", "running"])
+def test_cli_explains_pending_monitor_and_recorded_image_assessment(
+    evidence, monkeypatch, capsys, workflow_status, recorded_outcome
+):
+    status = evidence[1]
+    reason = "Latest monitor workflow has no confirmed successful state delivery"
+    status.update(
+        monitoringStatus="unavailable",
+        reason=reason,
+        observedMonitorWorkflow={
+            "id": 201,
+            "run_attempt": 2,
+            "status": workflow_status,
+            "conclusion": None,
+        },
+        latestAttempt={
+            "outcome": recorded_outcome,
+            "monitorRunId": "200",
+            "monitorRunAttempt": 1,
+            "assessedAt": "2026-01-01T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(sys, "argv", ["check_kind_release_images.py", "--package", PACKAGE])
+    monkeypatch.setattr(guard, "revision", lambda *args: SOURCE)
+    monkeypatch.setattr(guard, "document", lambda *args: {"project": {"name": PACKAGE}})
+    with pytest.raises(SystemExit) as failure:
+        guard.main()
+    assert failure.value.code == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert f"Kind release blocked: {PACKAGE}/shell" in output.err
+    assert f"Image: {guard.PREFIX}/shell@{IMAGE}" in output.err
+    assert f"Reason: {reason}" in output.err
+    assert "https://github.com/sokolaidev/maf-extensions/actions/runs/201/attempts/2" in output.err
+    assert f"status={workflow_status}" in output.err
+    assert f"Recorded image assessment: {recorded_outcome} (run=200, attempt=1" in output.err
+    assert "Wait for the latest monitor to finish and record a clean assessment" in output.err
+
+
+@pytest.mark.parametrize(
+    "monitoring,action",
+    [
+        ("vulnerable", "Remediate the image findings"),
+        ("stale", "obtain a fresh clean assessment"),
+        ("no-longer-monitored", "current image that is still monitored"),
+        ("unavailable", "Inspect the monitor and catalogue evidence"),
+    ],
+)
+def test_unhealthy_assessments_explain_recovery_without_suggesting_blind_retry(
+    evidence, monitoring, action
+):
+    evidence[1]["monitoringStatus"] = monitoring
+    with pytest.raises(ValueError) as failure:
+        guard.check(Path("."), SOURCE, [PACKAGE])
+    assert action in str(failure.value)
+    assert "Wait for the latest monitor" not in str(failure.value)
+
+
+def test_failed_monitor_links_exact_attempt_and_preserves_failure_reason(evidence):
+    evidence[1].update(
+        monitoringStatus="unavailable",
+        reason="Latest monitor workflow has no confirmed successful state delivery",
+        monitorWorkflow={
+            "id": 201,
+            "run_attempt": 2,
+            "status": "completed",
+            "conclusion": "failure",
+        },
+    )
+    with pytest.raises(ValueError) as failure:
+        guard.check(Path("."), SOURCE, [PACKAGE])
+    message = str(failure.value)
+    assert "actions/runs/201/attempts/2" in message
+    assert "status=completed, conclusion=failure" in message
+    assert "Reason: Latest monitor workflow has no confirmed successful state delivery" in message
+    assert "Inspect the monitor and catalogue evidence" in message
+    assert "Wait for the latest monitor" not in message
+
+
+def test_unavailable_evidence_without_monitor_keeps_safe_reason(evidence):
+    evidence[1].clear()
+    evidence[1].update(monitoringStatus="unavailable", reason="Monitoring evidence unavailable")
+    with pytest.raises(ValueError) as failure:
+        guard.check(Path("."), SOURCE, [PACKAGE])
+    message = str(failure.value)
+    assert "Reason: Monitoring evidence unavailable" in message
+    assert "Latest observed monitor:" not in message
+    assert "Inspect the monitor and catalogue evidence" in message
+
+
+def test_pending_monitor_does_not_mask_catalogue_retrieval_failure(evidence):
+    evidence[1].update(
+        monitoringStatus="unavailable",
+        reason="Monitoring evidence unavailable",
+        observedMonitorWorkflow={
+            "id": 201,
+            "run_attempt": 2,
+            "status": "queued",
+            "conclusion": None,
+        },
+    )
+    with pytest.raises(ValueError) as failure:
+        guard.check(Path("."), SOURCE, [PACKAGE])
+    assert "Inspect the monitor and catalogue evidence" in str(failure.value)
+    assert "Wait for the latest monitor" not in str(failure.value)
+
+
+def test_diagnostics_do_not_dump_scanner_metadata(evidence):
+    evidence[1].update(
+        monitoringStatus="unavailable",
+        latestAttempt={
+            "outcome": "unavailable",
+            "reason": "Monitor worker did not deliver an observation",
+            "database": {"path": "private scanner path"},
+        },
+        registryDiscovery={"outcome": "unavailable"},
+    )
+    with pytest.raises(ValueError) as failure:
+        guard.check(Path("."), SOURCE, [PACKAGE])
+    assert "private scanner path" not in str(failure.value)
+    assert "Image assessment reason: Monitor worker did not deliver an observation" in str(
+        failure.value
+    )
+    assert "Registry discovery is unavailable" in str(failure.value)
 
 
 @pytest.mark.parametrize(
