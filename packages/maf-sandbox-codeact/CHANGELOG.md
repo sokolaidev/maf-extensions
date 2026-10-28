@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.25.0...maf-sandbox-codeact-v0.26.0) (2026-10-28)
+
+
+### Features
+
+* adopt MAF 1.23 and MCP 2 across the suite ([#2140](https://github.com/sokolaidev/maf-extensions/issues/2140)) ([9ea47ea](https://github.com/sokolaidev/maf-extensions/commit/9ea47eac75a81ef01361a99bc405465fb54733ac))
+
 ## [0.25.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.24.1...maf-sandbox-codeact-v0.25.0) (2026-10-18)
 
 
