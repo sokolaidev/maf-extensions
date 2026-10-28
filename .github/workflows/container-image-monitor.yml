@@ -152,6 +152,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Report historical release warnings
         if: needs.finish.result == 'success'
         env:
@@ -166,11 +170,8 @@ jobs:
           SCAN: ${{ needs.scan.result }}
           FINISH: ${{ needs.finish.result }}
           ATTENTION: ${{ needs.finish.outputs.attention }}
-        run: |
-          test "$BEGIN" = success
-          test "$SCAN" = success || test "$SCAN" = skipped
-          test "$FINISH" = success
-          test "$ATTENTION" = false
+          MONITOR_NOTIFICATION: ${{ needs.finish.outputs.notification }}
+        run: python3 scripts/check_container_monitor_result.py
 
   report-failure:
     needs: [begin, scan, finish, result]
