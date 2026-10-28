@@ -245,12 +245,52 @@ def test_relay_forwards_to_configured_model_with_its_own_credentials(
 
     provider.smoke = capture
     try:
-        status, payload = post(relay, {"model": "sample", "messages": messages(record())[:1]})
+        status, payload = post(
+            relay, {"model": "sample", "max_tokens": 100000, "messages": messages(record())[:1]}
+        )
         assert status == 200 and b"tool_calls" in payload
         assert captured[0]["model"] == "chosen-model"
+        assert captured[0]["max_completion_tokens"] == 4096
+        assert "max_tokens" not in captured[0]
+        observed = relay.observations()
+        assert observed["requests"] == observed["forwarded_responses"] == 1
+        assert observed["error_count"] == 0 and len(observed["response_model_sha256"]) == 1
+        assert "chosen-model" not in json.dumps(observed)
+        assert provider.token not in json.dumps(observed)
         assert not relay.errors
     finally:
         relay.close()
+
+
+@pytest.mark.parametrize("change", ["done", "finish", "model", "error"])
+def test_model_forwarding_refuses_incomplete_streams(provider: Any, change: str) -> None:
+    payload = provider.smoke({"messages": messages(record())[:1]}, TURN, False)
+    if change == "done":
+        payload = payload.replace(b"data: [DONE]\n\n", b"")
+    elif change == "finish":
+        payload = payload.replace(b'"finish_reason": "tool_calls"', b'"finish_reason": null')
+    elif change == "model":
+        payload = payload.replace(b'"model": "sample"', b'"model": ""')
+    else:
+        payload = b'data: {"error": "refused"}\n\ndata: [DONE]\n\n'
+    with pytest.raises(RuntimeError):
+        provider.observe_response(payload)
+    assert provider.forwarded == 0 and not provider.response_models
+
+
+def test_multiple_repairs_require_every_calls_cleanup():
+    first, last = record(), record(repaired=True)
+    assert check([first, last], repaired=True)["calls"] == 2
+    first["projected"]["result"]["details"]["structuredContent"]["cleanup"] = "unknown"
+    with pytest.raises(RuntimeError, match="Cleanup"):
+        check([first, last], repaired=True)
+
+
+def test_worker_never_inherits_model_credentials(monkeypatch):
+    for key in agent.MODEL_ENV:
+        monkeypatch.setenv(key, "PRIVATE_SENTINEL")
+    env = agent.worker_environment()
+    assert not agent.MODEL_ENV.intersection(env)
 
 
 def test_provider_refuses_bad_auth_and_exhausted_budget(provider: Any) -> None:

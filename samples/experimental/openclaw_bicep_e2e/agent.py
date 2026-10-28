@@ -39,6 +39,7 @@ WORKER_REQUIREMENTS = (
 )
 HERE = Path(__file__).resolve().parent
 FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+MODEL_ENV = {"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"}
 
 
 def execute(command: list[str], root: Path, *, timeout: int = 1200) -> str:
@@ -53,6 +54,7 @@ def execute(command: list[str], root: Path, *, timeout: int = 1200) -> str:
             errors="replace",
             timeout=timeout,
             creationflags=FLAGS,
+            env={key: value for key, value in os.environ.items() if key not in MODEL_ENV},
             check=True,
         )
     return result.stdout.strip()
@@ -225,7 +227,11 @@ class Processes:
 def worker_environment() -> dict[str, str]:
     """Keep source-path overrides out of the installed console's imports."""
     return {
-        **{key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")},
+        **{
+            key: value
+            for key, value in os.environ.items()
+            if not key.upper().startswith("PYTHON") and key not in MODEL_ENV
+        },
         "PYTHONNOUSERSITE": "1",
     }
 
@@ -476,8 +482,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         env = {
             k: v
             for k, v in os.environ.items()
-            if not k.startswith("OPENCLAW_")
-            and k not in {"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"}
+            if not k.startswith("OPENCLAW_") and k not in MODEL_ENV
         }
         env.update(
             OPENCLAW_CONFIG_PATH=str(config),
@@ -535,6 +540,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 provider.close()
             except Exception as exc:
                 report["cleanup_errors"].append("Provider cleanup: " + type(exc).__name__)
+            if args.mode == "model":
+                report["provider"] = provider.observations()
         try:
             if not scope and (root / "owner/owner").exists():
                 owner = (root / "owner/owner").read_text().strip()

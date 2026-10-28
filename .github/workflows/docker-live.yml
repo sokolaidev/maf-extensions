@@ -14,6 +14,11 @@ on:
         description: "Run only the deterministic OpenClaw Gateway-to-Docker sample"
         type: boolean
         default: false
+      openclaw_mode:
+        description: "OpenClaw provider (model uses live-verify Azure OpenAI and incurs inference charges)"
+        type: choice
+        options: [smoke, model]
+        default: smoke
 
 permissions:
   contents: read
@@ -308,7 +313,7 @@ jobs:
 
   openclaw-bicep:
     name: OpenClaw Gateway-to-Docker on native Linux
-    if: github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep
+    if: github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep && inputs.openclaw_mode != 'model'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -350,13 +355,95 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  openclaw-bicep-model:
+    name: OpenClaw real-model Gateway-to-Docker
+    if: github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep && inputs.openclaw_mode == 'model'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment: live-verify
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      BICEP_IMAGE: ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: '0.12.5'
+          python-version: '3.13.15'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.8.1'
+      - name: Check model configuration
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            if [ -z "${!name}" ]; then
+              echo "::error::live-verify is missing $name"
+              exit 1
+            fi
+          done
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Download verified published worker and prepared compiler
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/openclaw-wheel"
+          wheel="$RUNNER_TEMP/openclaw-wheel/maf_sandbox_mcp-0.2.0-py3-none-any.whl"
+          curl --fail --silent --show-error --location \
+            'https://files.pythonhosted.org/packages/02/48/e687c55991f6b8197ba73e10320e9f7b143edb392d1686112a5b1674ed5d/maf_sandbox_mcp-0.2.0-py3-none-any.whl' --output "$wheel"
+          printf '%s  %s\n' 'ebb54bc8b51d4d0ec3e63f1f850c5aa53b55d80ec5567c679ead169a3ed0d545' "$wheel" | sha256sum --check --status
+          docker pull "$BICEP_IMAGE"
+      - name: Run the installed sample with Azure OpenAI
+        timeout-minutes: 18
+        env:
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          export OPENAI_BASE_URL="${AZURE_OPENAI_ENDPOINT%/}/openai/v1"
+          export OPENAI_MODEL="$AZURE_OPENAI_CHAT_MODEL"
+          OPENAI_API_KEY="$(az account get-access-token --resource https://cognitiveservices.azure.com/ --query accessToken --output tsv)"
+          test -n "$OPENAI_API_KEY"
+          printf '::add-mask::%s\n' "$OPENAI_API_KEY"
+          export OPENAI_API_KEY
+          uv run --no-project --python 3.13.15 samples/experimental/openclaw_bicep_e2e/agent.py \
+            --mode model --wheel "$RUNNER_TEMP/openclaw-wheel/maf_sandbox_mcp-0.2.0-py3-none-any.whl" \
+            --image "$BICEP_IMAGE" --output "$RUNNER_TEMP/openclaw-bicep-private"
+      - name: Record bounded evidence and independently check owner scope
+        if: always()
+        run: |
+          python3 scripts/report_openclaw_hosted.py --mode model --output "$RUNNER_TEMP/openclaw-bicep-evidence.md"
+          cat "$RUNNER_TEMP/openclaw-bicep-evidence.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain bounded Markdown evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: openclaw-bicep-model-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/openclaw-bicep-evidence.md
+          if-no-files-found: error
+          retention-days: 30
+
   report-failure:
     name: Report Docker live failure
     concurrency:
       group: docker-live-failure-tracker
       cancel-in-progress: false
-    needs: [docker-e2e, capability-policy, document, openclaw-bicep]
-    if: always() && (needs.docker-e2e.result == 'failure' || needs.capability-policy.result == 'failure' || needs.document.result == 'failure' || needs.openclaw-bicep.result == 'failure')
+    needs: [docker-e2e, capability-policy, document, openclaw-bicep, openclaw-bicep-model]
+    if: always() && (needs.docker-e2e.result == 'failure' || needs.capability-policy.result == 'failure' || needs.document.result == 'failure' || needs.openclaw-bicep.result == 'failure' || needs.openclaw-bicep-model.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
