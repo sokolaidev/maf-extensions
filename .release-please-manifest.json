@@ -14,7 +14,7 @@
   "packages/maf-sandbox-docker-sbx": "0.7.0",
   "packages/maf-sandbox-bubblewrap": "0.3.0",
   "packages/maf-compaction": "0.10.0",
-  "packages/maf-cachebench": "0.4.1",
+  "packages/maf-cachebench": "0.5.0",
   "packages/maf-sandbox-mcp": "0.2.0",
   "packages/maf-sandbox-shell": "0.1.1",
   "packages/maf-sandbox-document": "0.1.0"
