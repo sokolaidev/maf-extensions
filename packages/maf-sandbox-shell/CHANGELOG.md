@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-shell-v0.1.1...maf-sandbox-shell-v0.2.0) (2026-10-28)
+
+
+### Features
+
+* adopt MAF 1.23 and MCP 2 across the suite ([#2140](https://github.com/sokolaidev/maf-extensions/issues/2140)) ([9ea47ea](https://github.com/sokolaidev/maf-extensions/commit/9ea47eac75a81ef01361a99bc405465fb54733ac))
+
 ## [0.1.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-shell-v0.1.0...maf-sandbox-shell-v0.1.1) (2026-10-25)
 
 

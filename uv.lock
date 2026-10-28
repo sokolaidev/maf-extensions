@@ -1797,7 +1797,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-hyperlight"
-version = "0.10.0"
+version = "0.11.0"
 source = { editable = "packages/maf-sandbox-hyperlight" }
 dependencies = [
     { name = "hyperlight-sandbox" },
@@ -1862,7 +1862,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-shell"
-version = "0.1.1"
+version = "0.2.0"
 source = { editable = "packages/maf-sandbox-shell" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -1909,7 +1909,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-wslc"
-version = "0.30.0"
+version = "0.31.0"
 source = { editable = "packages/maf-sandbox-wslc" }
 dependencies = [
     { name = "maf-sandbox" },
