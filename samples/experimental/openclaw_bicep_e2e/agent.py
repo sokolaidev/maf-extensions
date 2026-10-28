@@ -517,7 +517,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         source = (HERE / "main.bicep").read_text(encoding="utf-8").strip()
         require(source == INVALID, "The sample fixture must retain its deliberate type error")
         prompts = [
-            f"Use the Bicep validation tool to validate main.bicep containing exactly:\n```bicep\n{source}\n```\nDo not change the source. Report the compiler result.",
+            f"Use the Bicep validation tool to validate main.bicep. Pass the files entry with path main.bicep and content equal to this exact JSON string: {json.dumps(source)}. Do not add a newline, whitespace, code fences or any other bytes. Do not repair or change the source on this turn. Report the compiler result.",
             "Repair the type error in the previous main.bicep, preserving the greeting hello. Keep the repair to a single output declaration, validate it with the Bicep tool, and report the compiler result.",
         ]
         report["turns"] = []
