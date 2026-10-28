@@ -120,10 +120,12 @@ def check(root: Path, head: str, packages: list[str]) -> list[dict[str, Any]]:
     if not selected:
         return []
     client = GitHub()
-    snapshot = History(client).head()
+    history = History(client)
+    snapshot = history.head()
     if snapshot is None:
         raise ValueError("No completed image catalogue is available")
     results = []
+    checked = {}
     for package in selected:
         for profile in KIND_IMAGES[package]:
             name = snapshot.catalogue["current"].get(profile)
@@ -132,6 +134,7 @@ def check(root: Path, head: str, packages: list[str]) -> list[dict[str, Any]]:
                     f"{package}: no completed {profile} image; publish and qualify it first"
                 )
             record = snapshot.catalogue["releases"][name]
+            checked[profile] = name
             if record["profile"] != profile:
                 raise ValueError("Current catalogue entry identifies another profile")
             matching_source(root, record["sourceCommit"], head, package, profile)
@@ -148,6 +151,12 @@ def check(root: Path, head: str, packages: list[str]) -> list[dict[str, Any]]:
                     "evidence": evidence_url,
                 }
             )
+    latest = history.head()
+    if latest is None:
+        raise ValueError("Image catalogue became unavailable during verification; retry")
+    for profile, name in checked.items():
+        if latest.catalogue["current"].get(profile) != name:
+            raise ValueError(f"Current {profile} image changed during verification; retry")
     return results
 
 
