@@ -21,7 +21,7 @@ from openshell_owned_probe import snapshot
 from openshell_replay_probe import wait_gateway
 
 
-def competing_calls(client, requests, schedule, record):
+def competing_calls(client, requests, schedule, record, *, observe_version=None):
     """Retain both outcomes; only an explicit ABORTED permits a new mutation intent."""
     if schedule not in ("policy_first", "detach_first", "concurrent"):
         raise ValueError("unknown mutation schedule")
@@ -33,6 +33,7 @@ def competing_calls(client, requests, schedule, record):
         raise ValueError("competing intents require the same nonzero resource version")
     row = {
         "schedule": schedule,
+        "expected_resource_version": requests[0][1].expected_resource_version,
         "requests": [
             {"method": method, "request_hex": request.SerializeToString().hex()}
             for method, request in requests
@@ -83,15 +84,25 @@ def competing_calls(client, requests, schedule, record):
             results = [future.result() for future in futures]
     else:
         ordered = requests if schedule == "policy_first" else list(reversed(requests))
-        results = [call(item) for item in ordered]
+        results = []
+        for item in ordered:
+            result = call(item)
+            results.append(result)
+            row["outcomes"].append(result[1])
+            if len(results) == 1 and observe_version is not None:
+                row["resource_version_after_first"] = observe_version()
     row["outcomes"] = [outcome for _, outcome in results]
-    statuses = sorted(outcome["status"] for _, outcome in results)
-    if statuses != ["ABORTED", "OK"]:
-        raise RuntimeError(
-            "competing intents did not produce one success and one explicit conflict"
-        )
-    if schedule != "concurrent" and row["outcomes"][0]["status"] != "OK":
-        raise RuntimeError("ordered control did not accept its first intent")
+    statuses = {outcome["method"]: outcome["status"] for _, outcome in results}
+    allowed_policy = {
+        "policy_first": {"OK"},
+        "detach_first": {"ABORTED"},
+        "concurrent": {"OK", "ABORTED"},
+    }
+    if (
+        statuses.get("DetachSandboxProvider") != "OK"
+        or statuses.get("UpdateConfig") not in allowed_policy[schedule]
+    ):
+        raise RuntimeError("unexpected policy/detach outcomes; no uncertain intent will be retried")
     if schedule == "concurrent":
         first, second = row["outcomes"]
         row["rpc_intervals_overlap"] = max(first["started_ns"], second["started_ns"]) < min(
@@ -241,10 +252,12 @@ class Transitions:
         self.wait_provider(receipt, attached)
         return receipt
 
-    def check(self, label, expected_get, expected_post, *, blocked=False):
+    def check(
+        self, label, expected_get, expected_post, *, blocked=False, blocked_status: int | str = 403
+    ):
         cases = [("GET", "/provider", expected_get), ("POST", "/provider", expected_post)]
         if blocked:
-            cases.append(("GET", "/blocked", 403))
+            cases.append(("GET", "/blocked", blocked_status))
         for method, path, expected in cases:
             self.current()
             observe_native(
@@ -267,17 +280,29 @@ class Transitions:
         version = self.current().metadata.resource_version
         detach = self.provider_request(version, False)
         requests = [("UpdateConfig", self.policy_request(version, False)), detach]
-        responses = competing_calls(self.client, requests, schedule, self.record)
+        responses = competing_calls(
+            self.client,
+            requests,
+            schedule,
+            self.record,
+            observe_version=lambda: self.current().metadata.resource_version,
+        )
         self.fixture.save()
         policy = responses["UpdateConfig"]
+        detached = responses[detach[0]]
+        if detached is None:
+            raise RuntimeError("missing successful detach response")
         if policy is not None:
             self.wait_policy(policy)
-            self.check(schedule + "_policy_won", 200, 403, blocked=True)
-            self.provider(False)
+            self.wait_provider(detached.receipt, False)
+            self.check(
+                schedule + "_both_accepted",
+                "EACCES",
+                "EACCES",
+                blocked=True,
+                blocked_status="EACCES",
+            )
         else:
-            detached = responses[detach[0]]
-            if detached is None:
-                raise RuntimeError("missing successful detach response")
             self.wait_provider(detached.receipt, False)
             self.check(schedule + "_detach_won", 403, 200, blocked=True)
             self.policy(False)

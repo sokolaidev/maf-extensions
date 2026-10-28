@@ -29,8 +29,11 @@ class RpcError(Exception):
 
 
 @pytest.mark.parametrize("schedule", ["policy_first", "detach_first", "concurrent"])
-@pytest.mark.parametrize("loser_status", ["ABORTED", "UNAVAILABLE", "DEADLINE_EXCEEDED", "OK"])
-def test_conflicts_require_two_known_outcomes(probe, monkeypatch, schedule, loser_status):
+@pytest.mark.parametrize("policy_status", ["ABORTED", "UNAVAILABLE", "DEADLINE_EXCEEDED", "OK"])
+@pytest.mark.parametrize("detach_status", ["OK", "ABORTED"])
+def test_conflicts_require_two_known_outcomes(
+    probe, monkeypatch, schedule, policy_status, detach_status
+):
     calls, closed, saved = [], [], []
     entered = threading.Barrier(2, timeout=5)
     lock = threading.Lock()
@@ -46,10 +49,10 @@ def test_conflicts_require_two_known_outcomes(probe, monkeypatch, schedule, lose
             if schedule == "concurrent":
                 entered.wait()
             with lock:
-                winner = not calls
                 calls.append((method, request))
-            if not winner and loser_status != "OK":
-                raise RpcError(loser_status)
+            status = policy_status if method == "UpdateConfig" else detach_status
+            if status != "OK":
+                raise RpcError(status)
             return Message(accepted=method)
 
         def close(self):
@@ -64,15 +67,27 @@ def test_conflicts_require_two_known_outcomes(probe, monkeypatch, schedule, lose
     def record(kind, row):
         saved.append((kind, row))
 
-    if loser_status != "ABORTED":
-        with pytest.raises(RuntimeError, match="one success"):
+    allowed = detach_status == "OK" and (
+        policy_status == "OK"
+        and schedule in ("policy_first", "concurrent")
+        or policy_status == "ABORTED"
+        and schedule in ("detach_first", "concurrent")
+    )
+    if not allowed:
+        with pytest.raises(RuntimeError, match="unexpected"):
             probe.competing_calls(client, requests, schedule, record)
     else:
-        result = probe.competing_calls(client, requests, schedule, record)
-        assert sum(response is not None for response in result.values()) == 1
+        result = probe.competing_calls(
+            client, requests, schedule, record, observe_version=lambda: 7
+        )
+        assert sum(response is not None for response in result.values()) == 1 + int(
+            policy_status == "OK"
+        )
         assert saved[0][1]["passed"]
         if schedule == "concurrent":
             assert saved[0][1]["rpc_intervals_overlap"]
+        else:
+            assert saved[0][1]["resource_version_after_first"] == 7
     assert len(closed) == 2
     assert len(saved[0][1]["outcomes"]) == 2
     if schedule != "concurrent":
@@ -96,33 +111,10 @@ def test_unknown_failure_is_retained_without_a_retry(probe, monkeypatch):
     monkeypatch.setattr(probe, "Client", unavailable)
     client = NS(scope=NS(workspace="w"), token="token", image="image", grpc=NS(RpcError=RpcError))
     requests = [("method", Message(expected_resource_version=7)) for _ in range(2)]
-    with pytest.raises(RuntimeError, match="one success"):
+    with pytest.raises(RuntimeError, match="unexpected"):
         probe.competing_calls(client, requests, "concurrent", lambda kind, row: saved.append(row))
     assert [row["status"] for row in saved[0]["outcomes"]] == ["OSError", "OSError"]
     assert not saved[0]["passed"]
-
-
-def test_ordered_control_must_accept_first_intent(probe, monkeypatch):
-    calls = []
-
-    class Peer:
-        def __init__(self, *args):
-            pass
-
-        def rpc(self, method, request):
-            calls.append(method)
-            if len(calls) == 1:
-                raise RpcError("ABORTED")
-            return Message(accepted=method)
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(probe, "Client", Peer)
-    client = NS(scope=NS(workspace="w"), token="token", image="image", grpc=NS(RpcError=RpcError))
-    requests = [(method, Message(expected_resource_version=7)) for method in ("policy", "detach")]
-    with pytest.raises(RuntimeError, match="first intent"):
-        probe.competing_calls(client, requests, "policy_first", lambda *args: None)
 
 
 def make_transitions(probe, rpc):
@@ -249,7 +241,7 @@ def test_restart_requires_same_intent_physical_instance_and_observed_access(
         assert "origin" not in calls
 
 
-@pytest.mark.parametrize("winner", ["UpdateConfig", "DetachSandboxProvider"])
+@pytest.mark.parametrize("winner", ["both", "DetachSandboxProvider"])
 def test_loser_is_resubmitted_only_after_winner_barrier_and_traffic_checks(
     probe, monkeypatch, winner
 ):
@@ -283,18 +275,18 @@ def test_loser_is_resubmitted_only_after_winner_barrier_and_traffic_checks(
     monkeypatch.setattr(
         probe,
         "competing_calls",
-        lambda *args: {
-            method: NS(receipt="receipt") if method == winner else None
+        lambda *args, **kwargs: {
+            method: NS(receipt="receipt") if winner == "both" or method == winner else None
             for method in ("UpdateConfig", "DetachSandboxProvider")
         },
     )
     transition.race("concurrent")
     assert calls[:3] == [("policy", True), ("provider", True), ("check", "concurrent_before")]
-    if winner == "UpdateConfig":
+    if winner == "both":
         assert calls[3:6] == [
             ("barrier", "policy"),
-            ("check", "concurrent_policy_won"),
-            ("provider", False),
+            ("barrier", "detach"),
+            ("check", "concurrent_both_accepted"),
         ]
     else:
         assert calls[3:6] == [
