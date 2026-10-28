@@ -8,7 +8,7 @@
   "packages/maf-sandbox-hyperlight": "0.10.0",
   "packages/maf-sandbox-otel": "0.10.0",
   "packages/maf-sandbox-terraform": "0.7.0",
-  "packages/maf-sandbox-wslc": "0.30.0",
+  "packages/maf-sandbox-wslc": "0.31.0",
   "packages/maf-sandbox-drawio": "0.6.0",
   "packages/maf-sandbox-tui": "0.5.0",
   "packages/maf-sandbox-docker-sbx": "0.7.0",
