@@ -188,8 +188,74 @@ def test_replacement_is_rejected_before_readiness_poll(probe, barrier):
     assert calls == ["GetSandbox"]
 
 
+def physical_snapshot():
+    return {
+        "containers": [
+            {
+                "Id": role,
+                "State": "running",
+                "Labels": {
+                    "openshell.ai/isolation-role": role,
+                    "openshell.ai/sandbox-id": "physical",
+                },
+            }
+            for role in ("sandbox", "supervisor")
+        ],
+        "processes": {"123": "456"},
+    }
+
+
 @pytest.mark.parametrize(
-    "failure", [None, "container", "pid", "missing_pid", "intent", "receipt", "origin", "stop"]
+    "failure",
+    [
+        None,
+        "old_supervisor",
+        "old_process",
+        "unknown_owner",
+        "stopped",
+        "missing_role",
+        "missing_process",
+    ],
+)
+def test_runtime_replacement_requires_independent_retirement_evidence(probe, monkeypatch, failure):
+    before = physical_snapshot()
+    after = copy.deepcopy(before)
+    after["containers"][1]["Id"] = "new-supervisor"
+    after["processes"] = {"789": "101112"}
+    monkeypatch.setattr(
+        probe, "docker_get", lambda path: {} if failure == "old_supervisor" else None
+    )
+    monkeypatch.setattr(
+        probe, "process_identity", lambda pid: "456" if failure == "old_process" else None
+    )
+    if failure == "unknown_owner":
+        after["containers"][1]["Labels"]["openshell.ai/sandbox-id"] = "replacement"
+    elif failure == "stopped":
+        after["containers"][0]["State"] = "exited"
+    elif failure == "missing_role":
+        after["containers"].pop()
+    elif failure == "missing_process":
+        after["processes"] = {}
+    if failure:
+        with pytest.raises(RuntimeError):
+            probe.runtime_continuity("physical", before, after)
+    else:
+        assert probe.runtime_continuity("physical", before, after) is False
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "container",
+        "pid",
+        "missing_pid",
+        "intent",
+        "receipt",
+        "origin",
+        "stop",
+        "runtime_restarted",
+    ],
 )
 @pytest.mark.parametrize("attached", [True, False])
 def test_restart_requires_same_intent_physical_instance_and_observed_access(
@@ -197,7 +263,7 @@ def test_restart_requires_same_intent_physical_instance_and_observed_access(
 ):
     calls = []
     transition, saved = make_transitions(probe, None)
-    before = {"containers": [{"Id": "workload"}, {"Id": "supervisor"}], "processes": {"123": "456"}}
+    before = physical_snapshot()
     after = copy.deepcopy(before)
     if failure == "container":
         after["containers"][0]["Id"] = "replacement"
@@ -205,6 +271,11 @@ def test_restart_requires_same_intent_physical_instance_and_observed_access(
         after["processes"]["123"] = "789"
     if failure == "missing_pid":
         before["processes"]["123"] = None
+    if failure == "runtime_restarted":
+        after["containers"][1]["Id"] = "new-supervisor"
+        after["processes"] = {"789": "101112"}
+    monkeypatch.setattr(probe, "docker_get", lambda path: None)
+    monkeypatch.setattr(probe, "process_identity", lambda pid: None)
     snapshots = iter([before, after])
     monkeypatch.setattr(probe, "snapshot", lambda identity: next(snapshots))
     intents = iter(["original", "changed" if failure == "intent" else "original"])
@@ -229,15 +300,27 @@ def test_restart_requires_same_intent_physical_instance_and_observed_access(
         process=NS(poll=lambda: None if failure == "stop" else 0),
     )
     if failure:
-        with pytest.raises(RuntimeError):
+        with pytest.raises(
+            probe.RuntimeRestarted if failure == "runtime_restarted" else RuntimeError
+        ):
             transition.restart(gateway, receipt(attached), attached)
         assert not saved[0][1]["completed"]
+        if failure == "runtime_restarted":
+            assert saved[0][1]["runtime_continuity"] is False
     else:
         transition.restart(gateway, receipt(attached), attached)
         assert saved[0][1]["completed"]
         assert calls == ["receipt", "stop", "start", "health", "receipt", "origin"]
     assert "start" in calls
-    if failure in ("container", "pid", "missing_pid", "intent", "receipt", "stop"):
+    if failure in (
+        "container",
+        "pid",
+        "missing_pid",
+        "intent",
+        "receipt",
+        "stop",
+        "runtime_restarted",
+    ):
         assert "origin" not in calls
 
 
@@ -298,7 +381,7 @@ def test_loser_is_resubmitted_only_after_winner_barrier_and_traffic_checks(
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "prepare", "acquire", "race", "restart", "dispose", "cleanup"]
+    "failure", [None, "prepare", "acquire", "race", "restart", "dispose", "cleanup", "continuity"]
 )
 def test_measurement_preserves_partial_evidence_and_cleanup_limits(probe, monkeypatch, failure):
     calls = []
@@ -351,6 +434,8 @@ def test_measurement_preserves_partial_evidence_and_cleanup_limits(probe, monkey
             return "receipt"
 
         def restart(self, gateway, value, attached):
+            if failure == "continuity":
+                raise probe.RuntimeRestarted("runtime replaced")
             report["transitions"]["cases"].extend([{"passed": True}] * (3 if attached else 2))
             fail("restart")
 
@@ -360,14 +445,18 @@ def test_measurement_preserves_partial_evidence_and_cleanup_limits(probe, monkey
     monkeypatch.setattr(
         probe.socket, "getaddrinfo", lambda *args: [(None, None, None, None, ("172.18.0.2", 8000))]
     )
-    if failure:
+    if failure and failure != "continuity":
         with pytest.raises(RuntimeError, match=failure):
             asyncio.run(probe.measure_transitions(Fixture(), "172.18.0.2", None))
     else:
         asyncio.run(probe.measure_transitions(Fixture(), "172.18.0.2", None))
     evidence = report["transitions"]
     assert evidence["qualification_passed"] is False
-    assert evidence["characterization_completed"] == (failure in (None, "dispose", "cleanup"))
+    assert evidence["characterization_completed"] == (
+        failure in (None, "dispose", "cleanup", "continuity")
+    )
+    assert evidence["restart_continuity_blocked"] == (failure == "continuity")
+    assert len(evidence["unrun_cases"]) == (5 if failure == "continuity" else 0)
     assert evidence["provider_and_profile_cleanup_verified"] == (
         failure not in ("prepare", "dispose", "cleanup")
     )

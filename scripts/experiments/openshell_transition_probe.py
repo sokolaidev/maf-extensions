@@ -17,8 +17,49 @@ from openshell_composition_probe import (
     revision_installed,
 )
 from openshell_egress_probe import fixture_policy, native_origin_ip
-from openshell_owned_probe import snapshot
+from openshell_owned_probe import docker_get, process_identity, snapshot
 from openshell_replay_probe import wait_gateway
+
+
+class RuntimeRestarted(RuntimeError):
+    """The owned workload restarted and its supervisor was replaced; continuity is unqualified."""
+
+
+def runtime_continuity(identity, before, after):
+    """Distinguish preserved processes from the verified owned-runtime replacement pattern."""
+
+    def roles(state):
+        containers = state["containers"]
+        mapped = {c["Labels"].get("openshell.ai/isolation-role"): c["Id"] for c in containers}
+        if (
+            len(containers) != 2
+            or set(mapped) != {"sandbox", "supervisor"}
+            or any(
+                c["Labels"].get("openshell.ai/sandbox-id") != identity or c["State"] != "running"
+                for c in containers
+            )
+            or not state["processes"]
+            or any(start is None for start in state["processes"].values())
+        ):
+            raise RuntimeError("incomplete owned runtime observation")
+        return mapped
+
+    original, current = roles(before), roles(after)
+    if original["sandbox"] != current["sandbox"]:
+        raise RuntimeError("restart replaced the owned workload container")
+    preserved = all(
+        after["processes"].get(pid) == start for pid, start in before["processes"].items()
+    )
+    if original == current and preserved:
+        return True
+    if (
+        original["supervisor"] == current["supervisor"]
+        or preserved
+        or docker_get("/containers/" + original["supervisor"] + "/json") is not None
+        or any(process_identity(pid) == start for pid, start in before["processes"].items())
+    ):
+        raise RuntimeError("restart identity change is not independently accounted for")
+    return False
 
 
 def competing_calls(client, requests, schedule, record, *, observe_version=None):
@@ -331,17 +372,17 @@ class Transitions:
         row["after_spec_hex"] = self.current().spec.SerializeToString(deterministic=True).hex()
         after = snapshot(self.identity)
         row["after"] = after
-        if (
-            row["after_spec_hex"] != before_spec
-            or len(before["containers"]) != 2
-            or {c["Id"] for c in before["containers"]} != {c["Id"] for c in after["containers"]}
-            or not before["processes"]
-            or any(
-                start is None or after["processes"].get(pid) != start
-                for pid, start in before["processes"].items()
+        if row["after_spec_hex"] != before_spec:
+            raise RuntimeError("restart changed sandbox intent")
+        row["runtime_continuity"] = runtime_continuity(self.identity, before, after)
+        if not row["runtime_continuity"]:
+            row["observation"] = "workload_restarted_and_supervisor_replaced"
+            row["original_supervisor_absent"] = True
+            row["original_processes_retired"] = True
+            self.fixture.save()
+            raise RuntimeRestarted(
+                "retained-state gateway restart did not preserve the running workload"
             )
-        ):
-            raise RuntimeError("restart changed sandbox intent or physical identity")
         self.wait_provider(receipt, attached)
         self.check(
             "restart_attached" if attached else "restart_detached",
@@ -366,6 +407,8 @@ async def measure_transitions(fixture, ip, gateway):
         "restarts": [],
         "qualification_passed": False,
         "characterization_completed": False,
+        "restart_continuity_blocked": False,
+        "unrun_cases": [],
         "provider_and_profile_cleanup_verified": False,
         "unqualified": [
             "server-side interleaving beyond observed RPC overlap",
@@ -400,13 +443,30 @@ async def measure_transitions(fixture, ip, gateway):
         transitions = Transitions(fixture, profile, ip, record)
         for schedule in ("policy_first", "detach_first", "concurrent"):
             await asyncio.to_thread(transitions.race, schedule)
-        await asyncio.to_thread(transitions.policy, True)
-        receipt = await asyncio.to_thread(transitions.provider, True)
-        await asyncio.to_thread(transitions.restart, gateway, receipt, True)
-        await asyncio.to_thread(transitions.policy, False)
-        receipt = await asyncio.to_thread(transitions.provider, False)
-        await asyncio.to_thread(transitions.restart, gateway, receipt, False)
-        if len(evidence["cases"]) != 29 or not all(row["passed"] for row in evidence["cases"]):
+        expected_cases = 24
+        restart_cases = [
+            "restart_attached_get_provider",
+            "restart_attached_post_provider",
+            "restart_attached_get_blocked",
+            "restart_detached_get_provider",
+            "restart_detached_post_provider",
+        ]
+        try:
+            await asyncio.to_thread(transitions.policy, True)
+            receipt = await asyncio.to_thread(transitions.provider, True)
+            await asyncio.to_thread(transitions.restart, gateway, receipt, True)
+            expected_cases = 27
+            await asyncio.to_thread(transitions.policy, False)
+            receipt = await asyncio.to_thread(transitions.provider, False)
+            await asyncio.to_thread(transitions.restart, gateway, receipt, False)
+            expected_cases = 29
+        except RuntimeRestarted as exc:
+            evidence["restart_continuity_blocked"] = True
+            evidence["blocker"] = str(exc)
+            evidence["unrun_cases"] = restart_cases[expected_cases - 24 :]
+        if len(evidence["cases"]) != expected_cases or not all(
+            row["passed"] for row in evidence["cases"]
+        ):
             raise RuntimeError("incomplete native transition matrix")
         evidence["characterization_completed"] = True
     finally:
