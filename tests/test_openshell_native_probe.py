@@ -368,3 +368,6 @@ def test_workflow_retains_evidence_on_failure():
     assert "--egress-origin-ip" in composition["run"]
     assert "composition.json" in composition["run"]
     assert "composition.log" in composition["run"]
+    assert "--egress-transitions" in composition["run"]
+    assert "transitions.json" in composition["run"]
+    assert "transitions.log" in composition["run"]
