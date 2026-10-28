@@ -749,13 +749,14 @@
           "golang.org/x/crypto": "v0.57.0",
           "golang.org/x/text": "v0.42.0",
           "golang.org/x/mod": "v0.41.0",
-          "google.golang.org/grpc": "v1.83.2"
+          "google.golang.org/grpc": "v1.83.2",
+          "github.com/go-jose/go-jose/v4": "v4.1.6"
         },
         "module_files": {
-          "go.mod": "9551238c5462289a26b08eeeca1ac3af3244b2a938595d6e2b9d27704875213b",
-          "go.sum": "7152d73c8cb2ae288054feb2b86fe421a7b226fb8f8402ebb0d607f9eaebc92c"
+          "go.mod": "e7039dd31f9ee3a4067c197f5cc6010e3ceb0f0aa709f87d6b7ab73e0ca9cfd7",
+          "go.sum": "78ff136d631b1310d26c1a84215270752cba26020fd1e3d05a560df548429cd2"
         },
-        "sha256": "1fdd888bb2f2b45b70b7b1c8de00209b43886d4f991cdaf7bb9ed9b47a98ea2b"
+        "sha256": "16be4497c697bad376a938c26e5e792e3be2dec17aa552fd9143e4e1b9f6843d"
       }
     },
     {
