@@ -28,7 +28,7 @@ def observations(report: dict[str, Any], mode: str = "smoke") -> tuple[dict[str,
     flags = ("passed", "owned_empty", "owner_lock_released", "processes_stopped")
     public = {key: report.get(key) for key in (*flags, "mode", "actual_model", "openclaw", "image")}
     public["cleanup_error_count"] = len(report.get("cleanup_errors", [None]))
-    for key in ("phase", "error_type", "setup_exit_code", "setup_error_codes"):
+    for key in ("phase", "error_type", "error_code", "setup_exit_code", "setup_error_codes"):
         if key in report:
             public[key] = report[key]
     fields = ("calls", "completed", "verdict", "cleanup", "source_sha256", "config_sha256", "image")
@@ -70,6 +70,9 @@ def observations(report: dict[str, Any], mode: str = "smoke") -> tuple[dict[str,
                 "max_requests",
                 "max_completion_tokens",
                 "reasoning_effort",
+                "function_calls",
+                "bicep_identifiers",
+                "observed_bicep_results",
             )
         }
         hashes = provider.get("response_model_sha256", [])

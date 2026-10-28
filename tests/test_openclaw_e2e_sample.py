@@ -195,6 +195,24 @@ def test_observe_deduplicates_history_and_keeps_original_turn(provider: Any) -> 
         provider.observe({"messages": messages(altered)})
 
 
+def test_observe_recognizes_the_canonical_mcp_tool_identity(provider: Any) -> None:
+    first = record()
+    history = messages(first)
+    function = history[1]["tool_calls"][0]["function"]
+    arguments = json.loads(function["arguments"])
+    arguments["id"] = "mcp:bicep:" + evidence["TOOL"]
+    function["arguments"] = json.dumps(arguments)
+    provider.observe({"messages": history})
+    provider.observe({"messages": history})
+    assert provider.records == [first]
+    assert check(provider.records)["verdict"] == "invalid"
+    observed = provider.observations()
+    assert observed["function_calls"] == {"tool_call": 1}
+    assert observed["bicep_identifiers"] == {"canonical": 1}
+    assert observed["observed_bicep_results"] == 1
+    assert first["turn"] not in json.dumps(observed)
+
+
 def test_provider_requires_current_turn_marker(provider: Any) -> None:
     with pytest.raises(RuntimeError, match="Missing turn"):
         provider.observe({"messages": [{"role": "user", "content": "It passed"}]})

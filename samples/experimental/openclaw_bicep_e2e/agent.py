@@ -548,6 +548,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         report["phase"] = "complete"
     except Exception as exc:
         report["error_type"] = type(exc).__name__
+        report["error_code"] = {
+            "No observed Bicep tool result for this turn": "missing-tool-result",
+            "First turn changed the supplied source": "changed-invalid-source",
+            "Provider failed during the turn": "provider-failed",
+            "Gateway turn failed; inspect private logs": "gateway-failed",
+            "Last repair did not validate": "repair-invalid",
+            "Expected the minimal greeting-preserving repair": "repair-shape",
+        }.get(str(exc), "other")
         if isinstance(exc, subprocess.CalledProcessError):
             report["setup_exit_code"] = exc.returncode
         setup = root / "setup.log"

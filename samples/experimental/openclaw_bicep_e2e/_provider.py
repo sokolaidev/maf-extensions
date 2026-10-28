@@ -8,6 +8,7 @@ import json
 import re
 import secrets
 import threading
+from collections import Counter
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,8 @@ class Provider:
         self.token = secrets.token_hex(32)
         self.records: list[dict[str, Any]] = []
         self.seen: dict[str, str] = {}
+        self.function_calls: dict[str, str] = {}
+        self.bicep_identifiers: dict[str, str] = {}
         self.requests = 0
         self.forwarded = 0
         self.response_models: set[str] = set()
@@ -114,9 +117,18 @@ class Provider:
             if message["role"] == "assistant":
                 for call in message.get("tool_calls", []):
                     function = call["function"]
+                    name = function["name"]
+                    self.function_calls[call["id"]] = (
+                        name
+                        if name in {"tool_call", "tool_search", "tool_describe", TOOL}
+                        else "other"
+                    )
                     if function["name"] == "tool_call":
                         args = json.loads(function["arguments"])
-                        if args.get("id") == TOOL:
+                        if args.get("id") in {TOOL, "mcp:bicep:" + TOOL}:
+                            self.bicep_identifiers[call["id"]] = (
+                                "short" if args["id"] == TOOL else "canonical"
+                            )
                             calls[call["id"]] = args["args"]
                             call_turns[call["id"]] = current_turn
             if message["role"] == "tool" and message.get("tool_call_id") in calls:
@@ -286,4 +298,7 @@ class Provider:
             "max_requests": MAX_REQUESTS,
             "max_completion_tokens": MAX_COMPLETION_TOKENS,
             "reasoning_effort": self.reasoning_effort,
+            "function_calls": dict(Counter(self.function_calls.values())),
+            "bicep_identifiers": dict(Counter(self.bicep_identifiers.values())),
+            "observed_bicep_results": len(self.records),
         }
