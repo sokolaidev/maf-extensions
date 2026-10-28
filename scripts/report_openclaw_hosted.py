@@ -28,6 +28,9 @@ def observations(report: dict[str, Any], mode: str = "smoke") -> tuple[dict[str,
     flags = ("passed", "owned_empty", "owner_lock_released", "processes_stopped")
     public = {key: report.get(key) for key in (*flags, "mode", "actual_model", "openclaw", "image")}
     public["cleanup_error_count"] = len(report.get("cleanup_errors", [None]))
+    for key in ("phase", "error_type", "setup_exit_code", "setup_error_codes"):
+        if key in report:
+            public[key] = report[key]
     fields = ("calls", "completed", "verdict", "cleanup", "source_sha256", "config_sha256", "image")
     turns = [{key: turn.get(key) for key in fields} for turn in report.get("turns", [])]
     public["turns"] = turns
@@ -95,16 +98,20 @@ def collect(root: Path, mode: str = "smoke") -> tuple[dict[str, Any], bool]:
     report_path = root / "report.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
     public, accepted = observations(report, mode)
-    owner = (root / "owner/owner").read_text(encoding="utf-8").strip()
-    if not re.fullmatch(r"[0-9a-f]{32}", owner):
-        raise ValueError("Invalid owner identity")
-    containers = command(
-        "docker", "ps", "-aq", "--filter", "label=maf-sandbox.scope=openclaw-bicep-" + owner
-    )
-    public["independent_owned_container_count"] = len(containers.split())
     public["report_sha256"] = digest(report_path)
-    public["tool_evidence_sha256"] = digest(root / "tool-evidence.jsonl")
-    return public, accepted and not containers
+    try:
+        owner = (root / "owner/owner").read_text(encoding="utf-8").strip()
+        if not re.fullmatch(r"[0-9a-f]{32}", owner):
+            raise ValueError("Invalid owner identity")
+        containers = command(
+            "docker", "ps", "-aq", "--filter", "label=maf-sandbox.scope=openclaw-bicep-" + owner
+        )
+        public["independent_owned_container_count"] = len(containers.split())
+        public["tool_evidence_sha256"] = digest(root / "tool-evidence.jsonl")
+        return public, accepted and not containers
+    except Exception as exc:
+        public["collection_error_type"] = type(exc).__name__
+        return public, False
 
 
 def main() -> int:
@@ -138,9 +145,9 @@ def main() -> int:
         )
         evidence["sample_sha256"] = digest(Path("samples/experimental/openclaw_bicep_e2e/agent.py"))
         root = Path(os.environ["RUNNER_TEMP"]) / "openclaw-bicep-private"
-        evidence["worker_python"] = command(str(root / "worker/bin/python"), "--version")
         observed, accepted = collect(root, args.mode)
         evidence.update(observed)
+        evidence["worker_python"] = command(str(root / "worker/bin/python"), "--version")
         evidence["qualified"] = accepted
     except Exception as exc:
         evidence["collection_error_type"] = type(exc).__name__

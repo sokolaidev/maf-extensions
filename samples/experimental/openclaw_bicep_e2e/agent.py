@@ -236,12 +236,16 @@ def worker_environment() -> dict[str, str]:
     }
 
 
-def install(args: argparse.Namespace, root: Path) -> tuple[Path, Path, dict[str, Any]]:
+def install(
+    args: argparse.Namespace, root: Path, report: dict[str, Any]
+) -> tuple[Path, Path, dict[str, Any]]:
     """Install the wheel outside the checkout and provision the pinned Gateway."""
     uv, node = program("uv"), program("node")
     environment = root / "worker"
+    report["phase"] = "worker-environment"
     execute([uv, "venv", "--python", "3.13", str(environment)], root)
     python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    report["phase"] = "worker-install"
     execute(
         [
             uv,
@@ -267,6 +271,7 @@ for d in m.distributions():
 print(json.dumps({'versions':{d.metadata['Name']:d.version for d in m.distributions()},
  'modules':{f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in p.glob('*.py')}}))
 """
+    report["phase"] = "worker-identity"
     identity = json.loads(execute([str(python), "-I", "-B", "-c", probe], root))
     with zipfile.ZipFile(args.wheel) as wheel:
         expected = {
@@ -283,6 +288,7 @@ print(json.dumps({'versions':{d.metadata['Name']:d.version for d in m.distributi
     claw = args.openclaw
     if claw is None:
         target = root / "openclaw"
+        report["phase"] = "openclaw-install"
         execute(
             [
                 program("npm.cmd" if os.name == "nt" else "npm"),
@@ -297,7 +303,9 @@ print(json.dumps({'versions':{d.metadata['Name']:d.version for d in m.distributi
             root,
         )
         claw = target / "node_modules/openclaw"
+        report["phase"] = "openclaw-postinstall"
         execute([node, str(claw / "scripts/postinstall-bundled-plugins.mjs")], root)
+    report["phase"] = "openclaw-version"
     require(
         json.loads((claw / "package.json").read_text(encoding="utf-8"))["version"] == OPENCLAW,
         "Use the pinned OpenClaw version; qualify upgrades separately",
@@ -429,7 +437,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     try:
         docker = program("docker")
-        python, claw, report["artifact"] = install(args, root)
+        python, claw, report["artifact"] = install(args, root, report)
+        report["phase"] = "compiler-image"
         image = json.loads(execute([docker, "image", "inspect", args.image], root, timeout=30))[0][
             "Id"
         ]
@@ -446,6 +455,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         token_file.write_text(worker_token, encoding="utf-8")
         token_file.chmod(0o600)
         worker = python.with_name("maf-bicep-mcp.exe" if os.name == "nt" else "maf-bicep-mcp")
+        report["phase"] = "worker-start"
         processes.start(
             "worker",
             [
@@ -496,6 +506,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             OPENCLAW_NO_RESPAWN="1",
             OPENCLAW_SKIP_CHANNELS="1",
         )
+        report["phase"] = "gateway-start"
         processes.start(
             "gateway", [program("node"), str(claw / "openclaw.mjs"), "gateway", "run"], env
         )
@@ -509,6 +520,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ]
         report["turns"] = []
         for index, prompt in enumerate(prompts):
+            report["phase"] = "repair-turn" if index else "invalid-turn"
             turn = uuid.uuid4().hex
             status, data = request(
                 gateway_port,
@@ -531,7 +543,29 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             report["turns"].append(measured)
             print("[measured] " + json.dumps({"turn": index + 1, **measured}), flush=True)
         report["passed"] = True
+        report["phase"] = "complete"
     except Exception as exc:
+        report["error_type"] = type(exc).__name__
+        if isinstance(exc, subprocess.CalledProcessError):
+            report["setup_exit_code"] = exc.returncode
+        setup = root / "setup.log"
+        if setup.exists():
+            log = setup.read_text(encoding="utf-8", errors="replace")
+            report["setup_error_codes"] = [
+                code
+                for code in (
+                    "ETARGET",
+                    "E404",
+                    "E401",
+                    "EACCES",
+                    "ENOENT",
+                    "ERESOLVE",
+                    "No solution found",
+                    "AssertionError",
+                    "ModuleNotFoundError",
+                )
+                if code in log
+            ]
         report["error"] = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
     finally:
         report["cleanup_errors"].extend(processes.close())

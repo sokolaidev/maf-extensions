@@ -114,6 +114,24 @@ def model_sample():
     return value
 
 
+def test_setup_failure_preserves_bounded_diagnostics_without_owner(tmp_path: Path):
+    value = {
+        "passed": False,
+        "phase": "worker-install",
+        "error_type": "CalledProcessError",
+        "setup_exit_code": 1,
+        "setup_error_codes": ["No solution found"],
+        "error": "PRIVATE_SENTINEL",
+    }
+    (tmp_path / "report.json").write_text(json.dumps(value))
+    public, accepted = report.collect(tmp_path, "model")
+    assert not accepted
+    assert public["phase"] == "worker-install"
+    assert public["setup_exit_code"] == 1
+    assert public["collection_error_type"] == "FileNotFoundError"
+    assert "PRIVATE_SENTINEL" not in json.dumps(public)
+
+
 def test_model_profile_allows_verified_repairs_without_weakening_smoke():
     value = model_sample()
     value["provider"]["key"] = "PRIVATE_SENTINEL"
