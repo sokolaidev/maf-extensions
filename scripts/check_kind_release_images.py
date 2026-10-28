@@ -1,4 +1,4 @@
-"""Require completed, currently clean matching images before releasing image-bound kinds."""
+"""Require completed, qualified matching images before releasing image-bound kinds."""
 
 from __future__ import annotations
 
@@ -11,10 +11,9 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from container_release import PREFIX, REPOSITORY, ROOT, read
+from container_release import PREFIX, ROOT, read
 from container_release_history import GitHub, History
-from container_release_status import report
-from image_release_needed import baseline, changed_inputs
+from image_release_needed import changed_inputs, release_evidence
 from select_image_security import metadata_only
 
 KIND_IMAGES = {
@@ -115,82 +114,8 @@ def qualified(directory: Path, candidate: dict[str, Any]) -> None:
         raise ValueError("Published image lacks matching successful consumer qualification")
 
 
-def refusal(package: str, profile: str, digest: str, status: dict[str, Any]) -> str:
-    """Explain the failed readiness conditions without exposing raw scanner or subprocess output."""
-    monitoring = status.get("monitoringStatus", "unavailable")
-    lines = [
-        f"{package}/{profile}: current image assessment is {monitoring}; release refused",
-        f"Image: {PREFIX}/{profile}@{digest}",
-    ]
-    if status.get("reason"):
-        lines.append(f"Reason: {status['reason']}")
-    requirements = (
-        ("publicationState", "completed"),
-        ("releaseScope", "current"),
-        ("digest", digest),
-        ("publicationFailure", None),
-    )
-    mismatches = [
-        f"{field}: {status[field]} (required: {expected})"
-        for field, expected in requirements
-        if field in status and status[field] != expected
-    ]
-    lines.extend(mismatches)
-    monitor = status.get("observedMonitorWorkflow") or status.get("monitorWorkflow") or {}
-    if monitor:
-        lines.append(
-            f"Latest observed monitor: https://github.com/{REPOSITORY}/actions/runs/"
-            f"{monitor['id']}/attempts/{monitor['run_attempt']} "
-            f"(status={monitor.get('status')}, conclusion={monitor.get('conclusion')})"
-        )
-    attempt = status.get("latestAttempt") or {}
-    if attempt:
-        lines.append(
-            f"Recorded image assessment: {attempt.get('outcome', 'unknown')} "
-            f"(run={attempt.get('monitorRunId')}, attempt={attempt.get('monitorRunAttempt')}, "
-            f"assessedAt={attempt.get('assessedAt', 'unknown')})"
-        )
-        if attempt.get("reason"):
-            lines.append(f"Image assessment reason: {attempt['reason']}")
-    discovery = status.get("registryDiscovery") or {}
-    if discovery.get("outcome") == "unavailable":
-        lines.append("Registry discovery is unavailable; current registry contents are unverified.")
-    if mismatches:
-        action = "Inspect the catalogue and restore a completed, matching current image release."
-    elif monitoring == "vulnerable":
-        action = "Remediate the image findings, then publish and qualify a replacement image."
-    elif (
-        monitoring == "unavailable"
-        and monitor.get("status") in {"queued", "pending", "requested", "waiting", "in_progress"}
-        and status.get("reason")
-        in {
-            "Catalogue does not include the latest monitor workflow attempt",
-            "Latest monitor workflow has no confirmed successful state delivery",
-            "Monitor attempt changed during retrieval",
-        }
-    ):
-        action = (
-            "Wait for the latest monitor to finish and record a clean assessment for this image, "
-            "then rerun the blocked workflow. An earlier clean assessment does not satisfy "
-            "the latest-monitor requirement."
-        )
-    elif monitoring == "stale":
-        action = (
-            "Run the container image monitor and obtain a fresh clean assessment before retrying."
-        )
-    elif monitoring == "no-longer-monitored":
-        action = "Publish and qualify a current image that is still monitored before retrying."
-    else:
-        action = (
-            "Inspect the monitor and catalogue evidence; restore a current "
-            "clean assessment before retrying."
-        )
-    lines.append(f"Next step: {action}")
-    return "\n".join(lines)
-
-
 def check(root: Path, head: str, packages: list[str]) -> list[dict[str, Any]]:
-    """Fail closed on missing, incompatible, vulnerable, stale or unavailable release evidence."""
+    """Require authenticated compatible images without gating packages on image security health."""
     selected = [package for package in packages if package in KIND_IMAGES]
     if not selected:
         return []
@@ -212,25 +137,15 @@ def check(root: Path, head: str, packages: list[str]) -> list[dict[str, Any]]:
             matching_source(root, record["sourceCommit"], head, package, profile)
             with tempfile.TemporaryDirectory(prefix="kind-release-image-") as temporary:
                 directory = Path(temporary)
-                evidence = baseline(client, record, directory)
+                evidence_url = release_evidence(client, record, directory)
                 qualified(directory, record["candidate"])
-            status = report(record["candidate"], github=client)
-            if (
-                status.get("monitoringStatus") != "clean"
-                or status.get("publicationState") != "completed"
-                or status.get("releaseScope") != "current"
-                or status.get("digest") != record["registryDigest"]
-                or status.get("publicationFailure") is not None
-            ):
-                raise ValueError(refusal(package, profile, record["registryDigest"], status))
             results.append(
                 {
                     "package": package,
                     "profile": profile,
                     "image": f"{PREFIX}/{profile}@{record['registryDigest']}",
                     "qualificationSource": record["sourceCommit"],
-                    "evidence": evidence["evidence"],
-                    "monitoringStatus": "clean",
+                    "evidence": evidence_url,
                 }
             )
     return results

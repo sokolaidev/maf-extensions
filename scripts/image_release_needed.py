@@ -195,8 +195,8 @@ def component_satisfied(wanted: list[str], inventory: set[tuple[str, ...]]) -> b
     return False
 
 
-def baseline(client: GitHub, record: dict[str, Any], directory: Path) -> dict[str, Any]:
-    """Require delivered, authenticated completion before using or closing against a release."""
+def release_evidence(client: GitHub, record: dict[str, Any], directory: Path) -> str:
+    """Authenticate a delivered image release independently of its vulnerability assessment."""
     if record["state"] != "completed" or record["delivery"] != "complete":
         raise ValueError(
             "Release evidence delivery is incomplete: "
@@ -215,6 +215,13 @@ def baseline(client: GitHub, record: dict[str, Any], directory: Path) -> dict[st
     verify_identity(candidate, directory, bundles=True)
     if sha256((directory / "evidence-index.json").read_bytes()) != record["evidenceIndexSha256"]:
         raise ValueError("Evidence index differs from the current catalogue")
+    return f"https://github.com/{REPOSITORY}/releases/tag/{release['tag_name']}"
+
+
+def baseline(client: GitHub, record: dict[str, Any], directory: Path) -> dict[str, Any]:
+    """Require authenticated completion and a clean original assessment for image refreshes."""
+    evidence_url = release_evidence(client, record, directory)
+    candidate = record["candidate"]
     assessment = read(directory / "assessment.json")
     verified = scan_result(
         read(directory / "grype.json"), record["imageId"], assessment["assessedAt"]
@@ -223,7 +230,7 @@ def baseline(client: GitHub, record: dict[str, Any], directory: Path) -> dict[st
         raise ValueError("Published assessment does not satisfy the release gate")
     result = {
         "components": components(read(directory / "sbom.syft.json"), record["imageId"]),
-        "evidence": f"https://github.com/{REPOSITORY}/releases/tag/{release['tag_name']}",
+        "evidence": evidence_url,
     }
     if record["profile"] in BICEP_ROUTES:
         route = candidate.get("bicepRoute", "upstream")

@@ -895,6 +895,32 @@ def test_freshness_refresh_preserves_approval_reports_and_uses_same_image(monkey
         assert (tmp_path / f"approval-{name}").read_bytes() == raw_bytes
 
 
+@pytest.mark.parametrize("severity", ["High", "Critical"])
+def test_vulnerable_image_cannot_reach_registry_publication(monkeypatch, tmp_path, severity):
+    raw = scan_report()
+    raw["matches"] = [
+        {
+            "vulnerability": {
+                "id": "CVE-example",
+                "severity": severity,
+                "fix": {"state": "not-fixed"},
+            }
+        }
+    ]
+    write(tmp_path / "candidate.json", CANDIDATE)
+    write(tmp_path / "manifest.json", {})
+    write(tmp_path / "grype.json", raw)
+    write(tmp_path / "assessment.json", scan_result(raw, CANDIDATE["imageId"], AT))
+    monkeypatch.setattr(registry, "validate_preparation", lambda *a: None)
+    monkeypatch.setattr(registry, "validate_layout", lambda *a: {})
+    monkeypatch.setattr(registry, "verify_registry_manifest", lambda *a: None)
+    monkeypatch.setattr(registry, "load_retained", lambda *a: None)
+    monkeypatch.setattr(registry, "manifest", lambda *a, **kw: pytest.fail("registry reached"))
+    monkeypatch.setattr(registry, "run", lambda *a, **kw: pytest.fail("registry push reached"))
+    with pytest.raises(ValueError, match="complete passing scan"):
+        registry.promote(tmp_path, MemoryHistory())
+
+
 @pytest.mark.parametrize("completed", [False, True])
 def test_rerun_never_rebuilds_when_original_artifact_is_lost(monkeypatch, tmp_path, completed):
     history = MemoryHistory()
