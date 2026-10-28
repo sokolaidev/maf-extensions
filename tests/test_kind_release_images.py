@@ -1,4 +1,4 @@
-"""Kind releases refuse missing, incompatible or unhealthy image evidence before merge/upload."""
+"""Kind releases require qualified compatible images independently of vulnerability monitoring."""
 
 from __future__ import annotations
 
@@ -10,9 +10,29 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
+from test_container_release_history import FakeGitHub
+from test_verify_container_release import evidence as signed_evidence
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import check_kind_release_images as guard  # noqa: E402
+import container_release_status as monitoring  # noqa: E402
+from container_release import (  # noqa: E402
+    COMPLETION,
+    PROVENANCE,
+    SPDX,
+    assessment_status,
+    complete,
+    digest,
+    observe,
+    read,
+    reserve,
+    scan_result,
+    validate_catalogue,
+    write,
+)
+from container_release_assets import image_tag  # noqa: E402
+from container_release_history import History, sha256  # noqa: E402
+from verify_container_release import policy_flags  # noqa: E402
 
 PACKAGE = "maf-sandbox-shell"
 SOURCE = "a" * 40
@@ -175,12 +195,8 @@ def evidence(monkeypatch):
         "candidate": candidate,
     }
     catalogue = {"current": {"shell": "shell/0.1.0"}, "releases": {"shell/0.1.0": record}}
-    status = {
-        "monitoringStatus": "clean",
-        "publicationState": "completed",
-        "releaseScope": "current",
-        "digest": IMAGE,
-    }
+    status = {"outcome": "clean"}
+    record["latestAttempt"] = status
     qualification = {
         "candidate": candidate,
         "runId": "1",
@@ -195,11 +211,11 @@ def evidence(monkeypatch):
     }
     calls = []
 
-    def baseline(client, selected, directory):
+    def release_evidence(client, selected, directory):
         calls.append(selected)
         (directory / "evidence-index.json").write_text(json.dumps({"qualification.json": IMAGE}))
         (directory / "qualification.json").write_text(json.dumps(qualification))
-        return {"evidence": "https://example.com/evidence"}
+        return "https://example.com/evidence"
 
     monkeypatch.setattr(
         guard,
@@ -207,16 +223,20 @@ def evidence(monkeypatch):
         lambda client: SimpleNamespace(head=lambda: SimpleNamespace(catalogue=catalogue)),
     )
     monkeypatch.setattr(guard, "matching_source", lambda *args: None)
-    monkeypatch.setattr(guard, "baseline", baseline)
-    monkeypatch.setattr(guard, "report", lambda *args, **kwargs: status)
+    monkeypatch.setattr(guard, "release_evidence", release_evidence)
+
+    def unexpected_monitor_query(*args, **kwargs):
+        pytest.fail("Package compatibility must not depend on live image monitoring")
+
+    monkeypatch.setattr(monitoring, "report", unexpected_monitor_query)
     return catalogue, status, qualification, calls
 
 
-def test_completed_matching_image_with_clean_current_monitor_passes(evidence):
+def test_completed_matching_image_passes_without_a_security_verdict(evidence):
     catalogue, _, _, calls = evidence
     result = guard.check(Path("."), SOURCE, [PACKAGE])
     assert result[0]["image"].endswith("@" + IMAGE)
-    assert result[0]["monitoringStatus"] == "clean"
+    assert "monitoringStatus" not in result[0]
     assert calls == [catalogue["releases"]["shell/0.1.0"]]
 
 
@@ -227,155 +247,224 @@ def test_missing_shell_image_blocks_release(evidence):
     assert evidence[3] == []
 
 
-@pytest.mark.parametrize("status", ["vulnerable", "stale", "unavailable", "no-longer-monitored"])
-def test_only_current_clean_monitoring_allows_a_release(evidence, status):
-    evidence[1]["monitoringStatus"] = status
-    with pytest.raises(ValueError, match="release refused"):
-        guard.check(Path("."), SOURCE, [PACKAGE])
+@pytest.mark.parametrize("status", ["vulnerable", "unavailable", "running"])
+def test_image_security_health_does_not_block_a_compatible_package(evidence, status):
+    evidence[1]["outcome"] = status
+    evidence[1]["findings"] = [{"severity": "High", "id": "CVE-example"}]
+    assert guard.check(Path("."), SOURCE, [PACKAGE])[0]["image"].endswith("@" + IMAGE)
 
 
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("releaseScope", "historical"),
-        ("publicationState", "incomplete"),
-        ("digest", "other"),
-        ("publicationFailure", "unexpected-registry-digest"),
-    ],
-)
-def test_monitoring_must_still_identify_the_completed_current_image(evidence, field, value):
-    evidence[1][field] = value
-    with pytest.raises(ValueError, match="release refused") as failure:
-        guard.check(Path("."), SOURCE, [PACKAGE])
-    assert f"{field}: {value}" in str(failure.value)
-    assert "restore a completed, matching current image release" in str(failure.value)
+def test_missing_monitor_attempt_does_not_block_a_compatible_package(evidence):
+    evidence[0]["releases"]["shell/0.1.0"].pop("latestAttempt")
+    assert guard.check(Path("."), SOURCE, [PACKAGE])
 
 
-@pytest.mark.parametrize("workflow_status", ["queued", "in_progress", "waiting"])
-@pytest.mark.parametrize("recorded_outcome", ["clean", "running"])
-def test_cli_explains_pending_monitor_and_recorded_image_assessment(
-    evidence, monkeypatch, capsys, workflow_status, recorded_outcome
+@pytest.mark.parametrize("replacement", ["shell/0.2.0", None])
+def test_current_pointer_changed_during_verification_blocks_release(
+    evidence, monkeypatch, replacement
 ):
-    status = evidence[1]
-    reason = "Latest monitor workflow has no confirmed successful state delivery"
-    status.update(
-        monitoringStatus="unavailable",
-        reason=reason,
-        observedMonitorWorkflow={
-            "id": 201,
-            "run_attempt": 2,
-            "status": workflow_status,
-            "conclusion": None,
+    catalogue = evidence[0]
+    verify = guard.release_evidence
+
+    def advance(*args):
+        result = verify(*args)
+        if replacement is None:
+            catalogue["current"].pop("shell")
+        else:
+            catalogue["current"]["shell"] = replacement
+        return result
+
+    monkeypatch.setattr(guard, "release_evidence", advance)
+    with pytest.raises(ValueError, match="Current shell image changed"):
+        guard.check(Path("."), SOURCE, [PACKAGE])
+
+
+def test_monitor_updates_and_unrelated_current_pointers_do_not_block_release(evidence, monkeypatch):
+    verify = guard.release_evidence
+
+    def advance(*args):
+        result = verify(*args)
+        evidence[0]["current"]["document"] = "document/0.2.0"
+        evidence[1]["outcome"] = "unavailable"
+        return result
+
+    monkeypatch.setattr(guard, "release_evidence", advance)
+    assert guard.check(Path("."), SOURCE, [PACKAGE])
+
+
+def test_catalogue_unavailable_after_verification_blocks_release(evidence, monkeypatch):
+    snapshots = iter([SimpleNamespace(catalogue=evidence[0]), None])
+    monkeypatch.setattr(guard, "History", lambda _: SimpleNamespace(head=lambda: next(snapshots)))
+    with pytest.raises(ValueError, match="catalogue became unavailable"):
+        guard.check(Path("."), SOURCE, [PACKAGE])
+
+
+def test_all_profiles_are_rechecked_after_the_last_verification(evidence, monkeypatch):
+    catalogue, _, qualification, calls = evidence
+    other = json.loads(json.dumps(catalogue["releases"]["shell/0.1.0"]))
+    other["profile"] = other["candidate"]["profile"] = "document"
+    catalogue["releases"]["document/0.1.0"] = other
+    catalogue["current"]["document"] = "document/0.1.0"
+    monkeypatch.setattr(guard, "KIND_IMAGES", {PACKAGE: ("shell", "document")})
+    verify = guard.release_evidence
+
+    def advance(client, record, directory):
+        qualification["candidate"] = record["candidate"]
+        qualification["runtime"]["profile"] = record["profile"]
+        if record["profile"] == "document":
+            catalogue["current"]["shell"] = "shell/0.2.0"
+        return verify(client, record, directory)
+
+    monkeypatch.setattr(guard, "release_evidence", advance)
+    with pytest.raises(ValueError, match="Current shell image changed"):
+        guard.check(Path("."), SOURCE, [PACKAGE])
+    assert [record["profile"] for record in calls] == ["shell", "document"]
+
+
+@pytest.fixture
+def authenticated_release(repo, tmp_path, monkeypatch):
+    root, source = repo
+    directory = tmp_path / "evidence"
+    directory.mkdir()
+    expected, statements = signed_evidence(directory, profile="shell")
+    expected["sourceCommit"] = source
+    candidate = {key: value for key, value in expected.items() if key != "evidenceIndexSha256"}
+    at = "2026-01-01T00:00:00Z"
+    report = {
+        "source": {"type": "image", "target": {"imageID": candidate["imageId"]}},
+        "descriptor": {
+            "db": {"status": {"valid": True, "built": at, "from": "test-db", "schemaVersion": "v6"}}
         },
-        latestAttempt={
-            "outcome": recorded_outcome,
-            "monitorRunId": "200",
-            "monitorRunAttempt": 1,
-            "assessedAt": "2026-01-01T00:00:00Z",
+        "matches": [{"vulnerability": {"id": "CVE-example", "severity": "High"}}],
+    }
+    write(directory / "grype.json", report)
+    write(directory / "assessment.json", scan_result(report, candidate["imageId"], at))
+    write(
+        directory / "qualification.json",
+        {
+            "candidate": candidate,
+            "runId": candidate["attemptId"],
+            "anonymousPullVerified": True,
+            "identity": {"candidateIdentityVerified": True},
+            "runtime": {
+                "passed": True,
+                "profile": "shell",
+                "imageId": candidate["imageId"],
+                "containersRemaining": [],
+            },
         },
     )
-    monkeypatch.setattr(sys, "argv", ["check_kind_release_images.py", "--package", PACKAGE])
-    monkeypatch.setattr(guard, "revision", lambda *args: SOURCE)
-    monkeypatch.setattr(guard, "document", lambda *args: {"project": {"name": PACKAGE}})
-    with pytest.raises(SystemExit) as failure:
-        guard.main()
-    assert failure.value.code == 1
-    output = capsys.readouterr()
-    assert output.out == ""
-    assert f"Kind release blocked: {PACKAGE}/shell" in output.err
-    assert f"Image: {guard.PREFIX}/shell@{IMAGE}" in output.err
-    assert f"Reason: {reason}" in output.err
-    assert "https://github.com/sokolaidev/maf-extensions/actions/runs/201/attempts/2" in output.err
-    assert f"status={workflow_status}" in output.err
-    assert f"Recorded image assessment: {recorded_outcome} (run=200, attempt=1" in output.err
-    assert "Wait for the latest monitor to finish and record a clean assessment" in output.err
+    write(directory / "completion.jsonl", {})
+    index = read(directory / "evidence-index.json")
+    index.update({name: "" for name in ("qualification.json", "assessment.json")})
+    write(directory / "evidence-index.json", {name: digest(directory / name) for name in index})
+    evidence_hash = digest(directory / "evidence-index.json")
+    completion = statements[COMPLETION][0]["verificationResult"]["statement"]["predicate"]
+    completion.update(sourceCommit=source, evidenceIndexSha256=evidence_hash)
+    provenance = statements[PROVENANCE][0]["verificationResult"]["statement"]["predicate"]
+    provenance["buildDefinition"]["resolvedDependencies"][0]["digest"]["gitCommit"] = source
+    client = FakeGitHub()
+    history = History(client)
+
+    def delivered(catalogue):
+        catalogue["releases"]["shell/0.1.0"]["delivery"] = "complete"
+        return catalogue
+
+    for operation, transform in (
+        ("reserve", lambda catalogue: reserve(catalogue, candidate, at)),
+        ("complete", lambda catalogue: complete(catalogue, candidate, evidence_hash, at)),
+        ("deliver", delivered),
+    ):
+        history.append(transform, operation=operation, source=source, at=at)
+    release = client.create(image_tag(candidate), source)
+    client.publish(release["id"])
+    for asset_id, path in enumerate(sorted(directory.iterdir()), start=1000):
+        raw = path.read_bytes()
+        client.blobs[asset_id] = raw
+        client.entries[release["id"]]["assets"].append(
+            {
+                "id": asset_id,
+                "name": path.name,
+                "size": len(raw),
+                "state": "uploaded",
+                "digest": sha256(raw),
+            }
+        )
+    monkeypatch.setattr(
+        client, "download_file", lambda asset_id, path: path.write_bytes(client.blobs[asset_id])
+    )
+    monkeypatch.setattr(guard, "GitHub", lambda: client)
+    actual_run = subprocess.run
+    calls = []
+
+    def run(command, **kwargs):
+        if command[0] != "gh":
+            return actual_run(command, **kwargs)
+        assert command[:3] == ["gh", "attestation", "verify"]
+        predicate = command[command.index("--predicate-type") + 1]
+        assert command[4:-2] == policy_flags(candidate, predicate)
+        assert command[-2] == "--bundle"
+        calls.append(predicate)
+        return subprocess.CompletedProcess(command, 0, json.dumps(statements[predicate]))
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return history, client, statements, calls, candidate, at
 
 
-@pytest.mark.parametrize(
-    "monitoring,action",
-    [
-        ("vulnerable", "Remediate the image findings"),
-        ("stale", "obtain a fresh clean assessment"),
-        ("no-longer-monitored", "current image that is still monitored"),
-        ("unavailable", "Inspect the monitor and catalogue evidence"),
-    ],
-)
-def test_unhealthy_assessments_explain_recovery_without_suggesting_blind_retry(
-    evidence, monitoring, action
+@pytest.mark.parametrize("outcome", [None, "vulnerable", "unavailable", "clean"])
+def test_authenticated_vulnerable_original_and_stale_monitoring_allow_package(
+    repo, authenticated_release, outcome
 ):
-    evidence[1]["monitoringStatus"] = monitoring
-    with pytest.raises(ValueError) as failure:
+    history, _, _, calls, candidate, at = authenticated_release
+    root, source = repo
+    if outcome is not None:
+        history.append(
+            lambda catalogue: observe(
+                catalogue,
+                "shell/0.1.0",
+                {
+                    "digest": candidate["registryDigest"],
+                    "assessedAt": at,
+                    "outcome": outcome,
+                },
+            ),
+            operation="monitor",
+            source=source,
+            at=at,
+        )
+    catalogue = history.head().catalogue
+    validate_catalogue(catalogue)
+    if outcome == "clean":
+        assert (
+            assessment_status(catalogue["releases"]["shell/0.1.0"], "2026-01-04T00:00:00Z")
+            == "stale"
+        )
+    assert guard.check(root, source, [PACKAGE])[0]["image"].endswith(candidate["registryDigest"])
+    assert calls == [PROVENANCE, SPDX, COMPLETION]
+
+
+@pytest.mark.parametrize("failure", ["subject", "completion-index", "asset-bytes"])
+def test_authenticated_compatibility_rejects_changed_evidence(repo, authenticated_release, failure):
+    root, source = repo
+    _, client, statements, _, _, _ = authenticated_release
+    if failure == "subject":
+        statements[PROVENANCE][0]["verificationResult"]["statement"]["subject"][0]["digest"][
+            "sha256"
+        ] = "f" * 64
+    elif failure == "completion-index":
+        statements[COMPLETION][0]["verificationResult"]["statement"]["predicate"][
+            "evidenceIndexSha256"
+        ] = "sha256:" + "f" * 64
+    else:
+        client.blobs[1000] += b"tampered"
+    with pytest.raises(ValueError, match="subject|index"):
+        guard.check(root, source, [PACKAGE])
+
+
+def test_current_entry_must_identify_the_required_profile(evidence):
+    evidence[0]["releases"]["shell/0.1.0"]["profile"] = "other"
+    with pytest.raises(ValueError, match="another profile"):
         guard.check(Path("."), SOURCE, [PACKAGE])
-    assert action in str(failure.value)
-    assert "Wait for the latest monitor" not in str(failure.value)
-
-
-def test_failed_monitor_links_exact_attempt_and_preserves_failure_reason(evidence):
-    evidence[1].update(
-        monitoringStatus="unavailable",
-        reason="Latest monitor workflow has no confirmed successful state delivery",
-        monitorWorkflow={
-            "id": 201,
-            "run_attempt": 2,
-            "status": "completed",
-            "conclusion": "failure",
-        },
-    )
-    with pytest.raises(ValueError) as failure:
-        guard.check(Path("."), SOURCE, [PACKAGE])
-    message = str(failure.value)
-    assert "actions/runs/201/attempts/2" in message
-    assert "status=completed, conclusion=failure" in message
-    assert "Reason: Latest monitor workflow has no confirmed successful state delivery" in message
-    assert "Inspect the monitor and catalogue evidence" in message
-    assert "Wait for the latest monitor" not in message
-
-
-def test_unavailable_evidence_without_monitor_keeps_safe_reason(evidence):
-    evidence[1].clear()
-    evidence[1].update(monitoringStatus="unavailable", reason="Monitoring evidence unavailable")
-    with pytest.raises(ValueError) as failure:
-        guard.check(Path("."), SOURCE, [PACKAGE])
-    message = str(failure.value)
-    assert "Reason: Monitoring evidence unavailable" in message
-    assert "Latest observed monitor:" not in message
-    assert "Inspect the monitor and catalogue evidence" in message
-
-
-def test_pending_monitor_does_not_mask_catalogue_retrieval_failure(evidence):
-    evidence[1].update(
-        monitoringStatus="unavailable",
-        reason="Monitoring evidence unavailable",
-        observedMonitorWorkflow={
-            "id": 201,
-            "run_attempt": 2,
-            "status": "queued",
-            "conclusion": None,
-        },
-    )
-    with pytest.raises(ValueError) as failure:
-        guard.check(Path("."), SOURCE, [PACKAGE])
-    assert "Inspect the monitor and catalogue evidence" in str(failure.value)
-    assert "Wait for the latest monitor" not in str(failure.value)
-
-
-def test_diagnostics_do_not_dump_scanner_metadata(evidence):
-    evidence[1].update(
-        monitoringStatus="unavailable",
-        latestAttempt={
-            "outcome": "unavailable",
-            "reason": "Monitor worker did not deliver an observation",
-            "database": {"path": "private scanner path"},
-        },
-        registryDiscovery={"outcome": "unavailable"},
-    )
-    with pytest.raises(ValueError) as failure:
-        guard.check(Path("."), SOURCE, [PACKAGE])
-    assert "private scanner path" not in str(failure.value)
-    assert "Image assessment reason: Monitor worker did not deliver an observation" in str(
-        failure.value
-    )
-    assert "Registry discovery is unavailable" in str(failure.value)
 
 
 @pytest.mark.parametrize(
@@ -415,14 +504,14 @@ def test_unindexed_qualification_is_not_trusted(tmp_path):
     [
         ValueError("incomplete delivery"),
         ValueError("bad signature"),
-        ValueError("High/Critical assessment"),
+        ValueError("mismatched evidence index"),
     ],
 )
-def test_authenticated_baseline_failure_propagates(evidence, monkeypatch, failure):
+def test_authenticated_release_failure_propagates(evidence, monkeypatch, failure):
     def fail(*args):
         raise failure
 
-    monkeypatch.setattr(guard, "baseline", fail)
+    monkeypatch.setattr(guard, "release_evidence", fail)
     with pytest.raises(ValueError, match=str(failure)):
         guard.check(Path("."), SOURCE, [PACKAGE])
 
