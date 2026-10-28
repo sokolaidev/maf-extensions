@@ -1797,7 +1797,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-hyperlight"
-version = "0.10.0"
+version = "0.11.0"
 source = { editable = "packages/maf-sandbox-hyperlight" }
 dependencies = [
     { name = "hyperlight-sandbox" },
