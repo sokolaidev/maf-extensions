@@ -63,6 +63,7 @@ def observations(report: dict[str, Any], mode: str = "smoke") -> tuple[dict[str,
                 "requests",
                 "forwarded_responses",
                 "error_count",
+                "upstream_failures",
                 "endpoint_sha256",
                 "requested_model_sha256",
                 "response_model_sha256",
@@ -77,6 +78,7 @@ def observations(report: dict[str, Any], mode: str = "smoke") -> tuple[dict[str,
             and 4 <= provider["requests"] <= 32
             and provider.get("forwarded_responses") == provider["requests"]
             and provider.get("error_count") == 0
+            and provider.get("upstream_failures") == []
             and provider.get("max_requests") == 32
             and provider.get("max_completion_tokens") == 4096
             and isinstance(hashes, list)

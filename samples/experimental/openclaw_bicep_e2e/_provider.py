@@ -29,6 +29,7 @@ class Provider:
         self.requests = 0
         self.forwarded = 0
         self.response_models: set[str] = set()
+        self.upstream_failures: list[dict[str, Any]] = []
         self.errors: list[str] = []
         provider = self
 
@@ -186,6 +187,8 @@ class Provider:
                 {"Content-Type": "application/json", "Authorization": "Bearer " + self.key},
             )
             response = connection.getresponse()
+            if response.status != 200:
+                self.record_failure(response.status, response.read(LIMIT + 1))
             require(response.status == 200, "Upstream model request failed")
             require(
                 response.getheader("Content-Type", "").startswith("text/event-stream"),
@@ -198,6 +201,44 @@ class Provider:
             return payload
         finally:
             connection.close()
+
+    def record_failure(self, status: int, payload: bytes) -> None:
+        """Keep fixed API error identifiers, never provider messages or arbitrary fields."""
+        failure: dict[str, Any] = {"status": status}
+        try:
+            error = json.loads(payload)["error"]
+            allowed = {
+                "code": {
+                    "unsupported_value",
+                    "unsupported_parameter",
+                    "invalid_parameter",
+                    "invalid_request_error",
+                    "DeploymentNotFound",
+                    "PermissionDenied",
+                    "Unauthorized",
+                    "rate_limit_exceeded",
+                    "content_filter",
+                },
+                "param": {
+                    "temperature",
+                    "max_tokens",
+                    "max_completion_tokens",
+                    "stream",
+                    "stream_options",
+                    "tools",
+                    "tool_choice",
+                    "model",
+                    "messages",
+                    "parallel_tool_calls",
+                    "reasoning_effort",
+                },
+            }
+            for key, values in allowed.items():
+                value = error.get(key)
+                failure[key] = value if isinstance(value, str) and value in values else "other"
+        except (ValueError, KeyError, TypeError, AttributeError):
+            failure["code"] = "unrecognized"
+        self.upstream_failures.append(failure)
 
     def observe_response(self, payload: bytes) -> None:
         """Require a completed stream and retain only hashed model identities."""
@@ -226,6 +267,7 @@ class Provider:
             "requests": self.requests,
             "forwarded_responses": self.forwarded,
             "error_count": len(self.errors),
+            "upstream_failures": self.upstream_failures,
             "endpoint_sha256": hashlib.sha256(self.upstream.encode()).hexdigest(),
             "requested_model_sha256": hashlib.sha256(self.model.encode()).hexdigest(),
             "response_model_sha256": sorted(self.response_models),

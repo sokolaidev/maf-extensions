@@ -278,6 +278,33 @@ def test_model_forwarding_refuses_incomplete_streams(provider: Any, change: str)
     assert provider.forwarded == 0 and not provider.response_models
 
 
+def test_upstream_failure_diagnostics_exclude_private_values(provider: Any):
+    provider.record_failure(
+        400,
+        json.dumps(
+            {
+                "error": {
+                    "code": "unsupported_value",
+                    "param": "temperature",
+                    "message": "PRIVATE_SENTINEL",
+                }
+            }
+        ).encode(),
+    )
+    provider.record_failure(
+        401,
+        json.dumps({"error": {"code": "PRIVATE_SENTINEL", "param": "PRIVATE_SENTINEL"}}).encode(),
+    )
+    provider.record_failure(502, b"PRIVATE_SENTINEL")
+    public = provider.observations()
+    assert public["upstream_failures"] == [
+        {"status": 400, "code": "unsupported_value", "param": "temperature"},
+        {"status": 401, "code": "other", "param": "other"},
+        {"status": 502, "code": "unrecognized"},
+    ]
+    assert "PRIVATE_SENTINEL" not in json.dumps(public)
+
+
 def test_multiple_repairs_require_every_calls_cleanup():
     first, last = record(), record(repaired=True)
     assert check([first, last], repaired=True)["calls"] == 2
