@@ -156,12 +156,33 @@ def test_current_monitor_retrieval_failure_does_not_affect_identity_result(curre
     result = {"releaseIdentityVerified": True} | report(CANDIDATE, at=AT)
     assert result["releaseIdentityVerified"] is True
     assert result["monitoringStatus"] == "unavailable"
+    assert result["reason"] == "Monitoring evidence unavailable"
+    assert "observedMonitorWorkflow" not in result
 
 
 def test_monitor_changes_during_read_report_unavailable(current, monkeypatch):
     values = iter([run(), run(201)])
     monkeypatch.setattr("container_release_status.latest_monitor", lambda _: next(values))
-    assert report(CANDIDATE, at=AT)["monitoringStatus"] == "unavailable"
+    result = report(CANDIDATE, at=AT)
+    assert result["monitoringStatus"] == "unavailable"
+    assert result["reason"] == "Monitor attempt changed during retrieval"
+    assert result["observedMonitorWorkflow"]["id"] == 201
+    assert "monitorWorkflow" not in result
+
+
+def test_catalogue_failure_retains_observed_monitor_without_exposing_subprocess_output(
+    current, monkeypatch
+):
+    def failed(_self):
+        raise OSError("private scanner output")
+
+    monkeypatch.setattr("container_release_status.History.head", failed)
+    result = report(CANDIDATE, at=AT)
+    assert result["monitoringStatus"] == "unavailable"
+    assert result["reason"] == "Monitoring evidence unavailable"
+    assert result["observedMonitorWorkflow"]["id"] == 200
+    assert "monitorWorkflow" not in result
+    assert "private scanner output" not in str(result)
 
 
 def test_known_findings_remain_visible_after_new_failure(current):

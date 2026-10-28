@@ -144,6 +144,7 @@ def report(
     client = github or GitHub()
     try:
         first = latest_monitor(client)
+        result["observedMonitorWorkflow"] = first
         snapshot = History(client).head()
         if snapshot is None:
             raise ValueError("No committed release catalogue exists")
@@ -182,6 +183,7 @@ def report(
         end = monitoring_end(record)
         result["monitoringEndsAt"] = end.isoformat() if end else None
         second = latest_monitor(client)
+        result["observedMonitorWorkflow"] = second
         if first != second:
             raise ValueError("Monitor attempt changed during retrieval")
         if timestamp(second["updated_at"]) > timestamp(checked_at):
