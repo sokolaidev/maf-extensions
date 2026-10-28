@@ -152,6 +152,7 @@ def test_real_model_requires_explicit_dispatch_and_isolates_credentials():
     run = steps["Run the installed sample with Azure OpenAI"]
     assert run["timeout-minutes"] == 18
     assert "--mode model" in run["run"] and "::add-mask::" in run["run"]
+    assert "--reasoning-effort none" in run["run"]
     assert "get-access-token --resource https://cognitiveservices.azure.com/" in run["run"]
     assert "$GITHUB_ENV" not in run["run"] and "set -x" not in run["run"]
     report = steps["Record bounded evidence and independently check owner scope"]

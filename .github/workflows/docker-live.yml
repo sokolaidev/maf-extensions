@@ -421,7 +421,7 @@ jobs:
           printf '::add-mask::%s\n' "$OPENAI_API_KEY"
           export OPENAI_API_KEY
           uv run --no-project --python 3.13.15 samples/experimental/openclaw_bicep_e2e/agent.py \
-            --mode model --wheel "$RUNNER_TEMP/openclaw-wheel/maf_sandbox_mcp-0.2.0-py3-none-any.whl" \
+            --mode model --reasoning-effort none --wheel "$RUNNER_TEMP/openclaw-wheel/maf_sandbox_mcp-0.2.0-py3-none-any.whl" \
             --image "$BICEP_IMAGE" --output "$RUNNER_TEMP/openclaw-bicep-private"
       - name: Record bounded evidence and independently check owner scope
         if: always()

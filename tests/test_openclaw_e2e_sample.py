@@ -231,10 +231,13 @@ def test_deterministic_provider_emits_tool_call_and_observes_result(provider: An
     assert check(provider.records)["verdict"] == "invalid"
 
 
+@pytest.mark.parametrize("reasoning_effort", ["provider-default", "none"])
 def test_relay_forwards_to_configured_model_with_its_own_credentials(
-    provider: Any, tmp_path: Path
+    provider: Any, tmp_path: Path, reasoning_effort: str
 ) -> None:
-    relay = agent.Provider(tmp_path / "relay.jsonl", provider.url, "chosen-model", provider.token)
+    relay = agent.Provider(
+        tmp_path / "relay.jsonl", provider.url, "chosen-model", provider.token, reasoning_effort
+    )
     relay.start()
     captured = []
     original = provider.smoke
@@ -250,7 +253,7 @@ def test_relay_forwards_to_configured_model_with_its_own_credentials(
             {
                 "model": "sample",
                 "max_tokens": 100000,
-                "reasoning_effort": "none",
+                "reasoning_effort": "high",
                 "messages": messages(record())[:1],
             },
         )
@@ -258,8 +261,12 @@ def test_relay_forwards_to_configured_model_with_its_own_credentials(
         assert captured[0]["model"] == "chosen-model"
         assert captured[0]["max_completion_tokens"] == 4096
         assert "max_tokens" not in captured[0]
-        assert "reasoning_effort" not in captured[0]
+        if reasoning_effort == "none":
+            assert captured[0]["reasoning_effort"] == "none"
+        else:
+            assert "reasoning_effort" not in captured[0]
         observed = relay.observations()
+        assert observed["reasoning_effort"] == reasoning_effort
         assert observed["requests"] == observed["forwarded_responses"] == 1
         assert observed["error_count"] == 0 and len(observed["response_model_sha256"]) == 1
         assert "chosen-model" not in json.dumps(observed)
@@ -372,7 +379,9 @@ def test_cleanup_continues_when_provider_shutdown_fails(
     monkeypatch.setattr(agent, "program", lambda name: name)
     monkeypatch.setattr(agent, "install", lambda *args: (tmp_path / "python", tmp_path, {}))
     monkeypatch.setattr(agent, "execute", lambda *args, **kwargs: json.dumps([{"Id": IMAGE}]))
-    args = argparse.Namespace(mode="smoke", output=tmp_path / "private", image=IMAGE)
+    args = argparse.Namespace(
+        mode="smoke", output=tmp_path / "private", image=IMAGE, reasoning_effort="provider-default"
+    )
     result = agent.run(args)
     assert not result["passed"]
     assert result["cleanup_errors"] == ["Provider cleanup: RuntimeError"]
@@ -613,7 +622,9 @@ def test_gateway_temp_is_private(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
             json.dumps([{"Id": IMAGE}]) if "inspect" in command else ""
         ),
     )
-    args = argparse.Namespace(mode="smoke", output=root, image=IMAGE)
+    args = argparse.Namespace(
+        mode="smoke", output=root, image=IMAGE, reasoning_effort="provider-default"
+    )
     result = agent.run(args)
     assert result["error"] == "captured gateway environment"
     private_temp = root / "temp"

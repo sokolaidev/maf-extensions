@@ -446,7 +446,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         config_file = root / "bicepconfig.json"
         config_file.write_bytes((HERE / "bicepconfig.json").read_bytes())
         config_hash = hashlib.sha256(config_file.read_bytes()).hexdigest()
-        provider = Provider(root / "tool-evidence.jsonl", upstream, model, key)
+        provider = Provider(
+            root / "tool-evidence.jsonl", upstream, model, key, args.reasoning_effort
+        )
         provider.start()
         worker_port, gateway_port = free_port(), free_port()
         require(worker_port != gateway_port, "Port allocation collided; rerun with fresh output")
@@ -626,6 +628,12 @@ def main() -> None:
     """Validate operator inputs before creating the isolated sample environment."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("smoke", "model"), default="smoke")
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=("provider-default", "none"),
+        default="provider-default",
+        help="Explicit Chat Completions compatibility setting for the selected model",
+    )
     parser.add_argument("--wheel", type=Path, required=True)
     parser.add_argument(
         "--image",

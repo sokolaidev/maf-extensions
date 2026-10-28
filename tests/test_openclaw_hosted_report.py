@@ -111,6 +111,7 @@ def model_sample():
         "response_model_sha256": ["e" * 64],
         "max_requests": 32,
         "max_completion_tokens": 4096,
+        "reasoning_effort": "none",
     }
     return value
 
@@ -158,6 +159,7 @@ def test_model_profile_allows_verified_repairs_without_weakening_smoke():
         ("upstream_failures", [{"status": 400}]),
         ("max_requests", 64),
         ("max_completion_tokens", 8192),
+        ("reasoning_effort", "provider-default"),
         ("response_model_sha256", []),
         ("requested_model_sha256", None),
         ("endpoint_sha256", None),

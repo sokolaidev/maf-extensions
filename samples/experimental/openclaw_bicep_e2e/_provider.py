@@ -21,7 +21,16 @@ MAX_COMPLETION_TOKENS = 4096
 
 
 class Provider:
-    def __init__(self, evidence: Path, upstream: str, model: str, key: str) -> None:
+    def __init__(
+        self,
+        evidence: Path,
+        upstream: str,
+        model: str,
+        key: str,
+        reasoning_effort: str = "provider-default",
+    ) -> None:
+        require(reasoning_effort in {"provider-default", "none"}, "Unknown reasoning profile")
+        self.reasoning_effort = reasoning_effort
         self.evidence, self.upstream, self.model, self.key = evidence, upstream, model, key
         self.token = secrets.token_hex(32)
         self.records: list[dict[str, Any]] = []
@@ -179,6 +188,8 @@ class Provider:
         body["model"] = self.model
         body.pop("max_tokens", None)
         body.pop("reasoning_effort", None)
+        if self.reasoning_effort != "provider-default":
+            body["reasoning_effort"] = self.reasoning_effort
         body["max_completion_tokens"] = MAX_COMPLETION_TOKENS
         try:
             connection.request(
@@ -274,4 +285,5 @@ class Provider:
             "response_model_sha256": sorted(self.response_models),
             "max_requests": MAX_REQUESTS,
             "max_completion_tokens": MAX_COMPLETION_TOKENS,
+            "reasoning_effort": self.reasoning_effort,
         }
