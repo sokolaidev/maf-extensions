@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import tempfile
+import time
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -27,13 +28,29 @@ class Evidence:
         self.github = github or GitHub()
 
     def find(self, tag: str) -> dict[str, Any] | None:
-        """Require an unambiguous release in the fixed repository."""
+        """Retry repeated pagination entries without accepting a changed release identity."""
         if not re.fullmatch(r"(?:image|image-monitor)-[a-z0-9.-]+", tag):
             raise ValueError("Invalid evidence release tag")
-        found = [release for release in self.github.releases() if release.get("tag_name") == tag]
-        if len(found) > 1:
-            raise ValueError("Ambiguous evidence release")
-        return found[0] if found else None
+        observed: set[int] = set()
+        for attempt in range(3):
+            found = [
+                release for release in self.github.releases() if release.get("tag_name") == tag
+            ]
+            observed.update(positive_id(release.get("id")) for release in found)
+            if len(observed) > 1:
+                raise ValueError(f"Conflicting evidence releases for {tag}: IDs {sorted(observed)}")
+            if len(found) == 1:
+                return found[0]
+            if not found:
+                if observed:
+                    raise ValueError(f"Evidence release disappeared during retrieval: {tag}")
+                return None
+            if attempt < 2:
+                time.sleep(attempt + 1)
+        raise ValueError(
+            f"Unstable evidence release listing for {tag}: repeated release ID "
+            f"{next(iter(observed))} after 3 complete reads; retry when the listing is stable"
+        )
 
     def ensure(self, tag: str, source: str) -> dict[str, Any]:
         """Create only a draft so every evidence file can be attached before immutability."""
@@ -137,11 +154,15 @@ class Evidence:
 
     def publish(self, release: dict[str, Any], source: str) -> dict[str, Any]:
         """Confirm immutability and source after publishing the fully assembled evidence."""
+        release_id = positive_id(release.get("id"))
         if release.get("draft") is True:
-            self.github.publish(positive_id(release.get("id")))
-        current = self.find(release["tag_name"])
+            self.github.publish(release_id)
+        current = decode(self.github.request(f"repos/{REPOSITORY}/releases/{release_id}"))
         if (
-            current is None
+            not isinstance(current, dict)
+            or positive_id(current.get("id")) != release_id
+            or current.get("tag_name") != release["tag_name"]
+            or current.get("target_commitish") != source
             or current.get("immutable") is not True
             or current.get("draft") is not False
         ):
