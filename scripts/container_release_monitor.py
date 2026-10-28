@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import urllib.error
+import uuid
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -148,7 +149,8 @@ def notification(
     if truncate and len(summary) > 32000:
         summary = (
             summary[:32000]
-            + "\n\nDetails truncated; see the result job log and monitor-diagnostics artifact."
+            + "\n\nDetails truncated; see the finish job log, which retains full diagnostics "
+            "even if the monitor-diagnostics artifact upload fails."
         )
     return json.dumps({"attention": health["attention"], "problems": identity, "summary": summary})
 
@@ -534,9 +536,13 @@ def finish(directory: Path) -> None:
     )
     catalogue = snapshot.catalogue if snapshot else empty_catalogue()
     health = monitoring_health(catalogue, at)
-    (directory / "diagnostics.json").write_text(
-        notification(catalogue, health, truncate=False), encoding="utf-8"
-    )
+    diagnostics = json.loads(notification(catalogue, health, truncate=False))
+    # Keep a safe fallback in the producer log even when artifact storage is unavailable.
+    token = uuid.uuid4().hex
+    print(f"::stop-commands::{token}", flush=True)
+    print(diagnostics["summary"], flush=True)
+    print(f"::{token}::", flush=True)
+    write(directory / "diagnostics.json", diagnostics)
     warnings = {name: state for name, state in health["historical"].items() if state != "clean"}
     summary = ["## Current release health", ""]
     for scope, heading in (
