@@ -43,10 +43,10 @@ def main() -> int:
         )
         problems.append("The monitor did not provide a readable assessment summary.")
 
-    report = "## Container image monitor result\n\n" + details + "\n\n"
+    heading = "## Container image monitor result\n\n"
     if problems:
-        report += "### Gate failures\n\n" + "\n".join(f"- {p}" for p in problems) + "\n\n"
-        report += (
+        guidance = "### Gate failures\n\n" + "\n".join(f"- {p}" for p in problems) + "\n\n"
+        guidance += (
             "### Next actions\n\n"
             "- High/Critical findings: inspect the retained Grype report and SBOM; update the "
             "affected inputs, qualify a new image version and obtain publication approval. "
@@ -58,8 +58,9 @@ def main() -> int:
             "evidence through its release/recovery workflow; a monitor retry cannot deliver it.\n\n"
         )
     else:
-        report += "Current images and monitoring delivery passed the gate.\n\n"
-    report += f"[Response guide]({GUIDE}). Historical findings alone do not fail this gate.\n"
+        guidance = "Current images and monitoring delivery passed the gate.\n\n"
+    guidance += f"[Response guide]({GUIDE}). Historical findings alone do not fail this gate.\n"
+    report = heading + details + "\n\n" + guidance
     # Assessment text must not be interpreted as Actions workflow commands.
     token = uuid.uuid4().hex
     print(f"::stop-commands::{token}", flush=True)
@@ -67,12 +68,14 @@ def main() -> int:
     print(f"::{token}::", flush=True)
     if path := os.environ.get("GITHUB_STEP_SUMMARY"):
         # GitHub limits each step summary to 1 MiB; the artifact and log retain every detail.
-        summary = report.encode("utf-8")
-        if len(summary) > 900_000:
-            report = summary[:900_000].decode("utf-8", errors="ignore") + (
+        if len(report.encode("utf-8")) > 900_000:
+            notice = (
                 "\n\nSummary shortened; full diagnostics are in this step's log and the "
-                "monitor-diagnostics artifact for this attempt.\n"
+                "monitor-diagnostics artifact for this attempt.\n\n"
             )
+            available = 900_000 - len((heading + notice + guidance).encode("utf-8"))
+            shortened = details.encode("utf-8")[:available].decode("utf-8", errors="ignore")
+            report = heading + shortened + notice + guidance
         with Path(path).open("a", encoding="utf-8") as stream:
             stream.write(report)
     for problem in problems:

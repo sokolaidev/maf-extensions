@@ -131,6 +131,16 @@ def test_large_diagnostics_remain_complete_in_logs_with_a_bounded_step_summary(t
     assert len(summary.encode("utf-8")) < 1024 * 1024
     assert "Summary shortened; full diagnostics" in summary
     assert "monitor-diagnostics artifact" in summary
+    for guidance in (
+        "### Gate failures",
+        "Current images or monitoring delivery need attention.",
+        "### Next actions",
+        "qualify a new image version",
+        "re-run all monitor jobs",
+        "a monitor retry cannot deliver it",
+        "#responding-to-monitor-findings",
+    ):
+        assert guidance in summary
 
 
 def test_assessment_text_cannot_emit_workflow_commands(tmp_path):
