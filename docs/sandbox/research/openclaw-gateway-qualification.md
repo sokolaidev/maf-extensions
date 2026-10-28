@@ -1466,4 +1466,3 @@ The complete installed worker dependency inventory was:
 | uvicorn | `0.54.0` |
 
 The evidence artifact contains only allowlisted Markdown observations. Credentials, endpoint/deployment names, sessions, submitted source and raw provider responses were not included in it. The private report and tool evidence were hashed before the disposable runner was removed.
-
