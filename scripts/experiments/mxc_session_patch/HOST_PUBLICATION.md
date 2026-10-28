@@ -365,10 +365,10 @@ The trusted driver reads a host-written helper creation identity and at most 1,0
 
 After helper retirement, the existing coordinator controls still require the committed checkpoint and interrupted scratch charge to survive pending-fence restart. Worker death and the local helper observation do not confirm the distributed fence. Only trusted controller verification and reconciliation permit B's newer generation, saved-result replay, interrupted-call refusal and restoration of 41 to 42. Successful reports contain `boundary: during_guest_execution`, `helper_stopped_after_owner_loss: true` and 14 scenario controls.
 
-After merging this candidate into the trusted workflow ref, run all participants together:
+Run all participants together from the trusted workflow ref:
 
 ```bash
 gh workflow run mxc-cross-runner.yml --repo sokolaidev/maf-extensions --ref main -f active_guest_crash=true
 ```
 
-Ordinary controls retain real worker/helper processes, private pipe EOF, process identities, SQLite and mutual TLS while substituting native guest execution. Native active-guest loss remains unqualified until the explicit hosted run passes. A's machine and trusted controller remain available. Whole-machine loss, coordinator-storage loss, network-authority revocation and production integration remain outside this candidate; automatic shutdown remains disabled.
+Ordinary controls retain real worker/helper processes, private pipe EOF, process identities, SQLite and mutual TLS while substituting native guest execution. The [2026-10-28 native run](../../../docs/sandbox/research/mxc-backend.md#qualified-active-guest-worker-loss-2026-10-28) passed all 14 controls on compatible AMD/Linux hosts, including helper retirement after worker loss before controller termination, takeover refusal across pending-fence restart and recovery of committed state. A's machine and trusted controller remained available. Whole-machine loss, coordinator-storage loss, network-authority revocation and production integration remain outside this evidence; automatic shutdown remains disabled.
