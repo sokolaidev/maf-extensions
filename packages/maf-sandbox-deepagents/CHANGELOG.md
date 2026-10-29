@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-deepagents-v0.6.0...maf-sandbox-deepagents-v0.7.0) (2026-10-29)
+
+
+### Features
+
+* adopt MAF 1.23 and MCP 2 across the suite ([#2140](https://github.com/sokolaidev/maf-extensions/issues/2140)) ([9ea47ea](https://github.com/sokolaidev/maf-extensions/commit/9ea47eac75a81ef01361a99bc405465fb54733ac))
+
 ## [0.6.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-deepagents-v0.5.0...maf-sandbox-deepagents-v0.6.0) (2026-10-18)
 
 
