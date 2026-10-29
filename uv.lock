@@ -1909,7 +1909,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-wslc"
-version = "0.31.0"
+version = "0.31.1"
 source = { editable = "packages/maf-sandbox-wslc" }
 dependencies = [
     { name = "maf-sandbox" },

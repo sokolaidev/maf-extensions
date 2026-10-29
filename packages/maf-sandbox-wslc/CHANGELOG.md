@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.31.0...maf-sandbox-wslc-v0.31.1) (2026-10-29)
+
+
+### Fixes
+
+* require maf-sandbox 0.52.0 in the packages that use it ([#2278](https://github.com/sokolaidev/maf-extensions/issues/2278)) ([8f00f9d](https://github.com/sokolaidev/maf-extensions/commit/8f00f9df3baf5859ed032d8e7e7a75eb2a3bffdc))
+
 ## [0.31.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.30.0...maf-sandbox-wslc-v0.31.0) (2026-10-28)
 
 
