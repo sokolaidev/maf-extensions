@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.26.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.25.0...maf-sandbox-codeact-v0.26.0) (2026-10-28)
+
+> **Correction, added after the release.** The PyPI artifacts of this version were published from `main` rather than from the `maf-sandbox-codeact-v0.26.0` tag: the [publish run at the tag](https://github.com/sokolaidev/maf-extensions/actions/runs/40771955906) failed in its test gate, and the [replacement run](https://github.com/sokolaidev/maf-extensions/actions/runs/40798281000) was dispatched with `--ref main`. Their attestations therefore name `refs/heads/main`, which a consumer that requires the release tag's ref rejects. The replacement release is planned as `0.26.1`, published from its own tag, with no code change ([#2298](https://github.com/sokolaidev/maf-extensions/pull/2298) recorded this note without the `Release-As` footer that selects it). The existing release and tag remain unchanged.
+
+
+### Features
+
+* adopt MAF 1.23 and MCP 2 across the suite ([#2140](https://github.com/sokolaidev/maf-extensions/issues/2140)) ([9ea47ea](https://github.com/sokolaidev/maf-extensions/commit/9ea47eac75a81ef01361a99bc405465fb54733ac))
+
 ## [0.25.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.24.1...maf-sandbox-codeact-v0.25.0) (2026-10-18)
 
 

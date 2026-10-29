@@ -1,4 +1,4 @@
-"""Require completed, currently clean matching images before releasing image-bound kinds."""
+"""Require completed, qualified matching images before releasing image-bound kinds."""
 
 from __future__ import annotations
 
@@ -13,8 +13,7 @@ from typing import Any
 
 from container_release import PREFIX, ROOT, read
 from container_release_history import GitHub, History
-from container_release_status import report
-from image_release_needed import baseline, changed_inputs
+from image_release_needed import changed_inputs, release_evidence
 from select_image_security import metadata_only
 
 KIND_IMAGES = {
@@ -116,15 +115,17 @@ def qualified(directory: Path, candidate: dict[str, Any]) -> None:
 
 
 def check(root: Path, head: str, packages: list[str]) -> list[dict[str, Any]]:
-    """Fail closed on missing, incompatible, vulnerable, stale or unavailable release evidence."""
+    """Require authenticated compatible images without gating packages on image security health."""
     selected = [package for package in packages if package in KIND_IMAGES]
     if not selected:
         return []
     client = GitHub()
-    snapshot = History(client).head()
+    history = History(client)
+    snapshot = history.head()
     if snapshot is None:
         raise ValueError("No completed image catalogue is available")
     results = []
+    checked = {}
     for package in selected:
         for profile in KIND_IMAGES[package]:
             name = snapshot.catalogue["current"].get(profile)
@@ -133,35 +134,29 @@ def check(root: Path, head: str, packages: list[str]) -> list[dict[str, Any]]:
                     f"{package}: no completed {profile} image; publish and qualify it first"
                 )
             record = snapshot.catalogue["releases"][name]
+            checked[profile] = name
             if record["profile"] != profile:
                 raise ValueError("Current catalogue entry identifies another profile")
             matching_source(root, record["sourceCommit"], head, package, profile)
             with tempfile.TemporaryDirectory(prefix="kind-release-image-") as temporary:
                 directory = Path(temporary)
-                evidence = baseline(client, record, directory)
+                evidence_url = release_evidence(client, record, directory)
                 qualified(directory, record["candidate"])
-            status = report(record["candidate"], github=client)
-            if (
-                status.get("monitoringStatus") != "clean"
-                or status.get("publicationState") != "completed"
-                or status.get("releaseScope") != "current"
-                or status.get("digest") != record["registryDigest"]
-                or status.get("publicationFailure") is not None
-            ):
-                raise ValueError(
-                    f"{package}/{profile}: current image assessment is "
-                    f"{status.get('monitoringStatus', 'unavailable')}; release refused"
-                )
             results.append(
                 {
                     "package": package,
                     "profile": profile,
                     "image": f"{PREFIX}/{profile}@{record['registryDigest']}",
                     "qualificationSource": record["sourceCommit"],
-                    "evidence": evidence["evidence"],
-                    "monitoringStatus": "clean",
+                    "evidence": evidence_url,
                 }
             )
+    latest = history.head()
+    if latest is None:
+        raise ValueError("Image catalogue became unavailable during verification; retry")
+    for profile, name in checked.items():
+        if latest.catalogue["current"].get(profile) != name:
+            raise ValueError(f"Current {profile} image changed during verification; retry")
     return results
 
 

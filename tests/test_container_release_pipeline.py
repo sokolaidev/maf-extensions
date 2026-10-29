@@ -496,6 +496,78 @@ def test_monitor_delivery_failure_keeps_running_instead_of_clean(
     )
 
 
+def test_finish_preserves_diagnostics_beyond_issue_notification_limit(
+    monkeypatch, tmp_path, monitor_context, capsys
+):
+    from test_check_container_monitor_result import run_gate
+
+    history = monitor_context
+    second = CANDIDATE | {
+        "profile": "shell",
+        "registryDigest": "sha256:" + "e" * 64,
+        "assessedManifestDigest": "sha256:" + "e" * 64,
+    }
+    history.catalogue = reserve(history.catalogue, second, AT)
+    monkeypatch.setattr(
+        monitor,
+        "Evidence",
+        lambda: SimpleNamespace(
+            ensure=lambda *a: {}, retain=lambda *a: None, publish=lambda *a: None
+        ),
+    )
+    emitted = []
+    monkeypatch.setattr(monitor, "outputs", emitted.append)
+    monitor.begin(tmp_path)
+    for target in read(tmp_path / "plan.json")["targets"]:
+        candidate = target["candidate"]
+        reason = (
+            "\n::error::embedded finding\n" + "Earlier diagnostic " * 2000
+            if candidate["profile"] == "bicep"
+            else "Final image failure reason"
+        )
+        write(
+            tmp_path / "reports" / monitor.target_name(target) / "observation.json",
+            {
+                "candidate": candidate,
+                "assessment": {
+                    "digest": candidate["registryDigest"],
+                    "monitorRunId": "456",
+                    "monitorRunAttempt": 1,
+                    "outcome": "unavailable",
+                    "assessedAt": DONE,
+                    "reason": reason,
+                },
+            },
+        )
+    monkeypatch.setattr(monitor, "now", lambda: DONE)
+    monitor.finish(tmp_path)
+    finish_log = capsys.readouterr().out
+    bounded = json.loads(emitted[-1]["notification"])
+    assert "Final image failure reason" not in bounded["summary"]
+    diagnostics = read(tmp_path / "diagnostics.json")
+    assert diagnostics["summary"] in finish_log
+    stop = finish_log.splitlines()[0]
+    assert stop.startswith("::stop-commands::")
+    resume = "::" + stop.removeprefix("::stop-commands::") + "::"
+    assert (
+        finish_log.index(stop)
+        < finish_log.index("::error::embedded finding")
+        < finish_log.index(resume)
+    )
+    assert "finish job log" in bounded["summary"]
+    assert diagnostics["problems"] == bounded["problems"]
+    result, summary = run_gate(tmp_path, diagnostics["summary"], ATTENTION="true")
+    assert result.returncode == 1
+    for value in ("shell/0.1.0", second["registryDigest"], "Final image failure reason"):
+        assert value in result.stdout and value in summary
+    failed, _ = run_gate(
+        tmp_path, "", FINISH="failure", MONITOR_DIAGNOSTICS=str(tmp_path / "missing.json")
+    )
+    assert failed.returncode == 1
+    assert "Image assessment details are unavailable" in failed.stdout
+    assert "Final image failure reason" in finish_log
+
+
 def test_monitor_notification_identifies_findings_and_ignores_scan_timestamps():
     catalogue = complete(
         reserve(empty_catalogue(), CANDIDATE, AT), CANDIDATE, CANDIDATE["imageId"], AT
@@ -757,6 +829,7 @@ def test_monitor_retains_failure_diagnostics_without_credentials(
     monkeypatch.setattr(monitor, operation, fail)
     monkeypatch.setattr(monitor, "now", lambda: DONE)
     monitor.scan(tmp_path, 0)
+    scan_log = capsys.readouterr().out
     monitor.finish(tmp_path)
     attempt = monitor_context.catalogue["releases"]["bicep/0.1.0"]["latestAttempt"]
     diagnostic = attempt["diagnostic"]
@@ -771,10 +844,10 @@ def test_monitor_retains_failure_diagnostics_without_credentials(
     with zipfile.ZipFile(tmp_path / "retained/reports-0000.zip") as archive:
         retained = json.loads(archive.read("bicep-0.1.0/observation.json"))
     assert retained["assessment"]["diagnostic"] == diagnostic
-    logged = json.loads(capsys.readouterr().out)
+    logged = json.loads(scan_log)
     assert logged == {"target": "bicep-0.1.0", "diagnostic": diagnostic}
     assert attempt["reason"] in json.loads(emitted[-1]["notification"])["summary"]
-    serialized = json.dumps([retained, logged, emitted])
+    serialized = json.dumps([retained, logged, emitted, capsys.readouterr().out])
     assert "secret" not in serialized
     assert str(tmp_path) not in serialized
     assert str(ROOT).replace("\\", "\\\\") not in serialized
@@ -893,6 +966,32 @@ def test_freshness_refresh_preserves_approval_reports_and_uses_same_image(monkey
     assert calls == [CANDIDATE["imageId"]]
     for name, raw_bytes in before.items():
         assert (tmp_path / f"approval-{name}").read_bytes() == raw_bytes
+
+
+@pytest.mark.parametrize("severity", ["High", "Critical"])
+def test_vulnerable_image_cannot_reach_registry_publication(monkeypatch, tmp_path, severity):
+    raw = scan_report()
+    raw["matches"] = [
+        {
+            "vulnerability": {
+                "id": "CVE-example",
+                "severity": severity,
+                "fix": {"state": "not-fixed"},
+            }
+        }
+    ]
+    write(tmp_path / "candidate.json", CANDIDATE)
+    write(tmp_path / "manifest.json", {})
+    write(tmp_path / "grype.json", raw)
+    write(tmp_path / "assessment.json", scan_result(raw, CANDIDATE["imageId"], AT))
+    monkeypatch.setattr(registry, "validate_preparation", lambda *a: None)
+    monkeypatch.setattr(registry, "validate_layout", lambda *a: {})
+    monkeypatch.setattr(registry, "verify_registry_manifest", lambda *a: None)
+    monkeypatch.setattr(registry, "load_retained", lambda *a: None)
+    monkeypatch.setattr(registry, "manifest", lambda *a, **kw: pytest.fail("registry reached"))
+    monkeypatch.setattr(registry, "run", lambda *a, **kw: pytest.fail("registry push reached"))
+    with pytest.raises(ValueError, match="complete passing scan"):
+        registry.promote(tmp_path, MemoryHistory())
 
 
 @pytest.mark.parametrize("completed", [False, True])
