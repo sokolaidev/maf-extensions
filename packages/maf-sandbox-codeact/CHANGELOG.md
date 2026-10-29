@@ -2,6 +2,8 @@
 
 ## [0.26.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.25.0...maf-sandbox-codeact-v0.26.0) (2026-10-28)
 
+> **Correction, added after the release.** The PyPI artifacts of this version were published from `main` rather than from the `maf-sandbox-codeact-v0.26.0` tag: the [publish run at the tag](https://github.com/sokolaidev/maf-extensions/actions/runs/40771955906) failed in its test gate, and the [replacement run](https://github.com/sokolaidev/maf-extensions/actions/runs/40798281000) was dispatched with `--ref main`. Their attestations therefore name `refs/heads/main`, which a consumer that requires the release tag's ref rejects. The replacement release is planned as `0.26.1`, published from its own tag, with no code change. The existing release and tag remain unchanged.
+
 
 ### Features
 
