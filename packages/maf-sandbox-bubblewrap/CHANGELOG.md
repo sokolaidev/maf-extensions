@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bubblewrap-v0.3.0...maf-sandbox-bubblewrap-v0.4.0) (2026-10-29)
+
+
+### Features
+
+* adopt MAF 1.23 and MCP 2 across the suite ([#2140](https://github.com/sokolaidev/maf-extensions/issues/2140)) ([9ea47ea](https://github.com/sokolaidev/maf-extensions/commit/9ea47eac75a81ef01361a99bc405465fb54733ac))
+
 ## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bubblewrap-v0.2.0...maf-sandbox-bubblewrap-v0.3.0) (2026-10-19)
 
 
