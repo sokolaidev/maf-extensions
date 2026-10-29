@@ -10,7 +10,7 @@
   "packages/maf-sandbox-terraform": "0.8.1",
   "packages/maf-sandbox-wslc": "0.31.0",
   "packages/maf-sandbox-drawio": "0.7.0",
-  "packages/maf-sandbox-tui": "0.6.0",
+  "packages/maf-sandbox-tui": "0.6.1",
   "packages/maf-sandbox-docker-sbx": "0.8.0",
   "packages/maf-sandbox-bubblewrap": "0.4.0",
   "packages/maf-compaction": "0.10.0",
