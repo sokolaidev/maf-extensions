@@ -9,6 +9,7 @@ import copy
 import datetime
 import hashlib
 import http.client
+import inspect
 import io
 import ipaddress
 import json
@@ -120,6 +121,7 @@ def receiver(tmp_path, monkeypatch, request):
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        timeout = 5
 
         def do_GET(self):
             body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
@@ -139,8 +141,17 @@ def receiver(tmp_path, monkeypatch, request):
         def log_message(self, format, *args):
             pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    server.daemon_threads = True
+    connections = []
+
+    class Receiver(ThreadingHTTPServer):
+        daemon_threads = False
+
+        def get_request(self):
+            connection, address = super().get_request()
+            connections.append(connection)
+            return connection, address
+
+    server = Receiver(("127.0.0.1", 0), Handler)
     server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     server_context.minimum_version = ssl.TLSVersion.TLSv1_2
     server_context.load_cert_chain(cert_path, key_path)
@@ -173,10 +184,53 @@ def receiver(tmp_path, monkeypatch, request):
             connection.close()
         return result
 
-    yield requests, routes, unrestricted
-    server.shutdown()
-    server.server_close()
-    thread.join(timeout=2)
+    try:
+        yield requests, routes, unrestricted
+    finally:
+        server.shutdown()
+        # Unblock keep-alive reads before server_close joins every request handler.
+        for connection in connections:
+            with contextlib.suppress(OSError):
+                connection.shutdown(socket.SHUT_RDWR)
+        server.server_close()
+        thread.join()
+
+
+def test_receiver_teardown_closes_idle_connections_and_joins_handlers(
+    tmp_path, monkeypatch, request
+):
+    servers = []
+    handlers = []
+
+    class ObservedServer(ThreadingHTTPServer):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            servers.append(self)
+
+        def process_request_thread(self, *args, **kwargs):
+            handlers.append(threading.current_thread())
+            super().process_request_thread(*args, **kwargs)
+
+    monkeypatch.setattr(sys.modules[__name__], "ThreadingHTTPServer", ObservedServer)
+    fixture = inspect.unwrap(receiver)(tmp_path, monkeypatch, request)
+    next(fixture)
+    server = servers[0]
+    connection = http.client.HTTPSConnection(
+        "127.0.0.1", server.server_port, context=ssl.create_default_context(), timeout=2
+    )
+    try:
+        connection.request("GET", "/repository/1.0/artifact.zip")
+        with connection.getresponse() as response:
+            assert response.read() == b"artifact"
+        transport = connection.sock
+        assert transport is not None
+        with pytest.raises(StopIteration):
+            next(fixture)
+        assert handlers and all(not handler.is_alive() for handler in handlers)
+        assert transport.recv(1) == b""
+    finally:
+        connection.close()
+        fixture.close()
 
 
 @pytest.mark.filterwarnings("ignore:ssl.TLSVersion.TLSv1:DeprecationWarning")
