@@ -4,7 +4,7 @@
   "packages/maf-sandbox-bicep": "0.25.0",
   "packages/maf-sandbox-codeact": "0.26.1",
   "packages/maf-sandbox-deepagents": "0.7.1",
-  "packages/maf-sandbox-docker": "0.30.0",
+  "packages/maf-sandbox-docker": "0.30.1",
   "packages/maf-sandbox-hyperlight": "0.11.1",
   "packages/maf-sandbox-otel": "0.11.1",
   "packages/maf-sandbox-terraform": "0.8.1",
