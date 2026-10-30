@@ -435,6 +435,45 @@ def test_consumer_guide_does_not_hide_image_or_unknown_document_changes(reposito
     assert affected("packages/maf-sandbox/README.md") == ("hyperlight-aks-probe",)
 
 
+@pytest.mark.parametrize("event", ["pull_request", "push"])
+def test_mxc_evidence_changes_do_not_select_image_builds(repository, event):
+    root, base = repository
+    head = commit(
+        root,
+        {
+            "docs/sandbox/backends/mxc.md": "Updated status",
+            "docs/sandbox/research/mxc-backend.md": "Updated qualification",
+            "scripts/experiments/mxc_session_patch/HOST_PUBLICATION.md": "Updated evidence",
+            "scripts/experiments/mxc_session_patch/cross-active-results.json": "[]",
+        },
+    )
+    profiles, reason = select(root, event, base, head)
+    assert profiles == []
+    assert "no image build, scan or security evidence" in reason
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("images/shell-sandbox/Dockerfile", ["shell"]),
+        ("scripts/experiments/mxc_session_patch/driver.py", list(PROFILES)),
+        ("scripts/experiments/mxc_session_patch/new-results.json", list(PROFILES)),
+        ("scripts/experiments/mxc_session_patch/nested/HOST_PUBLICATION.md", list(PROFILES)),
+        ("scripts/select_image_security.py", list(PROFILES)),
+    ],
+)
+def test_mxc_evidence_does_not_hide_build_or_unknown_inputs(repository, path, expected):
+    root, base = repository
+    head = commit(
+        root,
+        {
+            "scripts/experiments/mxc_session_patch/cross-active-results.json": "[]",
+            path: "Updated input",
+        },
+    )
+    assert select(root, "pull_request", base, head)[0] == expected
+
+
 def test_deleted_image_input_and_new_profile_both_select_scans(repository):
     root, _ = repository
     base = commit(root, {"images/drawio-export/old.py": "old"})
