@@ -66,6 +66,7 @@ class TestTheGateEnumerates:
             "maf-compaction",
             "maf-sandbox",
             "maf-sandbox-acas",
+            "maf-sandbox-antivirus",
             "maf-sandbox-bicep",
             "maf-sandbox-bubblewrap",
             "maf-sandbox-codeact",

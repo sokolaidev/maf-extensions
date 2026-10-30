@@ -393,6 +393,7 @@ CANDIDATE_BACKEND_PACKAGES = [
 #: receiving no checks — which is the detector gating itself (#450).
 NOT_BACKENDS = frozenset(
     {
+        "maf-sandbox-antivirus",  # Workload kind; provides no backend.
         "maf-sandbox-bicep",
         "maf-sandbox-codeact",
         "maf-sandbox-deepagents",

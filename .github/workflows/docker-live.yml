@@ -29,6 +29,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  antivirus:
+    if: github.event_name == 'workflow_dispatch' && !inputs.openclaw_bicep
+    name: Antivirus kind conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Build and qualify the antivirus runtime
+        run: |
+          uv sync --locked
+          docker build --platform linux/amd64 -t maf-antivirus:ci images/antivirus-sandbox
+          uv run python scripts/antivirus_qualification.py --image maf-antivirus:ci --output out/antivirus
+      - name: Retain antivirus qualification
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: antivirus-conformance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/antivirus/
+          if-no-files-found: error
+
   document:
     if: github.event_name != 'workflow_dispatch' || !inputs.openclaw_bicep
     name: Document kind conformance
@@ -442,8 +465,8 @@ jobs:
     concurrency:
       group: docker-live-failure-tracker
       cancel-in-progress: false
-    needs: [docker-e2e, capability-policy, document, openclaw-bicep, openclaw-bicep-model]
-    if: always() && (needs.docker-e2e.result == 'failure' || needs.capability-policy.result == 'failure' || needs.document.result == 'failure' || needs.openclaw-bicep.result == 'failure' || needs.openclaw-bicep-model.result == 'failure')
+    needs: [docker-e2e, capability-policy, document, antivirus, openclaw-bicep, openclaw-bicep-model]
+    if: always() && (needs.docker-e2e.result == 'failure' || needs.capability-policy.result == 'failure' || needs.document.result == 'failure' || needs.antivirus.result == 'failure' || needs.openclaw-bicep.result == 'failure' || needs.openclaw-bicep-model.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -463,4 +486,4 @@ jobs:
           --title 'Docker live checks failed'
           --reproduce 'Re-run the linked attempt, or dispatch docker-live.yml against the failing commit. Inspect the first failed step for setup, registry, daemon, or test failures.'
           --expected 'All Docker live checks pass.'
-          --packages maf-sandbox maf-sandbox-docker maf-sandbox-codeact maf-sandbox-bicep maf-sandbox-deepagents maf-sandbox-document maf-sandbox-drawio maf-sandbox-mcp
+          --packages maf-sandbox maf-sandbox-docker maf-sandbox-codeact maf-sandbox-bicep maf-sandbox-deepagents maf-sandbox-document maf-sandbox-antivirus maf-sandbox-drawio maf-sandbox-mcp

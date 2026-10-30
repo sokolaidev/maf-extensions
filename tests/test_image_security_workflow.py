@@ -133,7 +133,7 @@ def test_every_scan_profile_is_named_in_the_documented_scope():
         "profile": "${{ fromJSON(needs.select.outputs.profiles) }}"
     }
     names = PROFILES
-    assert len(names) == len(set(names)) == 14
+    assert len(names) == len(set(names)) == 15
     scope = (ROOT / "docs/security/container-images.md").read_text()
     for profile in names:
         assert f"| `{profile}` |" in scope
@@ -212,6 +212,7 @@ def test_hyperlight_release_transition_defers_the_entire_scan_evidence_chain():
         "terraform-avm",
         "graphviz",
         "document",
+        "antivirus",
         "drawio",
         "drawio-export",
         "egress-proxy",

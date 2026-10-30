@@ -22,6 +22,7 @@ on:
           - bicep-docker-sbx
           - graphviz
           - document
+          - antivirus
           - drawio
           - drawio-export
           - shell

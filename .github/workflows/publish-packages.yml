@@ -27,6 +27,7 @@ on:
       - "maf-sandbox-docker-v*"
       - "maf-sandbox-docker-sbx-v*"
       - "maf-sandbox-document-v*"
+      - "maf-sandbox-antivirus-v*"
       - "maf-sandbox-drawio-v*"
       - "maf-sandbox-hyperlight-v*"
       - "maf-sandbox-otel-v*"

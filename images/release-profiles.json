@@ -16,6 +16,7 @@
     "terraform-avm",
     "opentofu-avm",
     "hyperlight-aks-probe",
-    "egress-proxy"
+    "egress-proxy",
+    "antivirus"
   ]
 }
