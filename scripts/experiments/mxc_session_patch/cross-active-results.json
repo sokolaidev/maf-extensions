@@ -1,0 +1,129 @@
+[
+  {
+    "artifact": "mxc-cross-report-b-40779366624-1",
+    "artifact_id": 12857430918,
+    "archive_digest": "sha256:3dcb838aa270bafebfa4b8512deb91f0da7ebf4fae236783c3f0297ff226c6d0",
+    "report_sha256": "2ccb059e58b67dd98f8e7aa2ac44f6d88f5c2ad4aad927d5748b6c8d3fbd699c",
+    "members": [
+      {
+        "name": "report.json",
+        "bytes": 589
+      }
+    ],
+    "report": {
+      "status": "passed",
+      "phase": "native",
+      "role": "b",
+      "binding": {
+        "GITHUB_SHA": "cf6a3f8b2ea3a07c0f5e6bbdb9aba6b2e6d72ecd",
+        "GITHUB_RUN_ID": "40779366624",
+        "GITHUB_RUN_ATTEMPT": "1"
+      },
+      "python": "3.12.3",
+      "profile": {
+        "helper": "c7c5d0c88a248b6c681ca03895899da7101d6fea07f848458c6019f016b874c9",
+        "startup_index": "943812aec8c4bdd2873abd986c8b3e9e4be3b210e87077e054afad0b57ffd772",
+        "policy": "closed",
+        "platform": "Linux",
+        "architecture": "x86_64",
+        "cpu_vendor": "AuthenticAMD"
+      },
+      "cpu_vendor": "AuthenticAMD",
+      "distinct_boots": 3
+    }
+  },
+  {
+    "artifact": "mxc-cross-report-coordinator-40779366624-1",
+    "artifact_id": 12856871884,
+    "archive_digest": "sha256:85075f80ba8ee050e8da3775144fd008782155ac2b2c3b6774a3740f0bcd7270",
+    "report_sha256": "ec86094dbf385811713117e286507562d8fd9097db25a12ee28c89c09b37ecd8",
+    "members": [
+      {
+        "name": "report.json",
+        "bytes": 1336
+      },
+      {
+        "name": "service.log",
+        "bytes": 0
+      }
+    ],
+    "report": {
+      "status": "passed",
+      "phase": "native",
+      "role": "coordinator",
+      "binding": {
+        "GITHUB_SHA": "cf6a3f8b2ea3a07c0f5e6bbdb9aba6b2e6d72ecd",
+        "GITHUB_RUN_ID": "40779366624",
+        "GITHUB_RUN_ATTEMPT": "1"
+      },
+      "python": "3.12.3",
+      "profile": {
+        "helper": "c7c5d0c88a248b6c681ca03895899da7101d6fea07f848458c6019f016b874c9",
+        "startup_index": "943812aec8c4bdd2873abd986c8b3e9e4be3b210e87077e054afad0b57ffd772",
+        "policy": "closed",
+        "platform": "Linux",
+        "architecture": "x86_64",
+        "cpu_vendor": "AuthenticAMD"
+      },
+      "cpu_vendor": null,
+      "distinct_boots": 3,
+      "worker_crash": {
+        "boundary": "during_guest_execution",
+        "helper_stopped_after_owner_loss": true,
+        "native_counter": 99,
+        "worker_killed": true
+      },
+      "seed_checkpoint_bytes": 862170320,
+      "replacement_checkpoint_bytes": 862190800,
+      "controls": [
+        "competing-owner-_refused",
+        "coordinator-restart",
+        "missing-proof-_refused",
+        "stale-owner-_refused",
+        "retired-receipt-_refused",
+        "saved-result-without-helper",
+        "native-state-restored",
+        "scratch-reconciled",
+        "active-helper-stopped-after-owner-loss",
+        "worker-process-killed-during-guest-execution",
+        "takeover-blocked-without-proof",
+        "pending-fence-survived-restart",
+        "unpublished-state-discarded",
+        "interrupted-call-refused"
+      ]
+    }
+  },
+  {
+    "artifact": "mxc-cross-report-a-40779366624-1",
+    "artifact_id": 12856242446,
+    "archive_digest": "sha256:1373b5a9e6f562c19a8d8034e837bb235a542ef1e679cd9d374dff5dd0bad369",
+    "report_sha256": "8583376f7cd9146abead53492c35e63a2f369bcc6d50787261345eccb7acea60",
+    "members": [
+      {
+        "name": "report.json",
+        "bytes": 589
+      }
+    ],
+    "report": {
+      "status": "passed",
+      "phase": "native",
+      "role": "a",
+      "binding": {
+        "GITHUB_SHA": "cf6a3f8b2ea3a07c0f5e6bbdb9aba6b2e6d72ecd",
+        "GITHUB_RUN_ID": "40779366624",
+        "GITHUB_RUN_ATTEMPT": "1"
+      },
+      "python": "3.12.3",
+      "profile": {
+        "helper": "c7c5d0c88a248b6c681ca03895899da7101d6fea07f848458c6019f016b874c9",
+        "startup_index": "943812aec8c4bdd2873abd986c8b3e9e4be3b210e87077e054afad0b57ffd772",
+        "policy": "closed",
+        "platform": "Linux",
+        "architecture": "x86_64",
+        "cpu_vendor": "AuthenticAMD"
+      },
+      "cpu_vendor": "AuthenticAMD",
+      "distinct_boots": 3
+    }
+  }
+]
