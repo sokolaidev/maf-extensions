@@ -36,4 +36,5 @@ try:
         stacklevel=2,
     )
 except MafSandboxAntivirusExperimentalWarning:
+    # The pre-1.0 notice must not prevent imports under -W error.
     pass

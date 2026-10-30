@@ -182,6 +182,14 @@ async def _execute(
         "error",
     }:
         raise ValueError("invalid antivirus response")
+    for channel, diagnostic in (
+        ("stderr", result.stderr),
+        ("diagnostic", response.get("diagnostic", "")),
+    ):
+        if diagnostic:
+            _LOGGER.debug(
+                "scan_file untrusted guest %s %s: %.8192r", phase, channel, str(diagnostic)[:8192]
+            )
     return response
 
 
@@ -288,7 +296,7 @@ def _build_tool(
                         completed=prepared["status"] == "refused",
                         verdict="refused" if prepared["status"] == "refused" else None,
                         trusted_output=("Database preparation did not admit the scan",),
-                        output=(str(prepared.get("diagnostic", ""))[:8192],),
+                        output=("Guest diagnostic text withheld.",),
                     )
                 databases = _databases(prepared, "prepared")
                 if any(databases[name]["version"] != target for name, target in update.targets):
@@ -314,7 +322,7 @@ def _build_tool(
                     "Database update SHA-256: "
                     + hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest(),
                 ),
-                output=(str(response.get("diagnostic", ""))[:8192],),
+                output=("Guest diagnostic text withheld.",),
             )
         except TimeoutError:
             return _stopped("Error: antivirus update or scan timed out")

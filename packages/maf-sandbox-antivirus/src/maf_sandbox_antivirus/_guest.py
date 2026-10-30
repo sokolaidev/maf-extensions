@@ -247,9 +247,11 @@ def main() -> None:
             else:
                 raise ValueError("unknown operation")
     except Refused as exc:
-        response = {"status": "refused", "diagnostic": str(exc)[:MAX_DIAGNOSTIC]}
+        print(str(exc)[:MAX_DIAGNOSTIC], file=sys.stderr)
+        response = {"status": "refused", "diagnostic": "policy_refused"}
     except Exception as exc:
-        response = {"status": "error", "diagnostic": str(exc)[:MAX_DIAGNOSTIC]}
+        print(str(exc)[:MAX_DIAGNOSTIC], file=sys.stderr)
+        response = {"status": "error", "diagnostic": "operation_failed"}
     print(json.dumps(response, separators=(",", ":")))
 
 

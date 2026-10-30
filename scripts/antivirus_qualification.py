@@ -206,8 +206,8 @@ async def check(
                 )
             if expected == "infected":
                 _require(
-                    any("Eicar" in text or "EICAR" in text for text in texts),
-                    "EICAR signature absent",
+                    not any("Eicar" in text or "EICAR" in text for text in texts),
+                    "guest signature escaped into tool output",
                 )
             if label != "stale" and expected != "error":
                 _require(
