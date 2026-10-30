@@ -12,11 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import prepare_container_release as preparation  # noqa: E402
 from check_container_release_image import check  # noqa: E402
-from prepare_container_release import labels, require_source  # noqa: E402
 
 
 def test_release_labels_do_not_replace_upstream_version():
-    result = labels("bicep", "0.1.0", "a" * 40)
+    result = preparation.labels("bicep", "0.1.0", "a" * 40)
     assert "org.opencontainers.image.version" not in result
     assert result["dev.sokolai.maf.image.version"] == "0.1.0"
 
@@ -41,7 +40,7 @@ def test_source_cannot_be_selected_independently_of_dispatch(monkeypatch, change
         "prepare_container_release.run", lambda *a, **k: pytest.fail("must reject before building")
     )
     with pytest.raises(ValueError):
-        require_source("a" * 40)
+        preparation.require_source("a" * 40)
 
 
 @pytest.mark.parametrize(
