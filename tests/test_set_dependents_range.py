@@ -329,7 +329,7 @@ class TestTheTwoFileSetsNeverMoveTogether:
     def test_no_sample_in_this_repository_is_in_the_default_plan(self):
         planned = [path for path, _, _ in ranges.plan("9.9.0", REPO_ROOT)]
         assert planned, "nothing was planned at all; this test is measuring nothing"
-        assert not [path for path in planned if "samples" in path.parts], (
+        assert not [path for path in planned if {"samples", "scripts"} & set(path.parts)], (
             "the samples' floor moves in a pull request of its own, after the dependents publish"
         )
 
@@ -338,8 +338,15 @@ class TestTheTwoFileSetsNeverMoveTogether:
         # different means. This is what keeps them honest about the real files: a sample the
         # script stops recognising would otherwise sail through every fixture above.
         expected = []
-        for path in sorted((REPO_ROOT / "samples").glob("[0-9][0-9]_*/agent.py")):
-            block = path.read_text("utf-8").split("# /// script\n", 1)[1].split("# ///", 1)[0]
+        paths = [
+            *(REPO_ROOT / "samples").glob("[0-9][0-9]_*/agent.py"),
+            *(REPO_ROOT / "scripts").rglob("*.py"),
+        ]
+        for path in sorted(paths):
+            text = path.read_text("utf-8")
+            if "\n# /// script\n" not in "\n" + text:
+                continue
+            block = text.split("# /// script\n", 1)[1].split("# ///", 1)[0]
             metadata = tomllib.loads(
                 "\n".join(line.removeprefix("# ") for line in block.splitlines())
             )
@@ -350,6 +357,33 @@ class TestTheTwoFileSetsNeverMoveTogether:
         planned = [path for path, _, _ in ranges.plan("9.9.0", REPO_ROOT, samples=True)]
         assert expected, "no samples found; this test is measuring nothing"
         assert planned == expected
+
+    @pytest.mark.parametrize("relative", ["scripts/probe.py", "scripts/qualification/probe.py"])
+    def test_qualification_floors_move_only_with_samples(self, tmp_path: Path, relative: str):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True)
+        before = _agent()
+        path.write_text(before, "utf-8")
+        assert ranges.run("0.8.0", tmp_path) == []
+        assert path.read_text("utf-8") == before
+        assert ranges.run("0.8.0", tmp_path, samples=True) == [path]
+        assert path.read_text("utf-8") == before.replace("maf-sandbox>=0.7", "maf-sandbox>=0.8")
+        assert ranges.run("0.8.0", tmp_path, samples=True) == []
+
+    def test_a_capped_qualification_floor_is_refused(self, tmp_path: Path):
+        path = tmp_path / "scripts" / "probe.py"
+        path.parent.mkdir()
+        path.write_text(_agent('"maf-sandbox>=0.51,<0.52"'), "utf-8")
+        with pytest.raises(SystemExit, match="cannot edit"):
+            ranges.run("0.52.0", tmp_path, samples=True)
+
+    def test_a_script_without_inline_metadata_is_not_rewritten(self, tmp_path: Path):
+        path = tmp_path / "scripts" / "probe.py"
+        path.parent.mkdir()
+        before = '# Example: "maf-sandbox>=0.7"\n'
+        path.write_text(before, "utf-8")
+        assert ranges.run("0.8.0", tmp_path, samples=True) == []
+        assert path.read_text("utf-8") == before
 
 
 class TestTheTitle:
@@ -387,7 +421,7 @@ class TestTheTitle:
     def test_the_samples_alone_name_the_minor_not_the_release(self):
         # The files say >=0.8; a subject saying 0.8.0 would advertise a claim no file makes.
         assert ranges.title("0.8.0", frozenset({SAMPLE})) == (
-            "chore: require maf-sandbox 0.8 in every sample's declared floor"
+            "chore: require maf-sandbox 0.8 in sample and qualification floors"
         )
 
     def test_a_title_that_moves_only_samples_releases_nothing(self):

@@ -18,7 +18,7 @@ a minor further until 0.35.0, when every published dependent admitting the unrel
 became a gate on it — `docs/release-compatibility.md` has the argument. It only ever widens, so
 a patch changes nothing.
 
-**The samples' floor moves only under `--samples`**, which switches the file set rather than
+**Sample and qualification floors move only under `--samples`**, which switches the file set rather than
 adding to it. Merged with the packages' hunk it takes the whole suite unsatisfiable whenever
 the core reaches the index first (0.33.0, 0.34.0); the release workflow's range step passes no
 flag, and its samples step opens a separate pull request.
@@ -161,8 +161,11 @@ def plan(
     released = _version(released_text)
     planned: list[tuple[Path, str, frozenset[str]]] = []
     if samples:
-        for path in sorted(repo_root.glob("samples/*/agent.py")):
+        paths = [*repo_root.glob("samples/*/agent.py"), *repo_root.glob("scripts/**/*.py")]
+        for path in sorted(paths):
             text = path.read_text("utf-8")
+            if not re.search(r"(?m)^# /// script$", text):
+                continue
             if _SAMPLE_BASE.search(text) is None:
                 continue
             if _SAMPLE_FLOOR.search(text) is None:
@@ -214,7 +217,7 @@ def title(released_text: str, moved: frozenset[str]) -> str:
     line = f"{admitted[0]}.{admitted[1] - 1}"
     if moved == frozenset({SAMPLE_FLOOR}):
         samples = _text(target_sample_floor(released))
-        return f"chore: require maf-sandbox {samples} in every sample's declared floor"
+        return f"chore: require maf-sandbox {samples} in sample and qualification floors"
     if moved == frozenset({FLOOR, CEILING}):
         return (
             f"fix: require maf-sandbox {released_text} in the dependents, and admit the {line} line"

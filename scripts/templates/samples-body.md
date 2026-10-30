@@ -1,4 +1,4 @@
-Automated by the release workflow when maf-sandbox @VERSION@ was released. It moves only the floors in `samples/*/agent.py` to the @MINOR@ core minor; nothing under `packages/` is part of this pull request.
+Automated by the release workflow when maf-sandbox @VERSION@ was released. It moves the PEP 723 floors in `samples/*/agent.py` and qualification scripts under `scripts/` to the @MINOR@ core minor; nothing under `packages/` is part of this pull request.
 
 **Wait for the dependent releases before merging this.** The samples resolve their backend and kind packages from PyPI. Until the dependents that should admit @VERSION@ have published, this pull request can ask for the new core beside packages whose published ceilings still exclude it.
 
