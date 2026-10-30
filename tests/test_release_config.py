@@ -832,7 +832,7 @@ class TestTheProposalBodyIsWrittenIntact:
         "**Then merge it, and let the dependent releases it cuts publish.**",
     )
     _SAMPLES_EXPECTED = (
-        "It moves only the floors in `samples/*/agent.py` to the 1.2 core minor",
+        "It moves the PEP 723 floors in `samples/*/agent.py` and qualification scripts under `scripts/` to the 1.2 core minor",
         "**Wait for the dependent releases before merging this.**",
         "**This is deliberately separate from the range pull request.**",
         "**If this pull request is already green, still check the release order.**",

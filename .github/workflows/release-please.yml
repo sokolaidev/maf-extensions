@@ -140,7 +140,7 @@ jobs:
         run: |
           set -euo pipefail
           # The previous proposal may have left the checkout on its branch. Start this one from
-          # the release commit so the samples pull request carries only samples.
+          # the release commit so sample and qualification floors exclude package range changes.
           git switch --detach "$GITHUB_SHA"
           title="$(python3 scripts/set_dependents_range.py --print-title --samples "$VERSION")"
           branch="chore/maf-sandbox-samples-${VERSION}"

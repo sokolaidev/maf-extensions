@@ -3,7 +3,7 @@
 # /// script
 # requires-python = ">=3.12,<3.15"
 # dependencies = [
-#   "maf-sandbox>=0.51,<0.52",
+#   "maf-sandbox>=0.52",
 #   "maf-sandbox-acas>=0.31.1",
 #   "maf-sandbox-shell>=0.1.1",
 #   "azure-containerapps-sandbox",

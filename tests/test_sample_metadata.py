@@ -28,6 +28,15 @@ _BLOCK = re.compile(
     r"(?m)^# /// script\s*$\s(?P<body>(?:^#(?:| .*)$\s)+)^# ///\s*$",
 )
 
+_CORE_SCRIPTS = sorted(
+    [sample / "agent.py" for sample in _SAMPLE_DIRS]
+    + [
+        path
+        for path in (_SAMPLES.parent / "scripts").rglob("*.py")
+        if _BLOCK.search(path.read_text("utf-8"))
+    ]
+)
+
 
 #: The module a distribution installs. Underscores in, hyphens out, and `maf_sandbox` itself
 #: is the one that is not a suffix of anything.
@@ -262,7 +271,7 @@ class TestTheDeclaredCoreFloor:
     def _floor(self, sample: Path) -> tuple[int, ...] | None:
         found = [
             dep
-            for dep in _metadata(sample / "agent.py")["dependencies"]
+            for dep in _metadata(sample)["dependencies"]
             if re.match(r"[A-Za-z0-9._-]+", dep.strip()).group(0) == "maf-sandbox"
         ]
         assert len(found) < 2, (
@@ -280,9 +289,9 @@ class TestTheDeclaredCoreFloor:
         )
         return tuple(int(part) for part in match.group(1).split("."))
 
-    @pytest.mark.parametrize("sample", _SAMPLE_DIRS, ids=lambda path: path.name)
+    @pytest.mark.parametrize("sample", _CORE_SCRIPTS, ids=lambda path: path.as_posix())
     def test_every_sample_declares_one(self, sample: Path):
-        dependencies = _metadata(sample / "agent.py")["dependencies"]
+        dependencies = _metadata(sample)["dependencies"]
         if not any(dependency.startswith("maf-sandbox") for dependency in dependencies):
             return
         assert self._floor(sample) is not None, (
@@ -292,7 +301,7 @@ class TestTheDeclaredCoreFloor:
         )
 
     def test_they_all_declare_the_same_one(self):
-        floors = {sample.name: self._floor(sample) for sample in _SAMPLE_DIRS}
+        floors = {sample.as_posix(): self._floor(sample) for sample in _CORE_SCRIPTS}
         distinct = sorted({floor for floor in floors.values() if floor is not None})
         assert len(distinct) == 1, (
             "the samples declare different floors: "
@@ -304,7 +313,7 @@ class TestTheDeclaredCoreFloor:
     def test_it_is_in_the_sample_baseline_window(self):
         """Keep the prior sample baseline until the current core and dependents publish."""
         core, previous = self._core_minor(), self._previous_baseline()
-        floors = {floor[:2] for floor in map(self._floor, _SAMPLE_DIRS) if floor is not None}
+        floors = {floor[:2] for floor in map(self._floor, _CORE_SCRIPTS) if floor is not None}
         wrong = _floors_outside_the_window(floors, core, previous)
         ahead = [floor for floor in wrong if floor > core]
         assert not ahead, (
