@@ -438,6 +438,13 @@ def test_loser_is_resubmitted_only_after_winner_barrier_and_traffic_checks(
         "race",
         "restart",
         "restart_detached",
+        "attached_control",
+        "attached_case_1",
+        "attached_case_2",
+        "attached_case_3",
+        "detached_control",
+        "detached_case_1",
+        "detached_case_2",
         "dispose",
         "cleanup",
         "continuity",
@@ -446,6 +453,8 @@ def test_loser_is_resubmitted_only_after_winner_barrier_and_traffic_checks(
 def test_measurement_preserves_partial_evidence_and_cleanup_limits(probe, monkeypatch, failure):
     calls = []
     report = {}
+    snapshots = []
+    transitions = probe.Transitions
 
     def fail(stage):
         calls.append(stage)
@@ -470,7 +479,7 @@ def test_measurement_preserves_partial_evidence_and_cleanup_limits(probe, monkey
             self.report, self.owners = report, []
 
         def save(self):
-            pass
+            snapshots.append(copy.deepcopy(report))
 
         async def acquire(self, **kwargs):
             self.owners.append({"name": "sandbox", "sandbox_id": "physical"})
@@ -480,8 +489,9 @@ def test_measurement_preserves_partial_evidence_and_cleanup_limits(probe, monkey
             fail("dispose")
 
     class Matrix:
-        def __init__(self, *args):
-            pass
+        def __init__(self, fixture, profile, ip, record):
+            self.transitions = transitions(fixture, profile, ip, record)
+            self.transitions.current = lambda: None
 
         def race(self, schedule):
             report["transitions"]["cases"].extend([{"passed": True}] * 8)
@@ -496,11 +506,25 @@ def test_measurement_preserves_partial_evidence_and_cleanup_limits(probe, monkey
         def restart(self, gateway, value, attached):
             if failure == "continuity":
                 raise probe.RuntimeRestarted("runtime replaced")
-            report["transitions"]["cases"].extend([{"passed": True}] * (3 if attached else 2))
             fail("restart" if attached else "restart_detached")
+            self.transitions.check(
+                "restart_attached" if attached else "restart_detached", 200, 200, blocked=attached
+            )
+
+    def observe(client, name, ip, record, label, host, path, expected, method):
+        stage = "attached" if label.startswith("restart_attached_") else "detached"
+        index = {("GET", "/provider"): 1, ("POST", "/provider"): 2, ("GET", "/blocked"): 3}[
+            method, path
+        ]
+        if index == 1:
+            fail(stage + "_control")
+        failure_point = stage + "_case_" + str(index)
+        record("cases", {"case": label, "passed": failure != failure_point})
+        fail(failure_point)
 
     monkeypatch.setattr(probe, "CompositionProfile", lambda: profile)
     monkeypatch.setattr(probe, "Transitions", Matrix)
+    monkeypatch.setattr(probe, "observe_native", observe)
     monkeypatch.setattr(probe, "fixture_policy", lambda *args: None)
     monkeypatch.setattr(
         probe.socket, "getaddrinfo", lambda *args: [(None, None, None, None, ("172.18.0.2", 8000))]
@@ -520,7 +544,23 @@ def test_measurement_preserves_partial_evidence_and_cleanup_limits(probe, monkey
         "continuity": 5,
         "restart": 5,
         "restart_detached": 2,
+        "prepare": 5,
+        "acquire": 5,
+        "race": 5,
+        "attached_control": 4,
+        "attached_case_1": 4,
+        "attached_case_2": 3,
+        "attached_case_3": 2,
+        "detached_control": 1,
+        "detached_case_1": 1,
+        "detached_case_2": 0,
     }.get(failure, 0)
+    for saved in snapshots:
+        state = saved["transitions"]
+        started = {row["case"] for row in state["case_attempts"]}
+        assert started.isdisjoint(state["unrun_cases"])
+        observed = {row["case"] for row in state["cases"] if "case" in row}
+        assert observed <= started
     assert evidence["provider_and_profile_cleanup_verified"] == (
         failure not in ("prepare", "dispose", "cleanup")
     )

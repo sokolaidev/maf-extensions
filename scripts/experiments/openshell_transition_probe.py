@@ -301,12 +301,14 @@ class Transitions:
             cases.append(("GET", "/blocked", blocked_status))
         for method, path, expected in cases:
             self.current()
+            case = label + "_" + method.lower() + path.replace("/", "_")
+            self.record("case_attempts", {"case": case})
             observe_native(
                 self.client,
                 self.name,
                 self.ip,
                 self.record,
-                label + "_" + method.lower() + path.replace("/", "_"),
+                case,
                 self.profile.provider_host,
                 path,
                 expected,
@@ -403,9 +405,17 @@ class Transitions:
 async def measure_transitions(fixture, ip, gateway):
     """Keep race/restart evidence separate from serial composition and adoption gates."""
     ip = native_origin_ip(ip)
+    restart_cases = [
+        "restart_attached_get_provider",
+        "restart_attached_post_provider",
+        "restart_attached_get_blocked",
+        "restart_detached_get_provider",
+        "restart_detached_post_provider",
+    ]
     evidence = fixture.report["transitions"] = {
         "scope": "one anonymous provider; same-version policy/detach conflicts; retained-state gateway restart",
         "cases": [],
+        "case_attempts": [],
         "controls": [],
         "races": [],
         "mutations": [],
@@ -414,7 +424,7 @@ async def measure_transitions(fixture, ip, gateway):
         "qualification_passed": False,
         "characterization_completed": False,
         "restart_continuity_blocked": False,
-        "unrun_cases": [],
+        "unrun_cases": restart_cases.copy(),
         "provider_and_profile_cleanup_verified": False,
         "unqualified": [
             "server-side interleaving beyond observed RPC overlap",
@@ -428,6 +438,8 @@ async def measure_transitions(fixture, ip, gateway):
 
     def record(kind, row):
         evidence[kind].append(row)
+        if kind == "case_attempts" and row["case"] in evidence["unrun_cases"]:
+            evidence["unrun_cases"].remove(row["case"])
         fixture.save()
 
     profile = CompositionProfile()
@@ -450,31 +462,18 @@ async def measure_transitions(fixture, ip, gateway):
         for schedule in ("policy_first", "detach_first", "concurrent"):
             await asyncio.to_thread(transitions.race, schedule)
         expected_cases = 24
-        restart_cases = [
-            "restart_attached_get_provider",
-            "restart_attached_post_provider",
-            "restart_attached_get_blocked",
-            "restart_detached_get_provider",
-            "restart_detached_post_provider",
-        ]
-        evidence["unrun_cases"] = restart_cases.copy()
-        fixture.save()
         try:
             await asyncio.to_thread(transitions.policy, True)
             receipt = await asyncio.to_thread(transitions.provider, True)
             await asyncio.to_thread(transitions.restart, gateway, receipt, True)
             expected_cases = 27
-            evidence["unrun_cases"] = restart_cases[3:]
-            fixture.save()
             await asyncio.to_thread(transitions.policy, False)
             receipt = await asyncio.to_thread(transitions.provider, False)
             await asyncio.to_thread(transitions.restart, gateway, receipt, False)
             expected_cases = 29
-            evidence["unrun_cases"] = []
         except RuntimeRestarted as exc:
             evidence["restart_continuity_blocked"] = True
             evidence["blocker"] = str(exc)
-            evidence["unrun_cases"] = restart_cases[expected_cases - 24 :]
         if len(evidence["cases"]) != expected_cases or not all(
             row["passed"] for row in evidence["cases"]
         ):
