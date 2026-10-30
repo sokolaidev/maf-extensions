@@ -11,7 +11,7 @@ Guest egress is **closed**: `drawio_sandbox_spec` has an empty allowlist, and AC
 Build [the draw.io image](../../images/drawio-sandbox/Dockerfile) with Python 3 and Graphviz already installed. From the repository root:
 
 ```bash
-docker build -t <registry>.azurecr.io/drawio-sandbox:<revision> images/drawio-sandbox
+uv run --locked python scripts/build_wolfi_python.py -t <registry>.azurecr.io/drawio-sandbox:<revision> images/drawio-sandbox
 docker push <registry>.azurecr.io/drawio-sandbox:<revision>
 ```
 

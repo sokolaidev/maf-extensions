@@ -13,6 +13,7 @@ from typing import Any
 
 from build_bicep_image import PROFILES as BICEP_PROFILES
 from build_bicep_image import ROUTES, validate_route
+from build_wolfi_python import PYTHON_PROFILES
 from check_container_release_image import check
 from container_release import (
     PREFIX,
@@ -208,7 +209,8 @@ def prepare(
     run(
         ["bash", "scripts/build_scan_image.sh", profile],
         cwd=ROOT,
-        timeout=7200 if profile == "terraform-avm" else 2400,
+        timeout=(7200 if profile == "terraform-avm" else 2400)
+        + (1800 if profile in PYTHON_PROFILES else 0),
         env=os.environ | {"BICEP_ROUTE": bicep_route},
     )
     target = "maf-image-release:candidate"

@@ -35,7 +35,7 @@ Use `make_file_system_sink(output_directory, existing="replace")` to replace the
 Build the image from the repository root:
 
 ```bash
-docker build -t drawio-sandbox:local images/drawio-sandbox
+uv run --locked python scripts/build_wolfi_python.py -t drawio-sandbox:local images/drawio-sandbox
 ```
 
 The image needs Python and Graphviz. The kind requires a POSIX backend with `EXEC`, `FILES_IN` and `FILES_OUT`. It uses closed network access and the host's isolation floor. Core disposes after each call by default.

@@ -10,6 +10,17 @@ from pathlib import Path
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
+PYTHON_PROFILES = (
+    "document",
+    "drawio",
+    "drawio-export",
+    "shell",
+    "terraform-random",
+    "opentofu-random",
+    "terraform-avm",
+    "opentofu-avm",
+    "hyperlight-aks-probe",
+)
 
 
 def build_packages(destination: Path) -> None:

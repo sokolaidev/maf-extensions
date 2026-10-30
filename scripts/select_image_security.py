@@ -13,6 +13,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from build_wolfi_python import PYTHON_PROFILES
+
 PROFILES = (
     "bicep",
     "bicep-avm",
@@ -28,17 +30,6 @@ PROFILES = (
     "opentofu-avm",
     "hyperlight-aks-probe",
     "egress-proxy",
-)
-PYTHON_PROFILES = (
-    "document",
-    "drawio",
-    "drawio-export",
-    "shell",
-    "terraform-random",
-    "opentofu-random",
-    "terraform-avm",
-    "opentofu-avm",
-    "hyperlight-aks-probe",
 )
 IMAGE_INPUTS = {
     "images/wolfi-python/": PYTHON_PROFILES,
