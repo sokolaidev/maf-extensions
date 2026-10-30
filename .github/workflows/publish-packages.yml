@@ -55,6 +55,7 @@ on:
           - maf-sandbox-docker
           - maf-sandbox-docker-sbx
           - maf-sandbox-document
+          - maf-sandbox-antivirus
           - maf-sandbox-drawio
           - maf-sandbox-hyperlight
           - maf-sandbox-otel
