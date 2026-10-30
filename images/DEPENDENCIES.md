@@ -65,7 +65,7 @@ The gate continues to reject unfixed High/Critical matches. Source/license recei
 
 Shell before/after evidence is retained in the [shell guide](shell-sandbox/README.md): the Debian candidate had 55 High findings; the tested Wolfi candidate had zero High/Critical and two Medium findings in its dated local assessment. Subsequent published Docker, ACAS and WSLC evidence is linked there. Those results do not qualify a newly rebuilt candidate or every other Wolfi image.
 
-Issue [#2178](https://github.com/sokolaidev/maf-extensions/issues/2178) tracks migration acceptance. Implementation, local builds, local updater proposals, hosted PR checks, candidate publication and production acceptance are distinct. A local Dependabot CLI proposal proves updater behavior on its recorded input; GitHub bot proposals are now verified below, with Docker Sandboxes qualification still blocked by missing Dependabot credentials. Release approval and publication remain maintainer actions.
+Issue [#2178](https://github.com/sokolaidev/maf-extensions/issues/2178) tracks migration acceptance, completed by the evidence in [#2300](https://github.com/sokolaidev/maf-extensions/pull/2300). Implementation, local builds, local updater proposals, hosted PR checks, candidate publication and production acceptance are distinct. The GitHub bot tag and digest proposals below now have successful affected-profile aggregates, including Docker Sandboxes qualification. Release approval and publication remain maintainer actions.
 
 ## Local assessment, 2026-10-27
 
@@ -115,10 +115,23 @@ The bot-authored proposals below were created after the configuration reached th
 | [#2257](https://github.com/sokolaidev/maf-extensions/pull/2257), head `5db747932432b97725c062055e10a21afe7205e3` | Three native NuGet library changes in `dependencies.csproj` | Actual manifest proposal verified; closed without merging. No successful candidate qualification is claimed here. |
 | [#2276](https://github.com/sokolaidev/maf-extensions/pull/2276), head `9bfa7b505247897474fc808de4ade59c7617be4b` | Grouped Go JOSE 4.1.4 to 4.1.6 security update in both mirrors' `go.mod` and `go.sum` | The proxy and aggregate passed in [run 40580115145](https://github.com/sokolaidev/maf-extensions/actions/runs/40580115145); proposal merged. |
 
-Tag and same-tag digest changes both reached the affected-profile build and qualification matrix. Neither failed aggregate is green: the missing sandbox credential prevented that profile from building, qualifying or scanning on those bot runs. The successful implementation run cannot substitute for qualification of either update candidate. No publication was part of these PR checks.
+Tag and same-tag digest changes both reached the affected-profile build and qualification matrix. At the October 29 audit, neither failed aggregate was green: the missing sandbox credential prevented that profile from building, qualifying or scanning. The successful implementation run could not substitute for qualification of either update candidate. The later retries below complete that qualification without publication.
 
-### Remaining acceptance prerequisite
+### Credential prerequisite
 
-Both bot runs stopped with `DOCKER_USERNAME and DOCKER_PAT must be set to sign sbx in.` The repository's Dependabot secret inventory was empty at this audit. Configure `DOCKER_USERNAME` and a read-only `DOCKER_PAT` under repository **Settings → Secrets and variables → Dependabot**; Actions secrets are not supplied to Dependabot pull-request workflows. Keep the credential check and aggregate failure mandatory.
+Both bot runs stopped with `DOCKER_USERNAME and DOCKER_PAT must be set to sign sbx in.` The repository's Dependabot secret inventory was empty at the October 29 audit. Configure `DOCKER_USERNAME` and a read-only `DOCKER_PAT` under repository **Settings → Secrets and variables → Dependabot**; Actions secrets are not supplied to Dependabot pull-request workflows. Keep the credential check and aggregate failure mandatory.
 
-After configuration, rerun the failed jobs for the recorded bot candidates, or qualify replacement bot proposals and record their exact heads. Require successful Docker Sandboxes build, runtime qualification, inventory verification and strict scan for both update forms before closing [#2178](https://github.com/sokolaidev/maf-extensions/issues/2178). The upstream Bicep binary's retained High findings remain release blockers for that route. Publication, signatures of new published candidates and deployment-specific production acceptance remain separate maintainer work.
+### Bot candidate acceptance, 2026-10-30 UTC
+
+After both Dependabot secrets were configured, failed-job retries completed the two recorded candidates. [Digest run 40539641156, attempt 3](https://github.com/sokolaidev/maf-extensions/actions/runs/40539641156/attempts/3) and [SDK tag run 40530599022, attempt 2](https://github.com/sokolaidev/maf-extensions/actions/runs/40530599022/attempts/2) both passed their aggregates: 13 affected profiles for the digest update and three for the SDK update. The PR heads remain `5f0706c2` and `c3a9fe82`; their GitHub merge checkouts are `9d382903` and `dabe33ae`, respectively. The proposals remain closed without merging; these retries qualify their recorded inputs, not an accepted dependency upgrade.
+
+Only Docker Sandboxes was rebuilt by these retries. The other 12 digest profiles and two SDK profiles retain their successful October 27 candidates and scan database; they were not rescanned against the October 30 database. The [bot acceptance record](../tests/fixtures/image_dependencies/hosted-bot-updates.json) preserves all 16 candidate identities, original build attempts and collection dates, artifact identities, report hashes, component counts and severity counts. Build, runtime, Docker inspection, Syft and Grype identities match for every candidate; all recorded scans have zero High/Critical findings.
+
+| Docker Sandboxes candidate | Image config identity | Components | Critical / High | Scan database built |
+|---|---|---:|---:|---|
+| Shared Wolfi digest refresh | `sha256:7154eaa8886c43f4697bcdabe03695df77e3cb44de331f2c8070710d0457fb6f` | 167 | 0 / 0 | 2026-10-30T06:23:28Z |
+| SDK 10.0.403 tag update | `sha256:07a928a2897fdb4b2335f81f34b0f13b4218a089f30dbf7b9eb54254503882a1` | 167 | 0 / 0 | 2026-10-30T06:23:28Z |
+
+Both new candidates passed all six compiler/configuration/module cases through `maf-sandbox-docker-sbx` with `sbx` 0.50.1 and deny-all networking. Compiled-output transfer, workspace round trips, template archive identity and source/application inventory checks passed. No sandboxes remained, and the templates and workspaces were removed. Syft 1.54.0 and Grype 0.120.0 recorded zero findings at any severity for both candidates, with an empty scan configuration and the unchanged High threshold including unfixed findings.
+
+This completes the bot-update acceptance prerequisite for [#2178](https://github.com/sokolaidev/maf-extensions/issues/2178). The upstream Bicep binary's retained High findings remain release blockers for that route. Publication, signatures of new published candidates and deployment-specific production acceptance remain separate maintainer work; these dated candidate checks establish none of them.
