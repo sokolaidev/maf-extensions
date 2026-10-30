@@ -115,7 +115,7 @@ max-doc-length = 100
 [tool.pyright]
 # This historical MCP 1.x sample is checked in its own declared environment in CI.
 exclude = ["samples/experimental/openclaw_bicep"]
-include = ["scripts", "tests", "samples", "packages/*/tests/**", "images/terraform-sandbox/example.py", "images/terraform-sandbox/build_image.py", "images/terraform-sandbox/build_providers.py", "images/terraform-sandbox/install.py", "images/shell-sandbox"]
+include = ["scripts", "tests", "samples", "packages/*/tests/**", "images/terraform-sandbox/example.py", "images/terraform-sandbox/build_image.py", "images/terraform-sandbox/build_providers.py", "images/terraform-sandbox/install.py", "images/shell-sandbox", "images/azure-pricing-sandbox"]
 typeCheckingMode = "standard"
 # scripts/ is under no execution environment, so it stays at full standard — the phase-1
 # behavior, unchanged. Each test tree is its own execution environment (root takes a single
@@ -139,6 +139,7 @@ typeCheckingMode = "standard"
 # stale ones.
 executionEnvironments = [
   { root = "images/shell-sandbox", pythonPlatform = "Linux" },
+  { root = "images/azure-pricing-sandbox", pythonPlatform = "Linux" },
   { root = "samples", reportUnnecessaryTypeIgnoreComment = "error" },
   { root = "tests", extraPaths = ["samples/09_inprocess_bicep", "samples/07_docker_diagram", "samples/12_purge_lifecycle", "scripts", "images/terraform-sandbox"], reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
@@ -180,6 +181,7 @@ testpaths = [
     "packages/maf-sandbox-bicep/tests",
     "packages/maf-sandbox-terraform/tests",
     "packages/maf-sandbox-shell/tests",
+    "packages/maf-sandbox-azure-pricing/tests",
     "packages/maf-sandbox-codeact/tests",
     "packages/maf-sandbox-deepagents/tests",
     "packages/maf-sandbox-docker/tests",

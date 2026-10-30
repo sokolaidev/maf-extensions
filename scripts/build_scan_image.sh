@@ -7,6 +7,9 @@ if [ -n "${MAF_PROVIDER_BUILDS:-}" ]; then
 fi
 
 case "$1" in
+  azure-pricing)
+    docker build --pull --platform linux/amd64 -t maf-image-scan:target images/azure-pricing-sandbox
+    ;;
   bicep)
     uv run --locked python scripts/build_bicep_image.py --tag maf-image-scan:target
     ;;

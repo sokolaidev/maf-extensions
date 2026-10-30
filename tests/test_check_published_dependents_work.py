@@ -372,6 +372,7 @@ def _fake_fetch_with_docker_020(distribution: str) -> dict[str, list[str]]:
 # reads back, and the expected content of an `--emit-snapshot` run.
 _ADMITTING_AT_BUILD: list[tuple[str, str]] = [
     ("maf-sandbox-acas", "0.6.0"),
+    ("maf-sandbox-azure-pricing", "0.6.0"),
     ("maf-sandbox-bicep", "0.6.0"),
     ("maf-sandbox-bubblewrap", "0.6.0"),
     ("maf-sandbox-codeact", "0.6.0"),

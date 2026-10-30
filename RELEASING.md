@@ -42,6 +42,7 @@ Three things a Release PR does need from you first, all of them because it is a 
 | Tag | Publishes |
 |---|---|
 | `maf-sandbox-v*` | `packages/maf-sandbox` |
+| `maf-sandbox-azure-pricing-v*` | `packages/maf-sandbox-azure-pricing` |
 | `maf-sandbox-acas-v*` | `packages/maf-sandbox-acas` |
 | `maf-sandbox-bicep-v*` | `packages/maf-sandbox-bicep` |
 | `maf-sandbox-codeact-v*` | `packages/maf-sandbox-codeact` |
