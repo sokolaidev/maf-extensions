@@ -25,6 +25,7 @@ runs:
         echo "SBX_NO_TELEMETRY=1" >> "$GITHUB_ENV"
         if [ -z "$DOCKER_USERNAME" ] || [ -z "$DOCKER_PAT" ]; then
           echo "::error::DOCKER_USERNAME and DOCKER_PAT must be set to sign sbx in."
+          echo "::error::For Dependabot pull requests, configure both as Dependabot secrets; Actions secrets are unavailable to those runs."
           exit 1
         fi
         # Docker's apt repository, the one `get.docker.com` with REPO_ONLY=1 configures.

@@ -1,0 +1,588 @@
+{
+  "observedAt": "2026-10-30T23:10:36.479262+00:00",
+  "scope": "Linux/amd64 Dependabot PR candidates. Failed-job retries rebuilt only bicep-docker-sbx; the other profiles retain their original October 27 artifacts and database. No publication or production acceptance.",
+  "runs": [
+    {
+      "updateForm": "digest",
+      "pullRequest": 2238,
+      "pullRequestHead": "5f0706c21b9f6d1c60b7f0c1996b503289911eb2",
+      "runUrl": "https://github.com/sokolaidev/maf-extensions/actions/runs/40539641156",
+      "runAttempt": 3,
+      "runConclusion": "success",
+      "checkoutMergeCommit": "9d3829030dce7c2169d05fa69881147e856b55da",
+      "checkoutParents": [
+        "cd0cdb37f3c39002005719c786890a5afd4dc9d1",
+        "5f0706c21b9f6d1c60b7f0c1996b503289911eb2"
+      ],
+      "profiles": [
+        {
+          "profile": "bicep",
+          "artifactId": 12750296980,
+          "artifactUrl": "https://github.com/sokolaidev/maf-extensions/actions/runs/40539641156/artifacts/12750296980",
+          "artifactDigest": "sha256:780c5da8f79e4c1e2a409c84d3cb690c405135efe0f1ac96f30187f70ea16058",
+          "buildRunAttempt": 1,
+          "collectedAt": "2026-10-27T16:23:02.082503+00:00",
+          "imageId": "sha256:9bd0ee95fa8be9f29935f19ab79408271fbf239a653fc2b56f0ba6f1786c7928",
+          "runtimePassed": true,
+          "runtimeKind": "offline-packaging",
+          "componentCount": 132,
+          "matchCounts": {
+            "Critical": 0,
+            "High": 0,
+            "Medium": 0,
+            "Low": 0,
+            "Negligible": 0,
+            "Unknown": 0
+          },
+          "syftVersion": "1.54.0",
+          "grypeVersion": "0.120.0",
+          "databaseBuilt": "2026-10-27T06:30:41Z",
+          "sha256": {
+            "build.json": "31e7f3d88aeeacf861ac009dc8621bd997e90cd950ddd8f37043a15dc0e85e26",
+            "runtime.json": "63324b5baf1f72a5b0e259f5619dce5b9c9a21a47f3599b193f3645e4388df71",
+            "sbom.syft.json": "61358feb6c8f97820b020f0a9700c6fc1183ac0d181a2451186f99eba1370a62",
+            "grype.json": "cd5f97015f8fe4de2ff575ff6ab6e1388fae51e0cbe80f3a3e798d6256dd1b18",
+            "declared-images.json": "bb125627c1fa4bb3de114cdad365ba3113b44970044ca8b78a764d56229e01e3",
+            "image-inspect.json": "118e961e185ad27e5f0feb44ff6fe1615936ddd27a64ceba67c96783959ecf88",
+            "grype.yaml": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+          }
+        },
+        {
+          "profile": "bicep-avm",
+          "artifactId": 12749443919,
+          "artifactUrl": "https://github.com/sokolaidev/maf-extensions/actions/runs/40539641156/artifacts/12749443919",
+          "artifactDigest": "sha256:987e0f12ebc257429d37dbc36f597a5c6efc0774e214e9f35f838401a4936404",
+          "buildRunAttempt": 1,
+          "collectedAt": "2026-10-27T16:23:30.156845+00:00",
+          "imageId": "sha256:f883041252cf9e224943c8857115205d63842de69bd1df21e362ffc8e5146ccb",
+          "runtimePassed": true,
+          "runtimeKind": "offline-packaging",
+          "componentCount": 132,
+          "matchCounts": {
+            "Critical": 0,
+            "High": 0,
+            "Medium": 0,
+            "Low": 0,
+            "Negligible": 0,
+            "Unknown": 0
+          },
+          "syftVersion": "1.54.0",
+          "grypeVersion": "0.120.0",
+          "databaseBuilt": "2026-10-27T06:30:41Z",
+          "sha256": {
+            "build.json": "42f6f75f16c1e96a36324791d3682ab79ee5b52a6bfff92240fba0f89d9d9a8e",
+            "runtime.json": "b39c8d72a1e24a768adf1073c1815578603c72d88dd9e14d8a14aa56c0f08ab9",
+            "sbom.syft.json": "2a4d568fa01da585d0270b3d9e54177b9a529a55beb8b92c442ae934d03a4e6a",
+            "grype.json": "3dbdda505e91d7aab92678955e8ced2591b9f80bb98c3fe9822c6bc58bdd8a65",
+            "declared-images.json": "bb125627c1fa4bb3de114cdad365ba3113b44970044ca8b78a764d56229e01e3",
+            "image-inspect.json": "88122e33b31359f8082db059d371bc7df19a4b4c59bfef3defebd637d48996b2",
+            "grype.yaml": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+          }
+        },
+        {
+          "profile": "bicep-docker-sbx",
+          "artifactId": 13019091331,
+          "artifactUrl": "https://github.com/sokolaidev/maf-extensions/actions/runs/40539641156/artifacts/13019091331",
+          "artifactDigest": "sha256:e80d35ba7a8b2e16371d0a6943e4042cf2eb3b5455919b034782e931bf32fb35",
+          "buildRunAttempt": 3,
+          "collectedAt": "2026-10-30T23:05:42.092769+00:00",
+          "imageId": "sha256:7154eaa8886c43f4697bcdabe03695df77e3cb44de331f2c8070710d0457fb6f",
+          "runtimePassed": true,
+          "runtimeKind": "docker-sbx-consumer",
+          "componentCount": 167,
+          "matchCounts": {
+            "Critical": 0,
+            "High": 0,
+            "Medium": 0,
+            "Low": 0,
+            "Negligible": 0,
+            "Unknown": 0
+          },
+          "syftVersion": "1.54.0",
+          "grypeVersion": "0.120.0",
+          "databaseBuilt": "2026-10-30T06:23:28Z",
+          "sha256": {
+            "build.json": "1c257ea8dc040d5334596b972625fdf8e9dda97c089bf2722a62c80251aafe0d",
+            "runtime.json": "4be9892d4685245671b31215f3fb82109d328ba644a5e6f82d33088d9073e879",
+            "sbom.syft.json": "58ce261d78e92d905d5c01618a69663b3c93668caabca06aef89e8ba8397f977",
+            "grype.json": "68bfe5aa77a5dee2310af62fc92833bfa891707e398a8d83894772219b296753",
+            "declared-images.json": "bb125627c1fa4bb3de114cdad365ba3113b44970044ca8b78a764d56229e01e3",
+            "image-inspect.json": "d4cdfcbe9b587969d370e993879f5ba3503760b8b252895817577c06014cb0ec",
+            "grype.yaml": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+          },
+          "sandboxQualification": {
+            "sbxVersion": "sbx version v0.50.1 ddb0268d7124b9cf98955d0b08ffd71a0dfcebe4",
+            "checksPassed": [
+              "valid-local",
+              "invalid-type",
+              "staged-strict-config",
+              "default-config-control",
+              "staged-config",
+              "uncached-module"
+            ],
+            "network": "sbx-deny-all",
+            "compiledOutputTransfer": true,
+            "workspaceRoundTrip": true,
+            "sandboxesRemaining": [],
+            "templateRemoved": true,
+            "workspaceRemoved": true,
+            "sdkImage": "mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:3a48280a9a7c6276c3eeaba1efa6a08820f18c84fb9e6274c187719ecfaf9fbc",
+            "licenseSha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
+            "suiteLicenseSha256": "a37bf24f2f2c5779823a7a2426a0dd5d10e9bb2c9b96d197cdf196c097e38d61"
+          }
+        },
+        {
+          "profile": "document",
+          "artifactId": 12749288765,
+          "artifactUrl": "https://github.com/sokolaidev/maf-extensions/actions/runs/40539641156/artifacts/12749288765",
+          "artifactDigest": "sha256:5891a82a65b6d4f377768515646be3e0df3e87458c1c4b4760faead6038bdf55",
+          "buildRunAttempt": 1,
+          "collectedAt": "2026-10-27T16:19:50.141316+00:00",
+          "imageId": "sha256:2a9594e4520055cbfbf4408a1a2ef6aa9ca03f1716a5d52edc1c27fa3c399128",
+          "runtimePassed": true,
+          "runtimeKind": "offline-sdk-consumer",
+          "componentCount": 43,
+          "matchCounts": {
+            "Critical": 0,
+            "High": 0,
+            "Medium": 2,
+            "Low": 0,
+            "Negligible": 0,
+            "Unknown": 0
+          },
+          "syftVersion": "1.54.0",
+          "grypeVersion": "0.120.0",
+          "databaseBuilt": "2026-10-27T06:30:41Z",
+          "sha256": {
+            "build.json": "fde206eb9c62c433d8341c99238a8b63990ad82163f41825aa1de7bee7116465",
+            "runtime.json": "4b975e180ca9869fc3ad5c9d82f41e9f5b8ff78fc265375ee17259c653081374",
+            "sbom.syft.json": "9a242ee34697438b63f2a00ed6220846b3ec13a8198e01912febd224cdf1c624",
+            "grype.json": "4c8b18e650f7c0607ee4989b52b677902fc420163a06b579eaf951f460ee5ce8",
+            "declared-images.json": "bb125627c1fa4bb3de114cdad365ba3113b44970044ca8b78a764d56229e01e3",
+            "image-inspect.json": "19b162570f63e91b58a04bf23b208fef9ef78d6c7d1ab2caca333c57f888d0ba",
+            "grype.yaml": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+          }
+        },
+        {
+          "profile": "drawio",
+          "artifactId": 12749443649,
+          "artifactUrl": "https://github.com/sokolaidev/maf-extensions/actions/runs/40539641156/artifacts/12749443649",
+          "artifactDigest": "sha256:7f57913262200e80c1bc76e6eccce8f7f99bb0d64693d4d595e59403819b4194",
+          "buildRunAttempt": 1,
+          "collectedAt": "2026-10-27T16:21:39.079307+00:00",
+          "imageId": "sha256:ab55552307e52f0512703e6bd77cbfe217d71ca2cb9853a3001e0458638d6275",
+          "runtimePassed": true,
+          "runtimeKind": "offline-sdk-consumer",
+          "componentCount": 72,
+          "matchCounts": {
+            "Critical": 0,
+            "High": 0,
+            "Medium": 2,
+            "Low": 0,
+            "Negligible": 0,
+            "Unknown": 0
+          },
+          "syftVersion": "1.54.0",
+          "grypeVersion": "0.120.0",
+          "databaseBuilt": "2026-10-27T06:30:41Z",
+          "sha256": {
+            "build.json": "e31cd056a332887abf3e32dba4f073684c79837c5551fdb6729560ed63b07a26",
+            "runtime.json": "3b600d23c586037e51c5d16e14f5909e3a348a930249962ac48027bd03d423e1",
+            "sbom.syft.json": "b8951f1b537843af6b3bf42195805d0724474dc3b99b0f350faa25d21e0c9a3c",
+            "grype.json": "f228841c2f4bb77c9cd03e963b9d6974ec19638230d03a0527040594c6b353b8",
+            "declared-images.json": "bb125627c1fa4bb3de114cdad365ba3113b44970044ca8b78a764d56229e01e3",
+            "image-inspect.json": "14cfffd17ea494e94c7c1a1ae52ae29e988537554f442d46cfdff63bc44ed882",
+            "grype.yaml": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+          }
+        },
+        {
+          "profile": "drawio-export",
+          "artifactId": 12750447725,
+          "artifactUrl": "https://github.com/sokolaidev/maf-extensions/actions/runs/40539641156/artifacts/12750447725",
+          "artifactDigest": "sha256:f86cd3a8425a5c96fb381d861a55b4c972a80543e03e69d5d89dff0bb99320ef",
+          "buildRunAttempt": 1,
+          "collectedAt": "2026-10-27T16:23:08.776618+00:00",
+          "imageId": "sha256:58dac587caa188729a9d5bbc1ea2b841d213c214c8a52b795b0ba3b248541c5b",
+          "runtimePassed": true,
+          "runtimeKind": "offline-sdk-consumer",
+          "componentCount": 316,
+          "matchCounts": {
+            "Critical": 0,
+            "High": 0,
+            "Medium": 5,
+            "Low": 0,
+            "Negligible": 0,
+            "Unknown": 0
+          },
+          "syftVersion": "1.54.0",
+          "grypeVersion": "0.120.0",
+          "databaseBuilt": "2026-10-27T06:30:41Z",
+          "sha256": {
+            "build.json": "f4889869b4a2d9793ab5f7507fd2102631ce7db9100a907f02af22660541d2f2",
+            "runtime.json": "b5cadef6d6f2808db4b25a1eaa641d5d6d4cca80d7ab788ad3c3ad15a54777cd",
+            "sbom.syft.json": "1316191c2d0fce60d3ca30fe25461e8d915b1cda8f83494c027080a3cbfecb46",
+            "grype.json": "7d718ed005bbd2f05521f817d62c9913f162b39b23a68494e20d29492da5611d",
+            "declared-images.json": "bb125627c1fa4bb3de114cdad365ba3113b44970044ca8b78a764d56229e01e3",
+            "image-inspect.json": "b35433a5c1db3fa2299e1e9f408cab86d6b5b0c11be299f6612fae988ad34796",
+            "grype.yaml": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+          }
+        },
+        {
+          "profile": "graphviz",
+          "artifactId": 12750152103,
+          "artifactUrl": "https://github.com/sokolaidev/maf-extensions/actions/runs/40539641156/artifacts/12750152103",
+          "artifactDigest": "sha256:cf29722905f00c8e28a0e8a2d413f4a4d3312da7d801808f4f115ce40bdcde88",
+          "buildRunAttempt": 1,
+          "collectedAt": "2026-10-27T16:19:47.892904+00:00",
+          "imageId": "sha256:c96fbe854283b0fcc650221ada0f5c10a9c214186d5920fa8d3a8883c3828547",
+          "runtimePassed": true,
+          "runtimeKind": "offline-packaging",
+          "componentCount": 83,
+          "matchCounts": {
+            "Critical": 0,
+            "High": 0,
+            "Medium": 0,
+            "Low": 0,
+            "Negligible": 0,
+            "Unknown": 0
+          },
+          "syftVersion": "1.54.0",
+          "grypeVersion": "0.120.0",
+          "databaseBuilt": "2026-10-27T06:30:41Z",
+          "sha256": {
+            "build.json": "cf7249650f3d220b3eb6327852b870816e7a334c1018b33fdb34a55d807f968c",
+            "runtime.json": "75de0cc043d2e9d20096c3942166fb355f49616346a3d374780be4c1c393127e",
+            "sbom.syft.json": "bb7b6551fd9a5005bc21551aad9734cdcb5489d3dfd3d38485a51bd1eaef2adb",
+            "grype.json": "f9ccfc2bd93ff776e622822952705bc49fbd427821b29312d15d4642a660dd0c",
+            "declared-images.json": "bb125627c1fa4bb3de114cdad365ba3113b44970044ca8b78a764d56229e01e3",
+            "image-inspect.json": "94a019ef36f19b349ed241967d2953ccfcaab79d38d809f3fc02519d1ec4338b",
+            "grype.yaml": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+          }
+        },
+        {
+          "profile": "hyperlight-aks-probe",
+          "artifactId": 12750109897,
+          "artifactUrl": "https://github.com/sokolaidev/maf-extensions/actions/runs/40539641156/artifacts/12750109897",
+          "artifactDigest": "sha256:4c2aba0e45ba5ffaf8f2269edc5d4960ba1be8232f32fc84b187ccb4b4e8fe92",
+          "buildRunAttempt": 1,
+          "collectedAt": "2026-10-27T16:32:37.458308+00:00",
+          "imageId": "sha256:3f101582ee2b87e4ce03e63dd716d74922d1a5ccac371770e17d5b301433df76",
+          "runtimePassed": true,
+          "runtimeKind": "packaging",
+          "componentCount": 76,
+          "matchCounts": {
+            "Critical": 0,
+            "High": 0,
+            "Medium": 2,
+            "Low": 0,
+            "Negligible": 0,
+            "Unknown": 0
+          },
+          "syftVersion": "1.54.0",
+          "grypeVersion": "0.120.0",
+          "databaseBuilt": "2026-10-27T06:30:41Z",
+          "sha256": {
+            "build.json": "269ce1e7f061c7b7e930d20695ed8552a0218297ab07c6c234e799c46f88753e",
+            "runtime.json": "a375b4ede71f209c4f960e32308aeaf0e3d3b45797b273f74500e6648375b987",
+            "sbom.syft.json": "f1c42d27425a95fc54140f94ed74eb44e49682d60736164bdc42bc4de76a4491",
+            "grype.json": "edfd0e65e05d7be0d73a9429f0a8806303f066e7d426ee870a7e4b6c3fc773c9",
+            "declared-images.json": "bb125627c1fa4bb3de114cdad365ba3113b44970044ca8b78a764d56229e01e3",
+            "image-inspect.json": "39f07780d2849961f969020431924c98bf278b13d97dad2407ebe1bbe4b7c750",
+            "grype.yaml": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+          }
+        },
+        {
+          "profile": "opentofu-avm",
+          "artifactId": 12751013191,
+          "artifactUrl": "https://github.com/sokolaidev/maf-extensions/actions/runs/40539641156/artifacts/12751013191",
+          "artifactDigest": "sha256:3153c1d1edd19155ce92efe37f8a549de2c81f5ea7464d56a6cd25f91fc912ab",
+          "buildRunAttempt": 1,
+          "collectedAt": "2026-10-27T16:34:43.689640+00:00",
+          "imageId": "sha256:030aa07f20de0478228d743c10aaefbc0ce754efb5c57dc57d28d50aca3e9cbf",
+          "runtimePassed": true,
+          "runtimeKind": "offline-packaging",
+          "componentCount": 402,
+          "matchCounts": {
+            "Critical": 0,
+            "High": 0,
+            "Medium": 2,
+            "Low": 0,
+            "Negligible": 0,
+            "Unknown": 7
+          },
+          "syftVersion": "1.54.0",
+          "grypeVersion": "0.120.0",
+          "databaseBuilt": "2026-10-27T06:30:41Z",
+          "sha256": {
+            "build.json": "0720aca5db0579791b3f20b79725653e245ad73658da1485ccf0f9ec200fe196",
+            "runtime.json": "cbb8471e54be113f5f71d39e1a0cba006f9c2ada83dd4b7c490e52466df4f148",
+            "sbom.syft.json": "ca19b8afbbda9c156ef2351ed2ef01fbc6cf2b33bb9a7d1c96049d2408a76827",
+            "grype.json": "fcaac3d812ac575c36873657c84dc05f21149c68f96b678e5a29b025ec37fe8b",
+            "declared-images.json": "bb125627c1fa4bb3de114cdad365ba3113b44970044ca8b78a764d56229e01e3",
+            "image-inspect.json": "14f27b67d010e0447b261b2643021f829a6b502bce0a6386e2c9410bbec518d6",
+            "grype.yaml": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+          }
+        },
+        {
+          "profile": "opentofu-random",
+          "artifactId": 12750572904,
+          "artifactUrl": "https://github.com/sokolaidev/maf-extensions/actions/runs/40539641156/artifacts/12750572904",
+          "artifactDigest": "sha256:25f0eb1a4fa7848d6dec5d94c6dfb79ddd2b0b033057a0308bf6b4c1f159b277",
+          "buildRunAttempt": 1,
+          "collectedAt": "2026-10-27T16:30:26.341843+00:00",
+          "imageId": "sha256:f75f0aab9c00a04d418f68e51261c249de05d218a5e64e223b7c48f6655d8c7a",
+          "runtimePassed": true,
+          "runtimeKind": "offline-packaging",
+          "componentCount": 309,
+          "matchCounts": {
+            "Critical": 0,
+            "High": 0,
+            "Medium": 2,
+            "Low": 0,
+            "Negligible": 0,
+            "Unknown": 4
+          },
+          "syftVersion": "1.54.0",
+          "grypeVersion": "0.120.0",
+          "databaseBuilt": "2026-10-27T06:30:41Z",
+          "sha256": {
+            "build.json": "768610bb3d36f868d6ad7e2187fba9828c21c4fa324051a4e0d78dd763c47e1d",
+            "runtime.json": "397c0bbe2de6b114d360714024b68643263764e3d61823af73d584bb95f65003",
+            "sbom.syft.json": "70935d8b4a812059d0fd2331c29cc31ef7973c83238d403c3916ef3515cf18ed",
+            "grype.json": "cec670ae5c6b6ffde914cf3949424ede79029f799e588db8e4cc7b17f9fb8b46",
+            "declared-images.json": "bb125627c1fa4bb3de114cdad365ba3113b44970044ca8b78a764d56229e01e3",
+            "image-inspect.json": "2c222dbd5e1baece27e4fe531f3d4300fb8e291a97256da16aadbc854f20b1fb",
+            "grype.yaml": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+          }
+        },
+        {
+          "profile": "shell",
+          "artifactId": 12750108668,
+          "artifactUrl": "https://github.com/sokolaidev/maf-extensions/actions/runs/40539641156/artifacts/12750108668",
+          "artifactDigest": "sha256:0f439c3f9c317f9277670e34a1a0b659a4b78274b01930de6bd106e5f9d7ceff",
+          "buildRunAttempt": 1,
+          "collectedAt": "2026-10-27T16:26:20.036328+00:00",
+          "imageId": "sha256:6d33aa1daff1ce0fd16d12e3236c6bba037b4a049fc9427433db6b02ba1050d2",
+          "runtimePassed": true,
+          "runtimeKind": "offline-sdk-consumer",
+          "componentCount": 326,
+          "matchCounts": {
+            "Critical": 0,
+            "High": 0,
+            "Medium": 2,
+            "Low": 0,
+            "Negligible": 0,
+            "Unknown": 0
+          },
+          "syftVersion": "1.54.0",
+          "grypeVersion": "0.120.0",
+          "databaseBuilt": "2026-10-27T06:30:41Z",
+          "sha256": {
+            "build.json": "2cb955f03d48de072cbece5d4e84f56961bb71413210bf5e81b0dd7b8d249341",
+            "runtime.json": "997a1c102a3bbf51a0ea6bcc0e28df7a1b544993b574bf8bff20ca0748566bb6",
+            "sbom.syft.json": "e20da4aa1da78992b64dd9ab61df8cc8339025eb2ae17ab1a95d49f7b64acccd",
+            "grype.json": "3e78b437cfc86cce0f400662831742449d41a7f7d5af63292fcca2961030b316",
+            "declared-images.json": "bb125627c1fa4bb3de114cdad365ba3113b44970044ca8b78a764d56229e01e3",
+            "image-inspect.json": "45572d7af96fde3d1f1e0b82da944a039dc45e4201d17782258e4960ca8c9217",
+            "grype.yaml": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+          }
+        },
+        {
+          "profile": "terraform-avm",
+          "artifactId": 12750493075,
+          "artifactUrl": "https://github.com/sokolaidev/maf-extensions/actions/runs/40539641156/artifacts/12750493075",
+          "artifactDigest": "sha256:dd9b71b0fa2176d42c2c7a5a2880ff843806153612bd79f4b837512894b6a972",
+          "buildRunAttempt": 1,
+          "collectedAt": "2026-10-27T16:36:01.213885+00:00",
+          "imageId": "sha256:0f68f4e2d1587254128a3c45489088cf51c246a7b24d519a022781e2de0ff015",
+          "runtimePassed": true,
+          "runtimeKind": "offline-packaging",
+          "componentCount": 1481,
+          "matchCounts": {
+            "Critical": 0,
+            "High": 0,
+            "Medium": 5,
+            "Low": 7,
+            "Negligible": 0,
+            "Unknown": 43
+          },
+          "syftVersion": "1.54.0",
+          "grypeVersion": "0.120.0",
+          "databaseBuilt": "2026-10-27T06:30:41Z",
+          "sha256": {
+            "build.json": "5620eb01b9acb4d0ae29be8b9d393d6e6c02b99fa65c513518942e7bedf9593c",
+            "runtime.json": "5f9508e7d4c75f134b392365cee67a58f31e6c1138bfdb2d7fdc4fd4fb4770a9",
+            "sbom.syft.json": "533a9e07caa32b7dc56f514822d50c81c26255d1f7fc5e595a6607eb83950faa",
+            "grype.json": "9ae46f7f5b7b71603af8d27ce522f60a6a3eb43c228eae87a505b2efef1685bb",
+            "declared-images.json": "bb125627c1fa4bb3de114cdad365ba3113b44970044ca8b78a764d56229e01e3",
+            "image-inspect.json": "332f809781e1442a05c612cd4daad011ea91245cd3a1ee6fde8b278fd2a818fa",
+            "grype.yaml": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+          }
+        },
+        {
+          "profile": "terraform-random",
+          "artifactId": 12751391525,
+          "artifactUrl": "https://github.com/sokolaidev/maf-extensions/actions/runs/40539641156/artifacts/12751391525",
+          "artifactDigest": "sha256:bf3e54e415acf70b3d7759cc015b500e75d21b33e4da9830740918c14126a3be",
+          "buildRunAttempt": 1,
+          "collectedAt": "2026-10-27T16:30:25.031465+00:00",
+          "imageId": "sha256:9e14aabd946e423c6b228a4105b9e73c6cace0bb7dbc26636ad3088dae367593",
+          "runtimePassed": true,
+          "runtimeKind": "offline-packaging",
+          "componentCount": 315,
+          "matchCounts": {
+            "Critical": 0,
+            "High": 0,
+            "Medium": 2,
+            "Low": 0,
+            "Negligible": 0,
+            "Unknown": 4
+          },
+          "syftVersion": "1.54.0",
+          "grypeVersion": "0.120.0",
+          "databaseBuilt": "2026-10-27T06:30:41Z",
+          "sha256": {
+            "build.json": "7a035b999e0f3121df2a3816083094bc7713b3f1a7d75f8601e3ae4b8ee8fa0a",
+            "runtime.json": "b61c21b95c319a280f9909ff0cb2ea328d84eb2519dfe48d1d591a4665f2a627",
+            "sbom.syft.json": "6e6d5911de9904a31493b278790f0084b0978e4c47e26e17fe6400b5b8dd93ec",
+            "grype.json": "edef61f21b798756867376a2c96fb8a4b4163ef3f107f3f02a258544e70690f4",
+            "declared-images.json": "bb125627c1fa4bb3de114cdad365ba3113b44970044ca8b78a764d56229e01e3",
+            "image-inspect.json": "0c9d2747f8c997aa319c93b015815b7e72f63d9465d3cbf07567513727e1e938",
+            "grype.yaml": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+          }
+        }
+      ]
+    },
+    {
+      "updateForm": "tag",
+      "pullRequest": 2240,
+      "pullRequestHead": "c3a9fe82707e4775c6db2a9e87458517aef3019e",
+      "runUrl": "https://github.com/sokolaidev/maf-extensions/actions/runs/40530599022",
+      "runAttempt": 2,
+      "runConclusion": "success",
+      "checkoutMergeCommit": "dabe33ae21440b669dd3fe60e80407d69c0ac2bc",
+      "checkoutParents": [
+        "7c10a6cda33f6958f304da8bf10bf8a0ed1ebae2",
+        "c3a9fe82707e4775c6db2a9e87458517aef3019e"
+      ],
+      "profiles": [
+        {
+          "profile": "bicep",
+          "artifactId": 12746281754,
+          "artifactUrl": "https://github.com/sokolaidev/maf-extensions/actions/runs/40530599022/artifacts/12746281754",
+          "artifactDigest": "sha256:e7528cc4f71745e8abc4c01d0f59662422ff4908e15bb2d6c27280f10c882849",
+          "buildRunAttempt": 1,
+          "collectedAt": "2026-10-27T15:28:51.900810+00:00",
+          "imageId": "sha256:2a0b67b03139fb91be26918768c6ee971e1876cf4fabe522093b06b5068f06c9",
+          "runtimePassed": true,
+          "runtimeKind": "offline-packaging",
+          "componentCount": 132,
+          "matchCounts": {
+            "Critical": 0,
+            "High": 0,
+            "Medium": 0,
+            "Low": 0,
+            "Negligible": 0,
+            "Unknown": 0
+          },
+          "syftVersion": "1.54.0",
+          "grypeVersion": "0.120.0",
+          "databaseBuilt": "2026-10-27T06:30:41Z",
+          "sha256": {
+            "build.json": "b0d6b3576a7ad55f55a67c282130603ad7780b11d8041620b0d391de7d7001a4",
+            "runtime.json": "51bb4b78b28406538bb565af7d5196c7e65c2e77568069fad7d6d49d625d201f",
+            "sbom.syft.json": "c339d992c3dc2bf7a179e835a59d43bdbbc7b3cfac519798e9c5eb432dab8fe3",
+            "grype.json": "0ea18d67ed2e07fd3686e4a7e9c2663eac4311af5bf4be9388096c28a7137697",
+            "declared-images.json": "263f9e79df2b85f97726f6b5e69e515e1f3d606f67965dbd2739abb5e0c7e487",
+            "image-inspect.json": "6b577a0f54ec0c420ab2cc3932601e9593aa3990c48ec2d0e86ad62ebcfe57cd",
+            "grype.yaml": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+          }
+        },
+        {
+          "profile": "bicep-avm",
+          "artifactId": 12745613449,
+          "artifactUrl": "https://github.com/sokolaidev/maf-extensions/actions/runs/40530599022/artifacts/12745613449",
+          "artifactDigest": "sha256:a4f4c24c6edc04a9c3a920597b9b476127f70450314a4af869ab66218a068a08",
+          "buildRunAttempt": 1,
+          "collectedAt": "2026-10-27T15:27:41.102587+00:00",
+          "imageId": "sha256:2bd7cd4055a983f570701231dc613b950978123e509a3f86e6c08f3759061862",
+          "runtimePassed": true,
+          "runtimeKind": "offline-packaging",
+          "componentCount": 132,
+          "matchCounts": {
+            "Critical": 0,
+            "High": 0,
+            "Medium": 0,
+            "Low": 0,
+            "Negligible": 0,
+            "Unknown": 0
+          },
+          "syftVersion": "1.54.0",
+          "grypeVersion": "0.120.0",
+          "databaseBuilt": "2026-10-27T06:30:41Z",
+          "sha256": {
+            "build.json": "ec95872f615fc76211745f850c36242218391c528c331c81aa3c194f40c26251",
+            "runtime.json": "83cc9a9296764157e6fae4fb3385746d9b8ea936fe82b5d861bd9f23beef0a7a",
+            "sbom.syft.json": "3120c7a18508444a95226995217bca5d6277bfc3ea9b8706622605757d0ca3cf",
+            "grype.json": "c0b0def2a32a9dcdf28a577f3bf28ef7f97337faafb5ae6fca2c2489758f75cf",
+            "declared-images.json": "263f9e79df2b85f97726f6b5e69e515e1f3d606f67965dbd2739abb5e0c7e487",
+            "image-inspect.json": "615f0aab8d5869459d9e629ad925969c4b467c33f46545acd1ae7c9bcf8948ac",
+            "grype.yaml": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+          }
+        },
+        {
+          "profile": "bicep-docker-sbx",
+          "artifactId": 13019956044,
+          "artifactUrl": "https://github.com/sokolaidev/maf-extensions/actions/runs/40530599022/artifacts/13019956044",
+          "artifactDigest": "sha256:0b6975921d14657698afa44dff29ebf5e2eb5c2f16794768d49ef88bc8035507",
+          "buildRunAttempt": 2,
+          "collectedAt": "2026-10-30T23:05:37.102731+00:00",
+          "imageId": "sha256:07a928a2897fdb4b2335f81f34b0f13b4218a089f30dbf7b9eb54254503882a1",
+          "runtimePassed": true,
+          "runtimeKind": "docker-sbx-consumer",
+          "componentCount": 167,
+          "matchCounts": {
+            "Critical": 0,
+            "High": 0,
+            "Medium": 0,
+            "Low": 0,
+            "Negligible": 0,
+            "Unknown": 0
+          },
+          "syftVersion": "1.54.0",
+          "grypeVersion": "0.120.0",
+          "databaseBuilt": "2026-10-30T06:23:28Z",
+          "sha256": {
+            "build.json": "813e19413215682127a4061e0b5d93c95ea80e224bd9d83f7e470c828fd749a8",
+            "runtime.json": "6fc804166445458df9e57cb048968cffc89cdc2a1af02da34c203e6d382a1fb0",
+            "sbom.syft.json": "b86cc957b9616fc5554fae0e7bf548a4280f9a0ac5520a3e6350326f5fe7ab11",
+            "grype.json": "296e54df60fe38044b00b20576eb794da294fcea7896b8f01c1d41c909172448",
+            "declared-images.json": "263f9e79df2b85f97726f6b5e69e515e1f3d606f67965dbd2739abb5e0c7e487",
+            "image-inspect.json": "24d6c4dd12db47f775aa8619b6abbcf44c877ddf5d1f49ef889e53749c1d352d",
+            "grype.yaml": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+          },
+          "sandboxQualification": {
+            "sbxVersion": "sbx version v0.50.1 ddb0268d7124b9cf98955d0b08ffd71a0dfcebe4",
+            "checksPassed": [
+              "valid-local",
+              "invalid-type",
+              "staged-strict-config",
+              "default-config-control",
+              "staged-config",
+              "uncached-module"
+            ],
+            "network": "sbx-deny-all",
+            "compiledOutputTransfer": true,
+            "workspaceRoundTrip": true,
+            "sandboxesRemaining": [],
+            "templateRemoved": true,
+            "workspaceRemoved": true,
+            "sdkImage": "mcr.microsoft.com/dotnet/sdk:10.0.403@sha256:de4fe90a98845d75910b9769662465c84de1a934665c431279d1382b2bddc02b",
+            "licenseSha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
+            "suiteLicenseSha256": "a37bf24f2f2c5779823a7a2426a0dd5d10e9bb2c9b96d197cdf196c097e38d61"
+          }
+        }
+      ]
+    }
+  ]
+}
