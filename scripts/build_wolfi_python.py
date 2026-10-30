@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
+PLATFORM = "linux/amd64"
 PYTHON_PROFILES = (
     "document",
     "drawio",
@@ -35,7 +36,7 @@ def build_packages(destination: Path) -> None:
                 "docker",
                 "build",
                 "--platform",
-                "linux/amd64",
+                PLATFORM,
                 "--iidfile",
                 str(iid),
                 str(ROOT / "images/wolfi-python"),
@@ -52,7 +53,7 @@ def build_packages(destination: Path) -> None:
                     name,
                     "--privileged",
                     "--platform",
-                    "linux/amd64",
+                    PLATFORM,
                     iid.read_text(encoding="utf-8").strip(),
                 ],
                 check=True,
@@ -64,13 +65,24 @@ def build_packages(destination: Path) -> None:
 
 
 def build_image(command: list[str]) -> None:
-    """Run a Docker build with freshly built Python packages as an explicit context."""
+    """Build an AMD64 consumer with fresh Python packages; reject conflicting platforms."""
     if command[:2] != ["docker", "build"]:
         raise ValueError("Expected a Docker build command")
+    for index, argument in enumerate(command):
+        if argument == "--platform":
+            platform = command[index + 1] if index + 1 < len(command) else ""
+        elif argument.startswith("--platform="):
+            platform = argument.partition("=")[2]
+        else:
+            continue
+        if platform != PLATFORM:
+            raise ValueError(f"Python APKs require --platform {PLATFORM}")
     with tempfile.TemporaryDirectory(prefix="maf-python-packages-") as temporary:
         build_packages(Path(temporary))
         subprocess.run(
-            command[:2] + ["--build-context", f"python-packages={temporary}"] + command[2:],
+            command[:2]
+            + ["--build-context", f"python-packages={temporary}", "--platform", PLATFORM]
+            + command[2:],
             check=True,
         )
 

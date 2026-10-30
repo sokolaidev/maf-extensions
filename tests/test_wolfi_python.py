@@ -59,7 +59,8 @@ def test_package_build_failure_prevents_consumer_build_and_cleans_container(
         consumer = commands[-1]
         assert consumer[:3] == ["docker", "build", "--build-context"]
         assert consumer[3].startswith("python-packages=")
-        assert consumer[4:] == command[2:]
+        assert consumer[4:6] == ["--platform", "linux/amd64"]
+        assert consumer[6:] == command[2:]
     created = next(call for call in commands if call[1] == "create")
     name = created[created.index("--name") + 1]
     assert ["docker", "rm", "--force", name] in commands
@@ -73,6 +74,40 @@ def test_existing_output_is_never_overwritten(tmp_path, monkeypatch):
     monkeypatch.setattr(builder.subprocess, "run", lambda *a, **kw: pytest.fail("executed Docker"))
     with pytest.raises(ValueError, match="empty"):
         builder.build_packages(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "platform", [[], ["--platform", "linux/amd64"], ["--platform=linux/amd64"]]
+)
+def test_consumer_platform_matches_exported_packages(monkeypatch, platform):
+    commands = []
+    monkeypatch.setenv("DOCKER_DEFAULT_PLATFORM", "linux/arm64")
+    monkeypatch.setattr(builder, "build_packages", lambda destination: None)
+    monkeypatch.setattr(
+        builder.subprocess, "run", lambda command, **kwargs: commands.append(command)
+    )
+    builder.build_image(["docker", "build", *platform, "images/drawio-sandbox"])
+    command = commands[0]
+    platforms = [command[i + 1] for i, arg in enumerate(command) if arg == "--platform"]
+    platforms += [arg.partition("=")[2] for arg in command if arg.startswith("--platform=")]
+    assert platforms and set(platforms) == {"linux/amd64"}
+
+
+@pytest.mark.parametrize(
+    "platform",
+    [
+        ["--platform", "linux/arm64"],
+        ["--platform=linux/arm64"],
+        ["--platform", "linux/amd64,linux/arm64"],
+        ["--platform"],
+    ],
+)
+def test_unsupported_platform_refuses_before_package_compilation(monkeypatch, platform):
+    monkeypatch.setattr(
+        builder, "build_packages", lambda destination: pytest.fail("built packages")
+    )
+    with pytest.raises(ValueError, match="linux/amd64"):
+        builder.build_image(["docker", "build", *platform])
 
 
 @pytest.mark.parametrize("old_version", ["3.13.17_git20261023", "3.13.19"])
