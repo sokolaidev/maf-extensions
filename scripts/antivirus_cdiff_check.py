@@ -92,8 +92,8 @@ def check(guest: Any, fixtures: Path) -> list[str]:
                         patch.object(guest, "run", observed_run),
                     ):
                         request = {
-                            "now": 1624495209,
-                            "max_age_seconds": 604800,
+                            "now": 1624408809 + 8 * 86400,
+                            "max_age_seconds": 14 * 86400,
                             "update": {
                                 "seed": guest.seed(),
                                 "targets": {
@@ -124,28 +124,19 @@ def check(guest: Any, fixtures: Path) -> list[str]:
                                 raise AssertionError("signed chain did not reach its target")
                             Path("input.bin").write_bytes(b"harmless upload")
                             before = len(scans)
-                            try:
-                                guest.scan(
-                                    {
-                                        "max_bytes": 1024,
-                                        "max_filesize": 1024,
-                                        "max_scansize": 2048,
-                                        "max_files": 10,
-                                        "max_recursion": 3,
-                                        "timeout": 30,
-                                    },
-                                    time.monotonic() + 30,
-                                )
-                            except ValueError:
-                                # Historical fixtures trigger ClamAV's wall-clock age warning.
-                                warning = (
-                                    "LibClamAV Warning: **************************************************\n"
-                                    "LibClamAV Warning: ***  The virus database is older than 7 days!  ***\n"
-                                    "LibClamAV Warning: ***   Please update it as soon as possible.    ***\n"
-                                    "LibClamAV Warning: **************************************************\n"
-                                )
-                                if not scans or scans[-1][2] != warning:
-                                    raise
+                            verdict, _ = guest.scan(
+                                {
+                                    "max_bytes": 1024,
+                                    "max_filesize": 1024,
+                                    "max_scansize": 2048,
+                                    "max_files": 10,
+                                    "max_recursion": 3,
+                                    "timeout": 30,
+                                },
+                                time.monotonic() + 30,
+                            )
+                            if verdict != "clean":
+                                raise AssertionError("authenticated fixture scan was not clean")
                             if len(scans) != before + 1:
                                 raise AssertionError("fixture scan did not reach the native engine")
                             command, code, _ = scans[-1]

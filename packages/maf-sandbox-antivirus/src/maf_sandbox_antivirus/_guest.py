@@ -18,6 +18,12 @@ from typing import Any
 SEED = Path("/opt/maf-antivirus/seed")
 DATABASES = ("main", "daily", "bytecode")
 MAX_DIAGNOSTIC = 8192
+AGE_ADVISORY = (
+    "LibClamAV Warning: **************************************************\n"
+    "LibClamAV Warning: ***  The virus database is older than 7 days!  ***\n"
+    "LibClamAV Warning: ***   Please update it as soon as possible.    ***\n"
+    "LibClamAV Warning: **************************************************\n"
+)
 
 
 class Refused(ValueError):
@@ -220,7 +226,8 @@ def scan(request: dict[str, Any], deadline: float) -> tuple[str, str]:
         raise ValueError(output[:MAX_DIAGNOSTIC] or "engine did not complete")
     alerts = re.findall(r"^input\.bin: ([^\r\n]+) FOUND$", output, re.MULTILINE)
     if code == 0:
-        if output.strip():
+        # Preparation enforces the host's authenticated age limit.
+        if output.strip() and output != AGE_ADVISORY:
             raise ValueError(output)
         return "clean", ""
     if not alerts:

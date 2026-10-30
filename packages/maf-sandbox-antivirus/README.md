@@ -50,7 +50,7 @@ Updates are limited to 95 MiB and 90 patches per call. Payloads cross the backen
 | `max_files` | 1,000 | 10,000 |
 | `max_recursion` | 16 | 100 |
 
-All limits must be positive; non-finite values and booleans are rejected. `file_store_provenance` and `requires_file_integrity` have core's usual meaning. Use backend CPU, memory, process and disk limits as well; ClamAV's official databases need substantial memory. Start Docker qualification with 4 GiB and measure your deployment.
+All limits must be positive; non-finite values and booleans are rejected. The age ceiling uses authenticated database metadata; ClamAV's fixed seven-day advisory does not override an explicitly larger ceiling. `file_store_provenance` and `requires_file_integrity` have core's usual meaning. Use backend CPU, memory, process and disk limits as well; ClamAV's official databases need substantial memory. Start Docker qualification with 4 GiB and measure your deployment.
 
 ZIP members undergo bounded expansion before ClamAV because native archive limits can skip some members without an alert. This guard applies the file count, member size, total expansion and recursion ceilings, and refuses encrypted ZIP entries. Other formats use ClamAV's support and alerts; absence of an alert does not establish complete format coverage.
 

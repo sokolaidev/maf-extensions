@@ -11,6 +11,13 @@ import pytest
 
 from maf_sandbox_antivirus import _guest
 
+AGE_ADVISORY = (
+    "LibClamAV Warning: **************************************************\n"
+    "LibClamAV Warning: ***  The virus database is older than 7 days!  ***\n"
+    "LibClamAV Warning: ***   Please update it as soon as possible.    ***\n"
+    "LibClamAV Warning: **************************************************\n"
+)
+
 
 def policy(**changes):
     return (
@@ -84,6 +91,12 @@ def test_guest_errors_keep_exception_text_out_of_response(
     ("code", "output", "verdict"),
     [
         (0, "", "clean"),
+        (0, AGE_ADVISORY, "clean"),
+        (0, AGE_ADVISORY + "WARNING: skipped input\n", None),
+        (0, "WARNING: skipped input\n" + AGE_ADVISORY, None),
+        (0, AGE_ADVISORY * 2, None),
+        (0, AGE_ADVISORY[:-1], None),
+        (2, AGE_ADVISORY, None),
         (1, "input.bin: Eicar-Test-Signature FOUND\n", "infected"),
         (1, "input.bin: Heuristics.Limits.Exceeded.MaxScanSize FOUND\n", "refused"),
         (1, "input.bin: Heuristics.Encrypted.Zip FOUND\n", "refused"),
@@ -107,7 +120,10 @@ def test_native_outcomes_never_turn_skips_into_clean(tmp_path, monkeypatch, code
         assert _guest.scan(policy(), time.monotonic() + 10)[0] == verdict
 
 
-def test_freshness_uses_authenticated_payload_not_editable_cvd_header(tmp_path, monkeypatch):
+@pytest.mark.parametrize("max_age_days", [7, 14])
+def test_freshness_uses_authenticated_payload_not_editable_cvd_header(
+    tmp_path, monkeypatch, max_age_days
+):
     import ctypes
 
     monkeypatch.chdir(tmp_path)
@@ -125,13 +141,13 @@ def test_freshness_uses_authenticated_payload_not_editable_cvd_header(tmp_path, 
         if command[1].startswith("--unpack="):
             assert cwd is not None
             (cwd / f"{cwd.name}.info").write_text(
-                f"ClamAV-VDB:date:1:1:90:hash:signature:builder:{now - 864000}"
+                f"ClamAV-VDB:date:1:1:90:hash:signature:builder:{now - 8 * 86400}"
             )
 
     monkeypatch.setattr(_guest, "checked", checked)
     request = dict(
         now=now,
-        max_age_seconds=604800,
+        max_age_seconds=max_age_days * 86400,
         update=dict(
             seed={
                 name: {k: v for k, v in values.items() if k in ("version", "sha256")}
@@ -141,9 +157,15 @@ def test_freshness_uses_authenticated_payload_not_editable_cvd_header(tmp_path, 
             files=[],
         ),
     )
-    with pytest.raises(_guest.Refused, match="max_database_age_days"):
+    if max_age_days == 7:
+        with pytest.raises(_guest.Refused, match="max_database_age_days"):
+            _guest.prepare(request, time.monotonic() + 10)
+        assert not (tmp_path / "prepared.json").exists()
+    else:
         _guest.prepare(request, time.monotonic() + 10)
-    assert not (tmp_path / "prepared.json").exists()
+        (tmp_path / "input.bin").write_bytes(b"harmless")
+        monkeypatch.setattr(_guest, "run", lambda *a, **kw: (0, AGE_ADVISORY))
+        assert _guest.scan(policy(), time.monotonic() + 10) == ("clean", "")
 
 
 class SimpleNamespaceCallable(SimpleNamespace):
