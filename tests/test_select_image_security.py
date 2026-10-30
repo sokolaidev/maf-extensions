@@ -14,6 +14,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+from changed_paths import runs_code_checks, runs_workflow_checks  # noqa: E402
 from select_image_security import PROFILES, affected, changed_profiles, select  # noqa: E402
 
 pytestmark = pytest.mark.workflow
@@ -259,7 +260,9 @@ def test_release_with_image_change_selects_that_image(repository):
         ),
         ("scripts/build_scan_image.sh", list(PROFILES)),
         ("scripts/image_security_evidence.py", list(PROFILES)),
-        ("scripts/select_image_security.py", list(PROFILES)),
+        ("scripts/select_image_security.py", []),
+        ("tests/test_image_security_workflow.py", []),
+        ("tests/test_select_image_security.py", []),
         ("scripts/new_builder.py", list(PROFILES)),
         ("images/new-image/Dockerfile", list(PROFILES)),
         ("uv.lock", list(PROFILES)),
@@ -433,6 +436,96 @@ def test_consumer_guide_does_not_hide_image_or_unknown_document_changes(reposito
     assert affected("images/new-image/README.md") == PROFILES
     assert affected("images/graphviz-sandbox/assets/README.md") == ("graphviz",)
     assert affected("packages/maf-sandbox/README.md") == ("hyperlight-aks-probe",)
+
+
+@pytest.mark.parametrize("event", ["pull_request", "push"])
+def test_mxc_evidence_changes_do_not_select_image_builds(repository, event):
+    root, base = repository
+    head = commit(
+        root,
+        {
+            "docs/sandbox/backends/mxc.md": "Updated status",
+            "docs/sandbox/research/mxc-backend.md": "Updated qualification",
+            "scripts/experiments/mxc_session_patch/HOST_PUBLICATION.md": "Updated evidence",
+            "scripts/experiments/mxc_session_patch/cross-active-results.json": "[]",
+        },
+    )
+    profiles, reason = select(root, event, base, head)
+    assert profiles == []
+    assert "no image build, scan or security evidence" in reason
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("images/shell-sandbox/Dockerfile", ["shell"]),
+        ("scripts/experiments/mxc_session_patch/driver.py", list(PROFILES)),
+        ("scripts/experiments/mxc_session_patch/new-results.json", list(PROFILES)),
+        ("scripts/experiments/mxc_session_patch/nested/HOST_PUBLICATION.md", list(PROFILES)),
+        (".github/workflows/image-security.yml", list(PROFILES)),
+    ],
+)
+def test_mxc_evidence_does_not_hide_build_or_unknown_inputs(repository, path, expected):
+    root, base = repository
+    head = commit(
+        root,
+        {
+            "scripts/experiments/mxc_session_patch/cross-active-results.json": "[]",
+            path: "Updated input",
+        },
+    )
+    assert select(root, "pull_request", base, head)[0] == expected
+
+
+@pytest.mark.parametrize("event", ["pull_request", "push"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "scripts/select_image_security.py",
+        "tests/test_select_image_security.py",
+        "tests/test_image_security_workflow.py",
+    ],
+)
+def test_selection_tooling_changes_do_not_select_image_builds(repository, event, path):
+    root, base = repository
+    head = commit(root, {path: "Updated selection tooling"})
+    assert runs_code_checks([path])
+    assert runs_workflow_checks([path])
+    profiles, reason = select(root, event, base, head)
+    assert profiles == []
+    assert "no image build, scan or security evidence" in reason
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("images/shell-sandbox/Dockerfile", ["shell"]),
+        ("scripts/check_shell_image.py", ["shell"]),
+        ("scripts/new_builder.py", list(PROFILES)),
+        ("scripts/image_security_evidence.py", list(PROFILES)),
+        (".github/workflows/image-security.yml", list(PROFILES)),
+        (".dockerignore", list(PROFILES)),
+    ],
+)
+def test_selection_tooling_does_not_hide_image_input_changes(repository, path, expected):
+    root, base = repository
+    head = commit(
+        root,
+        {
+            "scripts/select_image_security.py": "Updated selector",
+            "tests/test_select_image_security.py": "Updated selector tests",
+            "tests/test_image_security_workflow.py": "Updated workflow tests",
+            path: "Updated image input",
+        },
+    )
+    assert select(root, "pull_request", base, head)[0] == expected
+
+
+@pytest.mark.parametrize("event", ["schedule", "workflow_dispatch"])
+def test_selection_tooling_changes_keep_scheduled_and_manual_full_coverage(repository, event):
+    root, base = repository
+    head = commit(root, {"scripts/select_image_security.py": "Updated selector"})
+    assert select(root, event, base, head)[0] == list(PROFILES)
 
 
 def test_deleted_image_input_and_new_profile_both_select_scans(repository):

@@ -71,6 +71,17 @@ CONSUMER_GUIDES = {
     "images/terraform-sandbox/TERRAFORM.md",
     "images/hyperlight-sandbox/README.md",
 }
+# These retained experiment records are not consumed by image builds or checks.
+EXPERIMENT_RECORDS = {
+    "scripts/experiments/mxc_session_patch/HOST_PUBLICATION.md",
+    "scripts/experiments/mxc_session_patch/cross-active-results.json",
+}
+# Workflow behavior tests cover selection tooling without rebuilding unchanged images.
+SELECTION_TOOLING = {
+    "scripts/select_image_security.py",
+    "tests/test_image_security_workflow.py",
+    "tests/test_select_image_security.py",
+}
 SCRIPT_INPUTS = {
     ".github/actions/prepare-provider-cache/action.yml": (
         "terraform-random",
@@ -130,8 +141,6 @@ SHARED_INPUTS = {
     ".gitattributes",
     ".gitmodules",
     ".github/workflows/image-security.yml",
-    "tests/test_image_security_workflow.py",
-    "tests/test_select_image_security.py",
 }
 
 
@@ -180,7 +189,7 @@ def metadata_only(root: Path, base: str, head: str, paths: list[str]) -> set[str
 
 def affected(path: str) -> tuple[str, ...]:
     """Map known build inputs; shared and unknown image tooling selects every profile."""
-    if path in CONSUMER_GUIDES:
+    if path in CONSUMER_GUIDES or path in EXPERIMENT_RECORDS or path in SELECTION_TOOLING:
         return ()
     if path in SHARED_INPUTS:
         return PROFILES
