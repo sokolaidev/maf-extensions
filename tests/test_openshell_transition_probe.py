@@ -254,6 +254,11 @@ def test_runtime_replacement_requires_independent_retirement_evidence(probe, mon
         "receipt",
         "origin",
         "stop",
+        "forced_kill",
+        "terminated",
+        "abnormal_exit",
+        "already_stopped",
+        "stop_error",
         "runtime_restarted",
     ],
 )
@@ -263,6 +268,8 @@ def test_restart_requires_same_intent_physical_instance_and_observed_access(
 ):
     calls = []
     transition, saved = make_transitions(probe, None)
+    persisted = []
+    monkeypatch.setattr(transition.fixture, "save", lambda: persisted.append(copy.deepcopy(saved)))
     before = physical_snapshot()
     after = copy.deepcopy(before)
     if failure == "container":
@@ -294,10 +301,24 @@ def test_restart_requires_same_intent_physical_instance_and_observed_access(
 
     monkeypatch.setattr(transition, "wait_provider", wait)
     monkeypatch.setattr(transition, "check", check)
+
+    def stop():
+        calls.append("stop")
+        if failure == "stop_error":
+            raise RuntimeError("stop failed")
+
+    exit_codes = iter(
+        [
+            0 if failure == "already_stopped" else None,
+            {"stop": None, "forced_kill": -9, "terminated": -15, "abnormal_exit": 1}.get(
+                failure, 0
+            ),
+        ]
+    )
     gateway = NS(
-        stop=lambda: calls.append("stop"),
+        stop=stop,
         start=lambda: calls.append("start"),
-        process=NS(poll=lambda: None if failure == "stop" else 0),
+        process=NS(poll=lambda: next(exit_codes)),
     )
     if failure:
         with pytest.raises(
@@ -312,6 +333,21 @@ def test_restart_requires_same_intent_physical_instance_and_observed_access(
         assert saved[0][1]["completed"]
         assert calls == ["receipt", "stop", "start", "health", "receipt", "origin"]
     assert "start" in calls
+    assert persisted[0][0][1]["completed"] is False
+    shutdown_failed = failure in (
+        "stop",
+        "forced_kill",
+        "terminated",
+        "abnormal_exit",
+        "already_stopped",
+        "stop_error",
+    )
+    assert saved[0][1]["graceful_shutdown"] is not shutdown_failed
+    assert persisted[0][0][1]["graceful_shutdown"] is not shutdown_failed
+    if shutdown_failed:
+        assert "health" not in calls
+    if failure == "already_stopped":
+        assert "stop" not in calls
     if failure in (
         "container",
         "pid",
@@ -319,6 +355,11 @@ def test_restart_requires_same_intent_physical_instance_and_observed_access(
         "intent",
         "receipt",
         "stop",
+        "forced_kill",
+        "terminated",
+        "abnormal_exit",
+        "already_stopped",
+        "stop_error",
         "runtime_restarted",
     ):
         assert "origin" not in calls
@@ -381,7 +422,18 @@ def test_loser_is_resubmitted_only_after_winner_barrier_and_traffic_checks(
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "prepare", "acquire", "race", "restart", "dispose", "cleanup", "continuity"]
+    "failure",
+    [
+        None,
+        "prepare",
+        "acquire",
+        "race",
+        "restart",
+        "restart_detached",
+        "dispose",
+        "cleanup",
+        "continuity",
+    ],
 )
 def test_measurement_preserves_partial_evidence_and_cleanup_limits(probe, monkeypatch, failure):
     calls = []
@@ -437,7 +489,7 @@ def test_measurement_preserves_partial_evidence_and_cleanup_limits(probe, monkey
             if failure == "continuity":
                 raise probe.RuntimeRestarted("runtime replaced")
             report["transitions"]["cases"].extend([{"passed": True}] * (3 if attached else 2))
-            fail("restart")
+            fail("restart" if attached else "restart_detached")
 
     monkeypatch.setattr(probe, "CompositionProfile", lambda: profile)
     monkeypatch.setattr(probe, "Transitions", Matrix)
@@ -456,7 +508,11 @@ def test_measurement_preserves_partial_evidence_and_cleanup_limits(probe, monkey
         failure in (None, "dispose", "cleanup", "continuity")
     )
     assert evidence["restart_continuity_blocked"] == (failure == "continuity")
-    assert len(evidence["unrun_cases"]) == (5 if failure == "continuity" else 0)
+    assert len(evidence["unrun_cases"]) == {
+        "continuity": 5,
+        "restart": 5,
+        "restart_detached": 2,
+    }.get(failure, 0)
     assert evidence["provider_and_profile_cleanup_verified"] == (
         failure not in ("prepare", "dispose", "cleanup")
     )

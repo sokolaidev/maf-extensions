@@ -359,14 +359,20 @@ class Transitions:
             "before": before,
             "before_spec_hex": before_spec,
             "completed": False,
+            "graceful_shutdown": False,
         }
         self.record("restarts", row)
-        gateway.stop()
         try:
+            row["before_stop_returncode"] = gateway.process.poll()
+            if row["before_stop_returncode"] is not None:
+                raise RuntimeError("gateway exited before the requested shutdown")
+            gateway.stop()
             row["stopped_returncode"] = gateway.process.poll()
-            if row["stopped_returncode"] is None:
-                raise RuntimeError("gateway did not stop")
+            row["graceful_shutdown"] = row["stopped_returncode"] == 0
+            if not row["graceful_shutdown"]:
+                raise RuntimeError("gateway shutdown was not graceful")
         finally:
+            self.fixture.save()
             gateway.start()
         wait_gateway(self.client)
         row["after_spec_hex"] = self.current().spec.SerializeToString(deterministic=True).hex()
@@ -451,15 +457,20 @@ async def measure_transitions(fixture, ip, gateway):
             "restart_detached_get_provider",
             "restart_detached_post_provider",
         ]
+        evidence["unrun_cases"] = restart_cases.copy()
+        fixture.save()
         try:
             await asyncio.to_thread(transitions.policy, True)
             receipt = await asyncio.to_thread(transitions.provider, True)
             await asyncio.to_thread(transitions.restart, gateway, receipt, True)
             expected_cases = 27
+            evidence["unrun_cases"] = restart_cases[3:]
+            fixture.save()
             await asyncio.to_thread(transitions.policy, False)
             receipt = await asyncio.to_thread(transitions.provider, False)
             await asyncio.to_thread(transitions.restart, gateway, receipt, False)
             expected_cases = 29
+            evidence["unrun_cases"] = []
         except RuntimeRestarted as exc:
             evidence["restart_continuity_blocked"] = True
             evidence["blocker"] = str(exc)
