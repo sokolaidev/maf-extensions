@@ -40,6 +40,7 @@ _PACKAGES = {
     "maf-sandbox-otel": "maf_sandbox_otel",
     "maf-sandbox-terraform": "maf_sandbox_terraform",
     "maf-sandbox-shell": "maf_sandbox_shell",
+    "maf-sandbox-azure-pricing": "maf_sandbox_azure_pricing",
     "maf-sandbox-mcp": "maf_sandbox_mcp",
     "maf-sandbox-tui": "maf_sandbox_tui",
     "maf-sandbox-wslc": "maf_sandbox_wslc",
@@ -946,7 +947,46 @@ def _smoke_maf_sandbox_document() -> str:
     return "call-isolated document spec and both fixed guest programs are present"
 
 
+def _smoke_maf_sandbox_azure_pricing() -> str:
+    from maf_sandbox import Capability, Isolation, IsolationScope, OsFamily, SandboxRouter
+    from maf_sandbox.maf import list_no_files, make_caller_context
+    from maf_sandbox.testing import (
+        FAKE_BACKEND_DECLARATIONS,
+        InProcessSandbox,
+        InProcessSandboxBackend,
+    )
+    from maf_sandbox_azure_pricing import azure_pricing_sandbox_spec, make_azure_pricing_tools
+
+    spec = azure_pricing_sandbox_spec()
+    assert spec.requires == {Capability.EXEC}
+    assert spec.isolation_scope == IsolationScope.CALL
+    assert Capability.EGRESS_METHODS in spec.required_capabilities
+    sandbox = InProcessSandbox(default_stdout='{"status":200,"results":{"prices":[]}}')
+    backend = InProcessSandboxBackend(
+        sandbox,
+        isolation=Isolation.CONTAINER,
+        sandbox_per_key=True,
+        declarations=dataclasses.replace(
+            FAKE_BACKEND_DECLARATIONS,
+            capabilities=frozenset({Capability.EXEC, Capability.EGRESS_METHODS}),
+            egress_method_tokens=None,
+            os_families=frozenset({OsFamily.POSIX}),
+            isolation_scopes=frozenset({IsolationScope.CALL}),
+        ),
+    )
+    [tool] = make_azure_pricing_tools(
+        SandboxRouter([backend], min_isolation=Isolation.CONTAINER),
+        "smoke",
+        make_caller_context(list_no_files, lambda: "s", lambda: "t"),
+    )
+    result = asyncio.run(tool.func(sku="Standard_D4s_v5"))
+    assert any(item.text and '"prices":[]' in item.text for item in result)
+    assert len(sandbox.commands) == 1 and len(backend.disposed) == 1
+    return "pricing tool executes fixed argv, projects a bounded report and disposes its sandbox"
+
+
 _SMOKES = {
+    "maf-sandbox-azure-pricing": _smoke_maf_sandbox_azure_pricing,
     "maf-sandbox": _smoke_maf_sandbox,
     "maf-sandbox-acas": _smoke_maf_sandbox_acas,
     "maf-sandbox-bicep": _smoke_maf_sandbox_bicep,

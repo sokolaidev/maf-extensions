@@ -3,6 +3,7 @@
   "platform": "linux/amd64",
   "registryPrefix": "ghcr.io/sokolaidev/maf-extensions",
   "profiles": [
+    "azure-pricing",
     "bicep",
     "bicep-avm",
     "bicep-docker-sbx",

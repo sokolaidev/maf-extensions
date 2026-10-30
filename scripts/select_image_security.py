@@ -16,6 +16,7 @@ from typing import Any
 from build_wolfi_python import PYTHON_PROFILES
 
 PROFILES = (
+    "azure-pricing",
     "bicep",
     "bicep-avm",
     "bicep-docker-sbx",
@@ -33,6 +34,8 @@ PROFILES = (
 )
 IMAGE_INPUTS = {
     "images/wolfi-python/": PYTHON_PROFILES,
+    "packages/maf-sandbox-azure-pricing/src/": ("azure-pricing",),
+    "images/azure-pricing-sandbox/": ("azure-pricing",),
     "images/document-sandbox/": ("document",),
     "images/shell-sandbox/": ("shell",),
     "images/egress-proxy/": ("egress-proxy",),
@@ -55,6 +58,7 @@ IMAGE_INPUTS = {
 # These exact consumer guides are not consumed by the image recipes or build helpers.
 CONSUMER_GUIDES = {
     "images/wolfi-python/README.md",
+    "images/azure-pricing-sandbox/README.md",
     "images/document-sandbox/README.md",
     "images/DEPENDENCIES.md",
     "images/README.md",
@@ -88,6 +92,7 @@ SELECTION_TOOLING = {
 }
 SCRIPT_INPUTS = {
     "scripts/build_wolfi_python.py": PYTHON_PROFILES,
+    "scripts/check_live_azure_pricing.py": ("azure-pricing",),
     ".github/actions/prepare-provider-cache/action.yml": (
         "terraform-random",
         "opentofu-random",

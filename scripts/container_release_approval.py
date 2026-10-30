@@ -28,6 +28,10 @@ from prepare_container_release import run
 WEB = f"https://github.com/{REPOSITORY}"
 UNAVAILABLE = "Unavailable (not established by retained evidence)"
 PROFILE_GUIDES = {
+    "azure-pricing": (
+        "Public Azure retail pricing through disposable GET-only sandboxes.",
+        "images/azure-pricing-sandbox/README.md",
+    ),
     "document": (
         "Guarded PDF, DOCX, PPTX and RTF extraction in disposable sandboxes.",
         "images/document-sandbox/README.md",
