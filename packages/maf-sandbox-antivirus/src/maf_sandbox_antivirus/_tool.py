@@ -317,12 +317,14 @@ def _build_tool(
                 completed=status != "error",
                 verdict=None if status == "error" else status,
                 trusted_output=(
-                    "Input SHA-256: " + hashlib.sha256(data).hexdigest(),
                     "Database identity: " + json.dumps(databases, sort_keys=True),
                     "Database update SHA-256: "
                     + hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest(),
                 ),
-                output=("Guest diagnostic text withheld.",),
+                output=(
+                    "Input SHA-256: " + hashlib.sha256(data).hexdigest(),
+                    "Guest diagnostic text withheld.",
+                ),
             )
         except TimeoutError:
             return _stopped("Error: antivirus update or scan timed out")

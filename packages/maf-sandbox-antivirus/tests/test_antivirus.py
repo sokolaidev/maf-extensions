@@ -128,6 +128,25 @@ def test_result_contract_and_cleanup(status):
     assert "Input SHA-256: " + hashlib.sha256(b"hello").hexdigest() in texts(answer)
 
 
+@pytest.mark.parametrize("status", ["clean", "infected", "refused", "error"])
+@pytest.mark.parametrize("confidentiality", [None, "private"])
+def test_input_digest_is_labelled_as_derived_output(status, confidentiality):
+    tool, _, _, _ = attach(Scanner(status))
+    if confidentiality is not None:
+        tool.additional_properties["confidentiality"] = confidentiality
+    answer = invoke(tool)
+    digest = "Input SHA-256: " + hashlib.sha256(b"hello").hexdigest()
+    [item] = [part for part in answer if part.text == digest]
+    assert item.additional_properties["security_label"] == {
+        "integrity": "untrusted",
+        "confidentiality": confidentiality or "public",
+    }
+    assert not any(
+        digest in part.text and "security_label" not in part.additional_properties
+        for part in answer
+    )
+
+
 @pytest.mark.parametrize("phase", ["seed", "prepare", "scan"])
 def test_timeout_disposes_without_clean(phase):
     tool, backend, _, _ = attach(Scanner(fail=phase))
