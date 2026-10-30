@@ -1,4 +1,4 @@
-name: Verify (live)
+name: 2-Verify (live)
 
 # Installs the PUBLISHED wheels into a clean environment and runs the samples below, each
 # asserting that its own workload ran rather than that the program exited zero.
