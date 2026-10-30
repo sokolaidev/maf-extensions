@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-document-v0.2.0...maf-sandbox-document-v0.2.1) (2026-10-30)
+
+
+### Documentation
+
+* **document:** document installation from PyPI ([#2334](https://github.com/sokolaidev/maf-extensions/issues/2334)) ([1aee8c5](https://github.com/sokolaidev/maf-extensions/commit/1aee8c5244e88cf6701ba3d332f07033b199d2b3))
+
 ## [0.2.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-document-v0.1.0...maf-sandbox-document-v0.2.0) (2026-10-28)
 
 
