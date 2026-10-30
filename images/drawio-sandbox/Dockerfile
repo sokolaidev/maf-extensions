@@ -1,4 +1,9 @@
 FROM cgr.dev/chainguard/wolfi-base:latest@sha256:0b179206ab162b12a43bacea1b525a4023e0272005c92d08555c61b1beaedc40 AS assembled
+RUN --mount=type=bind,from=python-packages,target=/python-packages \
+    cp /python-packages/maf-python.rsa.pub /etc/apk/keys/ \
+    && apk add --no-cache /python-packages/x86_64/python-3.13-3.13.18-r0.apk /python-packages/x86_64/python-3.13-base-3.13.18-r0.apk \
+    && rm /etc/apk/keys/maf-python.rsa.pub \
+    && python3 -c "import sys, ssl; assert sys.version_info[:3] == (3, 13, 18); assert ssl.HAS_PSK"
 
 RUN apk upgrade --no-cache \
     && apk add --no-cache python-3.13 graphviz ttf-dejavu \

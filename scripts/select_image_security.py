@@ -29,7 +29,19 @@ PROFILES = (
     "hyperlight-aks-probe",
     "egress-proxy",
 )
+PYTHON_PROFILES = (
+    "document",
+    "drawio",
+    "drawio-export",
+    "shell",
+    "terraform-random",
+    "opentofu-random",
+    "terraform-avm",
+    "opentofu-avm",
+    "hyperlight-aks-probe",
+)
 IMAGE_INPUTS = {
+    "images/wolfi-python/": PYTHON_PROFILES,
     "images/document-sandbox/": ("document",),
     "images/shell-sandbox/": ("shell",),
     "images/egress-proxy/": ("egress-proxy",),
@@ -51,6 +63,7 @@ IMAGE_INPUTS = {
 }
 # These exact consumer guides are not consumed by the image recipes or build helpers.
 CONSUMER_GUIDES = {
+    "images/wolfi-python/README.md",
     "images/document-sandbox/README.md",
     "images/DEPENDENCIES.md",
     "images/README.md",
@@ -83,6 +96,7 @@ SELECTION_TOOLING = {
     "tests/test_select_image_security.py",
 }
 SCRIPT_INPUTS = {
+    "scripts/build_wolfi_python.py": PYTHON_PROFILES,
     ".github/actions/prepare-provider-cache/action.yml": (
         "terraform-random",
         "opentofu-random",

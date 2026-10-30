@@ -3377,7 +3377,7 @@ jobs:
           set -euo pipefail
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
       - name: Build the shell validation image
-        run: docker build --platform linux/amd64 -t "$SHELL_SANDBOX_IMAGE" images/shell-sandbox
+        run: uv run --locked python scripts/build_wolfi_python.py --platform linux/amd64 -t "$SHELL_SANDBOX_IMAGE" images/shell-sandbox
       - name: Generate with Microsoft Learn and validate the storage script
         run: |
           set -euo pipefail

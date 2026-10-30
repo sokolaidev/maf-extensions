@@ -7,7 +7,7 @@ The Dockerfile uses a digest-pinned Wolfi base. Refresh that digest for OS secur
 ## Build and qualify
 
 ```bash
-docker build --platform linux/amd64 -t maf-document:local images/document-sandbox
+uv run --locked python scripts/build_wolfi_python.py --platform linux/amd64 -t maf-document:local images/document-sandbox
 uv run python scripts/document_qualification.py --image maf-document:local --output out/document
 ```
 

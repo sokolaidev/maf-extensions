@@ -24,6 +24,8 @@ The suite maintainers own dependency review and qualification for all rows below
 
 The proxy runtime retains Alpine: its static Go executable, BusyBox entrypoint, non-root layout and removal of APK are qualified together, and changing the mirrored Windows consumer requires WSLC host evidence. The specialized Debian Haskell and .NET build stages retain their compiler/package ecosystem. These are explicit compatibility and qualification exceptions, not claims that another distribution could never work.
 
+Python-bearing runtimes temporarily build Python 3.13.18 as signed APKs through the [shared Wolfi packaging recipe](wolfi-python/README.md). The suite maintainers own its CPython and Wolfi source pins and removal once upstream packages pass the same qualification and security gates.
+
 ## Non-image dependencies
 
 | Dependencies | Authoritative declaration | Owner's update mechanism |

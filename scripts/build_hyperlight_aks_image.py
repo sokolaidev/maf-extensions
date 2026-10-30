@@ -16,6 +16,8 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
+from build_wolfi_python import build_image
+
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE_URL = "https://github.com/sokolaidev/maf-extensions"
 SMOKE_TIMEOUT = 60
@@ -149,7 +151,7 @@ def build_and_verify(destination: Path, tag: str) -> dict[str, object]:
     record_path.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix="maf-hyperlight-iid-") as temporary:
         iid_path = Path(temporary) / "image-id"
-        subprocess.run(
+        build_image(
             [
                 "docker",
                 "build",
@@ -161,7 +163,6 @@ def build_and_verify(destination: Path, tag: str) -> dict[str, object]:
                 tag,
                 str(destination),
             ],
-            check=True,
         )
         image_id = iid_path.read_text(encoding="utf-8").strip()
     expected = hashlib.sha256((destination / "build-inputs.json").read_bytes()).hexdigest()

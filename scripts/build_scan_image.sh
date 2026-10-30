@@ -24,14 +24,14 @@ case "$1" in
     docker run --rm --network none maf-image-scan:target sh -ec 'printf "digraph { a -> b }" | dot -Tpng -o /tmp/render.png; test -s /tmp/render.png'
     ;;
   document)
-    docker build --pull --platform linux/amd64 -t maf-image-scan:target images/document-sandbox
+    uv run --locked python scripts/build_wolfi_python.py --pull --platform linux/amd64 -t maf-image-scan:target images/document-sandbox
     ;;
   drawio)
-    docker build --pull --platform linux/amd64 -t maf-image-scan:target images/drawio-sandbox
+    uv run --locked python scripts/build_wolfi_python.py --pull --platform linux/amd64 -t maf-image-scan:target images/drawio-sandbox
     docker run --rm --network none maf-image-scan:target sh -ec 'python3 --version; printf "digraph { a -> b }" | dot -Tpng -o /tmp/render.png; test -s /tmp/render.png'
     ;;
   drawio-export)
-    docker build --pull --platform linux/amd64 -t maf-image-scan:target images/drawio-export
+    uv run --locked python scripts/build_wolfi_python.py --pull --platform linux/amd64 -t maf-image-scan:target images/drawio-export
     docker run --rm -i --network none --entrypoint python3 maf-image-scan:target - <<'PY'
 import json
 import runpy
@@ -47,7 +47,7 @@ print('Offline PNG, SVG and JPEG exports passed')
 PY
     ;;
   shell)
-    docker build --pull --platform linux/amd64 -t maf-image-scan:target images/shell-sandbox
+    uv run --locked python scripts/build_wolfi_python.py --pull --platform linux/amd64 -t maf-image-scan:target images/shell-sandbox
     uv run --locked python scripts/check_shell_image.py --image maf-image-scan:target
     ;;
   terraform-random)

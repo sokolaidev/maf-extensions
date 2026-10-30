@@ -45,7 +45,7 @@ Call the tool with editable, uncompressed `mxfile` XML. A successful call delive
 For a local build and the existing four-case authoring check:
 
 ```sh
-docker build --pull --platform linux/amd64 -t drawio:local images/drawio-sandbox
+uv run --locked python scripts/build_wolfi_python.py --pull --platform linux/amd64 -t drawio:local images/drawio-sandbox
 uv run --locked python scripts/check_drawio_docker.py --image drawio:local --output drawio-check
 ```
 

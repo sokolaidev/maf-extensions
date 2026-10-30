@@ -46,7 +46,7 @@ Electron's inner sandbox is disabled. The qualified Docker boundary uses closed 
 ## Local build and qualification
 
 ```bash
-docker build -t maf-drawio-export:local images/drawio-export
+uv run --locked python scripts/build_wolfi_python.py -t maf-drawio-export:local images/drawio-export
 uv run python scripts/check_drawio_exports.py --image maf-drawio-export:local --output out/drawio-exports
 ```
 
