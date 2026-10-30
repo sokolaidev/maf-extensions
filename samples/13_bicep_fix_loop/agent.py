@@ -334,7 +334,7 @@ async def run() -> int:
         return 2
     client, credential = configured
     try:
-        agent = Agent(
+        async with Agent(
             client=client,
             name=AGENT_DIR,
             instructions=(
@@ -359,100 +359,101 @@ async def run() -> int:
                     disable_write_tool_approval=True,
                 )
             ],
-        )
+        ) as agent:
+            # One session across both turns, so the second carries the first's diagnostics. This is
+            # the whole mechanism: a fresh session would make turn two a stranger to turn one.
+            session = agent.create_session()
 
-        # One session across both turns, so the second carries the first's diagnostics. This is
-        # the whole mechanism: a fresh session would make turn two a stranger to turn one.
-        session = agent.create_session()
+            print("== Turn 1: author main.bicep, then validate it ==\n")
+            first = await agent.run(
+                f"Write {BICEP_FILE} with {SPEC}. Then validate it and list each diagnostic as one "
+                "line: rule id, severity, line. Leave the file as you wrote it for now — the next "
+                "message decides what to change.",
+                session=session,
+            )
+            print(quoted(first.text))
+            print(
+                f"\n{MEASURED}validations that reached the sandbox in turn 1: "
+                f"{validations(first, BICEP_TOOL)}"
+            )
+            print(f"{MEASURED}containers after turn 1: {counted(containers())}\n")
 
-        print("== Turn 1: author main.bicep, then validate it ==\n")
-        first = await agent.run(
-            f"Write {BICEP_FILE} with {SPEC}. Then validate it and list each diagnostic as one "
-            "line: rule id, severity, line. Leave the file as you wrote it for now — the next "
-            "message decides what to change.",
-            session=session,
-        )
-        print(quoted(first.text))
-        print(
-            f"\n{MEASURED}validations that reached the sandbox in turn 1: "
-            f"{validations(first, BICEP_TOOL)}"
-        )
-        print(f"{MEASURED}containers after turn 1: {counted(containers())}\n")
+            # The baseline turn 2's work is measured against, compiled here rather than lifted out
+            # of turn 1's own tool call. That distinction is the whole point: the model may validate
+            # a draft, edit it and validate again, and then its *first* result describes a file that
+            # no longer exists — crediting turn 2 with faults turn 1 had already fixed. Compiling
+            # the snapshot makes the diagnostics correspond to `authored` by construction.
+            #
+            # It costs one more `acquire`, on the same key, which is why the count is printed again.
+            authored = await read_or_empty(store, BICEP_FILE)
+            baseline = result_text(
+                await bicep_validate.invoke(arguments={"files": [BICEP_FILE]}, skip_parsing=True)
+            )
+            as_authored = faults_left(baseline)
 
-        # The baseline turn 2's work is measured against, compiled here rather than lifted out
-        # of turn 1's own tool call. That distinction is the whole point: the model may validate
-        # a draft, edit it and validate again, and then its *first* result describes a file that
-        # no longer exists — crediting turn 2 with faults turn 1 had already fixed. Compiling
-        # the snapshot makes the diagnostics correspond to `authored` by construction.
-        #
-        # It costs one more `acquire`, on the same key, which is why the count is printed again.
-        authored = await read_or_empty(store, BICEP_FILE)
-        baseline = result_text(
-            await bicep_validate.invoke(arguments={"files": [BICEP_FILE]}, skip_parsing=True)
-        )
-        as_authored = faults_left(baseline)
+            print("== What the compiler says about the file turn 1 wrote ==\n")
+            print(quoted("\n".join(f"  {line}" for line in baseline.splitlines())))
+            print(
+                f"\n{MEASURED}tracked faults in the authored file: {len(as_authored)} — "
+                f"{'; '.join(as_authored) or 'none'}"
+            )
+            print(f"{MEASURED}containers after the baseline compile: {counted(containers())}\n")
 
-        print("== What the compiler says about the file turn 1 wrote ==\n")
-        print(quoted("\n".join(f"  {line}" for line in baseline.splitlines())))
-        print(
-            f"\n{MEASURED}tracked faults in the authored file: {len(as_authored)} — "
-            f"{'; '.join(as_authored) or 'none'}"
-        )
-        print(f"{MEASURED}containers after the baseline compile: {counted(containers())}\n")
+            print("== Turn 2: fix, then validate again ==\n")
+            second = await agent.run(
+                "Fix the faults those diagnostics point at, then validate again and say what "
+                "changed. Leave the file reporting nothing it did not report before — a repair "
+                "that trades one diagnostic for another has not finished.",
+                session=session,
+            )
+            print(quoted(second.text))
+            print(
+                f"\n{MEASURED}validations that reached the sandbox in turn 2: "
+                f"{validations(second, BICEP_TOOL)}"
+            )
+            print(f"{MEASURED}containers after turn 2: {counted(containers())}\n")
 
-        print("== Turn 2: fix, then validate again ==\n")
-        second = await agent.run(
-            "Fix the faults those diagnostics point at, then validate again and say what "
-            "changed. Leave the file reporting nothing it did not report before — a repair "
-            "that trades one diagnostic for another has not finished.",
-            session=session,
-        )
-        print(quoted(second.text))
-        print(
-            f"\n{MEASURED}validations that reached the sandbox in turn 2: "
-            f"{validations(second, BICEP_TOOL)}"
-        )
-        print(f"{MEASURED}containers after turn 2: {counted(containers())}\n")
+            # A model that says "it validates clean now" is still narrating. Compile the file it
+            # left behind, from here rather than from the conversation, and let that be the verdict
+            # everything below is read off.
+            print("== What the compiler says about the file the model left ==\n")
+            verdict = result_text(
+                await bicep_validate.invoke(arguments={"files": [BICEP_FILE]}, skip_parsing=True)
+            )
+            print(quoted("\n".join(f"  {line}" for line in verdict.splitlines())))
+            print(f"\n{MEASURED}containers after the check: {counted(containers())}\n")
 
-        # A model that says "it validates clean now" is still narrating. Compile the file it
-        # left behind, from here rather than from the conversation, and let that be the verdict
-        # everything below is read off.
-        print("== What the compiler says about the file the model left ==\n")
-        verdict = result_text(
-            await bicep_validate.invoke(arguments={"files": [BICEP_FILE]}, skip_parsing=True)
-        )
-        print(quoted("\n".join(f"  {line}" for line in verdict.splitlines())))
-        print(f"\n{MEASURED}containers after the check: {counted(containers())}\n")
+            # The work product, and the two questions the compiler cannot answer: did turn 1 write a
+            # file at all, and did turn 2 change it. A model that edited nothing still compiles.
+            #
+            # Three lists, because the compiles are compared element by element: what went, what
+            # stayed, and what turn 2 reported for the first time. Differences, so they count what
+            # *this run* did rather than assuming the file arrived with both faults in it.
+            source = await read_or_empty(store, BICEP_FILE)
+            final = faults_left(verdict)
+            fixed = [fault for fault in as_authored if fault not in final]
+            remaining = [fault for fault in final if fault in as_authored]
+            introduced = [fault for fault in final if fault not in as_authored]
 
-        # The work product, and the two questions the compiler cannot answer: did turn 1 write a
-        # file at all, and did turn 2 change it. A model that edited nothing still compiles.
-        #
-        # Three lists, because the compiles are compared element by element: what went, what
-        # stayed, and what turn 2 reported for the first time. Differences, so they count what
-        # *this run* did rather than assuming the file arrived with both faults in it.
-        source = await read_or_empty(store, BICEP_FILE)
-        final = faults_left(verdict)
-        fixed = [fault for fault in as_authored if fault not in final]
-        remaining = [fault for fault in final if fault in as_authored]
-        introduced = [fault for fault in final if fault not in as_authored]
-
-        missing = work_missing(source)
-        silenced = suppressed(source)
-        print("== The work product ==\n")
-        print(f"{MEASURED}main.bicep authored in turn 1: {bool(authored.strip())}")
-        print(f"{MEASURED}main.bicep changed by turn 2:  {source != authored}")
-        print(
-            f"{MEASURED}storage account and output intact: {not missing}"
-            + (f" — missing {'; '.join(missing)}" if missing else "")
-        )
-        print(
-            f"{MEASURED}tracked rules suppressed: {len(silenced)} — {'; '.join(silenced) or 'none'}"
-        )
-        print(f"{MEASURED}faults fixed:       {len(fixed)} — {'; '.join(fixed) or 'none'}")
-        print(f"{MEASURED}faults remaining:   {len(remaining)} — {'; '.join(remaining) or 'none'}")
-        print(
-            f"{MEASURED}faults introduced:  {len(introduced)} — {'; '.join(introduced) or 'none'}\n"
-        )
+            missing = work_missing(source)
+            silenced = suppressed(source)
+            print("== The work product ==\n")
+            print(f"{MEASURED}main.bicep authored in turn 1: {bool(authored.strip())}")
+            print(f"{MEASURED}main.bicep changed by turn 2:  {source != authored}")
+            print(
+                f"{MEASURED}storage account and output intact: {not missing}"
+                + (f" — missing {'; '.join(missing)}" if missing else "")
+            )
+            print(
+                f"{MEASURED}tracked rules suppressed: {len(silenced)} — {'; '.join(silenced) or 'none'}"
+            )
+            print(f"{MEASURED}faults fixed:       {len(fixed)} — {'; '.join(fixed) or 'none'}")
+            print(
+                f"{MEASURED}faults remaining:   {len(remaining)} — {'; '.join(remaining) or 'none'}"
+            )
+            print(
+                f"{MEASURED}faults introduced:  {len(introduced)} — {'; '.join(introduced) or 'none'}\n"
+            )
     finally:
         purge = await router.dispose_scope(SCOPE, THREAD_ID)
         if credential is not None:

@@ -27,7 +27,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 # The protocol modules (`_protocol`, `_router`, `_purger`) stay import-clean of everything
-# but the standard library — giving THEM a backend dependency, or a MAF one, would make this
+# but the standard library â€” giving THEM a backend dependency, or a MAF one, would make this
 # layer the thing it exists to keep apart. `TestZeroDependencies` and `TestOnlyDeclaredDependencies`
 # (tests/test_sandbox_router.py) pin that at the source-scan level, which is a stronger and
 # more honest guarantee than a dependency list, since a stray import would still resolve
@@ -40,7 +40,7 @@ classifiers = [
 dependencies = [
     # The floor matches the locked core the framework-contract alarms run against.
     # Only the measured minor is admitted.
-    "agent-framework-core>=1.23.0,<1.24",
+    "agent-framework-core>=1.24.0,<1.25",
 ]
 
 [project.urls]
@@ -49,7 +49,7 @@ Source = "https://github.com/sokolaidev/maf-extensions"
 Issues = "https://github.com/sokolaidev/maf-extensions/issues"
 
 # No [tool.uv.sources] here, deliberately: this repository resolves agent-framework-core
-# from PyPI at the released range declared above — the same artifact every consumer of the
+# from PyPI at the released range declared above â€” the same artifact every consumer of the
 # published wheel gets. (The host application these packages were extracted from pins MAF
 # from git `main` on its own side; that pin stayed there when the packages moved here.)
 
@@ -65,7 +65,7 @@ target-version = "py312"
 extend-select = ["I", "UP", "D100", "D101", "D103", "D104", "E501", "W505", "TD", "FIX", "ERA001"]
 
 [tool.ruff.lint.per-file-ignores]
-# ruff resolves [tool.ruff] per file by the NEAREST ancestor pyproject.toml that has one —
+# ruff resolves [tool.ruff] per file by the NEAREST ancestor pyproject.toml that has one â€”
 # once this package gained its own [tool.ruff] section, the host application's root
 # pyproject.toml per-file-ignore entry for this package's tests stopped reaching these
 # files, so this package carries its own copy. The length rules join the docstring pair
@@ -73,7 +73,7 @@ extend-select = ["I", "UP", "D100", "D101", "D103", "D104", "E501", "W505", "TD"
 "tests/**" = ["D101", "D103", "E501", "W505"]
 # `_guest/` is source maf-sandbox copies into a guest image, so it targets whatever old Python
 # the guest has and keeps its `%`-formatting and plain idioms rather than this package's py312
-# style — pyupgrade (UP) would rewrite it into syntax an older guest might not run. Everything
+# style â€” pyupgrade (UP) would rewrite it into syntax an older guest might not run. Everything
 # else stays on, so an undefined name or a dead import there is still caught, which is the whole
 # point of it being a file rather than a `str.format` template.
 "**/_guest/**" = ["UP"]
@@ -81,7 +81,7 @@ extend-select = ["I", "UP", "D100", "D101", "D103", "D104", "E501", "W505", "TD"
 [tool.ruff.lint.pycodestyle]
 max-doc-length = 100
 
-# Self-contained type checking, scoped to this package — strict, unlike the host
+# Self-contained type checking, scoped to this package â€” strict, unlike the host
 # application's root config, which runs its own type checker in basic mode: this is new,
 # purpose-built code with no legacy baseline to carry. `tests/` is out for the same reason
 # the root config leaves tests out everywhere else in that repo: fixtures and hand-rolled
@@ -92,7 +92,7 @@ typeCheckingMode = "strict"
 
 # `_guest/` is guest source, deliberately annotation-free so it runs on an old, typing-light
 # guest Python. Strict's demand for annotations does not belong there, so the rules that fault
-# the absence of them are turned off for that directory only — the rest of strict stays on, so an
+# the absence of them are turned off for that directory only â€” the rest of strict stays on, so an
 # undefined name or a bad call there is still caught, which is the point of it being a real file.
 # (`typeCheckingMode` is not a recognised per-environment key in pyright 1.1.x; the rules are
 # named individually instead.)

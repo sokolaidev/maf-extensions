@@ -135,7 +135,7 @@ async def run() -> int:
 
     credential = DefaultAzureCredential()
     try:
-        agent = Agent(
+        async with Agent(
             client=OpenAIChatClient(
                 model=env["AZURE_OPENAI_CHAT_MODEL"],
                 azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
@@ -149,27 +149,29 @@ async def run() -> int:
                 "reading it, and never invent, reword or omit a diagnostic."
             ),
             tools=tools,
-        )
-        response = await agent.run(f"Validate {BICEP_FILE} and list every diagnostic you get back.")
-        # Quoted first, because the reply and the block below share one stream and the live
-        # check trusts the `[measured]` tag completely.
-        print(quoted(response.text))
-
-        # The compiler's own words, printed from the tool result rather than from the reply. The
-        # reply is the model's account of this, which is the thing the sample exists to be
-        # sceptical of: a model that never called the tool can still write a convincing summary
-        # of what it would have said (#314).
-        compiles = [
-            result for result in tool_results(response, BICEP_TOOL) if _PHASES.search(result)
-        ]
-        print()
-        print(
-            evidence(
-                "Diagnostics as bicep_validate returned them",
-                compiles,
-                "compiles that reached the sandbox",
+        ) as agent:
+            response = await agent.run(
+                f"Validate {BICEP_FILE} and list every diagnostic you get back."
             )
-        )
+            # Quoted first, because the reply and the block below share one stream and the live
+            # check trusts the `[measured]` tag completely.
+            print(quoted(response.text))
+
+            # The compiler's own words, printed from the tool result rather than from the reply. The
+            # reply is the model's account of this, which is the thing the sample exists to be
+            # sceptical of: a model that never called the tool can still write a convincing summary
+            # of what it would have said (#314).
+            compiles = [
+                result for result in tool_results(response, BICEP_TOOL) if _PHASES.search(result)
+            ]
+            print()
+            print(
+                evidence(
+                    "Diagnostics as bicep_validate returned them",
+                    compiles,
+                    "compiles that reached the sandbox",
+                )
+            )
     finally:
         purge = await router.dispose_scope(SCOPE, THREAD_ID)
         print(f"\n{MEASURED}Disposed {purge.disposed} sandbox(es).")

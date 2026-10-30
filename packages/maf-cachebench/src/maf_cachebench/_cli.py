@@ -7,6 +7,7 @@ import asyncio
 import json
 import math
 from collections.abc import Sequence
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
@@ -254,106 +255,113 @@ async def _run_matrix(
     run_id: str = args.run_id
     runtimes: dict[str, ProviderRuntime] = {}
     summarizer: Any = None
-    if args.summarizer_provider is not None and not args.dry_run:
-        summarizer_provider, summarizer_model = parse_provider_selector(args.summarizer_provider)
-        summarizer_runtime = build_provider(
-            summarizer_provider,
-            temperature=None if args.no_temperature else args.temperature,
-            response_max_tokens=512,
-            model=summarizer_model,
-        )
-        summarizer = ConfiguredClient(summarizer_runtime.client, summarizer_runtime.options)
-
-    all_records: list[TurnRecord] = []
-    summaries: list[CellSummary] = []
-
-    identities: dict[tuple[str, str], str] = {}
-    resolved: list[tuple[str, str, str]] = []
-    for selector in providers:
-        provider, model_override = parse_provider_selector(selector)
-        model = model_override or "dry-run"
-        if not args.dry_run:
-            try:
-                runtimes[selector] = build_provider(
-                    provider,
-                    temperature=None if args.no_temperature else args.temperature,
-                    response_max_tokens=args.response_max_tokens,
-                    model=model_override,
-                )
-            except Exception as exc:
-                print(f"!! skipping {selector}: {type(exc).__name__}: {exc}", flush=True)
-                continue
-            model = runtimes[selector].model
-        identity = (provider, model)
-        if identity in identities:
-            raise SystemExit(
-                f"Duplicate resolved provider/model: {identities[identity]!r} and {selector!r}."
+    async with AsyncExitStack() as resources:
+        if args.summarizer_provider is not None and not args.dry_run:
+            summarizer_provider, summarizer_model = parse_provider_selector(
+                args.summarizer_provider
             )
-        identities[identity] = selector
-        resolved.append((selector, provider, model))
+            summarizer_runtime = await resources.enter_async_context(
+                build_provider(
+                    summarizer_provider,
+                    temperature=None if args.no_temperature else args.temperature,
+                    response_max_tokens=512,
+                    model=summarizer_model,
+                )
+            )
+            summarizer = ConfiguredClient(summarizer_runtime.client, summarizer_runtime.options)
 
-    for selector, provider, model in resolved:
-        for size in sizes:
-            for strategy_name in strategies:
-                for repeat in range(1, args.repeats + 1):
-                    cell = CellKey(
-                        provider=provider,
-                        model=model,
-                        transcript=size,
-                        strategy=strategy_name,
-                        repeat=repeat,
-                    )
-                    # A unique salt per cell gives each cell its own cache namespace, so
-                    # cells cannot serve each other cache hits and contaminate results.
-                    salt = f"{run_id}-{cell.label}-{model}"
-                    transcript = build_preset(size, salt=salt, tokenizer=tokenizer)
-                    options = StrategyOptions(
-                        tokenizer=tokenizer,
-                        max_context_window_tokens=resolve_context_window(
-                            transcript.approx_final_prompt_tokens,
-                            override=args.context_window,
-                            max_output_tokens=args.max_output_tokens,
-                        ),
-                        max_output_tokens=args.max_output_tokens,
-                        keep_last_groups=args.keep_last_groups,
-                        keep_last_tool_call_groups=args.keep_tool_groups,
-                        summarizer=summarizer,
-                    )
-                    strategy = build_strategy(strategy_name, options)
+        all_records: list[TurnRecord] = []
+        summaries: list[CellSummary] = []
 
-                    # Built per cell, not per provider: the cache key must be stable for
-                    # every turn of a cell and different between cells. The underlying
-                    # client is shared, so this costs nothing.
-                    caller: Any = _DryRunCaller()
-                    if not args.dry_run:
-                        caller = ProviderCaller(
-                            runtimes[selector],
-                            extra_options=prompt_cache_key_options(
-                                provider, salt, enable_optional=args.prompt_cache_key
+        identities: dict[tuple[str, str], str] = {}
+        resolved: list[tuple[str, str, str]] = []
+        for selector in providers:
+            provider, model_override = parse_provider_selector(selector)
+            model = model_override or "dry-run"
+            if not args.dry_run:
+                try:
+                    runtimes[selector] = await resources.enter_async_context(
+                        build_provider(
+                            provider,
+                            temperature=None if args.no_temperature else args.temperature,
+                            response_max_tokens=args.response_max_tokens,
+                            model=model_override,
+                        )
+                    )
+                except Exception as exc:
+                    print(f"!! skipping {selector}: {type(exc).__name__}: {exc}", flush=True)
+                    continue
+                model = runtimes[selector].model
+            identity = (provider, model)
+            if identity in identities:
+                raise SystemExit(
+                    f"Duplicate resolved provider/model: {identities[identity]!r} and {selector!r}."
+                )
+            identities[identity] = selector
+            resolved.append((selector, provider, model))
+
+        for selector, provider, model in resolved:
+            for size in sizes:
+                for strategy_name in strategies:
+                    for repeat in range(1, args.repeats + 1):
+                        cell = CellKey(
+                            provider=provider,
+                            model=model,
+                            transcript=size,
+                            strategy=strategy_name,
+                            repeat=repeat,
+                        )
+                        # A unique salt per cell gives each cell its own cache namespace, so
+                        # cells cannot serve each other cache hits and contaminate results.
+                        salt = f"{run_id}-{cell.label}-{model}"
+                        transcript = build_preset(size, salt=salt, tokenizer=tokenizer)
+                        options = StrategyOptions(
+                            tokenizer=tokenizer,
+                            max_context_window_tokens=resolve_context_window(
+                                transcript.approx_final_prompt_tokens,
+                                override=args.context_window,
+                                max_output_tokens=args.max_output_tokens,
                             ),
-                            request_timeout=args.request_timeout or None,
+                            max_output_tokens=args.max_output_tokens,
+                            keep_last_groups=args.keep_last_groups,
+                            keep_last_tool_call_groups=args.keep_tool_groups,
+                            summarizer=summarizer,
                         )
+                        strategy = build_strategy(strategy_name, options)
 
-                    print(f"-> {cell.label} ({len(transcript.turns)} turns)", flush=True)
-                    records = await run_cell(
-                        cell=cell,
-                        transcript=transcript,
-                        strategy=strategy,
-                        tokenizer=tokenizer,
-                        caller=caller,
-                        on_record=on_record,
-                        turn_delay=args.turn_delay,
-                    )
-                    all_records.extend(records)
-                    summaries.append(
-                        summarize_cell(
-                            records,
+                        # Built per cell, not per provider: the cache key must be stable for
+                        # every turn of a cell and different between cells. The underlying
+                        # client is shared, so this costs nothing.
+                        caller: Any = _DryRunCaller()
+                        if not args.dry_run:
+                            caller = ProviderCaller(
+                                runtimes[selector],
+                                extra_options=prompt_cache_key_options(
+                                    provider, salt, enable_optional=args.prompt_cache_key
+                                ),
+                                request_timeout=args.request_timeout or None,
+                            )
+
+                        print(f"-> {cell.label} ({len(transcript.turns)} turns)", flush=True)
+                        records = await run_cell(
                             cell=cell,
-                            reports_cache_tokens=bool(records)
-                            and all(record.cached_tokens is not None for record in records),
+                            transcript=transcript,
+                            strategy=strategy,
+                            tokenizer=tokenizer,
+                            caller=caller,
+                            on_record=on_record,
+                            turn_delay=args.turn_delay,
                         )
-                    )
-    return all_records, summaries
+                        all_records.extend(records)
+                        summaries.append(
+                            summarize_cell(
+                                records,
+                                cell=cell,
+                                reports_cache_tokens=bool(records)
+                                and all(record.cached_tokens is not None for record in records),
+                            )
+                        )
+        return all_records, summaries
 
 
 async def run_benchmark(args: argparse.Namespace) -> int:

@@ -434,3 +434,37 @@ class TestATrustedFloorNeedsAnObserver:
             record.integrity_of("a.txt")
         assert "Wire file_store_provenance_middleware(record)" in str(refusal.value)
         assert "drop floor=" in str(refusal.value)
+
+
+@pytest.mark.parametrize("tool", sorted(FILE_STORE_WRITE_TOOLS))
+def test_prefixed_failed_mutation_records_the_expanded_path(tool):
+    record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+    middleware = file_store_provenance_middleware(record, tool_name_prefix="scratch")
+    context = _Context(f"scratch_{tool}", file_name="[var_name]")
+
+    async def scenario():
+        async def expanded_failure():
+            context.arguments["file_name"] = "notes.txt"
+            raise RuntimeError("failed after mutation")
+
+        with pytest.raises(RuntimeError, match="failed after mutation"):
+            await middleware.process(context, expanded_failure)
+
+    asyncio.run(scenario())
+    assert record.integrity_of("notes.txt") is SourceIntegrity.UNTRUSTED
+    assert record.integrity_of("[var_name]") is SourceIntegrity.TRUSTED
+
+
+def test_prefixed_observer_excludes_default_names_but_keeps_explicit_extensions():
+    record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+    middleware = file_store_provenance_middleware(
+        record, tool_name_prefix="scratch", also_observes={"host_write"}
+    )
+    asyncio.run(_run(middleware, _Context("file_access_write", file_name="default.txt")))
+    asyncio.run(
+        _run(middleware, _Context("other_scratch_file_access_write", file_name="other.txt"))
+    )
+    asyncio.run(_run(middleware, _Context("host_write", file_name="extra.txt")))
+    assert record.integrity_of("default.txt") is SourceIntegrity.TRUSTED
+    assert record.integrity_of("other.txt") is SourceIntegrity.TRUSTED
+    assert record.integrity_of("extra.txt") is SourceIntegrity.UNTRUSTED

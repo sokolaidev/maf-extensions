@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import json
 import sys
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -198,7 +199,7 @@ def test_sample_selects_engine_and_cleans_up_on_every_exit(
         else None
     )
     run = AsyncMock(side_effect=error, return_value=SimpleNamespace(text="reply", messages=[]))
-    monkeypatch.setattr(sample, "Agent", lambda **kwargs: SimpleNamespace(run=run))
+    monkeypatch.setattr(sample, "Agent", lambda **kwargs: nullcontext(SimpleNamespace(run=run)))
     if error is not None:
         with pytest.raises(type(error)):
             asyncio.run(sample.run())

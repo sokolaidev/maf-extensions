@@ -20,10 +20,10 @@ classifiers = [
     "Topic :: System :: Monitoring",
 ]
 dependencies = [
-    "maf-sandbox>=0.52.0,<0.53",
-    "maf-sandbox-bicep>=0.23.0,<0.26",
+    "maf-sandbox>=0.52.1,<0.53",
+    "maf-sandbox-bicep>=0.25.0,<0.26",
     "maf-sandbox-docker>=0.28.1,<0.31",
-    "agent-framework-core>=1.23.0,<1.24",
+    "agent-framework-core>=1.24.0,<1.25",
     "mcp==2.2.0",
     "uvicorn==0.54.0",
     "starlette==1.7.0",

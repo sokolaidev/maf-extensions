@@ -89,11 +89,16 @@ async def run() -> int:
             azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
             credential=credential,
         )
-        runtime = ProviderRuntime(
-            client=client, model=env["AZURE_OPENAI_CHAT_MODEL"], options={"max_tokens": 128}
-        )
-        caller = ProviderCaller(runtime, request_timeout=60, max_retries=1)
-        records = await benchmark(caller, runtime.model, uuid.uuid4().hex)
+        try:
+            runtime = ProviderRuntime(
+                client=client, model=env["AZURE_OPENAI_CHAT_MODEL"], options={"max_tokens": 128}
+            )
+            caller = ProviderCaller(runtime, request_timeout=60, max_retries=1)
+            records = await benchmark(caller, runtime.model, uuid.uuid4().hex)
+        finally:
+            close = getattr(client, "close", None)
+            if close is not None:
+                await close()
     for name, turns in records.items():
         for turn in turns:
             print(f"{MEASURED}" + json.dumps({"stage": "turn", "strategy": name, **asdict(turn)}))

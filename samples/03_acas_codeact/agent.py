@@ -130,7 +130,7 @@ async def run() -> int:
 
     credential = DefaultAzureCredential()
     try:
-        agent = Agent(
+        async with Agent(
             client=OpenAIChatClient(
                 model=env["AZURE_OPENAI_CHAT_MODEL"],
                 azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
@@ -144,24 +144,26 @@ async def run() -> int:
                 "not paraphrase, round, or recompute the number it printed."
             ),
             tools=tools,
-        )
-        response = await agent.run(TASK)
-        # Quoted first, because the reply and the block below share one stream and the live
-        # check trusts the `[measured]` tag completely.
-        print(quoted(response.text))
+        ) as agent:
+            response = await agent.run(TASK)
+            # Quoted first, because the reply and the block below share one stream and the live
+            # check trusts the `[measured]` tag completely.
+            print(quoted(response.text))
 
-        # What the interpreter printed, taken from the tool result rather than from the reply.
-        # The 100th Fibonacci number is a constant any model can recite, so the reply alone is
-        # not evidence a program ran — this block is (#314).
-        runs = [result for result in tool_results(response, CODEACT_TOOL) if _RAN.search(result)]
-        print()
-        print(
-            evidence(
-                "Program output as execute_code returned it",
-                runs,
-                "programs whose output came back from the sandbox",
+            # What the interpreter printed, taken from the tool result rather than from the reply.
+            # The 100th Fibonacci number is a constant any model can recite, so the reply alone is
+            # not evidence a program ran — this block is (#314).
+            runs = [
+                result for result in tool_results(response, CODEACT_TOOL) if _RAN.search(result)
+            ]
+            print()
+            print(
+                evidence(
+                    "Program output as execute_code returned it",
+                    runs,
+                    "programs whose output came back from the sandbox",
+                )
             )
-        )
     finally:
         # Deletes rather than relying on the lifecycle timers — see sample 01's README.
         purge = await router.dispose_scope(SCOPE, THREAD_ID)

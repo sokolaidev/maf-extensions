@@ -38,8 +38,7 @@ The host-facing conveniences live here:
   ``AgentFileStore``, so the model reads them back through the host's own file tools instead of
   through the workload's result. Here because the destination is the framework's store.
 - :func:`sandbox_outputs_read_tools` — the two read-only tools that expose such a store to the
-  model. Here because ``FileAccessProvider`` cannot: it names its tools from fixed constants, so
-  a second one of those is a name collision rather than a second store.
+  model with bounded responses and host-controlled names.
 """
 
 from __future__ import annotations
@@ -376,7 +375,10 @@ def sandbox_label_tracking_middleware(*args: Any, **kwargs: Any) -> Any:
 
 
 def file_store_provenance_middleware(
-    record: FileStoreProvenance, *, also_observes: frozenset[str] | set[str] = frozenset()
+    record: FileStoreProvenance,
+    *,
+    tool_name_prefix: str | None = None,
+    also_observes: frozenset[str] | set[str] = frozenset(),
 ) -> Any:
     """Middleware that records an agent-driven file-store write into ``record``.
 
@@ -421,6 +423,8 @@ def file_store_provenance_middleware(
 
     Args:
         record: Where observed writes land, and what a kind reads back.
+        tool_name_prefix: The matching FileAccessProvider's prefix. Only that provider's
+            mutation names are observed; each store needs its own record and unique names.
         also_observes: Extra tool names to treat as file-store writes, for a host that wires a
             write surface of its own. Each must name its path in a ``file_name`` argument.
     """
@@ -432,7 +436,10 @@ def file_store_provenance_middleware(
     # exists to close. The two cannot live in one module — the record is stdlib-only and this
     # imports `agent_framework`.
     record._note_observer()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    observed = FILE_STORE_WRITE_TOOLS | frozenset(also_observes)
+    observed = frozenset(
+        f"{tool_name_prefix}_{name}" if tool_name_prefix else name
+        for name in FILE_STORE_WRITE_TOOLS
+    ) | frozenset(also_observes)
 
     class _FileStoreProvenance(FunctionMiddleware):  # type: ignore[misc]
         async def process(self, context: Any, call_next: Any) -> None:
@@ -3307,11 +3314,7 @@ def make_file_store_sink(
     return OutputSink(deliver, per_call=True)
 
 
-#: What the two read-back tools are called by default, and the reason they are named at all.
-#: ``FileAccessProvider`` names its own from class constants read inside its tool decorators, so
-#: two of those contribute two ``file_access_read`` tools rather than two stores — and the model
-#: is then handed a name it cannot use to say which one it means. A prefix, because a host with
-#: two output stores hits the same wall one layer up.
+#: Distinct prefixes keep tools for separate output stores unambiguous.
 DEFAULT_OUTPUTS_TOOL_PREFIX = "sandbox_outputs"
 
 
@@ -3564,6 +3567,7 @@ class ScopedFileStores:
     pair. Native stores are retained unchanged, including their concurrency capabilities.
     Live bindings cannot reuse store or provenance objects across registries.
     Providers are read-only by default; writable scratch stores must be separate from sinks.
+    Set distinct ``tool_name_prefix`` values when exposing multiple stores to one agent.
     ``provenance_factory(scope, thread_id, store)`` restores a record before publication;
     it must finish synchronously and must not re-enter this registry.
     Bindings are retained for this registry's lifetime; reaching ``max_scopes`` refuses new
@@ -3578,6 +3582,7 @@ class ScopedFileStores:
         provenance_factory: Callable[[str, str, Any], FileStoreProvenance] | None = None,
         read_only: bool = True,
         max_scopes: int = 256,
+        tool_name_prefix: str | None = None,
     ) -> None:
         if type(max_scopes) is not int or max_scopes <= 0:
             raise ValueError("max_scopes must be a positive integer.")
@@ -3589,6 +3594,7 @@ class ScopedFileStores:
         self._floor = floor
         self._provenance_factory = provenance_factory
         self._read_only = read_only
+        self._tool_name_prefix = tool_name_prefix
         self._max_scopes = max_scopes
         self._bindings: dict[tuple[str, str], FileStoreBinding] = {}
         self._lock = threading.Lock()
@@ -3629,9 +3635,14 @@ class ScopedFileStores:
                 store=store,
                 provenance=provenance,
                 provider=FileAccessProvider(
-                    store=store, session_scoped=False, disable_write_tools=self._read_only
+                    store=store,
+                    session_scoped=False,
+                    disable_write_tools=self._read_only,
+                    tool_name_prefix=self._tool_name_prefix,
                 ),
-                middleware=file_store_provenance_middleware(provenance),
+                middleware=file_store_provenance_middleware(
+                    provenance, tool_name_prefix=self._tool_name_prefix
+                ),
             )
             identities = (("store", id(store)), ("provenance", id(provenance)))
             with _FILE_BINDINGS_LOCK:
