@@ -9,7 +9,8 @@
 #     "maf-sandbox-docker",
 #     "maf-sandbox-shell>=0.1.0",
 #     "maf-sandbox>=0.52",
-#     "mcp>=1.24,<2",
+#     "mcp>=2.2.0,<3",
+#     "tenacity>=9.1.4,<9.2.0",
 # ]
 # ///
 
