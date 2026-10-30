@@ -374,7 +374,7 @@ class Transitions:
         finally:
             self.fixture.save()
             gateway.start()
-        wait_gateway(self.client)
+            wait_gateway(self.client)
         row["after_spec_hex"] = self.current().spec.SerializeToString(deterministic=True).hex()
         after = snapshot(self.identity)
         row["after"] = after

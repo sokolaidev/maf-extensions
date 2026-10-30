@@ -259,6 +259,7 @@ def test_runtime_replacement_requires_independent_retirement_evidence(probe, mon
         "abnormal_exit",
         "already_stopped",
         "stop_error",
+        "health",
         "runtime_restarted",
     ],
 )
@@ -287,7 +288,13 @@ def test_restart_requires_same_intent_physical_instance_and_observed_access(
     monkeypatch.setattr(probe, "snapshot", lambda identity: next(snapshots))
     intents = iter(["original", "changed" if failure == "intent" else "original"])
     monkeypatch.setattr(transition, "current", lambda: NS(spec=Message(policy=next(intents))))
-    monkeypatch.setattr(probe, "wait_gateway", lambda client: calls.append("health"))
+
+    def health(client):
+        calls.append("health")
+        if failure == "health":
+            raise RuntimeError("gateway unavailable")
+
+    monkeypatch.setattr(probe, "wait_gateway", health)
 
     def wait(value, state):
         if failure == "receipt" and "health" in calls:
@@ -345,7 +352,7 @@ def test_restart_requires_same_intent_physical_instance_and_observed_access(
     assert saved[0][1]["graceful_shutdown"] is not shutdown_failed
     assert persisted[0][0][1]["graceful_shutdown"] is not shutdown_failed
     if shutdown_failed:
-        assert "health" not in calls
+        assert calls[-2:] == ["start", "health"]
     if failure == "already_stopped":
         assert "stop" not in calls
     if failure in (
@@ -360,6 +367,7 @@ def test_restart_requires_same_intent_physical_instance_and_observed_access(
         "abnormal_exit",
         "already_stopped",
         "stop_error",
+        "health",
         "runtime_restarted",
     ):
         assert "origin" not in calls
