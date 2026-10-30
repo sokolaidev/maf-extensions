@@ -1162,6 +1162,35 @@ def test_baseline_checks_signatures_before_consuming_inventory(monkeypatch, tmp_
         tracker.baseline(GitHub(), RECORD | {"candidate": {}}, tmp_path)
 
 
+def test_release_identity_is_independent_of_vulnerability_assessment(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        tracker.Evidence,
+        "fetch",
+        lambda *_: {"draft": False, "immutable": True, "tag_name": "image-graphviz-v0.1.0"},
+    )
+    monkeypatch.setattr(tracker, "image_tag", lambda _: "image-graphviz-v0.1.0")
+    monkeypatch.setattr(GitHub, "tag_commit", lambda *_: SOURCE)
+    verified = []
+    monkeypatch.setattr(tracker, "verify_identity", lambda *a, **kw: verified.append((a, kw)))
+    (tmp_path / "evidence-index.json").write_bytes(b"{}")
+    record = RECORD | {"candidate": {}, "evidenceIndexSha256": tracker.sha256(b"{}")}
+    assert tracker.release_evidence(GitHub(), record, tmp_path).endswith("image-graphviz-v0.1.0")
+    assert verified[0][0] == ({}, tmp_path)
+    assert verified[0][1] == {"bundles": True}
+    with pytest.raises(ValueError, match="Evidence index"):
+        tracker.release_evidence(GitHub(), record | {"evidenceIndexSha256": "other"}, tmp_path)
+
+
+def test_image_refresh_baseline_still_requires_clean_original_scan(monkeypatch, tmp_path):
+    monkeypatch.setattr(tracker, "release_evidence", lambda *a: "release")
+    assessment = {"assessedAt": "2026-01-01T00:00:00Z", "outcome": "vulnerable"}
+    (tmp_path / "assessment.json").write_text(json.dumps(assessment))
+    (tmp_path / "grype.json").write_text("{}")
+    monkeypatch.setattr(tracker, "scan_result", lambda *a: assessment)
+    with pytest.raises(ValueError, match="release gate"):
+        tracker.baseline(GitHub(), RECORD | {"candidate": {}}, tmp_path)
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

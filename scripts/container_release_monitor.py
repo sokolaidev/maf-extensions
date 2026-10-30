@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import urllib.error
+import uuid
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -103,8 +104,10 @@ def assessment_details(attempt: dict[str, Any]) -> list[str]:
     return details
 
 
-def notification(catalogue: dict[str, Any], health: dict[str, Any]) -> str:
-    """Summarize actionable health without timestamps or historical-only findings in its identity."""
+def notification(
+    catalogue: dict[str, Any], health: dict[str, Any], *, truncate: bool = True
+) -> str:
+    """Build stable issue diagnostics; retain the full summary for artifact transport."""
     rows = []
     for scope in ("current", "historical", "publication"):
         for name, status in sorted(health[scope].items()):
@@ -143,10 +146,11 @@ def notification(catalogue: dict[str, Any], health: dict[str, Any]) -> str:
     )
     if rows:
         summary += "\n\nAffected images and reasons:\n\n" + "\n".join(rows)
-    if len(summary) > 32000:
+    if truncate and len(summary) > 32000:
         summary = (
             summary[:32000]
-            + "\n\nDetails truncated; see the finish job summary and retained evidence."
+            + "\n\nDetails truncated; see the finish job log, which retains full diagnostics "
+            "even if the monitor-diagnostics artifact upload fails."
         )
     return json.dumps({"attention": health["attention"], "problems": identity, "summary": summary})
 
@@ -532,6 +536,13 @@ def finish(directory: Path) -> None:
     )
     catalogue = snapshot.catalogue if snapshot else empty_catalogue()
     health = monitoring_health(catalogue, at)
+    diagnostics = json.loads(notification(catalogue, health, truncate=False))
+    # Keep a safe fallback in the producer log even when artifact storage is unavailable.
+    token = uuid.uuid4().hex
+    print(f"::stop-commands::{token}", flush=True)
+    print(diagnostics["summary"], flush=True)
+    print(f"::{token}::", flush=True)
+    write(directory / "diagnostics.json", diagnostics)
     warnings = {name: state for name, state in health["historical"].items() if state != "clean"}
     summary = ["## Current release health", ""]
     for scope, heading in (

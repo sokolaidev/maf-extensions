@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.31.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.31.0...maf-sandbox-wslc-v0.31.1) (2026-10-29)
+
+
+### Fixes
+
+* require maf-sandbox 0.52.0 in the packages that use it ([#2278](https://github.com/sokolaidev/maf-extensions/issues/2278)) ([8f00f9d](https://github.com/sokolaidev/maf-extensions/commit/8f00f9df3baf5859ed032d8e7e7a75eb2a3bffdc))
+
+## [0.31.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.30.0...maf-sandbox-wslc-v0.31.0) (2026-10-28)
+
+
+### Features
+
+* adopt MAF 1.23 and MCP 2 across the suite ([#2140](https://github.com/sokolaidev/maf-extensions/issues/2140)) ([9ea47ea](https://github.com/sokolaidev/maf-extensions/commit/9ea47eac75a81ef01361a99bc405465fb54733ac))
+
+
+### Fixes
+
+* build container images from managed, digest-pinned dependencies ([#2219](https://github.com/sokolaidev/maf-extensions/issues/2219)) ([7c10a6c](https://github.com/sokolaidev/maf-extensions/commit/7c10a6cda33f6958f304da8bf10bf8a0ed1ebae2))
+* bump the proxy-images group across 2 directories with 1 update ([#2239](https://github.com/sokolaidev/maf-extensions/issues/2239)) ([004f5f9](https://github.com/sokolaidev/maf-extensions/commit/004f5f99c462798246e0005ede3a2c055ba91d8c))
+* bump the proxy-modules-security group across 2 directories with 1 update ([#2276](https://github.com/sokolaidev/maf-extensions/issues/2276)) ([3d509b1](https://github.com/sokolaidev/maf-extensions/commit/3d509b10debf3e1c369339c4199d59af1399c9c8))
+* refresh proxy dependencies with OpenTelemetry 0.21 compatibility ([#2275](https://github.com/sokolaidev/maf-extensions/issues/2275)) ([3830d79](https://github.com/sokolaidev/maf-extensions/commit/3830d7928fc9de7664c4823db9b383e901894877))
+
 ## [0.30.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.29.1...maf-sandbox-wslc-v0.30.0) (2026-10-19)
 
 

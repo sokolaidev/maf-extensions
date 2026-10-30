@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.8.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-sbx-v0.8.0...maf-sandbox-docker-sbx-v0.8.1) (2026-10-29)
+
+
+### Fixes
+
+* require maf-sandbox 0.52.0 in the packages that use it ([#2278](https://github.com/sokolaidev/maf-extensions/issues/2278)) ([8f00f9d](https://github.com/sokolaidev/maf-extensions/commit/8f00f9df3baf5859ed032d8e7e7a75eb2a3bffdc))
+
+## [0.8.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-sbx-v0.7.0...maf-sandbox-docker-sbx-v0.8.0) (2026-10-29)
+
+
+### Features
+
+* adopt MAF 1.23 and MCP 2 across the suite ([#2140](https://github.com/sokolaidev/maf-extensions/issues/2140)) ([9ea47ea](https://github.com/sokolaidev/maf-extensions/commit/9ea47eac75a81ef01361a99bc405465fb54733ac))
+
 ## [0.7.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-sbx-v0.6.1...maf-sandbox-docker-sbx-v0.7.0) (2026-10-19)
 
 

@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-tui"
-version = "0.5.0"
+version = "0.6.1"
 description = "A local operator console for inspecting and disposing maf-sandbox instances."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -27,7 +27,7 @@ classifiers = [
     "Topic :: System :: Monitoring",
 ]
 dependencies = [
-    "maf-sandbox>=0.51.0,<0.53",
+    "maf-sandbox>=0.52.0,<0.53",
     "packaging>=24,<27",
     "textual>=6,<8",
 ]
