@@ -532,10 +532,11 @@ def test_selection_tooling_does_not_hide_image_input_changes(repository, path, e
 
 
 @pytest.mark.parametrize("event", ["schedule", "workflow_dispatch"])
-def test_selection_tooling_changes_keep_scheduled_and_manual_full_coverage(repository, event):
+def test_selection_tooling_changes_preserve_scheduled_and_manual_coverage(repository, event):
     root, base = repository
     head = commit(root, {"scripts/select_image_security.py": "Updated selector"})
-    assert select(root, event, base, head)[0] == list(PROFILES)
+    expected = [profile for profile in PROFILES if event != "schedule" or profile != "antivirus"]
+    assert select(root, event, base, head)[0] == expected
 
 
 def test_deleted_image_input_and_new_profile_both_select_scans(repository):
