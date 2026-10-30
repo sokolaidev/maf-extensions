@@ -68,12 +68,15 @@ def build_image(command: list[str]) -> None:
     """Build an AMD64 consumer with fresh Python packages; reject conflicting platforms."""
     if command[:2] != ["docker", "build"]:
         raise ValueError("Expected a Docker build command")
-    for index, argument in enumerate(command):
+    arguments = iter(command[2:])
+    consumer_arguments = []
+    for argument in arguments:
         if argument == "--platform":
-            platform = command[index + 1] if index + 1 < len(command) else ""
+            platform = next(arguments, "")
         elif argument.startswith("--platform="):
             platform = argument.partition("=")[2]
         else:
+            consumer_arguments.append(argument)
             continue
         if platform != PLATFORM:
             raise ValueError(f"Python APKs require --platform {PLATFORM}")
@@ -82,7 +85,7 @@ def build_image(command: list[str]) -> None:
         subprocess.run(
             command[:2]
             + ["--build-context", f"python-packages={temporary}", "--platform", PLATFORM]
-            + command[2:],
+            + consumer_arguments,
             check=True,
         )
 

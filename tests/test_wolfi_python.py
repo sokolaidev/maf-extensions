@@ -77,7 +77,13 @@ def test_existing_output_is_never_overwritten(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "platform", [[], ["--platform", "linux/amd64"], ["--platform=linux/amd64"]]
+    "platform",
+    [
+        [],
+        ["--platform", "linux/amd64"],
+        ["--platform=linux/amd64"],
+        ["--platform", "linux/amd64", "--platform=linux/amd64"],
+    ],
 )
 def test_consumer_platform_matches_exported_packages(monkeypatch, platform):
     commands = []
@@ -90,7 +96,7 @@ def test_consumer_platform_matches_exported_packages(monkeypatch, platform):
     command = commands[0]
     platforms = [command[i + 1] for i, arg in enumerate(command) if arg == "--platform"]
     platforms += [arg.partition("=")[2] for arg in command if arg.startswith("--platform=")]
-    assert platforms and set(platforms) == {"linux/amd64"}
+    assert platforms == ["linux/amd64"]
 
 
 @pytest.mark.parametrize(
