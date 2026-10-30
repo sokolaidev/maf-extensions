@@ -94,7 +94,7 @@ async def run(*, smoke: bool = True) -> int:
             from agent_framework import Agent
             from agent_framework.openai import OpenAIChatClient
 
-            agent = Agent(
+            async with Agent(
                 client=OpenAIChatClient(
                     model=env["OPENAI_MODEL"],
                     base_url=env["OPENAI_BASE_URL"],
@@ -103,11 +103,11 @@ async def run(*, smoke: bool = True) -> int:
                 name=binding.key.agent_id,
                 instructions="Always use execute_code and report the integer the tool returned.",
                 tools=tools,
-            )
-            response = await agent.run(TASK, options={"store": False})
-            reply = response.text
-            print(quoted(reply), flush=True)
-            outputs = tool_results(response, "execute_code")
+            ) as agent:
+                response = await agent.run(TASK, options={"store": False})
+                reply = response.text
+                print(quoted(reply), flush=True)
+                outputs = tool_results(response, "execute_code")
         print(evidence("CodeAct tool results", outputs, "CodeAct results returned"), flush=True)
         expected = f"{COMPLETED_TEXT}\nResult: ok\nstdout:\n{ANSWER}"
         if not any(output.strip() == expected for output in outputs):

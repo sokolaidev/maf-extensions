@@ -291,7 +291,7 @@ async def _validate_under(
     tools = make_bicep_tools(
         router, store, BICEP_AGENT_DIR, context, image=env["BICEP_SANDBOX_IMAGE"], egress=posture
     )
-    agent = Agent(
+    async with Agent(
         client=OpenAIChatClient(
             model=env["AZURE_OPENAI_CHAT_MODEL"],
             azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
@@ -305,34 +305,37 @@ async def _validate_under(
             "omit a diagnostic."
         ),
         tools=tools,
-    )
-
-    print(f"  --- egress {posture} ---\n")
-    try:
-        reply = await agent.run(f"Validate {BICEP_FILE} and list every diagnostic you get back.")
-        # Quoted first, because the reply and the block below share one stream and the live
-        # check trusts the `[measured]` tag completely.
-        print(quoted(reply.text))
-        # The compiler's own words, taken from the tool result rather than from the reply. A
-        # model that never called the tool can still write a convincing summary of what it
-        # would have said, and the whole claim of this act rests on which one of these ran.
-        compiles = [result for result in tool_results(reply, BICEP_TOOL) if _PHASES.search(result)]
-        print()
-        print(
-            evidence(
-                f"bicep_validate under egress {posture}",
-                compiles,
-                "compiles that reached the sandbox",
+    ) as agent:
+        print(f"  --- egress {posture} ---\n")
+        try:
+            reply = await agent.run(
+                f"Validate {BICEP_FILE} and list every diagnostic you get back."
             )
-        )
-        print()
-        # No compile is not a restore. An empty list here means the sandbox never started, and
-        # reporting that as a successful restore would turn the loudest failure into the
-        # quietest one.
-        restored = bool(compiles) and not any(_RESTORE_FAILED in result for result in compiles)
-        return posture, restored
-    finally:
-        await router.dispose_scope(KEY.scope, thread)
+            # Quoted first, because the reply and the block below share one stream and the live
+            # check trusts the `[measured]` tag completely.
+            print(quoted(reply.text))
+            # The compiler's own words, taken from the tool result rather than from the reply. A
+            # model that never called the tool can still write a convincing summary of what it
+            # would have said, and the whole claim of this act rests on which one of these ran.
+            compiles = [
+                result for result in tool_results(reply, BICEP_TOOL) if _PHASES.search(result)
+            ]
+            print()
+            print(
+                evidence(
+                    f"bicep_validate under egress {posture}",
+                    compiles,
+                    "compiles that reached the sandbox",
+                )
+            )
+            print()
+            # No compile is not a restore. An empty list here means the sandbox never started, and
+            # reporting that as a successful restore would turn the loudest failure into the
+            # quietest one.
+            restored = bool(compiles) and not any(_RESTORE_FAILED in result for result in compiles)
+            return posture, restored
+        finally:
+            await router.dispose_scope(KEY.scope, thread)
 
 
 def _verdict(restored: bool) -> str:

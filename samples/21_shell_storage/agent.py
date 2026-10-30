@@ -194,7 +194,7 @@ async def run(output: Path) -> int:
                     request_timeout=60,
                 )
             )
-            agent = Agent(
+            async with Agent(
                 client=OpenAIChatClient(
                     model=env["AZURE_OPENAI_CHAT_MODEL"],
                     azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
@@ -203,45 +203,47 @@ async def run(output: Path) -> int:
                 name="storage-author",
                 instructions=PROMPT,
                 tools=[learn],
-            )
-            session = agent.create_session()
-            request = "Find the documentation and write the deployment script."
-            for attempt in range(1, MAX_ATTEMPTS + 1):
-                reply = await agent.run(request, session=session)
-                print(quoted(reply.text))
-                docs += learn_searches(reply)
-                measure("learn", results=docs)
-                if not docs:
-                    request = "Call microsoft_docs_search successfully before writing the script."
-                    continue
-                try:
-                    script = script_text(reply.text)
-                except ValueError as exc:
-                    request = f"Repair the script: {exc}. Return only the complete Bash script."
-                    continue
-                await store.write("deploy.sh", script)
-                before = len(observer.calls)
-                result = await validator.invoke(arguments={"files": ["deploy.sh"]})
-                if len(observer.calls) != before + 1 or not observer.calls[-1]:
-                    raise RuntimeError("Validation did not complete with confirmed disposal")
-                readback = await store.read("deploy.sh")
-                if readback != script:
-                    raise RuntimeError("Validation changed the submitted script")
-                clean = clean_result(result)
-                measure(
-                    "validation",
-                    attempt=attempt,
-                    clean=clean,
-                    sha256=hashlib.sha256(script.encode()).hexdigest(),
-                )
-                print(quoted(result_text(result)))
-                if clean:
-                    candidate = script
-                    break
-                request = (
-                    "Repair the script using these analyzer findings. Return only Bash.\n"
-                    + result_text(result)
-                )
+            ) as agent:
+                session = agent.create_session()
+                request = "Find the documentation and write the deployment script."
+                for attempt in range(1, MAX_ATTEMPTS + 1):
+                    reply = await agent.run(request, session=session)
+                    print(quoted(reply.text))
+                    docs += learn_searches(reply)
+                    measure("learn", results=docs)
+                    if not docs:
+                        request = (
+                            "Call microsoft_docs_search successfully before writing the script."
+                        )
+                        continue
+                    try:
+                        script = script_text(reply.text)
+                    except ValueError as exc:
+                        request = f"Repair the script: {exc}. Return only the complete Bash script."
+                        continue
+                    await store.write("deploy.sh", script)
+                    before = len(observer.calls)
+                    result = await validator.invoke(arguments={"files": ["deploy.sh"]})
+                    if len(observer.calls) != before + 1 or not observer.calls[-1]:
+                        raise RuntimeError("Validation did not complete with confirmed disposal")
+                    readback = await store.read("deploy.sh")
+                    if readback != script:
+                        raise RuntimeError("Validation changed the submitted script")
+                    clean = clean_result(result)
+                    measure(
+                        "validation",
+                        attempt=attempt,
+                        clean=clean,
+                        sha256=hashlib.sha256(script.encode()).hexdigest(),
+                    )
+                    print(quoted(result_text(result)))
+                    if clean:
+                        candidate = script
+                        break
+                    request = (
+                        "Repair the script using these analyzer findings. Return only Bash.\n"
+                        + result_text(result)
+                    )
     finally:
         try:
             purge = await router.dispose_scope(SCOPE, THREAD_ID)

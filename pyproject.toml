@@ -40,13 +40,13 @@ dev = [
     # Every sample that talks to a model imports this, and nothing else here pulls it in.
     # Wide where the tooling bands are narrow, and deliberately: a sample declares it unpinned,
     # so a check held to an older minor would pass against a version no live run uses.
-    "agent-framework-openai>=1.17.0,<2",
+    "agent-framework-openai>=1.18.0,<2",
     # maf-cachebench imports the other provider clients lazily, one per provider route, and
     # its strict pyright pass has to resolve every one of them. The Mistral and Ollama clients
     # exist only as pre-releases on the index, so their floors name one.
-    "agent-framework-foundry>=1.15.0,<2",
-    "agent-framework-mistral>=1.0.0b261015,<2",
-    "agent-framework-ollama>=1.0.0b261022,<2",
+    "agent-framework-foundry>=1.16.0,<2",
+    "agent-framework-mistral>=1.0.0b261030,<2",
+    "agent-framework-ollama>=1.0.0b261030,<2",
     "ollama>=0.5.3,<0.6",
     # Sample 17's Deep Agents wiring, for the same reason as the line above. `langchain-core`
     # arrives with it today and is named anyway: a sample declares what it imports, and a

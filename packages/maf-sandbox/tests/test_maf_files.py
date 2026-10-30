@@ -31,8 +31,9 @@ async def tools_for(binding):
     return {tool.name: tool for tool in context.tools}
 
 
-async def invoke(binding, tools, name, **arguments):
-    tool = tools[f"file_access_{name}"]
+async def invoke(binding, tools, name, *, prefix="", **arguments):
+    tool_name = f"{prefix}_file_access_{name}" if prefix else f"file_access_{name}"
+    tool = tools[tool_name]
     context = FunctionInvocationContext(function=tool, arguments=arguments)
 
     async def call():
@@ -316,3 +317,130 @@ def test_identity_registry_does_not_keep_unused_bindings_alive():
     del binding, registry
     gc.collect()
     assert weak() is None
+
+
+@pytest.mark.parametrize("observer_first", [False, True])
+@pytest.mark.parametrize("prefix", [None, "", "scratch"])
+@pytest.mark.parametrize("operation", ["write", "replace", "replace_lines", "delete"])
+def test_native_prefixed_mutations_mark_only_the_bound_store(prefix, operation, observer_first):
+    registry = ScopedFileStores(
+        lambda scope, thread: InMemoryAgentFileStore(),
+        floor=SourceIntegrity.TRUSTED,
+        read_only=False,
+        tool_name_prefix=prefix,
+    )
+    other = ScopedFileStores(
+        lambda scope, thread: InMemoryAgentFileStore(),
+        floor=SourceIntegrity.TRUSTED,
+        read_only=False,
+        tool_name_prefix="other",
+    ).bind(scope="tenant", thread_id="thread")
+    binding = registry.bind(scope="tenant", thread_id="thread")
+
+    async def scenario():
+        tools = await tools_for(binding)
+        other_tools = await tools_for(other)
+        await binding.store.write("notes.txt", "host text")
+        await other.store.write("notes.txt", "other host text")
+        arguments = {
+            "write": {"content": "model text", "overwrite": True},
+            "replace": {"old_string": "host", "new_string": "model"},
+            "replace_lines": {"edits": [{"line_number": 1, "new_line": "model text"}]},
+            "delete": {},
+        }[operation]
+        tool_name = f"{prefix}_file_access_{operation}" if prefix else f"file_access_{operation}"
+        context = FunctionInvocationContext(
+            function=tools[tool_name], arguments={"file_name": "notes.txt", **arguments}
+        )
+
+        async def call():
+            context.result = await context.function.invoke(arguments=context.arguments)
+
+        outer, inner_observer = (
+            (binding.middleware, other.middleware)
+            if observer_first
+            else (other.middleware, binding.middleware)
+        )
+
+        async def inner():
+            await inner_observer.process(context, call)
+
+        await outer.process(context, inner)
+        assert binding.provenance.integrity_of("notes.txt") is SourceIntegrity.UNTRUSTED
+        assert other.provenance.integrity_of("notes.txt") is SourceIntegrity.TRUSTED
+        assert await other.store.read("notes.txt") == "other host text"
+        assert "other_file_access_write" in other_tools
+        assert await binding.store.read("notes.txt") == (
+            None if operation == "delete" else "model text"
+        )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("path", ["/".join(["a"] * 256), "/".join(["a" * 200] * 21)])
+def test_native_store_length_refusals_do_not_land_files(path):
+    binding = ScopedFileStores(
+        lambda scope, thread: InMemoryAgentFileStore(),
+        read_only=False,
+        tool_name_prefix="scratch",
+    ).bind(scope="tenant", thread_id="thread")
+
+    async def scenario():
+        tools = await tools_for(binding)
+        await invoke(binding, tools, "write", prefix="scratch", file_name=path, content="bad")
+        assert await binding.store.list_children() == []
+
+    asyncio.run(scenario())
+
+
+def test_native_file_directory_collision_preserves_host_bytes():
+    binding = ScopedFileStores(
+        lambda scope, thread: InMemoryAgentFileStore(),
+        read_only=False,
+        tool_name_prefix="scratch",
+    ).bind(scope="tenant", thread_id="thread")
+
+    async def scenario():
+        tools = await tools_for(binding)
+        await binding.store.write("reports/host.txt", "host text")
+        await invoke(binding, tools, "write", prefix="scratch", file_name="reports", content="bad")
+        await invoke(binding, tools, "delete", prefix="scratch", file_name="reports")
+        assert await binding.store.read("reports/host.txt") == "host text"
+        assert await binding.store.read("reports") is None
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "name,host_path,error",
+    [
+        ("reports", "call/reports/host.txt", IsADirectoryError),
+        ("reports/result.txt", "call/reports", NotADirectoryError),
+    ],
+)
+def test_native_sink_collision_preserves_prior_landings_and_conservative_labels(
+    name, host_path, error
+):
+    store = InMemoryAgentFileStore()
+    record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+    sink = make_file_store_sink(store, provenance=record)
+
+    async def scenario():
+        await store.write(host_path, "host")
+        await sink.deliver(
+            Artifact(
+                name="first.txt", content=b"first", kind="probe", media_type=None, call_id="call"
+            )
+        )
+        with pytest.raises(error):
+            await sink.deliver(
+                Artifact(
+                    name=name, content=b"second", kind="probe", media_type=None, call_id="call"
+                )
+            )
+        assert await store.read("call/first.txt") == "first"
+        assert await store.read(host_path) == "host"
+        assert record.integrity_of("call/first.txt") is SourceIntegrity.UNTRUSTED
+        assert record.integrity_of(f"call/{name}") is SourceIntegrity.UNTRUSTED
+
+    asyncio.run(scenario())

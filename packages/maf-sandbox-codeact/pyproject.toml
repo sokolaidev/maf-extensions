@@ -1,7 +1,7 @@
 [project]
 name = "maf-sandbox-codeact"
 version = "0.26.1"
-description = "CodeAct as a Microsoft Agent Framework tool — the model writes a short Python program and it runs inside a sandbox — written against maf-sandbox so it runs on any sandbox backend."
+description = "CodeAct as a Microsoft Agent Framework tool â€” the model writes a short Python program and it runs inside a sandbox â€” written against maf-sandbox so it runs on any sandbox backend."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]
@@ -25,20 +25,20 @@ classifiers = [
     "Topic :: Software Development :: Interpreters",
 ]
 dependencies = [
-    # The sandbox protocol this workload is written against — its ONLY infrastructure
+    # The sandbox protocol this workload is written against â€” its ONLY infrastructure
     # dependency. No Azure import, no backend import; a test enforces both.
     # Upper-bounded too: maf-sandbox has not yet reached a stable API, so every release
     # before 1.0.0 may include breaking changes (see its CHANGELOG). Moving either end of
-    # this range has an order to it — see RELEASING.md. The floor tracks the release where
+    # this range has an order to it â€” see RELEASING.md. The floor tracks the release where
     # the vocabulary this kind's spec names actually arrives; admit anything older and a
-    # published wheel resolves a maf-sandbox base missing it — a keyword argument as much as an
+    # published wheel resolves a maf-sandbox base missing it â€” a keyword argument as much as an
     # import, and that one fails at the call, where no import check is looking. The number
-    # itself is below, and `scripts/set_dependents_range.py` moves it — so this says which
+    # itself is below, and `scripts/set_dependents_range.py` moves it â€” so this says which
     # release the floor is for, never which release that is.
-    "maf-sandbox>=0.52.0,<0.53",
+    "maf-sandbox>=0.52.1,<0.53",
     # Approvals must bind to the issuing session. Admit only the framework minor
     # qualified by the framework-contract tests.
-    "agent-framework-core>=1.23.0,<1.24",
+    "agent-framework-core>=1.24.0,<1.25",
 ]
 
 [project.urls]
@@ -46,7 +46,7 @@ Homepage = "https://www.sokol.ai"
 Source = "https://github.com/sokolaidev/maf-extensions"
 Issues = "https://github.com/sokolaidev/maf-extensions/issues"
 
-# agent-framework-core resolves from PyPI at the released range declared above — no git
+# agent-framework-core resolves from PyPI at the released range declared above â€” no git
 # source in this repository, deliberately: the tests run against the same artifact every
 # consumer of the published wheel gets.
 [tool.uv.sources]
@@ -72,7 +72,7 @@ extend-select = ["I", "UP", "D100", "D101", "D103", "D104", "E501", "W505", "TD"
 [tool.ruff.lint.pycodestyle]
 max-doc-length = 100
 
-# Self-contained type checking, scoped to this package — strict. `tests/` stays out (fakes,
+# Self-contained type checking, scoped to this package â€” strict. `tests/` stays out (fakes,
 # not signal for a strict checker).
 [tool.pyright]
 include = ["src"]

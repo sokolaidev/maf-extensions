@@ -420,7 +420,7 @@ async def run() -> int:
         [converter] = make_drawio_tools(
             router, AGENT_ID, context, storage.sink, image=image, direction="LR"
         )
-        agent = Agent(
+        async with Agent(
             client=OpenAIChatClient(
                 model=env["AZURE_OPENAI_CHAT_MODEL"],
                 azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
@@ -437,28 +437,28 @@ async def run() -> int:
                     storage.store, disable_write_tools=True, disable_readonly_tool_approval=True
                 )
             ],
-        )
-        session = agent.create_session()
+        ) as agent:
+            session = agent.create_session()
 
-        async def ask(prompt: str) -> str:
-            response = await agent.run(prompt, session=session)
-            print(quoted(response.text))
-            return response.text
+            async def ask(prompt: str) -> str:
+                response = await agent.run(prompt, session=session)
+                print(quoted(response.text))
+                return response.text
 
-        async def validate(xml: str) -> object:
-            return await validate_diagram(converter, xml, timings, storage)
+            async def validate(xml: str) -> object:
+                return await validate_diagram(converter, xml, timings, storage)
 
-        async def read_back(path: str, expected: str) -> bool:
-            reply = await agent.run(
-                f"Read the saved diagram with file_access_read: {path}. Do not recreate it.",
-                session=session,
-            )
-            print(quoted(reply.text))
-            return read_was_verified(reply, path, expected)
+            async def read_back(path: str, expected: str) -> bool:
+                reply = await agent.run(
+                    f"Read the saved diagram with file_access_read: {path}. Do not recreate it.",
+                    session=session,
+                )
+                print(quoted(reply.text))
+                return read_was_verified(reply, path, expected)
 
-        measure("configuration", backend="acas", guest_egress="closed", allowed_hosts=[])
-        async with asyncio.timeout(600):
-            await repair_diagram(ask, validate, read_back, storage, markdown)
+            measure("configuration", backend="acas", guest_egress="closed", allowed_hosts=[])
+            async with asyncio.timeout(600):
+                await repair_diagram(ask, validate, read_back, storage, markdown)
     measure("complete")
     return 0
 

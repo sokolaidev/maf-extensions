@@ -222,7 +222,7 @@ async def run() -> int:
 
     credential = DefaultAzureCredential()
     try:
-        agent = Agent(
+        async with Agent(
             client=OpenAIChatClient(
                 model=env["AZURE_OPENAI_CHAT_MODEL"],
                 azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
@@ -238,22 +238,22 @@ async def run() -> int:
                 f"the {OUTPUTS_TOOL_PREFIX}_read tool."
             ),
             tools=tools,
-        )
-        response = await agent.run(TASK)
-        print(quoted(response.text))
-        # Only the reads whose *call* asked for a landed path are fenced, so what is inside is
-        # bytes the sink wrote and nothing else — a refusal never enters. A fenced block cannot
-        # say on its own which call a result came from, which is why the call selects it.
-        print()
-        reads = landed_reads(response, f"{OUTPUTS_TOOL_PREFIX}_read", landed)
-        print(
-            evidence(
-                "read back out of the outputs store",
-                [result for _, result in reads],
-                "Landed files read back",
+        ) as agent:
+            response = await agent.run(TASK)
+            print(quoted(response.text))
+            # Only the reads whose *call* asked for a landed path are fenced, so what is inside is
+            # bytes the sink wrote and nothing else — a refusal never enters. A fenced block cannot
+            # say on its own which call a result came from, which is why the call selects it.
+            print()
+            reads = landed_reads(response, f"{OUTPUTS_TOOL_PREFIX}_read", landed)
+            print(
+                evidence(
+                    "read back out of the outputs store",
+                    [result for _, result in reads],
+                    "Landed files read back",
+                )
             )
-        )
-        print(f"{MEASURED}Read out of the outputs store: {json.dumps([n for n, _ in reads])}")
+            print(f"{MEASURED}Read out of the outputs store: {json.dumps([n for n, _ in reads])}")
     finally:
         purge = await router.dispose_scope(SCOPE, THREAD_ID)
         print(f"\n{MEASURED}Disposed {purge.disposed} sandbox(es).")

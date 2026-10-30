@@ -3902,31 +3902,59 @@ class TestTheSeamReapsARealChild:
         time.sleep(0.5)
         return beat.stat().st_size == first
 
-    def test_a_timeout_kills_the_child(self, tmp_path):
+    def _observe_started_child(self, beat, monkeypatch):
+        """Start cleanup deadlines only after the real child can write its heartbeat."""
+        ready = asyncio.Event()
+        spawn = asyncio.create_subprocess_exec
+
+        async def started(*args, **kwargs):
+            process = await spawn(*args, **kwargs)
+            try:
+                async with asyncio.timeout(30):
+                    while not beat.exists():
+                        assert process.returncode is None, "child exited before its heartbeat"
+                        await asyncio.sleep(0.01)
+            except BaseException:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                await process.wait()
+                raise
+            ready.set()
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", started)
+        return ready
+
+    def test_a_timeout_kills_the_child(self, tmp_path, monkeypatch):
         beat = tmp_path / "beat"
         backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
 
-        with pytest.raises(TimeoutError):
-            asyncio.run(backend._wslc("-c", _HEARTBEAT, str(beat), timeout=1.5))
+        async def scenario():
+            self._observe_started_child(beat, monkeypatch)
+            with pytest.raises(TimeoutError):
+                await backend._wslc("-c", _HEARTBEAT, str(beat), timeout=0.1)
 
+        asyncio.run(scenario())
         assert beat.exists(), "the child never started, so this proves nothing"
         assert self._stopped_growing(beat)
 
-    def test_a_cancelled_call_kills_the_child(self, tmp_path):
-        """Cancellation arrives at the same await a timeout does, and used to leave the child
-        running: the caller went away and nothing was left holding the handle."""
+    def test_a_cancelled_call_kills_the_child(self, tmp_path, monkeypatch):
         beat = tmp_path / "beat"
         backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
 
         async def scenario() -> None:
+            ready = self._observe_started_child(beat, monkeypatch)
             task = asyncio.ensure_future(backend._wslc("-c", _HEARTBEAT, str(beat), timeout=60))
-            await asyncio.sleep(1.5)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
+            try:
+                await asyncio.wait_for(ready.wait(), timeout=35)
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
 
         asyncio.run(scenario())
-
         assert beat.exists(), "the child never started, so this proves nothing"
         assert self._stopped_growing(beat)
 
