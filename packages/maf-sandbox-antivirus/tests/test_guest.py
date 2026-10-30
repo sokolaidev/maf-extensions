@@ -7,6 +7,7 @@ import struct
 import sys
 import time
 import zipfile
+import zlib
 from types import SimpleNamespace
 
 import pytest
@@ -119,6 +120,68 @@ def test_unsupported_zip_compression_is_refused(compression):
     with zipfile.ZipFile(output, "w", compression=compression) as zipped:
         zipped.writestr("member", b"data")
     with pytest.raises(_guest.Refused, match="unsupported ZIP compression"):
+        _guest.zip_preflight(output.getvalue(), policy(), time.monotonic() + 10)
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_zip_local_and_central_compression_must_agree(nested):
+    data = bytearray(archive(b"x" * 8192))
+    central = data.index(b"PK\x01\x02")
+    name_size, extra_size = struct.unpack_from("<HH", data, 26)
+    compressed = data[30 + name_size + extra_size : central]
+    struct.pack_into("<H", data, central + 10, zipfile.ZIP_STORED)
+    struct.pack_into("<I", data, central + 16, zlib.crc32(compressed))
+    struct.pack_into("<I", data, central + 24, len(compressed))
+    payload = archive(bytes(data)) if nested else bytes(data)
+    with pytest.raises(ValueError, match="local ZIP header"):
+        _guest.zip_preflight(
+            payload, policy(max_filesize=1024, max_scansize=4096), time.monotonic() + 10
+        )
+
+
+@pytest.mark.parametrize("offset,format", [(6, "<H"), (14, "<I"), (18, "<I"), (22, "<I")])
+def test_zip_local_flags_sizes_and_crc_must_agree(offset, format):
+    data = bytearray(archive(b"data"))
+    value = struct.unpack_from(format, data, offset)[0]
+    struct.pack_into(format, data, offset, value ^ 1)
+    with pytest.raises(ValueError, match="local ZIP header"):
+        _guest.zip_preflight(bytes(data), policy(), time.monotonic() + 10)
+
+
+@pytest.mark.parametrize("signature", [True, False])
+@pytest.mark.parametrize("damage", [None, "crc", "compressed_size", "size"])
+def test_zip_data_descriptor_must_agree(signature, damage):
+    class Stream(io.BytesIO):
+        def seek(self, *args, **kwargs):
+            raise io.UnsupportedOperation
+
+    output = Stream()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
+        zipped.writestr("member", b"data")
+    data = bytearray(output.getvalue())
+    descriptor = data.index(b"PK\x07\x08")
+    if not signature:
+        del data[descriptor : descriptor + 4]
+        end = data.index(b"PK\x05\x06")
+        struct.pack_into("<I", data, end + 16, data.index(b"PK\x01\x02"))
+    else:
+        descriptor += 4
+    if damage:
+        offset = descriptor + {"crc": 0, "compressed_size": 4, "size": 8}[damage]
+        value = struct.unpack_from("<I", data, offset)[0]
+        struct.pack_into("<I", data, offset, value ^ 1)
+        with pytest.raises(ValueError, match="ZIP data descriptor"):
+            _guest.zip_preflight(bytes(data), policy(), time.monotonic() + 10)
+    else:
+        _guest.zip_preflight(bytes(data), policy(), time.monotonic() + 10)
+
+
+def test_zip64_is_refused():
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
+        with zipped.open("member", "w", force_zip64=True) as member:
+            member.write(b"data")
+    with pytest.raises(_guest.Refused, match="ZIP64"):
         _guest.zip_preflight(output.getvalue(), policy(), time.monotonic() + 10)
 
 

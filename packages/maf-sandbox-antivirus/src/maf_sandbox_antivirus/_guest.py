@@ -158,6 +158,12 @@ def zip_chunks(content: bytes, item: zipfile.ZipInfo, deadline: float) -> Iterat
     """Decode bounded chunks without trusting the member's declared expanded size."""
     if item.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
         raise Refused("unsupported ZIP compression")
+    version, flags, method = struct.unpack_from("<HHH", content, item.header_offset + 4)
+    if version >= 45 or item.extract_version >= 45:
+        raise Refused("ZIP64 or newer ZIP features are unsupported")
+    if (flags, method) != (item.flag_bits, item.compress_type):
+        raise ValueError("inconsistent local ZIP header")
+    local_metadata = struct.unpack_from("<III", content, item.header_offset + 14)
     name_size, extra_size = struct.unpack_from("<HH", content, item.header_offset + 26)
     start = item.header_offset + 30 + name_size + extra_size
     compressed = memoryview(content)[start : start + item.compress_size]
@@ -180,6 +186,21 @@ def zip_chunks(content: bytes, item: zipfile.ZipInfo, deadline: float) -> Iterat
                 break
     if decoder is not None and not decoder.eof:
         raise ValueError("incomplete ZIP compressed stream")
+    expected = (item.CRC, item.compress_size, item.file_size)
+    if flags & 8:
+        if any(local not in (0, actual) for local, actual in zip(local_metadata, expected)):
+            raise ValueError("inconsistent local ZIP header")
+        end = start + item.compress_size
+        offsets = [end]
+        if content[end : end + 4] == b"PK\x07\x08":
+            offsets.append(end + 4)
+        if not any(
+            offset + 12 <= len(content) and struct.unpack_from("<III", content, offset) == expected
+            for offset in offsets
+        ):
+            raise ValueError("inconsistent ZIP data descriptor")
+    elif local_metadata != expected:
+        raise ValueError("inconsistent local ZIP header")
 
 
 def zip_preflight(data: bytes, request: dict[str, Any], deadline: float) -> None:
