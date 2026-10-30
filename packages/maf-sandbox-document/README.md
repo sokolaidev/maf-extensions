@@ -6,7 +6,13 @@
 
 Read PDF, DOCX, PPTX and RTF files through a fixed converter in a disposable sandbox. The model chooses a listed file, output format and optional page range; it supplies no converter code. Parsers and archive/XML guards run in the guest.
 
-This package is experimental and not yet published. Its first release requires the core release containing binary file-store reads; release core before this package. The image must also have a completed, currently eligible `document` release before the kind publishes.
+Install the published package from PyPI:
+
+```bash
+pip install maf-sandbox-document
+```
+
+The package requires `maf-sandbox>=0.52.0,<0.53` and `agent-framework-core>=1.23.0,<1.24`. The host must supply a verified image from a completed, currently eligible `document` image release.
 
 ## Attach the tool
 
