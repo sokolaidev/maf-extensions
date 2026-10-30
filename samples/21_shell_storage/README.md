@@ -7,7 +7,7 @@ An agent consults the public Microsoft Learn MCP server, writes an Azure CLI Bas
 Configure `AZURE_OPENAI_ENDPOINT` and `AZURE_OPENAI_CHAT_MODEL`, sign in with `az login`, and start Docker. Build the validation image from the repository:
 
 ```bash
-docker build -t maf-shell:live images/shell-sandbox
+uv run --locked python scripts/build_wolfi_python.py -t maf-shell:live images/shell-sandbox
 export SHELL_SANDBOX_IMAGE=maf-shell:live
 uv run samples/21_shell_storage/agent.py --output deploy.sh
 ```

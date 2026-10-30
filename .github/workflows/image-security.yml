@@ -51,7 +51,7 @@ jobs:
     needs: select
     if: needs.select.outputs.scan == 'true'
     runs-on: ${{ matrix.profile == 'bicep-docker-sbx' && 'ubuntu-24.04' || 'ubuntu-latest' }}
-    timeout-minutes: ${{ matrix.profile == 'terraform-avm' && 150 || 45 }}
+    timeout-minutes: ${{ matrix.profile == 'terraform-avm' && 180 || 75 }}
     strategy:
       fail-fast: false
       max-parallel: 4

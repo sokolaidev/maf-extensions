@@ -23,7 +23,7 @@ concurrency:
 jobs:
   terraform:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 150
     env:
       MAF_TERRAFORM_E2E_IMAGE: maf-terraform:ci
       MAF_OPENTOFU_E2E_IMAGE: maf-opentofu:ci
@@ -97,7 +97,7 @@ jobs:
   opentofu-platform:
     if: github.event_name == 'workflow_dispatch' && inputs.platform
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       MAF_OPENTOFU_PLATFORM_IMAGE: maf-opentofu:ci-platform
     steps:

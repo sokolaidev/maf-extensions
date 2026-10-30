@@ -1,10 +1,13 @@
 """Build one validation image using the versions and artifact pins in image.json."""
 
 import argparse
-import subprocess
+import sys
 from pathlib import Path
 
 from install import load_plan
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.build_wolfi_python import build_image  # noqa: E402
 
 
 def build_command(engine: str, profile: str, tag: str | None = None) -> list[str]:
@@ -39,7 +42,7 @@ def main() -> None:
     parser.add_argument("--profile", default="builtin")
     parser.add_argument("--tag")
     args = parser.parse_args()
-    subprocess.run(build_command(args.engine, args.profile, args.tag), check=True)
+    build_image(build_command(args.engine, args.profile, args.tag))
 
 
 if __name__ == "__main__":

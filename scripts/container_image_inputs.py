@@ -113,10 +113,16 @@ def build_inputs(root: Path) -> list[Path]:
             "build_bicep_image.py",
             "build_bicep_prepared_image.py",
             "build_scan_image.sh",
+            "build_wolfi_python.py",
         )
         if (root / "scripts" / name).is_file()
     ]
-    return sorted(set(dockerfiles(root) + manifests + helpers))
+    python_inputs = [
+        path
+        for path in (root / "images/wolfi-python").glob("*")
+        if path.is_file() and path.name != "README.md"
+    ]
+    return sorted(set(dockerfiles(root) + manifests + helpers + python_inputs))
 
 
 def validate_version_line(reference: str, path: Path) -> None:

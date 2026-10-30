@@ -10,12 +10,12 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+import prepare_container_release as preparation  # noqa: E402
 from check_container_release_image import check  # noqa: E402
-from prepare_container_release import labels, require_source  # noqa: E402
 
 
 def test_release_labels_do_not_replace_upstream_version():
-    result = labels("bicep", "0.1.0", "a" * 40)
+    result = preparation.labels("bicep", "0.1.0", "a" * 40)
     assert "org.opencontainers.image.version" not in result
     assert result["dev.sokolai.maf.image.version"] == "0.1.0"
 
@@ -40,7 +40,7 @@ def test_source_cannot_be_selected_independently_of_dispatch(monkeypatch, change
         "prepare_container_release.run", lambda *a, **k: pytest.fail("must reject before building")
     )
     with pytest.raises(ValueError):
-        require_source("a" * 40)
+        preparation.require_source("a" * 40)
 
 
 @pytest.mark.parametrize(
@@ -87,3 +87,32 @@ def test_mutable_runtime_target_is_rejected_before_docker(monkeypatch, tmp_path)
     )
     with pytest.raises(ValueError):
         check("bicep", "bicep:latest", tmp_path)
+
+
+@pytest.mark.parametrize("profile", preparation.profiles())
+def test_release_build_budget_includes_python_compilation(monkeypatch, tmp_path, profile):
+    monkeypatch.setattr(preparation, "require_source", lambda *args: None)
+    monkeypatch.setattr(preparation, "preflight", lambda *args: None)
+    python_profiles = {
+        "document",
+        "drawio",
+        "drawio-export",
+        "shell",
+        "terraform-random",
+        "opentofu-random",
+        "terraform-avm",
+        "opentofu-avm",
+        "hyperlight-aks-probe",
+    }
+    expected = 7200 if profile == "terraform-avm" else 2400
+    if profile in python_profiles:
+        expected += 1800
+
+    def stop_at_build(command, **kwargs):
+        assert command == ["bash", "scripts/build_scan_image.sh", profile]
+        assert kwargs["timeout"] == expected
+        raise RuntimeError("build intercepted")
+
+    monkeypatch.setattr(preparation, "run", stop_at_build)
+    with pytest.raises(RuntimeError, match="build intercepted"):
+        preparation.prepare(profile, "0.3.0", "a" * 40, "123", tmp_path / "candidate")

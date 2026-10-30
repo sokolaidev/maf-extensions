@@ -13,6 +13,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from build_wolfi_python import PYTHON_PROFILES
+
 PROFILES = (
     "bicep",
     "bicep-avm",
@@ -30,6 +32,7 @@ PROFILES = (
     "egress-proxy",
 )
 IMAGE_INPUTS = {
+    "images/wolfi-python/": PYTHON_PROFILES,
     "images/document-sandbox/": ("document",),
     "images/shell-sandbox/": ("shell",),
     "images/egress-proxy/": ("egress-proxy",),
@@ -51,6 +54,7 @@ IMAGE_INPUTS = {
 }
 # These exact consumer guides are not consumed by the image recipes or build helpers.
 CONSUMER_GUIDES = {
+    "images/wolfi-python/README.md",
     "images/document-sandbox/README.md",
     "images/DEPENDENCIES.md",
     "images/README.md",
@@ -83,6 +87,7 @@ SELECTION_TOOLING = {
     "tests/test_select_image_security.py",
 }
 SCRIPT_INPUTS = {
+    "scripts/build_wolfi_python.py": PYTHON_PROFILES,
     ".github/actions/prepare-provider-cache/action.yml": (
         "terraform-random",
         "opentofu-random",

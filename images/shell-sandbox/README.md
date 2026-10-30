@@ -17,7 +17,7 @@ The runtime uses a patched Wolfi base, Bash 5.3-r14 and dash 0.5.13.5-r2. Interp
 Use the matching `maf-sandbox-shell` package release with this image: earlier packages reject the changed interpreter identities. Checkout qualification does not prove compatibility with previously published wheels. Repository-wide base and dependency-update standardization remains tracked separately in [#2178](https://github.com/sokolaidev/maf-extensions/issues/2178).
 
 ```bash
-docker build --platform linux/amd64 -t maf-shell:local images/shell-sandbox
+uv run --locked python scripts/build_wolfi_python.py --platform linux/amd64 -t maf-shell:local images/shell-sandbox
 docker run --rm -i --network none --read-only --cap-drop ALL --tmpfs /tmp:rw,exec,size=512m maf-shell:local python3 - < images/shell-sandbox/test_runner.py
 ```
 

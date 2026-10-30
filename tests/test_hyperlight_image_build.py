@@ -189,6 +189,7 @@ def test_build_verifies_exact_image_and_never_keeps_stale_success(
 
     monkeypatch.setattr(subprocess, "run", execute)
     monkeypatch.setattr(builder, "_smoke_output", capture)
+    monkeypatch.setattr(builder, "build_image", lambda command: execute(command, check=True))
     if failure:
         with pytest.raises((ValueError, subprocess.CalledProcessError)):
             builder.build_and_verify(tmp_path, "mutable:tag")

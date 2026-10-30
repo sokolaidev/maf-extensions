@@ -4,7 +4,7 @@ This workspace-only sample calls both shell tools through Docker, reports findin
 
 ```bash
 uv sync --all-packages
-docker build --platform linux/amd64 -t maf-shell:local images/shell-sandbox
+uv run --locked python scripts/build_wolfi_python.py --platform linux/amd64 -t maf-shell:local images/shell-sandbox
 uv run python samples/experimental/shell_validation/agent.py --image maf-shell:local
 ```
 
