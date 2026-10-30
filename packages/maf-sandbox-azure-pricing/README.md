@@ -14,6 +14,8 @@ The spec requires POSIX, at least container isolation, `EXEC`, per-call isolatio
 
 Azure MCP 4.0.0-beta.4 does not accept `--read-only` on `pricing get`. The kind fixes the subcommand and enforces GET-only egress instead. The host cannot supply command names, endpoint overrides or a wider allowlist. Enable network use by attaching this tool only where the host permits that public destination. Host confidentiality policy still governs outgoing query arguments; GET-only access does not prevent data disclosure in a query.
 
+For public-only queries, pass `outbound_max_confidentiality="public"` and run the framework's label-tracking middleware followed by `PolicyEnforcementFunctionMiddleware(block_on_violation=True)`. The policy blocks private context or arguments before sandbox acquisition, including when the host trusts the pricing source's integrity. The cap defaults to `None`, following core's opt-in host classification contract; without enforcing middleware, the declaration alone does not block egress. A direct `tool.func` call bypasses framework middleware and is the host's responsibility.
+
 ## Arguments and results
 
 Arguments are `sku`, `service`, `region`, `service_family`, `price_type`, `currency` (default `USD`), `include_savings_plan` (default false), and `filter` (raw OData). At least one filter is required; `currency` and `include_savings_plan` do not count. A `service` query also requires `sku`. `PriceType` accepts `Consumption`, `Reservation` and `DevTestConsumption`. Raw filters are parenthesized before the CLI combines them with the typed filters. Empty, oversized and control-bearing arguments are refused before sandbox acquisition.
@@ -27,5 +29,7 @@ Keep reservation terms with their prices: `retailPrice` covers the whole reserva
 ## Integrity
 
 Price data is returned through `SandboxResult.output` with an untrusted workload declaration. The host may pass `egress_integrity=SourceIntegrity.TRUSTED` to vouch for the fixed Microsoft pricing source. Core promotes the data only when the framework also establishes trusted conversation and argument labels. Without either piece of evidence it stays untrusted. The host's result confidentiality is preserved.
+
+That host trust decision covers every retained field, including product, service and meter names; it is not proof that external text is free of instructions. Leave egress integrity unset when the host cannot vouch for those fields. Fixed standing guidance tells consumers to treat all report fields as data, never instructions or authority to call tools or change policy. This guidance does not replace the host's trust decision or enforce confidentiality.
 
 Only fixed completion, failure and truncation messages and standing pricing guidance use the trusted part of the result. Parsing JSON alone does not establish trust. See the [information-flow contract](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/information-flow.md).

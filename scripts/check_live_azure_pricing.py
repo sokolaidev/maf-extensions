@@ -13,7 +13,10 @@ from typing import Any
 from uuid import uuid4
 
 from agent_framework import FunctionInvocationContext
-from agent_framework.security import LabelTrackingFunctionMiddleware
+from agent_framework.security import (
+    LabelTrackingFunctionMiddleware,
+    PolicyEnforcementFunctionMiddleware,
+)
 from maf_sandbox import (
     CallerContext,
     Isolation,
@@ -121,10 +124,12 @@ async def check(image: str, proxy_image: str | None = None) -> dict[str, Any]:
         CallerContext(lambda: scope, lambda: "pricing", list_no_files),
         image=image_id,
         egress_integrity=SourceIntegrity.TRUSTED,
+        outbound_max_confidentiality="public",
         exec_timeout_seconds=90,
     )
     tool.additional_properties["confidentiality"] = "public"
     tracker = LabelTrackingFunctionMiddleware(auto_hide_untrusted=False)
+    policy = PolicyEnforcementFunctionMiddleware(block_on_violation=True)
     cases: list[dict[str, Any]] = []
     try:
         for category in ("Reservation", "Consumption"):
@@ -141,7 +146,10 @@ async def check(image: str, proxy_image: str | None = None) -> dict[str, Any]:
             async def invoke() -> None:
                 context.result = await tool.invoke(context=context)
 
-            await tracker.process(context, invoke)
+            async def enforce() -> None:
+                await policy.process(context, invoke)
+
+            await tracker.process(context, enforce)
             items = context.result
             require(
                 isinstance(items, list) and items[0].text == COMPLETED_TEXT,

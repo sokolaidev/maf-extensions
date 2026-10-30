@@ -25,4 +25,5 @@ try:
         stacklevel=2,
     )
 except MafSandboxAzurePricingExperimentalWarning:
+    # An informational warning must not block imports under -Werror.
     pass
