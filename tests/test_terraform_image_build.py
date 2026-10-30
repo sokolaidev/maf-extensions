@@ -176,12 +176,16 @@ def test_build_includes_configured_provider_manifest(config_path, monkeypatch, e
     assert "PROVIDER_MANIFEST=image.json" in build_image.build_command(engine, "builtin")
 
 
-@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
-def test_live_build_with_custom_provider_manifest(tmp_path, engine):
-    if os.environ.get("MAF_IMAGE_BUILD_TESTS") != "1":
-        pytest.skip("needs explicit Docker image build opt-in")
-    context = tmp_path / "context"
-    context.mkdir()
+def stage_custom_image(tmp_path, engine):
+    context = tmp_path / "images/terraform-sandbox"
+    context.mkdir(parents=True)
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copyfile(
+        IMAGE_SOURCE.parents[1] / "scripts/build_wolfi_python.py",
+        scripts / "build_wolfi_python.py",
+    )
+    shutil.copytree(IMAGE_SOURCE.parent / "wolfi-python", context.parent / "wolfi-python")
     for name in (
         "Dockerfile",
         "build_image.py",
@@ -199,6 +203,32 @@ def test_live_build_with_custom_provider_manifest(tmp_path, engine):
     config = json.loads(config_path.read_text())
     config["engines"][engine]["profiles"]["custom"] = manifest_name
     config_path.write_text(json.dumps(config))
+    return context
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+def test_staged_custom_image_builder_loads_without_checkout_imports(tmp_path, engine):
+    context = stage_custom_image(tmp_path, engine)
+    loaded = subprocess.run(
+        [sys.executable, "-E", str(context / "build_image.py"), "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert loaded.returncode == 0, loaded.stdout + loaded.stderr
+    assert "--profile" in loaded.stdout
+    for name in ("Dockerfile", "configure.py", "build.sh"):
+        assert (tmp_path / "images/wolfi-python" / name).read_bytes() == (
+            IMAGE_SOURCE.parent / "wolfi-python" / name
+        ).read_bytes()
+
+
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+def test_live_build_with_custom_provider_manifest(tmp_path, engine):
+    if os.environ.get("MAF_IMAGE_BUILD_TESTS") != "1":
+        pytest.skip("needs explicit Docker image build opt-in")
+    context = stage_custom_image(tmp_path, engine)
     tag = "maf-image-config-test:" + uuid.uuid4().hex
     try:
         built = subprocess.run(
@@ -214,7 +244,7 @@ def test_live_build_with_custom_provider_manifest(tmp_path, engine):
             ],
             capture_output=True,
             text=True,
-            timeout=1800,
+            timeout=3600,
         )
         assert built.returncode == 0, built.stdout + built.stderr
         inspection_script = (

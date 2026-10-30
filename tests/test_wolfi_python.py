@@ -83,11 +83,23 @@ def test_recipe_transform_preserves_abi_patches_and_tests(tmp_path, old_version)
       patches: compatibility.patch
   - uses: upstream-tests/python-regrtest
 """
+    privileged = """  - name: "${{package.name}}-privileged-netbindservice"
+    pipeline:
+      - runs: setcap cap_net_bind_service=+eip python3
+
+"""
+    remaining = """  - name: "${{package.name}}-tk"
+    pipeline: []
+"""
     recipe = tmp_path / "python-3.13.yaml"
     recipe.write_text(
         f'package:\n  version: "{old_version}"\n'
         "  epoch: 1 # run upstream regrtest subset via shared pipeline\n"
-        "pipeline:\n  - uses: git-checkout\n    with:\n      branch: 3.13\n" + suffix
+        "pipeline:\n  - uses: git-checkout\n    with:\n      branch: 3.13\n"
+        + suffix
+        + "subpackages:\n"
+        + privileged
+        + remaining
     )
     configure = runpy.run_path(str(ROOT / "images/wolfi-python/configure.py"))["configure"]
     if old_version != "3.13.17_git20261023":
@@ -96,7 +108,10 @@ def test_recipe_transform_preserves_abi_patches_and_tests(tmp_path, old_version)
         return
     configure(tmp_path)
     result = recipe.read_text()
-    assert result.endswith(suffix)
+    assert suffix in result
+    assert result.endswith(remaining)
+    assert "privileged-netbindservice" not in result
+    assert "setcap" not in result
     assert 'version: "3.13.18"' in result
     assert "epoch: 0" in result
     assert "tag: v3.13.18" in result

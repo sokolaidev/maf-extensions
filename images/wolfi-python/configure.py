@@ -28,6 +28,10 @@ def configure(root: Path) -> None:
 """
         + source[end:]
     )
+    # Consumers need the normal interpreter, without a file-capability override.
+    start = source.index('  - name: "${{package.name}}-privileged-netbindservice"\n')
+    end = source.index('  - name: "${{package.name}}-tk"\n', start)
+    source = source[:start] + source[end:]
     recipe.write_text(source, encoding="utf-8")
 
 

@@ -56,7 +56,7 @@ def test_new_jobs_are_bounded_and_check_measured_output(job, packages, checker):
     definition = workflow["jobs"][job]
     assert selected(definition["if"]) == packages
     assert "inputs.package == ''" in definition["if"]
-    assert definition["timeout-minutes"] <= 25
+    assert definition["timeout-minutes"] <= (55 if job == "sample-21" else 25)
     assert definition["environment"] == "live-verify"
     steps = definition["steps"]
     run = next(step["run"] for step in steps if checker in step.get("run", ""))

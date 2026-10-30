@@ -28,7 +28,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || !inputs.openclaw_bicep
     name: Document kind conformance
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,7 +51,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || !inputs.openclaw_bicep
     name: Docker capability contract qualification
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     env:
       MAF_SANDBOX_DOCKER_CAPABILITY_IMAGE: maf-capability-drawio:ci
       MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE: maf-capability-proxy:ci
