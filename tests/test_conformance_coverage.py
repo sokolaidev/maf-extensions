@@ -394,6 +394,7 @@ CANDIDATE_BACKEND_PACKAGES = [
 NOT_BACKENDS = frozenset(
     {
         "maf-sandbox-antivirus",  # Workload kind; provides no backend.
+        "maf-sandbox-azure-pricing",  # Workload kind; provides no backend.
         "maf-sandbox-bicep",
         "maf-sandbox-codeact",
         "maf-sandbox-deepagents",

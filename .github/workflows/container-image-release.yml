@@ -23,6 +23,7 @@ on:
           - graphviz
           - document
           - antivirus
+          - azure-pricing
           - drawio
           - drawio-export
           - shell

@@ -34,6 +34,7 @@ The inventory must contain components and identify the exact built image. For `t
 
 | Profile | Built target |
 |---|---|
+| `azure-pricing` | [Azure MCP public retail pricing through GET-only egress](../../images/azure-pricing-sandbox/README.md) |
 | `bicep` | Base Bicep sandbox |
 | `bicep-avm` | [Bicep with selected virtual-network and storage-account AVM modules](../../images/bicep-sandbox/AVM.md) |
 | `bicep-docker-sbx` | [Bicep and workspace utilities for Docker Sandboxes](../../images/bicep-docker-sbx/README.md) |

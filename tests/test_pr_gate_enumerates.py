@@ -67,6 +67,7 @@ class TestTheGateEnumerates:
             "maf-sandbox",
             "maf-sandbox-acas",
             "maf-sandbox-antivirus",
+            "maf-sandbox-azure-pricing",
             "maf-sandbox-bicep",
             "maf-sandbox-bubblewrap",
             "maf-sandbox-codeact",

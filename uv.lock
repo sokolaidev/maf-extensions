@@ -15,6 +15,7 @@ members = [
     "maf-sandbox",
     "maf-sandbox-acas",
     "maf-sandbox-antivirus",
+    "maf-sandbox-azure-pricing",
     "maf-sandbox-bicep",
     "maf-sandbox-bubblewrap",
     "maf-sandbox-codeact",
@@ -1692,6 +1693,21 @@ requires-dist = [
 name = "maf-sandbox-antivirus"
 version = "0.0.0"
 source = { editable = "packages/maf-sandbox-antivirus" }
+dependencies = [
+    { name = "agent-framework-core" },
+    { name = "maf-sandbox" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-framework-core", specifier = ">=1.23.0,<1.24" },
+    { name = "maf-sandbox", editable = "packages/maf-sandbox" },
+]
+
+[[package]]
+name = "maf-sandbox-azure-pricing"
+version = "0.0.0"
+source = { editable = "packages/maf-sandbox-azure-pricing" }
 dependencies = [
     { name = "agent-framework-core" },
     { name = "maf-sandbox" },

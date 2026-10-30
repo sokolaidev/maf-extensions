@@ -9,6 +9,7 @@ These pages describe each kind's contract. Package READMEs cover installation an
 | Kind | Tools | Purpose | Network access |
 |---|---|---|---|
 | [Antivirus](antivirus.md) | `scan_file` | Scan quarantined uploads with host-supplied signature updates | Closed |
+| [Azure pricing](azure-pricing.md) | `azure_pricing_get` | Look up public retail prices | Fixed GET-only `prices.azure.com` |
 | [Bicep](bicep.md) | `bicep_validate` | Compile and lint templates and parameter files | Fixed restore allowlist by default; host can choose closed or unrestricted |
 | [CodeAct](codeact.md) | `execute_code` | Run Python, with optional files, artifacts and host tools | Closed by default; host can add allowed destinations |
 | [Document](document.md) | `document_read` | Extract document text, Markdown and PDF page images | Closed |
@@ -84,6 +85,7 @@ The [authoring guide](writing-a-kind.md) contains a working example, host setup 
 
 | Contract | State | Details |
 |---|---|---|
+| Azure retail pricing | Implemented; publication and backend qualification are separate | [Azure pricing](azure-pricing.md#status) |
 | Four kinds, including optional Terraform/OpenTofu formatting | Implemented | [Bicep](bicep.md), [CodeAct](codeact.md), [draw.io](drawio.md), [Terraform](terraform.md) |
 | Wrapper-owned labels and file-read checks | Implemented | [Information flow](../information-flow.md) |
 | Four-field result contract | Implemented in all four kinds, their samples and live checks | [Information flow status](../information-flow.md#status) |

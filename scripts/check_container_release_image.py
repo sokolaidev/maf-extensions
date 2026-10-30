@@ -38,6 +38,20 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
             "containersRemaining": result["containersRemaining"],
             "liveDeploymentVerified": False,
         }
+    if profile == "azure-pricing":
+        import check_live_azure_pricing
+
+        result = asyncio.run(check_live_azure_pricing.check(image_id))
+        return {
+            "imageId": image_id,
+            "profile": profile,
+            "checkedAt": now(),
+            "kind": "live-public-api-sdk-consumer",
+            "passed": True,
+            "azurePricing": result,
+            "containersRemaining": result["containersRemaining"],
+            "liveDeploymentVerified": False,
+        }
     if profile == "document":
         import document_qualification
 

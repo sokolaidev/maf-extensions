@@ -16,6 +16,7 @@ from typing import Any
 from build_wolfi_python import PYTHON_PROFILES
 
 PROFILES = (
+    "azure-pricing",
     "bicep",
     "bicep-avm",
     "bicep-docker-sbx",
@@ -36,6 +37,8 @@ IMAGE_INPUTS = {
     "images/wolfi-python/": PYTHON_PROFILES,
     "images/antivirus-sandbox/": ("antivirus",),
     "tests/fixtures/antivirus/": ("antivirus",),
+    "packages/maf-sandbox-azure-pricing/src/": ("azure-pricing",),
+    "images/azure-pricing-sandbox/": ("azure-pricing",),
     "images/document-sandbox/": ("document",),
     "images/shell-sandbox/": ("shell",),
     "images/egress-proxy/": ("egress-proxy",),
@@ -59,6 +62,7 @@ IMAGE_INPUTS = {
 CONSUMER_GUIDES = {
     "images/wolfi-python/README.md",
     "images/antivirus-sandbox/README.md",
+    "images/azure-pricing-sandbox/README.md",
     "images/document-sandbox/README.md",
     "images/DEPENDENCIES.md",
     "images/README.md",
@@ -95,6 +99,7 @@ SCRIPT_INPUTS = {
     "scripts/antivirus_qualification.py": ("antivirus",),
     "scripts/antivirus_cdiff_check.py": ("antivirus",),
     "tests/test_antivirus_qualification.py": ("antivirus",),
+    "scripts/check_live_azure_pricing.py": ("azure-pricing",),
     ".github/actions/prepare-provider-cache/action.yml": (
         "terraform-random",
         "opentofu-random",

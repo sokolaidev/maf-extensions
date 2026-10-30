@@ -17,6 +17,7 @@ from image_release_needed import changed_inputs, release_evidence
 from select_image_security import metadata_only
 
 KIND_IMAGES = {
+    "maf-sandbox-azure-pricing": ("azure-pricing",),
     "maf-sandbox-document": ("document",),
     "maf-sandbox-antivirus": ("antivirus",),
     "maf-sandbox-bicep": ("bicep", "bicep-avm"),

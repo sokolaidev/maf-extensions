@@ -30,6 +30,7 @@ All packages require Python 3.12–3.14. Install the backend and workload or fra
 
 | Package | Released | What it is | Depends on |
 |---|---|---|---|
+| [`maf-sandbox-azure-pricing`](packages/maf-sandbox-azure-pricing/) | not yet released | Public Azure retail prices in disposable GET-only sandboxes | `maf-sandbox`, `agent-framework-core` |
 | [`maf-sandbox`](packages/maf-sandbox/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox)](https://pypi.org/project/maf-sandbox/) | Shared sandbox protocol, routing, policy and MAF integration | `agent-framework-core` (protocol modules are import-clean; the glue imports lazily) |
 | [`maf-sandbox-acas`](packages/maf-sandbox-acas/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-acas)](https://pypi.org/project/maf-sandbox-acas/) | MicroVM backend using Azure Container Apps Sandboxes | `maf-sandbox`, `azure-core`, `azure-identity`, `azure-containerapps-sandbox` (preview) |
 | [`maf-sandbox-antivirus`](packages/maf-sandbox-antivirus/) | not yet released | Offline upload scans with a baked ClamAV seed and host-supplied signed updates | `maf-sandbox`, `agent-framework-core` |

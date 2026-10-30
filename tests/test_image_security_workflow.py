@@ -133,7 +133,7 @@ def test_every_scan_profile_is_named_in_the_documented_scope():
         "profile": "${{ fromJSON(needs.select.outputs.profiles) }}"
     }
     names = PROFILES
-    assert len(names) == len(set(names)) == 15
+    assert len(names) == len(set(names)) == 16
     scope = (ROOT / "docs/security/container-images.md").read_text()
     for profile in names:
         assert f"| `{profile}` |" in scope

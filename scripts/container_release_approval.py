@@ -32,6 +32,10 @@ PROFILE_GUIDES = {
         "Offline upload scanning with a baked ClamAV seed and host-supplied signed updates.",
         "images/antivirus-sandbox/README.md",
     ),
+    "azure-pricing": (
+        "Public Azure retail pricing through disposable GET-only sandboxes.",
+        "images/azure-pricing-sandbox/README.md",
+    ),
     "document": (
         "Guarded PDF, DOCX, PPTX and RTF extraction in disposable sandboxes.",
         "images/document-sandbox/README.md",

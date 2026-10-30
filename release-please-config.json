@@ -151,6 +151,11 @@
         }
       ]
     },
+    "packages/maf-sandbox-azure-pricing": {
+      "package-name": "maf-sandbox-azure-pricing",
+      "exclude-paths": ["packages/maf-sandbox-azure-pricing/tests"],
+      "extra-files": [{"type": "toml", "path": "/uv.lock", "jsonpath": "$.package[?(@.name.value=='maf-sandbox-azure-pricing')].version"}]
+    },
     "packages/maf-sandbox-shell": {
       "package-name": "maf-sandbox-shell",
       "exclude-paths": ["packages/maf-sandbox-shell/tests"],
