@@ -25,6 +25,9 @@ def test_antivirus_runtime_and_image_select_offline_qualification():
         "antivirus",
     )
     assert affected("images/antivirus-sandbox/Dockerfile") == ("antivirus",)
+    assert affected("scripts/antivirus_cdiff_check.py") == ("antivirus",)
+    assert affected("tests/fixtures/antivirus/test-2.cdiff") == ("antivirus",)
+    assert affected("tests/test_antivirus_qualification.py") == ("antivirus",)
     assert "antivirus" not in select(ROOT, "schedule", "", "")[0]
 
 

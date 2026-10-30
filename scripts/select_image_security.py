@@ -35,6 +35,7 @@ PROFILES = (
 IMAGE_INPUTS = {
     "images/wolfi-python/": PYTHON_PROFILES,
     "images/antivirus-sandbox/": ("antivirus",),
+    "tests/fixtures/antivirus/": ("antivirus",),
     "images/document-sandbox/": ("document",),
     "images/shell-sandbox/": ("shell",),
     "images/egress-proxy/": ("egress-proxy",),
@@ -92,6 +93,8 @@ SELECTION_TOOLING = {
 SCRIPT_INPUTS = {
     "scripts/build_wolfi_python.py": PYTHON_PROFILES,
     "scripts/antivirus_qualification.py": ("antivirus",),
+    "scripts/antivirus_cdiff_check.py": ("antivirus",),
+    "tests/test_antivirus_qualification.py": ("antivirus",),
     ".github/actions/prepare-provider-cache/action.yml": (
         "terraform-random",
         "opentofu-random",

@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import zipfile
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -32,9 +33,42 @@ from maf_sandbox_antivirus import (
     DatabaseIdentity,
     DatabaseUpdate,
     UpdateFile,
+    antivirus_sandbox_spec,
     directory_update_provider,
     make_antivirus_tools,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+async def _signed_cdiff_checks(router: SandboxRouter, scope: str, image: str) -> list[str]:
+    key = SandboxKey(scope, "antivirus", "signed-fixtures", call_id=uuid4().hex)
+    try:
+        sandbox = await router.acquire(key, antivirus_sandbox_spec(image))
+        guest_directory = "/maf-sandbox/work"
+        payloads = {
+            "_guest.py": files("maf_sandbox_antivirus").joinpath("_guest.py").read_bytes(),
+            "check.py": (ROOT / "scripts/antivirus_cdiff_check.py").read_bytes(),
+        }
+        for name in ("test-1.cvd", "test-2.cdiff", "test-3.cdiff"):
+            payloads[name] = (ROOT / "tests/fixtures/antivirus" / name).read_bytes()
+        for name, content in payloads.items():
+            await sandbox.write_file(name, content, working_directory=guest_directory)
+        result = await sandbox.exec(
+            ["python3", "-I", "check.py", "_guest.py", "."],
+            working_directory=guest_directory,
+            timeout=180,
+        )
+        _require(result.exit_code == 0, f"signed CDIFF checks failed: {result.stderr}")
+        expected = [
+            f"{name}:{case}"
+            for name in ("main", "daily", "bytecode")
+            for case in ("valid-chain", "tampered-signature", "wrong-version")
+        ]
+        _require(json.loads(result.stdout) == expected, "signed CDIFF evidence is incomplete")
+        return expected
+    finally:
+        await router.dispose(key)
 
 
 def _require(condition: bool, message: str) -> None:
@@ -126,10 +160,21 @@ async def check(
         + b"PZX54(P^)7CC)7}$"
         + b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
     )
+    mirror = os.environ.get("MAF_ANTIVIRUS_UPDATE_DIRECTORY")
+    mirror_updates: list[DatabaseUpdate] = []
+
+    async def from_mirror(seed: tuple[DatabaseIdentity, ...]) -> DatabaseUpdate:
+        if mirror is None:
+            raise ValueError("mirror is not configured")
+        bundle = await directory_update_provider(Path(mirror))(seed)
+        mirror_updates.append(bundle)
+        return bundle
+
+    fresh = {"update_provider": from_mirror} if mirror else {}
     cases: list[tuple[str, bytes, dict[str, Any], str]] = [
-        ("clean", b"harmless upload", {}, "clean"),
-        ("eicar", eicar, {}, "infected"),
-        ("expanded-limit", archive.getvalue(), {"max_filesize": 1024}, "refused"),
+        ("clean", b"harmless upload", fresh, "clean"),
+        ("eicar", eicar, fresh, "infected"),
+        ("expanded-limit", archive.getvalue(), fresh | {"max_filesize": 1024}, "refused"),
         ("stale", b"harmless", {"max_database_age_days": 1 / 86400}, "refused"),
     ]
     if provider == "docker":
@@ -149,6 +194,18 @@ async def check(
         )
 
         async def replacement(seed: tuple[DatabaseIdentity, ...]) -> DatabaseUpdate:
+            if mirror:
+                snapshot = Path(mirror).resolve()
+                bundle = await directory_update_provider(snapshot)(seed)
+                current_bytecode = await asyncio.to_thread((snapshot / "bytecode.cvd").read_bytes)
+                bundle = DatabaseUpdate(
+                    seed,
+                    bundle.targets,
+                    tuple(item for item in bundle.files if not item.name.startswith("bytecode"))
+                    + (UpdateFile("bytecode.cvd", current_bytecode),),
+                )
+                mirror_updates.append(bundle)
+                return bundle
             return DatabaseUpdate(
                 seed,
                 tuple((item.name, item.version) for item in seed),
@@ -168,16 +225,7 @@ async def check(
                 ("corrupt-replacement", eicar, {"update_provider": corrupted}, "error"),
             ]
         )
-    mirror = os.environ.get("MAF_ANTIVIRUS_UPDATE_DIRECTORY")
-    mirror_updates: list[DatabaseUpdate] = []
     if mirror:
-        mirror_provider = directory_update_provider(Path(mirror))
-
-        async def from_mirror(seed: tuple[DatabaseIdentity, ...]) -> DatabaseUpdate:
-            bundle = await mirror_provider(seed)
-            mirror_updates.append(bundle)
-            return bundle
-
         cases.append(
             (
                 "host-update",
@@ -188,6 +236,8 @@ async def check(
         )
     reports = []
     try:
+        print("Checking signed CDIFF fixtures", flush=True)
+        signed_cdiff_checks = await _signed_cdiff_checks(router, scope, image_id)
         for label, content, options, expected in cases:
             print(f"Checking {label}", flush=True)
             store = _Store("upload", content)
@@ -224,9 +274,10 @@ async def check(
         close = getattr(backend, "aclose", None)
         if close:
             await close()
-    _require(len(events) == len(cases) == len(observations), "missing call evidence")
+    _require(len(events) == len(cases) == len(observations) - 1, "missing call evidence")
     _require(
-        len({row["instance"] for row in observations}) == len(cases), "calls shared an instance"
+        len({row["instance"] for row in observations}) == len(observations),
+        "calls shared an instance",
     )
     if provider == "docker":
         remaining = await asyncio.to_thread(
@@ -238,6 +289,7 @@ async def check(
         "imageId": image_id,
         "sdkSource": "checkout",
         "checks": reports,
+        "signedCdiffChecks": signed_cdiff_checks,
         "observations": observations,
         "containersRemaining": [],
         "acasVerified": provider == "acas",
