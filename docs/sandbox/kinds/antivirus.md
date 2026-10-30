@@ -12,4 +12,4 @@ The host gates readers and promotes exactly the scanned bytes, identified by the
 
 | Decision | State | Tracking |
 |---|---|---|
-| Offline scanning with a baked seed and host-supplied signed updates | In progress | [#2325](https://github.com/sokolaidev/maf-extensions/issues/2325) (open) |
+| Offline scanning with a baked seed and host-supplied signed updates | Implemented; release and live ACAS qualification pending | [#2325](https://github.com/sokolaidev/maf-extensions/issues/2325) (closed) by [#2330](https://github.com/sokolaidev/maf-extensions/pull/2330) (merged) |
