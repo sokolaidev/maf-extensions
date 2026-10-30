@@ -289,6 +289,7 @@ The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audi
 | Work | State | Tracking |
 |---|---|---|
 | GitHub-hosted Linux Gateway-to-Docker sample | Qualified on the recorded Ubuntu candidate with deterministic provider and independent cleanup; broader Linux and real-model claims remain unqualified | [#2214](https://github.com/sokolaidev/maf-extensions/issues/2214) (closed) by [#2217](https://github.com/sokolaidev/maf-extensions/pull/2217) (merged) |
+| GitHub-hosted real-model Bicep sample | Complete for the recorded Ubuntu/Azure OpenAI candidate with reasoning disabled: actual invalid/valid compiler results and independent cleanup passed | [#2288](https://github.com/sokolaidev/maf-extensions/issues/2288) (closed) by [#2294](https://github.com/sokolaidev/maf-extensions/pull/2294) (merged) |
 | Linux Gateway-to-Docker sample | Recorded deterministic Linux-on-Docker-Desktop run passed; real-model behavior remains unqualified | [#2185](https://github.com/sokolaidev/maf-extensions/issues/2185) (closed) by [#2191](https://github.com/sokolaidev/maf-extensions/pull/2191) (merged) |
 | Installed worker | Published 0.1.0; historical and fresh fixed-profile qualifications recorded separately below | [#1898](https://github.com/sokolaidev/maf-extensions/issues/1898) (closed) by [#1920](https://github.com/sokolaidev/maf-extensions/pull/1920) (merged) |
 | Bicep host qualification | First-tool design and finite supervised qualification complete; installed worker delivered separately in #1898; actual LLM behavior and full crash recovery remain unqualified | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (closed) by [#1901](https://github.com/sokolaidev/maf-extensions/pull/1901) (merged) |
@@ -1353,3 +1354,115 @@ The bounded Markdown artifact SHA-256 is `1adfb8c8f255f67c61fd5890221d96243eea93
 | `uvicorn` | `0.54.0` |
 
 This qualifies the existing deterministic sample on the recorded GitHub-hosted Ubuntu candidate. It does not qualify every Linux host, a real model, newer OpenClaw or dependency versions, the Windows owner-loss matrix on Linux, arbitrary escaping descendants, unattended recovery, delegated egress, MXC or production operation. The earlier Docker Desktop and Windows records retain their own candidate boundaries.
+
+## GitHub-hosted real-model profile (2026-10-28)
+
+[#2288](https://github.com/sokolaidev/maf-extensions/issues/2288) follows the deterministic hosted sample with an explicitly dispatched Azure OpenAI run. The repository's existing `live-verify` environment supplies the endpoint, deployment and OIDC identity; no new Azure resources or long-lived model key are needed. The profile uses the public [Azure OpenAI v1 Chat Completions API](https://learn.microsoft.com/en-us/rest/api/microsoft-foundry/azureopenai/chat?view=rest-microsoft-foundry-v1) with an Entra bearer token obtained after federated login.
+
+The published dependency audit found core 0.52.0, Docker 0.30.0 and MAF 1.23.0 available, but published Bicep 0.24.0 and MCP 0.2.0 still require the preceding core/MAF line. The current source worker already requires core 0.52/MAF 1.23. This profile therefore selects the published MCP 0.2.0 wheel with SHA-256 `ebb54bc8b51d4d0ec3e63f1f850c5aa53b55d80ec5567c679ead169a3ed0d545`, alongside the sample's existing published core 0.51.1, Bicep 0.24.0, Docker 0.29.0 and MAF 1.22.0 pins. It does not qualify the worker built from current main or change release order. The deterministic source-wheel route remains separate.
+
+Acceptance retains the original invalid source and the minimal valid repair, source/configuration/image attribution and independently verified cleanup. The model may make multiple repair calls, but every observed call must complete and confirm cleanup. The relay bounds requests to 32 and completions to 4,096 tokens, requires completed streaming responses, and records only counts and hashed provider/model identities in public evidence. The hosted collector binds acceptance to the selected mode and rejects smoke substitution, incomplete forwarding and missing cleanup. Only bounded Markdown evidence is uploaded; runtime JSON and private logs stay outside the checkout in disposable runner storage.
+
+The accepted hosted result below identifies its exact source, runtime, worker wheel, compiler image, dependency inventory and provider/model hashes. It qualifies the explicitly selected Chat Completions profile with reasoning disabled. Linux owner-loss qualification, reasoning-enabled tools, other models/providers, delegated egress, native MXC and production operation remain separate. The unsuccessful attempts are retained before the accepted result.
+
+The first hosted attempt, [run 40782344281](https://github.com/sokolaidev/maf-extensions/actions/runs/40782344281), tested `9f67b26d17f079f100e0e3a995e127ae40c3f200` on Ubuntu image `20261026.354.1`. OIDC login, wheel checksum verification and compiler-image download passed. The sample failed; its console reported stopped processes and no cleanup errors. The collector then discarded partial observations after a missing-file `FileNotFoundError`, so the public record does not identify the sample's failing phase or establish independent owner cleanup. The retained Markdown SHA-256 is `4307c5503f38db51478083e037ff67a8a4f5ef97b6d8808c21cde21e0847a652`. This attempt cannot be attributed to setup or provider behavior from its retained evidence. The next candidate retains a fixed stage label, exception class, numeric exit code and selected fixed diagnostic codes, while keeping raw logs private and preserving partial evidence when owner or tool evidence is absent.
+
+[Run 40783428530](https://github.com/sokolaidev/maf-extensions/actions/runs/40783428530) tested `ed213fc08a6cf9d79eb9f41668ff53153d2fa8b6` on the same runner image. Installation and Gateway startup passed, but the invalid-source turn observed eight provider requests, eight errors and zero forwarded responses; no compiler result was accepted. Final process-group cleanup, owner-lock reacquisition and an independent zero-container inventory passed with no cleanup errors. Missing tool evidence kept collection unqualified. Its Markdown SHA-256 is `f71e61b2a74a25de5616de393753a90a35bdd9e7c2da6d7b5cf61e100899a2f0`. This identifies the failing phase without identifying the provider rejection; the following candidate records HTTP status and fixed allowlisted API error identifiers, excluding arbitrary provider messages.
+
+[Run 40784605910](https://github.com/sokolaidev/maf-extensions/actions/runs/40784605910) tested `2facd0dd759fead8c68c88682cf4de50a69a7b2e` and identified HTTP 400 responses naming `reasoning_effort` for all eight requests. Zero responses were forwarded and no compiler result was accepted; process cleanup, owner-lock release and the independent empty owner scope passed again. The retained Markdown SHA-256 is `37a3597966d0670ab2d2af354ac08c519b479f32ca089d3152027183261a7cbe`. The next candidate omits the Gateway's reasoning-effort control from forwarded requests and uses the configured provider's default; it retains the same completion-token cap and acceptance requirements.
+
+[Run 40785484775](https://github.com/sokolaidev/maf-extensions/actions/runs/40785484775), candidate `b5c62171457a01774265ea0dccb67a1f7870bde9`, repeated the same eight HTTP 400 rejections with the field omitted. Cleanup passed and no model response or compiler result was accepted. Its Markdown SHA-256 is `c9d892da903db0679120db1e10471d0d1b5cb0d84a8d9b45c1b837742c127b36`. The inference that omitting the field would restore compatibility was wrong. The configured model's [published API contract](https://developers.openai.com/api/docs/models/gpt-6-luna) permits Chat Completions function tools only with `reasoning_effort: none`; the default is `medium`. The following profile explicitly selects `none` and records it as an acceptance condition. This remains real-model tool selection and repair, but cannot qualify reasoning-enabled tool use. Responses API support would require a separate provider/Gateway design and qualification.
+
+[Run 40786514492](https://github.com/sokolaidev/maf-extensions/actions/runs/40786514492), candidate `434d6946c2120326b1df32d381ca92b3db731c1f`, completed four real-model forwards with `reasoning_effort: none`, no provider errors and one hashed returned-model identity. The invalid-source turn still produced no accepted tool evidence, so the profile remained unqualified. Final process cleanup, owner-lock release and the independent zero-container inventory passed. Its Markdown SHA-256 is `e1aa661731e2116dce497117978c2e65d9cc2509dcbd929e92847d3ee112ad59`. A subsequent regression test reproduced the reader ignoring the canonical `mcp:bicep:bicep__bicep_validate` tool ID while recognizing its short alias. The next candidate recognizes both forms under the same result/source/image/configuration/cleanup checks and retains fixed-category call counts without publishing call identities. This is a demonstrated reader defect, but this attempt's retained evidence does not establish which identifier the model used.
+
+[Run 40787367427](https://github.com/sokolaidev/maf-extensions/actions/runs/40787367427), candidate `0f14be1767da35960b2037fe43c350c15d4a9dc0`, observed one `tool_search`, one `tool_describe` and one canonical Bicep `tool_call`, with four completed model forwards and no provider errors. The reader captured the Bicep result and rejected it with `changed-invalid-source`; no turn was accepted. The submitted-source digest, image/configuration attribution, completion and per-call cleanup checks precede that refusal and passed; final cleanup and independent owner inventory passed too. Its Markdown SHA-256 is `00e15f8cb1f89dacc95c9ab3436a625548d368ea5df073e3f78e8a5ca2fa93af`. The retained evidence does not distinguish a whitespace change from another source alteration. The next candidate supplies the exact first-source JSON string and explicitly forbids extra bytes; byte-for-byte acceptance remains unchanged.
+
+### Accepted real-model result
+
+[Run 40787931344, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/40787931344) passed on 2026-10-28 UTC at `1c026062dc85a13cb710399018cd78d22124e690`. Seven model requests completed with seven forwarded responses, no provider errors and no upstream failure records. The model made two discovery searches, one description request and two canonical Bicep calls. One call per turn produced the required invalid then valid compiler verdicts; each completed with confirmed cleanup and matching source/configuration/image attribution. Final process-group absence, owner-lock reacquisition and the independent zero-container inventory passed with no cleanup errors. Both `passed` and `qualified` are true.
+
+The explicit profile uses `reasoning_effort: none`, a 32-request budget and a 4,096-token completion cap. It establishes actual model-driven discovery, tool use and repair under that setting. It does not establish reasoning-enabled tools, general model reliability, every repair retry pattern, a newer source-built worker, Linux owner-loss, other providers/hosts or production acceptance. Later documentation changes do not broaden this executable candidate.
+
+| Candidate or evidence | Recorded identity |
+| --- | --- |
+| Source | `1c026062dc85a13cb710399018cd78d22124e690` |
+| Sample launcher SHA-256 | `19997811b786efb888d906d19b55fae89b172fe5c944e886b234967ee5f9b759` |
+| OpenClaw | `2026.9.7` |
+| Runner image | `20261026.354.1` |
+| Platform | `Linux-7.0.0-1017-azure-x86_64-with-glibc2.39` |
+| Node | `v26.8.1` |
+| uv | `uv 0.12.5 (x86_64-unknown-linux-gnu)` |
+| Worker Python | `Python 3.13.15` |
+| Docker Engine | `28.0.4` |
+| Docker API | `1.48` |
+| containerd | `v2.4.2` |
+| runc | `1.5.2` |
+| Compiler registry digest | `ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e` |
+| Compiler image ID | `sha256:fb02b2f79c7428f7595f1fa664cc4f240ed54c349e059d8e4a0dccb0e435fab3` |
+| Compiler configuration SHA-256 | `d3f160d081dcf48e41f0f0cdf006595b380402ac9730f3ee920738ba616d87e1` |
+| Published worker wheel SHA-256 | `ebb54bc8b51d4d0ec3e63f1f850c5aa53b55d80ec5567c679ead169a3ed0d545` |
+| Endpoint SHA-256 | `308241e7111832947f4614c87b2bb7f8a135c63fbac6cf5fce09ffa744c635de` |
+| Requested model SHA-256 | `9a7e60cd1c7bb9d5493832103af02aca05272564b29e49852a9a0b5d8d96ec2c` |
+| Returned model SHA-256 | `b8be814ffed8fd2f3fc7c660d5f2038c33c02a1d0ed3a6a31e542bb97c23813a` |
+| Private report SHA-256 | `ae1c74ac2718613c895cf21b414a3f6d752fd6661762ef5998cc4abb4f1c392f` |
+| Private tool evidence SHA-256 | `938fb6a5be2e67b44a393708e74fd305ae41368a899a1beb2040a18b423a2545` |
+| Retained Markdown SHA-256 | `9c511cd03ff095b0e7fee75d30e7a30813907edfa3cb41a8e32b518f3d736e32` |
+
+| Turn | Calls | Verdict | Cleanup | Submitted-source SHA-256 |
+| --- | --- | --- | --- | --- |
+| 1 | 1 | `invalid` | `confirmed` | `91285d8d03f8c76ee86fddeab9f039132ebc75ddcc0f5dbd3a0f5e4bd7b4b0cf` |
+| 2 | 1 | `valid` | `confirmed` | `25a645af6181b25dc4727c19663a910c8c45d8ca84bf4db34548c16c11c301c7` |
+
+The installed worker modules matched the verified wheel:
+
+| Module | SHA-256 |
+| --- | --- |
+| __init__.py | `6cd4609954365facc1edf656bfffc2366bf5da541f1fc699b88122dd007f2430` |
+| server.py | `005eeeccd40ab0dc65a31281a72e3b353eae87cf62d42afb590b447faa3ba2bb` |
+| workload_http.py | `4bc49175b2c4bb0159a8c90481703f820380b02058f86ff4f49041f7afa7bb0f` |
+| workload_service.py | `3c44b867007dfc8fc026c0e094d106ed64174311c4a82fd4e61bca31a96ab34b` |
+
+The complete installed worker dependency inventory was:
+
+| Distribution | Version |
+| --- | --- |
+| PyJWT | `2.15.1` |
+| PyYAML | `6.0.3` |
+| agent-framework-core | `1.22.0` |
+| annotated-types | `0.8.0` |
+| anyio | `4.15.1` |
+| attrs | `26.1.0` |
+| certifi | `2026.10.23` |
+| cffi | `2.1.1` |
+| click | `8.5.0` |
+| cryptography | `50.0.2` |
+| h11 | `0.16.0` |
+| httpcore | `1.0.9` |
+| httpx | `0.28.1` |
+| httpx-sse | `0.4.3` |
+| idna | `3.20` |
+| jsonschema | `4.26.0` |
+| jsonschema-specifications | `2025.9.1` |
+| maf-sandbox | `0.51.1` |
+| maf-sandbox-bicep | `0.24.0` |
+| maf-sandbox-docker | `0.29.0` |
+| maf-sandbox-mcp | `0.2.0` |
+| mcp | `1.30.0` |
+| msgspec | `0.22.0` |
+| opentelemetry-api | `1.45.1` |
+| pycparser | `3.12` |
+| pydantic | `2.14.1` |
+| pydantic-settings | `2.16.2` |
+| pydantic_core | `2.50.1` |
+| python-dotenv | `1.2.4` |
+| python-multipart | `0.0.32` |
+| referencing | `0.37.0` |
+| regex | `2026.9.29` |
+| rpds-py | `2026.9.1` |
+| sse-starlette | `3.6.0` |
+| starlette | `1.7.0` |
+| typing-inspection | `0.4.4` |
+| typing_extensions | `4.16.0` |
+| uvicorn | `0.54.0` |
+
+The evidence artifact contains only allowlisted Markdown observations. Credentials, endpoint/deployment names, sessions, submitted source and raw provider responses were not included in it. The private report and tool evidence were hashed before the disposable runner was removed.

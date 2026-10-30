@@ -100,7 +100,11 @@ def test_openclaw_is_opt_in_and_only_uploads_bounded_evidence():
             == "github.event_name != 'workflow_dispatch' || !inputs.openclaw_bicep"
         )
     job = live["jobs"]["openclaw-bicep"]
-    assert job["if"] == "github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep"
+    assert job["if"] == (
+        "github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep "
+        "&& inputs.openclaw_mode != 'model'"
+    )
+    assert "environment" not in job and "permissions" not in job
     assert job["runs-on"] == "ubuntu-24.04"
     assert "container" not in job
     steps = {step.get("name"): step for step in job["steps"]}
@@ -118,5 +122,42 @@ def test_failure_reporter_serializes_the_shared_tracker_without_locking_workload
         "cancel-in-progress": False,
     }
     assert "docker-live-failure-tracker" not in live["concurrency"]["group"]
-    for name in ("docker-e2e", "capability-policy", "document", "openclaw-bicep"):
+    for name in (
+        "docker-e2e",
+        "capability-policy",
+        "document",
+        "openclaw-bicep",
+        "openclaw-bicep-model",
+    ):
         assert "concurrency" not in live["jobs"][name]
+
+
+def test_real_model_requires_explicit_dispatch_and_isolates_credentials():
+    live = workflow("docker-live.yml")
+    option = live[True]["workflow_dispatch"]["inputs"]["openclaw_mode"]
+    assert option["default"] == "smoke" and option["options"] == ["smoke", "model"]
+    job = live["jobs"]["openclaw-bicep-model"]
+    assert job["if"] == (
+        "github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep "
+        "&& inputs.openclaw_mode == 'model'"
+    )
+    assert job["environment"] == "live-verify"
+    assert job["permissions"] == {"contents": "read", "id-token": "write"}
+    assert job["runs-on"] == "ubuntu-24.04" and job["timeout-minutes"] == 25
+    steps = {step.get("name"): step for step in job["steps"]}
+    download = steps["Download verified published worker and prepared compiler"]["run"]
+    assert "maf_sandbox_mcp-0.2.0-py3-none-any.whl" in download
+    assert "ebb54bc8b51d4d0ec3e63f1f850c5aa53b55d80ec5567c679ead169a3ed0d545" in download
+    assert "sha256sum --check --status" in download
+    run = steps["Run the installed sample with Azure OpenAI"]
+    assert run["timeout-minutes"] == 18
+    assert "--mode model" in run["run"] and "::add-mask::" in run["run"]
+    assert "--reasoning-effort none" in run["run"]
+    assert "get-access-token --resource https://cognitiveservices.azure.com/" in run["run"]
+    assert "$GITHUB_ENV" not in run["run"] and "set -x" not in run["run"]
+    report = steps["Record bounded evidence and independently check owner scope"]
+    assert report["if"] == "always()" and "--mode model" in report["run"]
+    upload = steps["Retain bounded Markdown evidence"]
+    assert upload["if"] == "always()"
+    assert upload["with"]["path"] == "${{ runner.temp }}/openclaw-bicep-evidence.md"
+    assert all("continue-on-error" not in step for step in job["steps"])

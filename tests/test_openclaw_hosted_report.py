@@ -95,3 +95,95 @@ def test_independent_inventory_refuses_leftovers(tmp_path: Path, monkeypatch):
     assert commands == [
         ("docker", "ps", "-aq", "--filter", "label=maf-sandbox.scope=openclaw-bicep-" + "a" * 32)
     ]
+
+
+def model_sample():
+    value = sample()
+    value.update(mode="model", actual_model=True)
+    value["turns"][1]["calls"] = 3
+    value["provider"] = {
+        "requests": 6,
+        "forwarded_responses": 6,
+        "error_count": 0,
+        "upstream_failures": [],
+        "endpoint_sha256": "c" * 64,
+        "requested_model_sha256": "d" * 64,
+        "response_model_sha256": ["e" * 64],
+        "max_requests": 32,
+        "max_completion_tokens": 4096,
+        "reasoning_effort": "none",
+    }
+    return value
+
+
+def test_setup_failure_preserves_bounded_diagnostics_without_owner(tmp_path: Path):
+    value = {
+        "passed": False,
+        "phase": "worker-install",
+        "error_type": "CalledProcessError",
+        "setup_exit_code": 1,
+        "setup_error_codes": ["No solution found"],
+        "error": "PRIVATE_SENTINEL",
+    }
+    (tmp_path / "report.json").write_text(json.dumps(value))
+    public, accepted = report.collect(tmp_path, "model")
+    assert not accepted
+    assert public["phase"] == "worker-install"
+    assert public["setup_exit_code"] == 1
+    assert public["collection_error_type"] == "FileNotFoundError"
+    assert "PRIVATE_SENTINEL" not in json.dumps(public)
+
+
+def test_model_profile_allows_verified_repairs_without_weakening_smoke():
+    value = model_sample()
+    value["provider"]["key"] = "PRIVATE_SENTINEL"
+    value["provider"]["endpoint"] = "PRIVATE_SENTINEL"
+    public, accepted = report.observations(value, "model")
+    assert accepted and public["turns"][1]["calls"] == 3
+    assert "PRIVATE_SENTINEL" not in json.dumps(public)
+    assert not report.observations(value)[1]
+    assert not report.observations(sample(), "model")[1]
+    value = sample()
+    value["turns"][1]["calls"] = 3
+    assert not report.observations(value)[1]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("requests", 0),
+        ("requests", 33),
+        ("requests", True),
+        ("forwarded_responses", 5),
+        ("error_count", 1),
+        ("upstream_failures", [{"status": 400}]),
+        ("max_requests", 64),
+        ("max_completion_tokens", 8192),
+        ("reasoning_effort", "provider-default"),
+        ("response_model_sha256", []),
+        ("requested_model_sha256", None),
+        ("endpoint_sha256", None),
+    ],
+)
+def test_model_profile_requires_complete_bounded_forwarding(field, value):
+    result = model_sample()
+    result["provider"][field] = value
+    assert not report.observations(result, "model")[1]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("calls", 0),
+        ("calls", True),
+        ("calls", -1),
+        ("calls", 33),
+        ("completed", False),
+        ("cleanup", "unknown"),
+        ("verdict", "invalid"),
+    ],
+)
+def test_model_profile_refuses_incomplete_turns(field, value):
+    result = model_sample()
+    result["turns"][1][field] = value
+    assert not report.observations(result, "model")[1]

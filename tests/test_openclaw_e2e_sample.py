@@ -195,6 +195,24 @@ def test_observe_deduplicates_history_and_keeps_original_turn(provider: Any) -> 
         provider.observe({"messages": messages(altered)})
 
 
+def test_observe_recognizes_the_canonical_mcp_tool_identity(provider: Any) -> None:
+    first = record()
+    history = messages(first)
+    function = history[1]["tool_calls"][0]["function"]
+    arguments = json.loads(function["arguments"])
+    arguments["id"] = "mcp:bicep:" + evidence["TOOL"]
+    function["arguments"] = json.dumps(arguments)
+    provider.observe({"messages": history})
+    provider.observe({"messages": history})
+    assert provider.records == [first]
+    assert check(provider.records)["verdict"] == "invalid"
+    observed = provider.observations()
+    assert observed["function_calls"] == {"tool_call": 1}
+    assert observed["bicep_identifiers"] == {"canonical": 1}
+    assert observed["observed_bicep_results"] == 1
+    assert first["turn"] not in json.dumps(observed)
+
+
 def test_provider_requires_current_turn_marker(provider: Any) -> None:
     with pytest.raises(RuntimeError, match="Missing turn"):
         provider.observe({"messages": [{"role": "user", "content": "It passed"}]})
@@ -231,10 +249,13 @@ def test_deterministic_provider_emits_tool_call_and_observes_result(provider: An
     assert check(provider.records)["verdict"] == "invalid"
 
 
+@pytest.mark.parametrize("reasoning_effort", ["provider-default", "none"])
 def test_relay_forwards_to_configured_model_with_its_own_credentials(
-    provider: Any, tmp_path: Path
+    provider: Any, tmp_path: Path, reasoning_effort: str
 ) -> None:
-    relay = agent.Provider(tmp_path / "relay.jsonl", provider.url, "chosen-model", provider.token)
+    relay = agent.Provider(
+        tmp_path / "relay.jsonl", provider.url, "chosen-model", provider.token, reasoning_effort
+    )
     relay.start()
     captured = []
     original = provider.smoke
@@ -245,12 +266,90 @@ def test_relay_forwards_to_configured_model_with_its_own_credentials(
 
     provider.smoke = capture
     try:
-        status, payload = post(relay, {"model": "sample", "messages": messages(record())[:1]})
+        status, payload = post(
+            relay,
+            {
+                "model": "sample",
+                "max_tokens": 100000,
+                "reasoning_effort": "high",
+                "messages": messages(record())[:1],
+            },
+        )
         assert status == 200 and b"tool_calls" in payload
         assert captured[0]["model"] == "chosen-model"
+        assert captured[0]["max_completion_tokens"] == 4096
+        assert "max_tokens" not in captured[0]
+        if reasoning_effort == "none":
+            assert captured[0]["reasoning_effort"] == "none"
+        else:
+            assert "reasoning_effort" not in captured[0]
+        observed = relay.observations()
+        assert observed["reasoning_effort"] == reasoning_effort
+        assert observed["requests"] == observed["forwarded_responses"] == 1
+        assert observed["error_count"] == 0 and len(observed["response_model_sha256"]) == 1
+        assert "chosen-model" not in json.dumps(observed)
+        assert provider.token not in json.dumps(observed)
         assert not relay.errors
     finally:
         relay.close()
+
+
+@pytest.mark.parametrize("change", ["done", "finish", "model", "error"])
+def test_model_forwarding_refuses_incomplete_streams(provider: Any, change: str) -> None:
+    payload = provider.smoke({"messages": messages(record())[:1]}, TURN, False)
+    if change == "done":
+        payload = payload.replace(b"data: [DONE]\n\n", b"")
+    elif change == "finish":
+        payload = payload.replace(b'"finish_reason": "tool_calls"', b'"finish_reason": null')
+    elif change == "model":
+        payload = payload.replace(b'"model": "sample"', b'"model": ""')
+    else:
+        payload = b'data: {"error": "refused"}\n\ndata: [DONE]\n\n'
+    with pytest.raises(RuntimeError):
+        provider.observe_response(payload)
+    assert provider.forwarded == 0 and not provider.response_models
+
+
+def test_upstream_failure_diagnostics_exclude_private_values(provider: Any):
+    provider.record_failure(
+        400,
+        json.dumps(
+            {
+                "error": {
+                    "code": "unsupported_value",
+                    "param": "temperature",
+                    "message": "PRIVATE_SENTINEL",
+                }
+            }
+        ).encode(),
+    )
+    provider.record_failure(
+        401,
+        json.dumps({"error": {"code": "PRIVATE_SENTINEL", "param": "PRIVATE_SENTINEL"}}).encode(),
+    )
+    provider.record_failure(502, b"PRIVATE_SENTINEL")
+    public = provider.observations()
+    assert public["upstream_failures"] == [
+        {"status": 400, "code": "unsupported_value", "param": "temperature"},
+        {"status": 401, "code": "other", "param": "other"},
+        {"status": 502, "code": "unrecognized"},
+    ]
+    assert "PRIVATE_SENTINEL" not in json.dumps(public)
+
+
+def test_multiple_repairs_require_every_calls_cleanup():
+    first, last = record(), record(repaired=True)
+    assert check([first, last], repaired=True)["calls"] == 2
+    first["projected"]["result"]["details"]["structuredContent"]["cleanup"] = "unknown"
+    with pytest.raises(RuntimeError, match="Cleanup"):
+        check([first, last], repaired=True)
+
+
+def test_worker_never_inherits_model_credentials(monkeypatch):
+    for key in agent.MODEL_ENV:
+        monkeypatch.setenv(key, "PRIVATE_SENTINEL")
+    env = agent.worker_environment()
+    assert not agent.MODEL_ENV.intersection(env)
 
 
 def test_provider_refuses_bad_auth_and_exhausted_budget(provider: Any) -> None:
@@ -298,7 +397,9 @@ def test_cleanup_continues_when_provider_shutdown_fails(
     monkeypatch.setattr(agent, "program", lambda name: name)
     monkeypatch.setattr(agent, "install", lambda *args: (tmp_path / "python", tmp_path, {}))
     monkeypatch.setattr(agent, "execute", lambda *args, **kwargs: json.dumps([{"Id": IMAGE}]))
-    args = argparse.Namespace(mode="smoke", output=tmp_path / "private", image=IMAGE)
+    args = argparse.Namespace(
+        mode="smoke", output=tmp_path / "private", image=IMAGE, reasoning_effort="provider-default"
+    )
     result = agent.run(args)
     assert not result["passed"]
     assert result["cleanup_errors"] == ["Provider cleanup: RuntimeError"]
@@ -539,7 +640,9 @@ def test_gateway_temp_is_private(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
             json.dumps([{"Id": IMAGE}]) if "inspect" in command else ""
         ),
     )
-    args = argparse.Namespace(mode="smoke", output=root, image=IMAGE)
+    args = argparse.Namespace(
+        mode="smoke", output=root, image=IMAGE, reasoning_effort="provider-default"
+    )
     result = agent.run(args)
     assert result["error"] == "captured gateway environment"
     private_temp = root / "temp"

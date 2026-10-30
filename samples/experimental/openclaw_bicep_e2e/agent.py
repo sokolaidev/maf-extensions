@@ -39,6 +39,7 @@ WORKER_REQUIREMENTS = (
 )
 HERE = Path(__file__).resolve().parent
 FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+MODEL_ENV = {"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"}
 
 
 def execute(command: list[str], root: Path, *, timeout: int = 1200) -> str:
@@ -53,6 +54,7 @@ def execute(command: list[str], root: Path, *, timeout: int = 1200) -> str:
             errors="replace",
             timeout=timeout,
             creationflags=FLAGS,
+            env={key: value for key, value in os.environ.items() if key not in MODEL_ENV},
             check=True,
         )
     return result.stdout.strip()
@@ -225,17 +227,25 @@ class Processes:
 def worker_environment() -> dict[str, str]:
     """Keep source-path overrides out of the installed console's imports."""
     return {
-        **{key: value for key, value in os.environ.items() if not key.upper().startswith("PYTHON")},
+        **{
+            key: value
+            for key, value in os.environ.items()
+            if not key.upper().startswith("PYTHON") and key not in MODEL_ENV
+        },
         "PYTHONNOUSERSITE": "1",
     }
 
 
-def install(args: argparse.Namespace, root: Path) -> tuple[Path, Path, dict[str, Any]]:
+def install(
+    args: argparse.Namespace, root: Path, report: dict[str, Any]
+) -> tuple[Path, Path, dict[str, Any]]:
     """Install the wheel outside the checkout and provision the pinned Gateway."""
     uv, node = program("uv"), program("node")
     environment = root / "worker"
+    report["phase"] = "worker-environment"
     execute([uv, "venv", "--python", "3.13", str(environment)], root)
     python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    report["phase"] = "worker-install"
     execute(
         [
             uv,
@@ -261,6 +271,7 @@ for d in m.distributions():
 print(json.dumps({'versions':{d.metadata['Name']:d.version for d in m.distributions()},
  'modules':{f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in p.glob('*.py')}}))
 """
+    report["phase"] = "worker-identity"
     identity = json.loads(execute([str(python), "-I", "-B", "-c", probe], root))
     with zipfile.ZipFile(args.wheel) as wheel:
         expected = {
@@ -277,6 +288,7 @@ print(json.dumps({'versions':{d.metadata['Name']:d.version for d in m.distributi
     claw = args.openclaw
     if claw is None:
         target = root / "openclaw"
+        report["phase"] = "openclaw-install"
         execute(
             [
                 program("npm.cmd" if os.name == "nt" else "npm"),
@@ -291,7 +303,9 @@ print(json.dumps({'versions':{d.metadata['Name']:d.version for d in m.distributi
             root,
         )
         claw = target / "node_modules/openclaw"
+        report["phase"] = "openclaw-postinstall"
         execute([node, str(claw / "scripts/postinstall-bundled-plugins.mjs")], root)
+    report["phase"] = "openclaw-version"
     require(
         json.loads((claw / "package.json").read_text(encoding="utf-8"))["version"] == OPENCLAW,
         "Use the pinned OpenClaw version; qualify upgrades separately",
@@ -423,7 +437,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     try:
         docker = program("docker")
-        python, claw, report["artifact"] = install(args, root)
+        python, claw, report["artifact"] = install(args, root, report)
+        report["phase"] = "compiler-image"
         image = json.loads(execute([docker, "image", "inspect", args.image], root, timeout=30))[0][
             "Id"
         ]
@@ -431,7 +446,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         config_file = root / "bicepconfig.json"
         config_file.write_bytes((HERE / "bicepconfig.json").read_bytes())
         config_hash = hashlib.sha256(config_file.read_bytes()).hexdigest()
-        provider = Provider(root / "tool-evidence.jsonl", upstream, model, key)
+        provider = Provider(
+            root / "tool-evidence.jsonl", upstream, model, key, args.reasoning_effort
+        )
         provider.start()
         worker_port, gateway_port = free_port(), free_port()
         require(worker_port != gateway_port, "Port allocation collided; rerun with fresh output")
@@ -440,6 +457,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         token_file.write_text(worker_token, encoding="utf-8")
         token_file.chmod(0o600)
         worker = python.with_name("maf-bicep-mcp.exe" if os.name == "nt" else "maf-bicep-mcp")
+        report["phase"] = "worker-start"
         processes.start(
             "worker",
             [
@@ -476,8 +494,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         env = {
             k: v
             for k, v in os.environ.items()
-            if not k.startswith("OPENCLAW_")
-            and k not in {"OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"}
+            if not k.startswith("OPENCLAW_") and k not in MODEL_ENV
         }
         env.update(
             OPENCLAW_CONFIG_PATH=str(config),
@@ -491,6 +508,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             OPENCLAW_NO_RESPAWN="1",
             OPENCLAW_SKIP_CHANNELS="1",
         )
+        report["phase"] = "gateway-start"
         processes.start(
             "gateway", [program("node"), str(claw / "openclaw.mjs"), "gateway", "run"], env
         )
@@ -499,11 +517,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         source = (HERE / "main.bicep").read_text(encoding="utf-8").strip()
         require(source == INVALID, "The sample fixture must retain its deliberate type error")
         prompts = [
-            f"Use the Bicep validation tool to validate main.bicep containing exactly:\n```bicep\n{source}\n```\nDo not change the source. Report the compiler result.",
+            f"Use the Bicep validation tool to validate main.bicep. Pass the files entry with path main.bicep and content equal to this exact JSON string: {json.dumps(source)}. Do not add a newline, whitespace, code fences or any other bytes. Do not repair or change the source on this turn. Report the compiler result.",
             "Repair the type error in the previous main.bicep, preserving the greeting hello. Keep the repair to a single output declaration, validate it with the Bicep tool, and report the compiler result.",
         ]
         report["turns"] = []
         for index, prompt in enumerate(prompts):
+            report["phase"] = "repair-turn" if index else "invalid-turn"
             turn = uuid.uuid4().hex
             status, data = request(
                 gateway_port,
@@ -526,7 +545,37 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             report["turns"].append(measured)
             print("[measured] " + json.dumps({"turn": index + 1, **measured}), flush=True)
         report["passed"] = True
+        report["phase"] = "complete"
     except Exception as exc:
+        report["error_type"] = type(exc).__name__
+        report["error_code"] = {
+            "No observed Bicep tool result for this turn": "missing-tool-result",
+            "First turn changed the supplied source": "changed-invalid-source",
+            "Provider failed during the turn": "provider-failed",
+            "Gateway turn failed; inspect private logs": "gateway-failed",
+            "Last repair did not validate": "repair-invalid",
+            "Expected the minimal greeting-preserving repair": "repair-shape",
+        }.get(str(exc), "other")
+        if isinstance(exc, subprocess.CalledProcessError):
+            report["setup_exit_code"] = exc.returncode
+        setup = root / "setup.log"
+        if setup.exists():
+            log = setup.read_text(encoding="utf-8", errors="replace")
+            report["setup_error_codes"] = [
+                code
+                for code in (
+                    "ETARGET",
+                    "E404",
+                    "E401",
+                    "EACCES",
+                    "ENOENT",
+                    "ERESOLVE",
+                    "No solution found",
+                    "AssertionError",
+                    "ModuleNotFoundError",
+                )
+                if code in log
+            ]
         report["error"] = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
     finally:
         report["cleanup_errors"].extend(processes.close())
@@ -535,6 +584,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 provider.close()
             except Exception as exc:
                 report["cleanup_errors"].append("Provider cleanup: " + type(exc).__name__)
+            if args.mode == "model":
+                report["provider"] = provider.observations()
         try:
             if not scope and (root / "owner/owner").exists():
                 owner = (root / "owner/owner").read_text().strip()
@@ -585,6 +636,12 @@ def main() -> None:
     """Validate operator inputs before creating the isolated sample environment."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("smoke", "model"), default="smoke")
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=("provider-default", "none"),
+        default="provider-default",
+        help="Explicit Chat Completions compatibility setting for the selected model",
+    )
     parser.add_argument("--wheel", type=Path, required=True)
     parser.add_argument(
         "--image",
