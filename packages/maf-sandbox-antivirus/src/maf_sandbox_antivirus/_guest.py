@@ -7,11 +7,14 @@ import io
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import tempfile
 import time
 import zipfile
+import zlib
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -151,6 +154,34 @@ def prepare(request: dict[str, Any], deadline: float) -> dict[str, Any]:
     return {name: {k: v for k, v in data.items() if k != "path"} for name, data in result.items()}
 
 
+def zip_chunks(content: bytes, item: zipfile.ZipInfo, deadline: float) -> Iterator[bytes]:
+    """Decode bounded chunks without trusting the member's declared expanded size."""
+    if item.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+        raise Refused("unsupported ZIP compression")
+    name_size, extra_size = struct.unpack_from("<HH", content, item.header_offset + 26)
+    start = item.header_offset + 30 + name_size + extra_size
+    compressed = memoryview(content)[start : start + item.compress_size]
+    if len(compressed) != item.compress_size:
+        raise ValueError("truncated ZIP member")
+    decoder = zlib.decompressobj(-15) if item.compress_type == zipfile.ZIP_DEFLATED else None
+    for offset in range(0, len(compressed), 64 * 1024):
+        pending = bytes(compressed[offset : offset + 64 * 1024])
+        while True:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("ZIP preflight timed out")
+            chunk = decoder.decompress(pending, 64 * 1024) if decoder else pending
+            yield chunk
+            if decoder is None:
+                break
+            if decoder.unused_data:
+                raise ValueError("trailing ZIP compressed data")
+            pending = decoder.unconsumed_tail
+            if not pending and len(chunk) < 64 * 1024:
+                break
+    if decoder is not None and not decoder.eof:
+        raise ValueError("incomplete ZIP compressed stream")
+
+
 def zip_preflight(data: bytes, request: dict[str, Any], deadline: float) -> None:
     """Bound actual ZIP expansion before the engine's format-specific skip paths."""
     consumed, count = len(data), 0
@@ -176,16 +207,18 @@ def zip_preflight(data: bytes, request: dict[str, Any], deadline: float) -> None
                 if consumed + item.file_size > request["max_scansize"]:
                     raise Refused("max_scansize exceeded")
                 extracted = bytearray()
-                with archive.open(item) as member:
-                    while chunk := member.read(64 * 1024):
-                        if time.monotonic() >= deadline:
-                            raise TimeoutError("ZIP preflight timed out")
+                # open validates local headers and overlapping entries; ZipExtFile reads
+                # truncate at the untrusted declared size, so decode the raw stream ourselves.
+                with archive.open(item):
+                    for chunk in zip_chunks(content, item, deadline):
                         consumed += len(chunk)
                         extracted.extend(chunk)
                         if len(extracted) > request["max_filesize"]:
                             raise Refused("max_filesize exceeded")
                         if consumed > request["max_scansize"]:
                             raise Refused("max_scansize exceeded")
+                if len(extracted) != item.file_size or zlib.crc32(extracted) != item.CRC:
+                    raise ValueError("inconsistent ZIP member size or checksum")
                 visit(bytes(extracted), depth + 1)
 
     visit(data, 1)

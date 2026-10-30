@@ -309,7 +309,9 @@ def _build_tool(
             status = response["status"]
             if status not in ("clean", "infected", "refused", "error"):
                 raise ValueError("invalid scan status")
-            if time.time() - databases["daily"]["built"] > settings["max_age_seconds"]:
+            if status != "error" and (
+                time.time() - databases["daily"]["built"] > settings["max_age_seconds"]
+            ):
                 status = "refused"
             if any(value["built"] > time.time() + 300 for value in databases.values()):
                 raise ValueError("future database timestamp")

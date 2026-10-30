@@ -2,6 +2,8 @@
 
 import io
 import json
+import random
+import struct
 import sys
 import time
 import zipfile
@@ -58,6 +60,66 @@ def test_zip_limits_are_refused_before_clamav(data, settings, reason):
 def test_zip_deadline():
     with pytest.raises(TimeoutError):
         _guest.zip_preflight(archive(b"data"), policy(), time.monotonic() - 1)
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("limit", ["max_filesize", "max_scansize"])
+def test_forged_zip_size_cannot_bypass_expansion_limits(nested, limit):
+    data = bytearray(archive(b"x" * 8192))
+    central = data.index(b"PK\x01\x02")
+    struct.pack_into("<I", data, central + 16, 0)
+    struct.pack_into("<I", data, central + 24, 0)
+    payload = archive(bytes(data)) if nested else bytes(data)
+    with pytest.raises(_guest.Refused, match=limit):
+        _guest.zip_preflight(payload, policy(**{limit: 1024}), time.monotonic() + 10)
+
+
+@pytest.mark.parametrize("damage", ["size", "crc", "truncated", "trailing", "empty_stream"])
+def test_zip_requires_consistent_complete_stream(damage):
+    data = bytearray(archive(b"x" * 8192))
+    central = data.index(b"PK\x01\x02")
+    compressed_size = struct.unpack_from("<I", data, central + 20)[0]
+    if damage == "size":
+        struct.pack_into("<I", data, central + 24, 0)
+        struct.pack_into("<I", data, central + 16, 0)
+    elif damage == "crc":
+        struct.pack_into("<I", data, central + 16, 0)
+    elif damage == "trailing":
+        data[central:central] = b"x"
+        central += 1
+        struct.pack_into("<I", data, central + 20, compressed_size + 1)
+        end = data.index(b"PK\x05\x06")
+        struct.pack_into("<I", data, end + 16, central)
+    else:
+        struct.pack_into(
+            "<I", data, central + 20, 0 if damage == "empty_stream" else compressed_size - 1
+        )
+    with pytest.raises(ValueError):
+        _guest.zip_preflight(bytes(data), policy(), time.monotonic() + 10)
+
+
+@pytest.mark.parametrize("compression", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+@pytest.mark.parametrize(
+    "payload",
+    [b"", b"x" * 196608, random.Random(0).randbytes(196608)],
+    ids=["empty", "compressible", "incompressible"],
+)
+def test_complete_zip_streams_across_chunk_boundaries(compression, payload):
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=compression) as zipped:
+        zipped.writestr("member", payload)
+    _guest.zip_preflight(
+        output.getvalue(), policy(max_filesize=262144, max_scansize=524288), time.monotonic() + 10
+    )
+
+
+@pytest.mark.parametrize("compression", [zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA])
+def test_unsupported_zip_compression_is_refused(compression):
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=compression) as zipped:
+        zipped.writestr("member", b"data")
+    with pytest.raises(_guest.Refused, match="unsupported ZIP compression"):
+        _guest.zip_preflight(output.getvalue(), policy(), time.monotonic() + 10)
 
 
 def test_nested_zip_within_limits():

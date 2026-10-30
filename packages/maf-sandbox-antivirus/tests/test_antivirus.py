@@ -147,6 +147,30 @@ def test_input_digest_is_labelled_as_derived_output(status, confidentiality):
     )
 
 
+@pytest.mark.parametrize("status", ["clean", "infected", "refused", "error"])
+def test_database_expiring_during_scan_preserves_engine_failure(status, monkeypatch):
+    now = 2_000_000_000
+
+    class ExpiringScanner(Scanner):
+        async def exec(self, command, *, working_directory, timeout):
+            nonlocal now
+            result = await super().exec(
+                command, working_directory=working_directory, timeout=timeout
+            )
+            if command[-1] == "scan":
+                now += 8 * 86400
+            return result
+
+    monkeypatch.setattr(time, "time", lambda: now)
+    tool, backend, _, _ = attach(ExpiringScanner(status))
+    answer = invoke(tool)
+    assert (answer[0].text == COMPLETED_TEXT) == (status != "error")
+    assert [part.text for part in answer if part.text.startswith("Result:")] == (
+        [] if status == "error" else ["Result: refused"]
+    )
+    assert backend.disposed
+
+
 @pytest.mark.parametrize("phase", ["seed", "prepare", "scan"])
 def test_timeout_disposes_without_clean(phase):
     tool, backend, _, _ = attach(Scanner(fail=phase))
