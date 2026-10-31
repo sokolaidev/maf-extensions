@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-antivirus"
-version = "0.0.0"
+version = "0.1.0"
 description = "Offline antivirus scans in disposable sandboxes with host-supplied database updates"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
