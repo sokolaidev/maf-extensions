@@ -1,4 +1,4 @@
-"""Select image scans from build inputs, preserving full scheduled coverage."""
+"""Select image scans from build inputs and each profile's rebuild policy."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ PROFILES = (
     "bicep-docker-sbx",
     "graphviz",
     "document",
+    "antivirus",
     "drawio",
     "drawio-export",
     "shell",
@@ -34,6 +35,8 @@ PROFILES = (
 )
 IMAGE_INPUTS = {
     "images/wolfi-python/": PYTHON_PROFILES,
+    "images/antivirus-sandbox/": ("antivirus",),
+    "tests/fixtures/antivirus/": ("antivirus",),
     "packages/maf-sandbox-azure-pricing/src/": ("azure-pricing",),
     "images/azure-pricing-sandbox/": ("azure-pricing",),
     "images/document-sandbox/": ("document",),
@@ -58,6 +61,7 @@ IMAGE_INPUTS = {
 # These exact consumer guides are not consumed by the image recipes or build helpers.
 CONSUMER_GUIDES = {
     "images/wolfi-python/README.md",
+    "images/antivirus-sandbox/README.md",
     "images/azure-pricing-sandbox/README.md",
     "images/document-sandbox/README.md",
     "images/DEPENDENCIES.md",
@@ -92,6 +96,9 @@ SELECTION_TOOLING = {
 }
 SCRIPT_INPUTS = {
     "scripts/build_wolfi_python.py": PYTHON_PROFILES,
+    "scripts/antivirus_qualification.py": ("antivirus",),
+    "scripts/antivirus_cdiff_check.py": ("antivirus",),
+    "tests/test_antivirus_qualification.py": ("antivirus",),
     "scripts/check_live_azure_pricing.py": ("azure-pricing",),
     ".github/actions/prepare-provider-cache/action.yml": (
         "terraform-random",
@@ -212,6 +219,8 @@ def affected(path: str) -> tuple[str, ...]:
         return PROFILES
     if path.startswith("packages/maf-sandbox-docker-sbx/src/"):
         return ("bicep-docker-sbx",)
+    if path.startswith("packages/maf-sandbox-antivirus/src/"):
+        return ("antivirus",)
     parts = path.split("/")
     if len(parts) >= 3 and parts[0] == "packages":
         if parts[2] == "pyproject.toml":
@@ -404,7 +413,12 @@ def changed_profiles(root: Path, base: str, head: str, path: str) -> tuple[str, 
 
 def select(root: Path, event: str, base: str, head: str) -> tuple[list[str], str]:
     """Return ordered profiles and a scope explanation, defaulting to full coverage on uncertainty."""
-    if event in {"schedule", "workflow_dispatch"}:
+    if event == "schedule":
+        return (
+            [profile for profile in PROFILES if profile != "antivirus"],
+            "Antivirus rebuilds follow source changes or explicit dispatch; signatures update separately.",
+        )
+    if event == "workflow_dispatch":
         return list(PROFILES), f"Full coverage for {event}."
     if event not in {"pull_request", "push"} or not all(
         re.fullmatch(r"[0-9a-f]{40}", ref) and ref != "0" * 40 for ref in (base, head)

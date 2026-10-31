@@ -26,6 +26,9 @@ case "$1" in
     docker build --pull --platform linux/amd64 -t maf-image-scan:target images/graphviz-sandbox
     docker run --rm --network none maf-image-scan:target sh -ec 'printf "digraph { a -> b }" | dot -Tpng -o /tmp/render.png; test -s /tmp/render.png'
     ;;
+  antivirus)
+    docker build --pull --platform linux/amd64 --label org.opencontainers.image.documentation=https://github.com/sokolaidev/maf-extensions/blob/main/images/antivirus-sandbox/README.md -t maf-image-scan:target images/antivirus-sandbox
+    ;;
   document)
     uv run --locked python scripts/build_wolfi_python.py --pull --platform linux/amd64 -t maf-image-scan:target images/document-sandbox
     ;;

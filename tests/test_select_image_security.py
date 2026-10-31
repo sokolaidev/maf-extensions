@@ -18,6 +18,19 @@ from changed_paths import runs_code_checks, runs_workflow_checks  # noqa: E402
 from select_image_security import PROFILES, affected, changed_profiles, select  # noqa: E402
 
 pytestmark = pytest.mark.workflow
+
+
+def test_antivirus_runtime_and_image_select_offline_qualification():
+    assert affected("packages/maf-sandbox-antivirus/src/maf_sandbox_antivirus/_guest.py") == (
+        "antivirus",
+    )
+    assert affected("images/antivirus-sandbox/Dockerfile") == ("antivirus",)
+    assert affected("scripts/antivirus_cdiff_check.py") == ("antivirus",)
+    assert affected("tests/fixtures/antivirus/test-2.cdiff") == ("antivirus",)
+    assert affected("tests/test_antivirus_qualification.py") == ("antivirus",)
+    assert "antivirus" not in select(ROOT, "schedule", "", "")[0]
+
+
 PACKAGE = "packages/maf-sandbox"
 METADATA = '[project]\nname = "maf-sandbox"\nversion = "0.1.0"\ndependencies = []\n'
 LOCK = """version = 1
@@ -522,10 +535,11 @@ def test_selection_tooling_does_not_hide_image_input_changes(repository, path, e
 
 
 @pytest.mark.parametrize("event", ["schedule", "workflow_dispatch"])
-def test_selection_tooling_changes_keep_scheduled_and_manual_full_coverage(repository, event):
+def test_selection_tooling_changes_preserve_scheduled_and_manual_coverage(repository, event):
     root, base = repository
     head = commit(root, {"scripts/select_image_security.py": "Updated selector"})
-    assert select(root, event, base, head)[0] == list(PROFILES)
+    expected = [profile for profile in PROFILES if event != "schedule" or profile != "antivirus"]
+    assert select(root, event, base, head)[0] == expected
 
 
 def test_deleted_image_input_and_new_profile_both_select_scans(repository):
@@ -538,8 +552,9 @@ def test_deleted_image_input_and_new_profile_both_select_scans(repository):
 
 
 @pytest.mark.parametrize("event", ["schedule", "workflow_dispatch"])
-def test_scheduled_and_manual_runs_select_every_profile_without_a_diff(tmp_path, event):
-    assert select(tmp_path, event, "", "")[0] == list(PROFILES)
+def test_scheduled_runs_do_not_rebuild_antivirus_seed(tmp_path, event):
+    expected = [p for p in PROFILES if event != "schedule" or p != "antivirus"]
+    assert select(tmp_path, event, "", "")[0] == expected
 
 
 @pytest.mark.parametrize("base", ["", "0" * 40, "a" * 40, "--all"])
@@ -611,6 +626,6 @@ def test_selector_emits_matrix_and_scope_summary(tmp_path):
         check=True,
     )
     values = dict(line.split("=", 1) for line in output.read_text().splitlines())
-    assert json.loads(values["profiles"]) == list(PROFILES)
+    assert json.loads(values["profiles"]) == [p for p in PROFILES if p != "antivirus"]
     assert values["scan"] == "true"
-    assert "Full coverage for schedule" in summary.read_text()
+    assert "signatures update separately" in summary.read_text()

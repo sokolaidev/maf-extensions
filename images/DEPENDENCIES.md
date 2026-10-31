@@ -8,6 +8,7 @@ The suite maintainers own dependency review and qualification for all rows below
 
 | Consumers | Authoritative declaration | Update mechanism and permitted line | Qualification |
 |---|---|---|---|
+| Antivirus | [Dockerfile](antivirus-sandbox/Dockerfile) | Weekly Alpine 3.24 digest updates; manually reviewed ClamAV 1.4 engine pin; host-managed signature snapshots between image releases | Offline seed verification, signed CDIFF/CVD updates, clean/EICAR, archive limits, freshness, closed network and disposal |
 | Shell | [Dockerfile](shell-sandbox/Dockerfile), runtime stage | Grouped weekly Wolfi `latest@sha256` digest updates; Python stays on the explicit `python-3.13` APK package | Bash/dash semantics, PowerShell/.NET/ICU, PSScriptAnalyzer discovery, ShellCheck audit, deadlines, descendants and manifest confinement |
 | Azure pricing | [Dockerfile](azure-pricing-sandbox/Dockerfile), [image.json](azure-pricing-sandbox/image.json) | Grouped weekly base-image digest updates; maintainer updates the Azure MCP npm version and SHA-512 together | CLI schema, bounded results, GET-only egress, .NET trust of the injected CA and disposable SDK calls |
 | Bicep upstream and source, Bicep AVM, Bicep Docker Sandboxes | [Dockerfile](bicep-sandbox/Dockerfile) and [source.Dockerfile](bicep-sandbox/source.Dockerfile) | Same grouped Wolfi digest | Compiler identity, valid/invalid compilation, staged and fallback policy, closed-network module refusal; AVM cache and sandbox consumer checks |

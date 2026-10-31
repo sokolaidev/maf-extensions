@@ -10,7 +10,7 @@ on:
         description: Image profile to check (all for full coverage)
         type: choice
         default: all
-        options: [all, azure-pricing, bicep, bicep-avm, bicep-docker-sbx, graphviz, document, drawio, drawio-export, shell, terraform-random, opentofu-random, terraform-avm, opentofu-avm, hyperlight-aks-probe, egress-proxy]
+        options: [all, azure-pricing, bicep, bicep-avm, bicep-docker-sbx, graphviz, document, antivirus, drawio, drawio-export, shell, terraform-random, opentofu-random, terraform-avm, opentofu-avm, hyperlight-aks-probe, egress-proxy]
       bicep_route:
         description: Bicep replacement policy or an explicit diagnostic compiler route
         type: choice
@@ -207,7 +207,7 @@ jobs:
           write(directory / "runtime.json", check("shell", os.environ["IMAGE_ID"], directory))
           PY
       - name: Qualify the remaining image consumers
-        if: steps.identity.outcome == 'success' && contains(fromJSON('["azure-pricing","terraform-avm","graphviz","document","drawio","drawio-export","egress-proxy","hyperlight-aks-probe"]'), matrix.profile)
+        if: steps.identity.outcome == 'success' && contains(fromJSON('["azure-pricing","terraform-avm","graphviz","document","antivirus","drawio","drawio-export","egress-proxy","hyperlight-aks-probe"]'), matrix.profile)
         env:
           IMAGE_ID: ${{ steps.identity.outputs.image_id }}
           PROFILE: ${{ matrix.profile }}
@@ -308,9 +308,9 @@ jobs:
           --marker '<!-- image-security-failure-tracker -->'
           --title 'Container image security checks failed'
           --reproduce 'Re-run the linked attempt or dispatch image-security.yml against the failing commit. Inspect the failed profile and its retained inventory and Grype report; build and scanner errors also fail this workflow.'
-          --expected 'All selected Linux/amd64 profiles build and produce matching nonempty inventories, with no High or Critical findings, including unfixed findings. Scheduled runs select all documented profiles; manual runs select all profiles or one chosen profile, subject to the documented Hyperlight release-transition preflight.'
-          --packages maf-sandbox maf-sandbox-docker maf-sandbox-bicep maf-sandbox-terraform maf-sandbox-document maf-sandbox-drawio maf-sandbox-hyperlight
-          --recovery 'A successful full-profile run on the default branch automatically closes this issue with a recovery link. Partial runs and deferred scans leave it open.'
+          --expected 'All selected Linux/amd64 profiles build and produce matching nonempty inventories, with no High or Critical findings, including unfixed findings. Scheduled runs exclude antivirus; manual runs select all profiles or one chosen profile, subject to the documented Hyperlight release-transition preflight.'
+          --packages maf-sandbox maf-sandbox-docker maf-sandbox-bicep maf-sandbox-terraform maf-sandbox-document maf-sandbox-antivirus maf-sandbox-drawio maf-sandbox-hyperlight
+          --recovery 'A successful manual full-profile run on the default branch automatically closes this issue with a recovery link. Partial runs and deferred scans leave it open.'
 
   report-recovery:
     name: Close recovered image security tracker

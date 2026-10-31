@@ -96,6 +96,17 @@
         }
       ]
     },
+    "packages/maf-sandbox-antivirus": {
+      "package-name": "maf-sandbox-antivirus",
+      "exclude-paths": ["packages/maf-sandbox-antivirus/tests"],
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "/uv.lock",
+          "jsonpath": "$.package[?(@.name.value=='maf-sandbox-antivirus')].version"
+        }
+      ]
+    },
     "packages/maf-sandbox-document": {
       "package-name": "maf-sandbox-document",
       "exclude-paths": ["packages/maf-sandbox-document/tests"],

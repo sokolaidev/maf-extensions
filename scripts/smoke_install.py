@@ -36,6 +36,7 @@ _PACKAGES = {
     "maf-sandbox-docker-sbx": "maf_sandbox_docker_sbx",
     "maf-sandbox-hyperlight": "maf_sandbox_hyperlight",
     "maf-sandbox-document": "maf_sandbox_document",
+    "maf-sandbox-antivirus": "maf_sandbox_antivirus",
     "maf-sandbox-drawio": "maf_sandbox_drawio",
     "maf-sandbox-otel": "maf_sandbox_otel",
     "maf-sandbox-terraform": "maf_sandbox_terraform",
@@ -932,6 +933,19 @@ def _smoke_maf_cachebench() -> str:
     return f"{len(names)} strategies registered, {len(TRANSCRIPT_PRESETS)} transcript presets"
 
 
+def _smoke_maf_sandbox_antivirus() -> str:
+    """Verify the isolated package includes its fixed guest and closed-egress spec."""
+    from importlib.resources import files
+
+    from maf_sandbox import Egress, IsolationScope
+    from maf_sandbox_antivirus import antivirus_sandbox_spec
+
+    spec = antivirus_sandbox_spec()
+    assert spec.egress == Egress.CLOSED and spec.isolation_scope == IsolationScope.CALL
+    assert "def prepare(" in files("maf_sandbox_antivirus").joinpath("_guest.py").read_text("utf-8")
+    return "offline antivirus spec and fixed guest program are present"
+
+
 def _smoke_maf_sandbox_document() -> str:
     from importlib.resources import files
 
@@ -995,6 +1009,7 @@ _SMOKES = {
     "maf-sandbox-docker": _smoke_maf_sandbox_docker,
     "maf-sandbox-docker-sbx": _smoke_maf_sandbox_docker_sbx,
     "maf-sandbox-document": _smoke_maf_sandbox_document,
+    "maf-sandbox-antivirus": _smoke_maf_sandbox_antivirus,
     "maf-sandbox-drawio": _smoke_maf_sandbox_drawio,
     "maf-sandbox-hyperlight": _smoke_maf_sandbox_hyperlight,
     "maf-sandbox-otel": _smoke_maf_sandbox_otel,

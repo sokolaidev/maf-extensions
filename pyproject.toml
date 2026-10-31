@@ -189,6 +189,7 @@ testpaths = [
     "packages/maf-sandbox-hyperlight/tests",
     "packages/maf-sandbox-drawio/tests",
     "packages/maf-sandbox-document/tests",
+    "packages/maf-sandbox-antivirus/tests",
     "packages/maf-sandbox-otel/tests",
     "packages/maf-sandbox-mcp/tests",
     "packages/maf-sandbox-tui/tests",

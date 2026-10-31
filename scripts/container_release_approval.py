@@ -28,6 +28,10 @@ from prepare_container_release import run
 WEB = f"https://github.com/{REPOSITORY}"
 UNAVAILABLE = "Unavailable (not established by retained evidence)"
 PROFILE_GUIDES = {
+    "antivirus": (
+        "Offline upload scanning with a baked ClamAV seed and host-supplied signed updates.",
+        "images/antivirus-sandbox/README.md",
+    ),
     "azure-pricing": (
         "Public Azure retail pricing through disposable GET-only sandboxes.",
         "images/azure-pricing-sandbox/README.md",
@@ -184,6 +188,15 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
         ("Database built at (UTC)", database.get("built", UNAVAILABLE)),
         ("Database valid", database.get("valid", UNAVAILABLE)),
     ]
+    if candidate["profile"] == "antivirus":
+        antivirus = runtime.get("antivirus", {})
+        for label, key in (
+            ("Antivirus consumer checks", "checks"),
+            ("Antivirus container observations", "observations"),
+            ("Antivirus ACAS verified", "acasVerified"),
+            ("Antivirus host replacement verified", "hostReplacementVerified"),
+        ):
+            rows.append((label, antivirus.get(key, UNAVAILABLE)))
     if candidate["profile"] == "document":
         document = runtime.get("document", {})
         for label, key in (

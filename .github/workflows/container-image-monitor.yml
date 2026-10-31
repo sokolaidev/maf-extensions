@@ -212,4 +212,4 @@ jobs:
           --reproduce 'Inspect the linked attempt and immutable image-monitor evidence release. Re-run all jobs or dispatch container-image-monitor.yml from main; a failed-jobs-only rerun cannot reuse an earlier scan plan.'
           --expected 'Current releases have no High or Critical findings, and every actively monitored digest has complete fresh evidence and durable delivery. Superseded-release findings remain historical warnings throughout their 90-day monitoring window; incomplete or abandoned public candidates still need attention.'
           --context 'Package versions below describe the monitoring checkout, not compatibility with the affected images. Use the catalogue and retained scan evidence for exact image digests, release state, scanner failures and findings.'
-          --packages maf-sandbox maf-sandbox-docker maf-sandbox-bicep maf-sandbox-terraform maf-sandbox-document maf-sandbox-drawio maf-sandbox-hyperlight
+          --packages maf-sandbox maf-sandbox-docker maf-sandbox-bicep maf-sandbox-terraform maf-sandbox-document maf-sandbox-antivirus maf-sandbox-drawio maf-sandbox-hyperlight

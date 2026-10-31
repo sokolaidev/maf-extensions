@@ -8,6 +8,7 @@ These pages describe each kind's contract. Package READMEs cover installation an
 
 | Kind | Tools | Purpose | Network access |
 |---|---|---|---|
+| [Antivirus](antivirus.md) | `scan_file` | Scan quarantined uploads with host-supplied signature updates | Closed |
 | [Azure pricing](azure-pricing.md) | `azure_pricing_get` | Look up public retail prices | Fixed GET-only `prices.azure.com` |
 | [Bicep](bicep.md) | `bicep_validate` | Compile and lint templates and parameter files | Fixed restore allowlist by default; host can choose closed or unrestricted |
 | [CodeAct](codeact.md) | `execute_code` | Run Python, with optional files, artifacts and host tools | Closed by default; host can add allowed destinations |

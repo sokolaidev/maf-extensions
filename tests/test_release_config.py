@@ -488,6 +488,11 @@ class TestTagsResolveToExactlyOnePackage:
                 f"glob {glob} matches no package — a rename left it behind"
             )
 
+    def test_dispatch_choices_cover_every_released_package(self):
+        workflow = yaml.safe_load(PUBLISH_WORKFLOW.read_text("utf-8"))
+        options = workflow[True]["workflow_dispatch"]["inputs"]["package"]["options"]
+        assert sorted(options) == sorted(declared_name(path) for path in PACKAGE_PATHS)
+
 
 class TestAcceptedTitleTypesAreConfigured:
     """A title type the check allows but the changelog config never mentions is a hole.
