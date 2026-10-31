@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,28 @@ def bundle_key() -> str:
     return digest.hexdigest()
 
 
+def required_apks() -> set[str]:
+    """Require the same main/base APK pair across consumers of the shared preparation."""
+    pairs = set()
+    for dockerfile in (ROOT / "images").glob("*/Dockerfile"):
+        source = dockerfile.read_text(encoding="utf-8")
+        if "/python-packages/" not in source:
+            continue
+        names = frozenset(
+            re.findall(
+                r"/python-packages/(x86_64/python-3\.13(?:-base)?-[0-9][\w.+-]*\.apk)", source
+            )
+        )
+        main = {name.removeprefix("x86_64/python-3.13-") for name in names if "-base-" not in name}
+        base = {name.removeprefix("x86_64/python-3.13-base-") for name in names if "-base-" in name}
+        if len(names) != 2 or len(main) != 1 or main != base:
+            raise ValueError("Python consumer must declare one matching main/base APK pair")
+        pairs.add(names)
+    if len(pairs) != 1:
+        raise ValueError("Python consumers must agree on one shared APK pair")
+    return set(pairs.pop())
+
+
 def bundle_files(directory: Path) -> dict[str, str]:
     """Inventory only public package outputs; private signing keys must never be retained."""
     files = {}
@@ -73,9 +96,7 @@ def bundle_files(directory: Path) -> dict[str, str]:
         "maf-python.rsa.pub",
         "python-3.13.yaml",
         "x86_64/APKINDEX.tar.gz",
-        "x86_64/python-3.13-3.13.18-r0.apk",
-        "x86_64/python-3.13-base-3.13.18-r0.apk",
-    }
+    } | required_apks()
     if not required <= files.keys():
         raise ValueError("Python package bundle is incomplete")
     return files
