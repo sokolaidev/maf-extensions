@@ -15,6 +15,62 @@ from openai.types.responses import ResponseErrorEvent
 
 
 @pytest.mark.anyio
+async def test_hosted_search_groups_are_preserved_or_shed_whole_after_reload():
+    from agent_framework import CharacterEstimatorTokenizer
+    from agent_framework._compaction import group_messages, project_included_messages
+    from maf_compaction import AnchoredCompactionStrategy
+    from maf_compaction._preserve import set_preserved
+
+    messages = [Message("system", "instructions"), Message("user", "research")]
+    for index in range(5):
+        messages.append(
+            Message(
+                "assistant",
+                [
+                    Content.from_search_tool_call(f"search-{index}", tool_name="web_search"),
+                    Content.from_search_tool_result(
+                        f"search-{index}", tool_name="web_search", result="evidence " * 1000
+                    ),
+                ],
+                message_id=f"search-message-{index}",
+            )
+        )
+    messages.append(Message("assistant", "answer", message_id="answer"))
+    messages = [
+        Message.from_dict(json.loads(json.dumps(message.to_dict()))) for message in messages
+    ]
+    assert [group["kind"] for group in group_messages(messages)] == [
+        "system",
+        "user",
+        *(["tool_call"] * 5),
+        "assistant_text",
+    ]
+    protected = messages[4]
+    before = [content.to_dict() for content in protected.contents]
+    set_preserved(protected, preserved=True, reason="retained evidence")
+    strategy = AnchoredCompactionStrategy(
+        max_input_tokens=120,
+        tokenizer=CharacterEstimatorTokenizer(),
+        keep_head_groups=2,
+        keep_tail_groups=1,
+    )
+    assert await strategy(messages)
+    included = project_included_messages(messages)
+    assert protected in included
+    assert [content.to_dict() for content in protected.contents] == before
+    search_contents = [
+        content
+        for message in included
+        for content in message.contents
+        if content.type in {"search_tool_call", "search_tool_result"}
+    ]
+    assert [(content.type, content.call_id) for content in search_contents] == [
+        ("search_tool_call", "search-2"),
+        ("search_tool_result", "search-2"),
+    ]
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("coordinate_space", ["source", "content"])
 async def test_cited_tool_results_survive_reload_and_refuse_lossy_shortening(coordinate_space):
     citation = {
