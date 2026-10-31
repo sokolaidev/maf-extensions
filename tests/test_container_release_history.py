@@ -604,6 +604,7 @@ def test_identical_page_overlap_restarts_listing_with_a_bound(monkeypatch, overl
     gh = FakeGitHub()
     history = History(gh)
     expected = append_reservation(history)
+    assert expected is not None
     gh.entries[1]["draft"] = draft
     entry = gh.releases()[0]
     reads = 0
@@ -631,7 +632,11 @@ def test_identical_page_overlap_restarts_listing_with_a_bound(monkeypatch, overl
         assert pages == [1, 2] * 3
     else:
         current = history.head()
-        assert current is None if draft else current.reference == expected.reference
+        if draft:
+            assert current is None
+        else:
+            assert current is not None
+            assert current.reference == expected.reference
         assert pages == [1, 2] * overlaps + [1, 1]
     assert delays == [1, 2][:overlaps]
 
@@ -678,6 +683,7 @@ def test_overlap_recovery_still_validates_snapshot(monkeypatch, defect):
     history = History(gh)
     append_reservation(history)
     newest = append_reservation(history, "124/reserve", CANDIDATE | {"profile": "graphviz"})
+    assert newest is not None
     if defect == "bytes":
         gh.blobs[newest.release_id] += b"corruption"
     elif defect == "ancestry":
