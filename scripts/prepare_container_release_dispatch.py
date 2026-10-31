@@ -78,8 +78,17 @@ def dispatch(
     elif attempt != "1":
         if not retained_available(run_id):
             outputs({"lost": str(record is not None).lower()})
+            if record is None:
+                raise ValueError(
+                    f"Retained candidate is unavailable for {profile}:{release_version}; "
+                    "this version is not reserved in the validated catalogue. "
+                    "Start a new workflow dispatch instead of re-running this attempt; "
+                    "the same version can be requested if it is still unused at preflight."
+                )
             raise ValueError(
-                "Retained candidate is unavailable; a rebuild requires a new dispatch and unused version"
+                f"Retained candidate is unavailable for reserved {profile}:{release_version}; "
+                "a rebuild requires a new dispatch and unused version. "
+                "The reserved version cannot be reused."
             )
         run(
             [

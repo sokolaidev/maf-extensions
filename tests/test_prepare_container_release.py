@@ -20,6 +20,72 @@ def test_release_labels_do_not_replace_upstream_version():
     assert result["dev.sokolai.maf.image.version"] == "0.1.0"
 
 
+@pytest.mark.parametrize("require_clean", [False, True])
+@pytest.mark.parametrize("fixed", [False, True])
+def test_assessment_reports_blocking_packages_and_retains_evidence(
+    monkeypatch, tmp_path, require_clean, fixed
+):
+    image_id = "sha256:" + "a" * 64
+    report = {
+        "source": {"type": "image", "target": {"imageID": image_id}},
+        "descriptor": {
+            "db": {
+                "status": {
+                    "valid": True,
+                    "built": "2026-01-01T00:00:00Z",
+                    "schemaVersion": "v6",
+                    "from": "test-database",
+                }
+            }
+        },
+        "matches": [
+            {
+                "vulnerability": {
+                    "id": "CVE-example",
+                    "severity": "Critical",
+                    "fix": {"state": "fixed", "versions": ["1.2.4-r0"]}
+                    if fixed
+                    else {"state": "not-fixed"},
+                },
+                "artifact": {"name": "python-test", "version": "1.2.3-r0", "type": "apk"},
+            }
+        ],
+    }
+    preparation.write(tmp_path / "grype.json", report)
+    preparation.write(tmp_path / "sbom.syft.json", {})
+    monkeypatch.setattr(preparation, "verify_inventory", lambda *a: None)
+    monkeypatch.setattr(preparation, "run", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        preparation.subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a, 2)
+    )
+    if require_clean:
+        with pytest.raises(ValueError, match="High/Critical assessment failed") as caught:
+            preparation.assess(tmp_path, image_id)
+        message = str(caught.value)
+        for detail in ("Critical", "CVE-example", "python-test", "1.2.3-r0", "apk", "grype.json"):
+            assert detail in message
+        assert ("1.2.4-r0" if fixed else "not-fixed") in message
+    else:
+        assert (
+            preparation.assess(tmp_path, image_id, require_clean=False)["outcome"] == "vulnerable"
+        )
+    assert preparation.read(tmp_path / "grype.json") == report
+    assert preparation.read(tmp_path / "assessment.json")["outcome"] == "vulnerable"
+
+
+def test_failure_diagnostics_bound_output_and_escape_untrusted_fields():
+    finding = {
+        "vulnerability": {"id": "CVE-test\n::warning::injected", "severity": "High"},
+        "artifact": {"name": "test\npackage"},
+    }
+    message = preparation.assessment_failure({"matches": [finding] * 22})
+    assert message.count("  Finding:") == 20
+    assert "2 additional blocking findings omitted" in message
+    assert "\\n::warning::injected" in message
+    assert "\n::warning::" not in message
+    assert '"installed": "unknown"' in message
+
+
 @pytest.mark.parametrize(
     "changed",
     [

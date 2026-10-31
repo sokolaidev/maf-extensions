@@ -72,6 +72,39 @@ def require_source(revision: str) -> None:
         raise ValueError("Release preparation requires a clean checkout")
 
 
+def assessment_failure(report: dict[str, Any]) -> str:
+    """Describe blocking packages without emitting untrusted workflow commands."""
+    findings = [
+        match
+        for match in report["matches"]
+        if match["vulnerability"]["severity"] in {"High", "Critical"}
+    ]
+    lines = ["High/Critical assessment failed, including unfixed findings:"]
+    for match in findings[:20]:
+        vulnerability = match["vulnerability"]
+        artifact = match.get("artifact") or {}
+        fix = vulnerability.get("fix") or {}
+        lines.append(
+            "  Finding: "
+            + json.dumps(
+                {
+                    "severity": vulnerability["severity"],
+                    "id": vulnerability["id"],
+                    "package": artifact.get("name", "unknown"),
+                    "installed": artifact.get("version", "unknown"),
+                    "type": artifact.get("type", "unknown"),
+                    "fixState": fix.get("state", "unknown"),
+                    "fixedVersions": fix.get("versions") or [],
+                },
+                ensure_ascii=True,
+            )
+        )
+    if len(findings) > 20:
+        lines.append(f"  {len(findings) - 20} additional blocking findings omitted.")
+    lines.append("See retained grype.json and assessment.json for the full report.")
+    return "\n".join(lines)
+
+
 def assess(directory: Path, image_id: str, *, require_clean: bool = True) -> dict[str, Any]:
     """Refresh the exact image's inventory and strict High/Critical assessment."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -127,12 +160,13 @@ def assess(directory: Path, image_id: str, *, require_clean: bool = True) -> dic
     )
     if scan.returncode not in (0, 2):
         raise ValueError("Vulnerability scanner did not complete")
-    result = scan_result(read(directory / "grype.json"), image_id, now())
+    report = read(directory / "grype.json")
+    result = scan_result(report, image_id, now())
     write(directory / "assessment.json", result)
     if (scan.returncode == 0) != (result["outcome"] == "clean"):
         raise ValueError("Scanner exit status disagrees with the retained assessment")
     if require_clean and (scan.returncode or result["outcome"] != "clean"):
-        raise ValueError("High/Critical assessment failed, including unfixed findings")
+        raise ValueError(assessment_failure(report))
     return result
 
 

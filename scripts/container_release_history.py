@@ -286,9 +286,29 @@ class History:
     def __init__(self, github: GitHub | None = None) -> None:
         self.github = github or GitHub()
 
-    def records(self) -> dict[int, dict[str, Any]]:
-        """Reject conflicting sequence ownership, including unfinished drafts."""
+    def records(self, observed: dict[int, int] | None = None) -> dict[int, dict[str, Any]]:
+        """Retry identical page overlaps without forgetting previously observed identities."""
+        seen: dict[int, tuple[int, bool]] = {}
+        if observed is None:
+            observed = {}
+        for attempt in range(3):
+            records, overlap = self._records_once()
+            identities = {n: (r["id"], r["draft"]) for n, r in records.items()}
+            if any(identities.get(n) != identity for n, identity in seen.items()):
+                raise ValueError("Security history changed while retrying overlapping pages")
+            seen.update(identities)
+            self._remember({n: r for n, r in records.items() if not r["draft"]}, observed)
+            if overlap is None:
+                return records
+            if attempt == 2:
+                raise ValueError(f"{overlap}; listing remained unstable after 3 reads")
+            time.sleep(attempt + 1)
+        raise AssertionError("Unreachable history retry")
+
+    def _records_once(self) -> tuple[dict[int, dict[str, Any]], str | None]:
+        """Inspect the entire listing before treating an exact duplicate as retryable."""
         records: dict[int, dict[str, Any]] = {}
+        overlap = None
         for release in self.github.releases():
             number = sequence(release)
             if number is None:
@@ -298,14 +318,17 @@ class History:
                 raise ValueError("History release has no draft state")
             if number in records:
                 previous = records[number]
-                raise ValueError(
+                message = (
                     "Conflicting or unstable security-history listing: "
                     f"sequence {number}, "
                     f"first release ID {previous['id']} (draft={previous['draft']}), "
                     f"repeated release ID {release['id']} (draft={release['draft']})"
                 )
+                if previous != release:
+                    raise ValueError(message)
+                overlap = message
             records[number] = release
-        return records
+        return records, overlap
 
     def snapshot(self, number: int, release: dict[str, Any]) -> Snapshot:
         """Verify the original snapshot asset and the envelope before considering its state."""
@@ -367,7 +390,11 @@ class History:
 
     def _committed(self, observed: dict[int, int]) -> dict[int, dict[str, Any]]:
         """Keep every committed identity seen during one head read, including its retries."""
-        committed = {n: r for n, r in self.records().items() if not r["draft"]}
+        return {n: r for n, r in self.records(observed).items() if not r["draft"]}
+
+    @staticmethod
+    def _remember(committed: dict[int, dict[str, Any]], observed: dict[int, int]) -> None:
+        """Retain identities even when a listing must be read again."""
         identities = {n: r["id"] for n, r in committed.items()}
         latest = max(observed, default=0)
         if any(identities.get(n) != rid for n, rid in observed.items()) or any(
@@ -375,7 +402,6 @@ class History:
         ):
             raise ValueError("Security history changed during retrieval")
         observed.update(identities)
-        return committed
 
     def _head_once(self, observed: dict[int, int]) -> Snapshot | None:
         """Check retained ancestry and current bytes without downloading every old snapshot."""
