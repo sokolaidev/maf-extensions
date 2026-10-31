@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,23 @@ def test_transitive_runtime_changes_select_the_consuming_image(graph, field, val
 def test_shared_qualification_dependency_selects_all_profiles(graph):
     next(p for p in graph[1]["package"] if p["name"] == "pyyaml")["version"] = "2.0"
     assert selected() == set(PROFILES)
+
+
+@pytest.mark.parametrize("field", ["version", "wheels"])
+def test_pillow_update_selects_document_and_both_drawio_qualifications(monkeypatch, field):
+    before = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    after = copy.deepcopy(before)
+    pillow = next(package for package in after["package"] if package["name"] == "pillow")
+    if field == "version":
+        pillow["version"] = "999.0"
+    else:
+        pillow["wheels"][0]["hash"] = "sha256:" + "a" * 64
+    monkeypatch.setattr(
+        dependencies,
+        "document",
+        lambda root, revision, path: copy.deepcopy(before if revision == "before" else after),
+    )
+    assert selected() == {"document", "drawio", "drawio-export"}
 
 
 def test_global_resolution_policy_selects_all_profiles(graph):
