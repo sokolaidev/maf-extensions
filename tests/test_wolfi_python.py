@@ -153,8 +153,26 @@ def test_recipe_transform_preserves_abi_patches_and_tests(tmp_path, old_version)
     assert result.endswith(remaining)
     assert "privileged-netbindservice" not in result
     assert "setcap" not in result
-    assert 'version: "3.13.18"' in result
+    assert 'version: "3.13.18_git20261030"' in result
     assert "epoch: 0" in result
-    assert "tag: v3.13.18" in result
-    assert "expected-commit: 0d4bd512fc429e3d4eacdd113c975e161f21644d" in result
-    assert "branch: 3.13" not in result
+    assert "expected-commit: 42155a0feaca9ba6991942c323cbe9fb7278be3c" in result
+    assert "branch: 3.13" in result
+    assert "sed -i 's/3[.]13[.]18+/3.13.18/' Include/patchlevel.h" in result
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        "document-sandbox",
+        "drawio-sandbox",
+        "drawio-export",
+        "hyperlight-sandbox",
+        "shell-sandbox",
+        "terraform-sandbox",
+    ],
+)
+def test_consumers_install_the_advisory_aligned_python_apks(context):
+    source = (ROOT / "images" / context / "Dockerfile").read_text()
+    for package in ("python-3.13", "python-3.13-base"):
+        assert f"/python-packages/x86_64/{package}-3.13.18_git20261030-r0.apk" in source
+    assert "3.13.18-r0.apk" not in source

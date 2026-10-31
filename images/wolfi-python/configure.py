@@ -1,15 +1,15 @@
-"""Apply the fixed CPython source release to a pinned Wolfi packaging recipe."""
+"""Apply the fixed CPython maintenance snapshot to a pinned Wolfi packaging recipe."""
 
 import sys
 from pathlib import Path
 
 
 def configure(root: Path) -> None:
-    """Keep Wolfi's ABI patches and tests while replacing its maintenance snapshot."""
+    """Keep Wolfi's ABI patches and tests while updating its maintenance snapshot."""
     recipe = root / "python-3.13.yaml"
     source = recipe.read_text(encoding="utf-8")
     for before, after in (
-        ('version: "3.13.17_git20261023"', 'version: "3.13.18"'),
+        ('version: "3.13.17_git20261023"', 'version: "3.13.18_git20261030"'),
         ("epoch: 1 # run upstream regrtest subset via shared pipeline", "epoch: 0"),
     ):
         if source.count(before) != 1:
@@ -22,8 +22,13 @@ def configure(root: Path) -> None:
         + """  - uses: git-checkout
     with:
       repository: https://github.com/python/cpython
-      tag: v3.13.18
-      expected-commit: 0d4bd512fc429e3d4eacdd113c975e161f21644d
+      branch: 3.13
+      expected-commit: 42155a0feaca9ba6991942c323cbe9fb7278be3c
+
+  - name: Drop the branch development marker from the version string
+    runs: |
+      sed -i 's/3[.]13[.]18+/3.13.18/' Include/patchlevel.h
+      grep -q '^#define PY_VERSION[[:space:]]*"3[.]13[.]18"' Include/patchlevel.h
 
 """
         + source[end:]
