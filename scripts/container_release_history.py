@@ -10,6 +10,7 @@ import re
 import subprocess
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -286,9 +287,30 @@ class History:
     def __init__(self, github: GitHub | None = None) -> None:
         self.github = github or GitHub()
 
-    def records(self) -> dict[int, dict[str, Any]]:
-        """Reject conflicting sequence ownership, including unfinished drafts."""
+    def records(
+        self, observed: dict[int, dict[str, Any]] | None = None
+    ) -> dict[int, dict[str, Any]]:
+        """Retry identical page overlaps without forgetting previously observed records."""
+        seen: dict[int, dict[str, Any]] = {}
+        if observed is None:
+            observed = {}
+        for attempt in range(3):
+            records, overlap = self._records_once()
+            if any(records.get(n) != release for n, release in seen.items()):
+                raise ValueError("Security history changed while retrying overlapping pages")
+            seen.update(deepcopy(records))
+            self._remember({n: r for n, r in records.items() if not r["draft"]}, observed)
+            if overlap is None:
+                return records
+            if attempt == 2:
+                raise ValueError(f"{overlap}; listing remained unstable after 3 reads")
+            time.sleep(attempt + 1)
+        raise AssertionError("Unreachable history retry")
+
+    def _records_once(self) -> tuple[dict[int, dict[str, Any]], str | None]:
+        """Inspect the entire listing before treating an exact duplicate as retryable."""
         records: dict[int, dict[str, Any]] = {}
+        overlap = None
         for release in self.github.releases():
             number = sequence(release)
             if number is None:
@@ -298,14 +320,17 @@ class History:
                 raise ValueError("History release has no draft state")
             if number in records:
                 previous = records[number]
-                raise ValueError(
+                message = (
                     "Conflicting or unstable security-history listing: "
                     f"sequence {number}, "
                     f"first release ID {previous['id']} (draft={previous['draft']}), "
                     f"repeated release ID {release['id']} (draft={release['draft']})"
                 )
+                if previous != release:
+                    raise ValueError(message)
+                overlap = message
             records[number] = release
-        return records
+        return records, overlap
 
     def snapshot(self, number: int, release: dict[str, Any]) -> Snapshot:
         """Verify the original snapshot asset and the envelope before considering its state."""
@@ -357,7 +382,7 @@ class History:
 
     def head(self) -> Snapshot | None:
         """Read a validated head, retrying concurrent publication at most twice."""
-        observed: dict[int, int] = {}
+        observed: dict[int, dict[str, Any]] = {}
         for delay in (1, 2):
             try:
                 return self._head_once(observed)
@@ -365,19 +390,37 @@ class History:
                 time.sleep(delay)
         return self._head_once(observed)
 
-    def _committed(self, observed: dict[int, int]) -> dict[int, dict[str, Any]]:
-        """Keep every committed identity seen during one head read, including its retries."""
-        committed = {n: r for n, r in self.records().items() if not r["draft"]}
-        identities = {n: r["id"] for n, r in committed.items()}
+    def _committed(self, observed: dict[int, dict[str, Any]]) -> dict[int, dict[str, Any]]:
+        """Keep committed evidence seen during one head read, including its retries."""
+        return {n: r for n, r in self.records(observed).items() if not r["draft"]}
+
+    @staticmethod
+    def _remember(
+        committed: dict[int, dict[str, Any]], observed: dict[int, dict[str, Any]]
+    ) -> None:
+        """Retain security evidence while allowing mutable prose and download counters."""
+        evidence = {}
+        for number, release in committed.items():
+            record = {
+                key: release.get(key)
+                for key in ("id", "draft", "immutable", "target_commitish", "assets")
+            }
+            if isinstance(record["assets"], list):
+                record["assets"] = [
+                    {key: asset.get(key) for key in ("id", "name", "state", "size", "digest")}
+                    if isinstance(asset, dict)
+                    else asset
+                    for asset in record["assets"]
+                ]
+            evidence[number] = record
         latest = max(observed, default=0)
-        if any(identities.get(n) != rid for n, rid in observed.items()) or any(
-            n <= latest for n in identities.keys() - observed.keys()
+        if any(evidence.get(n) != record for n, record in observed.items()) or any(
+            n <= latest for n in evidence.keys() - observed.keys()
         ):
             raise ValueError("Security history changed during retrieval")
-        observed.update(identities)
-        return committed
+        observed.update(deepcopy(evidence))
 
-    def _head_once(self, observed: dict[int, int]) -> Snapshot | None:
+    def _head_once(self, observed: dict[int, dict[str, Any]]) -> Snapshot | None:
         """Check retained ancestry and current bytes without downloading every old snapshot."""
         committed = self._committed(observed)
         references = []

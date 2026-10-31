@@ -227,7 +227,7 @@ def test_head_does_not_retry_changed_committed_records(monkeypatch, change):
 
 
 @pytest.mark.parametrize("backoff", [1, 2])
-@pytest.mark.parametrize("change", ["remove", "replace-old", "replace-new"])
+@pytest.mark.parametrize("change", ["remove", "replace-old", "replace-new", "immutable", "asset"])
 def test_head_retains_observed_identities_across_backoff(monkeypatch, backoff, change):
     gh = FakeGitHub()
     history = History(gh)
@@ -258,6 +258,10 @@ def test_head_retains_observed_identities_across_backoff(monkeypatch, backoff, c
             return
         if change == "remove":
             del gh.entries[backoff + 2]
+        elif change == "immutable":
+            gh.entries[2]["immutable"] = False
+        elif change == "asset":
+            gh.entries[2]["assets"][0]["id"] = 99
         else:
             replaced = 2 if change == "replace-old" else backoff + 2
             gh.entries[99] = gh.entries.pop(replaced)
@@ -558,7 +562,7 @@ def test_history_api_reads_all_pages_and_pins_repository_and_host(monkeypatch):
 
 
 @pytest.mark.parametrize("draft", [False, True])
-@pytest.mark.parametrize("change", ["identical", "draft", "identity"])
+@pytest.mark.parametrize("change", ["draft", "identity", "metadata"])
 def test_repeated_history_sequence_across_pages_is_diagnosed_without_retry(
     monkeypatch, draft, change
 ):
@@ -568,6 +572,8 @@ def test_repeated_history_sequence_across_pages_is_diagnosed_without_retry(
         repeated["draft"] = not draft
     elif change == "identity":
         repeated["id"] = 456
+    else:
+        repeated["immutable"] = True
     pages = [
         [{"id": i, "tag_name": f"software-v{i}"} for i in range(1, 100)] + [first],
         [repeated],
@@ -594,6 +600,230 @@ def test_repeated_history_sequence_across_pages_is_diagnosed_without_retry(
     )
     assert len(seen) == 2
     assert delays == []
+
+
+@pytest.mark.parametrize("overlaps", [1, 2, 3])
+@pytest.mark.parametrize("draft", [False, True])
+def test_identical_page_overlap_restarts_listing_with_a_bound(monkeypatch, overlaps, draft):
+    gh = FakeGitHub()
+    history = History(gh)
+    expected = append_reservation(history)
+    assert expected is not None
+    gh.entries[1]["draft"] = draft
+    entry = gh.releases()[0]
+    reads = 0
+    pages = []
+    delays = []
+
+    def request(endpoint):
+        nonlocal reads
+        page = int(endpoint.rsplit("=", 1)[1])
+        pages.append(page)
+        if page == 1:
+            reads += 1
+            if reads <= overlaps:
+                return encode([{"tag_name": f"software-v{i}"} for i in range(99)] + [entry])
+            return encode([entry])
+        assert page == 2
+        return encode([entry])
+
+    monkeypatch.setattr(gh, "releases", lambda: GitHub.releases(gh))
+    monkeypatch.setattr(gh, "request", request)
+    monkeypatch.setattr("container_release_history.time.sleep", delays.append)
+    if overlaps == 3:
+        with pytest.raises(ValueError, match="listing remained unstable after 3 reads"):
+            history.head()
+        assert pages == [1, 2] * 3
+    else:
+        current = history.head()
+        if draft:
+            assert current is None
+        else:
+            assert current is not None
+            assert current.reference == expected.reference
+        assert pages == [1, 2] * overlaps + [1, 1]
+    assert delays == [1, 2][:overlaps]
+
+
+@pytest.mark.parametrize("stage", [1, 2])
+@pytest.mark.parametrize("change", ["remove", "replace", "draft", "backfill"])
+def test_overlap_retries_keep_observed_history(monkeypatch, stage, change):
+    gh = FakeGitHub()
+    history = History(gh)
+    gh.create(TAG + "000000000001", SOURCE)
+    append_reservation(history)
+    original = gh.releases
+    reads = 0
+    delays = []
+
+    def releases():
+        nonlocal reads
+        reads += 1
+        entries = original()
+        if reads == stage:
+            return entries + [copy.deepcopy(entries[-1])]
+        if reads == stage + 1:
+            if change == "remove":
+                entries.pop()
+            elif change == "replace":
+                entries[-1]["id"] = 99
+            elif change == "draft":
+                entries[-1]["draft"] = True
+            else:
+                entries[0]["draft"] = False
+        return entries
+
+    monkeypatch.setattr(gh, "releases", releases)
+    monkeypatch.setattr("container_release_history.time.sleep", delays.append)
+    with pytest.raises(ValueError, match="Security history changed"):
+        history.head()
+    assert reads == stage + 1
+    assert delays == [1]
+
+
+@pytest.mark.parametrize("stage", [1, 2])
+@pytest.mark.parametrize("draft", [False, True])
+@pytest.mark.parametrize("field", ["immutable", "target_commitish", "asset", "body"])
+def test_overlap_retry_rejects_changed_release_metadata(monkeypatch, stage, draft, field):
+    gh = FakeGitHub()
+    history = History(gh)
+    append_reservation(history)
+    gh.entries[1]["draft"] = draft
+    original = gh.releases
+    reads = 0
+    delays = []
+
+    def releases():
+        nonlocal reads
+        reads += 1
+        entries = original()
+        if reads == stage:
+            return entries + [copy.deepcopy(entries[-1])]
+        if reads == stage + 1:
+            if field == "asset":
+                entries[-1]["assets"][0]["digest"] = DIGEST
+            else:
+                entries[-1][field] = {
+                    "immutable": False,
+                    "target_commitish": "d" * 40,
+                    "body": "changed",
+                }[field]
+        return entries
+
+    monkeypatch.setattr(gh, "releases", releases)
+    monkeypatch.setattr("container_release_history.time.sleep", delays.append)
+    with pytest.raises(ValueError, match="changed while retrying overlapping pages"):
+        history.head()
+    assert reads == stage + 1
+    assert delays == [1]
+
+
+@pytest.mark.parametrize(
+    "field", ["immutable", "target_commitish", "id", "name", "state", "size", "digest"]
+)
+def test_final_history_read_rejects_changed_evidence_without_overlap(monkeypatch, field):
+    gh = FakeGitHub()
+    history = History(gh)
+    append_reservation(history)
+    original = gh.releases
+    reads = 0
+
+    def releases():
+        nonlocal reads
+        reads += 1
+        entries = original()
+        if reads == 2:
+            if field in {"immutable", "target_commitish"}:
+                entries[-1][field] = False if field == "immutable" else "d" * 40
+            else:
+                entries[-1]["assets"][0][field] = {
+                    "id": 99,
+                    "name": "other.json",
+                    "state": "starter",
+                    "size": 1,
+                    "digest": DIGEST,
+                }[field]
+        return entries
+
+    monkeypatch.setattr(gh, "releases", releases)
+    monkeypatch.setattr("container_release_history.time.sleep", lambda _: pytest.fail("retry"))
+    with pytest.raises(ValueError):
+        history.head()
+    assert reads == 2
+
+
+def test_final_history_read_allows_download_count_and_release_prose_changes(monkeypatch):
+    gh = FakeGitHub()
+    history = History(gh)
+    expected = append_reservation(history)
+    original = gh.releases
+    reads = 0
+
+    def releases():
+        nonlocal reads
+        reads += 1
+        entries = original()
+        if reads == 2:
+            entries[-1]["assets"][0]["download_count"] = 1
+            entries[-1].update(body="notes", name="display name")
+        return entries
+
+    monkeypatch.setattr(gh, "releases", releases)
+    assert history.head() == expected
+    assert reads == 2
+
+
+@pytest.mark.parametrize("defect", ["bytes", "ancestry", "tag", "mutable"])
+def test_overlap_recovery_still_validates_snapshot(monkeypatch, defect):
+    gh = FakeGitHub()
+    history = History(gh)
+    append_reservation(history)
+    newest = append_reservation(history, "124/reserve", CANDIDATE | {"profile": "graphviz"})
+    assert newest is not None
+    if defect == "bytes":
+        gh.blobs[newest.release_id] += b"corruption"
+    elif defect == "ancestry":
+        gh.replace(newest.release_id, newest.document | {"ancestors": [], "previous": None})
+    elif defect == "tag":
+        monkeypatch.setattr(gh, "tag_commit", lambda tag: "d" * 40)
+    else:
+        gh.entries[newest.release_id]["immutable"] = False
+    original = gh.releases
+    reads = 0
+    delays = []
+
+    def releases():
+        nonlocal reads
+        reads += 1
+        entries = original()
+        return entries + [copy.deepcopy(entries[-1])] if reads == 1 else entries
+
+    monkeypatch.setattr(gh, "releases", releases)
+    monkeypatch.setattr("container_release_history.time.sleep", delays.append)
+    with pytest.raises(ValueError):
+        history.head()
+    assert reads == 2
+    assert delays == [1]
+
+
+def test_conflict_after_identical_overlap_is_not_retried(monkeypatch):
+    entry = {"id": 1, "tag_name": TAG + "000000000001", "draft": False}
+    gh = FakeGitHub()
+    monkeypatch.setattr(gh, "releases", lambda: [entry, entry.copy(), entry | {"id": 2}])
+    monkeypatch.setattr("container_release_history.time.sleep", lambda _: pytest.fail("retry"))
+    with pytest.raises(ValueError, match="repeated release ID 2"):
+        History(gh).head()
+
+
+def test_writer_listing_retries_overlap_without_accepting_backfill(monkeypatch):
+    entry = {"id": 2, "tag_name": TAG + "000000000002", "draft": False}
+    backfill = entry | {"id": 1, "tag_name": TAG + "000000000001"}
+    listings = iter([[entry, entry.copy()], [backfill, entry]])
+    gh = FakeGitHub()
+    monkeypatch.setattr(gh, "releases", lambda: next(listings))
+    monkeypatch.setattr("container_release_history.time.sleep", lambda _: None)
+    with pytest.raises(ValueError, match="changed during retrieval"):
+        History(gh).records()
 
 
 def test_release_creation_is_draft_and_never_changes_latest(monkeypatch):

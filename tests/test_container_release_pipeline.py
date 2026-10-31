@@ -1024,6 +1024,22 @@ def test_uncertain_artifact_listing_does_not_abandon_version(monkeypatch):
         dispatcher.retained_available("123")
 
 
+def test_unreserved_failed_attempt_explains_fresh_dispatch_without_retirement(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(dispatcher, "preflight", lambda *args: empty_catalogue())
+    monkeypatch.setattr(dispatcher, "context", lambda: (CANDIDATE["sourceCommit"], "123", "2"))
+    monkeypatch.setattr(dispatcher, "retained_available", lambda run_id: False)
+    monkeypatch.setattr(dispatcher, "prepare", lambda *a: pytest.fail("rerun must never rebuild"))
+    outputs = []
+    monkeypatch.setattr(dispatcher, "outputs", outputs.append)
+    with pytest.raises(ValueError, match="bicep:0.1.0.*not reserved") as caught:
+        dispatcher.dispatch("bicep", "0.1.0", tmp_path / "build", tmp_path / "selection")
+    assert "new workflow dispatch" in str(caught.value)
+    assert "same version can be requested if it is still unused at preflight" in str(caught.value)
+    assert outputs == [{"lost": "false"}]
+
+
 def test_failed_preparation_reports_cannot_resume_publication(monkeypatch):
     workflow = yaml.safe_load((ROOT / ".github/workflows/container-image-release.yml").read_text())
     step = next(
