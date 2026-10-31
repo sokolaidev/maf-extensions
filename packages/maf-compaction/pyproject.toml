@@ -30,7 +30,7 @@ dependencies = [
     # public exposes. The ceiling admits only the minor those helpers were read against: a
     # private module changing shape must be a resolution failure, not a silent change of
     # behaviour.
-    "agent-framework-core>=1.23.0,<1.24",
+    "agent-framework-core>=1.24.0,<1.25",
 ]
 
 [project.urls]

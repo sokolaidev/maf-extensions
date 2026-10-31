@@ -185,7 +185,7 @@ async def run() -> int:
 
     credential = DefaultAzureCredential()
     try:
-        agent = Agent(
+        async with Agent(
             client=OpenAIChatClient(
                 model=env["AZURE_OPENAI_CHAT_MODEL"],
                 azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
@@ -199,11 +199,11 @@ async def run() -> int:
                 "it saved the image. Do not claim to have seen the image itself."
             ),
             tools=tools,
-        )
-        response = await agent.run(TASK)
-        # Quoted, because the reply and the measured line below share one stream and the live
-        # check trusts the `[measured]` tag completely (#314).
-        print(quoted(response.text))
+        ) as agent:
+            response = await agent.run(TASK)
+            # Quoted, because the reply and the measured line below share one stream and the live
+            # check trusts the `[measured]` tag completely (#314).
+            print(quoted(response.text))
     finally:
         # Cleanup first, reporting after, and the order is the point: a `print` can raise on a
         # stream that has gone, and this `finally` is the only thing that takes the sandbox

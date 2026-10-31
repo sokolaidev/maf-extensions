@@ -34,10 +34,10 @@ members = [
 
 [manifest.dependency-groups]
 dev = [
-    { name = "agent-framework-foundry", specifier = ">=1.15.0,<2" },
-    { name = "agent-framework-mistral", specifier = ">=1.0.0b261015,<2" },
-    { name = "agent-framework-ollama", specifier = ">=1.0.0b261022,<2" },
-    { name = "agent-framework-openai", specifier = ">=1.17.0,<2" },
+    { name = "agent-framework-foundry", specifier = ">=1.16.0,<2" },
+    { name = "agent-framework-mistral", specifier = ">=1.0.0b261030,<2" },
+    { name = "agent-framework-ollama", specifier = ">=1.0.0b261030,<2" },
+    { name = "agent-framework-openai", specifier = ">=1.18.0,<2" },
     { name = "anyio", specifier = ">=4.5,<5" },
     { name = "autogen-agentchat", specifier = ">=0.7.5,<0.8" },
     { name = "autogen-core", specifier = ">=0.7.5,<0.8" },
@@ -71,7 +71,7 @@ dev = [
 
 [[package]]
 name = "agent-framework-core"
-version = "1.23.0"
+version = "1.24.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "msgspec" },
@@ -82,14 +82,14 @@ dependencies = [
     { name = "regex" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/eb/60/cd1bd50c52372de500a30c53038c81c85291b3d458e8596a7974c402a1ee/agent_framework_core-1.23.0.tar.gz", hash = "sha256:f2a212fb534b89ecf18d4d4e99ebc91ce717793df295cc74566ac16b5e07d8de", size = 769389, upload-time = "2026-10-22T17:01:36.931Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9a/d6/7b700ed0f1cb26ce540660e70a1eec9479932f752d103054eece4cd24c5f/agent_framework_core-1.24.0.tar.gz", hash = "sha256:04968b955c2d198ea5d7635e0f062d744dbf971d881bb2fe6023a50687c05b4c", size = 791994, upload-time = "2026-10-30T21:38:06.536Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3d/99/8621d38956658e0dda6a3ffa4ce18e53e4dc15b97d1071e0481c828a769b/agent_framework_core-1.23.0-py3-none-any.whl", hash = "sha256:b16e8b44c0033e28d339d03d3b6367f0bec2dd8da9d533b8ba6c278d6a72bd01", size = 829938, upload-time = "2026-10-22T17:01:34.997Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/39/35e085321e228fe45e46e5bf6af9a08a5ddc11d5ee175cbe8a5f7ce146d7/agent_framework_core-1.24.0-py3-none-any.whl", hash = "sha256:dd8edd14dabbe6c64d807c2d0dece91a8171d31055443ff5f98cc7f902007bee", size = 853834, upload-time = "2026-10-30T21:39:05.591Z" },
 ]
 
 [[package]]
 name = "agent-framework-foundry"
-version = "1.15.0"
+version = "1.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -99,48 +99,48 @@ dependencies = [
     { name = "azure-ai-projects" },
     { name = "httpx" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f6/2a/93330dbace17eeb3f9be167884fc8fda246c2b92ba8df9ad29d733538d29/agent_framework_foundry-1.15.0.tar.gz", hash = "sha256:cd052b21089e779ca5540c4d2d69e7a4b1b561baf71a096cf5dc0febfa767989", size = 61140, upload-time = "2026-10-15T09:59:35.669Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b4/e6/bcf5c0f42062b9bda299cfa9c798ac20b0d4a3bec2bc9e25869cd90ce58d/agent_framework_foundry-1.16.0.tar.gz", hash = "sha256:757959397d5e0fcf5a19ac3d06db380d6f978647fbbec7ba9d81c35831dd5385", size = 62426, upload-time = "2026-10-30T21:38:13.043Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ed/b6/7e84c5dcb8f477fe34a0f7157501bb360c0316ce999f0f8d14e5288296ca/agent_framework_foundry-1.15.0-py3-none-any.whl", hash = "sha256:1f4bc0c207386a7c6763b78a890dcad426e06e919cb4551e2970b8949bb8ba67", size = 62152, upload-time = "2026-10-15T09:55:21.351Z" },
+    { url = "https://files.pythonhosted.org/packages/de/10/ec55d65489e718e87f2883d749155d830de9b9be409c6c2cd3c5a3af1d36/agent_framework_foundry-1.16.0-py3-none-any.whl", hash = "sha256:5626e5922618052d019c1cfe784887366de28d8691a9c35011538cd6e9a55daf", size = 63171, upload-time = "2026-10-30T21:39:12.101Z" },
 ]
 
 [[package]]
 name = "agent-framework-mistral"
-version = "1.0.0b261015"
+version = "1.0.0b261030"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "agent-framework-core" },
     { name = "mistralai" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/86/ec/4fd9c66113ace7c9feca501e7d557215eb60622833932496518f7ed79527/agent_framework_mistral-1.0.0b261015.tar.gz", hash = "sha256:32391fc41b2c3b455b6092697e62138179083e75d469f227facbbdd2b91185f5", size = 17517, upload-time = "2026-10-15T17:42:29.444Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3d/e9/7288638f4e2b0bc6f8baa3183b1ed3c7e5ab7f2f681a87897f00b4a77c87/agent_framework_mistral-1.0.0b261030.tar.gz", hash = "sha256:6c97247d3c654bdf578066c9b67a6a0672e5d544eab23462cb1f7f468a3ddda2", size = 17546, upload-time = "2026-10-30T21:38:29.04Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a8/11/941cd2cc6878e21710560060b3aaf0a5315d54fbe595f5b4e85515c4a0c0/agent_framework_mistral-1.0.0b261015-py3-none-any.whl", hash = "sha256:91d3f42f260e94a3f7152388312de38f52a5531726e30a65ea9c120e35995bbb", size = 19582, upload-time = "2026-10-15T17:42:28.238Z" },
+    { url = "https://files.pythonhosted.org/packages/54/08/82ed77857014c4f3e05ef9302f9a4a59c4e58e5755e5e31623d02ef0e778/agent_framework_mistral-1.0.0b261030-py3-none-any.whl", hash = "sha256:c4dbcd6b0a9f4991af6e6d68d3e41fe3efcc820aa8bbb1615ddbe6a2e64e9bee", size = 19610, upload-time = "2026-10-30T21:39:27.631Z" },
 ]
 
 [[package]]
 name = "agent-framework-ollama"
-version = "1.0.0b261022"
+version = "1.0.0b261030"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "agent-framework-core" },
     { name = "ollama" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ea/9e/b443902ce073b037258f27c93115edbb52f8b4385793d99e70f6513d20f5/agent_framework_ollama-1.0.0b261022.tar.gz", hash = "sha256:2ad220104d08b497af832a5e7583d85ed5512dd57c6911c19fc61f42a3f36465", size = 12526, upload-time = "2026-10-22T17:01:30.269Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/36/52/01a61422078775d9a3c8951789331097bb086424a45c8e27a5dff40ff8ca/agent_framework_ollama-1.0.0b261030.tar.gz", hash = "sha256:c15858b6379d2a6e7bda0bbc9c269ac673ef25d526b6703c6a6df114788b3349", size = 12656, upload-time = "2026-10-30T21:38:34.353Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b5/98/47e7c3848fc614a2d063c4147fe14c57dc0d675d6734f22545b3ef602bf9/agent_framework_ollama-1.0.0b261022-py3-none-any.whl", hash = "sha256:b7271bf6ab11643c97ac1d7c4587d1c686c0dd3bf346aecd067a6b61a7409ea2", size = 14201, upload-time = "2026-10-22T17:01:13.086Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/e2/870b04eaa8b04f75af1d97fc49efa490faef842f854a32d8c7a45d3da9b4/agent_framework_ollama-1.0.0b261030-py3-none-any.whl", hash = "sha256:230ddb20195a3811c16effd91abc64006e69ea903dcae0fdd93c6bade034655d", size = 14315, upload-time = "2026-10-30T21:39:32.374Z" },
 ]
 
 [[package]]
 name = "agent-framework-openai"
-version = "1.17.0"
+version = "1.18.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "agent-framework-core" },
     { name = "openai" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d6/53/fb87384f37bbf0a3e4d16a84ae0b8ee0028bb9c3b874573687364937b5bd/agent_framework_openai-1.17.0.tar.gz", hash = "sha256:5b48c67ca4142aa49790028ca9a745f4eb6886ad9f4a3caaf5368a866cf44939", size = 76839, upload-time = "2026-10-15T09:59:47.114Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a1/1b/2907c8b399716e71f0a560ef3a62f235f0bb3e0fd765a8cea4332796d343/agent_framework_openai-1.18.0.tar.gz", hash = "sha256:0c65c0b71940c72243870808b26de38d2f87fbdb187a49793514af8a449746e1", size = 78840, upload-time = "2026-10-30T21:38:35.644Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cf/a9/2eec96b0030574ca2f74f69f3b72b908c7c0f55a0c63a96cabcd4f7ee2d2/agent_framework_openai-1.17.0-py3-none-any.whl", hash = "sha256:3a30fae2afd7fa0ee5b3247046e4ed462437983a7e567786e5ac6702e6b47b5f", size = 81664, upload-time = "2026-10-15T09:59:10.235Z" },
+    { url = "https://files.pythonhosted.org/packages/65/7d/458753e38e4cf0b2261c175cf9f64d3c03ca4227085d7d0b669a74820dbf/agent_framework_openai-1.18.0-py3-none-any.whl", hash = "sha256:8ad432801ba7ff55afe104383635919d33bc129bdbe3ac9ffab9d25d3b7ef52d", size = 83660, upload-time = "2026-10-30T21:39:33.758Z" },
 ]
 
 [[package]]
@@ -1631,11 +1631,11 @@ tiktoken = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-core", specifier = ">=1.23.0,<1.24" },
-    { name = "agent-framework-foundry", marker = "extra == 'foundry'", specifier = ">=1.15.0,<2" },
-    { name = "agent-framework-mistral", marker = "extra == 'mistral'", specifier = ">=1.0.0b261015,<2" },
-    { name = "agent-framework-ollama", marker = "extra == 'ollama'", specifier = ">=1.0.0b261022,<2" },
-    { name = "agent-framework-openai", marker = "extra == 'openai'", specifier = ">=1.17.0,<2" },
+    { name = "agent-framework-core", specifier = ">=1.24.0,<1.25" },
+    { name = "agent-framework-foundry", marker = "extra == 'foundry'", specifier = ">=1.16.0,<2" },
+    { name = "agent-framework-mistral", marker = "extra == 'mistral'", specifier = ">=1.0.0b261030,<2" },
+    { name = "agent-framework-ollama", marker = "extra == 'ollama'", specifier = ">=1.0.0b261030,<2" },
+    { name = "agent-framework-openai", marker = "extra == 'openai'", specifier = ">=1.18.0,<2" },
     { name = "aiohttp", marker = "extra == 'foundry'", specifier = ">=3.9,<4" },
     { name = "aiohttp", marker = "extra == 'openai'", specifier = ">=3.9,<4" },
     { name = "azure-identity", marker = "extra == 'foundry'", specifier = ">=1.17,<2" },
@@ -1656,7 +1656,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "agent-framework-core", specifier = ">=1.23.0,<1.24" }]
+requires-dist = [{ name = "agent-framework-core", specifier = ">=1.24.0,<1.25" }]
 
 [[package]]
 name = "maf-sandbox"
@@ -1667,7 +1667,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "agent-framework-core", specifier = ">=1.23.0,<1.24" }]
+requires-dist = [{ name = "agent-framework-core", specifier = ">=1.24.0,<1.25" }]
 
 [[package]]
 name = "maf-sandbox-acas"
@@ -1699,7 +1699,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-core", specifier = ">=1.23.0,<1.24" },
+    { name = "agent-framework-core", specifier = ">=1.24.0,<1.25" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
 
@@ -1714,7 +1714,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-core", specifier = ">=1.23.0,<1.24" },
+    { name = "agent-framework-core", specifier = ">=1.24.0,<1.25" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
 
@@ -1740,7 +1740,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-core", specifier = ">=1.23.0,<1.24" },
+    { name = "agent-framework-core", specifier = ">=1.24.0,<1.25" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
 
@@ -1792,7 +1792,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-core", specifier = ">=1.23.0,<1.24" },
+    { name = "agent-framework-core", specifier = ">=1.24.0,<1.25" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
 
@@ -1807,7 +1807,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-core", specifier = ">=1.23.0,<1.24" },
+    { name = "agent-framework-core", specifier = ">=1.24.0,<1.25" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
 
@@ -1849,7 +1849,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-core", specifier = ">=1.23.0,<1.24" },
+    { name = "agent-framework-core", specifier = ">=1.24.0,<1.25" },
     { name = "anyio", specifier = ">=4.5,<5" },
     { name = "jsonschema", specifier = ">=4.26,<5" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
@@ -1887,7 +1887,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-core", specifier = ">=1.23.0,<1.24" },
+    { name = "agent-framework-core", specifier = ">=1.24.0,<1.25" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
 
@@ -1902,7 +1902,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-framework-core", specifier = ">=1.23.0,<1.24" },
+    { name = "agent-framework-core", specifier = ">=1.24.0,<1.25" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
 

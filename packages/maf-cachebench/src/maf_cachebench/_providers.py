@@ -15,9 +15,12 @@ from __future__ import annotations
 import hashlib
 import os
 from collections.abc import Callable, Mapping
+from contextlib import AsyncExitStack
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Final, Literal
+from inspect import isawaitable
+from types import TracebackType
+from typing import Any, Final, Literal, cast
 
 __all__ = [
     "PROVIDER_SPECS",
@@ -43,11 +46,52 @@ it is opt-in — an older deployment may reject the unknown field.
 
 @dataclass(slots=True)
 class ProviderRuntime:
-    """A ready-to-use chat client together with the options each call should carry."""
+    """A client and request defaults, with explicit ownership for created resources.
+
+    Manually supplied clients are borrowed by default. Factory-built runtimes own their
+    resources; close them after all cells sharing the client, or use an async context.
+    """
 
     client: Any
     model: str
     options: dict[str, Any] = field(default_factory=dict[str, Any])
+    owns_client: bool = False
+    owned_resources: tuple[Any, ...] = ()
+    _closed: bool = field(default=False, init=False, repr=False)
+
+    async def __aenter__(self) -> ProviderRuntime:
+        if self._closed:
+            raise RuntimeError("Provider runtime is closed.")
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self.close()
+
+    async def close(self) -> None:
+        """Close owned resources once, attempting every cleanup even when one fails."""
+        if self._closed:
+            return
+        self._closed = True
+        resources = (*self.owned_resources, *((self.client,) if self.owns_client else ()))
+        async with AsyncExitStack() as stack:
+            seen: set[int] = set()
+            for resource in resources:
+                if id(resource) not in seen:
+                    seen.add(id(resource))
+                    stack.push_async_callback(_close_resource, resource)
+
+
+async def _close_resource(resource: Any) -> None:
+    close = getattr(resource, "aclose", None) or getattr(resource, "close", None)
+    if close is not None:
+        result = close()
+        if isawaitable(result):
+            await result
 
 
 class ConfiguredClient:
@@ -59,6 +103,24 @@ class ConfiguredClient:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.inner, name)
+
+    async def __aenter__(self) -> ConfiguredClient:
+        enter = getattr(self.inner, "__aenter__", None)
+        if enter is not None:
+            await enter()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None:
+        leave = getattr(self.inner, "__aexit__", None)
+        if leave is not None:
+            return await leave(exc_type, exc, traceback)
+        await _close_resource(self.inner)
+        return None
 
     async def get_response(self, *args: Any, **kwargs: Any) -> Any:
         options = deepcopy(self.options)
@@ -140,7 +202,10 @@ def _build_azure(
         api_version=os.environ.get("AZURE_OPENAI_API_VERSION"),
     )
     return ProviderRuntime(
-        client=client, model=model, options=_base_options(temperature, response_max_tokens)
+        client=client,
+        model=model,
+        options=_base_options(temperature, response_max_tokens),
+        owns_client=True,
     )
 
 
@@ -157,13 +222,19 @@ def _build_foundry(
     from azure.identity.aio import DefaultAzureCredential
 
     model = model_override or _require_env("FOUNDRY_MODEL")
+    endpoint = _require_env("FOUNDRY_PROJECT_ENDPOINT")
+    credential = DefaultAzureCredential()
     client = FoundryChatClient(
         model=model,
-        project_endpoint=_require_env("FOUNDRY_PROJECT_ENDPOINT"),
-        credential=DefaultAzureCredential(),
+        project_endpoint=endpoint,
+        credential=credential,
     )
     return ProviderRuntime(
-        client=client, model=model, options=_base_options(temperature, response_max_tokens)
+        client=client,
+        model=model,
+        options=_base_options(temperature, response_max_tokens),
+        owns_client=True,
+        owned_resources=(credential,),
     )
 
 
@@ -183,13 +254,19 @@ def _build_azure_responses(
     from azure.identity.aio import DefaultAzureCredential
 
     model = model_override or _require_env("AZURE_OPENAI_RESPONSES_MODEL")
+    endpoint = _require_env("AZURE_OPENAI_ENDPOINT")
+    credential = DefaultAzureCredential()
     client = OpenAIChatClient(
         model=model,
-        azure_endpoint=_require_env("AZURE_OPENAI_ENDPOINT"),
-        credential=DefaultAzureCredential(),
+        azure_endpoint=endpoint,
+        credential=credential,
     )
     return ProviderRuntime(
-        client=client, model=model, options=_base_options(temperature, response_max_tokens)
+        client=client,
+        model=model,
+        options=_base_options(temperature, response_max_tokens),
+        owns_client=True,
+        owned_resources=(credential,),
     )
 
 
@@ -219,7 +296,7 @@ def _build_openrouter(
             "allow_fallbacks": False,
         }
     options["extra_body"] = extra_body
-    return ProviderRuntime(client=client, model=model, options=options)
+    return ProviderRuntime(client=client, model=model, options=options, owns_client=True)
 
 
 def _build_mistral(
@@ -231,7 +308,10 @@ def _build_mistral(
     model = model_override or os.environ.get("MISTRAL_CHAT_MODEL") or _require_env("MISTRAL_MODEL")
     client = MistralChatClient(model=model, api_key=_require_env("MISTRAL_API_KEY"))
     return ProviderRuntime(
-        client=client, model=model, options=_base_options(temperature, response_max_tokens)
+        client=client,
+        model=model,
+        options=_base_options(temperature, response_max_tokens),
+        owns_client=True,
     )
 
 
@@ -251,9 +331,15 @@ def _build_ollama(
     headers: dict[str, str] = {}
     if api_key := os.environ.get("OLLAMA_API_KEY"):
         headers["Authorization"] = f"Bearer {api_key}"
-    client = OllamaChatClient(model=model, client=AsyncClient(host=host, headers=headers or None))
+    sdk = AsyncClient(host=host, headers=headers or None)
+    client = OllamaChatClient(model=model, client=sdk)
     return ProviderRuntime(
-        client=client, model=model, options=_base_options(temperature, response_max_tokens)
+        client=client,
+        model=model,
+        options=_base_options(temperature, response_max_tokens),
+        owns_client=True,
+        # Ollama exposes transport cleanup only on its underlying HTTP client.
+        owned_resources=(cast(Any, sdk)._client,),
     )
 
 

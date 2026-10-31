@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -278,7 +279,7 @@ def test_model_answer_matches_tool_integer_exactly(sample, smoke_stack, monkeypa
     monkeypatch.setattr(
         agent_framework,
         "Agent",
-        lambda **kwargs: SimpleNamespace(run=AsyncMock(return_value=response)),
+        lambda **kwargs: nullcontext(SimpleNamespace(run=AsyncMock(return_value=response))),
     )
     if reply.strip() == sample.ANSWER:
         assert asyncio.run(sample.run()) == 0

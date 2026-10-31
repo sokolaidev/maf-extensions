@@ -124,6 +124,11 @@ def unsupported_option(error: BaseException) -> str | None:
     name arrive backslash-escaped. Normalizing them away first keeps the patterns readable
     and lets the same pattern match whether the message was repr'd or not.
     """
+    for cause in _error_chain(error):
+        if getattr(cause, "code", None) == "unsupported_parameter":
+            parameter = getattr(cause, "param", None)
+            if isinstance(parameter, str) and re.fullmatch(r"[a-z_]+", parameter):
+                return parameter
     text = str(error).replace("\\'", "'").replace('\\"', '"')
     for pattern in _UNSUPPORTED_PARAM_PATTERNS:
         if match := pattern.search(text):

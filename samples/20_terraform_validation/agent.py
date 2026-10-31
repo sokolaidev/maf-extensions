@@ -149,7 +149,7 @@ async def run() -> int:
                 print("No sandbox backend: validation tool was not attached.", file=sys.stderr)
                 return 2
             tool = f"{engine}_validate"
-            agent = Agent(
+            async with Agent(
                 client=OpenAIChatClient(
                     model=env["AZURE_OPENAI_CHAT_MODEL"],
                     azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
@@ -158,16 +158,16 @@ async def run() -> int:
                 name=AGENT_DIR,
                 instructions=f"Always call {tool} with files=['main.tf'] and root_module='.'. Report its diagnostics without repairing the module.",
                 tools=tools,
-            )
-            response = await agent.run("Validate main.tf once and report every diagnostic.")
-            print(quoted(response.text))
-            print(
-                evidence(
-                    f"Diagnostics as {tool} returned them",
-                    tool_results(response, tool),
-                    "validation results",
+            ) as agent:
+                response = await agent.run("Validate main.tf once and report every diagnostic.")
+                print(quoted(response.text))
+                print(
+                    evidence(
+                        f"Diagnostics as {tool} returned them",
+                        tool_results(response, tool),
+                        "validation results",
+                    )
                 )
-            )
         finally:
             purge = await router.dispose_scope(SCOPE, thread_id)
             print(f"{MEASURED}Disposed {purge.disposed} sandbox(es).")

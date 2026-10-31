@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -304,7 +305,9 @@ def test_model_requires_tool_evidence_and_matching_answer(
         "OpenAIChatClient",
         lambda **kwargs: client_args.append(kwargs) or object(),
     )
-    monkeypatch.setattr(agent_framework, "Agent", lambda **kwargs: SimpleNamespace(run=turn))
+    monkeypatch.setattr(
+        agent_framework, "Agent", lambda **kwargs: nullcontext(SimpleNamespace(run=turn))
+    )
     if has_result and reply.strip() == sample.ANSWER:
         assert asyncio.run(sample.run(smoke=False)) == 0
     else:

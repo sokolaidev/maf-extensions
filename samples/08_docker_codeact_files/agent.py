@@ -160,7 +160,7 @@ async def run() -> int:
 
     credential = DefaultAzureCredential()
     try:
-        agent = Agent(
+        async with Agent(
             client=OpenAIChatClient(
                 model=env["AZURE_OPENAI_CHAT_MODEL"],
                 azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
@@ -175,11 +175,11 @@ async def run() -> int:
                 "is not saved. Report exactly what the program printed."
             ),
             tools=tools,
-        )
-        response = await agent.run(TASK)
-        # Quoted, because the reply and the two measured lines below share one stream and the
-        # live check trusts the `[measured]` tag completely (#314).
-        print(quoted(response.text))
+        ) as agent:
+            response = await agent.run(TASK)
+            # Quoted, because the reply and the two measured lines below share one stream and the
+            # live check trusts the `[measured]` tag completely (#314).
+            print(quoted(response.text))
     finally:
         # Deletes rather than relying on the container living on — see sample 01's README.
         purge = await router.dispose_scope(SCOPE, THREAD_ID)

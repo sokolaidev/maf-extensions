@@ -7,6 +7,7 @@ import asyncio
 import logging
 import math
 from collections.abc import Sequence
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
@@ -4123,262 +4124,281 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
         print("every strategy builds cleanly")
         return 0
 
-    runtime = build_provider(
-        provider,
-        temperature=workload.temperature,
-        response_max_tokens=args.max_output_tokens,
-        model=model_override,
-    )
-    pricing = _resolve_pricing(args, provider, runtime.model)
-    if plan is not None:
-        # Printed on every run, not only the dry one. These logs are archived and read back
-        # months later against runs made with different sizing, and a cell that cannot say
-        # what it was aiming at cannot be placed on an axis with the others.
-        share = (
-            f" Tool share {plan.achieved_tool_share:.1%} predicted against {plan.tool_share:.0%} "
-            f"requested, {plan.tool_share_deviation:+.1%}."
-            if plan.tool_share > 0
-            else ""
-        )
-        print(
-            f"sizing: {plan.filler_turns} filler turns of ~{plan.filler_tokens:,} tokens and "
-            f"{planted_groups} tool results of ~{plan.tool_result_tokens:,} tokens, "
-            f"predicting {plan.predicted_tokens:,} against a target of {plan.target_tokens:,} "
-            f"({plan.fill_fraction:.0%} of {plan.context_limit:,}); payload "
-            f"{plan.payload_tokens:,} "
-            f"tokens, of which {plan.tool_payload_tokens:,} is tool results.{share}",
-            flush=True,
-        )
-
-    # Client-side history is required for local compaction to see the full conversation.
-    stores_by_default = bool(getattr(runtime.client, "STORES_BY_DEFAULT", False))
-    if wants_client_side_history(runtime.client, allow_server_history=workload.server_history):
-        print(
-            f"note: {runtime.model} keeps history server-side by default. Forcing store=False so "
-            "the history is sent by the client and compaction actually applies.",
-            flush=True,
-        )
-    elif stores_by_default:
-        print(
-            "WARNING: --server-history means the service owns the conversation. The agent sends "
-            "only the new turn, so no strategy can compact anything and every row will match the "
-            "control. This measures the service, not compaction.",
-            flush=True,
-        )
-    summarizer_client: Any = None
-    summarizer_selector: str | None = None
-    if args.summarizer_provider is not None:
-        sum_provider, sum_model = parse_provider_selector(args.summarizer_provider)
-        summarizer_runtime = build_provider(
-            sum_provider, temperature=0.0, response_max_tokens=1_024, model=sum_model
-        )
-        if sum_provider != provider or summarizer_runtime.model != runtime.model:
-            raise SystemExit(
-                "The summarizer must use the same provider and model as the agent: "
-                "this benchmark records one set of prices for both."
+    async with AsyncExitStack() as resources:
+        runtime = await resources.enter_async_context(
+            build_provider(
+                provider,
+                temperature=workload.temperature,
+                response_max_tokens=args.max_output_tokens,
+                model=model_override,
             )
-        summarizer_client = ConfiguredClient(summarizer_runtime.client, summarizer_runtime.options)
-        # The model the provider settled on, not the selector that was typed. A run naming only
-        # a provider records which model summarized for it, which is the difference between two
-        # cells whose summarizing rows disagree.
-        summarizer_selector = f"{sum_provider}:{summarizer_runtime.model}"
-
-    # Built once, above the seed loop, and both recorded and passed on from here. The loop
-    # rebuilds StrategyOptions per seed only to hand it a fresh metered summarizer; every
-    # number in it is fixed by the command line, so reading them here cannot describe a
-    # different configuration from the one each seed runs under.
-    settings = _strategy_settings(
-        args, _strategy_options(args, tokenizer), summarizer=summarizer_selector
-    )
-
-    cell_params = CellParams(
-        provider=provider,
-        model=runtime.model,
-        agent_kind=args.agent,
-        context_window=args.context_window,
-        fill=args.fill,
-        probe_repeats=args.probe_repeats,
-        combined_repeats=args.combined_repeats,
-        repeats=args.repeats,
-        strategies=tuple(strategies),
-        narration=args.narration,
-        fact_placement=args.fact_placement,
-        tool_result_tokens=tool_result_tokens,
-        tool_share=tool_share,
-        filler_turns=filler_turns,
-        filler_tokens=filler_tokens,
-        tool_turns=args.tool_turns,
-        filler_tool_turns=args.filler_tool_turns,
-        markers_per_tool=args.markers_per_tool,
-        price_input=pricing.input_per_million,
-        price_cached=pricing.cached_read_per_million,
-        price_output=pricing.output_per_million,
-        price_cache_write=pricing.cache_write_per_million,
-        long_context_threshold=pricing.long_context_threshold,
-        price_long_input=None
-        if pricing.long_context is None
-        else pricing.long_context.input_per_million,
-        price_long_cached=None
-        if pricing.long_context is None
-        else pricing.long_context.cached_read_per_million,
-        price_long_output=None
-        if pricing.long_context is None
-        else pricing.long_context.output_per_million,
-        price_long_cache_write=None
-        if pricing.long_context is None
-        else pricing.long_context.cache_write_per_million,
-        min_correctness=min_correctness,
-        plan=plan,
-        workload=workload,
-        settings=settings,
-    )
-    results_path = Path(args.results_jsonl) if args.results_jsonl is not None else None
-    # None unless asked for, and read once here so the seed loop below has nothing to decide.
-    # Dumping observes the finished conversation and changes none of it; the flag only decides
-    # whether anyone looks.
-    dump_path = Path(args.dump_record) if args.dump_record is not None else None
-
-    cells: list[CellStats] = []
-    for name in strategies:
-        print(f"-> {name}", flush=True)
-        # Each seed needs an independent meter so summarizer charges cannot cross cells.
-        seeds: list[SeedRecord] = []
-        for repeat in range(args.seed_offset + 1, args.seed_offset + args.repeats + 1):
-            if args.repeats > 1 or args.seed_offset:
-                print(f"   seed {repeat}", flush=True)
-            summarizer = MeteredClient(summarizer_client) if summarizer_client is not None else None
-            scenario = build_live_scenario(
-                salt=f"{new_run_id()}-{name}-{repeat}",
-                filler_turns=filler_turns,
-                filler_tokens=filler_tokens,
-                tool_turns=args.tool_turns,
-                markers_per_tool=args.markers_per_tool,
-                filler_tool_turns=args.filler_tool_turns,
-                narration=args.narration,
-                subset_questions=workload.subset_questions,
+        )
+        pricing = _resolve_pricing(args, provider, runtime.model)
+        if plan is not None:
+            # Printed on every run, not only the dry one. These logs are archived and read back
+            # months later against runs made with different sizing, and a cell that cannot say
+            # what it was aiming at cannot be placed on an axis with the others.
+            share = (
+                f" Tool share {plan.achieved_tool_share:.1%} predicted against "
+                f"{plan.tool_share:.0%} "
+                f"requested, {plan.tool_share_deviation:+.1%}."
+                if plan.tool_share > 0
+                else ""
             )
-            options = _strategy_options(
-                args,
-                tokenizer,
-                # A recording proxy, not a client: see MeteredClient for why it is cast.
-                summarizer=cast("SupportsChatGetResponse[Any] | None", summarizer),
+            print(
+                f"sizing: {plan.filler_turns} filler turns of ~{plan.filler_tokens:,} tokens and "
+                f"{planted_groups} tool results of ~{plan.tool_result_tokens:,} tokens, "
+                f"predicting {plan.predicted_tokens:,} against a target of {plan.target_tokens:,} "
+                f"({plan.fill_fraction:.0%} of {plan.context_limit:,}); payload "
+                f"{plan.payload_tokens:,} "
+                f"tokens, of which {plan.tool_payload_tokens:,} is tool results.{share}",
+                flush=True,
             )
-            outcome = await run_live(
-                runtime,
-                strategy_name=name,
-                options=options,
-                scenario=scenario,
-                agent_kind=args.agent,
-                tool_result_tokens=tool_result_tokens,
-                force_tool_calls=workload.force_tool_calls,
-                narration=args.narration,
-                retrieval_guidance=workload.retrieval_guidance,
-                fact_placement=args.fact_placement,
-                # Preserve the selected history ownership mode.
-                allow_server_history=workload.server_history,
-                probe_repeats=args.probe_repeats,
-                combined_repeats=args.combined_repeats,
-                # The cap for the closing answers, and the only calls that carry it. Ordinary
-                # calls carry --max-output-tokens, which is the number the strategies reserved
-                # out of the window; see the flag's help for why the two are not one.
-                answer_max_tokens=settings.answer_max_tokens,
-                # Off the recorded settings rather than off the flags, so what the record says
-                # this cell was configured with and what the seed was configured with are one
-                # expression. Resolving "0 means no bound of my own" twice is how a cell comes
-                # to be labelled with a configuration it did not run.
-                record_max_tokens=settings.record_max_tokens,
-                record_target_tokens=settings.record_target_tokens,
-                max_groups_before_record=settings.max_groups_before_record,
-                repeat_records=settings.repeat_records,
+
+        # Client-side history is required for local compaction to see the full conversation.
+        stores_by_default = bool(getattr(runtime.client, "STORES_BY_DEFAULT", False))
+        if wants_client_side_history(runtime.client, allow_server_history=workload.server_history):
+            print(
+                f"note: {runtime.model} keeps history server-side by default. "
+                f"Forcing store=False so "
+                "the history is sent by the client and compaction actually applies.",
+                flush=True,
             )
-            # Scored, written and reported here rather than when the cell ends. A seed that
-            # has been paid for is durable the moment it exists, and the line that follows is
-            # the only sign of progress a cell gives in the hours before its table.
-            record = _seed_record(outcome, scenario, pricing, cell_params, repeat)
-            if results_path is not None:
-                append_seed_record(results_path, record)
-            if dump_path is not None:
-                _dump_record(dump_path, name, repeat, outcome.record_text)
-            seeds.append(record)
-            print(_progress(record), flush=True)
-        cells.append(_aggregate(name, seeds))
-
-    # A run that stopped early spent almost nothing and answered almost nothing. Ranking it
-    # produces "100% cheaper" for a strategy that simply died, and counts it as clearing the
-    # correctness bar because a near-zero control makes every ratio look enormous.
-    incomplete, oversized, diverged = _excluded_cells(cells)
-    if all(any(record.error for record in cell.records) for cell in cells):
-        first = next(record.error for cell in cells for record in cell.records if record.error)
-        raise SystemExit(
-            f"Every strategy failed. First error: {first}"
-            + chr(10)
-            + "No comparison is possible; nothing below would mean anything."
-        )
-    if not any(cell.cost > 0 for cell in cells):
-        raise SystemExit("No strategy reported any billed tokens, so there is nothing to compare.")
-
-    excluded = incomplete | oversized | diverged
-    for line in _exclusion_notes(incomplete, oversized, diverged, args.context_window):
-        print(line)
-    split = _split_measured(cells)
-    ranked, admissible = _verdict_outcomes(cells, incomplete, oversized, diverged, split=split)
-
-    verdict: JointVerdict | None = None
-    if diverged:
-        # Printed rather than raised, unlike the two reasons below. Those are cells that could
-        # not be measured; this one was measured and cannot be ranked, and the table still
-        # carries every column the divergence does not touch -- which is most of them, and all
-        # of them paid for.
-        print()
-        print(
-            "The uncompacted control ran a different conversation from the rows it is the baseline "
-            "for, so this cell has no ranking. See CONTROL DIVERGED below."
-        )
-    elif not any(outcome.strategy == "none" for outcome in ranked):
-        # Only a control that did not finish reaches this. One that overflowed the limit and
-        # finished is the cell compaction exists for, and anchors the verdict below; one that
-        # overflowed and did *not* finish was most likely refused by the model's real window,
-        # which is a fill past what the model accepts rather than past what the cell stands in for.
-        advice = (
-            "It also exceeded the tried limit, so the model most likely refused the prompt itself: "
-            "lower --fill to a size the model accepts, even if that is past --context-window."
-            if "none" in oversized
-            else "Re-run the cell."
-        )
-        raise SystemExit(
-            f"The uncompacted control did not finish, so at {args.context_window:,} tokens "
-            f"there is no "
-            f"measurement of what the whole conversation held and nothing can be judged "
-            f"against it. {advice}"
-        )
-    else:
-        try:
-            verdict = recommend(
-                ranked, min_correctness=min_correctness, baseline_admissible=admissible
+        elif stores_by_default:
+            print(
+                "WARNING: --server-history means the service owns the "
+                "conversation. The agent sends "
+                "only the new turn, so no strategy can compact anything and every "
+                "row will match the "
+                "control. This measures the service, not compaction.",
+                flush=True,
             )
-        except ValueError as error:
-            raise SystemExit(f"Cannot summarize: {error}") from error
-    if tool_strategies_inert:
-        affected = (
-            ", ".join(cell.strategy for cell in cells if "tool" in cell.strategy)
-            or "the tool strategies"
+        summarizer_client: Any = None
+        summarizer_selector: str | None = None
+        if args.summarizer_provider is not None:
+            sum_provider, sum_model = parse_provider_selector(args.summarizer_provider)
+            summarizer_runtime = await resources.enter_async_context(
+                build_provider(
+                    sum_provider, temperature=0.0, response_max_tokens=1_024, model=sum_model
+                )
+            )
+            if sum_provider != provider or summarizer_runtime.model != runtime.model:
+                raise SystemExit(
+                    "The summarizer must use the same provider and model as the agent: "
+                    "this benchmark records one set of prices for both."
+                )
+            summarizer_client = ConfiguredClient(
+                summarizer_runtime.client, summarizer_runtime.options
+            )
+            # The model the provider settled on, not the selector that was typed. A run naming only
+            # a provider records which model summarized for it, which is the difference between two
+            # cells whose summarizing rows disagree.
+            summarizer_selector = f"{sum_provider}:{summarizer_runtime.model}"
+
+        # Built once, above the seed loop, and both recorded and passed on from here. The loop
+        # rebuilds StrategyOptions per seed only to hand it a fresh metered summarizer; every
+        # number in it is fixed by the command line, so reading them here cannot describe a
+        # different configuration from the one each seed runs under.
+        settings = _strategy_settings(
+            args, _strategy_options(args, tokenizer), summarizer=summarizer_selector
         )
-        print()
-        print(
-            f"WARNING: {planted_groups} tool-call groups were planted but tool-oriented strategies "
-            f"retain the last {retained}, so {affected} evicted nothing. Their scores measure "
-            "a no-op, not information preservation. Raise --tool-turns above the retention."
-        )
-    print(
-        _render(
-            verdict,
-            cells,
-            excluded,
-            show_answers=args.show_answers,
+
+        cell_params = CellParams(
+            provider=provider,
+            model=runtime.model,
+            agent_kind=args.agent,
+            context_window=args.context_window,
+            fill=args.fill,
+            probe_repeats=args.probe_repeats,
+            combined_repeats=args.combined_repeats,
+            repeats=args.repeats,
+            strategies=tuple(strategies),
+            narration=args.narration,
+            fact_placement=args.fact_placement,
+            tool_result_tokens=tool_result_tokens,
+            tool_share=tool_share,
+            filler_turns=filler_turns,
+            filler_tokens=filler_tokens,
+            tool_turns=args.tool_turns,
+            filler_tool_turns=args.filler_tool_turns,
+            markers_per_tool=args.markers_per_tool,
+            price_input=pricing.input_per_million,
+            price_cached=pricing.cached_read_per_million,
+            price_output=pricing.output_per_million,
+            price_cache_write=pricing.cache_write_per_million,
+            long_context_threshold=pricing.long_context_threshold,
+            price_long_input=None
+            if pricing.long_context is None
+            else pricing.long_context.input_per_million,
+            price_long_cached=None
+            if pricing.long_context is None
+            else pricing.long_context.cached_read_per_million,
+            price_long_output=None
+            if pricing.long_context is None
+            else pricing.long_context.output_per_million,
+            price_long_cache_write=None
+            if pricing.long_context is None
+            else pricing.long_context.cache_write_per_million,
             min_correctness=min_correctness,
+            plan=plan,
+            workload=workload,
+            settings=settings,
         )
-    )
-    return 0
+        results_path = Path(args.results_jsonl) if args.results_jsonl is not None else None
+        # None unless asked for, and read once here so the seed loop below has nothing to decide.
+        # Dumping observes the finished conversation and changes none of it; the flag only decides
+        # whether anyone looks.
+        dump_path = Path(args.dump_record) if args.dump_record is not None else None
+
+        cells: list[CellStats] = []
+        for name in strategies:
+            print(f"-> {name}", flush=True)
+            # Each seed needs an independent meter so summarizer charges cannot cross cells.
+            seeds: list[SeedRecord] = []
+            for repeat in range(args.seed_offset + 1, args.seed_offset + args.repeats + 1):
+                if args.repeats > 1 or args.seed_offset:
+                    print(f"   seed {repeat}", flush=True)
+                summarizer = (
+                    MeteredClient(summarizer_client) if summarizer_client is not None else None
+                )
+                scenario = build_live_scenario(
+                    salt=f"{new_run_id()}-{name}-{repeat}",
+                    filler_turns=filler_turns,
+                    filler_tokens=filler_tokens,
+                    tool_turns=args.tool_turns,
+                    markers_per_tool=args.markers_per_tool,
+                    filler_tool_turns=args.filler_tool_turns,
+                    narration=args.narration,
+                    subset_questions=workload.subset_questions,
+                )
+                options = _strategy_options(
+                    args,
+                    tokenizer,
+                    # A recording proxy, not a client: see MeteredClient for why it is cast.
+                    summarizer=cast("SupportsChatGetResponse[Any] | None", summarizer),
+                )
+                outcome = await run_live(
+                    runtime,
+                    strategy_name=name,
+                    options=options,
+                    scenario=scenario,
+                    agent_kind=args.agent,
+                    tool_result_tokens=tool_result_tokens,
+                    force_tool_calls=workload.force_tool_calls,
+                    narration=args.narration,
+                    retrieval_guidance=workload.retrieval_guidance,
+                    fact_placement=args.fact_placement,
+                    # Preserve the selected history ownership mode.
+                    allow_server_history=workload.server_history,
+                    probe_repeats=args.probe_repeats,
+                    combined_repeats=args.combined_repeats,
+                    # The cap for the closing answers, and the only calls that carry it. Ordinary
+                    # calls carry --max-output-tokens, which is the number the strategies reserved
+                    # out of the window; see the flag's help for why the two are not one.
+                    answer_max_tokens=settings.answer_max_tokens,
+                    # Off the recorded settings rather than off the flags, so what the record says
+                    # this cell was configured with and what the seed was configured with are one
+                    # expression. Resolving "0 means no bound of my own" twice is how a cell comes
+                    # to be labelled with a configuration it did not run.
+                    record_max_tokens=settings.record_max_tokens,
+                    record_target_tokens=settings.record_target_tokens,
+                    max_groups_before_record=settings.max_groups_before_record,
+                    repeat_records=settings.repeat_records,
+                )
+                # Scored, written and reported here rather than when the cell ends. A seed that
+                # has been paid for is durable the moment it exists, and the line that follows is
+                # the only sign of progress a cell gives in the hours before its table.
+                record = _seed_record(outcome, scenario, pricing, cell_params, repeat)
+                if results_path is not None:
+                    append_seed_record(results_path, record)
+                if dump_path is not None:
+                    _dump_record(dump_path, name, repeat, outcome.record_text)
+                seeds.append(record)
+                print(_progress(record), flush=True)
+            cells.append(_aggregate(name, seeds))
+
+        # A run that stopped early spent almost nothing and answered almost nothing. Ranking it
+        # produces "100% cheaper" for a strategy that simply died, and counts it as clearing the
+        # correctness bar because a near-zero control makes every ratio look enormous.
+        incomplete, oversized, diverged = _excluded_cells(cells)
+        if all(any(record.error for record in cell.records) for cell in cells):
+            first = next(record.error for cell in cells for record in cell.records if record.error)
+            raise SystemExit(
+                f"Every strategy failed. First error: {first}"
+                + chr(10)
+                + "No comparison is possible; nothing below would mean anything."
+            )
+        if not any(cell.cost > 0 for cell in cells):
+            raise SystemExit(
+                "No strategy reported any billed tokens, so there is nothing to compare."
+            )
+
+        excluded = incomplete | oversized | diverged
+        for line in _exclusion_notes(incomplete, oversized, diverged, args.context_window):
+            print(line)
+        split = _split_measured(cells)
+        ranked, admissible = _verdict_outcomes(cells, incomplete, oversized, diverged, split=split)
+
+        verdict: JointVerdict | None = None
+        if diverged:
+            # Printed rather than raised, unlike the two reasons below. Those are cells that could
+            # not be measured; this one was measured and cannot be ranked, and the table still
+            # carries every column the divergence does not touch -- which is most of them, and all
+            # of them paid for.
+            print()
+            print(
+                "The uncompacted control ran a different conversation from the "
+                "rows it is the baseline "
+                "for, so this cell has no ranking. See CONTROL DIVERGED below."
+            )
+        elif not any(outcome.strategy == "none" for outcome in ranked):
+            # Only a control that did not finish reaches this. One that overflowed the limit and
+            # finished is the cell compaction exists for, and anchors the verdict below; one that
+            # overflowed and did *not* finish was most likely refused by the model's real window,
+            # which is a fill past what the model accepts rather than past what the cell stands in
+            # for.
+            advice = (
+                "It also exceeded the tried limit, so the model most likely "
+                "refused the prompt itself: "
+                "lower --fill to a size the model accepts, even if that is past --context-window."
+                if "none" in oversized
+                else "Re-run the cell."
+            )
+            raise SystemExit(
+                f"The uncompacted control did not finish, so at {args.context_window:,} tokens "
+                f"there is no "
+                f"measurement of what the whole conversation held and nothing can be judged "
+                f"against it. {advice}"
+            )
+        else:
+            try:
+                verdict = recommend(
+                    ranked, min_correctness=min_correctness, baseline_admissible=admissible
+                )
+            except ValueError as error:
+                raise SystemExit(f"Cannot summarize: {error}") from error
+        if tool_strategies_inert:
+            affected = (
+                ", ".join(cell.strategy for cell in cells if "tool" in cell.strategy)
+                or "the tool strategies"
+            )
+            print()
+            print(
+                f"WARNING: {planted_groups} tool-call groups were planted but "
+                f"tool-oriented strategies "
+                f"retain the last {retained}, so {affected} evicted nothing. Their scores measure "
+                "a no-op, not information preservation. Raise --tool-turns above the retention."
+            )
+        print(
+            _render(
+                verdict,
+                cells,
+                excluded,
+                show_answers=args.show_answers,
+                min_correctness=min_correctness,
+            )
+        )
+        return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
