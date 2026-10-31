@@ -161,7 +161,7 @@ def test_ci_only_gates_image_and_its_success_artifact():
         if "steps.hyperlight-image.outputs.build" in step.get("if", ""):
             assert steps.index(step) > steps.index(preflight)
             assert step["if"] == (
-                "needs.changes.outputs.code == 'true' && steps.hyperlight-image.outputs.build == 'true'"
+                "needs.changes.outputs.hyperlight == 'true' && steps.hyperlight-image.outputs.build == 'true'"
             )
             gated.append(step["name"])
         if "check_hyperlight_linux.py" in step.get("run", ""):
@@ -174,10 +174,15 @@ def test_ci_only_gates_image_and_its_success_artifact():
                 assert step["if"] == "needs.changes.outputs.code == 'true'"
             assert not step.get("continue-on-error")
     assert gated == [
+        "Prepare the shared Python runtime",
         "Build and verify the Hyperlight runtime image",
         "Retain Hyperlight image verification records",
     ]
-    build = next(step for step in steps if step.get("name") == gated[0])
+    build = next(
+        step
+        for step in steps
+        if step.get("name") == "Build and verify the Hyperlight runtime image"
+    )
     assert "scripts/build_hyperlight_aks_image.py --require-clean" in build["run"]
     assert not build.get("continue-on-error")
 

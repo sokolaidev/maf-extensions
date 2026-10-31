@@ -51,6 +51,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       code: ${{ steps.classify.outputs.code }}
+      hyperlight: ${{ steps.images.outputs.hyperlight }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -73,6 +74,12 @@ jobs:
           fi
           git diff --name-only "$BASE_SHA" HEAD |
             python3 scripts/changed_paths.py >> "$GITHUB_OUTPUT"
+
+      - name: Select affected image inputs separately from code tests
+        id: images
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 scripts/select_image_security.py
 
   kind-images:
     name: Kind release image readiness
@@ -201,12 +208,21 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         run: uv run python scripts/check_hyperlight_image_compatibility.py >> "$GITHUB_OUTPUT"
 
+      - name: Prepare the shared Python runtime
+        id: python-packages
+        if: needs.changes.outputs.hyperlight == 'true' && steps.hyperlight-image.outputs.build == 'true'
+        uses: ./.github/actions/prepare-wolfi-python
+        with:
+          fresh: ${{ github.event_name != 'pull_request' }}
+
       - name: Build and verify the Hyperlight runtime image
-        if: needs.changes.outputs.code == 'true' && steps.hyperlight-image.outputs.build == 'true'
+        if: needs.changes.outputs.hyperlight == 'true' && steps.hyperlight-image.outputs.build == 'true'
+        env:
+          MAF_WOLFI_PYTHON_PACKAGES: ${{ steps.python-packages.outputs.directory }}
         run: uv run python scripts/build_hyperlight_aks_image.py --require-clean --output "$RUNNER_TEMP/hyperlight-image" --tag hyperlight-sandbox:ci
 
       - name: Retain Hyperlight image verification records
-        if: needs.changes.outputs.code == 'true' && steps.hyperlight-image.outputs.build == 'true'
+        if: needs.changes.outputs.hyperlight == 'true' && steps.hyperlight-image.outputs.build == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hyperlight-image-verification
