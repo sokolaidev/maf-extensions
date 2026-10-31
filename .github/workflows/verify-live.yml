@@ -311,13 +311,6 @@ jobs:
             exit 1
           fi
 
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
         env:
@@ -329,6 +322,13 @@ jobs:
           # different CDN cache object, and polling the index passed while the sample resolved
           # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       # Runs the sample as a consumer would, then asserts on the block it prints from what
       # bicep_validate returned. The sample authenticates with DefaultAzureCredential, which
@@ -457,13 +457,6 @@ jobs:
             exit 1
           fi
 
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
         env:
@@ -475,6 +468,13 @@ jobs:
           # different CDN cache object, and polling the index passed while the sample resolved
           # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       # Runs the sample as a consumer would, then asserts on the interpreter's own stdout,
       # which the sample prints from the tool result rather than from the reply. The sample
@@ -563,13 +563,6 @@ jobs:
             exit 1
           fi
 
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       # Where samples 06 and 08 run an MCR image that `docker run` pulls, this one's guest is
       # built from this repository — the same context sample 01 imports into an Azure sandbox
       # group, so the two jobs compile with one Bicep CLI and one rule set. The tag is local and
@@ -588,6 +581,13 @@ jobs:
           # different CDN cache object, and polling the index passed while the sample resolved
           # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Run sample 05 and assert the diagnostics came back
         env:
@@ -663,13 +663,6 @@ jobs:
             exit 1
           fi
 
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Install and prepare sbx
         uses: ./.github/actions/setup-sbx
         with:
@@ -692,6 +685,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Run sample 05 on docker-sbx and assert the diagnostics came back
         env:
@@ -776,13 +776,6 @@ jobs:
             exit 1
           fi
 
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
         env:
@@ -794,6 +787,13 @@ jobs:
           # different CDN cache object, and polling the index passed while the sample resolved
           # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       # ubuntu-latest ships a running Docker daemon, so the sandbox is free and local. The
       # sample authenticates the model with DefaultAzureCredential, which the az login above
@@ -882,13 +882,6 @@ jobs:
             exit 1
           fi
 
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       # Graphviz on a Debian base, built from this repository like sample-05's guest. Nothing
       # pushes it anywhere: the backend runs what is on the machine.
       - name: Build the sandbox image
@@ -905,6 +898,13 @@ jobs:
           # different CDN cache object, and polling the index passed while the sample resolved
           # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Run sample 07 and assert a rendered PNG came back out
         env:
@@ -986,13 +986,6 @@ jobs:
             exit 1
           fi
 
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Install and prepare sbx
         uses: ./.github/actions/setup-sbx
         with:
@@ -1014,6 +1007,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Run sample 07 on docker-sbx and assert a rendered PNG came back out
         env:
@@ -1093,13 +1093,6 @@ jobs:
             exit 1
           fi
 
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
         env:
@@ -1111,6 +1104,13 @@ jobs:
           # different CDN cache object, and polling the index passed while the sample resolved
           # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Run sample 08 and assert a file went in and a file came out
         env:
@@ -1219,13 +1219,6 @@ jobs:
             exit 1
           fi
 
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
         env:
@@ -1237,6 +1230,13 @@ jobs:
           # different CDN cache object, and polling the index passed while the sample resolved
           # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       # No container to build and no sandbox to configure — the backend runs the bicep binary on
       # this runner. The sample authenticates the model with DefaultAzureCredential, which the az
@@ -1402,13 +1402,6 @@ jobs:
             exit 1
           fi
 
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       # Act 4's guest, built from this repository like sample-05's — the same Bicep CLI and the
       # same `bicepconfig.json`, so a difference between the two jobs is about egress rather
       # than about the compiler. The tag is local and unqualified because the backend runs what
@@ -1440,6 +1433,13 @@ jobs:
           # different CDN cache object, and polling the index passed while the sample resolved
           # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Run sample 11 and assert the router chose, refused, confined and disposed
         env:
@@ -1603,13 +1603,6 @@ jobs:
             exit 1
           fi
 
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       # Built here rather than pulled, exactly as sample 05 does it, and the freshness matters
       # more for this sample than for that one: `bicepconfig.json` lives in the image, so a
       # stale one reports fewer diagnostics at their built-in severities and the fix turn is
@@ -1628,6 +1621,13 @@ jobs:
           # different CDN cache object, and polling the index passed while the sample resolved
           # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Run sample 13 and assert repair with warm sandbox reuse
         env:
@@ -1737,13 +1737,6 @@ jobs:
             exit 1
           fi
 
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
         env:
@@ -1755,6 +1748,13 @@ jobs:
           # different CDN cache object, and polling the index passed while the sample resolved
           # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Run sample 14 and assert a file went in and a file came out
         env:
@@ -1868,13 +1868,6 @@ jobs:
             exit 1
           fi
 
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
         env:
@@ -1886,6 +1879,13 @@ jobs:
           # different CDN cache object, and polling the index passed while the sample resolved
           # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Run sample 15 and assert a program really called back out
         env:
@@ -1976,13 +1976,6 @@ jobs:
             exit 1
           fi
 
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
         env:
@@ -1994,6 +1987,13 @@ jobs:
           # different CDN cache object, and polling the index passed while the sample resolved
           # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Run sample 15 on docker and assert a program really called back out
         env:
@@ -2081,13 +2081,6 @@ jobs:
             exit 1
           fi
 
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
         env:
@@ -2096,6 +2089,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Run sample 16 and assert the answer came back out of the outputs store
         env:
@@ -2188,13 +2188,6 @@ jobs:
             exit 1
           fi
 
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       # The same image sample-05 builds, from the same context: the two jobs compile one file
       # with one Bicep CLI and one rule set, which is what makes their diagnostics comparable.
       - name: Build the sandbox image
@@ -2211,6 +2204,13 @@ jobs:
           # different CDN cache object, and polling the index passed while the sample resolved
           # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Run sample 17 and assert the diagnostics came back
         env:
@@ -2287,13 +2287,6 @@ jobs:
             exit 1
           fi
 
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Install and prepare sbx
         uses: ./.github/actions/setup-sbx
         with:
@@ -2316,6 +2309,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Run sample 17 on docker-sbx and assert the diagnostics came back
         env:
@@ -2490,12 +2490,6 @@ jobs:
             echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
         env:
@@ -2504,6 +2498,12 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Run sample 18 and print each draw.io call duration
         run: |
           set -euo pipefail
@@ -2584,13 +2584,6 @@ jobs:
             exit 1
           fi
 
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
         env:
@@ -2602,6 +2595,13 @@ jobs:
           # different CDN cache object, and polling the index passed while the sample resolved
           # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       # ubuntu-latest ships a running Docker daemon, so the sandbox is free and local. The
       # sample authenticates the model with DefaultAzureCredential, which the az login above
@@ -2684,12 +2684,6 @@ jobs:
             echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
         env:
@@ -2700,6 +2694,12 @@ jobs:
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
       - name: Build the pinned random-provider image
         run: python3 images/terraform-sandbox/build_image.py --engine "$SAMPLE_ENGINE" --profile random --tag "$TERRAFORM_SANDBOX_IMAGE"
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Validate with the published tool and verify per-call disposal
         run: |
           set -euo pipefail
@@ -2771,12 +2771,6 @@ jobs:
             echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
         env:
@@ -2787,6 +2781,12 @@ jobs:
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
       - name: Build the pinned random-provider image
         run: python3 images/terraform-sandbox/build_image.py --engine "$SAMPLE_ENGINE" --profile random --tag "$OPENTOFU_SANDBOX_IMAGE"
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Validate with the published tool and verify per-call disposal
         run: |
           set -euo pipefail
@@ -2866,12 +2866,6 @@ jobs:
             echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
         env:
@@ -2880,6 +2874,12 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Validate with the published tool and verify per-call disposal
         run: |
           set -euo pipefail
@@ -2959,12 +2959,6 @@ jobs:
             echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
         env:
@@ -2973,6 +2967,12 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Validate with the published tool and verify per-call disposal
         run: |
           set -euo pipefail
@@ -3091,12 +3091,6 @@ jobs:
             echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Build the Bicep sandbox image
         run: wslc build -t bicep-sandbox:local images/bicep-sandbox
       - name: Wait for this runner's PyPI edge to serve the release
@@ -3107,6 +3101,12 @@ jobs:
         run: |
           set -euo pipefail
           python "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Run sample 02 and assert its workload evidence
         env:
           BICEP_SANDBOX_IMAGE: bicep-sandbox:local
@@ -3186,13 +3186,6 @@ jobs:
             echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
         env:
@@ -3201,6 +3194,13 @@ jobs:
         run: |
           set -euo pipefail
           python "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
       - name: Run sample 04 and assert its workload evidence
         env:
           AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
@@ -3362,12 +3362,6 @@ jobs:
             echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
         env:
@@ -3378,6 +3372,12 @@ jobs:
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
       - name: Build the shell validation image
         run: uv run --locked python scripts/build_wolfi_python.py --platform linux/amd64 -t "$SHELL_SANDBOX_IMAGE" images/shell-sandbox
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Generate with Microsoft Learn and validate the storage script
         run: |
           set -euo pipefail
@@ -3448,12 +3448,6 @@ jobs:
             echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
-      - name: Sign in to Azure with OIDC
-        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
         env:
@@ -3462,6 +3456,12 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Verify compaction and cachebench against the live model
         run: |
           set -euo pipefail

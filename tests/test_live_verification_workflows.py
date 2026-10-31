@@ -19,6 +19,31 @@ def selected(condition):
     return set(json.loads(match[1]))
 
 
+def test_sample_oidc_login_follows_builds_and_release_waits():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/verify-live.yml").read_text("utf-8"))
+    checked = set()
+    for name, job in workflow["jobs"].items():
+        if not name.startswith("sample-"):
+            continue
+        steps = job["steps"]
+        logins = [i for i, step in enumerate(steps) if "azure/login@" in step.get("uses", "")]
+        if not logins:
+            continue
+        assert len(logins) == 1, name
+        login = logins[0]
+        for i, step in enumerate(steps):
+            if (
+                "await_live_version.py" in step.get("run", "")
+                or step.get("name", "").startswith("Build ")
+                or step.get("uses") == "./.github/actions/setup-sbx"
+            ):
+                assert i < login, (name, step.get("name"))
+        run = steps[login + 1].get("run", "")
+        assert "agent.py" in run or "retry_live_sample.py" in run, name
+        checked.add(name)
+    assert "sample-21" in checked
+
+
 def test_release_filters_include_otel_shell_and_compaction_pair():
     workflow = yaml.safe_load((ROOT / ".github/workflows/publish-packages.yml").read_text("utf-8"))
     filters = [
