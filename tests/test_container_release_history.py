@@ -227,7 +227,7 @@ def test_head_does_not_retry_changed_committed_records(monkeypatch, change):
 
 
 @pytest.mark.parametrize("backoff", [1, 2])
-@pytest.mark.parametrize("change", ["remove", "replace-old", "replace-new"])
+@pytest.mark.parametrize("change", ["remove", "replace-old", "replace-new", "immutable", "asset"])
 def test_head_retains_observed_identities_across_backoff(monkeypatch, backoff, change):
     gh = FakeGitHub()
     history = History(gh)
@@ -258,6 +258,10 @@ def test_head_retains_observed_identities_across_backoff(monkeypatch, backoff, c
             return
         if change == "remove":
             del gh.entries[backoff + 2]
+        elif change == "immutable":
+            gh.entries[2]["immutable"] = False
+        elif change == "asset":
+            gh.entries[2]["assets"][0]["id"] = 99
         else:
             replaced = 2 if change == "replace-old" else backoff + 2
             gh.entries[99] = gh.entries.pop(replaced)
@@ -675,6 +679,98 @@ def test_overlap_retries_keep_observed_history(monkeypatch, stage, change):
         history.head()
     assert reads == stage + 1
     assert delays == [1]
+
+
+@pytest.mark.parametrize("stage", [1, 2])
+@pytest.mark.parametrize("draft", [False, True])
+@pytest.mark.parametrize("field", ["immutable", "target_commitish", "asset", "body"])
+def test_overlap_retry_rejects_changed_release_metadata(monkeypatch, stage, draft, field):
+    gh = FakeGitHub()
+    history = History(gh)
+    append_reservation(history)
+    gh.entries[1]["draft"] = draft
+    original = gh.releases
+    reads = 0
+    delays = []
+
+    def releases():
+        nonlocal reads
+        reads += 1
+        entries = original()
+        if reads == stage:
+            return entries + [copy.deepcopy(entries[-1])]
+        if reads == stage + 1:
+            if field == "asset":
+                entries[-1]["assets"][0]["digest"] = DIGEST
+            else:
+                entries[-1][field] = {
+                    "immutable": False,
+                    "target_commitish": "d" * 40,
+                    "body": "changed",
+                }[field]
+        return entries
+
+    monkeypatch.setattr(gh, "releases", releases)
+    monkeypatch.setattr("container_release_history.time.sleep", delays.append)
+    with pytest.raises(ValueError, match="changed while retrying overlapping pages"):
+        history.head()
+    assert reads == stage + 1
+    assert delays == [1]
+
+
+@pytest.mark.parametrize(
+    "field", ["immutable", "target_commitish", "id", "name", "state", "size", "digest"]
+)
+def test_final_history_read_rejects_changed_evidence_without_overlap(monkeypatch, field):
+    gh = FakeGitHub()
+    history = History(gh)
+    append_reservation(history)
+    original = gh.releases
+    reads = 0
+
+    def releases():
+        nonlocal reads
+        reads += 1
+        entries = original()
+        if reads == 2:
+            if field in {"immutable", "target_commitish"}:
+                entries[-1][field] = False if field == "immutable" else "d" * 40
+            else:
+                entries[-1]["assets"][0][field] = {
+                    "id": 99,
+                    "name": "other.json",
+                    "state": "starter",
+                    "size": 1,
+                    "digest": DIGEST,
+                }[field]
+        return entries
+
+    monkeypatch.setattr(gh, "releases", releases)
+    monkeypatch.setattr("container_release_history.time.sleep", lambda _: pytest.fail("retry"))
+    with pytest.raises(ValueError):
+        history.head()
+    assert reads == 2
+
+
+def test_final_history_read_allows_download_count_and_release_prose_changes(monkeypatch):
+    gh = FakeGitHub()
+    history = History(gh)
+    expected = append_reservation(history)
+    original = gh.releases
+    reads = 0
+
+    def releases():
+        nonlocal reads
+        reads += 1
+        entries = original()
+        if reads == 2:
+            entries[-1]["assets"][0]["download_count"] = 1
+            entries[-1].update(body="notes", name="display name")
+        return entries
+
+    monkeypatch.setattr(gh, "releases", releases)
+    assert history.head() == expected
+    assert reads == 2
 
 
 @pytest.mark.parametrize("defect", ["bytes", "ancestry", "tag", "mutable"])
