@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import os
+import re
 import subprocess
 import sys
 import tempfile
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -22,6 +27,109 @@ PYTHON_PROFILES = (
     "opentofu-avm",
     "hyperlight-aks-probe",
 )
+
+
+def bundle_key() -> str:
+    """Bind reusable APKs to the complete recipe context, helper and target platform."""
+    context = ROOT / "images/wolfi-python"
+    for name in ("Dockerfile", "configure.py", "build.sh"):
+        if not (context / name).is_file():
+            raise ValueError(f"Missing Python build input: {name}")
+    inputs = [Path(__file__).resolve(), *sorted(context.rglob("*"))]
+    digest = hashlib.sha256(PLATFORM.encode())
+    for path in inputs:
+        if path.is_symlink():
+            raise ValueError("Python build inputs must not contain symlinks")
+        if path.is_file():
+            digest.update(path.relative_to(ROOT).as_posix().encode() + b"\0")
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
+def required_apks() -> set[str]:
+    """Require the same main/base APK pair across consumers of the shared preparation."""
+    pairs = set()
+    for dockerfile in (ROOT / "images").glob("*/Dockerfile"):
+        source = dockerfile.read_text(encoding="utf-8")
+        if "/python-packages/" not in source:
+            continue
+        names = frozenset(
+            re.findall(
+                r"/python-packages/(x86_64/python-3\.13(?:-base)?-[0-9][\w.+-]*\.apk)", source
+            )
+        )
+        main = {name.removeprefix("x86_64/python-3.13-") for name in names if "-base-" not in name}
+        base = {name.removeprefix("x86_64/python-3.13-base-") for name in names if "-base-" in name}
+        if len(names) != 2 or len(main) != 1 or main != base:
+            raise ValueError("Python consumer must declare one matching main/base APK pair")
+        pairs.add(names)
+    if len(pairs) != 1:
+        raise ValueError("Python consumers must agree on one shared APK pair")
+    return set(pairs.pop())
+
+
+def bundle_files(directory: Path) -> dict[str, str]:
+    """Inventory only public package outputs; private signing keys must never be retained."""
+    files = {}
+    if directory.is_symlink():
+        raise ValueError("Python package bundle must not contain symlinks")
+    for path in sorted(directory.rglob("*")):
+        if path.is_symlink():
+            raise ValueError("Python package bundle must not contain symlinks")
+        if path.is_dir():
+            continue
+        name = path.relative_to(directory).as_posix()
+        if name == "bundle.json":
+            continue
+        if name not in {
+            "maf-python.rsa.pub",
+            "python-3.13.yaml",
+            "x86_64/APKINDEX.tar.gz",
+        } and not (
+            path.parent == directory / "x86_64"
+            and path.name.startswith("python-3.13")
+            and path.suffix == ".apk"
+        ):
+            raise ValueError(f"Unexpected Python package output: {name}")
+        files[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    required = {
+        "maf-python.rsa.pub",
+        "python-3.13.yaml",
+        "x86_64/APKINDEX.tar.gz",
+    } | required_apks()
+    if not required <= files.keys():
+        raise ValueError("Python package bundle is incomplete")
+    return files
+
+
+def seal_bundle(directory: Path) -> None:
+    """Record preparation identity for transfer within CI; this is not release attestation."""
+    record = {
+        "schemaVersion": 1,
+        "inputs": bundle_key(),
+        "platform": PLATFORM,
+        "createdAt": datetime.now(UTC).isoformat(),
+        "files": bundle_files(directory),
+    }
+    (directory / "bundle.json").write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+
+
+def verify_bundle(directory: Path) -> None:
+    """Refuse changed, stale or incompatible cached preparation before a consumer build."""
+    files = bundle_files(directory)
+    record = json.loads((directory / "bundle.json").read_text(encoding="utf-8"))
+    if (
+        record.get("schemaVersion") != 1
+        or record.get("inputs") != bundle_key()
+        or record.get("platform") != PLATFORM
+        or record.get("files") != files
+    ):
+        raise ValueError("Python package bundle differs from its inputs or recorded bytes")
+    created = datetime.fromisoformat(record["createdAt"])
+    if created.tzinfo is None or not timedelta(minutes=-5) <= datetime.now(
+        UTC
+    ) - created <= timedelta(hours=48):
+        raise ValueError("Python package bundle is stale or has an invalid preparation time")
 
 
 def build_packages(destination: Path) -> None:
@@ -65,7 +173,7 @@ def build_packages(destination: Path) -> None:
 
 
 def build_image(command: list[str]) -> None:
-    """Build an AMD64 consumer with fresh Python packages; reject conflicting platforms."""
+    """Build an AMD64 consumer with fresh or verified shared Python packages."""
     if command[:2] != ["docker", "build"]:
         raise ValueError("Expected a Docker build command")
     arguments = iter(command[2:])
@@ -81,10 +189,15 @@ def build_image(command: list[str]) -> None:
         if platform != PLATFORM:
             raise ValueError(f"Python APKs require --platform {PLATFORM}")
     with tempfile.TemporaryDirectory(prefix="maf-python-packages-") as temporary:
-        build_packages(Path(temporary))
+        if supplied := os.environ.get("MAF_WOLFI_PYTHON_PACKAGES"):
+            directory = Path(supplied).absolute()
+            verify_bundle(directory)
+        else:
+            directory = Path(temporary)
+            build_packages(directory)
         subprocess.run(
             command[:2]
-            + ["--build-context", f"python-packages={temporary}", "--platform", PLATFORM]
+            + ["--build-context", f"python-packages={directory}", "--platform", PLATFORM]
             + consumer_arguments,
             check=True,
         )
@@ -92,7 +205,17 @@ def build_image(command: list[str]) -> None:
 
 def main() -> None:
     """Accept Docker build arguments, or export the packages for a local test build."""
-    if sys.argv[1:2] == ["--output"]:
+    if sys.argv[1:] == ["--bundle-key"]:
+        print(bundle_key() + "-" + datetime.now(UTC).strftime("%Y%m%d"))
+    elif sys.argv[1:2] in (["--prepare-bundle"], ["--verify-bundle"]):
+        parser = argparse.ArgumentParser(description=__doc__)
+        parser.add_argument(sys.argv[1], required=True, type=Path, dest="directory")
+        directory = parser.parse_args().directory
+        if sys.argv[1] == "--prepare-bundle":
+            build_packages(directory)
+            seal_bundle(directory)
+        verify_bundle(directory)
+    elif sys.argv[1:2] == ["--output"]:
         parser = argparse.ArgumentParser(description=__doc__)
         parser.add_argument("--output", required=True, type=Path)
         build_packages(parser.parse_args().output)

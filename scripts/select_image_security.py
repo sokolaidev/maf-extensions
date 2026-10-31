@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from build_wolfi_python import PYTHON_PROFILES
+from image_dependency_selection import affected_dependencies
 
 PROFILES = (
     "azure-pricing",
@@ -91,10 +92,14 @@ EXPERIMENT_RECORDS = {
 # Workflow behavior tests cover selection tooling without rebuilding unchanged images.
 SELECTION_TOOLING = {
     "scripts/select_image_security.py",
+    "scripts/image_dependency_selection.py",
+    "tests/test_image_dependency_selection.py",
     "tests/test_image_security_workflow.py",
     "tests/test_select_image_security.py",
 }
 SCRIPT_INPUTS = {
+    ".github/actions/prepare-wolfi-python/action.yml": PYTHON_PROFILES,
+    ".github/workflows/tests.yml": ("hyperlight-aks-probe",),
     "scripts/build_wolfi_python.py": PYTHON_PROFILES,
     "scripts/antivirus_qualification.py": ("antivirus",),
     "scripts/antivirus_cdiff_check.py": ("antivirus",),
@@ -428,12 +433,23 @@ def select(root: Path, event: str, base: str, head: str) -> tuple[list[str], str
         paths = _git(root, "diff", "--name-only", "--no-renames", "-z", base, head, "--")
         changed = [path for path in paths.split("\0") if path]
         ignored = metadata_only(root, base, head, changed)
+        dependency_paths = {
+            path
+            for path in changed
+            if path not in ignored
+            and (
+                path in {"uv.lock", "pyproject.toml"}
+                or re.fullmatch(r"packages/[^/]+/pyproject\.toml", path)
+            )
+        }
         chosen = {
             profile
             for path in changed
-            if path not in ignored
+            if path not in ignored | dependency_paths
             for profile in changed_profiles(root, base, head, path)
         }
+        if dependency_paths:
+            chosen.update(affected_dependencies(root, base, head, dependency_paths, PROFILES))
     except (
         subprocess.CalledProcessError,
         OSError,
@@ -469,6 +485,10 @@ def main() -> None:
             "Manually selected profile; other profiles were not scanned.",
         )
     output = f"profiles={json.dumps(profiles)}\nscan={str(bool(profiles)).lower()}\n"
+    python_profiles = [profile for profile in profiles if profile in PYTHON_PROFILES]
+    output += f"python={str(bool(python_profiles)).lower()}\n"
+    output += f"python_profiles={json.dumps(python_profiles)}\n"
+    output += f"hyperlight={str('hyperlight-aks-probe' in profiles).lower()}\n"
     print(output, end="")
     if target := os.environ.get("GITHUB_OUTPUT"):
         with Path(target).open("a", encoding="utf-8") as stream:
