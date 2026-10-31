@@ -508,7 +508,12 @@ def main() -> int:
     parser.add_argument("--https-ca", type=Path)
     parser.add_argument("--egress-routes", action="store_true")
     parser.add_argument("--egress-composition", action="store_true")
+    parser.add_argument("--egress-transitions", action="store_true")
     args = parser.parse_args()
+    if args.egress_transitions and (
+        not args.egress_origin_ip or args.https_ca or args.egress_routes or args.egress_composition
+    ):
+        parser.error("--egress-transitions requires only --egress-origin-ip")
     if args.egress_composition and (
         not args.egress_origin_ip or args.https_ca or args.egress_routes
     ):
@@ -595,7 +600,11 @@ def main() -> int:
             created = True
             report["workspace_create"]["state"] = "confirmed"
             fixture.save()
-            if args.egress_composition:
+            if args.egress_transitions:
+                from openshell_transition_probe import measure_transitions
+
+                asyncio.run(measure_transitions(fixture, args.egress_origin_ip, control["gateway"]))
+            elif args.egress_composition:
                 from openshell_composition_probe import measure_native_composition
 
                 asyncio.run(measure_native_composition(fixture, args.egress_origin_ip))
