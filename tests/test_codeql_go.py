@@ -76,6 +76,11 @@ def test_manual_build_uses_patched_upstream_and_owned_sources(tmp_path, monkeypa
     assert commands.count(("go", "mod", "verify")) == 2
     assert sum(args[:3] == ("go", "build", "-a") for args in commands) == 6
     assert sum(args[:3] == ("go", "test", "-a") for args in commands) == 3
+    test_compiles = [args for args in commands if args[:2] == ("go", "test")]
+    assert all(args[3:5] == ("-c", "-o") for args in test_compiles)
+    assert all("-count=1" not in args and "-run" not in args for args in test_compiles)
+    assert sum("-test.run=^TestMAFCredential" in args for args in commands) == 2
+    assert (str(output / "fixture-tests"),) in commands
     for context in codeql_go.CONTEXTS:
         source = tmp_path / context
         destination = output / context.parts[1]

@@ -101,17 +101,20 @@ def build(root: Path, output: Path) -> None:
         proxy_environment = dict(environment, CODEQL_PATH_TRANSFORMER=str(transformer))
         run("go", "mod", "download", cwd=destination, env=environment)
         run("go", "mod", "verify", cwd=destination, env=environment)
+        test_binary = destination / "credential-tests"
+        # Keep test-runner flags out of the extractor's go-build flag parser.
         run(
             "go",
             "test",
             "-a",
-            "-count=1",
-            "-run",
-            "^TestMAFCredential",
+            "-c",
+            "-o",
+            str(test_binary),
             "./internal/proxy",
             cwd=destination,
             env=proxy_environment,
         )
+        run(str(test_binary), "-test.run=^TestMAFCredential", cwd=destination, env=environment)
         run(
             "go",
             "build",
@@ -136,16 +139,20 @@ def build(root: Path, output: Path) -> None:
     for context in CONTEXTS:
         run("go", "build", "-a", ".", cwd=root / context / "dependencies", env=environment)
     fixture = root / STANDALONE[1]
+    test_binary = output / "fixture-tests"
     run(
         "go",
         "test",
         "-a",
-        "-count=1",
+        "-c",
+        "-o",
+        str(test_binary),
         str(fixture),
         str(fixture.with_name("main_test.go")),
         cwd=root,
         env=environment,
     )
+    run(str(test_binary), cwd=root, env=environment)
     (output / "sources.json").write_text(
         json.dumps([p.as_posix() for p in sources], indent=2) + "\n", encoding="utf-8"
     )
