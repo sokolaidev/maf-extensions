@@ -59,7 +59,21 @@ def test_reports_must_advance_within_the_accepted_session(probe, sequence):
 
 @pytest.mark.parametrize("attached", [True, False])
 @pytest.mark.parametrize(
-    "failure", [None, "preserved", "stale", "intent", "runtime", "identity", "guest", "after"]
+    "failure",
+    [
+        None,
+        "preserved",
+        "stale",
+        "intent",
+        "runtime",
+        "identity",
+        "guest",
+        "after",
+        "retained",
+        "policy",
+        "provider",
+        "receipt",
+    ],
 )
 def test_recovery_brackets_traffic_with_fresh_stable_authority(
     probe, monkeypatch, attached, failure
@@ -75,10 +89,25 @@ def test_recovery_brackets_traffic_with_fresh_stable_authority(
     fixture = NS(client=NS(), owners=[{"name": "owned", "sandbox_id": "physical"}])
     fixture.save = lambda: persisted.append(copy.deepcopy(saved))
 
+    def retained(method, request):
+        assert method == "GetSandboxProviderStatus" and request.receipt_id == "original"
+        events.append("retained")
+        if failure == "retained":
+            raise RuntimeError("retained status unavailable")
+        return NS(status=Message(state="SUPERSEDED"))
+
+    fixture.client.scope = "workspace"
+    fixture.client.rpc = retained
+    fixture.client.pb = NS(
+        GetSandboxProviderStatusRequest=NS, ProviderReadinessState=NS(Name=lambda value: value)
+    )
+
     def record(kind, value):
         saved.append((kind, value))
 
-    transition = probe.RestartAuthority(fixture, NS(provider_host="fixture"), "192.0.2.1", record)
+    transition = probe.RestartAuthority(
+        fixture, NS(provider_host="fixture", provider="provider"), "192.0.2.1", record
+    )
     monkeypatch.setattr(transition, "restart_runtime", lambda *args: (row, status("old")))
     monkeypatch.setattr(
         transition,
@@ -91,7 +120,24 @@ def test_recovery_brackets_traffic_with_fresh_stable_authority(
     monkeypatch.setattr(probe.time, "monotonic", lambda: next(tick))
     monkeypatch.setattr(probe.time, "sleep", lambda _: None)
 
+    def policy(enabled):
+        assert enabled is attached
+        events.append("policy")
+        if failure == "policy":
+            raise RuntimeError("policy intent failed")
+
+    def provider(enabled):
+        assert enabled is attached
+        events.append("provider")
+        if failure == "provider":
+            raise RuntimeError("provider intent failed")
+        return Message(receipt_id="original" if failure == "receipt" else "restored")
+
+    monkeypatch.setattr(transition, "policy", policy)
+    monkeypatch.setattr(transition, "provider", provider)
+
     def wait(*args):
+        assert args[0].receipt_id == "restored"
         sequence = len([event for event in events if event == "status"]) + 1
         events.append("status")
         prefix = "old" if failure == "stale" else "new"
@@ -114,17 +160,23 @@ def test_recovery_brackets_traffic_with_fresh_stable_authority(
     monkeypatch.setattr(probe, "observe_native", observe)
     if failure:
         with pytest.raises(RuntimeError):
-            transition.recover(None, Message(), attached)
+            transition.recover(None, Message(receipt_id="original"), attached)
         assert not row["completed"]
-        if failure in ("preserved", "stale", "intent", "runtime", "identity"):
+        if failure not in ("guest", "after"):
             assert "guest" not in events
         if failure == "after":
             case = next(value for kind, value in saved if kind == "cases")
             assert case["passed"] and not case["authority_verified"]
     else:
-        transition.recover(None, Message(), attached)
+        transition.recover(None, Message(receipt_id="original"), attached)
         assert row["completed"]
-        assert events == ["status"] + ["status", "guest", "status"] * (3 if attached else 2)
+        assert events == ["retained", "policy", "provider", "status"] + [
+            "status",
+            "guest",
+            "status",
+        ] * (3 if attached else 2)
+        assert row["retained_receipt_state"] == "SUPERSEDED"
+        assert row["restoration_state"] == "installed"
         cases = [value for kind, value in saved if kind == "cases"]
         assert all(case["authority_verified"] for case in cases)
         assert all(case["authority_before_hex"] != case["authority_after_hex"] for case in cases)

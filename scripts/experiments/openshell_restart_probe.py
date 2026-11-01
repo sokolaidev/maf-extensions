@@ -39,15 +39,18 @@ def fresh_authority(before, current, accepted=None):
 class RestartAuthority(Transitions):
     """Bind replacement-runtime observations to fresh installed authority and host identity."""
 
+    def stable(self, runtime, spec):
+        if self.current().spec.SerializeToString(deterministic=True).hex() != spec:
+            raise RuntimeError("replacement runtime intent changed")
+        if not runtime_continuity(self.identity, runtime, snapshot(self.identity)):
+            raise RuntimeError("replacement runtime changed during authority observation")
+
     def attest(self, receipt, attached, before, runtime, spec, accepted=None):
         deadline = time.monotonic() + 30
         while True:
             status = self.wait_provider(receipt, attached)
             self.record("attestations", {"status_hex": status.SerializeToString().hex()})
-            if self.current().spec.SerializeToString(deterministic=True).hex() != spec:
-                raise RuntimeError("replacement runtime intent changed")
-            if not runtime_continuity(self.identity, runtime, snapshot(self.identity)):
-                raise RuntimeError("replacement runtime changed during authority observation")
+            self.stable(runtime, spec)
             if accepted is not None and authority_identity(status) != authority_identity(accepted):
                 raise RuntimeError("replacement authority identity changed")
             if fresh_authority(before, status, accepted):
@@ -63,7 +66,30 @@ class RestartAuthority(Transitions):
         if row["runtime_continuity"]:
             raise RuntimeError("recovery experiment requires independently verified replacement")
         runtime, spec = row["after"], row["after_spec_hex"]
+        self.stable(runtime, spec)
+        retained = self.client.rpc(
+            "GetSandboxProviderStatus",
+            self.client.pb.GetSandboxProviderStatusRequest(
+                sandbox=self.name,
+                provider=self.profile.provider,
+                workspace_scope=self.client.scope,
+                receipt_id=receipt.receipt_id,
+            ),
+        ).status
+        row["retained_receipt_status_hex"] = retained.SerializeToString().hex()
+        row["retained_receipt_state"] = self.client.pb.ProviderReadinessState.Name(retained.state)
+        row["restoration_state"] = "pending"
+        self.fixture.save()
+        self.policy(attached)
+        restored = self.provider(attached)
+        if not restored.receipt_id or restored.receipt_id == receipt.receipt_id:
+            raise RuntimeError("restoration requires a new provider receipt")
+        receipt = restored
+        spec = self.current().spec.SerializeToString(deterministic=True).hex()
+        row["restored_spec_hex"] = spec
+        row["restored_receipt_hex"] = receipt.SerializeToString().hex()
         accepted = self.attest(receipt, attached, before, runtime, spec)
+        row["restoration_state"] = "installed"
         row["replacement_status_hex"] = accepted.SerializeToString().hex()
         self.fixture.save()
         cases = [("GET", "/provider"), ("POST", "/provider")]
@@ -100,7 +126,7 @@ async def measure_restart_authority(fixture, ip, gateway):
     """Run attached and detached replacement controls in one disposable owned sandbox."""
     ip = native_origin_ip(ip)
     evidence = fixture.report["restart_authority"] = {
-        "scope": "anonymous provider; fresh IPv4 HTTP connections after orderly runtime replacement",
+        "scope": "anonymous provider; explicitly restored policy/provider intent after orderly runtime replacement",
         "cases": [],
         "case_attempts": [],
         "controls": [],
