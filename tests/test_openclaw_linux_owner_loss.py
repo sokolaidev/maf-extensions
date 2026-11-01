@@ -109,7 +109,7 @@ def test_runtime_snapshot_includes_added_and_modified_assets(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "mutation", ["plan", "missing_case", "runtime", "transplant", "failed_case"]
+    "mutation", ["none", "plan", "missing_case", "runtime", "transplant", "failed_case"]
 )
 def test_collector_rejects_incomplete_or_transplanted_campaign(tmp_path, monkeypatch, mutation):
     candidate, _ = observation("control")
@@ -139,7 +139,7 @@ def test_collector_rejects_incomplete_or_transplanted_campaign(tmp_path, monkeyp
     reporter = importlib.import_module("report_openclaw_hosted")
     monkeypatch.setattr(reporter, "command", lambda *a: "{}")
     monkeypatch.setattr(profile, "cleanup", lambda *a: {"confirmed": True, "removed": []})
-    assert profile.collect(tmp_path, root)["qualified"] is False
+    assert profile.collect(tmp_path, root)["qualified"] is (mutation == "none")
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="requires Linux pidfds and procfs")
