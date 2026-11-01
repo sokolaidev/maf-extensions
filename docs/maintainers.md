@@ -4,6 +4,14 @@ Everything here is already done for the packages published today — a count is 
 
 Read it before touching PyPI settings: much of it is one-time configuration whose failure mode is a `403` at token-mint time that does not say which field was wrong. The later sections are the reasoning behind two choices in the release flow that look like oversights until you know what was tried.
 
+## CodeQL setup
+
+The [advanced CodeQL workflow](../.github/workflows/codeql.yml) analyzes Actions, JavaScript/TypeScript, Python, Rust and Go with the security-extended suite. Go uses [an explicit build](../scripts/codeql_go.py): each proxy's Dockerfile supplies the upstream commit and Go version, its patch and dependency manifests reconstruct the production module, and the standalone Go tools, dependency import anchors and credential tests are built too. CodeQL path transforms retain the original credential source paths. A database source-archive check requires all nine owned source and test files with their original bytes before upload. New tracked Go files require an explicit build decision.
+
+Until the repository variable `CODEQL_ADVANCED_UPLOAD` is `true`, the workflow validates extraction and retains SARIF artifacts without uploading to code scanning. This permits testing alongside default setup, which rejects advanced CodeQL uploads. A green validation run does not clear the historical default-setup Go failure or establish live code-scanning coverage.
+
+After merging the workflow and verifying all five analyses, switch CodeQL from default to advanced setup in repository security settings, set `CODEQL_ADVANCED_UPLOAD=true`, and dispatch `codeql.yml` on `main`. Verify successful uploads for all five languages, including Go, at that exact commit before retiring the historical failed default-setup configuration from the tool status page. Do not delete the old configuration as a substitute for restoring Go coverage. If cutover fails, restore default setup with its previously configured languages and extended query suite while repairing the advanced workflow; retain the failed-run evidence.
+
 ## Trusted publishing
 
 Publishing uses OIDC. PyPI is told to trust *this repository, this workflow file, this environment*, and mints a short-lived credential per run. Nothing is stored as a secret.

@@ -1,0 +1,118 @@
+name: CodeQL advanced
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+          - language: rust
+            build-mode: none
+          - language: go
+            build-mode: manual
+    env:
+      CODEQL_EXTRACTOR_GO_OPTION_EXTRACT_TESTS: 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the production Go version
+        if: matrix.language == 'go'
+        id: go
+        run: echo "version=$(python3 scripts/codeql_go.py version)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: matrix.language == 'go'
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+          cache: false
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          db-location: ${{ runner.temp }}/codeql_databases
+          queries: security-extended
+      - name: Build the patched proxies and standalone Go tools
+        if: matrix.language == 'go'
+        run: python3 scripts/codeql_go.py build
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          category: /language:${{ matrix.language }}
+          output: codeql-results
+          upload: never
+      - name: Verify owned Go source coverage
+        if: matrix.language == 'go'
+        run: python3 scripts/codeql_go.py coverage --archive "$RUNNER_TEMP/codeql_databases/go/src.zip"
+      - name: Upload code scanning results after cutover
+        if: vars.CODEQL_ADVANCED_UPLOAD == 'true'
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: codeql-results
+          category: /language:${{ matrix.language }}
+      - name: Retain scan results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codeql-${{ matrix.language }}
+          path: codeql-results
+          retention-days: 14
+      - name: Report upload mode
+        env:
+          UPLOAD_ENABLED: ${{ vars.CODEQL_ADVANCED_UPLOAD }}
+        run: |
+          if [ "$UPLOAD_ENABLED" = true ]; then
+            echo 'CodeQL results uploaded to code scanning.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Validation only: SARIF retained as an artifact. Default setup still owns code scanning until the documented cutover.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  report-failure:
+    name: Report CodeQL analysis failure
+    needs: analyze
+    if: always() && needs.analyze.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Open or notify the CodeQL tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/report_workflow_failure.py
+          --marker '<!-- codeql-analysis-failure-tracker -->'
+          --title 'CodeQL analysis failed'
+          --reproduce 'Re-run the linked attempt or dispatch codeql.yml at the failing commit. Inspect the language job, retained SARIF and Go source-coverage check; verify the documented default-to-advanced cutover before enabling uploads.'
+          --expected 'All five language analyses complete, every tracked Go source is extracted at its original path and bytes, and enabled code-scanning uploads succeed.'
+          --packages maf-sandbox-docker maf-sandbox-wslc
