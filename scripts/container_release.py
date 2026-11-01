@@ -363,35 +363,76 @@ def validate_transition(before: dict[str, Any], after: dict[str, Any]) -> None:
             raise ValueError("Known vulnerability history cannot be erased")
 
 
+def reservation_origin(record: dict[str, Any]) -> str:
+    """Identify the workflow and source that own immutable candidate bytes."""
+    return (
+        f"Original run: https://github.com/{REPOSITORY}/actions/runs/{record['attemptId']}; "
+        f"source: {record['sourceCommit']} ({record['sourceRef']})."
+    )
+
+
 def validate_eligibility(catalogue: dict[str, Any], request: dict[str, Any]) -> None:
     """Check catalogue-dependent rules without reserving a version or requiring built bytes."""
     validate_request(request)
     profile, requested = request["profile"], request["version"]
     label = f"{profile}:{requested}"
     existing = catalogue["releases"].get(f"{profile}/{requested}")
+    current = catalogue["current"].get(profile)
+    overtaken = current and version(requested) <= version(catalogue["releases"][current]["version"])
     if existing:
+        origin = reservation_origin(existing)
         if existing.get("unexpectedDigests"):
             raise ValueError(
-                f"{label}: Unexpected public bytes permanently retire the reserved version"
+                f"{label}: Unexpected public bytes permanently retire the reserved version. "
+                f"{origin} Investigate the unexpected registry digests and use an unused version "
+                "for a replacement. Retrying this version cannot make it eligible."
+            )
+        if existing["state"] == "abandoned":
+            raise ValueError(
+                f"{label}: An abandoned version is permanently retired. {origin} "
+                "Use an unused version for a replacement; this version cannot be resumed or rebuilt."
+            )
+        if existing["state"] == "incomplete" and overtaken:
+            raise ValueError(
+                f"{label}: Incomplete release was overtaken by completed {current}. {origin} "
+                "Abandon this incomplete reservation through the protected release workflow. "
+                "Use the current image, or an unused version newer than the current release."
             )
         if any(
             existing.get(field) != request[field]
             for field in ("sourceCommit", "sourceRef", "attemptId")
         ):
-            raise ValueError(f"{label}: A reserved version cannot change identity or owner")
-        if existing["state"] == "abandoned":
-            raise ValueError(f"{label}: An abandoned version is permanently retired")
+            if existing["state"] == "completed":
+                raise ValueError(
+                    f"{label}: This image version is already published; evidence delivery is "
+                    f"{existing['delivery']}. {origin} A different run or source cannot overwrite it. "
+                    "Use the existing image, or start a new dispatch with an unused version for an "
+                    "updated image. For unfinished signing or evidence delivery, recover the "
+                    "original run. Retrying this conflicting dispatch will not help."
+                )
+            raise ValueError(
+                f"{label}: This version is reserved by an incomplete publication. {origin} "
+                "Resume the original run with its retained candidate; do not rebuild this version. "
+                "If that candidate cannot be recovered, abandon the reservation through the "
+                "protected release workflow and start a new dispatch with an unused version. "
+                "Retrying this conflicting dispatch will not help."
+            )
         if existing["state"] == "completed":
             return
-    current = catalogue["current"].get(profile)
-    if current and version(requested) <= version(catalogue["releases"][current]["version"]):
-        raise ValueError(f"{label}: Incomplete release was overtaken by a completed version")
+    if overtaken:
+        raise ValueError(
+            f"{label}: Requested version is not newer than completed {current}. "
+            "Start a new dispatch with an unused version newer than the current release."
+        )
     if (
         not current
         and not any(r["profile"] == profile for r in catalogue["releases"].values())
         and requested != "0.1.0"
     ):
-        raise ValueError(f"{label}: The first reserved version must be 0.1.0")
+        raise ValueError(
+            f"{label}: The first reserved version must be 0.1.0. "
+            "Start a new dispatch with version 0.1.0 for this profile."
+        )
 
 
 def reserve(catalogue: dict[str, Any], candidate: dict[str, Any], at: str) -> dict[str, Any]:
@@ -406,10 +447,21 @@ def reserve(catalogue: dict[str, Any], candidate: dict[str, Any], at: str) -> di
     )
     existing = result["releases"].get(name)
     if existing:
-        if any(existing.get(field) != candidate.get(field) for field in IDENTITY_FIELDS):
-            raise ValueError("A reserved version cannot change identity or owner")
+        changed = [
+            field for field in IDENTITY_FIELDS if existing.get(field) != candidate.get(field)
+        ]
+        if changed:
+            raise ValueError(
+                f"{name}: Retained candidate identity differs in {', '.join(changed)}. "
+                f"{reservation_origin(existing)} Reuse the original retained OCI candidate; "
+                "a rebuild requires a new dispatch and unused version."
+            )
         if existing.get("candidate", retained) != retained:
-            raise ValueError("Reserved preparation evidence cannot change")
+            raise ValueError(
+                f"{name}: Reserved preparation evidence cannot change. "
+                f"{reservation_origin(existing)} Recover the original candidate and evidence; "
+                "a rebuild requires a new dispatch and unused version."
+            )
         if existing["state"] == "completed":
             return result
     if not existing:
