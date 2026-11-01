@@ -189,6 +189,66 @@ def test_pipeline_orders_stages_caches_public_queries_and_keeps_unknowns(sample)
     assert result["rows"][2]["monthly_cost"] is None
 
 
+@pytest.mark.parametrize("failure", ["lookup", "invalid-json", "incomplete", "wrong-meter"])
+def test_failed_product_lookup_is_not_retried_for_each_resource(sample, failure):
+    keys = list(sample.estimate.CATALOG)
+    entries = [resource(sample, product_key=keys[index % 3]) for index in range(49)]
+    entries.append(resource(sample, product_key=keys[3]))
+    calls = []
+
+    async def pricing(key):
+        calls.append(key)
+        if key == keys[3]:
+            return price_report(sample, key)
+        if failure == "lookup":
+            raise ValueError("Pricing lookup incomplete")
+        if failure == "invalid-json":
+            return json.loads("invalid")
+        report = price_report(sample, key)
+        if failure == "incomplete":
+            report["truncated"] = True
+        else:
+            report["prices"][0]["meterName"] = "wrong meter"
+        return report
+
+    report = asyncio.run(
+        sample.agent.pipeline(
+            sample.agent.Upload(b"word"),
+            AsyncMock(return_value=clean(sample)),
+            AsyncMock(return_value=entries[0].evidence),
+            AsyncMock(return_value=sample.estimate.Inventory(resources=entries)),
+            pricing,
+            region="westeurope",
+            currency="USD",
+        )
+    )
+    assert calls == keys
+    assert len(report["rows"]) == 50
+    assert report["unresolved_resources"] == 49
+    assert report["inventory_total"] is None
+    assert all(row["price"] is None for row in report["rows"][:-1])
+    assert report["rows"][-1]["monthly_cost"] == "0.10"
+    assert report["estimated_subtotal"] == "0.10"
+
+
+@pytest.mark.parametrize("error", [RuntimeError("cleanup failed"), asyncio.CancelledError()])
+def test_fatal_pricing_failure_is_not_cached_or_swallowed(sample, error):
+    pricing = AsyncMock(side_effect=error)
+    with pytest.raises(type(error)):
+        asyncio.run(
+            sample.agent.pipeline(
+                sample.agent.Upload(b"word"),
+                AsyncMock(return_value=clean(sample)),
+                AsyncMock(return_value="two Linux B2s VMs"),
+                AsyncMock(return_value=sample.estimate.Inventory(resources=[resource(sample)] * 2)),
+                pricing,
+                region="westeurope",
+                currency="USD",
+            )
+        )
+    pricing.assert_awaited_once()
+
+
 @pytest.mark.parametrize(
     "overrides", [dict(quantity=None), dict(region="eastus"), dict(product_key="unknown")]
 )

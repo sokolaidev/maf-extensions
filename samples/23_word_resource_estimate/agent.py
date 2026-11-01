@@ -197,18 +197,23 @@ async def pipeline(
     inventory = validate_inventory(await extract(text), text)
     measure("inventory", resources=len(inventory.resources))
     rows = []
-    cache: dict[str, dict[str, Any]] = {}
+    cache: dict[str, dict[str, Any] | None] = {}
     for resource in inventory.resources:
         reason = unresolved(resource, region)
         price = None
         if reason is None:
-            try:
-                if resource.product_key not in cache:
-                    cache[resource.product_key] = await pricing(resource.product_key)
-                price = select_price(
-                    cache[resource.product_key], CATALOG[resource.product_key], region, currency
-                )
-            except ValueError:
+            if resource.product_key not in cache:
+                try:
+                    cache[resource.product_key] = select_price(
+                        await pricing(resource.product_key),
+                        CATALOG[resource.product_key],
+                        region,
+                        currency,
+                    )
+                except ValueError:
+                    cache[resource.product_key] = None
+            price = cache[resource.product_key]
+            if price is None:
                 reason = "Lookup failed, was incomplete, or had no unique exact meter"
         rows.append(estimate_row(resource, price, reason))
     return report_document(rows, region, currency)
