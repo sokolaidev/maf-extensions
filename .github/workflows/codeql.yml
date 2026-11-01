@@ -92,3 +92,27 @@ jobs:
           else
             echo 'Validation only: SARIF retained as an artifact. Default setup still owns code scanning until the documented cutover.' >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  report-failure:
+    name: Report CodeQL analysis failure
+    needs: analyze
+    if: always() && needs.analyze.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Open or notify the CodeQL tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/report_workflow_failure.py
+          --marker '<!-- codeql-analysis-failure-tracker -->'
+          --title 'CodeQL analysis failed'
+          --reproduce 'Re-run the linked attempt or dispatch codeql.yml at the failing commit. Inspect the language job, retained SARIF and Go source-coverage check; verify the documented default-to-advanced cutover before enabling uploads.'
+          --expected 'All five language analyses complete, every tracked Go source is extracted at its original path and bytes, and enabled code-scanning uploads succeed.'
+          --packages maf-sandbox-docker maf-sandbox-wslc

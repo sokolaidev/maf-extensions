@@ -196,6 +196,7 @@ def test_failure_opens_or_comments_on_its_own_tracker_across_all_pages(monkeypat
         else:
             assert "does not automatically close" in body["body"]
         expected_packages = {
+            "codeql.yml": {"maf-sandbox-docker", "maf-sandbox-wslc"},
             "bicep-catalog.yml": {"maf-sandbox-bicep"},
             "docker-live.yml": {
                 "maf-sandbox-mcp",
