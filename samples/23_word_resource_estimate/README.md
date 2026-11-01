@@ -32,7 +32,7 @@ Hourly VM cost is `quantity × hours per resource per month × retailPrice`, usi
 
 The table shows quantity, unit price, usage, monthly cost and assumptions. `estimate.json` also retains document evidence, extracted requirements, the matched meter ID, effective date, retrieval time and selected image references. An unresolved row has `monthly_cost: null`, and any unresolved row makes `inventory_total: null`; `estimated_subtotal` is explicitly partial. Even when every extracted row is priced, the result is a scoped inventory estimate, not a billing quote.
 
-Open `estimate.md` to view the result table. The sample does not print the table's document-derived names and notes to stdout; successful runs log package versions, timings, cleanup, artifact hashes and counts. Both report files can contain sensitive document content, including verbatim evidence in JSON, so retain them with the same access restrictions as the input. The live workflow uploads reports only from the checked-in public fixture.
+Open `estimate.md` to view the result table. The sample does not print the table's document-derived names and notes to stdout; successful runs log package versions, timings, cleanup, artifact hashes and counts. Both report files can contain sensitive document content, including verbatim evidence in JSON, so retain them with the same access restrictions as the input. On POSIX, the new report directory and files use owner-only permissions (`0700` and `0600`). The live workflow uploads reports only from the checked-in public fixture.
 
 ## Validation
 

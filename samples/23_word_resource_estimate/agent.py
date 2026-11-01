@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -219,12 +220,14 @@ def save_report(output: Path, report: dict[str, Any]) -> None:
         "estimate.json": (json.dumps(report, ensure_ascii=True, indent=2) + "\n").encode(),
         "estimate.md": markdown(report).encode(),
     }
-    output.mkdir()
+    output.mkdir(mode=0o700)
     owned: list[Path] = []
     try:
         for name, payload in payloads.items():
             path = output / name
-            with path.open("xb") as destination:
+            with open(
+                path, "xb", opener=lambda name, flags: os.open(name, flags, 0o600)
+            ) as destination:
                 owned.append(path)
                 destination.write(payload)
             if path.read_bytes() != payload:

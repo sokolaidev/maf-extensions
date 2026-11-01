@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 
@@ -67,6 +68,9 @@ def assess(
             return ["Inventory source does not match the verification mode"]
         if report["currency"] != "USD" or report["region"] != "westeurope":
             return ["Unexpected fixture region or currency"]
+        retrieved = datetime.fromisoformat(report["queried_at_utc"])
+        if retrieved.utcoffset() is None:
+            return ["Retrieval time must be timezone-aware"]
         rows = report["rows"]
         expected_rows = {
             "linux-b2s": (2, "730.0", "1 Hour"),
@@ -97,10 +101,19 @@ def assess(
                 or price["priceType"] != "Consumption"
                 or price["currencyCode"] != "USD"
                 or price["region"] != "westeurope"
+                or price.get("isPrimaryMeterRegion") is not True
+                or price.get("reservationTerm")
+                or not isinstance(price["meterId"], str)
                 or not price["meterId"]
-                or not price["effectiveStartDate"]
             ):
-                return ["Wrong billing unit or missing meter attribution"]
+                return ["Wrong billing terms or missing primary-meter attribution"]
+            effective = datetime.fromisoformat(price["effectiveStartDate"])
+            if effective.utcoffset() is None or effective > retrieved:
+                return ["Meter effective date is not current at retrieval"]
+            if isinstance(price["retailPrice"], bool) or not isinstance(
+                price["retailPrice"], (int, float)
+            ):
+                return ["Fixture retail price must be numeric"]
             retail = Decimal(str(price["retailPrice"]))
             if not retail.is_finite() or retail <= 0:
                 return ["Fixture retail price must be positive"]

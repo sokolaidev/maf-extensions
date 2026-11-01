@@ -6,6 +6,8 @@ import asyncio
 import hashlib
 import importlib.util
 import json
+import os
+import stat
 import subprocess
 import sys
 from decimal import Decimal
@@ -327,6 +329,20 @@ def test_failed_output_write_removes_only_owned_files(sample, tmp_path, monkeypa
     assert not output.exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits")
+@pytest.mark.parametrize("mask", [0, 0o022])
+def test_report_permissions_are_owner_only(sample, tmp_path, mask):
+    previous = os.umask(mask)
+    output = tmp_path / "report"
+    try:
+        sample.agent.save_report(output, sample.estimate.report_document([], "westeurope", "USD"))
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(output.stat().st_mode) == 0o700
+    for name in ("estimate.json", "estimate.md"):
+        assert stat.S_IMODE((output / name).stat().st_mode) == 0o600
+
+
 def test_input_is_a_bounded_immutable_snapshot(sample, tmp_path, monkeypatch):
     path = tmp_path / "input.docx"
     path.write_bytes(b"word")
@@ -520,6 +536,14 @@ def evidence_log(measured):
     return "\n".join("  [measured] " + json.dumps(item) for item in measured)
 
 
+def retain_live_report(sample, measured, artifacts, report):
+    artifacts["estimate.json"] = json.dumps(report).encode()
+    artifacts["estimate.md"] = sample.estimate.markdown(report).encode()
+    for event in measured[8:10]:
+        payload = artifacts[event["name"]]
+        event.update(sha256=hashlib.sha256(payload).hexdigest(), bytes=len(payload))
+
+
 def test_live_checker_accepts_host_artifacts_and_rejects_model_text(sample):
     measured, artifacts = live_evidence(sample)
     output = evidence_log(measured)
@@ -553,11 +577,7 @@ def test_live_checker_rejects_wrong_meter_with_consistent_artifacts(
     report["estimated_subtotal"] = str(
         sum(Decimal(item["monthly_cost"]) for item in report["rows"] if item["price"])
     )
-    artifacts["estimate.json"] = json.dumps(report).encode()
-    artifacts["estimate.md"] = sample.estimate.markdown(report).encode()
-    for event in measured[8:10]:
-        payload = artifacts[event["name"]]
-        event.update(sha256=hashlib.sha256(payload).hexdigest(), bytes=len(payload))
+    retain_live_report(sample, measured, artifacts, report)
     assert sample.checker.assess(evidence_log(measured), artifacts) == [
         "Selected meter does not match the fixture product"
     ]
@@ -571,6 +591,49 @@ def test_live_checker_identity_is_independent_of_sample_catalog(sample, monkeypa
     assert sample.checker.assess(evidence_log(measured), artifacts) == [
         "Selected meter does not match the fixture product"
     ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("isPrimaryMeterRegion", False),
+        ("isPrimaryMeterRegion", 1),
+        ("isPrimaryMeterRegion", "true"),
+        ("isPrimaryMeterRegion", None),
+        ("effectiveStartDate", "invalid"),
+        ("effectiveStartDate", "2026-01-01T00:00:00"),
+        ("effectiveStartDate", "2099-01-01T00:00:00Z"),
+        ("effectiveStartDate", "2026-01-01T01:00:00-01:00"),
+        ("meterId", 123),
+        ("reservationTerm", "1 Year"),
+        ("retailPrice", "0.05"),
+    ],
+)
+def test_live_checker_rejects_inadmissible_meter_with_consistent_artifacts(sample, field, value):
+    measured, artifacts = live_evidence(sample)
+    report = json.loads(artifacts["estimate.json"])
+    report["queried_at_utc"] = "2026-01-01T00:00:00Z"
+    report["rows"][0]["price"][field] = value
+    retain_live_report(sample, measured, artifacts, report)
+    assert sample.checker.assess(evidence_log(measured), artifacts)
+
+
+@pytest.mark.parametrize("retrieved", ["invalid", "2026-01-01", None])
+def test_live_checker_rejects_invalid_retrieval_time(sample, retrieved):
+    measured, artifacts = live_evidence(sample)
+    report = json.loads(artifacts["estimate.json"])
+    report["queried_at_utc"] = retrieved
+    retain_live_report(sample, measured, artifacts, report)
+    assert sample.checker.assess(evidence_log(measured), artifacts)
+
+
+def test_live_checker_compares_effective_instants_with_timezone_offsets(sample):
+    measured, artifacts = live_evidence(sample)
+    report = json.loads(artifacts["estimate.json"])
+    report["queried_at_utc"] = "2026-01-01T00:00:00Z"
+    report["rows"][0]["price"]["effectiveStartDate"] = "2026-01-01T01:00:00+01:00"
+    retain_live_report(sample, measured, artifacts, report)
+    assert sample.checker.assess(evidence_log(measured), artifacts) == []
 
 
 @pytest.mark.parametrize(
