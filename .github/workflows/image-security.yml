@@ -10,7 +10,7 @@ on:
         description: Image profile to check (all for full coverage)
         type: choice
         default: all
-        options: [all, azure-pricing, bicep, bicep-avm, bicep-docker-sbx, graphviz, document, antivirus, drawio, drawio-export, shell, terraform-random, opentofu-random, terraform-avm, opentofu-avm, hyperlight-aks-probe, egress-proxy]
+        options: [all, antivirus, azure-pricing, bicep, bicep-avm, bicep-docker-sbx, document, drawio, drawio-export, egress-proxy, graphviz, hyperlight-aks-probe, opentofu-avm, opentofu-random, shell, terraform-avm, terraform-random]
       bicep_route:
         description: Bicep replacement policy or an explicit diagnostic compiler route
         type: choice
