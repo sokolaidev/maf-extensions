@@ -47,8 +47,12 @@ on:
         required: true
         type: choice
         options:
+          - maf-cachebench
+          - maf-compaction
           - maf-sandbox
           - maf-sandbox-acas
+          - maf-sandbox-antivirus
+          - maf-sandbox-azure-pricing
           - maf-sandbox-bicep
           - maf-sandbox-bubblewrap
           - maf-sandbox-codeact
@@ -56,18 +60,14 @@ on:
           - maf-sandbox-docker
           - maf-sandbox-docker-sbx
           - maf-sandbox-document
-          - maf-sandbox-antivirus
           - maf-sandbox-drawio
           - maf-sandbox-hyperlight
-          - maf-sandbox-otel
-          - maf-sandbox-terraform
-          - maf-sandbox-shell
-          - maf-sandbox-azure-pricing
           - maf-sandbox-mcp
+          - maf-sandbox-otel
+          - maf-sandbox-shell
+          - maf-sandbox-terraform
           - maf-sandbox-tui
           - maf-sandbox-wslc
-          - maf-compaction
-          - maf-cachebench
       target:
         description: "Registry"
         required: true
