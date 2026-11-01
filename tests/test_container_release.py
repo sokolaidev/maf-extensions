@@ -449,7 +449,8 @@ def test_preparation_scans_and_tests_reloaded_image(tmp_path, monkeypatch):
         }
         return subprocess.CompletedProcess(command, 0, json.dumps([details]))
 
-    def retain(image_id, directory):
+    def retain(image_id, directory, *, acas):
+        assert acas is True
         assert image_id == DIGEST
         return {
             "imageId": retained_id,

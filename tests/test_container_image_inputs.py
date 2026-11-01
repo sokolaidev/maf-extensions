@@ -68,6 +68,7 @@ def test_shared_wolfi_references_have_one_reviewed_digest():
         "drawio-sandbox/Dockerfile",
         "drawio-export/Dockerfile",
         "graphviz-sandbox/Dockerfile",
+        "document-sandbox/Dockerfile",
         "shell-sandbox/Dockerfile",
         "terraform-sandbox/Dockerfile",
     ],

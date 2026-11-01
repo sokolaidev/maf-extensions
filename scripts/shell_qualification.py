@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
-import tarfile
 import tempfile
 from importlib.metadata import version
 from pathlib import Path
@@ -13,6 +12,7 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from container_release import require_digest
+from image_layer_archive import check_layer_archive
 from maf_sandbox import (
     CallerContext,
     Isolation,
@@ -66,28 +66,6 @@ def require(condition: bool, message: str) -> None:
     """Keep qualification gates enabled under optimized Python."""
     if not condition:
         raise ValueError(message)
-
-
-def check_layer_archive(path: Path) -> int:
-    """Reject special-device entries in every saved layer, including hidden lower layers."""
-    with tarfile.open(path) as archive:
-        manifest_file = archive.extractfile("manifest.json")
-        if manifest_file is None:
-            raise ValueError("Missing Docker save manifest")
-        manifests = json.load(manifest_file)
-        require(len(manifests) == 1, "Expected one saved shell image")
-        layers = manifests[0]["Layers"]
-        require(isinstance(layers, list) and bool(layers), "Expected shell filesystem layers")
-        for name in layers:
-            layer_file = archive.extractfile(name)
-            if layer_file is None:
-                raise ValueError("Missing shell image layer")
-            with tarfile.open(fileobj=layer_file, mode="r|*") as layer:
-                for member in layer:
-                    require(
-                        not member.isdev(), f"Shell image contains a device node: {member.name}"
-                    )
-    return len(layers)
 
 
 def check_image_layers(image_id: str) -> dict[str, Any]:

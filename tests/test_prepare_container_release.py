@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -182,3 +183,41 @@ def test_release_build_budget_includes_python_compilation(monkeypatch, tmp_path,
     monkeypatch.setattr(preparation, "run", stop_at_build)
     with pytest.raises(RuntimeError, match="build intercepted"):
         preparation.prepare(profile, "0.3.0", "a" * 40, "123", tmp_path / "candidate")
+
+
+@pytest.mark.parametrize("profile", preparation.profiles())
+def test_acas_profiles_require_layer_inspection_before_qualification(
+    monkeypatch, tmp_path, profile
+):
+    excluded = {"bicep-docker-sbx", "hyperlight-aks-probe", "egress-proxy"}
+    image_id = "sha256:" + "a" * 64
+    revision = "b" * 40
+    monkeypatch.setattr(preparation, "require_source", lambda *args: None)
+    monkeypatch.setattr(preparation, "preflight", lambda *args: None)
+
+    def run(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps(
+                [
+                    {
+                        "Id": image_id,
+                        "Os": "linux",
+                        "Architecture": "amd64",
+                        "Config": {"Labels": preparation.labels(profile, "0.3.0", revision)},
+                    }
+                ]
+            ),
+        )
+
+    def retain(image, directory, *, acas):
+        assert image == image_id
+        assert acas == (profile not in excluded)
+        raise RuntimeError("retention intercepted")
+
+    monkeypatch.setattr(preparation, "run", run)
+    monkeypatch.setattr(preparation, "retain", retain)
+    monkeypatch.setattr(preparation, "check", lambda *args: pytest.fail("not yet qualified"))
+    with pytest.raises(RuntimeError, match="retention intercepted"):
+        preparation.prepare(profile, "0.3.0", revision, "123", tmp_path / "candidate")
