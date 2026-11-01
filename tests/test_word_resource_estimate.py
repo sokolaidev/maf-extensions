@@ -373,7 +373,16 @@ def test_scaffold_is_canonical(sample):
     ).read_bytes()
 
 
-def test_checked_in_fixture_and_inventory_agree(sample):
+@pytest.mark.parametrize("creator_system", [0, 3], ids=["windows", "unix"])
+def test_checked_in_fixture_and_inventory_agree(sample, monkeypatch, creator_system):
+    zip_info = sample.fixture.zipfile.ZipInfo
+    original_init = zip_info.__init__
+
+    def platform_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self.create_system = creator_system
+
+    monkeypatch.setattr(zip_info, "__init__", platform_init)
     assert (SAMPLE / "resources.docx").read_bytes() == sample.fixture.document_bytes()
     inventory = sample.estimate.Inventory.model_validate(sample.fixture.inventory_data())
     sample.estimate.validate_inventory(inventory, "\n".join(sample.fixture.PARAGRAPHS))

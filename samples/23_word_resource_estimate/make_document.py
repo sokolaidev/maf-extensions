@@ -66,6 +66,7 @@ def document_bytes() -> bytes:
         }
         for name, content in files.items():
             info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
+            info.create_system = 0  # Keep fixture bytes independent of the host OS.
             info.compress_type = zipfile.ZIP_DEFLATED
             archive.writestr(info, content)
     return buffer.getvalue()
