@@ -24,6 +24,7 @@ from container_release import (  # noqa: E402
     empty_catalogue,
     read,
     reserve,
+    validate_eligibility,
     write,
 )
 
@@ -109,7 +110,7 @@ def test_unused_version_below_current_is_rejected_but_newer_is_eligible(history)
     history.catalogue = complete(
         reserve(history.catalogue, newer, LATER), newer, CANDIDATE["imageId"], LATER
     )
-    with pytest.raises(ValueError, match="shell:0.1.1:.*overtaken"):
+    with pytest.raises(ValueError, match="shell:0.1.1:.*not newer than completed shell/0.2.0"):
         check(CANDIDATE | {"version": "0.1.1"})
     check(CANDIDATE | {"version": "0.2.1"})
 
@@ -228,8 +229,48 @@ def test_reservation_rechecks_state_changed_after_preflight(history, monkeypatch
     monkeypatch.setattr(publisher.History, "append", append)
     monkeypatch.setattr(publisher, "selected", lambda directory: CANDIDATE)
     monkeypatch.setattr(publisher, "context", lambda: (CANDIDATE["sourceCommit"], "123", "1"))
-    with pytest.raises(ValueError, match="owner|retired|overtaken"):
+    with pytest.raises(ValueError, match="incomplete publication|retired|overtaken"):
         publisher.reserve_version(tmp_path)
+    assert history.catalogue == before
+
+
+@pytest.mark.parametrize(
+    "state", ["incomplete", "completed", "abandoned", "unexpected", "overtaken"]
+)
+@pytest.mark.parametrize("field", ["sourceCommit", "attemptId"])
+def test_conflicts_explain_state_origin_and_recovery(history, state, field):
+    history.catalogue = reserve(empty_catalogue(), CANDIDATE, AT)
+    if state == "completed":
+        history.catalogue = complete(history.catalogue, CANDIDATE, CANDIDATE["imageId"], LATER)
+    elif state == "abandoned":
+        history.catalogue = abandon(history.catalogue, "shell/0.1.0", "expired", LATER)
+    elif state == "unexpected":
+        unexpected = "sha256:" + "d" * 64
+        history.catalogue["releases"]["shell/0.1.0"]["unexpectedDigests"] = {
+            unexpected: {"digest": unexpected, "discoveredAt": LATER}
+        }
+    elif state == "overtaken":
+        newer = CANDIDATE | {"version": "0.2.0", "attemptId": "456"}
+        history.catalogue = complete(
+            reserve(history.catalogue, newer, LATER), newer, CANDIDATE["imageId"], LATER
+        )
+    request = CANDIDATE | {field: {"sourceCommit": "d" * 40, "attemptId": "789"}[field]}
+    before = copy.deepcopy(history.catalogue)
+    with pytest.raises(ValueError) as caught:
+        validate_eligibility(history.catalogue, request)
+    message = str(caught.value)
+    assert "shell:0.1.0" in message
+    assert "https://github.com/sokolaidev/maf-extensions/actions/runs/123" in message
+    assert CANDIDATE["sourceCommit"] in message
+    assert "refs/heads/main" in message
+    expected = {
+        "incomplete": ("incomplete publication", "Resume the original run", "do not rebuild"),
+        "completed": ("already published", "evidence delivery is pending", "unused version"),
+        "abandoned": ("permanently retired", "cannot be resumed or rebuilt"),
+        "unexpected": ("Unexpected public bytes", "Investigate", "unused version"),
+        "overtaken": ("completed shell/0.2.0", "Abandon this incomplete reservation"),
+    }
+    assert all(fragment in message for fragment in expected[state])
     assert history.catalogue == before
 
 
