@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
+import re
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
+from typing import Any
 
 from live_sample_evidence import duration, records
 
@@ -22,6 +25,74 @@ FIXTURE_METERS = {
     ),
     "premium-ssd-p10": ("Storage", "Premium SSD Managed Disks", "P10 LRS", "P10 LRS Disk"),
 }
+
+
+def markdown_matches(report: dict[str, Any], rendered: str) -> bool:
+    """Compare the displayed table and summary with validated JSON, without the renderer."""
+
+    def flat(value: object) -> str:
+        return str(value).replace("\n", " ").replace("\r", " ")
+
+    def cells(line: str) -> list[str]:
+        if not line.startswith("| ") or not line.endswith(" |"):
+            raise ValueError("Malformed Markdown row")
+        values = line[2:-2].split(" | ")
+        if len(values) != 7:
+            raise ValueError("Wrong Markdown column count")
+        return [html.unescape(re.sub(r"\\([\\|`\[\]*_])", r"\1", value)) for value in values]
+
+    lines = rendered.splitlines()
+    table = [line for line in lines if line.startswith("|")]
+    if len(table) != len(report["rows"]) + 2:
+        return False
+    if cells(table[0]) != [
+        "Resource",
+        "Product",
+        "Qty",
+        "Unit price",
+        "Usage/resource/month",
+        "Monthly cost",
+        "Status / assumptions",
+    ] or not re.fullmatch(r"\|(?:[-:]+\|){7}", table[1]):
+        return False
+    for line, row in zip(table[2:], report["rows"], strict=True):
+        name, product, quantity, unit_price, usage, cost, notes = cells(line)
+        expected_notes = "; ".join(
+            flat(value) for value in (row["status"], row.get("assumption"), row["notes"]) if value
+        )
+        if (name, product, quantity, notes) != (
+            flat(row["name"]),
+            row["product_key"],
+            str(row["quantity"]) if row["quantity"] is not None else "?",
+            expected_notes,
+        ):
+            return False
+        if row["price"] is None:
+            if (unit_price, usage, cost) != ("—", "—", "—"):
+                return False
+        else:
+            amount, separator, unit = unit_price.partition(" / ")
+            if (
+                not separator
+                or unit != row["price"]["unitOfMeasure"]
+                or Decimal(amount) != Decimal(str(row["price"]["retailPrice"]))
+                or Decimal(usage) != Decimal(row["usage_per_resource"])
+                or Decimal(cost) != Decimal(row["monthly_cost"])
+            ):
+                return False
+    subtotal_lines = [line for line in lines if line.startswith("Estimated subtotal:")]
+    if len(subtotal_lines) != 1:
+        return False
+    subtotal = re.fullmatch(
+        r"Estimated subtotal: \*\*([0-9]+(?:\.[0-9]+)?) USD\*\*\.", subtotal_lines[0]
+    )
+    if subtotal is None or Decimal(subtotal[1]) != Decimal(report["estimated_subtotal"]):
+        return False
+    return [line for line in lines if line.startswith("Region:")] == [
+        f"Region: {report['region']}. Currency: {report['currency']}. Retrieved: {flat(report['queried_at_utc'])}."
+    ] and [line for line in lines if line.startswith("Unresolved resources:")] == [
+        f"Unresolved resources: **{report['unresolved_resources']}**. No complete inventory total is available."
+    ]
 
 
 def assess(
@@ -127,10 +198,8 @@ def assess(
             return ["Partial estimate was presented as complete"]
         if Decimal(report["estimated_subtotal"]) != total:
             return ["Subtotal differs from the priced rows"]
-        if "No complete inventory total is available." not in artifacts["estimate.md"].decode(
-            "utf-8"
-        ):
-            return ["Markdown report omits the incomplete-total warning"]
+        if not markdown_matches(report, artifacts["estimate.md"].decode("utf-8")):
+            return ["Markdown cost table or summary differs from the JSON report"]
     except (KeyError, TypeError, ValueError, InvalidOperation, UnicodeError):
         return ["Malformed cost report or measurement"]
     return []

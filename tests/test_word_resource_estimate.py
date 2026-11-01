@@ -637,6 +637,79 @@ def test_live_checker_compares_effective_instants_with_timezone_offsets(sample):
 
 
 @pytest.mark.parametrize(
+    "case",
+    [
+        "warning-only",
+        "missing-row",
+        "duplicate-row",
+        "name",
+        "product",
+        "quantity",
+        "unit-price",
+        "unit",
+        "usage",
+        "cost",
+        "notes",
+        "status",
+        "assumption",
+        "subtotal",
+        "currency",
+        "region",
+        "retrieved",
+        "unresolved",
+        "unknown-cost",
+    ],
+)
+def test_live_checker_rejects_inconsistent_markdown_with_matching_hash(sample, case):
+    measured, artifacts = live_evidence(sample)
+    display = json.loads(artifacts["estimate.json"])
+    row = display["rows"][0]
+    changes = {
+        "name": (row, "name", "Other resource"),
+        "product": (row, "product_key", "windows-b2s"),
+        "quantity": (row, "quantity", 3),
+        "unit-price": (row["price"], "retailPrice", 0.01),
+        "unit": (row["price"], "unitOfMeasure", "100 Hours"),
+        "usage": (row, "usage_per_resource", "1"),
+        "cost": (row, "monthly_cost", "0.01"),
+        "notes": (row, "notes", "Different notes"),
+        "status": (row, "status", "Not priced"),
+        "assumption": (row, "assumption", "Different assumption"),
+        "subtotal": (display, "estimated_subtotal", "0.01"),
+        "currency": (display, "currency", "EUR"),
+        "region": (display, "region", "eastus"),
+        "retrieved": (display, "queried_at_utc", "2026-01-01T00:00:00Z"),
+        "unresolved": (display, "unresolved_resources", 2),
+        "unknown-cost": (display["rows"][-1], "monthly_cost", "0.01"),
+    }
+    if case in changes:
+        target, key, value = changes[case]
+        target[key] = value
+    rendered = sample.estimate.markdown(display)
+    if case == "warning-only":
+        rendered = "No complete inventory total is available."
+    elif case == "missing-row":
+        rendered = "\n".join(line for index, line in enumerate(rendered.splitlines()) if index != 6)
+    elif case == "duplicate-row":
+        rendered += rendered.splitlines()[6] + "\n"
+    artifacts["estimate.md"] = rendered.encode()
+    measured[9].update(
+        sha256=hashlib.sha256(artifacts["estimate.md"]).hexdigest(),
+        bytes=len(artifacts["estimate.md"]),
+    )
+    assert sample.checker.assess(evidence_log(measured), artifacts)
+
+
+def test_live_checker_accepts_escaped_markdown_content(sample):
+    measured, artifacts = live_evidence(sample)
+    report = json.loads(artifacts["estimate.json"])
+    report["rows"][0]["name"] = "Web | <servers> \\ *[one]*\nnew"
+    report["rows"][0]["notes"] = "Use `literal_text` & keep \\| punctuation"
+    retain_live_report(sample, measured, artifacts, report)
+    assert sample.checker.assess(evidence_log(measured), artifacts) == []
+
+
+@pytest.mark.parametrize(
     "case", ["cleanup", "order", "timing", "call-id", "source", "total", "arithmetic", "quantity"]
 )
 def test_live_checker_rejects_incomplete_or_inconsistent_evidence(sample, case):
