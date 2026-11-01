@@ -9,6 +9,8 @@ samples/_pyright_probe_*.py
 dist/
 .pytest_cache/
 .ruff_cache/
+.codeql-build/
+codeql-results/
 bandit-report.json
 *.egg-info/
 
