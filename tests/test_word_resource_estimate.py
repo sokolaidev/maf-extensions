@@ -8,6 +8,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -526,6 +527,50 @@ def test_live_checker_accepts_host_artifacts_and_rejects_model_text(sample):
     scaffold = importlib.import_module("_scaffold")
     assert sample.checker.assess(scaffold.quoted(output), artifacts)
     assert sample.checker.assess(output, {**artifacts, "estimate.md": b"tampered"})
+
+
+@pytest.mark.parametrize("product_key", ["linux-b2s", "linux-d2s-v5", "premium-ssd-p10"])
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("serviceName", "Wrong service"),
+        ("productName", "Virtual Machines BS Series Windows"),
+        ("skuName", "Wrong SKU"),
+        ("meterName", "Wrong meter"),
+    ],
+)
+def test_live_checker_rejects_wrong_meter_with_consistent_artifacts(
+    sample, product_key, field, replacement
+):
+    measured, artifacts = live_evidence(sample)
+    report = json.loads(artifacts["estimate.json"])
+    row = next(row for row in report["rows"] if row["product_key"] == product_key)
+    row["price"][field] = replacement
+    row["price"]["retailPrice"] = 0.25
+    row["monthly_cost"] = str(
+        Decimal("0.25") * row["quantity"] * Decimal(row["usage_per_resource"])
+    )
+    report["estimated_subtotal"] = str(
+        sum(Decimal(item["monthly_cost"]) for item in report["rows"] if item["price"])
+    )
+    artifacts["estimate.json"] = json.dumps(report).encode()
+    artifacts["estimate.md"] = sample.estimate.markdown(report).encode()
+    for event in measured[8:10]:
+        payload = artifacts[event["name"]]
+        event.update(sha256=hashlib.sha256(payload).hexdigest(), bytes=len(payload))
+    assert sample.checker.assess(evidence_log(measured), artifacts) == [
+        "Selected meter does not match the fixture product"
+    ]
+
+
+def test_live_checker_identity_is_independent_of_sample_catalog(sample, monkeypatch):
+    monkeypatch.setitem(
+        sample.estimate.CATALOG, "linux-b2s", sample.estimate.CATALOG["windows-b2s"]
+    )
+    measured, artifacts = live_evidence(sample)
+    assert sample.checker.assess(evidence_log(measured), artifacts) == [
+        "Selected meter does not match the fixture product"
+    ]
 
 
 @pytest.mark.parametrize(

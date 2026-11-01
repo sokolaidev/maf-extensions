@@ -10,6 +10,18 @@ from pathlib import Path
 
 from live_sample_evidence import duration, records
 
+# Independent identities keep sample-catalog regressions visible to the live gate.
+FIXTURE_METERS = {
+    "linux-b2s": ("Virtual Machines", "Virtual Machines BS Series", "B2s", "B2s"),
+    "linux-d2s-v5": (
+        "Virtual Machines",
+        "Virtual Machines Dsv5 Series",
+        "Standard_D2s_v5",
+        "D2s v5",
+    ),
+    "premium-ssd-p10": ("Storage", "Premium SSD Managed Disks", "P10 LRS", "P10 LRS Disk"),
+}
+
 
 def assess(
     output: str, artifacts: dict[str, bytes], *, inventory_source: str = "model"
@@ -73,6 +85,11 @@ def assess(
                 continue
             quantity, usage, unit = expected_rows[row["product_key"]]
             price = row["price"]
+            identity = tuple(
+                price[field] for field in ("serviceName", "productName", "skuName", "meterName")
+            )
+            if identity != FIXTURE_METERS[row["product_key"]]:
+                return ["Selected meter does not match the fixture product"]
             if row["quantity"] != quantity or Decimal(row["usage_per_resource"]) != Decimal(usage):
                 return ["Fixture quantity or usage differs"]
             if (
