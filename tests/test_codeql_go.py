@@ -84,16 +84,16 @@ def test_manual_build_uses_patched_upstream_and_owned_sources(tmp_path, monkeypa
         assert (destination / "internal/proxy/credential_gate.go").read_bytes() == (
             source / "credential_gate.go"
         ).read_bytes()
-        mapping = (output / "path-transformer.txt").read_text(encoding="utf-8")
-        assert (
-            f"#{source.as_posix()}\n{destination.as_posix()}/internal/proxy//credential_gate.go"
-            in mapping
-        )
-    for args, _, env in calls:
+        mapping = (destination / "path-transformer.txt").read_text(encoding="utf-8")
+        assert mapping == f"#{source.as_posix()}\n{destination.as_posix()}/internal/proxy//\n"
+    for args, cwd, env in calls:
         if args[:2] in (("go", "test"), ("go", "build")):
             assert env["GOFLAGS"] == "-mod=readonly"
             assert env["GOWORK"] == "off"
-            assert env["CODEQL_PATH_TRANSFORMER"] == str(output / "path-transformer.txt")
+            if cwd.parent == output:
+                assert env["CODEQL_PATH_TRANSFORMER"] == str(cwd / "path-transformer.txt")
+            else:
+                assert "CODEQL_PATH_TRANSFORMER" not in env
 
 
 @pytest.mark.parametrize("defect", ["missing", "wrong-bytes", "staged-path", "duplicate", None])

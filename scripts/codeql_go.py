@@ -64,8 +64,7 @@ def build(root: Path, output: Path) -> None:
     output.mkdir(parents=True, exist_ok=False)
     environment = dict(os.environ, GOTOOLCHAIN="local", GOFLAGS="-mod=readonly", GOWORK="off")
     version = run("go", "version", cwd=root).split()[2].removeprefix("go")
-    mappings: list[str] = []
-    builds: list[Path] = []
+    builds: list[tuple[Path, Path]] = []
     for context in CONTEXTS:
         source = root / context
         revision, required_version = build_identity(source)
@@ -91,14 +90,15 @@ def build(root: Path, output: Path) -> None:
             shutil.copyfile(source / "dependencies" / name, destination / name)
         for name in ("credential_gate.go", "credential_gate_test.go"):
             shutil.copyfile(source / name, destination / "internal/proxy" / name)
-            mappings.extend(
-                (f"#{source.as_posix()}", f"{destination.as_posix()}/internal/proxy//{name}")
-            )
-        builds.append(destination)
-    transformer = output / "path-transformer.txt"
-    transformer.write_text("\n".join(mappings) + "\n", encoding="utf-8")
-    environment["CODEQL_PATH_TRANSFORMER"] = str(transformer)
-    for destination in builds:
+        builds.append((destination, source))
+    for destination, source in builds:
+        transformer = destination / "path-transformer.txt"
+        # The Go extractor accepts one directory-prefix rewrite per process.
+        transformer.write_text(
+            f"#{source.as_posix()}\n{destination.as_posix()}/internal/proxy//\n",
+            encoding="utf-8",
+        )
+        proxy_environment = dict(environment, CODEQL_PATH_TRANSFORMER=str(transformer))
         run("go", "mod", "download", cwd=destination, env=environment)
         run("go", "mod", "verify", cwd=destination, env=environment)
         run(
@@ -109,7 +109,7 @@ def build(root: Path, output: Path) -> None:
             "^TestMAFCredential",
             "./internal/proxy",
             cwd=destination,
-            env=environment,
+            env=proxy_environment,
         )
         run(
             "go",
@@ -119,7 +119,7 @@ def build(root: Path, output: Path) -> None:
             str(destination / "iron-proxy"),
             "./cmd/iron-proxy",
             cwd=destination,
-            env=dict(environment, CGO_ENABLED="0"),
+            env=dict(proxy_environment, CGO_ENABLED="0"),
         )
     for number, source in enumerate(STANDALONE):
         run(
