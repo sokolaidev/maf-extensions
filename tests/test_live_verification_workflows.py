@@ -51,9 +51,15 @@ def test_release_filters_include_otel_shell_and_compaction_pair():
         for job in ("wait-for-propagation", "train-status", "verify")
     ]
     assert filters[0] == filters[1] == filters[2]
-    assert {"maf-sandbox-otel", "maf-sandbox-shell", "maf-compaction", "maf-cachebench"} <= filters[
-        0
-    ]
+    assert {
+        "maf-sandbox-otel",
+        "maf-sandbox-shell",
+        "maf-sandbox-antivirus",
+        "maf-sandbox-document",
+        "maf-sandbox-azure-pricing",
+        "maf-compaction",
+        "maf-cachebench",
+    } <= filters[0]
     assert (
         not {
             "maf-sandbox-bubblewrap",
@@ -74,6 +80,17 @@ def test_release_filters_include_otel_shell_and_compaction_pair():
             "check_live_shell_sample.py",
         ),
         ("sample-22", {"maf-compaction", "maf-cachebench"}, "check_live_compaction_sample.py"),
+        (
+            "sample-23",
+            {
+                "maf-sandbox",
+                "maf-sandbox-docker",
+                "maf-sandbox-antivirus",
+                "maf-sandbox-document",
+                "maf-sandbox-azure-pricing",
+            },
+            "check_live_word_estimate_sample.py",
+        ),
     ],
 )
 def test_new_jobs_are_bounded_and_check_measured_output(job, packages, checker):
@@ -81,7 +98,7 @@ def test_new_jobs_are_bounded_and_check_measured_output(job, packages, checker):
     definition = workflow["jobs"][job]
     assert selected(definition["if"]) == packages
     assert "inputs.package == ''" in definition["if"]
-    assert definition["timeout-minutes"] <= (55 if job == "sample-21" else 25)
+    assert definition["timeout-minutes"] <= (55 if job in {"sample-21", "sample-23"} else 25)
     assert definition["environment"] == "live-verify"
     steps = definition["steps"]
     run = next(step["run"] for step in steps if checker in step.get("run", ""))

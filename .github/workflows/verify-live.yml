@@ -3484,3 +3484,101 @@ jobs:
           path: ${{ runner.temp }}/sample-22-live.log
           if-no-files-found: ignore
           retention-days: 7
+
+  sample-23:
+    name: samples/23_word_resource_estimate
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-docker", "maf-sandbox-antivirus", "maf-sandbox-document", "maf-sandbox-azure-pricing"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    environment: live-verify
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+      AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+      ANTIVIRUS_SANDBOX_IMAGE: maf-antivirus:live
+      DOCUMENT_SANDBOX_IMAGE: maf-document:live
+      AZURE_PRICING_SANDBOX_IMAGE: maf-azure-pricing:live
+      MAF_EGRESS_PROXY_IMAGE: maf-word-estimate-proxy:live
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing $name in live-verify. See docs/maintainers.md."
+              exit 1
+            fi
+          done
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+      - name: Build scanner, document, pricing and selected backend proxy images
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64 -t "$ANTIVIRUS_SANDBOX_IMAGE" images/antivirus-sandbox
+          uv run --locked python scripts/build_wolfi_python.py --platform linux/amd64 -t "$DOCUMENT_SANDBOX_IMAGE" images/document-sandbox
+          docker build --platform linux/amd64 -t "$AZURE_PRICING_SANDBOX_IMAGE" images/azure-pricing-sandbox
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/23_word_resource_estimate --source "$SOURCE")"
+          uv run --no-project $source_args --with maf-sandbox-docker python -c \
+            'import os, subprocess; from maf_sandbox_docker import proxy_build_context; subprocess.run(["docker", "build", "-t", os.environ["MAF_EGRESS_PROXY_IMAGE"], str(proxy_build_context())], check=True)'
+          for name in ANTIVIRUS_SANDBOX_IMAGE DOCUMENT_SANDBOX_IMAGE AZURE_PRICING_SANDBOX_IMAGE MAF_EGRESS_PROXY_IMAGE; do
+            echo "$name=$(docker image inspect "${!name}" --format '{{.Id}}')" >> "$GITHUB_ENV"
+          done
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Scan Word inventory and estimate current Azure retail costs
+        run: |
+          set -euo pipefail
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/23_word_resource_estimate --source "$SOURCE")"
+          uv run --no-project $source_args samples/23_word_resource_estimate/agent.py \
+            samples/23_word_resource_estimate/resources.docx --output "$RUNNER_TEMP/word-estimate" \
+            2>&1 | tee "$RUNNER_TEMP/sample-23-live.log"
+          python3 "$HARNESS"/scripts/check_live_word_estimate_sample.py "$RUNNER_TEMP/sample-23-live.log" "$RUNNER_TEMP/word-estimate"
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py "$RUNNER_TEMP/sample-23-live.log" "$PACKAGE" "$VERSION"
+      - name: Retain timings and cost estimate evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sample-23-live-evidence
+          path: |
+            ${{ runner.temp }}/sample-23-live.log
+            ${{ runner.temp }}/word-estimate
+          if-no-files-found: ignore
+          retention-days: 7
