@@ -32,6 +32,8 @@ jobs:
     outputs:
       profiles: ${{ steps.select.outputs.profiles }}
       scan: ${{ steps.select.outputs.scan }}
+      python: ${{ steps.select.outputs.python }}
+      python_profiles: ${{ steps.select.outputs.python_profiles }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -46,10 +48,36 @@ jobs:
       - name: Check pinned image declarations
         run: python3 scripts/container_image_inputs.py
 
+  python-packages:
+    name: Prepare shared Python APKs
+    needs: select
+    if: needs.select.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    outputs:
+      artifact: ${{ steps.bundle.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/prepare-wolfi-python
+        with:
+          fresh: ${{ github.event_name != 'pull_request' }}
+      - name: Retain the verified Python preparation for this run
+        id: bundle
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wolfi-python-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/wolfi-python-packages/
+          if-no-files-found: error
+          retention-days: 2
+
   scan:
     name: Image security (${{ matrix.profile }})
-    needs: select
-    if: needs.select.outputs.scan == 'true'
+    needs: [select, python-packages]
+    if: >-
+      always() && needs.select.result == 'success' && needs.select.outputs.scan == 'true' &&
+      (needs.python-packages.result == 'success' || needs.python-packages.result == 'skipped')
     runs-on: ${{ matrix.profile == 'bicep-docker-sbx' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     timeout-minutes: ${{ matrix.profile == 'terraform-avm' && 180 || 75 }}
     strategy:
@@ -70,6 +98,18 @@ jobs:
           docker-pat: ${{ secrets.DOCKER_PAT }}
       - name: Require configuration-based Docker image IDs
         uses: ./.github/actions/setup-classic-docker
+      - name: Download the shared Python preparation
+        if: contains(fromJSON(needs.select.outputs.python_profiles), matrix.profile)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.python-packages.outputs.artifact }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/wolfi-python-packages
+      - name: Verify and enable the shared Python preparation
+        if: contains(fromJSON(needs.select.outputs.python_profiles), matrix.profile)
+        run: |
+          python3 scripts/build_wolfi_python.py --verify-bundle "$RUNNER_TEMP/wolfi-python-packages"
+          echo "MAF_WOLFI_PYTHON_PACKAGES=$RUNNER_TEMP/wolfi-python-packages" >> "$GITHUB_ENV"
       - name: Make room for the AVM provider toolchain and build cache
         if: matrix.profile == 'terraform-avm'
         run: |
@@ -264,7 +304,7 @@ jobs:
 
   check:
     name: Image security checks
-    needs: [select, scan]
+    needs: [select, python-packages, scan]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -274,8 +314,16 @@ jobs:
           SELECTION: ${{ needs.select.result }}
           SCAN_REQUIRED: ${{ needs.select.outputs.scan }}
           SCAN_RESULT: ${{ needs.scan.result }}
+          PYTHON_REQUIRED: ${{ needs.select.outputs.python }}
+          PYTHON_RESULT: ${{ needs.python-packages.result }}
         run: |
           test "$SELECTION" = success
+          if [ "$PYTHON_REQUIRED" = true ]; then
+            test "$PYTHON_RESULT" = success
+          else
+            test "$PYTHON_REQUIRED" = false
+            test "$PYTHON_RESULT" = skipped
+          fi
           if [ "$SCAN_REQUIRED" = true ]; then
             test "$SCAN_RESULT" = success
           else
@@ -289,8 +337,8 @@ jobs:
       group: image-security-tracker
       queue: max
       cancel-in-progress: false
-    needs: [select, scan, check]
-    if: always() && (needs.select.result == 'failure' || needs.scan.result == 'failure' || needs.check.result == 'failure') && github.event_name != 'pull_request'
+    needs: [select, python-packages, scan, check]
+    if: always() && (needs.select.result == 'failure' || needs.python-packages.result == 'failure' || needs.scan.result == 'failure' || needs.check.result == 'failure') && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

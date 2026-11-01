@@ -495,6 +495,8 @@ def test_mxc_evidence_does_not_hide_build_or_unknown_inputs(repository, path, ex
     "path",
     [
         "scripts/select_image_security.py",
+        "scripts/image_dependency_selection.py",
+        "tests/test_image_dependency_selection.py",
         "tests/test_select_image_security.py",
         "tests/test_image_security_workflow.py",
     ],
@@ -586,9 +588,10 @@ def test_workflow_always_reports_selection_and_checks():
         "${{ github.event.pull_request.base.sha || github.event.before }}"
     )
     assert selection["run"] == "python3 scripts/select_image_security.py"
-    assert jobs["scan"]["needs"] == "select"
-    assert jobs["scan"]["if"] == "needs.select.outputs.scan == 'true'"
-    assert jobs["check"]["needs"] == ["select", "scan"]
+    assert jobs["scan"]["needs"] == ["select", "python-packages"]
+    assert "needs.select.outputs.scan == 'true'" in jobs["scan"]["if"]
+    assert "needs.python-packages.result == 'success'" in jobs["scan"]["if"]
+    assert jobs["check"]["needs"] == ["select", "python-packages", "scan"]
     assert jobs["check"]["if"] == "always()"
     assert "event=schedule" in (ROOT / "README.md").read_text(encoding="utf-8")
 
@@ -612,7 +615,14 @@ def test_result_job_refuses_missing_or_failed_selected_scans(selection, required
     command = workflow["jobs"]["check"]["steps"][0]["run"]
     process = subprocess.run(
         ["bash", "-e", "-c", command],
-        env=os.environ | {"SELECTION": selection, "SCAN_REQUIRED": required, "SCAN_RESULT": result},
+        env=os.environ
+        | {
+            "SELECTION": selection,
+            "SCAN_REQUIRED": required,
+            "SCAN_RESULT": result,
+            "PYTHON_REQUIRED": "false",
+            "PYTHON_RESULT": "skipped",
+        },
         check=False,
     )
     assert (process.returncode == 0) is success
@@ -629,3 +639,49 @@ def test_selector_emits_matrix_and_scope_summary(tmp_path):
     assert json.loads(values["profiles"]) == [p for p in PROFILES if p != "antivirus"]
     assert values["scan"] == "true"
     assert "signatures update separately" in summary.read_text()
+    assert values["python"] == "true"
+    assert values["hyperlight"] == "true"
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [("ruff", []), ("python-pptx", ["document"]), ("pyyaml", list(PROFILES))],
+)
+def test_lock_comparison_selects_actual_consumers(repository, name, expected):
+    root, _ = repository
+    lock = (ROOT / "uv.lock").read_text("utf-8")
+    base = commit(root, {"uv.lock": lock})
+    changed, count = re.subn(
+        rf'(\[\[package\]\]\nname = "{name}"\nversion = ")[^"]+',
+        r"\g<1>999.0.0",
+        lock,
+    )
+    assert count > 0
+    head = commit(root, {"uv.lock": changed})
+    assert select(root, "pull_request", base, head)[0] == expected
+
+
+def test_unreadable_dependency_graph_keeps_full_coverage(repository):
+    root, base = repository
+    head = commit(root, {"uv.lock": LOCK.replace('name = "dependency"', 'name = "missing"')})
+    assert select(root, "pull_request", base, head)[0] == list(PROFILES)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Production Bash check runs on Linux")
+@pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", "", "success"])
+def test_result_job_requires_successful_python_preparation(result):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/image-security.yml").read_text())
+    command = workflow["jobs"]["check"]["steps"][0]["run"]
+    process = subprocess.run(
+        ["bash", "-e", "-c", command],
+        env=os.environ
+        | {
+            "SELECTION": "success",
+            "SCAN_REQUIRED": "true",
+            "SCAN_RESULT": "success",
+            "PYTHON_REQUIRED": "true",
+            "PYTHON_RESULT": result,
+        },
+        check=False,
+    )
+    assert (process.returncode == 0) is (result == "success")

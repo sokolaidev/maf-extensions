@@ -1,0 +1,39 @@
+name: Prepare patched Python APKs
+description: Reuse an exact daily input key or compile a verified public APK bundle.
+inputs:
+  fresh:
+    description: Build from source even when a cache entry exists
+    default: 'false'
+outputs:
+  directory:
+    description: Verified APK bundle directory
+    value: ${{ runner.temp }}/wolfi-python-packages
+runs:
+  using: composite
+  steps:
+    - name: Identify Python preparation inputs
+      id: inputs
+      shell: bash
+      run: echo "key=$(python3 scripts/build_wolfi_python.py --bundle-key)" >> "$GITHUB_OUTPUT"
+    - name: Restore the exact daily Python preparation
+      id: cache
+      if: inputs.fresh != 'true'
+      continue-on-error: true
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/wolfi-python-packages
+        key: wolfi-python-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.inputs.outputs.key }}
+    - name: Compile Python once on a cache miss
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: python3 scripts/build_wolfi_python.py --prepare-bundle "$RUNNER_TEMP/wolfi-python-packages"
+    - name: Verify preparation inputs and every transferred byte
+      shell: bash
+      run: python3 scripts/build_wolfi_python.py --verify-bundle "$RUNNER_TEMP/wolfi-python-packages"
+    - name: Save trusted default-branch preparation
+      if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name != 'pull_request' && steps.cache.outputs.cache-hit != 'true'
+      continue-on-error: true
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/wolfi-python-packages
+        key: wolfi-python-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.inputs.outputs.key }}
