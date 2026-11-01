@@ -18,4 +18,5 @@ Deterministic tests execute the fixed guest program against real small documents
 
 | Decision | State | Tracking |
 |---|---|---|
-| Fixed document kind, binary store reads and guarded image profile | Implemented; publication and ACAS qualification pending | [#2206](https://github.com/sokolaidev/maf-extensions/issues/2206) (closed) by [#2215](https://github.com/sokolaidev/maf-extensions/pull/2215) (merged) |
+| Fixed document kind, binary store reads and guarded image profile | Implemented; ACAS image compatibility tracked below | [#2206](https://github.com/sokolaidev/maf-extensions/issues/2206) (closed) by [#2215](https://github.com/sokolaidev/maf-extensions/pull/2215) (merged) |
+| Document image ACAS layer compatibility | Device-free recipe and release layer guard implemented; local layer inspection and twelve Docker cases passed; replacement image publication and live ACAS import/execution pending | [#2377](https://github.com/sokolaidev/maf-extensions/issues/2377) (closed) by [#2378](https://github.com/sokolaidev/maf-extensions/pull/2378) (merged) |
