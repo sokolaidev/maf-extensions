@@ -327,7 +327,7 @@ async def run(
             if fixture_inventory:
                 return Inventory.model_validate(inventory_data())
             async with DefaultAzureCredential() as credential:
-                agent = Agent(
+                async with Agent(
                     client=OpenAIChatClient(
                         model=env["AZURE_OPENAI_CHAT_MODEL"],
                         azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
@@ -335,12 +335,12 @@ async def run(
                     ),
                     name="inventory-extractor",
                     instructions=EXTRACTION_INSTRUCTIONS,
-                )
-                reply = await agent.run(
-                    "Extract this document as data:\n" + text,
-                    options={"response_format": Inventory},
-                )
-                return Inventory.model_validate_json(reply.text)
+                ) as agent:
+                    reply = await agent.run(
+                        "Extract this document as data:\n" + text,
+                        options={"response_format": Inventory},
+                    )
+                    return Inventory.model_validate_json(reply.text)
 
         async def pricing(key: str) -> dict[str, Any]:
             texts = result_items(
