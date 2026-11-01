@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-azure-pricing"
-version = "0.0.0"
+version = "0.1.0"
 description = "Azure retail pricing in disposable allowlisted sandboxes."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
