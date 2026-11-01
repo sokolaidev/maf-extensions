@@ -16,23 +16,24 @@ on:
       profile:
         description: Linux/amd64 image profile
         type: choice
+        default: bicep
         options:
+          - antivirus
+          - azure-pricing
           - bicep
           - bicep-avm
           - bicep-docker-sbx
-          - graphviz
           - document
-          - antivirus
-          - azure-pricing
           - drawio
           - drawio-export
-          - shell
-          - terraform-random
-          - opentofu-random
-          - terraform-avm
-          - opentofu-avm
-          - hyperlight-aks-probe
           - egress-proxy
+          - graphviz
+          - hyperlight-aks-probe
+          - opentofu-avm
+          - opentofu-random
+          - shell
+          - terraform-avm
+          - terraform-random
         required: true
       version:
         description: Unused independent image SemVer, initially 0.1.0
@@ -66,7 +67,7 @@ jobs:
   policy:
     outputs:
       summary_url: ${{ steps.abandon-summary.outputs.summary_url }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-m
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -123,7 +124,7 @@ jobs:
   prepare:
     needs: policy
     if: inputs.operation == 'release'
-    runs-on: ${{ inputs.profile == 'bicep-docker-sbx' && 'ubuntu-24.04' || 'ubuntu-latest' }}
+    runs-on: ${{ inputs.profile == 'bicep-docker-sbx' && 'ubuntu-24.04' || 'ubuntu-latest-m' }}
     timeout-minutes: ${{ inputs.profile == 'terraform-avm' && 180 || 90 }}
     outputs:
       approval_name: ${{ steps.approval-summary.outputs.approval_name }}
@@ -219,7 +220,7 @@ jobs:
     name: ${{ needs.prepare.outputs.approval_name }}
     needs: prepare
     if: needs.prepare.outputs.mode != 'delivery'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-m
     timeout-minutes: 5
     environment:
       name: container-release
@@ -232,7 +233,7 @@ jobs:
     if: >-
       always() && needs.prepare.result == 'success' &&
       (needs.approve.result == 'success' || needs.prepare.outputs.mode == 'delivery')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-m
     timeout-minutes: 15
     permissions:
       contents: write
@@ -274,7 +275,7 @@ jobs:
   promote:
     needs: [prepare, reserve]
     if: needs.reserve.outputs.completed == 'false'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-m
     timeout-minutes: 60
     permissions:
       contents: read
@@ -340,7 +341,7 @@ jobs:
 
   qualify:
     needs: [prepare, promote]
-    runs-on: ${{ inputs.profile == 'bicep-docker-sbx' && 'ubuntu-24.04' || 'ubuntu-latest' }}
+    runs-on: ${{ inputs.profile == 'bicep-docker-sbx' && 'ubuntu-24.04' || 'ubuntu-latest-m' }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -381,7 +382,7 @@ jobs:
       always() && needs.reserve.result == 'success' &&
       needs.reserve.outputs.delivered != 'true' &&
       (needs.qualify.result == 'success' || needs.reserve.outputs.completed == 'true')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-m
     timeout-minutes: 30
     permissions:
       contents: write
@@ -435,7 +436,7 @@ jobs:
   sign-completion:
     needs: [prepare, complete]
     if: always() && needs.prepare.result == 'success' && needs.complete.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-m
     timeout-minutes: 15
     permissions:
       contents: read
@@ -483,7 +484,7 @@ jobs:
   deliver:
     needs: [prepare, sign-completion]
     if: always() && needs.prepare.result == 'success' && needs.sign-completion.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-m
     timeout-minutes: 30
     permissions:
       contents: write
@@ -529,7 +530,7 @@ jobs:
     name: Permanently abandon ${{ inputs.profile }}:${{ inputs.version }} in public GHCR release history
     needs: policy
     if: inputs.operation == 'abandon'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-m
     timeout-minutes: 15
     environment:
       name: container-release
@@ -569,7 +570,7 @@ jobs:
   retire-lost-candidate:
     needs: [policy, prepare]
     if: always() && needs.policy.result == 'success' && needs.prepare.outputs.lost == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-m
     timeout-minutes: 15
     permissions:
       contents: write
