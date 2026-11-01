@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from _scaffold import MEASURED, installed_versions, quoted, require_env_vars
+from _scaffold import MEASURED, installed_versions, require_env_vars
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
@@ -370,7 +370,6 @@ async def run(
         measure(
             "artifact", name=name, sha256=hashlib.sha256(content).hexdigest(), bytes=len(content)
         )
-    print(quoted(markdown(report)))
     measure("report", unresolved=report["unresolved_resources"], files=2)
     return 0
 

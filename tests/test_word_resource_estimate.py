@@ -417,6 +417,40 @@ def test_failure_and_cancellation_purge_scope_without_report(sample, tmp_path, m
     assert not (tmp_path / "out").exists()
 
 
+def test_success_retains_document_content_only_in_report_files(
+    sample, tmp_path, monkeypatch, capsys
+):
+    agent = sample.agent
+    path = tmp_path / "input.docx"
+    path.write_bytes(sample.fixture.document_bytes())
+    monkeypatch.setattr(agent, "require_env_vars", lambda names: dict.fromkeys(names, "configured"))
+    monkeypatch.setattr(
+        agent.DockerSandboxBackend,
+        "create",
+        AsyncMock(return_value=SimpleNamespace(isolation="container")),
+    )
+    router = SimpleNamespace(dispose_scope=AsyncMock(return_value=SimpleNamespace(undisposed=0)))
+    monkeypatch.setattr(agent, "SandboxRouter", lambda *args, **kwargs: router)
+    for factory in ("make_antivirus_tools", "make_document_tools", "make_azure_pricing_tools"):
+        monkeypatch.setattr(agent, factory, lambda *args, **kwargs: [SimpleNamespace()])
+    entry = resource(
+        sample, name="private-name", notes="private-notes", evidence="private-evidence"
+    )
+    row = sample.estimate.estimate_row(entry, None, "Unknown")
+    report = sample.estimate.report_document([row], "westeurope", "USD")
+    monkeypatch.setattr(agent, "pipeline", AsyncMock(return_value=report))
+    output = tmp_path / "out"
+    assert asyncio.run(agent.run(path, output, "westeurope", "USD", None, True)) == 0
+    captured = capsys.readouterr()
+    saved = (output / "estimate.json").read_text(encoding="utf-8")
+    for value in (entry.name, entry.notes, entry.evidence):
+        assert value in saved
+        assert value not in captured.out + captured.err
+    assert "private-name" in (output / "estimate.md").read_text(encoding="utf-8")
+    assert '"stage": "artifact"' in captured.out
+    assert '"stage": "report"' in captured.out
+
+
 def test_fixture_mode_never_substitutes_inventory_for_another_document(
     sample, tmp_path, monkeypatch
 ):
@@ -489,7 +523,8 @@ def test_live_checker_accepts_host_artifacts_and_rejects_model_text(sample):
     measured, artifacts = live_evidence(sample)
     output = evidence_log(measured)
     assert sample.checker.assess(output, artifacts) == []
-    assert sample.checker.assess(sample.agent.quoted(output), artifacts)
+    scaffold = importlib.import_module("_scaffold")
+    assert sample.checker.assess(scaffold.quoted(output), artifacts)
     assert sample.checker.assess(output, {**artifacts, "estimate.md": b"tampered"})
 
 
