@@ -104,6 +104,7 @@ def build(root: Path, output: Path) -> None:
         run(
             "go",
             "test",
+            "-a",
             "-count=1",
             "-run",
             "^TestMAFCredential",
@@ -138,6 +139,7 @@ def build(root: Path, output: Path) -> None:
     run(
         "go",
         "test",
+        "-a",
         "-count=1",
         str(fixture),
         str(fixture.with_name("main_test.go")),

@@ -75,6 +75,7 @@ def test_manual_build_uses_patched_upstream_and_owned_sources(tmp_path, monkeypa
     assert sum(args[:3] == ("git", "apply", "--check") for args in commands) == 2
     assert commands.count(("go", "mod", "verify")) == 2
     assert sum(args[:3] == ("go", "build", "-a") for args in commands) == 6
+    assert sum(args[:3] == ("go", "test", "-a") for args in commands) == 3
     for context in codeql_go.CONTEXTS:
         source = tmp_path / context
         destination = output / context.parts[1]
