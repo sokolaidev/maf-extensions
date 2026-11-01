@@ -1706,7 +1706,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-azure-pricing"
-version = "0.0.0"
+version = "0.1.0"
 source = { editable = "packages/maf-sandbox-azure-pricing" }
 dependencies = [
     { name = "agent-framework-core" },
