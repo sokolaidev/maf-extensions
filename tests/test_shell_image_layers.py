@@ -1,4 +1,4 @@
-"""Shell release checks inspect saved layers before starting consumer sandboxes."""
+"""Saved layers are checked before release retention or shell execution."""
 
 import asyncio
 import io
@@ -11,7 +11,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import prepare_container_release as preparation  # noqa: E402
 import shell_qualification as shell  # noqa: E402
+from image_layer_archive import check_layer_archive  # noqa: E402
 
 IMAGE = "sha256:" + "a" * 64
 
@@ -34,18 +36,21 @@ def saved_image(path, kind):
         archive.addfile(member, io.BytesIO(data))
 
 
-@pytest.mark.parametrize("kind", [tarfile.CHRTYPE, tarfile.BLKTYPE, tarfile.FIFOTYPE])
+@pytest.mark.parametrize("kind", [tarfile.CHRTYPE, tarfile.BLKTYPE, tarfile.FIFOTYPE, b"s"])
 def test_device_in_lower_layer_is_rejected_even_with_a_later_whiteout(tmp_path, kind):
     path = tmp_path / "image.tar"
     saved_image(path, kind)
-    with pytest.raises(ValueError, match="device node: dev/null"):
-        shell.check_layer_archive(path)
+    with pytest.raises(ValueError, match="special file:.*dev/null"):
+        check_layer_archive(path)
 
 
-def test_regular_files_are_not_devices(tmp_path):
+@pytest.mark.parametrize(
+    "kind", [tarfile.REGTYPE, tarfile.DIRTYPE, tarfile.SYMTYPE, tarfile.LNKTYPE]
+)
+def test_regular_files_and_links_are_not_special_files(tmp_path, kind):
     path = tmp_path / "image.tar"
-    saved_image(path, tarfile.REGTYPE)
-    assert shell.check_layer_archive(path) == 2
+    saved_image(path, kind)
+    assert check_layer_archive(path) == 2
 
 
 def test_saved_image_identity_and_layer_evidence(monkeypatch):
@@ -74,3 +79,47 @@ def test_layer_failure_stops_before_acquiring_a_sandbox(monkeypatch):
     with pytest.raises(ValueError, match="device node"):
         asyncio.run(shell.check(IMAGE))
     create.assert_not_awaited()
+
+
+@pytest.mark.parametrize("kind", [tarfile.CHRTYPE, tarfile.BLKTYPE, tarfile.FIFOTYPE, b"s"])
+def test_release_refuses_special_files_before_retaining_candidate(tmp_path, monkeypatch, kind):
+    def run(command, **kwargs):
+        assert command[:3] == ["docker", "save", "--output"]
+        assert command[-1] == IMAGE
+        saved_image(Path(command[3]), kind)
+
+    monkeypatch.setattr(preparation, "run", run)
+    with pytest.raises(ValueError, match="special file"):
+        preparation.retain(IMAGE, tmp_path, acas=True)
+    assert not (tmp_path / "image-layers.json").exists()
+    assert not (tmp_path / "oci").exists()
+
+
+def test_release_retains_layer_evidence_before_conversion(tmp_path, monkeypatch):
+    def run(command, **kwargs):
+        if command[:3] == ["docker", "save", "--output"]:
+            saved_image(Path(command[3]), tarfile.REGTYPE)
+        else:
+            assert command[:4] == ["skopeo", "copy", "--format", "oci"]
+            assert preparation.read(tmp_path / "image-layers.json") == {
+                "builtImageId": IMAGE,
+                "layersChecked": 2,
+                "specialFilesPresent": False,
+            }
+            raise RuntimeError("conversion intercepted")
+
+    monkeypatch.setattr(preparation, "run", run)
+    with pytest.raises(RuntimeError, match="conversion intercepted"):
+        preparation.retain(IMAGE, tmp_path, acas=True)
+
+
+@pytest.mark.parametrize("layers", [[], None, "layer0.tar"])
+def test_empty_or_invalid_layer_list_is_rejected(tmp_path, layers):
+    path = tmp_path / "image.tar"
+    with tarfile.open(path, "w") as archive:
+        data = json.dumps([{"Layers": layers}]).encode()
+        member = tarfile.TarInfo("manifest.json")
+        member.size = len(data)
+        archive.addfile(member, io.BytesIO(data))
+    with pytest.raises(ValueError, match="filesystem layers"):
+        check_layer_archive(path)

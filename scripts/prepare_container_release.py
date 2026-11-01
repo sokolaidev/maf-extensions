@@ -30,6 +30,7 @@ from container_release import (
 )
 from container_release_oci import blob, validate_layout
 from container_release_preflight import preflight
+from image_layer_archive import ACAS_PROFILES, check_layer_archive
 from image_security_evidence import record, verify_inventory
 
 
@@ -193,7 +194,7 @@ def load_retained(layout: Path, image_id: str) -> None:
         raise ValueError("Loaded image differs from retained candidate")
 
 
-def retain(image_id: str, output: Path) -> dict[str, str]:
+def retain(image_id: str, output: Path, *, acas: bool = False) -> dict[str, str]:
     """Convert once to OCI and reload its configuration for assessment."""
     layout = output / "oci"
     if layout.exists():
@@ -201,6 +202,15 @@ def retain(image_id: str, output: Path) -> dict[str, str]:
     with tempfile.TemporaryDirectory(prefix="maf-image-export-") as temporary:
         archive = Path(temporary) / "image.tar"
         run(["docker", "save", "--output", str(archive), image_id])
+        if acas:
+            write(
+                output / "image-layers.json",
+                {
+                    "builtImageId": image_id,
+                    "layersChecked": check_layer_archive(archive),
+                    "specialFilesPresent": False,
+                },
+            )
         run(
             [
                 "skopeo",
@@ -254,7 +264,7 @@ def prepare(
     run([*command, "-"], input="FROM maf-image-scan:target\n")
     details = json.loads(run(["docker", "image", "inspect", target], capture_output=True).stdout)
     built_id = record(details, revision, profile)["local_image_id"]
-    identity = retain(built_id, output)
+    identity = retain(built_id, output, acas=profile in ACAS_PROFILES)
     details = json.loads(
         run(["docker", "image", "inspect", identity["imageId"]], capture_output=True).stdout
     )
