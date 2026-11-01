@@ -177,6 +177,14 @@ If only the qualification sources change, `python -m scripts.openclaw_conformanc
 
 This profile does not qualify host power loss, arbitrary descendants, other platforms, model reasoning, credential orphan expiry or an unattended watchdog. The [accepted fifteen-case campaign](research/openclaw-gateway-qualification.md#bounded-actor-loss-qualification-2026-10-20) retains its fresh installed baseline, raw observations and excluded development attempts separately. Its offline evaluator command is in the [evidence record](../../scripts/experiments/openclaw_owner_loss_evidence/2026-10-19-windows-v1/README.md).
 
+### Linux actor-loss profile
+
+The [Linux runner](../../scripts/openclaw_conformance/linux_owner_loss.py) selects `owner-loss-linux-v1`: a fresh deterministic installed sample baseline, a control, and Gateway/client/worker loss at pre-admission, active compilation, held response and held cleanup. The installed worker and principal dependencies remain pinned to the published-worker profile used by the hosted real-model sample. Dependency upgrades are separate candidates.
+
+The fault injector verifies the actor's Linux process group and session against its supervised launcher and retains a pidfd before sending SIGKILL. The correlated workload and recovery predicates are shared with the Windows campaign. Product recovery must complete before the independent cleanup sweep; either sweep removing an orphan prevents acceptance. Worker replacement is an explicit operator restart under the same exclusive owner with a rotated token. Old token/session/cancellation/deletion authority must be refused while fresh work remains usable.
+
+Dispatch `docker-live.yml` with `openclaw_bicep=true` and `openclaw_mode=owner-loss`. Only the bounded Markdown result is uploaded; private baseline, runtime and fault observations remain in the runner's temporary directory. The collector rechecks the fixed case inventory, source/runtime identity, baseline and raw per-case predicates. This profile excludes Docker unavailability/removal denial, daemon or host loss, escaped process trees, actual-model retry behavior and unattended watchdog recovery.
+
 ## Full backend boundary
 
 A full OpenClaw sandbox backend over `maf-sandbox` is deferred. The [2026-10-20 assessment](research/openclaw-integration.md#full-sandbox-backend-disposition-2026-10-20) verified that installed `openclaw@2026.10.5` exports the sandbox JavaScript helper while its own SDK catalog classifies it as private-local for official plugins. Import success does not establish a supported third-party backend contract.
@@ -207,6 +215,7 @@ The [2026-10-12 consolidated reconciliation](research/openclaw-qualification-clo
 |---|---|---|
 | GitHub-hosted Linux Gateway-to-Docker sample | Qualified on the recorded Ubuntu candidate with deterministic provider and independent cleanup; broader Linux and real-model claims remain unqualified | [#2214](https://github.com/sokolaidev/maf-extensions/issues/2214) (closed) by [#2217](https://github.com/sokolaidev/maf-extensions/pull/2217) (merged) |
 | GitHub-hosted real-model Bicep sample | Complete for the recorded Ubuntu/Azure OpenAI candidate with reasoning disabled: actual invalid/valid compiler results and independent cleanup passed | [#2288](https://github.com/sokolaidev/maf-extensions/issues/2288) (closed) by [#2294](https://github.com/sokolaidev/maf-extensions/pull/2294) (merged) |
+| GitHub-hosted Linux actor-loss profile | In progress: thirteen fixed cases; hosted qualification pending | [#2386](https://github.com/sokolaidev/maf-extensions/issues/2386) (open) |
 | Linux Gateway-to-Docker sample | Recorded deterministic Linux-on-Docker-Desktop run passed; real-model behavior remains unqualified | [#2185](https://github.com/sokolaidev/maf-extensions/issues/2185) (closed) by [#2191](https://github.com/sokolaidev/maf-extensions/pull/2191) (merged) |
 | First Bicep operation | Design decisions and follow-ups complete; supervised source implementation and finite qualification delivered | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (closed) by [#1901](https://github.com/sokolaidev/maf-extensions/pull/1901) (merged); [#1651](https://github.com/sokolaidev/maf-extensions/pull/1651) (merged) |
 | Shared service lifecycle | Design delivered; stdio default and opt-in HTTP | [#1665](https://github.com/sokolaidev/maf-extensions/issues/1665) (closed) by [#1677](https://github.com/sokolaidev/maf-extensions/pull/1677) (merged) |

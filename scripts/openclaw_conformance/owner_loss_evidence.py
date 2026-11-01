@@ -81,7 +81,9 @@ def one(rows: list[dict[str, Any]], event: str) -> dict[str, Any]:
     return matching[0]
 
 
-def verify(value: dict[str, Any], case: str, manifest: dict[str, Any]) -> None:
+def verify(
+    value: dict[str, Any], case: str, manifest: dict[str, Any], *, platform: str = "Windows"
+) -> None:
     """Correlate actor, phase, workload and recovery evidence for one required case."""
     require(value.get("parent_failure") is None, "parent_supervisor_failure")
     require(value.get("case") == case and value.get("outcome") == "pass", "case_failed")
@@ -135,12 +137,26 @@ def verify(value: dict[str, Any], case: str, manifest: dict[str, Any]) -> None:
     barrier = one(rows, "barrier_observed")
     require(barrier["phase"] == phase and barrier["mono_ns"] < fault["mono_ns"], "fault_phase")
     require(
-        fault["actor"] == actor
-        and fault["exited"] is True
-        and fault["others_alive"] is True
-        and fault["job_membership_verified"] is True,
+        fault["actor"] == actor and fault["exited"] is True and fault["others_alive"] is True,
         "fault_containment",
     )
+    if platform == "Linux":
+        identity = fault.get("linux_identity", {})
+        require(
+            fault["job_membership_verified"] is False
+            and identity.get("pidfd_bound") is True
+            and identity.get("signal") == "SIGKILL"
+            and all(
+                type(identity.get(k)) is int and identity[k] > 0
+                for k in ("pid", "pgrp", "session", "start", "supervisor_pid")
+            )
+            and identity["pgrp"] == identity["session"] == identity["supervisor_pid"],
+            "linux_fault_containment",
+        )
+    else:
+        require(
+            platform == "Windows" and fault["job_membership_verified"] is True, "fault_containment"
+        )
     if phase == "active":
         require(
             barrier["compiler_running"] is True and barrier["paused"] is True, "active_compiler"
