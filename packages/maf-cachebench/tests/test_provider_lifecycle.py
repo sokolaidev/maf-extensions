@@ -59,6 +59,66 @@ async def test_cleanup_failure_still_closes_other_owned_resources_once():
     assert events == ["client", "credential"]
 
 
+@pytest.mark.parametrize("blocked_resource", ["client", "credential"])
+@pytest.mark.parametrize("fails", [False, True])
+async def test_cancellation_during_cleanup_drains_shared_close(blocked_resource, fails):
+    events: list[str] = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockingResource(Resource):
+        async def close(self) -> None:
+            if self.name == blocked_resource:
+                entered.set()
+                await release.wait()
+            await super().close()
+
+    client = BlockingResource("client", events, fails=fails)
+    credential = BlockingResource("credential", events)
+    runtime = ProviderRuntime(client, "stub", owns_client=True, owned_resources=(credential,))
+    first = asyncio.create_task(runtime.close())
+    second = None
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        first.cancel()
+        await asyncio.sleep(0)
+        assert not first.done()
+
+        second_entered = asyncio.Event()
+
+        async def also_close():
+            second_entered.set()
+            await runtime.close()
+
+        second = asyncio.create_task(also_close())
+        await asyncio.wait_for(second_entered.wait(), timeout=5)
+        assert not second.done()
+        first.cancel()
+        await asyncio.sleep(0)
+        assert not first.done()
+        assert not second.done()
+        with pytest.raises(RuntimeError, match="closed"):
+            await runtime.__aenter__()
+
+        release.set()
+        results = await asyncio.wait_for(
+            asyncio.gather(first, second, return_exceptions=True), timeout=5
+        )
+        assert isinstance(results[0], asyncio.CancelledError)
+        if fails:
+            assert isinstance(results[1], RuntimeError)
+        else:
+            assert results[1] is None
+        assert events == ["client", "credential"]
+        await runtime.close()
+        assert events == ["client", "credential"]
+    finally:
+        release.set()
+        await asyncio.gather(
+            first, *([second] if second is not None else []), return_exceptions=True
+        )
+
+
 async def test_manually_supplied_client_is_borrowed_by_default():
     events: list[str] = []
     async with ProviderRuntime(Resource("borrowed", events), "stub"):

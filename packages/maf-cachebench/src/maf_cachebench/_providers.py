@@ -12,6 +12,7 @@ as a zero hit rate.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 from collections.abc import Callable, Mapping
@@ -57,10 +58,10 @@ class ProviderRuntime:
     options: dict[str, Any] = field(default_factory=dict[str, Any])
     owns_client: bool = False
     owned_resources: tuple[Any, ...] = ()
-    _closed: bool = field(default=False, init=False, repr=False)
+    _close_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
 
     async def __aenter__(self) -> ProviderRuntime:
-        if self._closed:
+        if self._close_task is not None:
             raise RuntimeError("Provider runtime is closed.")
         return self
 
@@ -73,10 +74,25 @@ class ProviderRuntime:
         await self.close()
 
     async def close(self) -> None:
-        """Close owned resources once, attempting every cleanup even when one fails."""
-        if self._closed:
+        """Close owned resources once; defer caller cancellation until cleanup settles."""
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close_resources())
+        elif self._close_task.done():
             return
-        self._closed = True
+        task = self._close_task
+        interrupted = False
+        try:
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    interrupted = True
+            task.result()
+        finally:
+            if interrupted:
+                raise asyncio.CancelledError
+
+    async def _close_resources(self) -> None:
         resources = (*self.owned_resources, *((self.client,) if self.owns_client else ()))
         async with AsyncExitStack() as stack:
             seen: set[int] = set()
