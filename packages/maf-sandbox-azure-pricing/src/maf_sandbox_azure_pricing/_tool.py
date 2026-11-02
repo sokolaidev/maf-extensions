@@ -110,11 +110,20 @@ def _build_tool(
     async def pricing_get(
         sku: Annotated[
             str | None,
-            "Exact, case-sensitive armSkuName, e.g. Standard_D4s_v5; not a portal display name.",
+            (
+                "Exact, case-sensitive armSkuName, e.g. Standard_D4s_v5; not a portal display "
+                "name. Many network and platform meters have an empty armSkuName. For those, "
+                "omit sku and service and use filter on serviceName, productName or meterName; "
+                "do not invent a SKU."
+            ),
         ] = None,
         service: Annotated[
             str | None,
-            "Exact, case-sensitive serviceName, e.g. Virtual Machines. Also requires sku.",
+            (
+                "Exact, case-sensitive serviceName, e.g. Virtual Machines. The CLI requires sku "
+                "with this argument. For meters without an ARM SKU, omit service and sku and "
+                "use filter on serviceName, productName or meterName instead."
+            ),
         ] = None,
         region: Annotated[
             str | None,
@@ -158,6 +167,8 @@ def _build_tool(
         At least one filter is required; service also requires an ARM SKU. SavingsPlan is
         not a price type: set include_savings_plan instead. Named filters match exact,
         case-sensitive price-list values; filter accepts OData over the listed fields.
+        Many network and platform meters have an empty armSkuName: do not invent a SKU.
+        Omit service and sku for those meters; use filter on serviceName, productName or meterName.
         There is no osType field; Windows VM productName values end in Windows.
         Meters may use billing zones, Global or an empty region. An empty regional result
         does not establish that no price exists: retry without region or filter the zone.
@@ -175,9 +186,15 @@ def _build_tool(
                 filter,
             )
         except (TypeError, ValueError):
+            if service is not None and sku is None:
+                return _incomplete(
+                    "Pricing query refused: the CLI requires sku with service. For meters "
+                    "without an ARM SKU, omit service and sku and use filter on serviceName, "
+                    "productName or meterName instead. Do not invent a SKU."
+                )
             return _incomplete(
                 "Pricing query refused: provide bounded nonempty filters, a three-letter uppercase "
-                "currency and a valid price type. Service queries also require a SKU."
+                "currency and a valid price type."
             )
         key = session.key()
         if isinstance(key, str):

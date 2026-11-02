@@ -154,6 +154,12 @@ def test_model_schema_describes_price_fields_and_nonregional_queries():
     assert "retry without region" in region and "armRegionName eq ''" in region
     assert "retry without region" in tool.description
     assert "no osType" in tool.description
+    assert "empty armSkuName" in properties["sku"]["description"]
+    assert "empty armSkuName" in tool.description
+    for parameter in ("sku", "service"):
+        description = properties[parameter]["description"]
+        assert "omit" in description and "filter" in description
+        assert all(field in description for field in ("serviceName", "productName", "meterName"))
     assert properties["currency"]["default"] == "USD"
     assert properties["include_savings_plan"]["default"] is False
     assert schema["$defs"]["PriceType"]["enum"] == [
@@ -352,7 +358,6 @@ def test_argv_is_fixed_and_raw_filter_is_grouped():
         {"sku": "a\nb"},
         {"sku": "\ud800"},
         {"sku": "a" * 1025},
-        {"service": "Virtual Machines"},
         {"sku": "x", "currency": "usd"},
         {"sku": "x", "price_type": "SavingsPlan"},
         {"sku": "x", "include_savings_plan": 1},
@@ -364,6 +369,48 @@ def test_invalid_arguments_refuse_before_acquisition(arguments):
     result = asyncio.run(tool.func(**arguments))
     assert result[0].text == NOT_COMPLETED_TEXT
     assert not backend.keys and not sandbox.commands
+
+
+@pytest.mark.parametrize("raw_filter", [None, "productName eq 'private-product'"])
+def test_service_without_sku_suggests_raw_filters_without_echo_or_acquisition(raw_filter):
+    tool, backend, sandbox = attach()
+    items = asyncio.run(tool.func(service="private-service", region="Global", filter=raw_filter))
+    assert items[0].text == NOT_COMPLETED_TEXT
+    assert items[1].text == (
+        "Pricing query refused: the CLI requires sku with service. For meters "
+        "without an ARM SKU, omit service and sku and use filter on serviceName, "
+        "productName or meterName instead. Do not invent a SKU."
+    )
+    assert "private-service" not in str(items) and "private-product" not in str(items)
+    assert not backend.keys and not sandbox.commands
+
+
+def test_private_endpoint_raw_filter_needs_no_invented_sku():
+    price = row() | {
+        "armSkuName": "",
+        "region": "Global",
+        "serviceName": "Virtual Network",
+        "productName": "Virtual Network Private Link",
+        "meterName": "Standard Private Endpoint",
+        "priceType": "Consumption",
+    }
+    predicate = (
+        "serviceName eq 'Virtual Network' and productName eq 'Virtual Network Private Link' "
+        "and meterName eq 'Standard Private Endpoint'"
+    )
+    tool, backend, sandbox = attach(InProcessSandbox(default_stdout=envelope([price])))
+    items = asyncio.run(tool.func(region="Global", filter=predicate))
+    assert items[0].text == COMPLETED_TEXT
+    assert json.loads(report(items).text)["prices"] == [price]
+    assert shlex.split(sandbox.commands[0][0]) == [
+        "/usr/local/bin/azmcp",
+        "pricing",
+        "get",
+        "--currency=USD",
+        "--region=Global",
+        f"--filter=({predicate})",
+    ]
+    assert len(backend.disposed) == 1
 
 
 @pytest.mark.parametrize("field", ["sku", "region", "service_family", "price_type", "filter"])
