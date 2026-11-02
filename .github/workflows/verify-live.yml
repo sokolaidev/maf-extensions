@@ -2658,6 +2658,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
@@ -2665,7 +2666,9 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
-          sparse-checkout: scripts
+          sparse-checkout: |
+            scripts
+            images
           persist-credentials: false
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
       - name: Check the live configuration is present
@@ -2692,7 +2695,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+      - name: Pull the qualified published image
+        if: env.SOURCE == 'published'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 "$HARNESS"/scripts/pull_live_image.py --profile terraform-random --root "$GITHUB_WORKSPACE"
       - name: Build the pinned random-provider image
+        if: env.SOURCE == 'branch'
         run: python3 images/terraform-sandbox/build_image.py --engine "$SAMPLE_ENGINE" --profile random --tag "$TERRAFORM_SANDBOX_IMAGE"
       - name: Sign in to Azure with OIDC
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
@@ -2745,6 +2754,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
@@ -2752,7 +2762,9 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
-          sparse-checkout: scripts
+          sparse-checkout: |
+            scripts
+            images
           persist-credentials: false
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
       - name: Check the live configuration is present
@@ -2779,7 +2791,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+      - name: Pull the qualified published image
+        if: env.SOURCE == 'published'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 "$HARNESS"/scripts/pull_live_image.py --profile opentofu-random --root "$GITHUB_WORKSPACE"
       - name: Build the pinned random-provider image
+        if: env.SOURCE == 'branch'
         run: python3 images/terraform-sandbox/build_image.py --engine "$SAMPLE_ENGINE" --profile random --tag "$OPENTOFU_SANDBOX_IMAGE"
       - name: Sign in to Azure with OIDC
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
@@ -3336,6 +3354,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Check out the checks from the default branch
         if: startsWith(github.ref, 'refs/tags/')
@@ -3343,7 +3362,9 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch || 'main' }}
           path: .harness
-          sparse-checkout: scripts
+          sparse-checkout: |
+            scripts
+            images
           persist-credentials: false
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
       - name: Check the live configuration is present
@@ -3370,7 +3391,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+      - name: Pull the qualified published image
+        if: env.SOURCE == 'published'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 "$HARNESS"/scripts/pull_live_image.py --profile shell --root "$GITHUB_WORKSPACE"
       - name: Build the shell validation image
+        if: env.SOURCE == 'branch'
         run: uv run --locked python scripts/build_wolfi_python.py --platform linux/amd64 -t "$SHELL_SANDBOX_IMAGE" images/shell-sandbox
       - name: Sign in to Azure with OIDC
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
