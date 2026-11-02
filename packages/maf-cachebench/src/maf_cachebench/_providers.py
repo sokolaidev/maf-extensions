@@ -84,7 +84,8 @@ class ProviderRuntime:
         try:
             while not task.done():
                 try:
-                    await asyncio.shield(task)
+                    # Cancelling this wait leaves cleanup running and its error for result().
+                    await asyncio.wait((task,))
                 except asyncio.CancelledError:
                     interrupted = True
             task.result()
