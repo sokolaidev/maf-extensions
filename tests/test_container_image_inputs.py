@@ -52,7 +52,11 @@ def test_only_locked_provider_compiler_is_excluded_from_image_updates():
         for pattern in update.get("directories", [update.get("directory", "")]):
             for directory in ROOT.glob(pattern.lstrip("/")):
                 for exclusion in update.get("exclude-paths", []):
-                    excluded.update(path for path in directory.glob(exclusion) if inventory(path))
+                    excluded.update(
+                        path
+                        for path in ROOT.glob(exclusion)
+                        if path.parent == directory and inventory(path)
+                    )
     assert excluded == {ROOT / "images/terraform-sandbox/prepared.Dockerfile"}
     compiler = stage_image(next(iter(excluded)), "provider-toolchain")
     expected = "go" + compiler.split(":")[1].split("-")[0]
