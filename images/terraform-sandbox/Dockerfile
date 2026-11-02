@@ -1,12 +1,12 @@
 # The initial supported guest platform is Linux amd64. Build each engine separately.
 ARG ENGINE=terraform
-FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS opentofu-build
+FROM golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS opentofu-build
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local
 RUN apk add --no-cache git python3
 COPY image.json build_opentofu.py build_go.py /recipe/
 RUN python3 /recipe/build_opentofu.py
 
-FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS terraform-build
+FROM golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS terraform-build
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local
 RUN apk add --no-cache git python3
 COPY image.json build_terraform.py build_go.py /recipe/
