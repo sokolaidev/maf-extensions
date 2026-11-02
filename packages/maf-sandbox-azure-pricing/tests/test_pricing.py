@@ -113,6 +113,133 @@ def test_outbound_cap_is_host_selected():
     assert tool.additional_properties["max_allowed_confidentiality"] == "host-classification"
 
 
+def test_model_schema_describes_price_fields_and_nonregional_queries():
+    tool, _, _ = attach()
+    schema = tool.input_model.model_json_schema()
+    properties = schema["properties"]
+    for parameter, field in {
+        "sku": "armSkuName",
+        "service": "serviceName",
+        "region": "armRegionName",
+        "service_family": "serviceFamily",
+        "price_type": "priceType",
+    }.items():
+        description = properties[parameter]["description"]
+        assert field in description
+        assert "Exact, case-sensitive" in description
+    assert all(value.get("description") for value in properties.values())
+    raw_filter = properties["filter"]["description"]
+    for field in (
+        "armRegionName",
+        "location",
+        "meterId",
+        "meterName",
+        "productId",
+        "skuId",
+        "productName",
+        "skuName",
+        "serviceName",
+        "serviceId",
+        "serviceFamily",
+        "priceType",
+        "armSkuName",
+        "reservationTerm",
+    ):
+        assert field in raw_filter
+    assert "contains(meterName, 'Spot')" in raw_filter
+    assert "Unknown fields reject the whole lookup" in raw_filter
+    assert "no osType" in raw_filter and "Windows" in raw_filter
+    region = properties["region"]["description"]
+    assert all(value in region for value in ("Zone 8", "US Gov Zone 2", "Global", "empty region"))
+    assert "retry without region" in region and "armRegionName eq ''" in region
+    assert "retry without region" in tool.description
+    assert "no osType" in tool.description
+    assert "empty armSkuName" in properties["sku"]["description"]
+    assert "empty armSkuName" in tool.description
+    for parameter in ("sku", "service"):
+        description = properties[parameter]["description"]
+        assert "omit" in description and "filter" in description
+        assert all(field in description for field in ("serviceName", "productName", "meterName"))
+    assert properties["currency"]["default"] == "USD"
+    assert properties["include_savings_plan"]["default"] is False
+    assert schema["$defs"]["PriceType"]["enum"] == [
+        "Consumption",
+        "Reservation",
+        "DevTestConsumption",
+    ]
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        ExecResult(
+            exit_code=1,
+            stdout=json.dumps(
+                {
+                    "status": 500,
+                    "message": "Service request failed.\nStatus: 400 (Bad Request)\nsecret predicate",
+                    "results": {"type": "ClientResultException"},
+                }
+            ),
+        ),
+        ExecResult(stdout='{"status":400,"message":"secret predicate"}'),
+        ExecResult(exit_code=1, stderr="HTTP 400: secret predicate"),
+        ExecResult(stderr="HTTP/1.1 400 Bad Request: secret predicate"),
+        ExecResult(exit_code=1, stderr="Status code: 400; secret predicate"),
+        ExecResult(exit_code=1, stderr="Invalid OData parameters supplied: secret predicate"),
+    ],
+)
+def test_upstream_bad_request_returns_fixed_filter_guidance_and_disposes(result):
+    class Rejected(InProcessSandbox):
+        async def exec(self, *args, **kwargs):
+            return result
+
+    tool, backend, _ = attach(Rejected())
+    context = FunctionInvocationContext(
+        function=tool, arguments={"filter": "osType eq 'secret predicate'"}
+    )
+    items = asyncio.run(tool.invoke(context=context))
+    assert items[0].text == NOT_COMPLETED_TEXT
+    guidance = next(item for item in items if "rejected the filter" in (item.text or ""))
+    assert "HTTP 400" in guidance.text and "Correct the query before retrying" in guidance.text
+    assert "secret predicate" not in str(items)
+    assert not any((item.text or "").startswith('{"prices":') for item in items)
+    assert len(backend.disposed) == 1
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        ExecResult(exit_code=1, stderr="HTTP 429: retry later"),
+        ExecResult(exit_code=1, stderr="HTTP 500: internal error"),
+        ExecResult(exit_code=1, stderr="Status: 4000; 400 rows received"),
+        ExecResult(exit_code=1, stdout="HTTP 400: not a JSON envelope"),
+        ExecResult(exit_code=1, stdout='{"status":"400","message":"HTTP 400"}'),
+        ExecResult(exit_code=1, stdout='{"status":500,"message":"HTTP 503"}'),
+        ExecResult(exit_code=1, stdout=envelope([row() | {"productName": "HTTP 400"}])),
+    ],
+)
+def test_other_cli_failures_do_not_claim_filter_rejection(result):
+    class Failed(InProcessSandbox):
+        async def exec(self, *args, **kwargs):
+            return result
+
+    tool, backend, _ = attach(Failed())
+    items = asyncio.run(tool.func(sku="x"))
+    assert items[0].text == NOT_COMPLETED_TEXT
+    assert "rejected the filter" not in str(items)
+    assert backend.disposed
+
+
+def test_price_text_cannot_turn_success_into_filter_refusal():
+    price = row() | {"productName": "HTTP 400 (Bad Request)"}
+    tool, backend, _ = attach(InProcessSandbox(default_stdout=envelope([price])))
+    items = asyncio.run(tool.func(sku="x"))
+    assert items[0].text == COMPLETED_TEXT
+    assert json.loads(report(items).text)["prices"] == [price]
+    assert backend.disposed
+
+
 @pytest.mark.parametrize("egress", [None, SourceIntegrity.TRUSTED])
 @pytest.mark.parametrize(
     "confidentiality", [ConfidentialityLabel.PUBLIC, ConfidentialityLabel.PRIVATE]
@@ -231,7 +358,6 @@ def test_argv_is_fixed_and_raw_filter_is_grouped():
         {"sku": "a\nb"},
         {"sku": "\ud800"},
         {"sku": "a" * 1025},
-        {"service": "Virtual Machines"},
         {"sku": "x", "currency": "usd"},
         {"sku": "x", "price_type": "SavingsPlan"},
         {"sku": "x", "include_savings_plan": 1},
@@ -243,6 +369,48 @@ def test_invalid_arguments_refuse_before_acquisition(arguments):
     result = asyncio.run(tool.func(**arguments))
     assert result[0].text == NOT_COMPLETED_TEXT
     assert not backend.keys and not sandbox.commands
+
+
+@pytest.mark.parametrize("raw_filter", [None, "productName eq 'private-product'"])
+def test_service_without_sku_suggests_raw_filters_without_echo_or_acquisition(raw_filter):
+    tool, backend, sandbox = attach()
+    items = asyncio.run(tool.func(service="private-service", region="Global", filter=raw_filter))
+    assert items[0].text == NOT_COMPLETED_TEXT
+    assert items[1].text == (
+        "Pricing query refused: the CLI requires sku with service. For meters "
+        "without an ARM SKU, omit service and sku and use filter on serviceName, "
+        "productName or meterName instead. Do not invent a SKU."
+    )
+    assert "private-service" not in str(items) and "private-product" not in str(items)
+    assert not backend.keys and not sandbox.commands
+
+
+def test_private_endpoint_raw_filter_needs_no_invented_sku():
+    price = row() | {
+        "armSkuName": "",
+        "region": "Global",
+        "serviceName": "Virtual Network",
+        "productName": "Virtual Network Private Link",
+        "meterName": "Standard Private Endpoint",
+        "priceType": "Consumption",
+    }
+    predicate = (
+        "serviceName eq 'Virtual Network' and productName eq 'Virtual Network Private Link' "
+        "and meterName eq 'Standard Private Endpoint'"
+    )
+    tool, backend, sandbox = attach(InProcessSandbox(default_stdout=envelope([price])))
+    items = asyncio.run(tool.func(region="Global", filter=predicate))
+    assert items[0].text == COMPLETED_TEXT
+    assert json.loads(report(items).text)["prices"] == [price]
+    assert shlex.split(sandbox.commands[0][0]) == [
+        "/usr/local/bin/azmcp",
+        "pricing",
+        "get",
+        "--currency=USD",
+        "--region=Global",
+        f"--filter=({predicate})",
+    ]
+    assert len(backend.disposed) == 1
 
 
 @pytest.mark.parametrize("field", ["sku", "region", "service_family", "price_type", "filter"])
