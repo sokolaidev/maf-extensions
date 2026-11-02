@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import re
 import signal
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,13 @@ DENIAL_REFERENCE = (
     "docker:29.8.2-dind@sha256:6316d612722fd7fb2bd7edf9fcbb4439d08915cfb2e0e0b28bf16675fc9f3314"
 )
 DENIAL_IMAGE = "sha256:98175203ef6f7a6147c3edbff4f2606d2707b413a61b45fed021004ddbf0ebd1"
+
+
+def connection_probe(environment: dict[str, str]) -> int:
+    """Probe daemon reachability through a server-side container inventory."""
+    return subprocess.run(
+        ["docker", "ps", "-aq"], env=environment, capture_output=True, timeout=15
+    ).returncode
 
 
 def denied_case(root: Path, prepared: Path, candidate: dict[str, Any]) -> dict[str, Any]:

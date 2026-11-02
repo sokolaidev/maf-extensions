@@ -608,6 +608,20 @@ def test_connection_loss_requires_an_independently_failed_private_probe(field, b
         profile.verify_case(value, "worker-unavailable", candidate, CAMPAIGN)
 
 
+def test_connection_probe_uses_server_inventory_even_when_formatted_info_would_succeed(monkeypatch):
+    environment = {"DOCKER_CONTEXT": "private", "DOCKER_CONFIG": "isolated"}
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        assert kwargs["env"] is environment and kwargs["timeout"] == 15
+        return SimpleNamespace(returncode=1 if command == ["docker", "ps", "-aq"] else 0)
+
+    monkeypatch.setattr(docker_faults.subprocess, "run", run)
+    assert docker_faults.connection_probe(environment) == 1
+    assert commands == [["docker", "ps", "-aq"]]
+
+
 @pytest.mark.parametrize(
     "mutation",
     [

@@ -627,22 +627,20 @@ def case(
                     blocked_env = None
                 if blocked_env is not None:
                     linux_fault = sys.platform == "linux"
-                    engine = digest(docker("info", "--format", "{{.ID}}"))
+                    engine_identity = docker("info", "--format", "{{.ID}}")
+                    require(bool(engine_identity), "observer_engine_identity")
+                    engine = digest(engine_identity)
                     if linux_fault:
                         fields = {}
                         if private_context:
-                            probe = subprocess.run(
-                                ["docker", "info", "--format", "{{.ID}}"],
-                                env=blocked_env,
-                                capture_output=True,
-                                text=True,
-                                timeout=15,
-                            )
-                            require(probe.returncode != 0, "private_context_reachable")
+                            from .linux_docker_failures import connection_probe
+
+                            probe_returncode = connection_probe(blocked_env)
+                            require(probe_returncode != 0, "private_context_reachable")
                             fields = {
                                 "context_private": private_context.directory.is_relative_to(root),
                                 "endpoint_reserved": private_context.reserved.getsockname()[1] > 0,
-                                "probe_returncode": probe.returncode,
+                                "probe_returncode": probe_returncode,
                             }
                         note(
                             "docker_fault_blocked",
