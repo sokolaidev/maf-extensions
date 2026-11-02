@@ -2,7 +2,7 @@ FROM python:3.13-slim-trixie@sha256:d98cc29d3266e535dd9da1099688d9cb3ca475381357
 COPY image.json install.py /recipe/
 RUN python3 /recipe/install.py
 
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:0b179206ab162b12a43bacea1b525a4023e0272005c92d08555c61b1beaedc40 AS runtime
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:88a20e2d017bd20cdc0cb3910de603e7bea9512a6c351a8dd3c9df212ab03d73 AS runtime
 RUN apk upgrade --no-cache && apk add --no-cache ca-certificates-bundle icu libssl3 libcrypto3 libstdc++ zlib
 COPY --from=download /out/azmcp /usr/local/bin/azmcp
 COPY --from=download /out/LICENSE /usr/share/licenses/azure-mcp/LICENSE
