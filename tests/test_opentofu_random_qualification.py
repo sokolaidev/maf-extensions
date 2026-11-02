@@ -21,10 +21,10 @@ def report():
     return {
         "receipt": tofu.expected_receipt("dependencies.opentofu.json"),
         "build": {
-            "go_version": "go version "
-            + tofu.read(tofu.CONTEXT / "image.json")["engines"]["opentofu"]["source_build"][
-                "go_version"
-            ]
+            "go_version": "go version go"
+            + tofu.stage_image(tofu.CONTEXT / "Dockerfile", "opentofu-build")
+            .split(":")[1]
+            .split("-")[0]
             + " linux/amd64",
             "source": tofu.read(tofu.CONTEXT / "image.json")["engines"]["opentofu"]["source_build"],
         },

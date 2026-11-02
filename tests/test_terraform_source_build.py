@@ -26,7 +26,11 @@ def test_build_refuses_drift_before_compilation(tmp_path, monkeypatch, mismatch)
 
     def output(command, **kwargs):
         if command == ["go", "env", "GOVERSION"]:
-            return "go1.26.8" if mismatch == "toolchain" else source["go_version"]
+            return (
+                "go1.26.8"
+                if mismatch == "toolchain"
+                else build_terraform.engine_go_version("terraform")
+            )
         if command == ["git", "rev-parse", "HEAD"]:
             return "0" * 40 if mismatch == "revision" else source["revision"]
         assert command[:4] == ["go", "list", "-m", "-json"]
@@ -105,7 +109,7 @@ def test_source_build_stops_after_download_exhaustion_or_first_check_failure(
 
     def output(command, **kwargs):
         if command == ["go", "env", "GOVERSION"]:
-            return source["go_version"]
+            return builder.engine_go_version(engine)
         if command == ["git", "rev-parse", "HEAD"]:
             return source["revision"]
         assert command[:3] == ["go", "list", "-m"]
