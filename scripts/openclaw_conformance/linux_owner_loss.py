@@ -199,7 +199,10 @@ def run(prepared: Path, root: Path) -> None:
                 one(value["events"], "harness_cleanup")["processes_stopped"] is True,
                 "process_cleanup_unconfirmed",
             )
-            require(failure != "KeyboardInterrupt", "interrupted")
+            require(
+                failure != "KeyboardInterrupt" and value.get("failure") != "KeyboardInterrupt",
+                "interrupted",
+            )
         summary["runtime_unchanged"] = runtime(prepared) == candidate["runtime"]
         write(root / "summary.json", summary)
     finally:

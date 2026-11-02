@@ -247,6 +247,49 @@ def test_incomplete_campaign_retains_failure_and_cleanup_diagnostics(tmp_path, m
     assert all(r["rejection"] == "missing_or_oversized_record" for r in report["cases"][1:])
 
 
+def test_interrupted_case_stops_campaign_after_evidence_and_cleanup(tmp_path, monkeypatch):
+    prepared = tmp_path / "prepared"
+    root = tmp_path / "faults"
+    candidate = {
+        "host": {"platform": "Linux"},
+        "wheel_sha256": profile.WHEEL,
+        "versions": dict(profile.VERSIONS),
+    }
+    calls = []
+
+    def interrupted_case(case_root, _prepared, _candidate, name):
+        calls.append(("case", name))
+        return {
+            "case": name,
+            "outcome": "fail",
+            "failure": "KeyboardInterrupt",
+            "events": [{"event": "harness_cleanup", "processes_stopped": True}],
+        }
+
+    def cleanup(case_root, name):
+        calls.append(("cleanup", name))
+        return {"confirmed": True, "remaining": [], "removed": []}
+
+    cases = importlib.import_module("openclaw_conformance.owner_loss_cases")
+    monkeypatch.setattr(cases, "case", interrupted_case)
+    monkeypatch.setattr(profile, "cleanup", cleanup)
+    monkeypatch.setattr(profile, "baseline", lambda _: candidate)
+    monkeypatch.setattr(profile.sys, "platform", "linux")
+    monkeypatch.setattr(profile.sys, "prefix", str(prepared / "worker"))
+    monkeypatch.setattr(profile.signal, "SIGALRM", 14, raising=False)
+    monkeypatch.setattr(profile.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(profile.signal, "alarm", lambda *a: None, raising=False)
+    with pytest.raises(ValueError, match="interrupted"):
+        profile.run(prepared, root)
+    assert calls == [("case", "control"), ("cleanup", "control")]
+    summary = profile.read(root / "summary.json")
+    assert summary["completed"] == ["control"]
+    assert summary["runtime_unchanged"] is False
+    saved = root / "control.json"
+    assert summary["case_hashes"]["control"] == profile.file_hash(saved)
+    assert profile.read(saved)["failure"] == "KeyboardInterrupt"
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="requires Linux pidfds and procfs")
 def test_pidfd_fault_targets_only_owned_actor():
     with subprocess.Popen(
