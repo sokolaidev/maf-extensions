@@ -371,3 +371,40 @@ def test_workflow_retains_evidence_on_failure():
     assert "--egress-transitions" in composition["run"]
     assert "transitions.json" in composition["run"]
     assert "transitions.log" in composition["run"]
+    assert "--egress-restart" in composition["run"]
+    assert "restart.json" in composition["run"]
+    assert "restart.log" in composition["run"]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        [],
+        ["--https-ca", "ca.pem"],
+        ["--egress-routes"],
+        ["--egress-composition"],
+        ["--egress-transitions"],
+    ],
+)
+def test_restart_mode_refuses_missing_origin_or_other_modes(modules, monkeypatch, extra):
+    probe, _ = modules
+    args = [
+        "probe",
+        "--execute",
+        "--image",
+        "image",
+        "--config",
+        "config",
+        "--report",
+        "report",
+        "--egress-restart",
+    ]
+    if extra:
+        args += ["--egress-origin-ip", "192.0.2.1", *extra]
+    monkeypatch.setattr(probe.sys, "argv", args)
+    monkeypatch.setattr(
+        probe, "docker_get", lambda *args: pytest.fail("invalid mode reached Docker")
+    )
+    with pytest.raises(SystemExit) as error:
+        probe.main()
+    assert error.value.code == 2

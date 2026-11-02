@@ -351,8 +351,9 @@ class Transitions:
             self.policy(False)
         self.check(schedule + "_converged", "EACCES", "EACCES")
 
-    def restart(self, gateway, receipt, attached):
-        self.wait_provider(receipt, attached)
+    def restart_runtime(self, gateway, receipt, attached):
+        """Record an orderly restart and independently classify the resulting runtime."""
+        status = self.wait_provider(receipt, attached)
         before = snapshot(self.identity)
         before_spec = self.current().spec.SerializeToString(deterministic=True).hex()
         row = {
@@ -387,7 +388,12 @@ class Transitions:
             row["observation"] = "workload_restarted_and_supervisor_replaced"
             row["original_supervisor_absent"] = True
             row["original_processes_retired"] = True
-            self.fixture.save()
+        self.fixture.save()
+        return row, status
+
+    def restart(self, gateway, receipt, attached):
+        row, _ = self.restart_runtime(gateway, receipt, attached)
+        if not row["runtime_continuity"]:
             raise RuntimeRestarted(
                 "retained-state gateway restart did not preserve the running workload"
             )
