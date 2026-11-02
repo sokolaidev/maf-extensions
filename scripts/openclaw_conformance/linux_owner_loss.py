@@ -183,9 +183,14 @@ def run(prepared: Path, root: Path) -> None:
                 value["candidate_sha256"] = expected["candidate_sha256"]
                 value["parent_failure"] = failure
                 try:
+                    require(
+                        one(value.get("events", []), "harness_cleanup")["processes_stopped"]
+                        is True,
+                        "process_cleanup_unconfirmed",
+                    )
                     value["independent_cleanup"] = cleanup(root / name, name)
                 except Exception as exc:
-                    value["independent_cleanup"] = {"confirmed": False, "error": type(exc).__name__}
+                    value["independent_cleanup"] = {"confirmed": False, "error": safe_reason(exc)}
                 data = encode(value)
                 require(len(data) <= LIMITS["events"], "case_evidence_limit")
                 path = root / (name + ".json")

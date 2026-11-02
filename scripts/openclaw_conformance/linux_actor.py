@@ -12,6 +12,43 @@ from typing import Any
 from .evidence import Refused, require
 
 
+def stop_processes(processes: list[Any]) -> list[str]:
+    """Finish bounded process-group teardown before reporting deferred interrupts."""
+    if sys.platform != "linux":
+        raise Refused("linux_required")
+    signal.alarm(0)
+    errors = []
+
+    def interrupted(_signum, _frame):
+        errors.append("KeyboardInterrupt")
+
+    previous = signal.signal(signal.SIGINT, interrupted)
+    try:
+        for proc in reversed(processes):
+            try:
+                errors.extend(proc.close())
+            except Exception as exc:
+                errors.append(type(exc).__name__)
+            if proc.stopped:
+                continue
+            stopped = True
+            for child, _ in reversed(proc.children):
+                try:
+                    try:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    require(proc.wait_empty(child, 10), "owned_processes_remain")
+                    child.wait(timeout=10)
+                except Exception as exc:
+                    stopped = False
+                    errors.append(type(exc).__name__)
+            proc.stopped = stopped
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    return errors
+
+
 def identity(pid: int) -> dict[str, int]:
     """Read process ownership and birth identity from one procfs snapshot."""
     raw = Path(f"/proc/{pid}/stat").read_text()

@@ -749,8 +749,15 @@ def case(
                 denial.restore()
             except Exception as exc:
                 errors.append(type(exc).__name__)
-        for proc in reversed(processes):
-            errors.extend(proc.close())
+        if sys.platform == "linux":
+            from .linux_actor import stop_processes
+
+            errors.extend(stop_processes(processes))
+            if "KeyboardInterrupt" in errors:
+                failure = "KeyboardInterrupt"
+        else:
+            for proc in reversed(processes):
+                errors.extend(proc.close())
         provider.shutdown()
         provider.server_close()
         provider_thread.join(timeout=10)
@@ -762,6 +769,10 @@ def case(
         sentinel_survived = False
         sentinel_removed = False
         try:
+            require(
+                sys.platform != "linux" or all(proc.stopped for proc in processes),
+                "process_cleanup_unconfirmed",
+            )
             sentinel_survived = sentinel_alive()
             leftovers = owned()
             note("harness_leftovers", resources=leftovers)

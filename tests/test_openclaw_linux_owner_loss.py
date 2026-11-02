@@ -7,6 +7,7 @@ import importlib
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -247,7 +248,10 @@ def test_incomplete_campaign_retains_failure_and_cleanup_diagnostics(tmp_path, m
     assert all(r["rejection"] == "missing_or_oversized_record" for r in report["cases"][1:])
 
 
-def test_interrupted_case_stops_campaign_after_evidence_and_cleanup(tmp_path, monkeypatch):
+@pytest.mark.parametrize("processes_stopped", [True, False])
+def test_interrupted_case_stops_campaign_after_evidence_and_cleanup(
+    tmp_path, monkeypatch, processes_stopped
+):
     prepared = tmp_path / "prepared"
     root = tmp_path / "faults"
     candidate = {
@@ -263,7 +267,7 @@ def test_interrupted_case_stops_campaign_after_evidence_and_cleanup(tmp_path, mo
             "case": name,
             "outcome": "fail",
             "failure": "KeyboardInterrupt",
-            "events": [{"event": "harness_cleanup", "processes_stopped": True}],
+            "events": [{"event": "harness_cleanup", "processes_stopped": processes_stopped}],
         }
 
     def cleanup(case_root, name):
@@ -279,15 +283,90 @@ def test_interrupted_case_stops_campaign_after_evidence_and_cleanup(tmp_path, mo
     monkeypatch.setattr(profile.signal, "SIGALRM", 14, raising=False)
     monkeypatch.setattr(profile.signal, "signal", lambda *a: None)
     monkeypatch.setattr(profile.signal, "alarm", lambda *a: None, raising=False)
-    with pytest.raises(ValueError, match="interrupted"):
+    with pytest.raises(
+        ValueError, match="interrupted" if processes_stopped else "cleanup_unconfirmed"
+    ):
         profile.run(prepared, root)
-    assert calls == [("case", "control"), ("cleanup", "control")]
+    assert calls == [
+        ("case", "control"),
+        *(([("cleanup", "control")]) if processes_stopped else []),
+    ]
     summary = profile.read(root / "summary.json")
     assert summary["completed"] == ["control"]
     assert summary["runtime_unchanged"] is False
     saved = root / "control.json"
     assert summary["case_hashes"]["control"] == profile.file_hash(saved)
     assert profile.read(saved)["failure"] == "KeyboardInterrupt"
+
+
+def test_process_teardown_disarms_deadline_and_retries_failed_close(monkeypatch):
+    calls = []
+    handlers = {}
+    child = SimpleNamespace(pid=1234, wait=lambda **kw: calls.append("wait"))
+
+    def close():
+        calls.append("close")
+        handlers[actors.signal.SIGINT](actors.signal.SIGINT, None)
+        return ["Refused"]
+
+    def handler(signum, callback):
+        handlers[signum] = callback
+        return actors.signal.SIG_DFL
+
+    proc = SimpleNamespace(
+        children=[(child, None)],
+        stopped=False,
+        close=close,
+        wait_empty=lambda *a: True,
+    )
+    monkeypatch.setattr(actors.sys, "platform", "linux")
+    monkeypatch.setattr(actors.signal, "alarm", lambda n: calls.append(("alarm", n)), raising=False)
+    monkeypatch.setattr(actors.signal, "signal", handler)
+    monkeypatch.setattr(actors.signal, "SIGKILL", 9, raising=False)
+    monkeypatch.setattr(
+        actors.os, "killpg", lambda pid, sig: calls.append(("kill", pid)), raising=False
+    )
+    errors = actors.stop_processes([proc])
+    assert calls == [("alarm", 0), "close", ("kill", 1234), "wait"]
+    assert errors == ["KeyboardInterrupt", "Refused"]
+    assert proc.stopped is True
+    assert handlers[actors.signal.SIGINT] == actors.signal.SIG_DFL
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux process groups and alarms")
+def test_pending_deadline_cannot_bypass_kill_of_term_resistant_actor(tmp_path, monkeypatch):
+    agent = importlib.import_module("test_openclaw_e2e_sample").agent
+    proc = agent.Processes(tmp_path)
+    marker = tmp_path / "ready"
+    code = (
+        "import signal,time; from pathlib import Path; "
+        "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+        f"Path({str(marker)!r}).touch(); time.sleep(60)"
+    )
+    original_wait = proc.wait_empty
+    monkeypatch.setattr(
+        proc, "wait_empty", lambda child, seconds: original_wait(child, 0.3 if seconds == 30 else 5)
+    )
+
+    def expired(*_args):
+        raise profile.Refused("fault_case_deadline")
+
+    previous = actors.signal.signal(actors.signal.SIGALRM, expired)
+    try:
+        proc.start("resistant", [sys.executable, "-c", code])
+        deadline = time.monotonic() + 10
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert marker.exists()
+        actors.signal.setitimer(actors.signal.ITIMER_REAL, 0.1)
+        assert actors.stop_processes([proc]) == []
+        assert proc.stopped and not proc.group_exists(proc.children[0][0])
+        assert proc.children[0][0].returncode == -actors.signal.SIGKILL
+    finally:
+        actors.signal.alarm(0)
+        actors.signal.signal(actors.signal.SIGALRM, previous)
+        if not proc.stopped:
+            actors.stop_processes([proc])
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="requires Linux pidfds and procfs")
