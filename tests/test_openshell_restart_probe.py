@@ -69,6 +69,7 @@ def test_reports_must_advance_within_the_accepted_session(probe, sequence):
         "identity",
         "guest",
         "after",
+        "cached_after",
         "retained",
         "policy",
         "provider",
@@ -78,7 +79,7 @@ def test_reports_must_advance_within_the_accepted_session(probe, sequence):
 def test_recovery_brackets_traffic_with_fresh_stable_authority(
     probe, monkeypatch, attached, failure
 ):
-    saved, events, persisted = [], [], []
+    saved, events, persisted, cached_before_guest = [], [], [], []
     spec = Message(policy="expected")
     row = {
         "runtime_continuity": failure == "preserved",
@@ -145,9 +146,12 @@ def test_recovery_brackets_traffic_with_fresh_stable_authority(
             prefix = "third"
         if failure == "after" and sequence == 3:
             sequence = 2
+        if failure == "cached_after" and sequence >= 3:
+            return cached_before_guest[-1]
         return status(prefix, sequence)
 
     def observe(client, name, ip, record, label, host, path, expected, method):
+        cached_before_guest.append(status(sequence=3))
         events.append("guest")
         result = {"case": label, "passed": failure != "guest"}
         record("cases", result)
@@ -162,9 +166,9 @@ def test_recovery_brackets_traffic_with_fresh_stable_authority(
         with pytest.raises(RuntimeError):
             transition.recover(None, Message(receipt_id="original"), attached)
         assert not row["completed"]
-        if failure not in ("guest", "after"):
+        if failure not in ("guest", "after", "cached_after"):
             assert "guest" not in events
-        if failure == "after":
+        if failure in ("after", "cached_after"):
             case = next(value for kind, value in saved if kind == "cases")
             assert case["passed"] and not case["authority_verified"]
     else:
@@ -174,12 +178,17 @@ def test_recovery_brackets_traffic_with_fresh_stable_authority(
             "status",
             "guest",
             "status",
+            "status",
         ] * (3 if attached else 2)
         assert row["retained_receipt_state"] == "SUPERSEDED"
         assert row["restoration_state"] == "installed"
         cases = [value for kind, value in saved if kind == "cases"]
         assert all(case["authority_verified"] for case in cases)
         assert all(case["authority_before_hex"] != case["authority_after_hex"] for case in cases)
+        assert all(
+            case["authority_post_traffic_floor_hex"] != case["authority_after_hex"]
+            for case in cases
+        )
     assert persisted
 
 

@@ -115,6 +115,9 @@ class RestartAuthority(Transitions):
             observation["authority_verified"] = False
             self.fixture.save()
             accepted = self.attest(receipt, attached, before, runtime, spec, accepted)
+            observation["authority_post_traffic_floor_hex"] = accepted.SerializeToString().hex()
+            self.fixture.save()
+            accepted = self.attest(receipt, attached, before, runtime, spec, accepted)
             observation["authority_after_hex"] = accepted.SerializeToString().hex()
             observation["authority_verified"] = True
             self.fixture.save()
