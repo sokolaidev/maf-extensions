@@ -160,6 +160,7 @@ def runner_hash() -> str:
         *Path(__file__).parent.glob("*.py"),
         *FIXTURES.glob("openclaw*.py"),
         *SAMPLE.glob("*.py"),
+        REPO / "scripts/report_openclaw_hosted.py",
         REPO / "tests/test_mcp_workload_service.py",
     ]
     return digest({p.relative_to(REPO).as_posix(): file_hash(p) for p in sorted(paths)})
@@ -169,6 +170,7 @@ def runner_revision() -> str:
     """Require committed qualification sources before binding a candidate."""
     paths = [
         "scripts/openclaw_conformance",
+        "scripts/report_openclaw_hosted.py",
         "tests/fixtures",
         "tests/test_mcp_workload_service.py",
         "samples/experimental/openclaw_bicep_e2e",

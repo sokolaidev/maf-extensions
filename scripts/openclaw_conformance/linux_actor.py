@@ -37,7 +37,7 @@ def stop_processes(processes: list[Any]) -> list[str]:
                     try:
                         os.killpg(child.pid, signal.SIGKILL)
                     except ProcessLookupError:
-                        pass
+                        pass  # The group can exit before escalation; wait_empty still confirms absence.
                     require(proc.wait_empty(child, 10), "owned_processes_remain")
                     child.wait(timeout=10)
                 except Exception as exc:

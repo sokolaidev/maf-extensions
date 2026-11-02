@@ -142,6 +142,31 @@ def test_runtime_snapshot_includes_added_and_modified_assets(tmp_path):
     assert profile.runtime(tmp_path) != before
 
 
+def test_baseline_reporter_participates_in_source_identity_and_dirty_check(tmp_path, monkeypatch):
+    install = importlib.import_module("openclaw_conformance.install")
+    runner = tmp_path / "scripts/openclaw_conformance/install.py"
+    reporter = tmp_path / "scripts/report_openclaw_hosted.py"
+    for path in (runner, reporter, tmp_path / "tests/test_mcp_workload_service.py"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("original", encoding="utf-8")
+    monkeypatch.setattr(install, "__file__", str(runner))
+    monkeypatch.setattr(install, "REPO", tmp_path)
+    monkeypatch.setattr(install, "FIXTURES", tmp_path / "tests/fixtures")
+    monkeypatch.setattr(install, "SAMPLE", tmp_path / "sample")
+    before = install.runner_hash()
+    reporter.write_text("changed acceptance", encoding="utf-8")
+    assert install.runner_hash() != before
+
+    def dirty(command, **kwargs):
+        assert "status" in command
+        assert "scripts/report_openclaw_hosted.py" in command
+        return b" M scripts/report_openclaw_hosted.py\n"
+
+    monkeypatch.setattr(install.subprocess, "check_output", dirty)
+    with pytest.raises(ValueError, match="uncommitted_runner"):
+        install.runner_revision()
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
