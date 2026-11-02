@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import math
 import os
 import platform
 import re
 import signal
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +20,7 @@ from .install import FIXTURES, REPO, SAMPLE, runner_hash, runner_revision
 from .owner_loss_cleanup import cleanup
 from .owner_loss_evidence import DEADLINES, PHASES, one, verify
 
-PROFILE = "owner-loss-linux-v1"
+PROFILE = "owner-loss-linux-v2"
 CASES = (
     "control",
     *(f"{actor}-{phase}" for actor in ("gateway", "client", "worker") for phase in PHASES),
@@ -104,13 +106,15 @@ def baseline(prepared: Path) -> dict[str, Any]:
     }
 
 
-def plan(candidate: dict[str, Any]) -> dict[str, Any]:
+def plan(candidate: dict[str, Any], campaign: str) -> dict[str, Any]:
     """Fix the case inventory and supported dependencies before execution."""
     require(candidate["host"]["platform"] == "Linux", "linux_required")
     require(candidate["wheel_sha256"] == WHEEL, "worker_wheel")
     require(all(candidate["versions"].get(k) == v for k, v in VERSIONS.items()), "worker_versions")
+    require(isinstance(campaign, str) and re.fullmatch(r"[0-9a-f]{32}", campaign), "campaign_id")
     return {
         "profile": PROFILE,
+        "campaign_id": campaign,
         "candidate_sha256": digest(candidate),
         "cases": list(CASES),
         "deadlines": DEADLINES,
@@ -119,9 +123,13 @@ def plan(candidate: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def verify_case(value: dict[str, Any], name: str, candidate: dict[str, Any]) -> None:
+def verify_case(value: dict[str, Any], name: str, candidate: dict[str, Any], campaign: str) -> None:
     """Require recovery before any emergency cleanup intervention."""
     require(name in CASES, "case_not_selected")
+    require(
+        value.get("campaign_id") == campaign and value.get("candidate_sha256") == digest(candidate),
+        "case_campaign_binding",
+    )
     verify(value, name, candidate, platform="Linux")
     require(value["independent_cleanup"].get("removed") == [], "emergency_cleanup_required")
     require(one(value["events"], "harness_leftovers")["resources"] == [], "harness_removed_orphans")
@@ -141,12 +149,18 @@ def run(prepared: Path, root: Path) -> None:
     )
     root.mkdir(parents=True, mode=0o700)
     candidate = baseline(prepared)
+    expected = plan(candidate, uuid.uuid4().hex)
     write(root / "candidate.json", candidate)
-    write(root / "plan.json", plan(candidate))
+    write(root / "plan.json", expected)
     sys.path[:0] = [str(FIXTURES), str(SAMPLE)]
     from .owner_loss_cases import case
 
-    summary: dict[str, Any] = {"completed": [], "runtime_unchanged": False}
+    summary: dict[str, Any] = {
+        "plan_sha256": digest(expected),
+        "completed": [],
+        "case_hashes": {},
+        "runtime_unchanged": False,
+    }
     write(root / "summary.json", summary)
 
     def expired(_signum, _frame):
@@ -165,6 +179,8 @@ def run(prepared: Path, root: Path) -> None:
                 failure = str(exc) if isinstance(exc, Refused) else type(exc).__name__
             finally:
                 signal.alarm(0)
+                value["campaign_id"] = expected["campaign_id"]
+                value["candidate_sha256"] = expected["candidate_sha256"]
                 value["parent_failure"] = failure
                 try:
                     value["independent_cleanup"] = cleanup(root / name, name)
@@ -172,7 +188,9 @@ def run(prepared: Path, root: Path) -> None:
                     value["independent_cleanup"] = {"confirmed": False, "error": type(exc).__name__}
                 data = encode(value)
                 require(len(data) <= LIMITS["events"], "case_evidence_limit")
-                (root / (name + ".json")).write_bytes(data)
+                path = root / (name + ".json")
+                path.write_bytes(data)
+                summary["case_hashes"][name] = file_hash(path)
                 summary["completed"].append(name)
                 write(root / "summary.json", summary)
             # Continue after a rejected result only when cleanup is independently confirmed.
@@ -195,48 +213,75 @@ def safe_reason(exc: Exception) -> str:
     return reason if re.fullmatch(r"[A-Za-z0-9_:-]{1,120}", reason) else type(exc).__name__
 
 
+def failure_code(value: Any) -> str | None:
+    """Retain refusal codes without publishing arbitrary failure text."""
+    if value is None:
+        return None
+    return (
+        value
+        if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_:-]{1,120}", value)
+        else "redacted"
+    )
+
+
 def collect(prepared: Path, root: Path) -> dict[str, Any]:
     """Re-evaluate raw evidence, runtime identity and resource absence before publication."""
     public: dict[str, Any] = {"profile": PROFILE, "qualified": False, "cases": []}
     sys.path[:0] = [str(FIXTURES), str(SAMPLE)]
+    candidate, expected, summary = {}, {}, {}
     try:
         candidate = read(root / "candidate.json")
         public["candidate"] = candidate
-        require(read(root / "plan.json") == plan(candidate), "plan_narrowed")
+        expected = read(root / "plan.json")
+        require(expected == plan(candidate, expected["campaign_id"]), "plan_narrowed")
         require(candidate == baseline(prepared), "candidate_changed")
         summary = read(root / "summary.json")
-        require(summary["completed"] == list(CASES), "case_inventory")
-        require(summary["runtime_unchanged"] is True, "runtime_changed")
+        require(summary["plan_sha256"] == digest(expected), "summary_campaign_binding")
+        public["campaign_id"] = expected["campaign_id"]
         reporter = importlib.import_module("report_openclaw_hosted")
         public["docker"] = json.loads(
             reporter.command("docker", "version", "--format", "{{json .Server}}")
         )
         public["node"] = reporter.command("node", "--version")
         public["uv"] = reporter.command("uv", "--version")
-        for name in CASES:
-            row: dict[str, Any] = {"case": name, "passed": False}
-            public["cases"].append(row)
-            try:
-                path = root / (name + ".json")
-                value = read(path, LIMITS["events"])
-                row["sha256"] = file_hash(path)
-                row["seconds"] = value.get("duration")
-                row["parent_failure"] = value.get("parent_failure")
-                row["failure"] = value.get("failure")
-                row["independent_cleanup"] = value.get("independent_cleanup", {}).get("confirmed")
-                verify_case(value, name, candidate)
-                # This second inventory must not turn a required cleanup into acceptance.
-                remaining = cleanup(root / name, name)
-                require(
-                    remaining["confirmed"] is True and remaining["removed"] == [],
-                    "postflight_survivor",
-                )
-                row["passed"] = True
-            except Exception as exc:
-                row["rejection"] = safe_reason(exc)
-        public["qualified"] = all(row["passed"] for row in public["cases"])
     except Exception as exc:
         public["rejection"] = safe_reason(exc)
+    for name in CASES:
+        row: dict[str, Any] = {"case": name, "passed": False}
+        public["cases"].append(row)
+        try:
+            path = root / (name + ".json")
+            value = read(path, LIMITS["events"])
+            row["sha256"] = file_hash(path)
+            duration = value.get("duration")
+            row["seconds"] = (
+                duration if type(duration) in (int, float) and math.isfinite(duration) else None
+            )
+            row["parent_failure"] = failure_code(value.get("parent_failure"))
+            row["failure"] = failure_code(value.get("failure"))
+            row["independent_cleanup"] = (
+                value.get("independent_cleanup", {}).get("confirmed") is True
+            )
+            require("rejection" not in public, "campaign_rejected")
+            require(row["sha256"] == summary["case_hashes"].get(name), "case_artifact_digest")
+            verify_case(value, name, candidate, expected["campaign_id"])
+            # This second inventory must not turn a required cleanup into acceptance.
+            remaining = cleanup(root / name, name)
+            require(
+                remaining["confirmed"] is True and remaining["removed"] == [],
+                "postflight_survivor",
+            )
+            row["passed"] = True
+        except Exception as exc:
+            row["rejection"] = safe_reason(exc)
+    try:
+        require("rejection" not in public, "campaign_rejected")
+        require(summary["completed"] == list(CASES), "case_inventory")
+        require(set(summary["case_hashes"]) == set(CASES), "case_hash_inventory")
+        require(summary["runtime_unchanged"] is True, "runtime_changed")
+        public["qualified"] = all(row["passed"] for row in public["cases"])
+    except Exception as exc:
+        public.setdefault("rejection", safe_reason(exc))
     return public
 
 

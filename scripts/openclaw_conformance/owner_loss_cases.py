@@ -251,6 +251,13 @@ def case(
         proc.start(role + str(len(processes)), command, child_env)
         return proc
 
+    def bind(role, proc, pid):
+        target = actor(proc, pid)
+        scope_stack.callback(target.close)
+        if os.name != "nt":
+            note("actor_bound", actor=role, pid=pid, linux_identity=target.evidence)
+        return target
+
     bootstrap = "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module('openclaw_owner_loss_worker',run_name='__main__')"
 
     def start_worker(child_env=None):
@@ -261,8 +268,7 @@ def case(
             env if child_env is None else child_env,
         )
         pid = wait(lambda: rows(root / "worker-pid.jsonl")[before:] or None, "worker_pid")[0]["pid"]
-        target = actor(proc, pid)
-        scope_stack.callback(target.close)
+        target = bind("worker", proc, pid)
         return proc, target
 
     def ready(port, key, actor, path="/ready"):
@@ -429,8 +435,7 @@ def case(
             gateway_pid = read(root / "gateway-pid.json")["pid"]
         else:
             gateway_pid = gateway_process.children[0][0].pid
-        actors["gateway"] = actor(gateway_process, gateway_pid)
-        scope_stack.callback(actors["gateway"].close)
+        actors["gateway"] = bind("gateway", gateway_process, gateway_pid)
         ready(gateway_port, gateway_token, actors["gateway"], "/health")
         note("control_result", result=gateway_valid())
         old_sid = initialize()
@@ -451,8 +456,7 @@ def case(
                 env,
             )
             pid = wait(lambda: rows(root / "client.jsonl") or None, "client_pid")[0]["pid"]
-            actors["client"] = actor(client_process, pid)
-            scope_stack.callback(actors["client"].close)
+            actors["client"] = bind("client", client_process, pid)
             # Gateway preparation has its own deadline; the phase barrier begins at worker ingress.
             wait(
                 lambda: any(r["event"] == "target_request" for r in rows(root / "transport.jsonl")),
@@ -787,6 +791,7 @@ def case(
         "config_sha256": manifest["config_sha256"],
         "duration": time.monotonic() - started,
         **observations(root, name),
+        **({"worker": rows(root / "worker-pid.jsonl")} if os.name != "nt" else {}),
     }
     write(root / "result.json", value)
     return value

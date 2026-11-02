@@ -17,11 +17,13 @@ sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "tests/fixtures")]
 profile = importlib.import_module("openclaw_conformance.linux_owner_loss")
 actors = importlib.import_module("openclaw_conformance.linux_actor")
 old = importlib.import_module("test_openclaw_owner_loss")
+CAMPAIGN = "a" * 32
 
 
 def observation(name):
     candidate = old.manifest()
     value = old.observation(name, candidate)
+    value.update(campaign_id=CAMPAIGN, candidate_sha256=profile.digest(candidate))
     value["independent_cleanup"]["removed"] = []
     final = profile.one(value["events"], "harness_cleanup")
     value["events"].append(
@@ -32,7 +34,7 @@ def observation(name):
         fault = profile.one(value["events"], "actor_killed")
         fault["job_membership_verified"] = False
         fault["linux_identity"] = {
-            "pid": 101,
+            "pid": 1234,
             "pgrp": 100,
             "session": 100,
             "start": 77,
@@ -40,13 +42,25 @@ def observation(name):
             "pidfd_bound": True,
             "signal": "SIGKILL",
         }
+        role = name.split("-", 1)[0]
+        value["worker"] = [{"event": "actor_started", "mono_ns": 10, "pid": 1234}]
+        value["events"].append(
+            {
+                "event": "actor_bound",
+                "mono_ns": 220 if role == "client" else 20,
+                "actor": role,
+                "pid": 1234,
+                "linux_identity": dict(fault["linux_identity"]),
+            }
+        )
+        value["events"].sort(key=lambda row: row["mono_ns"])
     return candidate, value
 
 
 @pytest.mark.parametrize("name", profile.CASES)
 def test_linux_cases_reuse_full_correlated_recovery_contract(name):
     candidate, value = observation(name)
-    profile.verify_case(value, name, candidate)
+    profile.verify_case(value, name, candidate, CAMPAIGN)
 
 
 @pytest.mark.parametrize(
@@ -64,7 +78,26 @@ def test_actor_loss_requires_linux_identity(field, bad):
     candidate, value = observation("worker-active")
     profile.one(value["events"], "actor_killed")["linux_identity"][field] = bad
     with pytest.raises(ValueError, match="linux_fault_containment"):
-        profile.verify_case(value, "worker-active", candidate)
+        profile.verify_case(value, "worker-active", candidate, CAMPAIGN)
+
+
+@pytest.mark.parametrize("role", ["client", "worker", "gateway"])
+@pytest.mark.parametrize("field", ["pid", "start"])
+def test_killed_identity_must_match_bound_actor(role, field):
+    name = role + "-active"
+    candidate, value = observation(name)
+    profile.one(value["events"], "actor_killed")["linux_identity"][field] += 1
+    with pytest.raises(ValueError, match="linux_actor_identity"):
+        profile.verify_case(value, name, candidate, CAMPAIGN)
+
+
+@pytest.mark.parametrize("role", ["client", "worker"])
+def test_killed_identity_must_match_process_startup(role):
+    name = role + "-active"
+    candidate, value = observation(name)
+    profile.one(value[role], "actor_started")["pid"] += 1
+    with pytest.raises(ValueError, match="linux_actor_startup"):
+        profile.verify_case(value, name, candidate, CAMPAIGN)
 
 
 @pytest.mark.parametrize("layer", ["independent", "harness"])
@@ -75,7 +108,7 @@ def test_emergency_cleanup_cannot_pass_recovery(layer):
     else:
         profile.one(value["events"], "harness_leftovers")["resources"] = ["orphan"]
     with pytest.raises(ValueError, match="emergency_cleanup_required|harness_removed_orphans"):
-        profile.verify_case(value, "worker-active", candidate)
+        profile.verify_case(value, "worker-active", candidate, CAMPAIGN)
 
 
 def test_linux_evidence_does_not_satisfy_windows_profile():
@@ -90,10 +123,10 @@ def test_linux_plan_rejects_candidate_upgrade():
         "wheel_sha256": profile.WHEEL,
         "versions": dict(profile.VERSIONS),
     }
-    assert len(profile.plan(candidate)["cases"]) == 13
+    assert len(profile.plan(candidate, CAMPAIGN)["cases"]) == 13
     candidate["versions"]["mcp"] = "2.2.0"
     with pytest.raises(ValueError, match="worker_versions"):
-        profile.plan(candidate)
+        profile.plan(candidate, CAMPAIGN)
 
 
 def test_runtime_snapshot_includes_added_and_modified_assets(tmp_path):
@@ -109,7 +142,19 @@ def test_runtime_snapshot_includes_added_and_modified_assets(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "mutation", ["none", "plan", "missing_case", "runtime", "transplant", "failed_case"]
+    "mutation",
+    [
+        "none",
+        "plan",
+        "missing_case",
+        "runtime",
+        "transplant",
+        "failed_case",
+        "campaign",
+        "source",
+        "case_hash",
+        "summary",
+    ],
 )
 def test_collector_rejects_incomplete_or_transplanted_campaign(tmp_path, monkeypatch, mutation):
     candidate, _ = observation("control")
@@ -119,19 +164,37 @@ def test_collector_rejects_incomplete_or_transplanted_campaign(tmp_path, monkeyp
     root = tmp_path / "campaign"
     root.mkdir()
     profile.write(root / "candidate.json", candidate)
-    plan = profile.plan(candidate)
+    plan = profile.plan(candidate, CAMPAIGN)
     if mutation == "plan":
         plan["cases"] = ["control"]
     profile.write(root / "plan.json", plan)
-    summary = {"completed": list(profile.CASES), "runtime_unchanged": mutation != "runtime"}
+    summary = {
+        "completed": list(profile.CASES),
+        "runtime_unchanged": mutation != "runtime",
+        "plan_sha256": profile.digest(plan),
+        "case_hashes": {},
+    }
     if mutation == "missing_case":
         summary["completed"].pop()
-    profile.write(root / "summary.json", summary)
+    if mutation == "summary":
+        summary["plan_sha256"] = "f" * 64
     for name in profile.CASES:
         _, value = observation(name)
+        value["candidate_sha256"] = profile.digest(candidate)
+        if name == "worker-active":
+            if mutation == "campaign":
+                value["campaign_id"] = "b" * 32
+            if mutation == "source":
+                value["candidate_sha256"] = profile.digest(dict(candidate, source_commit="other"))
         if mutation == "failed_case" and name == "worker-active":
             value["outcome"] = "fail"
-        profile.write(root / (name + ".json"), value)
+        path = root / (name + ".json")
+        profile.write(path, value)
+        summary["case_hashes"][name] = profile.file_hash(path)
+        if mutation == "case_hash" and name == "worker-active":
+            value["duration"] += 1
+            profile.write(path, value)
+    profile.write(root / "summary.json", summary)
     selected = copy.deepcopy(candidate)
     if mutation == "transplant":
         selected["image"] = "sha256:" + "f" * 64
@@ -139,7 +202,49 @@ def test_collector_rejects_incomplete_or_transplanted_campaign(tmp_path, monkeyp
     reporter = importlib.import_module("report_openclaw_hosted")
     monkeypatch.setattr(reporter, "command", lambda *a: "{}")
     monkeypatch.setattr(profile, "cleanup", lambda *a: {"confirmed": True, "removed": []})
-    assert profile.collect(tmp_path, root)["qualified"] is (mutation == "none")
+    report = profile.collect(tmp_path, root)
+    assert report["qualified"] is (mutation == "none")
+    if mutation in {"source", "campaign", "case_hash"}:
+        row = next(r for r in report["cases"] if r["case"] == "worker-active")
+        assert row["rejection"] == (
+            "case_artifact_digest" if mutation == "case_hash" else "case_campaign_binding"
+        )
+
+
+def test_incomplete_campaign_retains_failure_and_cleanup_diagnostics(tmp_path, monkeypatch):
+    candidate, value = observation("control")
+    candidate.update(
+        host={"platform": "Linux"}, wheel_sha256=profile.WHEEL, versions=dict(profile.VERSIONS)
+    )
+    expected = profile.plan(candidate, CAMPAIGN)
+    value.update(candidate_sha256=profile.digest(candidate), parent_failure="fault_case_deadline")
+    value["failure"] = "private log with token and path"
+    value["independent_cleanup"]["confirmed"] = False
+    profile.write(tmp_path / "candidate.json", candidate)
+    profile.write(tmp_path / "plan.json", expected)
+    profile.write(tmp_path / "control.json", value)
+    profile.write(
+        tmp_path / "summary.json",
+        {
+            "plan_sha256": profile.digest(expected),
+            "completed": ["control"],
+            "case_hashes": {"control": profile.file_hash(tmp_path / "control.json")},
+            "runtime_unchanged": False,
+        },
+    )
+    monkeypatch.setattr(profile, "baseline", lambda _: candidate)
+    reporter = importlib.import_module("report_openclaw_hosted")
+    monkeypatch.setattr(reporter, "command", lambda *a: "{}")
+    report = profile.collect(tmp_path, tmp_path)
+    assert report["qualified"] is False
+    assert report["rejection"] == "case_inventory"
+    assert len(report["cases"]) == 13
+    row = report["cases"][0]
+    assert row["parent_failure"] == "fault_case_deadline"
+    assert row["failure"] == "redacted"
+    assert row["independent_cleanup"] is False
+    assert row["rejection"] == "parent_supervisor_failure"
+    assert all(r["rejection"] == "missing_or_oversized_record" for r in report["cases"][1:])
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="requires Linux pidfds and procfs")

@@ -1478,7 +1478,9 @@ The Linux injector verifies process group/session membership and a stable procfs
 
 The opt-in workflow runs on Ubuntu 24.04 without cloud credentials or actual-model calls. Reproduce with `gh workflow run docker-live.yml --ref <candidate> -f openclaw_bicep=true -f openclaw_mode=owner-loss`. Only the bounded Markdown report is uploaded. Runtime state, raw events, sessions and JSON remain in temporary directories outside the checkout. Actual-model retry behavior, Docker/host failure, escaped process trees, automatic watchdog recovery, newer workers, native MXC and production remain unqualified.
 
-### Accepted Linux actor-loss result
+### Historical Linux v1 actor-loss result
+
+This v1 result predates the stricter `owner-loss-linux-v2` evidence contract. It does not qualify v2: that contract additionally binds case artifacts to a fresh campaign and candidate with recorded hashes, correlates killed identities with startup records, and retains bounded diagnostics for incomplete campaigns. A fresh hosted v2 run is pending.
 
 [Run 41353738697, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/41353738697) passed on source `10ff274ad0fd1bc1c1f4c886c36f55aa206a5c13`. Its fresh deterministic installed baseline passed before fault injection, followed by all thirteen selected cases. The independent collector re-evaluated each raw case against the fixed profile, verified the same baseline and installed runtime, and emitted `qualified: true`. The retained Markdown SHA-256 is `d9750776c7ee2725e4ad47559d681d345dd903903bd572d358dedae4e9266086`.
 

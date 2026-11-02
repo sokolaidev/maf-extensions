@@ -153,6 +153,27 @@ def verify(
             and identity["pgrp"] == identity["session"] == identity["supervisor_pid"],
             "linux_fault_containment",
         )
+        bound = one(
+            [r for r in rows if r.get("actor") == actor and r["mono_ns"] < fault["mono_ns"]],
+            "actor_bound",
+        )
+        require(
+            bound["linux_identity"] == identity
+            and type(bound["pid"]) is int
+            and bound["pid"] == identity["pid"]
+            and bound["mono_ns"] < barrier["mono_ns"],
+            "linux_actor_identity",
+        )
+        if actor in {"client", "worker"}:
+            started = one(
+                [r for r in value[actor] if r["mono_ns"] < fault["mono_ns"]], "actor_started"
+            )
+            require(
+                type(started["pid"]) is int
+                and started["pid"] == identity["pid"]
+                and started["mono_ns"] < bound["mono_ns"],
+                "linux_actor_startup",
+            )
     else:
         require(
             platform == "Windows" and fault["job_membership_verified"] is True, "fault_containment"
