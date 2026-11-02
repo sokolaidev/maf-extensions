@@ -1,4 +1,4 @@
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:88a20e2d017bd20cdc0cb3910de603e7bea9512a6c351a8dd3c9df212ab03d73
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:fd50bd0cdeb808cf4f45c9c9189e0cc7f7fcc27195d69abd6622c80527e7e021
 RUN apk add --no-cache melange=0.63.2-r0 bubblewrap python-3.13
 ADD --checksum=sha256:eed7e91702528f0072cf5424445888b9de2a9e32519c62873b98f83104d9201f https://codeload.github.com/wolfi-dev/os/tar.gz/65e46148155ff624c83ce3c02321614adc4d23b1 /tmp/wolfi.tar.gz
 RUN mkdir /recipe && tar -xzf /tmp/wolfi.tar.gz -C /recipe --strip-components=1 && rm /tmp/wolfi.tar.gz
