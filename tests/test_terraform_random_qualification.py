@@ -21,10 +21,10 @@ def report():
     return {
         "receipt": terraform.expected_receipt("dependencies.terraform.json"),
         "build": {
-            "go_version": "go version "
-            + terraform.read(terraform.CONTEXT / "image.json")["engines"]["terraform"][
-                "source_build"
-            ]["go_version"]
+            "go_version": "go version go"
+            + terraform.stage_image(terraform.CONTEXT / "Dockerfile", "terraform-build")
+            .split(":")[1]
+            .split("-")[0]
             + " linux/amd64",
             "source": terraform.read(terraform.CONTEXT / "image.json")["engines"]["terraform"][
                 "source_build"

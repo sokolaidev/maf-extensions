@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 from build_go import download_modules
+from install import engine_go_version
 
 
 def main() -> None:
@@ -15,9 +16,8 @@ def main() -> None:
     recipe = Path(__file__).resolve().parent
     plan = json.loads((recipe / "image.json").read_text())["engines"]["opentofu"]
     source = plan["source_build"]
-    if (
-        subprocess.check_output(["go", "env", "GOVERSION"], text=True).strip()
-        != source["go_version"]
+    if subprocess.check_output(["go", "env", "GOVERSION"], text=True).strip() != engine_go_version(
+        "opentofu"
     ):
         raise ValueError("OpenTofu build toolchain mismatch")
     checkout, output = Path("/src/opentofu"), Path("/out")

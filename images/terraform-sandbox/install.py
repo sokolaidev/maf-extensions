@@ -17,6 +17,20 @@ _PRERELEASE = rf"(?:{_NUMBER}|[0-9]*[a-z-][a-z0-9-]*)"
 _VERSION = rf"{_NUMBER}\.{_NUMBER}\.{_NUMBER}(?:-{_PRERELEASE}(?:\.{_PRERELEASE})*)?"
 
 
+def engine_go_version(engine: str, recipe: Path | None = None) -> str:
+    """Read the engine compiler version from its immutable Dockerfile stage."""
+    recipe = recipe or Path(__file__).with_name("Dockerfile")
+    matches = re.findall(
+        rf"^FROM golang:({_NUMBER}\.{_NUMBER}\.{_NUMBER})-alpine@sha256:[0-9a-f]{{64}}"
+        rf" AS {re.escape(engine)}-build\s*$",
+        recipe.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    if len(matches) != 1:
+        raise ValueError(f"Expected one pinned Go stage for {engine}")
+    return "go" + matches[0]
+
+
 def load_json(path: Path) -> Any:
     """Refuse ambiguous image configuration and provider approvals."""
 
@@ -135,10 +149,10 @@ def main(
         for name, expected in record["files"].items():
             if hashlib.sha256((built / name).read_bytes()).hexdigest() != expected:
                 raise ValueError("source build file checksum mismatch")
-        if "go_version" in plan["source_build"] and record.get("go_version", "").split() != [
+        if record.get("go_version", "").split() != [
             "go",
             "version",
-            plan["source_build"]["go_version"],
+            engine_go_version(engine, (config_path or Path(__file__)).with_name("Dockerfile")),
             "linux/amd64",
         ]:
             raise ValueError("source build toolchain mismatch")

@@ -88,6 +88,9 @@ updates:
       - "/packages/maf-sandbox-docker/tests/fixtures/missing-commands"
       - "/packages/maf-sandbox-wslc/tests/fixtures/*"
       - "/packages/maf-sandbox-docker-sbx/tests/images"
+    # Provider compiler changes require regenerated module and archive hashes.
+    exclude-paths:
+      - "prepared.Dockerfile"
     schedule:
       interval: "weekly"
       day: "monday"

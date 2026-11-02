@@ -6,6 +6,7 @@ import inspect
 import json
 from typing import Any
 
+from container_image_inputs import stage_image
 from terraform_avm_qualification import CONTEXT, FIELDS, expected_receipt, read
 
 CASES = (
@@ -164,7 +165,9 @@ def evidence(output: bytes) -> dict[str, Any]:
     if (
         result["build"]["source"] != engine["source_build"]
         or result["build"].get("go_version")
-        != "go version " + engine["source_build"]["go_version"] + " linux/amd64"
+        != "go version go"
+        + stage_image(CONTEXT / "Dockerfile", "opentofu-build").split(":")[1].split("-")[0]
+        + " linux/amd64"
         or result["moduleFilesVerified"] is not True
     ):
         raise ValueError("OpenTofu build or module identity differs from the selected release")

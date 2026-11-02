@@ -4,7 +4,7 @@
 # The mirror leaves this build holding unpacked providers, which Terraform links into
 # every call instead of copying; the ZIPs never reach a published layer.
 ARG BASE_IMAGE=scratch
-FROM golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS provider-toolchain
+FROM golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS provider-toolchain
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local
 RUN apk add --no-cache python3 git
 

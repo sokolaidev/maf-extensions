@@ -33,7 +33,7 @@ def built(tmp_path, engine):
         (root / name).write_bytes(content)
     record = {
         "source": plan["source_build"],
-        "go_version": "go version " + plan["source_build"]["go_version"] + " linux/amd64",
+        "go_version": "go version " + install.engine_go_version(engine) + " linux/amd64",
         "files": {name: hashlib.sha256(content).hexdigest() for name, content in files.items()},
     }
     (root / "build.json").write_text(json.dumps(record))
@@ -107,3 +107,54 @@ def test_install_refuses_an_unapproved_toolchain(tmp_path, built, monkeypatch, e
     plan = install.load_plan(engine, "builtin")
     with pytest.raises(ValueError, match="toolchain mismatch"):
         install.main(engine, "builtin", plan["version"], str(root), destination=tmp_path / "image")
+
+
+@pytest.mark.parametrize("version", ["1.27.3", "1.27.4"])
+def test_dockerfile_only_update_drives_installation(tmp_path, built, monkeypatch, engine, version):
+    root, record = built
+    recipe = tmp_path / "Dockerfile"
+    recipe.write_text(f"FROM golang:{version}-alpine@sha256:{'a' * 64} AS {engine}-build\n")
+    config = tmp_path / "image.json"
+    plan = install.load_plan(engine, "builtin")
+    assert "go_version" not in plan["source_build"]
+    document = json.loads((SOURCE / "image.json").read_text())
+    document["engines"][engine]["profiles"] = {"builtin": None}
+    config.write_text(json.dumps(document))
+    record["go_version"] = f"go version go{version} linux/amd64"
+    (root / "build.json").write_text(json.dumps(record))
+    monkeypatch.setattr(
+        install.subprocess,
+        "run",
+        lambda *a, **kw: SimpleNamespace(
+            stdout=json.dumps({"terraform_version": plan["version"]}).encode()
+        ),
+    )
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    install.main(
+        engine,
+        "builtin",
+        plan["version"],
+        str(root),
+        config_path=config,
+        destination=tmp_path / "image",
+        bin_directory=binaries,
+    )
+    assert json.loads((tmp_path / "image/engine.json").read_text())["source_build"] == record
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        "FROM golang:1.27.3-alpine AS terraform-build",
+        "FROM ${GO_IMAGE} AS terraform-build",
+        f"FROM golang:latest@sha256:{'a' * 64} AS terraform-build",
+        f"FROM golang:1.27.3-alpine@sha256:{'a' * 64} AS other-build",
+        f"FROM golang:1.27.3-alpine@sha256:{'a' * 64} AS terraform-build\n" * 2,
+    ],
+)
+def test_engine_toolchain_requires_one_literal_pinned_stage(tmp_path, declaration):
+    recipe = tmp_path / "Dockerfile"
+    recipe.write_text(declaration + "\n")
+    with pytest.raises(ValueError, match="one pinned Go stage"):
+        install.engine_go_version("terraform", recipe)

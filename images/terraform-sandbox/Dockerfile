@@ -3,13 +3,13 @@ ARG ENGINE=terraform
 FROM golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS opentofu-build
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local
 RUN apk add --no-cache git python3
-COPY image.json build_opentofu.py build_go.py /recipe/
+COPY Dockerfile image.json install.py build_opentofu.py build_go.py /recipe/
 RUN python3 /recipe/build_opentofu.py
 
 FROM golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS terraform-build
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local
 RUN apk add --no-cache git python3
-COPY image.json build_terraform.py build_go.py /recipe/
+COPY Dockerfile image.json install.py build_terraform.py build_go.py /recipe/
 RUN python3 /recipe/build_terraform.py && go clean -cache -modcache
 
 FROM cgr.dev/chainguard/wolfi-base:latest@sha256:88a20e2d017bd20cdc0cb3910de603e7bea9512a6c351a8dd3c9df212ab03d73 AS runtime
@@ -27,7 +27,7 @@ ARG ENGINE=terraform
 ARG PROFILE=builtin
 ARG ENGINE_VERSION
 ARG PROVIDER_MANIFEST=image.json
-COPY image.json /opt/maf-terraform/
+COPY Dockerfile image.json /opt/maf-terraform/
 COPY ${PROVIDER_MANIFEST} /opt/maf-terraform/
 COPY install.py /opt/maf-terraform/install.py
 

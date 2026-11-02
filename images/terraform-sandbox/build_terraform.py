@@ -9,13 +9,14 @@ from pathlib import Path
 from typing import Any
 
 from build_go import download_modules
+from install import engine_go_version
 
 
 def build(plan: dict[str, Any], checkout: Path, output: Path) -> None:
     """Verify source and module pins, test the build and retain its inputs."""
     source = plan["source_build"]
     toolchain = subprocess.check_output(["go", "env", "GOVERSION"], text=True).strip()
-    if toolchain != source["go_version"]:
+    if toolchain != engine_go_version("terraform"):
         raise ValueError("Terraform build toolchain mismatch")
     subprocess.run(
         [

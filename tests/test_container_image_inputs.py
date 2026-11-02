@@ -43,6 +43,25 @@ def test_every_dockerfile_is_pinned_and_has_a_scheduled_updater():
             validate_version_line(reference, path)
 
 
+def test_only_locked_provider_compiler_is_excluded_from_image_updates():
+    updates = yaml.safe_load((ROOT / ".github/dependabot.yml").read_text())["updates"]
+    excluded = set()
+    for update in updates:
+        if update["package-ecosystem"] != "docker":
+            continue
+        for pattern in update.get("directories", [update.get("directory", "")]):
+            for directory in ROOT.glob(pattern.lstrip("/")):
+                for exclusion in update.get("exclude-paths", []):
+                    excluded.update(path for path in directory.glob(exclusion) if inventory(path))
+    assert excluded == {ROOT / "images/terraform-sandbox/prepared.Dockerfile"}
+    compiler = stage_image(next(iter(excluded)), "provider-toolchain")
+    expected = "go" + compiler.split(":")[1].split("-")[0]
+    for manifest in (ROOT / "images/terraform-sandbox").glob("dependencies.*.json"):
+        for provider in json.loads(manifest.read_text()).get("providers", []):
+            if "source_build" in provider:
+                assert provider["source_build"]["go_version"] == expected, manifest
+
+
 def test_shared_wolfi_references_have_one_reviewed_digest():
     pins = {
         reference
