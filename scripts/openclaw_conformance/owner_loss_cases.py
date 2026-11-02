@@ -81,7 +81,7 @@ def http(port: int, token: str, path: str = "/ready", body=None, sid=None, metho
         connection.close()
 
 
-class Actor:
+class WindowsActor:
     """Retain the exact actor handle after proving membership in its supervisor's job."""
 
     def __init__(self, processes: Any, pid: int):
@@ -119,6 +119,15 @@ class Actor:
         if self.handle:
             self.api.CloseHandle(self.handle)
             self.handle = None
+
+
+def actor(processes: Any, pid: int):
+    """Bind the exact actor using the selected platform's process ownership primitive."""
+    if os.name == "nt":
+        return WindowsActor(processes, pid)
+    from .linux_actor import LinuxActor
+
+    return LinuxActor(processes, pid)
 
 
 def case(
@@ -218,7 +227,7 @@ def case(
     provider_thread = threading.Thread(target=provider.serve_forever, daemon=True)
     provider_thread.start()
     processes = []
-    actors: dict[str, Actor] = {}
+    actors: dict[str, Any] = {}
     scope_stack = ExitStack()
     failure = None
     settings_path = root / "state/openclaw.json"
@@ -242,6 +251,13 @@ def case(
         proc.start(role + str(len(processes)), command, child_env)
         return proc
 
+    def bind(role, proc, pid):
+        target = actor(proc, pid)
+        scope_stack.callback(target.close)
+        if os.name != "nt":
+            note("actor_bound", actor=role, pid=pid, linux_identity=target.evidence)
+        return target
+
     bootstrap = "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module('openclaw_owner_loss_worker',run_name='__main__')"
 
     def start_worker(child_env=None):
@@ -252,9 +268,8 @@ def case(
             env if child_env is None else child_env,
         )
         pid = wait(lambda: rows(root / "worker-pid.jsonl")[before:] or None, "worker_pid")[0]["pid"]
-        actor = Actor(proc, pid)
-        scope_stack.callback(actor.close)
-        return proc, actor
+        target = bind("worker", proc, pid)
+        return proc, target
 
     def ready(port, key, actor, path="/ready"):
         def probe():
@@ -398,20 +413,29 @@ def case(
             OPENCLAW_SKIP_CHANNELS="1",
         )
         launcher = "const fs=require('fs'),cp=require('child_process');const p=cp.spawn(process.execPath,[process.argv[1],'gateway','run'],{stdio:'inherit'});fs.writeFileSync(process.argv[2],JSON.stringify({pid:p.pid}));p.on('exit',c=>process.exit(c===null?1:c));"
-        gateway_process = start(
-            "gateway",
+        gateway_command = (
             [
                 "node",
                 "-e",
                 launcher,
                 str(prepared / "openclaw/node_modules/openclaw/openclaw.mjs"),
                 str(root / "gateway-pid.json"),
-            ],
-            gateway_env,
+            ]
+            if os.name == "nt"
+            else [
+                "node",
+                str(prepared / "openclaw/node_modules/openclaw/openclaw.mjs"),
+                "gateway",
+                "run",
+            ]
         )
-        wait(lambda: (root / "gateway-pid.json").exists(), "gateway_pid")
-        actors["gateway"] = Actor(gateway_process, read(root / "gateway-pid.json")["pid"])
-        scope_stack.callback(actors["gateway"].close)
+        gateway_process = start("gateway", gateway_command, gateway_env)
+        if os.name == "nt":
+            wait(lambda: (root / "gateway-pid.json").exists(), "gateway_pid")
+            gateway_pid = read(root / "gateway-pid.json")["pid"]
+        else:
+            gateway_pid = gateway_process.children[0][0].pid
+        actors["gateway"] = bind("gateway", gateway_process, gateway_pid)
         ready(gateway_port, gateway_token, actors["gateway"], "/health")
         note("control_result", result=gateway_valid())
         old_sid = initialize()
@@ -432,8 +456,7 @@ def case(
                 env,
             )
             pid = wait(lambda: rows(root / "client.jsonl") or None, "client_pid")[0]["pid"]
-            actors["client"] = Actor(client_process, pid)
-            scope_stack.callback(actors["client"].close)
+            actors["client"] = bind("client", client_process, pid)
             # Gateway preparation has its own deadline; the phase barrier begins at worker ingress.
             wait(
                 lambda: any(r["event"] == "target_request" for r in rows(root / "transport.jsonl")),
@@ -488,7 +511,8 @@ def case(
                 others_alive=all(
                     a.alive() for key, a in actors.items() if key not in {actor_name, "client"}
                 ),
-                job_membership_verified=True,
+                job_membership_verified=os.name == "nt",
+                **({"linux_identity": actors[actor_name].evidence} if os.name != "nt" else {}),
             )
             if actor_name == "worker":
                 note(
@@ -725,8 +749,15 @@ def case(
                 denial.restore()
             except Exception as exc:
                 errors.append(type(exc).__name__)
-        for proc in reversed(processes):
-            errors.extend(proc.close())
+        if sys.platform == "linux":
+            from .linux_actor import stop_processes
+
+            errors.extend(stop_processes(processes))
+            if "KeyboardInterrupt" in errors:
+                failure = "KeyboardInterrupt"
+        else:
+            for proc in reversed(processes):
+                errors.extend(proc.close())
         provider.shutdown()
         provider.server_close()
         provider_thread.join(timeout=10)
@@ -738,6 +769,10 @@ def case(
         sentinel_survived = False
         sentinel_removed = False
         try:
+            require(
+                sys.platform != "linux" or all(proc.stopped for proc in processes),
+                "process_cleanup_unconfirmed",
+            )
             sentinel_survived = sentinel_alive()
             leftovers = owned()
             note("harness_leftovers", resources=leftovers)
@@ -767,6 +802,7 @@ def case(
         "config_sha256": manifest["config_sha256"],
         "duration": time.monotonic() - started,
         **observations(root, name),
+        **({"worker": rows(root / "worker-pid.jsonl")} if os.name != "nt" else {}),
     }
     write(root / "result.json", value)
     return value

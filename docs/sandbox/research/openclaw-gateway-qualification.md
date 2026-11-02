@@ -290,6 +290,7 @@ The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audi
 |---|---|---|
 | GitHub-hosted Linux Gateway-to-Docker sample | Qualified on the recorded Ubuntu candidate with deterministic provider and independent cleanup; broader Linux and real-model claims remain unqualified | [#2214](https://github.com/sokolaidev/maf-extensions/issues/2214) (closed) by [#2217](https://github.com/sokolaidev/maf-extensions/pull/2217) (merged) |
 | GitHub-hosted real-model Bicep sample | Complete for the recorded Ubuntu/Azure OpenAI candidate with reasoning disabled: actual invalid/valid compiler results and independent cleanup passed | [#2288](https://github.com/sokolaidev/maf-extensions/issues/2288) (closed) by [#2294](https://github.com/sokolaidev/maf-extensions/pull/2294) (merged) |
+| GitHub-hosted Linux actor-loss profile | Complete for the recorded Ubuntu v2 candidate: thirteen actor-loss cases and independent cleanup passed; broader failure modes remain unqualified | [#2386](https://github.com/sokolaidev/maf-extensions/issues/2386) (closed) by [#2387](https://github.com/sokolaidev/maf-extensions/pull/2387) (merged) |
 | Linux Gateway-to-Docker sample | Recorded deterministic Linux-on-Docker-Desktop run passed; real-model behavior remains unqualified | [#2185](https://github.com/sokolaidev/maf-extensions/issues/2185) (closed) by [#2191](https://github.com/sokolaidev/maf-extensions/pull/2191) (merged) |
 | Installed worker | Published 0.1.0; historical and fresh fixed-profile qualifications recorded separately below | [#1898](https://github.com/sokolaidev/maf-extensions/issues/1898) (closed) by [#1920](https://github.com/sokolaidev/maf-extensions/pull/1920) (merged) |
 | Bicep host qualification | First-tool design and finite supervised qualification complete; installed worker delivered separately in #1898; actual LLM behavior and full crash recovery remain unqualified | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (closed) by [#1901](https://github.com/sokolaidev/maf-extensions/pull/1901) (merged) |
@@ -1466,3 +1467,186 @@ The complete installed worker dependency inventory was:
 | uvicorn | `0.54.0` |
 
 The evidence artifact contains only allowlisted Markdown observations. Credentials, endpoint/deployment names, sessions, submitted source and raw provider responses were not included in it. The private report and tool evidence were hashed before the disposable runner was removed.
+
+## GitHub-hosted Linux actor-loss profile (2026-11-01)
+
+After #2294 merged and #2288 closed, [#2386](https://github.com/sokolaidev/maf-extensions/issues/2386) selects a separate Linux actor-loss profile. The Windows campaign remains fifteen cases on its original candidate. The new `owner-loss-linux-v1` profile selects thirteen: a control plus Gateway, client and worker loss at pre-admission, active compilation, held response and held cleanup. Docker connection unavailability and daemon removal denial are excluded from this first Linux profile and remain unqualified there.
+
+The [runner](../../../scripts/openclaw_conformance/linux_owner_loss.py) requires a fresh deterministic installed sample on the same runner before faults. It pins the published `maf-sandbox-mcp` 0.2.0 wheel and core/Bicep/Docker/MAF/MCP at 0.51.1/0.24.0/0.29.0/1.22.0/1.30.0, preserves OpenClaw 2026.9.7 and the prepared compiler digest, and records the complete installed dependency inventory and runtime file fingerprint. A fresh resolved transitive dependency inventory is a new candidate; matching the principal pins does not transplant prior qualification.
+
+The Linux injector verifies process group/session membership and a stable procfs birth identity around pidfd acquisition. It sends SIGKILL through that descriptor and observes exit through the same descriptor. Existing correlated request, barrier, result, settlement, sibling, replacement and stale-authority predicates remain mandatory. Worker restart retains its exclusive owner and rotates the token explicitly; process death alone is not readiness, recovery or cancellation. Both product recovery and process cleanup must complete before acceptance. Harness orphan removal cannot turn failed recovery into a pass.
+
+The opt-in workflow runs on Ubuntu 24.04 without cloud credentials or actual-model calls. Reproduce with `gh workflow run docker-live.yml --ref <candidate> -f openclaw_bicep=true -f openclaw_mode=owner-loss`. Only the bounded Markdown report is uploaded. Runtime state, raw events, sessions and JSON remain in temporary directories outside the checkout. Actual-model retry behavior, Docker/host failure, escaped process trees, automatic watchdog recovery, newer workers, native MXC and production remain unqualified.
+
+### Historical Linux v1 actor-loss result
+
+This v1 result predates the stricter `owner-loss-linux-v2` evidence contract. It does not qualify v2: that contract additionally binds case artifacts to a fresh campaign and candidate with recorded hashes, correlates killed identities with startup records, and retains bounded diagnostics for incomplete campaigns. The fresh hosted v2 result is recorded below.
+
+[Run 41353738697, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/41353738697) passed on source `10ff274ad0fd1bc1c1f4c886c36f55aa206a5c13`. Its fresh deterministic installed baseline passed before fault injection, followed by all thirteen selected cases. The independent collector re-evaluated each raw case against the fixed profile, verified the same baseline and installed runtime, and emitted `qualified: true`. The retained Markdown SHA-256 is `d9750776c7ee2725e4ad47559d681d345dd903903bd572d358dedae4e9266086`.
+
+The accepted predicates establish exact actor exit through Linux pidfds, surviving-service settlement after Gateway/client loss, explicit same-owner worker replacement after worker loss, cleanup before replacement readiness, old-token and old-session/cancellation/deletion refusal, no automatic replay, usable sibling/fresh calls, unrelated sentinel preservation and final process/container absence. Every case reported no harness or parent failure, confirmed independent cleanup, and no orphan removal by either cleanup sweep. This is bounded operator-driven recovery with deterministic provider decisions, not unattended or real-model fault recovery.
+
+Runner: Ubuntu 24.04 image `20261026.354.1`, Linux `7.0.0-1017-azure` / `x86_64`, Python `3.13.15`, Node `v26.8.1`, uv 0.12.5, Docker `28.0.4` / API `1.48`, containerd v2.4.2 and runc 1.5.2. The thirteen cases took 479.246 seconds in total; setup and evidence collection are separate.
+
+| Identity | Retained value |
+|---|---|
+| Qualification source fingerprint | `4e66bdafa1be6b6ee7f433f31e7d34d132e919c5d0930f5d9ec67a6a19eb2e6a` |
+| Published worker wheel SHA-256 | `ebb54bc8b51d4d0ec3e63f1f850c5aa53b55d80ec5567c679ead169a3ed0d545` |
+| Compiler registry digest | `ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e` |
+| Compiler image ID | `sha256:fb02b2f79c7428f7595f1fa664cc4f240ed54c349e059d8e4a0dccb0e435fab3` |
+| Compiler configuration SHA-256 | `d3f160d081dcf48e41f0f0cdf006595b380402ac9730f3ee920738ba616d87e1` |
+| Baseline report SHA-256 | `7d81ba1e12884cdaaec54665aabcada9765ece62525d49c5c5fb78e2c5fa1196` |
+| Baseline tool evidence SHA-256 | `9be64e55d23cf67c5a99f56ea6bcf142c4307e2a2187f1947e24e35ff0ccdf97` |
+| npm lock SHA-256 | `aaaf2df960db9281dd51f41782db739403dad083fa6e45d82df697b575dfdd9f` |
+| Installed runtime (43057 files) fingerprint | `472ac08a26b0ff07790ca637794e91a81b0ca24915ad83287e12a24eee7c1cea` |
+| Installed worker `__init__.py` SHA-256 | `6cd4609954365facc1edf656bfffc2366bf5da541f1fc699b88122dd007f2430` |
+| Installed worker `server.py` SHA-256 | `005eeeccd40ab0dc65a31281a72e3b353eae87cf62d42afb590b447faa3ba2bb` |
+| Installed worker `workload_http.py` SHA-256 | `4bc49175b2c4bb0159a8c90481703f820380b02058f86ff4f49041f7afa7bb0f` |
+| Installed worker `workload_service.py` SHA-256 | `3c44b867007dfc8fc026c0e094d106ed64174311c4a82fd4e61bca31a96ab34b` |
+
+| Case | Result | Seconds | Private case evidence SHA-256 |
+|---|---|---:|---|
+| `control` | Passed; independent cleanup confirmed | 22.566 | `a52c6c539bbaebb2ade092d5d39376c675a8c9f1e15e5ecf7fa17649c2e37332` |
+| `gateway-pre_admission` | Passed; independent cleanup confirmed | 35.134 | `52cfcd3293a8d4ee45e90e52d1a060e2271ea55d9851e4b00f658dcb9b345b35` |
+| `gateway-active` | Passed; independent cleanup confirmed | 38.142 | `84ace6c0073be7b3c56f81eb39163b71a9f944f44ce92089575a62cca1f26b7d` |
+| `gateway-response` | Passed; independent cleanup confirmed | 35.048 | `91fefb5c0f51dda871e88079777d2cadd3f41e30852f748ca29609bc631bfa90` |
+| `gateway-cleanup` | Passed; independent cleanup confirmed | 35.047 | `dd67d29a46b11a9bad7ca233799b05155071b5a2d87ca171e4bb87d1a0e3cc3a` |
+| `client-pre_admission` | Passed; independent cleanup confirmed | 36.121 | `2b39803b4ccaf8cb35d40708fcdf83f070b748edb1a0bdbb3a66ed1061c334ad` |
+| `client-active` | Passed; independent cleanup confirmed | 34.793 | `648730c42046df0f0a520e3093c77356cc0358d0bfc3feff34fea0a74614603c` |
+| `client-response` | Passed; independent cleanup confirmed | 36.005 | `e70efbf09f8d33a2d0121f8f682695743579acb8207c6e83f21eab7805a64060` |
+| `client-cleanup` | Passed; independent cleanup confirmed | 36.074 | `d6a26bc76f2b610d4b2a836d79220dd0d4912063e0487d54806faa07e5b4bd55` |
+| `worker-pre_admission` | Passed; independent cleanup confirmed | 38.989 | `212a417b8f99a21a8f77d47b21d6f5aed446b0f7d19b2db277a36ef0a767ca7f` |
+| `worker-active` | Passed; independent cleanup confirmed | 39.923 | `00fc89e0728514f351774dbae4cabbfc77004fdb51c2fabfd94487efa6dc5cbc` |
+| `worker-response` | Passed; independent cleanup confirmed | 45.774 | `77d7bf687b23552c5a9add19fb3c9d15eac1ab68ad6e68d01fac41c5d5c79d63` |
+| `worker-cleanup` | Passed; independent cleanup confirmed | 45.631 | `b8a56e5b4de4bb5c853b31cd8a62f7ee81d3b24d01f977772b09d6909eecbbe2` |
+
+Complete installed Python inventory for this candidate:
+
+| Distribution | Version |
+|---|---|
+| PyJWT | `2.15.1` |
+| PyYAML | `6.0.3` |
+| agent-framework-core | `1.22.0` |
+| annotated-types | `0.8.0` |
+| anyio | `4.16.0` |
+| attrs | `26.1.0` |
+| certifi | `2026.10.23` |
+| cffi | `2.1.1` |
+| click | `8.5.0` |
+| cryptography | `50.0.2` |
+| h11 | `0.16.0` |
+| httpcore | `1.0.9` |
+| httpx | `0.28.1` |
+| httpx-sse | `0.4.3` |
+| idna | `3.20` |
+| jsonschema | `4.26.0` |
+| jsonschema-specifications | `2025.9.1` |
+| maf-sandbox | `0.51.1` |
+| maf-sandbox-bicep | `0.24.0` |
+| maf-sandbox-docker | `0.29.0` |
+| maf-sandbox-mcp | `0.2.0` |
+| mcp | `1.30.0` |
+| msgspec | `0.22.0` |
+| opentelemetry-api | `1.45.2` |
+| pycparser | `3.12` |
+| pydantic | `2.14.2` |
+| pydantic-settings | `2.16.2` |
+| pydantic_core | `2.50.2` |
+| python-dotenv | `1.2.4` |
+| python-multipart | `0.0.33` |
+| referencing | `0.37.0` |
+| regex | `2026.9.29` |
+| rpds-py | `2026.9.1` |
+| sse-starlette | `3.6.0` |
+| starlette | `1.7.0` |
+| typing-inspection | `0.4.4` |
+| typing_extensions | `4.16.0` |
+| uvicorn | `0.54.0` |
+
+The principal pins match the selected published-worker profile; the transitive inventory is recorded independently rather than inherited from the earlier real-model run. The Windows fifteen-case result remains separate. Linux Docker-unavailable/removal-denied recovery and all broader exclusions above remain unqualified. Documentation and offline regression-test changes after the accepted source do not constitute another hosted run.
+
+## Accepted Linux v2 actor-loss result (2026-11-02)
+
+[Run 41527289097, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/41527289097) passed the fresh installed baseline and all thirteen cases on source `8bf3e21324004a7ccfdfcfea646b0817bb47df8a`. The independent collector emitted `qualified: true` for `owner-loss-linux-v2`, with campaign `e563f70ea1c74732a0035c976fa030d1`. Retained Markdown SHA-256: `56aad15f8f06ba9e41595be0a8a9dd955ca564a74ac1a06f1adcb40a97a303e3`.
+
+The v2 collector verifies each case's campaign ID, complete candidate digest and recorded artifact hash. It also matches killed PID and birth identity to the selected actor's retained startup binding, with separate worker/client process-start records. The source fingerprint and dirty-source check include the hosted baseline reporter. Postflight inventories are read-only, and case-bound receipts preserve failed or interrupted observations across collection retries. Incomplete campaigns remain unqualified while publishing bounded diagnostics for available cases, including parent cleanup interruption. The historical v1 result above does not satisfy this stronger contract.
+
+Linux teardown disarms the case alarm and defers interruption until owned process groups are terminated. A failed graceful close is followed by forced termination and group-absence checks; container sweeping is refused while owned processes remain unconfirmed. The [Linux repository test job](https://github.com/sokolaidev/maf-extensions/actions/runs/41527146911/job/125557786110) ran the native alarm/TERM-resistance regression (0.385 seconds), owned pidfd termination (0.002 seconds), and unrelated-actor refusal (0.002 seconds) on this accepted source. Its retained JUnit records show all three passed without skips.
+
+Runner: Ubuntu 24.04 image `20261026.354.1`, Linux `7.0.0-1017-azure` / `x86_64`, Python `3.13.15`, Node `v26.8.1`, `uv 0.12.5 (x86_64-unknown-linux-gnu)` and Docker `28.0.4` / API `1.48`. Case execution total: 480.469 seconds, excluding setup and collection.
+
+| Identity | Retained value |
+|---|---|
+| Qualification source fingerprint | `a437761c6eaa84432dbb81394db991df082dd0a983a4ff756d447a443f1e11b0` |
+| Published worker wheel SHA-256 | `ebb54bc8b51d4d0ec3e63f1f850c5aa53b55d80ec5567c679ead169a3ed0d545` |
+| Compiler image ID | `sha256:fb02b2f79c7428f7595f1fa664cc4f240ed54c349e059d8e4a0dccb0e435fab3` |
+| Compiler configuration SHA-256 | `d3f160d081dcf48e41f0f0cdf006595b380402ac9730f3ee920738ba616d87e1` |
+| Baseline report SHA-256 | `7d81ba1e12884cdaaec54665aabcada9765ece62525d49c5c5fb78e2c5fa1196` |
+| Baseline tool evidence SHA-256 | `a66c2676a02bbb294a0f01f8ed4c741e4902abe8a85dd9bd55d11f49f0923a3b` |
+| npm lock SHA-256 | `5db997dec92617c66bc22230ab3aed80f0efea55385950847392cae65f35f0d8` |
+| Installed runtime (43059 files) fingerprint | `740b4dad83d0b6668e5b3bd143b3429ca41625977bf97ec0db06da448b5a04cc` |
+| Installed worker __init__.py SHA-256 | `6cd4609954365facc1edf656bfffc2366bf5da541f1fc699b88122dd007f2430` |
+| Installed worker server.py SHA-256 | `005eeeccd40ab0dc65a31281a72e3b353eae87cf62d42afb590b447faa3ba2bb` |
+| Installed worker workload_http.py SHA-256 | `4bc49175b2c4bb0159a8c90481703f820380b02058f86ff4f49041f7afa7bb0f` |
+| Installed worker workload_service.py SHA-256 | `3c44b867007dfc8fc026c0e094d106ed64174311c4a82fd4e61bca31a96ab34b` |
+
+| Case | Result | Seconds | Private case evidence SHA-256 |
+|---|---|---:|---|
+| `control` | Passed; independent cleanup confirmed | 22.560 | `f83b1ad35d0bd99233da3e7ef7278ddcccf330b88fea81eb1a3b6a1b5bcfa7bc` |
+| `gateway-pre_admission` | Passed; independent cleanup confirmed | 35.479 | `628101973389823e023e8810662bb59d0390598751eabc80b30b354dc7a11f55` |
+| `gateway-active` | Passed; independent cleanup confirmed | 39.020 | `ef75e034539ed31eb0f863a44cd8d0f1e5f33641a7ff7b9649ecc21d2fbb3b61` |
+| `gateway-response` | Passed; independent cleanup confirmed | 36.274 | `0bc1d82fc42f46c8c95dfb2a80767ac7edf8582dd738ffc5f5b76d27f02f6362` |
+| `gateway-cleanup` | Passed; independent cleanup confirmed | 35.668 | `292d34289572b56d2233dd59c63a092e8d71b2b5a6dcdbdd76e69a01dae9fe39` |
+| `client-pre_admission` | Passed; independent cleanup confirmed | 29.931 | `4203419412b429c6b0f0f63e81078ec85869a309820e6ff787f3c77689c042cb` |
+| `client-active` | Passed; independent cleanup confirmed | 35.336 | `2533bd362988806fbf9246fa5cabdf2728a4a4aec56e13479fe415839de695d2` |
+| `client-response` | Passed; independent cleanup confirmed | 36.464 | `e3969751269cfbeff24f6ff078c094d78a34c4593af286f10d4262d04c82cc52` |
+| `client-cleanup` | Passed; independent cleanup confirmed | 36.219 | `a64f4013e4e30834e3b7086798a7e2a4ca977d8c84cde86fa821f6259479cd7d` |
+| `worker-pre_admission` | Passed; independent cleanup confirmed | 39.973 | `55ab6f3d9b37a82999d914997e4684e387a2579c59072a2912042a424d02f9ee` |
+| `worker-active` | Passed; independent cleanup confirmed | 41.055 | `1bc2a90d0504ac9e2b129aa8d89f3a3ea557f2df761b96b05206c7c31411000e` |
+| `worker-response` | Passed; independent cleanup confirmed | 46.229 | `48ff2202e12f307c994a2965072cfebf002861198a283e37e9fac1cec2450b73` |
+| `worker-cleanup` | Passed; independent cleanup confirmed | 46.260 | `d37b805cbe3ec48a925a753df81a157829113f12be98f88d2b7e09241eb03ccb` |
+
+Complete installed Python inventory for this candidate:
+
+| Distribution | Version |
+|---|---|
+| PyJWT | `2.15.1` |
+| PyYAML | `6.0.3` |
+| agent-framework-core | `1.22.0` |
+| annotated-types | `0.8.0` |
+| anyio | `4.16.0` |
+| attrs | `26.1.0` |
+| certifi | `2026.10.23` |
+| cffi | `2.1.1` |
+| click | `8.5.0` |
+| cryptography | `50.0.2` |
+| h11 | `0.16.0` |
+| httpcore | `1.0.9` |
+| httpx | `0.28.1` |
+| httpx-sse | `0.4.3` |
+| idna | `3.20` |
+| jsonschema | `4.26.0` |
+| jsonschema-specifications | `2025.9.1` |
+| maf-sandbox | `0.51.1` |
+| maf-sandbox-bicep | `0.24.0` |
+| maf-sandbox-docker | `0.29.0` |
+| maf-sandbox-mcp | `0.2.0` |
+| mcp | `1.30.0` |
+| msgspec | `0.22.0` |
+| opentelemetry-api | `1.45.2` |
+| pycparser | `3.12` |
+| pydantic | `2.14.2` |
+| pydantic-settings | `2.16.2` |
+| pydantic_core | `2.50.2` |
+| python-dotenv | `1.2.4` |
+| python-multipart | `0.0.33` |
+| referencing | `0.37.0` |
+| regex | `2026.9.29` |
+| rpds-py | `2026.9.1` |
+| sse-starlette | `3.6.0` |
+| starlette | `1.7.0` |
+| typing-inspection | `0.4.4` |
+| typing_extensions | `4.16.0` |
+| uvicorn | `0.54.0` |
+
+Every case passed without harness or parent failure, with independently confirmed resource absence. This result qualifies only the recorded deterministic-provider candidate and bounded operator-driven recovery. Docker unavailability/removal denial, daemon or host loss, escaped process trees, actual-model retry behavior, unattended watchdogs, newer candidates and production remain unqualified. The documentation update that records this result does not constitute another hosted run.

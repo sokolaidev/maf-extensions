@@ -102,7 +102,7 @@ def test_openclaw_is_opt_in_and_only_uploads_bounded_evidence():
     job = live["jobs"]["openclaw-bicep"]
     assert job["if"] == (
         "github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep "
-        "&& inputs.openclaw_mode != 'model'"
+        "&& inputs.openclaw_mode == 'smoke'"
     )
     assert "environment" not in job and "permissions" not in job
     assert job["runs-on"] == "ubuntu-24.04"
@@ -135,7 +135,7 @@ def test_failure_reporter_serializes_the_shared_tracker_without_locking_workload
 def test_real_model_requires_explicit_dispatch_and_isolates_credentials():
     live = workflow("docker-live.yml")
     option = live[True]["workflow_dispatch"]["inputs"]["openclaw_mode"]
-    assert option["default"] == "smoke" and option["options"] == ["smoke", "model"]
+    assert option["default"] == "smoke" and option["options"] == ["smoke", "model", "owner-loss"]
     job = live["jobs"]["openclaw-bicep-model"]
     assert job["if"] == (
         "github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep "

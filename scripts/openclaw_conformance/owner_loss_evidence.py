@@ -81,7 +81,9 @@ def one(rows: list[dict[str, Any]], event: str) -> dict[str, Any]:
     return matching[0]
 
 
-def verify(value: dict[str, Any], case: str, manifest: dict[str, Any]) -> None:
+def verify(
+    value: dict[str, Any], case: str, manifest: dict[str, Any], *, platform: str = "Windows"
+) -> None:
     """Correlate actor, phase, workload and recovery evidence for one required case."""
     require(value.get("parent_failure") is None, "parent_supervisor_failure")
     require(value.get("case") == case and value.get("outcome") == "pass", "case_failed")
@@ -135,12 +137,47 @@ def verify(value: dict[str, Any], case: str, manifest: dict[str, Any]) -> None:
     barrier = one(rows, "barrier_observed")
     require(barrier["phase"] == phase and barrier["mono_ns"] < fault["mono_ns"], "fault_phase")
     require(
-        fault["actor"] == actor
-        and fault["exited"] is True
-        and fault["others_alive"] is True
-        and fault["job_membership_verified"] is True,
+        fault["actor"] == actor and fault["exited"] is True and fault["others_alive"] is True,
         "fault_containment",
     )
+    if platform == "Linux":
+        identity = fault.get("linux_identity", {})
+        require(
+            fault["job_membership_verified"] is False
+            and identity.get("pidfd_bound") is True
+            and identity.get("signal") == "SIGKILL"
+            and all(
+                type(identity.get(k)) is int and identity[k] > 0
+                for k in ("pid", "pgrp", "session", "start", "supervisor_pid")
+            )
+            and identity["pgrp"] == identity["session"] == identity["supervisor_pid"],
+            "linux_fault_containment",
+        )
+        bound = one(
+            [r for r in rows if r.get("actor") == actor and r["mono_ns"] < fault["mono_ns"]],
+            "actor_bound",
+        )
+        require(
+            bound["linux_identity"] == identity
+            and type(bound["pid"]) is int
+            and bound["pid"] == identity["pid"]
+            and bound["mono_ns"] < barrier["mono_ns"],
+            "linux_actor_identity",
+        )
+        if actor in {"client", "worker"}:
+            started = one(
+                [r for r in value[actor] if r["mono_ns"] < fault["mono_ns"]], "actor_started"
+            )
+            require(
+                type(started["pid"]) is int
+                and started["pid"] == identity["pid"]
+                and started["mono_ns"] < bound["mono_ns"],
+                "linux_actor_startup",
+            )
+    else:
+        require(
+            platform == "Windows" and fault["job_membership_verified"] is True, "fault_containment"
+        )
     if phase == "active":
         require(
             barrier["compiler_running"] is True and barrier["paused"] is True, "active_compiler"
