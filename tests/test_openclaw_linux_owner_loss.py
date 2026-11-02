@@ -699,6 +699,31 @@ def test_dedicated_postflight_is_read_only_and_checks_retained_volume_identity(
     assert all(args[0] in {"info", "ps", "volume"} for args in calls)
 
 
+def test_fallback_does_not_report_a_surviving_orphan_volume_as_removed(tmp_path, monkeypatch):
+    host = importlib.import_module("openclaw_docker_denial_check")
+    client = "a" * 32
+    profile.write(
+        tmp_path / "daemon-control.json",
+        {"client": client, "name": "qualification-authz-" + client, "host": "unix:///fixture.sock"},
+    )
+    profile.write(
+        tmp_path / "daemon-resources.json",
+        {"client": client, "daemon": "b" * 64, "parent": "original", "volumes": ["orphan-volume"]},
+    )
+
+    def outer(endpoint, *args):
+        if args[0] == "info":
+            return "original"
+        return "orphan-volume" if args[0] == "volume" else ""
+
+    monkeypatch.setattr(host, "outer_docker", outer)
+    monkeypatch.setattr(host, "cleanup_daemon", lambda *a: None)
+    result = docker_faults.inventory(tmp_path, remove=True)
+    assert result["confirmed"] is False
+    assert result["remaining"] == ["orphan-volume"]
+    assert result["removed"] == []
+
+
 @pytest.mark.parametrize(
     "failure", [RuntimeError("Dedicated daemon volume survived cleanup"), KeyboardInterrupt()]
 )

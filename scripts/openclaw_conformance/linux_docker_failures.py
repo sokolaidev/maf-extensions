@@ -151,8 +151,9 @@ def inventory(root: Path, *, remove: bool) -> dict[str, Any]:
     removed = []
     if remove and remaining:
         host.cleanup_daemon(root, endpoint, name, client)
-        removed = remaining
-        remaining = survivors()
+        after = survivors()
+        removed = sorted(set(remaining) - set(after))
+        remaining = after
     return {
         "remaining": remaining,
         "removed": removed,
