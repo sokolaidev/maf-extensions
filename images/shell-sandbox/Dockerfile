@@ -16,7 +16,7 @@ RUN python3 /recipe/install.py bash /tmp \
     && ln -s /opt/powershell/pwsh /usr/local/bin/pwsh \
     && python3 /recipe/install.py psscriptanalyzer /opt/maf-shell/modules/PSScriptAnalyzer/1.25.0
 
-FROM python:3.13-slim-trixie@sha256:d98cc29d3266e535dd9da1099688d9cb3ca4753813571e071763d17725460962 AS compiler
+FROM python:3.13-slim-trixie@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb AS compiler
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ghc libghc-aeson-dev libghc-diff-dev libghc-fgl-dev libghc-regex-tdfa-dev libghc-quickcheck2-dev \
     && rm -rf /var/lib/apt/lists/*
