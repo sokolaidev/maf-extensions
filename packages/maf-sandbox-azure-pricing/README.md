@@ -20,6 +20,20 @@ For public-only queries, pass `outbound_max_confidentiality="public"` and run th
 
 Arguments are `sku`, `service`, `region`, `service_family`, `price_type`, `currency` (default `USD`), `include_savings_plan` (default false), and `filter` (raw OData). At least one filter is required; `currency` and `include_savings_plan` do not count. A `service` query also requires `sku`. `PriceType` accepts `Consumption`, `Reservation` and `DevTestConsumption`. Raw filters are parenthesized before the CLI combines them with the typed filters. Empty, oversized and control-bearing arguments are refused before sandbox acquisition.
 
+The tool's parameter schema describes the price-list fields and their exact, case-sensitive values:
+
+| Parameter | Price-list field | Example |
+|---|---|---|
+| `sku` | `armSkuName` | `Standard_D4s_v5` |
+| `service` | `serviceName` | `Virtual Machines` |
+| `region` | `armRegionName` | `westeurope` |
+| `service_family` | `serviceFamily` | `Compute` |
+| `price_type` | `priceType` | `Consumption` |
+
+For raw OData, [Microsoft's API filter reference](https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices#api-filters) lists `armRegionName`, `location`, `meterId`, `meterName`, `productId`, `skuId`, `productName`, `skuName`, `serviceName`, `serviceId`, `serviceFamily`, `priceType` and `armSkuName`; `reservationTerm` also works. `contains(meterName, 'Spot')` supports substring queries. There is no operating-system field such as `osType`: Windows VM meters have `Windows` at the end of `productName`. `skuName` is a price-list value, not a portal display name. Unknown fields fail the whole lookup. Recognizable upstream HTTP 400 failures return fixed filter-correction guidance without echoing CLI text or arguments; raw predicates are not parsed or field-validated on the host.
+
+Some meters use a billing zone (`Zone 1` through `Zone 8`, `US Gov Zone 1` or `US Gov Zone 2`), `Global`, or an empty `armRegionName`. An empty regional query does not establish that no price exists. Retry without `region`, or use a raw predicate such as `armRegionName eq 'Zone 1'`, `armRegionName eq 'Global'` or `armRegionName eq ''` while retaining another narrowing filter. The `region` argument itself cannot be an empty string.
+
 The host selects `exec_timeout_seconds` (default 60), `max_output_bytes` (default 8 MiB for combined stdout/stderr) and `max_rows` (default 100). Responses must be successful, clean UTF-8 JSON with valid pricing values; duplicate keys, non-finite prices, malformed rows, transport errors and stderr fail closed. An empty price array is a completed lookup. Errors do not echo CLI text or query arguments.
 
 Projected JSON includes `prices`, `returned_rows`, `received_rows`, `truncated` and `upstream_limit_reached`. The CLI retrieves at most 5,000 rows before the host applies its row cap. Reaching that ceiling marks the result potentially truncated, even when all received rows fit. Narrow the query; the tool has no continuation token and does not compute totals over incomplete results.

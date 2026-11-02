@@ -1,12 +1,13 @@
 """Typed pricing queries through the sandbox protocol and core's provenance checks."""
 
 import asyncio
+import json
 import math
 import re
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Annotated, Any, cast
 
-from maf_sandbox import CallerContext, SandboxRouter, SourceIntegrity
+from maf_sandbox import CallerContext, ExecResult, SandboxRouter, SourceIntegrity
 from maf_sandbox.bounded_exec import BoundedExec
 from maf_sandbox.maf import SandboxResult, SandboxToolSession, sandboxed_tool
 
@@ -23,6 +24,31 @@ _GUIDANCE = (
     "monthly hours. Savings-plan terms are separate. Azure MCP omits tierMinimumUnits, so "
     "these rows cannot establish usage-tier thresholds. A truncated result is not exhaustive."
 )
+_BAD_REQUEST = re.compile(
+    rb"\b(?:HTTP(?:/[0-9.]+)?[ \t]+|Status(?:[ \t]+code)?[ \t]*:[ \t]*)400\b"
+    rb"|\b400[ \t]*\(Bad Request\)|\bInvalid OData parameters supplied\b",
+    re.IGNORECASE,
+)
+
+
+def _filter_rejected(result: ExecResult) -> bool:
+    if _BAD_REQUEST.search(result.stderr_bytes):
+        return True
+    try:
+        raw = json.loads(result.stdout_bytes)
+    except (ValueError, UnicodeError):
+        return False
+    if not isinstance(raw, dict):
+        return False
+    envelope = cast("dict[str, Any]", raw)
+    if type(envelope.get("status")) is not int:
+        return False
+    if envelope["status"] == 400:
+        return True
+    if envelope["status"] < 400:
+        return False
+    message = envelope.get("message")
+    return isinstance(message, str) and bool(_BAD_REQUEST.search(message.encode("utf-8")))
 
 
 def _text(value: str | None, limit: int = 1024) -> str | None:
@@ -82,19 +108,59 @@ def _build_tool(
     max_output_bytes: int,
 ) -> Callable[..., Awaitable[SandboxResult]]:
     async def pricing_get(
-        sku: str | None = None,
-        service: str | None = None,
-        region: str | None = None,
-        service_family: str | None = None,
-        price_type: PriceType | None = None,
-        currency: str = "USD",
-        include_savings_plan: bool = False,
-        filter: str | None = None,
+        sku: Annotated[
+            str | None,
+            "Exact, case-sensitive armSkuName, e.g. Standard_D4s_v5; not a portal display name.",
+        ] = None,
+        service: Annotated[
+            str | None,
+            "Exact, case-sensitive serviceName, e.g. Virtual Machines. Also requires sku.",
+        ] = None,
+        region: Annotated[
+            str | None,
+            (
+                "Exact, case-sensitive armRegionName, e.g. westeurope. Some meters use billing "
+                "zones (Zone 1 through Zone 8, US Gov Zone 1 or US Gov Zone 2), Global, or an "
+                "empty region. If a regional query is empty, retry without region or use filter "
+                "with armRegionName eq 'Zone 1', armRegionName eq 'Global', or armRegionName eq ''."
+            ),
+        ] = None,
+        service_family: Annotated[
+            str | None, "Exact, case-sensitive serviceFamily, e.g. Compute or Networking."
+        ] = None,
+        price_type: Annotated[
+            PriceType | None,
+            (
+                "Exact, case-sensitive priceType: Consumption, Reservation or DevTestConsumption. "
+                "For savings plans, use include_savings_plan instead."
+            ),
+        ] = None,
+        currency: Annotated[str, "Three-letter uppercase currencyCode; defaults to USD."] = "USD",
+        include_savings_plan: Annotated[
+            bool, "Include savings-plan terms and prices where available; not a priceType."
+        ] = False,
+        filter: Annotated[
+            str | None,
+            (
+                "Raw OData predicate, combined with the named filters using AND. Filter fields: "
+                "armRegionName, location, meterId, meterName, productId, skuId, productName, "
+                "skuName, serviceName, serviceId, serviceFamily, priceType, armSkuName, "
+                "reservationTerm. Values are case-sensitive; eq matches exactly. "
+                "contains(meterName, 'Spot') is supported. Unknown fields reject the whole lookup. "
+                "There is no operating-system field (no osType); Windows VM meters have Windows "
+                "at the end of productName. skuName is a price-list value, "
+                "not a portal display name."
+            ),
+        ] = None,
     ) -> SandboxResult:
         """Look up current Azure public retail prices for explicit filters.
 
         At least one filter is required; service also requires an ARM SKU. SavingsPlan is
-        not a price type: set include_savings_plan instead. Use filter for raw OData.
+        not a price type: set include_savings_plan instead. Named filters match exact,
+        case-sensitive price-list values; filter accepts OData over the listed fields.
+        There is no osType field; Windows VM productName values end in Windows.
+        Meters may use billing zones, Global or an empty region. An empty regional result
+        does not establish that no price exists: retry without region or filter the zone.
         Narrow queries when truncated. Reservation prices cover the whole reservation term.
         """
         try:
@@ -129,13 +195,19 @@ def _build_tool(
                     timeout=timeout,
                     max_output_bytes=max_output_bytes,
                 )
-            if result.exit_code != 0 or result.producer_owns_stderr or result.stderr_bytes:
-                return _incomplete(
-                    "Pricing lookup incomplete: the CLI did not return a clean result."
-                )
             if len(result.stdout_bytes) > max_output_bytes:
                 return _incomplete(
                     "Pricing lookup incomplete: the response exceeds the byte limit."
+                )
+            if _filter_rejected(result):
+                return _incomplete(
+                    "Pricing query refused: the Retail Prices API rejected the filter "
+                    "(HTTP 400). Check the documented filter fields and predicate syntax; "
+                    "there is no osType field. Correct the query before retrying."
+                )
+            if result.exit_code != 0 or result.producer_owns_stderr or result.stderr_bytes:
+                return _incomplete(
+                    "Pricing lookup incomplete: the CLI did not return a clean result."
                 )
             report, truncated = parse_report(result.stdout_bytes, max_rows)
         except Exception:
