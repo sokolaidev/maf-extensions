@@ -50,7 +50,7 @@ def cleanup_daemon(root: Path, host: str, name: str, client: str) -> None:
         raise RuntimeError("Dedicated daemon survived cleanup")
 
 
-def run(args: argparse.Namespace) -> None:
+def run(args: argparse.Namespace, *, qualifier=None) -> None:
     root = args.root.resolve()
     root.mkdir(parents=True, exist_ok=False)
     if os.environ.get("DOCKER_HOST"):
@@ -106,12 +106,31 @@ def run(args: argparse.Namespace) -> None:
             "/bin/sh",
             daemon_image,
             "-c",
-            "mkdir -p /control; /usr/local/bin/qualification-authz /control & exec dockerd-entrypoint.sh --authorization-plugin=qualification --feature=containerd-snapshotter=true --iptables=false --bridge=none",
+            "mkdir -p /control; /usr/local/bin/qualification-authz /control & exec dockerd-entrypoint.sh --authorization-plugin=qualification "
+            + (
+                "--feature=containerd-snapshotter=false --storage-driver=overlay2"
+                if getattr(args, "classic_store", False)
+                else "--feature=containerd-snapshotter=true"
+            )
+            + " --iptables=false --bridge=none",
             timeout=120,
         )
         outer_docker(host, "cp", str(binary), daemon + ":/usr/local/bin/qualification-authz")
         outer_docker(host, "start", daemon, timeout=45)
         inspected = json.loads(outer_docker(host, "inspect", daemon))[0]
+        (root / "daemon-resources.json").write_text(
+            json.dumps(
+                {
+                    "daemon": daemon,
+                    "client": client,
+                    "parent": parent_id,
+                    "volumes": sorted(
+                        m["Name"] for m in inspected["Mounts"] if m["Type"] == "volume"
+                    ),
+                }
+            ),
+            encoding="utf-8",
+        )
         ports = inspected["NetworkSettings"]["Ports"]["2376/tcp"]
         if len(ports) != 1 or ports[0]["HostIp"] != "127.0.0.1":
             raise RuntimeError("Dedicated daemon was not published only on loopback")
@@ -166,7 +185,7 @@ def run(args: argparse.Namespace) -> None:
             "Dedicated TLS daemon loaded the exact prepared image and authorization plugin",
             flush=True,
         )
-        report = qualify(
+        report = (qualify if qualifier is None else qualifier)(
             argparse.Namespace(
                 root=root / "gateway",
                 config=args.config,

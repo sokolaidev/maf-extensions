@@ -419,10 +419,14 @@ def verify(
             )
             if case.endswith("denied"):
                 denial = value["denial"]
+                if platform == "Linux":
+                    from .linux_docker_failures import DENIAL_IMAGE as expected_denial_image
+                else:
+                    expected_denial_image = DENIAL_IMAGE
                 require(
                     denial["daemon_removed"] is True
                     and denial["parent_unchanged"] is True
-                    and denial["image"] == DENIAL_IMAGE,
+                    and denial["image"] == expected_denial_image,
                     "real_denial",
                 )
                 verify_authorization = importlib.import_module(
