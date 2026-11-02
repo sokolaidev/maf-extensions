@@ -23,6 +23,56 @@ def test_invalid_owner_never_reaches_docker(tmp_path, monkeypatch):
         cleanup.cleanup(tmp_path, "worker-active")
 
 
+def test_read_only_inventory_preserves_survivors_on_repeated_collection(tmp_path, monkeypatch):
+    (tmp_path / "owner").mkdir()
+    (tmp_path / "owner/owner").write_text("a" * 32)
+    e.write(
+        tmp_path / "resources.json",
+        {
+            "sentinel_name": "oc-owner-loss-" + "b" * 32,
+            "sentinel_scope": "owner-loss-sentinel-" + "c" * 32,
+        },
+    )
+    scope = "openclaw-bicep-" + "a" * 32
+    identifier = "d" * 64
+    called = []
+
+    def docker(args, **kwargs):
+        called.append(args[1])
+        if args[1] == "ps":
+            return SimpleNamespace(
+                returncode=0, stdout=identifier if args[-1].endswith(scope) else ""
+            )
+        assert args[1] == "inspect"
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                [
+                    {
+                        "Id": identifier,
+                        "Config": {"Labels": {"maf-sandbox.scope": scope}},
+                    }
+                ]
+            ),
+        )
+
+    monkeypatch.setattr(cleanup.subprocess, "run", docker)
+    for _ in range(2):
+        result = cleanup.cleanup(tmp_path, "worker-active", remove=False)
+        assert result["remaining"] == [identifier]
+        assert result["removed"] == []
+        assert result["confirmed"] is False
+    assert "rm" not in called
+
+
+def test_read_only_inventory_requires_retained_registration(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        cleanup.subprocess, "run", lambda *a, **k: pytest.fail("missing registration")
+    )
+    with pytest.raises(e.Refused, match="cleanup_registration_missing"):
+        cleanup.cleanup(tmp_path, "worker-active", remove=False)
+
+
 @pytest.mark.parametrize("field,bad", [("sentinel_name", "shared"), ("sentinel_scope", "shared")])
 def test_invalid_sentinel_never_reaches_docker(tmp_path, monkeypatch, field, bad):
     value = {

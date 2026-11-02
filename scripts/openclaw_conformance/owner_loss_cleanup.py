@@ -13,8 +13,8 @@ from .evidence import read, require
 from .install import environment
 
 
-def cleanup(root: Path, case: str) -> dict[str, Any]:
-    """Reconcile only fixture-owned resources after every child process tree has stopped."""
+def cleanup(root: Path, case: str, *, remove: bool = True) -> dict[str, Any]:
+    """Reconcile fixture-owned resources after process teardown; remove=False only inventories."""
 
     observer_environment = environment(root)
 
@@ -31,7 +31,9 @@ def cleanup(root: Path, case: str) -> dict[str, Any]:
         return value.stdout.strip()
 
     removed = []
+    remaining = []
     if case == "worker-denied":
+        require(remove, "dedicated_daemon_cleanup_required")
         control = root / "daemon-control.json"
         if control.exists():
             value = read(control)
@@ -46,6 +48,7 @@ def cleanup(root: Path, case: str) -> dict[str, Any]:
         return {"remaining": [], "removed": removed, "scope": "dedicated_daemon", "confirmed": True}
     control = root / "resources.json"
     owner = root / "owner/owner"
+    require(remove or (control.is_file() and owner.is_file()), "cleanup_registration_missing")
     scopes = []
     if owner.exists():
         value = owner.read_text(encoding="ascii")
@@ -71,10 +74,19 @@ def cleanup(root: Path, case: str) -> dict[str, Any]:
                 and (name is None or info["Name"] == "/" + name),
                 "cleanup_scope_changed",
             )
-            docker("rm", "-f", identifier)
-            removed.append(identifier)
-        require(
-            not docker("ps", "-aq", "--filter", "label=maf-sandbox.scope=" + scope),
-            "cleanup_survivor",
-        )
-    return {"remaining": [], "removed": removed, "scope": "registered_case", "confirmed": True}
+            if remove:
+                docker("rm", "-f", identifier)
+                removed.append(identifier)
+            else:
+                remaining.append(identifier)
+        if remove:
+            require(
+                not docker("ps", "-aq", "--filter", "label=maf-sandbox.scope=" + scope),
+                "cleanup_survivor",
+            )
+    return {
+        "remaining": remaining,
+        "removed": removed,
+        "scope": "registered_case",
+        "confirmed": not remaining,
+    }

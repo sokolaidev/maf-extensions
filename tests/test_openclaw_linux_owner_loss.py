@@ -180,6 +180,8 @@ def test_baseline_reporter_participates_in_source_identity_and_dirty_check(tmp_p
         "source",
         "case_hash",
         "summary",
+        "survivor",
+        "collection_interrupt",
     ],
 )
 def test_collector_rejects_incomplete_or_transplanted_campaign(tmp_path, monkeypatch, mutation):
@@ -227,14 +229,38 @@ def test_collector_rejects_incomplete_or_transplanted_campaign(tmp_path, monkeyp
     monkeypatch.setattr(profile, "baseline", lambda _: selected)
     reporter = importlib.import_module("report_openclaw_hosted")
     monkeypatch.setattr(reporter, "command", lambda *a: "{}")
-    monkeypatch.setattr(profile, "cleanup", lambda *a: {"confirmed": True, "removed": []})
+
+    def inventory(*args, **kwargs):
+        assert kwargs == {"remove": False}
+        return {"confirmed": True, "removed": [], "remaining": []}
+
+    def failed_inventory(*args, **kwargs):
+        assert kwargs == {"remove": False}
+        if mutation == "collection_interrupt":
+            raise KeyboardInterrupt
+        return {"confirmed": False, "removed": [], "remaining": ["orphan"]}
+
+    monkeypatch.setattr(profile, "cleanup", inventory)
+    if mutation in {"survivor", "collection_interrupt"}:
+        monkeypatch.setattr(profile, "cleanup", failed_inventory)
+    if mutation == "collection_interrupt":
+        with pytest.raises(KeyboardInterrupt):
+            profile.collect(tmp_path, root)
+        monkeypatch.setattr(profile, "cleanup", inventory)
     report = profile.collect(tmp_path, root)
     assert report["qualified"] is (mutation == "none")
+    if mutation == "none":
+        assert profile.collect(tmp_path, root)["qualified"] is True
     if mutation in {"source", "campaign", "case_hash"}:
         row = next(r for r in report["cases"] if r["case"] == "worker-active")
         assert row["rejection"] == (
             "case_artifact_digest" if mutation == "case_hash" else "case_campaign_binding"
         )
+    if mutation in {"survivor", "collection_interrupt"}:
+        monkeypatch.setattr(profile, "cleanup", inventory)
+        repeated = profile.collect(tmp_path, root)
+        assert repeated["qualified"] is False
+        assert repeated["cases"][0]["rejection"] == "postflight_previous_failure"
 
 
 def test_incomplete_campaign_retains_failure_and_cleanup_diagnostics(tmp_path, monkeypatch):
@@ -273,9 +299,11 @@ def test_incomplete_campaign_retains_failure_and_cleanup_diagnostics(tmp_path, m
     assert all(r["rejection"] == "missing_or_oversized_record" for r in report["cases"][1:])
 
 
-@pytest.mark.parametrize("processes_stopped", [True, False])
+@pytest.mark.parametrize(
+    "processes_stopped,cleanup_interrupted", [(True, False), (False, False), (True, True)]
+)
 def test_interrupted_case_stops_campaign_after_evidence_and_cleanup(
-    tmp_path, monkeypatch, processes_stopped
+    tmp_path, monkeypatch, processes_stopped, cleanup_interrupted
 ):
     prepared = tmp_path / "prepared"
     root = tmp_path / "faults"
@@ -291,12 +319,14 @@ def test_interrupted_case_stops_campaign_after_evidence_and_cleanup(
         return {
             "case": name,
             "outcome": "fail",
-            "failure": "KeyboardInterrupt",
+            "failure": None if cleanup_interrupted else "KeyboardInterrupt",
             "events": [{"event": "harness_cleanup", "processes_stopped": processes_stopped}],
         }
 
     def cleanup(case_root, name):
         calls.append(("cleanup", name))
+        if cleanup_interrupted:
+            raise KeyboardInterrupt
         return {"confirmed": True, "remaining": [], "removed": []}
 
     cases = importlib.import_module("openclaw_conformance.owner_loss_cases")
@@ -309,7 +339,10 @@ def test_interrupted_case_stops_campaign_after_evidence_and_cleanup(
     monkeypatch.setattr(profile.signal, "signal", lambda *a: None)
     monkeypatch.setattr(profile.signal, "alarm", lambda *a: None, raising=False)
     with pytest.raises(
-        ValueError, match="interrupted" if processes_stopped else "cleanup_unconfirmed"
+        ValueError,
+        match="interrupted"
+        if processes_stopped and not cleanup_interrupted
+        else "cleanup_unconfirmed",
     ):
         profile.run(prepared, root)
     assert calls == [
@@ -321,7 +354,13 @@ def test_interrupted_case_stops_campaign_after_evidence_and_cleanup(
     assert summary["runtime_unchanged"] is False
     saved = root / "control.json"
     assert summary["case_hashes"]["control"] == profile.file_hash(saved)
-    assert profile.read(saved)["failure"] == "KeyboardInterrupt"
+    value = profile.read(saved)
+    if cleanup_interrupted:
+        assert value["failure"] is None
+        assert value["parent_failure"] == "KeyboardInterrupt"
+        assert value["independent_cleanup"] == {"confirmed": False, "error": "KeyboardInterrupt"}
+    else:
+        assert value["failure"] == "KeyboardInterrupt"
 
 
 def test_process_teardown_disarms_deadline_and_retries_failed_close(monkeypatch):

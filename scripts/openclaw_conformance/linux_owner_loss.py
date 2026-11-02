@@ -189,8 +189,10 @@ def run(prepared: Path, root: Path) -> None:
                         "process_cleanup_unconfirmed",
                     )
                     value["independent_cleanup"] = cleanup(root / name, name)
-                except Exception as exc:
+                except (Exception, KeyboardInterrupt) as exc:
                     value["independent_cleanup"] = {"confirmed": False, "error": safe_reason(exc)}
+                    if isinstance(exc, KeyboardInterrupt):
+                        value["parent_failure"] = "KeyboardInterrupt"
                 data = encode(value)
                 require(len(data) <= LIMITS["events"], "case_evidence_limit")
                 path = root / (name + ".json")
@@ -215,7 +217,7 @@ def run(prepared: Path, root: Path) -> None:
         signal.signal(signal.SIGALRM, previous)
 
 
-def safe_reason(exc: Exception) -> str:
+def safe_reason(exc: BaseException) -> str:
     """Publish bounded refusal codes without exception messages from dependencies."""
     reason = str(exc) if isinstance(exc, Refused) else type(exc).__name__
     return reason if re.fullmatch(r"[A-Za-z0-9_:-]{1,120}", reason) else type(exc).__name__
@@ -230,6 +232,26 @@ def failure_code(value: Any) -> str | None:
         if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_:-]{1,120}", value)
         else "redacted"
     )
+
+
+def postflight(root: Path, name: str, case_hash: str) -> None:
+    """Retain failed or interrupted read-only inventories across repeated collections."""
+    receipt = root / (name + ".postflight.json")
+    if receipt.exists():
+        previous = read(receipt)
+        require(previous.get("case_sha256") == case_hash, "postflight_binding")
+        require(previous.get("passed") is True, "postflight_previous_failure")
+    state = {"case_sha256": case_hash, "passed": False}
+    write(receipt, state)
+    remaining = cleanup(root / name, name, remove=False)
+    require(
+        remaining["confirmed"] is True
+        and remaining["removed"] == []
+        and remaining["remaining"] == [],
+        "postflight_survivor",
+    )
+    state["passed"] = True
+    write(receipt, state)
 
 
 def collect(prepared: Path, root: Path) -> dict[str, Any]:
@@ -273,12 +295,7 @@ def collect(prepared: Path, root: Path) -> dict[str, Any]:
             require("rejection" not in public, "campaign_rejected")
             require(row["sha256"] == summary["case_hashes"].get(name), "case_artifact_digest")
             verify_case(value, name, candidate, expected["campaign_id"])
-            # This second inventory must not turn a required cleanup into acceptance.
-            remaining = cleanup(root / name, name)
-            require(
-                remaining["confirmed"] is True and remaining["removed"] == [],
-                "postflight_survivor",
-            )
+            postflight(root, name, row["sha256"])
             row["passed"] = True
         except Exception as exc:
             row["rejection"] = safe_reason(exc)
