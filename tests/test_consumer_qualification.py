@@ -445,6 +445,79 @@ def test_legacy_docker_evidence_cannot_cover_an_additional_backend(repo, monkeyp
         )
 
 
+def test_shared_drawio_notice_requires_fresh_export_evidence(repo, monkeypatch):
+    root, _ = repo
+    package = "maf-sandbox-drawio"
+    metadata = root / "packages" / package / "pyproject.toml"
+    metadata.parent.mkdir()
+    metadata.write_text(f'[project]\nname = "{package}"\nversion = "0.1.0"\n')
+    source = metadata.parent / "src"
+    source.mkdir()
+    (source / "module.py").write_text("VALUE = 1\n")
+    notice = root / "images/drawio-sandbox/DEJAVU-LICENSE"
+    notice.parent.mkdir(parents=True)
+    notice.write_text("original notice\n")
+    base = legacy.commit(root)
+    before = consumer.inputs(root, base, package, "drawio-export", "docker", CANDIDATE)
+    catalogue = {
+        "current": {"drawio-export": "drawio-export/0.1.0"},
+        "releases": {"drawio-export/0.1.0": CANDIDATE},
+    }
+    monkeypatch.setattr(
+        workflow,
+        "History",
+        lambda: SimpleNamespace(head=lambda: SimpleNamespace(catalogue=catalogue)),
+    )
+    assert workflow.selection(root, base, "drawio-export") == []
+    notice.write_text("changed notice\n")
+    head = legacy.commit(root)
+    after = consumer.inputs(root, head, package, "drawio-export", "docker", CANDIDATE)
+    assert after != before
+    assert consumer.image_changes(root, base, head, "drawio-export") == []
+    assert workflow.selection(root, base, "drawio-export") == [
+        {"package": package, "profile": "drawio-export", "backend": "docker"}
+    ]
+    with pytest.raises(ValueError, match="consumer harness"):
+        guard.matching_source(root, base, head, package, "drawio-export")
+    monkeypatch.setattr(
+        consumer, "verify", lambda value: consumer.validate_record(claim(before, base), value)
+    )
+    with pytest.raises(ValueError, match="mismatched identity"):
+        guard.compatibility(
+            root, head, package, "drawio-export", CANDIDATE | {"sourceCommit": base}
+        )
+
+
+@pytest.mark.parametrize("change", ["added", "removed"])
+@pytest.mark.parametrize("fresh", [False, True])
+def test_workspace_package_changes_require_independent_evidence(repo, monkeypatch, change, fresh):
+    root, base = repo
+    metadata = root / "packages/maf-sandbox-new-kind/pyproject.toml"
+    metadata.parent.mkdir()
+    metadata.write_text('[project]\nname = "maf-sandbox-new-kind"\nversion = "0.1.0"\n')
+    if change == "removed":
+        base = legacy.commit(root)
+        metadata.unlink()
+    head = legacy.commit(root)
+    with pytest.raises(subprocess.CalledProcessError):
+        guard.matching_source(root, base, head, legacy.PACKAGE, "shell")
+    assert consumer.image_changes(root, base, head, "shell") == []
+
+    def verify(value):
+        if not fresh:
+            raise ValueError("fresh consumer evidence unavailable")
+        return claim(value, head)
+
+    monkeypatch.setattr(consumer, "verify", verify)
+    record = CANDIDATE | {"sourceCommit": base}
+    if fresh:
+        result = guard.compatibility(root, head, legacy.PACKAGE, "shell", record)
+        assert result[0]["sourceCommit"] == head
+    else:
+        with pytest.raises(ValueError, match="fresh consumer evidence unavailable"):
+            guard.compatibility(root, head, legacy.PACKAGE, "shell", record)
+
+
 @pytest.mark.workflow
 def test_workflow_separates_execution_from_signing_and_never_publishes_images():
     root = Path(__file__).resolve().parents[1]

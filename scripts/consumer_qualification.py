@@ -29,6 +29,7 @@ KIND_IMAGES = {
 }
 # Coverage is a release requirement, not an assertion of support on other backends.
 BACKENDS = {profile: ("docker",) for profiles in KIND_IMAGES.values() for profile in profiles}
+HARNESS_INPUTS = {"drawio-export": ("images/drawio-sandbox/DEJAVU-LICENSE",)}
 QUALIFICATION_ONLY = {
     "scripts/check_live_azure_pricing.py",
     "scripts/antivirus_qualification.py",
@@ -98,6 +99,8 @@ def inputs(
             path = prefix.rstrip("/")
             if any(p.startswith(prefix) for p in files):
                 selected[path] = git(root, "rev-parse", f"{head}:{path}")
+    for path in HARNESS_INPUTS.get(profile, ()):
+        selected[path] = git(root, "rev-parse", f"{head}:{path}")
     versions = {}
     for path in sorted(files):
         if re.fullmatch(r"packages/[^/]+/pyproject\.toml", path):

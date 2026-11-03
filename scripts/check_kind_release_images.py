@@ -92,6 +92,7 @@ def matching_source(root: Path, source: str, head: str, package: str, profile: s
         for path in paths
         if path.startswith(("scripts/", "tests/fixtures/", ".github/actions/setup-classic-docker/"))
         or path == consumer.WORKFLOW
+        or path in consumer.HARNESS_INPUTS.get(profile, ())
     ]
     if harness:
         raise ValueError(
@@ -129,7 +130,7 @@ def compatibility(
         if consumer.BACKENDS[profile] == ("docker",):
             return []
         legacy_reason = f"{profile}: legacy evidence does not cover every required backend"
-    except ValueError as error:
+    except (ValueError, subprocess.SubprocessError) as error:
         legacy_reason = str(error)
     problems = []
     changed = consumer.image_changes(root, record["sourceCommit"], head, profile)
