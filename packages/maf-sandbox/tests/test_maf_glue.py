@@ -4378,12 +4378,8 @@ class TestTheRecordSamplesValueAndCountTogether:
         record.forget("a.txt")
         assert record.state_of("a.txt") == (SourceIntegrity.TRUSTED, 2)
 
-    def test_a_change_to_one_path_ends_an_interval_on_another(self):
-        """The count is the record's, so an unrelated write costs a concurrent read its label.
-
-        Conservative on purpose: the alternative is a per-path count, which cannot be discarded
-        when the path is forgotten without losing the history that makes the check work.
-        """
+    def test_the_count_also_moves_for_an_unrelated_path(self):
+        """The store-wide count alone cannot identify which path changed."""
         record = self._record()
 
         _, before = record.state_of("a.txt")
@@ -4401,8 +4397,7 @@ class TestTheRecordSamplesValueAndCountTogether:
 
 
 class TestReadFileRefoldsAgainstTheRecord:
-    """The content's label is the weakest of the listing's and the record's — and only where the
-    record held still for the whole read, which its mutation count is what establishes."""
+    """Stable path evidence folds with the listing; a changed input refuses the read."""
 
     def _session_with(self, record):
         return _session(file_store_provenance=record)
@@ -4412,7 +4407,7 @@ class TestReadFileRefoldsAgainstTheRecord:
         file_store_provenance_middleware(record)
         return record
 
-    def test_a_write_while_the_read_is_in_flight_leaves_the_bytes_unlabelled(self):
+    def test_a_write_while_the_read_is_in_flight_refuses_the_bytes(self):
         """A record that moved during the read describes neither end of it, so nothing is
         claimed about the bytes it was holding."""
         record = self._trusted_floor()
@@ -4422,12 +4417,11 @@ class TestReadFileRefoldsAgainstTheRecord:
         store = _ReadStore({"a.txt": "1"}, during_read=lambda: record.record("a.txt"))
         item = asyncio.run(self._session_with(record).read_file(store, listed))
 
-        assert not isinstance(item, str) and item is not None
-        assert SOURCE_INTEGRITY_PROPERTY not in item.additional_properties
+        assert isinstance(item, str) and "changed while this call" in item
 
     def test_a_forget_while_the_read_is_in_flight_cannot_raise_the_label(self):
         """`forget` returns a path to the floor, so a later look alone can read higher than
-        what stood when the bytes were captured. The count refuses instead."""
+        what stood when the bytes were captured. The read window refuses instead."""
         record = self._trusted_floor()
         listed = ListedFile("a.txt", record.integrity_of("a.txt"))
         assert listed.integrity is SourceIntegrity.TRUSTED
@@ -4436,12 +4430,11 @@ class TestReadFileRefoldsAgainstTheRecord:
         store = _ReadStore({"a.txt": "1"}, during_read=lambda: record.forget("a.txt"))
         item = asyncio.run(self._session_with(record).read_file(store, listed))
 
-        assert not isinstance(item, str) and item is not None
-        assert SOURCE_INTEGRITY_PROPERTY not in item.additional_properties
+        assert isinstance(item, str) and "changed while this call" in item
 
     def test_a_record_then_forget_inside_one_read_is_not_read_as_no_change(self):
         """Both looks answer `trusted` while the bytes were captured under an entry, so equal
-        values do not mean a still interval. The count does, because it never returns."""
+        values do not mean a still interval. The read window retains both mutations."""
         record = self._trusted_floor()
         listed = ListedFile("a.txt", record.integrity_of("a.txt"))
         assert listed.integrity is SourceIntegrity.TRUSTED
@@ -4454,8 +4447,7 @@ class TestReadFileRefoldsAgainstTheRecord:
         item = asyncio.run(self._session_with(record).read_file(store, listed))
 
         assert record.integrity_of("a.txt") is SourceIntegrity.TRUSTED, "both looks agree"
-        assert not isinstance(item, str) and item is not None
-        assert SOURCE_INTEGRITY_PROPERTY not in item.additional_properties
+        assert isinstance(item, str) and "changed while this call" in item
 
     def test_a_read_nothing_touched_keeps_the_record_s_answer(self):
         """The count is not a blanket downgrade: a still record still answers."""
@@ -4569,8 +4561,7 @@ class TestFileIntegrityAdmission:
                 BinaryStore(), ListedFile("file.pdf", SourceIntegrity.TRUSTED)
             )
         )
-        assert not isinstance(item, str) and item is not None
-        assert SOURCE_INTEGRITY_PROPERTY not in item.additional_properties
+        assert isinstance(item, str) and "changed while this call" in item
 
     def test_binary_read_requires_integrity_before_returning_bytes(self):
         class BinaryStore:
@@ -4648,8 +4639,12 @@ class TestFileIntegrityAdmission:
             )
         )
 
-        assert isinstance(item, str) and "required file integrity" in item
-        assert "content" not in item
+        if mutation == "elsewhere":
+            assert not isinstance(item, str) and item is not None
+            assert item.additional_properties[SOURCE_INTEGRITY_PROPERTY] == "trusted"
+        else:
+            assert isinstance(item, str) and "changed while this call" in item
+            assert "content" not in item
 
     @pytest.mark.parametrize(
         ("name", "options", "shown"),

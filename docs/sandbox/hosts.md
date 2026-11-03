@@ -247,7 +247,7 @@ The registry retains bindings and provenance for its lifetime, refuses missing i
 
 Wire the same record into three places: `file_store_provenance_middleware`, `list_all_files(..., provenance=record)`, and `sandboxed_tool(file_store_provenance=record)`. Use one record per store.
 
-![The host shares one provenance record between write-observing middleware, file listings and sandboxed reads. A model-driven mutation records untrusted integrity. A read compares the record's state before and after fetching bytes, then combines stable evidence with the listing. Changed evidence produces an unlabelled read; an optional integrity requirement can refuse it.](assets/file-provenance.svg)
+![The host shares one provenance record between write-observing middleware, file listings and sandboxed reads. A model-driven mutation records untrusted integrity. A read compares the record's state before and after fetching bytes, then combines stable evidence with the listing. Changed input evidence refuses the call; unrelated writes preserve the label.](assets/file-provenance.svg)
 
 The middleware records mutations as untrusted in a `finally`, even if the body raises or returns a refusal as text. It reads the final normalized path after other middleware has expanded arguments. Deletes are recorded too; only the host may `forget` a path after establishing removal.
 
@@ -255,13 +255,15 @@ The middleware records mutations as untrusted in a `finally`, even if the body r
 
 A trusted floor requires construction of the observing middleware. This catches a missing observer, but cannot verify that the host actually added it to the agent's chain. Wiring remains the host's responsibility.
 
-`read_file` checks the record's value and change counter before and after reading. Stable evidence is combined with the listing's label. Any intervening record change leaves the read unlabelled, including a change to another path.
+`read_file` checks the record before and after reading and watches path mutations from the start of the call's listing. A change to the input being read, or to an input already read while collecting later inputs, stops the whole call with a retryable refusal. The wrapper returns no workload report, even for kinds that normally continue after an ordinary read failure. The refusal contains only the safely rendered input references and fixed advice to retry without batching a writer to those files. Unrelated writes preserve the folded label; a changed store-wide counter triggers a bounded content recheck rather than a blanket downgrade. Read windows retain mutation history only for the active call, so record/forget cycles are detected without permanent per-path counters.
 
 Set `requires_file_integrity` to reject weaker reads. Its default, `None`, accepts every readable file. `UNTRUSTED` requires an established label; `TRUSTED` accepts only trusted evidence. Without a session record, admission uses the listing alone.
 
-Refused content is not delivered or counted as fed input. Bicep can continue with other admitted files; CodeAct stops that call. Provenance wiring errors still raise rather than becoming content refusals.
+Refused content is not delivered or counted as fed input. Ordinary integrity-admission refusals retain each kind's handling: Bicep can continue with other admitted files; CodeAct stops that call. Changed-input refusals stop every kind, including Bicep. Provenance wiring errors still raise rather than becoming content refusals.
 
-One limit remains: middleware records when the writing call returns. Bytes already written by an unfinished call are not yet recorded. A trusted floor includes the host's responsibility for that interval.
+A host with its own provenance snapshots should raise `FileStoreChanged` (exported by `maf_sandbox`) from `state_of(path)` when that path changed since its listing or read snapshot. Exception details are never copied to the refusal. A `(None, count)` answer still means unestablished integrity and does not refuse by itself. Hosts that override the record must provide this path-specific signal for listing-to-read changes; a store-wide counter alone cannot identify them.
+
+The read window ends with input collection: a later write during guest execution does not invalidate bytes already staged. This is mutation detection, not a transactional snapshot or a store lock. One limit remains: middleware records when the writing call returns. Bytes already written by an unfinished call are not yet recorded. A trusted floor includes the host's responsibility for that interval.
 
 ## Classify derived tool results
 

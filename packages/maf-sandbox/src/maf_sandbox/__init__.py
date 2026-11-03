@@ -71,7 +71,12 @@ from __future__ import annotations
 
 from ._effective_state import EffectiveState
 from ._error_detail import error_detail
-from ._file_provenance import FILE_STORE_WRITE_TOOLS, FileStoreProvenance, store_key
+from ._file_provenance import (
+    FILE_STORE_WRITE_TOOLS,
+    FileStoreChanged,
+    FileStoreProvenance,
+    store_key,
+)
 from ._host_tools import (
     DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN,
     FLOW_DECLARED_KEY,
@@ -332,6 +337,7 @@ __all__ = [
     "ExecResult",
     "FailedReclaimPolicy",
     "FileStoreProvenance",
+    "FileStoreChanged",
     "GuestRunLayout",
     "HostToolAggregate",
     "HostToolDeclaration",

@@ -70,7 +70,13 @@ from ._effective_state import (
     open_effective_state_notes,
 )
 from ._error_detail import error_detail
-from ._file_provenance import FILE_STORE_WRITE_TOOLS, PATH_ARGUMENT, FileStoreProvenance
+from ._file_provenance import (
+    FILE_STORE_WRITE_TOOLS,
+    PATH_ARGUMENT,
+    FileStoreChanged,
+    FileStoreProvenance,
+    ReadWindow,
+)
 from ._observer import (
     RECORDED_CALL,
     FedFromStore,
@@ -256,6 +262,10 @@ class _SandboxToolCall:
     #: Conversation acquires retain their hold until a late result has been cleaned.
     acquiring: dict[SandboxKey, int] = field(default_factory=dict[SandboxKey, int])
     retire: Callable[[SandboxKey], Awaitable[None]] | None = None
+    file_windows: dict[tuple[int, int], tuple[Any, ReadWindow]] = field(
+        default_factory=dict[tuple[int, int], tuple[Any, ReadWindow]]
+    )
+    file_refusal: str | None = None
 
 
 #: The call a tool body is running inside, or ``None`` outside one.
@@ -1262,6 +1272,10 @@ class _CallClosed(RuntimeError):
     """Admission outlived its tool call."""
 
 
+class _FileReadChanged(Exception):
+    """Stop the tool body before it can use a partial input set."""
+
+
 class SandboxToolSession:
     """Everything a sandbox workload's tool body needs, minus anything the model supplies.
 
@@ -1469,6 +1483,7 @@ class SandboxToolSession:
 
         Failure details stay in the host log; the returned refusal contains no store text.
         """
+        self._file_window(store)
         try:
             return await self._context.list_files(store)
         except Exception as exc:  # noqa: BLE001
@@ -1508,13 +1523,10 @@ class SandboxToolSession:
         fold. Unestablished integrity is below every level, so requiring ``trusted`` over an
         unestablished store refuses every file. ``None`` disables this admission check.
 
-        **The label is checked across the read, not taken from the listing.**  A listing's
-        label is as old as the listing, and MAF runs tool calls concurrently, so the record is
-        sampled either side of ``store.read`` through
-        :meth:`FileStoreProvenance.state_of`, which answers both under one lock.  An unchanged
-        count means the record held
-        still for the whole read and its answer is folded with the listing's; a changed one
-        means nothing can be said about these bytes, and they carry no label at all.
+        A mutation to an input since this call's listing refuses the whole call. The wrapper
+        stops the body and renders a trusted refusal; a direct session read returns that text.
+        Unrelated mutations preserve the fold. Host records can raise ``FileStoreChanged``
+        from ``state_of`` for a stale snapshot; ``None`` still means unestablished integrity.
 
         Without a record on the session the listing's label stands, and a host wiring
         ``floor=SourceIntegrity.TRUSTED`` is then claiming the store is not written under a read
@@ -1535,6 +1547,49 @@ class SandboxToolSession:
         would report the wrong length for the value it is standing in for.  The caller knows both
         spellings; this method only ever sees one.
         """
+        window = self._file_window(store)
+        shown = named if named is not None else echoed_name(listed.name, at=at, hidden=hidden)
+        if window is not None:
+            window.paths[listed.name] = shown
+        try:
+            return await self._read_file(store, listed, window=window, shown=shown)
+        except FileStoreChanged:
+            changed = (
+                [display for path, display in window.paths.items() if window.changed(path)]
+                if window is not None
+                else []
+            )
+            self._record_read(listed.name, None, 0, outcome="refused")
+            refusal = (
+                f"Error: {', '.join(changed) if changed else shown} changed while this call "
+                "was reading its inputs; no result was produced. Re-run, and do not run it "
+                "in the same batch as a tool that writes these files."
+            )
+            call = _CALL.get()
+            if call is not None and not call.closed:
+                call.file_refusal = refusal
+                raise _FileReadChanged(refusal) from None
+            return refusal
+        finally:
+            call = _CALL.get()
+            if window is not None and (call is None or call.closed):
+                window.close()
+
+    def _file_window(self, store: Any) -> ReadWindow | None:
+        record = self._file_store_provenance
+        if record is None:
+            return None
+        call = _CALL.get()
+        if call is None or call.closed:
+            return record.read_window()
+        key = (id(self), id(store))
+        if key not in call.file_windows:
+            call.file_windows[key] = (store, record.read_window())
+        return call.file_windows[key][1]
+
+    async def _read_file(
+        self, store: Any, listed: ListedFile, *, window: ReadWindow | None, shown: str
+    ) -> Content | str | None:
         from agent_framework import Content
 
         try:
@@ -1542,17 +1597,21 @@ class SandboxToolSession:
             # middleware observes, which is a supported configuration and so a reachable way out
             # of a read that would otherwise leave no record at all.
             before = self._recorded_state(listed.name)
+            self._check_file_window(window)
+        except FileStoreChanged:
+            raise
         except BaseException:
             self._record_read(listed.name, None, 0, outcome="refused")
             raise
         try:
             text = await store.read(listed.name)
+        except FileStoreChanged:
+            raise
         except Exception as exc:  # noqa: BLE001
             self._logger.warning(
                 f"{self._log_prefix}: could not read a listed file: %s", error_detail(exc)
             )
             self._record_read(listed.name, None, 0, outcome="refused")
-            shown = named if named is not None else echoed_name(listed.name, at=at, hidden=hidden)
             return f"Error: {shown} could not be read from the file store"
         except BaseException:
             # A cancel leaves this site the same way a raise does — no text crossed — and the
@@ -1560,23 +1619,24 @@ class SandboxToolSession:
             # `Exception`, so it needs its own catch or the read goes unrecorded.
             self._record_read(listed.name, None, 0, outcome="refused")
             raise
-        if text is None:
-            self._record_read(listed.name, None, 0, outcome="absent")
-            return None
         try:
             # Inside the boundary for the same reason the first reading is: this is the record's
             # *second* `state_of`, and a path forgotten while the read was in flight can make it
             # raise where the first one did not.
-            integrity = self._folded_integrity(listed, before)
+            integrity = await self._folded_integrity(store, listed, before, text, window)
+        except FileStoreChanged:
+            raise
         except BaseException:
             self._record_read(listed.name, None, 0, outcome="refused")
             raise
+        if text is None:
+            self._record_read(listed.name, None, 0, outcome="absent")
+            return None
         required = self._requires_file_integrity
         if required is not None and (
             integrity is None or INTEGRITY_RANK[integrity] < INTEGRITY_RANK[required]
         ):
             self._record_read(listed.name, integrity, 0, outcome="refused")
-            shown = named if named is not None else echoed_name(listed.name, at=at, hidden=hidden)
             return f"Error: {shown} does not meet the required file integrity ({required})"
         self._record_read(
             listed.name, integrity, 0 if isinstance(text, bytes) else len(text), outcome="read"
@@ -1662,27 +1722,38 @@ class SandboxToolSession:
         record = self._file_store_provenance
         return (None, 0) if record is None else record.state_of(name)
 
-    def _folded_integrity(
-        self, listed: ListedFile, before: tuple[SourceIntegrity | None, int]
+    def _check_file_window(self, window: ReadWindow | None) -> None:
+        if window is not None and any(window.changed(path) for path in window.paths):
+            raise FileStoreChanged
+
+    async def _folded_integrity(
+        self,
+        store: Any,
+        listed: ListedFile,
+        before: tuple[SourceIntegrity | None, int],
+        text: str | bytes | None,
+        window: ReadWindow | None,
     ) -> SourceIntegrity | None:
-        """The listing's label folded with what the record said across the read.
-
-        **A reading either side is not enough, and the count is what closes it.**  A path can be
-        recorded and then forgotten while one read is in flight, which leaves both readings
-        equal and neither of them true of the moment the bytes were captured — the model's write
-        happened between them.  The count :meth:`FileStoreProvenance.state_of` answers with only
-        goes up, so an unchanged one is the thing two equal readings are not: proof that nothing
-        happened.
-
-        Where it did change, this answers ``None``.  *Unestablished* is what a reader that
-        cannot say honestly says, and it is what :func:`weakest_integrity` already treats as
-        beating every level.
-        """
+        """Fold stable path evidence, rechecking bytes when a host's counter moved."""
         if self._file_store_provenance is None:
             return listed.integrity
         integrity, generation = before
-        if generation != self._recorded_state(listed.name)[1]:
-            return None
+        after, current = self._recorded_state(listed.name)
+        self._check_file_window(window)
+        if after != integrity:
+            raise FileStoreChanged
+        if generation != current:
+            try:
+                unchanged = await store.read(listed.name) == text
+            except Exception as exc:
+                self._logger.warning(
+                    f"{self._log_prefix}: could not recheck a listed file: %s", error_detail(exc)
+                )
+                raise FileStoreChanged from None
+            after, _ = self._recorded_state(listed.name)
+            self._check_file_window(window)
+            if not unchanged or after != integrity:
+                raise FileStoreChanged
         return weakest_integrity((listed, ListedFile(listed.name, integrity)))
 
     async def acquire(self, key: SandboxKey) -> Sandbox | str:
@@ -3119,9 +3190,29 @@ def sandboxed_tool(
         try:
             try:
                 result = await body(*args, **kwargs)
+            except _FileReadChanged:
+                result = None
             except BaseException as raised:
                 raised_by_body = raised
                 raise
+            if call.file_refusal is not None:
+                if not result_contract:
+                    from agent_framework import Content
+                    from agent_framework.security import ContentLabel
+
+                    substitution = (
+                        {CALL_ID_PLACEHOLDER: _call_name(call)} if _needs_call_id(committed) else {}
+                    )
+                    return [
+                        Content.from_text(
+                            text, additional_properties={"security_label": ContentLabel().to_dict()}
+                        )
+                        for text in (
+                            call.file_refusal,
+                            *(sentence.format(**substitution) for sentence in committed),
+                        )
+                    ]
+                result = SandboxResult(completed=False, trusted_output=(call.file_refusal,))
             # Gated, because `_call_name` is also what tells the reclaim a directory is named
             # after this call: a tool with no `{call_id}` sentence must not gain one here.
             return _label_tool_result(
@@ -3138,6 +3229,9 @@ def sandboxed_tool(
             )
         finally:
             _CALL.reset(token)
+            for _, window in call.file_windows.values():
+                window.close()
+            call.file_windows.clear()
             close_unclean_notes(notes)
             # Closed before the removal, not after: a task the body left running would otherwise
             # be handed this path while it is being deleted.

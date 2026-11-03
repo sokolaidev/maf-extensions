@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 import threading
+from weakref import WeakSet
 
 from ._protocol import SourceIntegrity
 
@@ -31,8 +32,42 @@ __all__ = [
     "FILE_STORE_WRITE_TOOLS",
     "PATH_ARGUMENT",
     "FileStoreProvenance",
+    "FileStoreChanged",
     "store_key",
 ]
+
+
+class FileStoreChanged(Exception):
+    """A host record's snapshot for this path changed during listing or reading.
+
+    Raise from ``state_of`` instead of returning unestablished integrity for stale evidence.
+    Exception details stay on the host; the session renders its own refusal.
+    """
+
+
+class ReadWindow:
+    """Path mutations retained only while a reader holds this window."""
+
+    def __init__(self) -> None:
+        self.paths: dict[str, str] = {}
+        self._lock = threading.Lock()
+        self._changed: set[str] = set()
+        self._closed = False
+
+    def note_change(self, key: str) -> None:
+        with self._lock:
+            if not self._closed:
+                self._changed.add(key)
+
+    def changed(self, path: str) -> bool:
+        with self._lock:
+            return store_key(path) in self._changed
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            self._changed.clear()
+
 
 #: The ``FileAccessProvider`` tools that change what a path holds.  Named here rather than
 #: imported, because importing them would make this module require the framework's harness to
@@ -97,8 +132,8 @@ class FileStoreProvenance:
     and back inside one read and leave both readings identical.  Take :meth:`state_of`, which
     samples the value and the count under one lock: equal counts either side mean nothing
     happened in between and the reading describes the whole interval, and a changed count means
-    the reader must not claim anything.  The two accessors called in turn would answer about two
-    instants instead, and a write between them is the one arrangement the count cannot catch.
+    the reader must check which path changed. The two accessors called in turn would answer
+    about two instants instead, and a write between them is what the count cannot catch.
     :meth:`~maf_sandbox.maf.SandboxToolSession.read_file` does exactly that, given the record.
 
     **One residue is not closable from here.**  A write is recorded once the writing tool call
@@ -121,6 +156,18 @@ class FileStoreProvenance:
         #: every temporary file a long-lived host ever writes.
         self._epoch = 0
         self._observed = False
+        self._readers: WeakSet[ReadWindow] = WeakSet()
+
+    def read_window(self) -> ReadWindow:
+        """Observe path mutations until the returned window is closed or released."""
+        with self._lock:
+            window = ReadWindow()
+            self._readers.add(window)
+            return window
+
+    def _changed(self, key: str) -> None:
+        for reader in self._readers:
+            reader.note_change(key)
 
     def _note_observer(self) -> None:
         """Mark that a middleware has been built against this record.
@@ -157,6 +204,7 @@ class FileStoreProvenance:
         """
         with self._lock:
             key = store_key(path)
+            self._changed(key)
             if key not in self._entries:
                 self._entries[key] = SourceIntegrity.UNTRUSTED
                 self._epoch += 1
@@ -176,8 +224,10 @@ class FileStoreProvenance:
         then harmless rather than something a host has to serialise against.
         """
         with self._lock:
-            if self._entries.pop(store_key(path), None) is not None:
+            key = store_key(path)
+            if self._entries.pop(key, None) is not None:
                 self._epoch += 1
+                self._changed(key)
 
     def _sample(self, path: str) -> tuple[SourceIntegrity | None, bool, int]:
         """This path's entry, whether anything observes writes, and its count — under one lock.
@@ -199,11 +249,11 @@ class FileStoreProvenance:
         answer about two instants and a write between them is the one arrangement a count cannot
         rescue.
 
-        **The count is the record's, not the path's.**  A mutation anywhere ends every interval
-        in flight, so a busy store costs concurrent reads their label rather than their
-        correctness — and the alternative is a per-path count that can never be discarded,
-        because discarding it is what lets a path look untouched after being written and
-        forgotten.
+        **The count is the record's, not the path's.** A changed count alone does not prove
+        that this path changed. Read windows retain path mutations for their own lifetime,
+        including record/forget cycles, without retaining permanent per-path tombstones.
+        Hosts with their own snapshots raise ``FileStoreChanged`` for stale path evidence;
+        returning ``None`` continues to mean the integrity was never established.
 
         Raises:
             ValueError: as :meth:`integrity_of` does, and for the same reason.
