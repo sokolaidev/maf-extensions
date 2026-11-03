@@ -12,13 +12,15 @@ The host can pass `outbound_max_confidentiality="public"` and wire label trackin
 
 ## Results
 
-The host validates the success envelope and every row, projects known pricing fields and applies its row cap. It rejects malformed JSON, ambiguous keys, invalid numbers, missing units and reservation terms, failed execution and stderr. Only fixed completion/failure/truncation messages and standing pricing guidance use the trusted result fields.
+The host validates the success envelope and every row, projects known pricing fields, selects applicable locations and applies its row cap. It rejects malformed JSON, ambiguous keys, invalid numbers, missing units and reservation terms, failed execution and stderr. Only fixed completion/failure/truncation messages and standing pricing guidance use the trusted result fields.
+
+An ARM-region query retrieves that region, Global and billing-zone candidates in one CLI execution. The host selects zones by service/product family, then uses Global as a fallback per service/product/meter. For West Europe, network rows use Zone 1, Front Door Standard/Premium uses Zone 6, and CDN/classic Front Door uses Zone 1. Rows carry `matched_by` and zone provenance in the price report. The [package guide](../../../packages/maf-sandbox-azure-pricing/README.md#billing-zone-selection) records the source tables, nearest-region estimates and exclusions. Edge zones assume the requested geography represents the serving edge; ExpressRoute requires an explicit peering-location filter. Unknown regions and families omit zone rows with a note. An explicit `armRegionName` predicate disables expansion; exact Global/zone queries and queries without `region` retain their original behavior.
 
 Price rows use `SandboxResult.output` with `source_integrity=UNTRUSTED`. The host may establish the network source with `egress_integrity=SourceIntegrity.TRUSTED`. With no file reads, core promotes these rows only when the framework also establishes trusted conversation and argument labels. Without those conditions they remain untrusted. See [information flow](../information-flow.md#how-core-labels-a-call).
 
 Trusting that source covers its text fields as well as numeric prices. Fixed standing guidance treats every field as data, never instructions; it is contextual guidance, not a sanitizer or a substitute for the host's trust decision.
 
-The CLI retrieves at most 5,000 rows. `truncated` is true when the host omits rows or the upstream ceiling is reached; no continuation token is available. An empty list is a completed lookup. Reservation prices cover whole terms despite hourly-looking units, savings plans retain nested terms, and Azure MCP omits usage-tier thresholds. Public retail prices do not establish negotiated account pricing.
+The CLI retrieves at most 5,000 rows. `truncated` is true when the presentation cap omits selected rows or the upstream ceiling is reached, even if host location selection leaves few rows; no continuation token is available. Global fallbacks cannot establish the absence of preferred rows in a truncated result. An empty list is a completed lookup. Reservation prices cover whole terms despite hourly-looking units, savings plans retain nested terms, and Azure MCP omits usage-tier thresholds. Public retail prices do not establish negotiated account pricing.
 
 ## Host and verification
 
@@ -29,3 +31,4 @@ The [package guide](../../../packages/maf-sandbox-azure-pricing/README.md) descr
 | Decision | State | Tracking |
 |---|---|---|
 | Disposable public pricing kind and GET-only source | Implemented; publication and other-backend qualification remain separate | [#1678](https://github.com/sokolaidev/maf-extensions/issues/1678) (closed) by [#2331](https://github.com/sokolaidev/maf-extensions/pull/2331) (merged) |
+| Regional Global fallback and per-family billing zones | Implemented; nearest-region and serving-edge assumptions remain explicit | [#2418](https://github.com/sokolaidev/maf-extensions/issues/2418) (closed) by [#2420](https://github.com/sokolaidev/maf-extensions/pull/2420) (merged) |

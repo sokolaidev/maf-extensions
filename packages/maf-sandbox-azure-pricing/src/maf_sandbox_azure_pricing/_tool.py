@@ -11,6 +11,7 @@ from maf_sandbox import CallerContext, ExecResult, SandboxRouter, SourceIntegrit
 from maf_sandbox.bounded_exec import BoundedExec
 from maf_sandbox.maf import SandboxResult, SandboxToolSession, sandboxed_tool
 
+from ._regions import expanded_region, region_predicate
 from ._report import parse_report
 from ._spec import AZURE_PRICING_TOOL_NAME, PriceType, azure_pricing_sandbox_spec
 
@@ -86,6 +87,10 @@ def _argv(
         raise ValueError("Invalid currency")
     if type(include_savings_plan) is not bool:
         raise ValueError("Invalid savings plan flag")
+    if (selection_region := expanded_region(region, filter)) is not None:
+        fields["region"] = None
+        locations = region_predicate(selection_region)
+        fields["filter"] = f"{locations} and ({filter})" if filter else locations
     args = ["/usr/local/bin/azmcp", "pricing", "get", f"--currency={currency}"]
     for name, value in fields.items():
         if value is not None:
@@ -128,10 +133,11 @@ def _build_tool(
         region: Annotated[
             str | None,
             (
-                "Exact, case-sensitive armRegionName, e.g. westeurope. Some meters use billing "
-                "zones (Zone 1 through Zone 8, US Gov Zone 1 or US Gov Zone 2), Global, or an "
-                "empty region. If a regional query is empty, retry without region or use filter "
-                "with armRegionName eq 'Zone 1', armRegionName eq 'Global', or armRegionName eq ''."
+                "Exact, case-sensitive ARM region, e.g. westeurope. Includes Global fallbacks "
+                "and billing zones selected per service family (Zone 1 through Zone 9, "
+                "US Gov Zone 1 or US Gov Zone 2). Rows carry matched_by and zone metadata. "
+                "An explicit armRegionName predicate disables expansion. For an empty region "
+                "use filter with armRegionName eq ''. Unknown regions have no zone selection."
             ),
         ] = None,
         service_family: Annotated[
@@ -170,8 +176,10 @@ def _build_tool(
         Many network and platform meters have an empty armSkuName: do not invent a SKU.
         Omit service and sku for those meters; use filter on serviceName, productName or meterName.
         There is no osType field; Windows VM productName values end in Windows.
-        Meters may use billing zones, Global or an empty region. An empty regional result
-        does not establish that no price exists: retry without region or filter the zone.
+        Region queries include per-family billing zones and Global fallbacks with match labels.
+        ExpressRoute needs an explicit peering-location filter; edge zones assume the requested
+        geography, not the origin's actual serving edge. Empty-region meters need an explicit
+        filter.
         Narrow queries when truncated. Reservation prices cover the whole reservation term.
         """
         try:
@@ -226,7 +234,9 @@ def _build_tool(
                 return _incomplete(
                     "Pricing lookup incomplete: the CLI did not return a clean result."
                 )
-            report, truncated = parse_report(result.stdout_bytes, max_rows)
+            report, truncated = parse_report(
+                result.stdout_bytes, max_rows, region=expanded_region(region, filter)
+            )
         except Exception:
             return _incomplete(
                 "Pricing lookup incomplete: execution timed out, exceeded its byte limit, "

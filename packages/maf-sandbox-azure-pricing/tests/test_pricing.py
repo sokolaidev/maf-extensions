@@ -150,9 +150,9 @@ def test_model_schema_describes_price_fields_and_nonregional_queries():
     assert "Unknown fields reject the whole lookup" in raw_filter
     assert "no osType" in raw_filter and "Windows" in raw_filter
     region = properties["region"]["description"]
-    assert all(value in region for value in ("Zone 8", "US Gov Zone 2", "Global", "empty region"))
-    assert "retry without region" in region and "armRegionName eq ''" in region
-    assert "retry without region" in tool.description
+    assert all(value in region for value in ("Zone 9", "US Gov Zone 2", "Global", "empty region"))
+    assert "disables expansion" in region and "armRegionName eq ''" in region
+    assert "per-family billing zones" in tool.description
     assert "no osType" in tool.description
     assert "empty armSkuName" in properties["sku"]["description"]
     assert "empty armSkuName" in tool.description
@@ -311,6 +311,8 @@ def test_spec_is_fixed_and_requires_no_file_surfaces():
 
 
 def test_argv_is_fixed_and_raw_filter_is_grouped():
+    from maf_sandbox_azure_pricing._regions import region_predicate
+
     tool, backend, sandbox = attach()
     result = asyncio.run(
         tool.func(
@@ -334,16 +336,15 @@ def test_argv_is_fixed_and_raw_filter_is_grouped():
         "--currency=EUR",
         "--sku=--help; $(touch sentinel)",
         "--service=Virtual Machines",
-        "--region=westeurope",
         "--service-family=Compute",
         "--price-type=Reservation",
-        "--filter=(meterId eq 'a' or meterId eq 'b')",
+        f"--filter=({region_predicate('westeurope')} and (meterId eq 'a' or meterId eq 'b'))",
         "--include-savings-plan",
     ]
     assert timeout == 60 and len(backend.disposed) == 1
     assert not sandbox.contents
     value = json.loads(report(result).text)
-    assert value["prices"] == [row()] and not value["truncated"]
+    assert value["prices"] == [row() | {"matched_by": "region"}] and not value["truncated"]
     assert "IGNORED" not in str(result)
 
 
@@ -605,3 +606,302 @@ def test_no_bounded_surface_refuses_before_exec():
     result = asyncio.run(tool.func(sku="x"))
     assert result[0].text == NOT_COMPLETED_TEXT
     assert not sandbox.inner.commands and backend.disposed
+
+
+@pytest.mark.parametrize(
+    ("service", "product", "family", "zone"),
+    [
+        ("Virtual Network", "Virtual Network Manager", "network", "Zone 1"),
+        ("Virtual Network", "Virtual Network", "network", "Zone 1"),
+        ("VPN Gateway", "VPN Gateway Bandwidth", "network", "Zone 1"),
+        ("Azure Cosmos DB", "Azure Cosmos DB Data Transfer", "network", "Zone 1"),
+        ("Azure Multicloud Interconnect", "Azure Multicloud Interconnect ER", "network", "Zone 1"),
+        ("Azure Front Door Service", "Azure Front Door", "front_door", "Zone 6"),
+        ("Azure Front Door Service", "Azure Front Door Service", "cdn_classic", "Zone 1"),
+        ("Content Delivery Network", "Premium CDN", "cdn_classic", "Zone 1"),
+        ("Azure DNS", "Azure DNS", "dns", "Zone 1"),
+    ],
+)
+def test_westeurope_selects_zones_per_service_and_product(service, product, family, zone):
+    from maf_sandbox_azure_pricing._regions import BILLING_ZONES
+
+    prices = [
+        row() | {"serviceName": service, "productName": product, "region": location}
+        for location in BILLING_ZONES
+    ]
+    data, truncated = parse_report(envelope(prices).encode(), 1, region="westeurope")
+    result = json.loads(data)
+    assert not truncated
+    assert result["received_rows"] == len(BILLING_ZONES)
+    assert result["selected_rows"] == result["returned_rows"] == 1
+    [price] = result["prices"]
+    assert price["region"] == price["zone"] == zone
+    assert price["zone_family"] == family and price["matched_by"] == "zone"
+    if family == "network":
+        assert price["zone_basis"] == "published_region"
+        assert price["zone_reference_region"] == "westeurope"
+    if family in ("front_door", "cdn_classic"):
+        assert "serving edge" in str(result["selection_notes"])
+
+
+@pytest.mark.parametrize(
+    ("region", "network", "front_door", "cdn"),
+    [
+        ("eastus", "Zone 1", "Zone 1", "Zone 1"),
+        ("westeurope", "Zone 1", "Zone 6", "Zone 1"),
+        ("australiacentral", "Zone 1", "Zone 4", "Zone 4"),
+        ("australiaeast", "Zone 2", "Zone 4", "Zone 4"),
+        ("newzealandnorth", "Zone 2", "Zone 2", "Zone 4"),
+        ("koreacentral", "Zone 2", "Zone 8", "Zone 2"),
+        ("centralindia", "Zone 2", "Zone 5", "Zone 5"),
+        ("japaneast", "Zone 2", "Zone 2", "Zone 2"),
+        ("brazilsouth", "Zone 3", "Zone 3", "Zone 3"),
+        ("uaenorth", "Zone 3", "Zone 7", "Zone 1"),
+        ("southafricanorth", "Zone 3", "Zone 7", "Zone 1"),
+        ("usgovvirginia", "US Gov Zone 1", "Zone 9", None),
+    ],
+)
+def test_geographies_do_not_share_one_zone_map(region, network, front_door, cdn):
+    from maf_sandbox_azure_pricing._regions import _zone
+
+    for family, expected in [
+        ("network", network),
+        ("front_door", front_door),
+        ("cdn_classic", cdn),
+    ]:
+        match = _zone(region, family)
+        assert (match["zone"] if match else None) == expected
+
+
+@pytest.mark.parametrize(
+    ("service", "product"),
+    [
+        ("Content Delivery Network", "Premium CDN"),
+        ("Azure Front Door Service", "Azure Front Door Service"),
+    ],
+)
+def test_newzealand_cdn_selects_zone_four_rows(service, product):
+    prices = [
+        row() | {"serviceName": service, "productName": product, "region": location}
+        for location in ("Zone 2", "Zone 4")
+    ]
+    data, truncated = parse_report(envelope(prices).encode(), 1, region="newzealandnorth")
+    result = json.loads(data)
+    assert not truncated and result["selected_rows"] == 1
+    assert result["prices"] == [
+        prices[1]
+        | {
+            "matched_by": "zone",
+            "zone_family": "cdn_classic",
+            "zone": "Zone 4",
+            "zone_basis": "geography",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("region", "reference", "zone"),
+    [
+        ("swedencentral", "norwayeast", "Zone 1"),
+        ("qatarcentral", "uaecentral", "Zone 3"),
+        ("israelcentral", "uaecentral", "Zone 3"),
+        ("newzealandnorth", "australiaeast", "Zone 2"),
+        ("indonesiacentral", "southeastasia", "Zone 2"),
+        ("westus3", "westus", "Zone 1"),
+        ("chilecentral", "brazilsouth", "Zone 3"),
+    ],
+)
+def test_network_fallback_identifies_nearest_published_region(region, reference, zone):
+    from maf_sandbox_azure_pricing._regions import _zone
+
+    assert _zone(region, "network") == {
+        "zone": zone,
+        "zone_basis": "nearest_region",
+        "zone_reference_region": reference,
+    }
+
+
+def test_every_known_region_has_a_network_reference_and_edge_zone():
+    from maf_sandbox_azure_pricing._regions import (
+        _EDGE_ZONE,
+        _NEAREST_NETWORK_REGION,
+        _NETWORK_ZONE,
+        _zone,
+    )
+
+    assert set(_EDGE_ZONE) == set(_NETWORK_ZONE) | set(_NEAREST_NETWORK_REGION)
+    assert set(_NEAREST_NETWORK_REGION.values()) <= set(_NETWORK_ZONE)
+    for region in _EDGE_ZONE:
+        assert _zone(region, "network") is not None
+        assert _zone(region, "front_door") is not None
+        assert _zone(region, "dns") is not None
+
+
+def test_global_fallback_uses_service_product_meter_and_keeps_terms_and_price_tiers():
+    base = row() | {
+        "serviceName": "Virtual Network",
+        "productName": "Virtual Network Manager",
+        "meterName": "Managed VNet",
+    }
+    global_price = base | {"region": "Global"}
+    regional = base | {"region": "westeurope"}
+    zonal = base | {"region": "Zone 1", "meterName": "Connections"}
+    other = [
+        global_price | {"serviceName": "Other service"},
+        global_price | {"productName": "Other product"},
+        global_price | {"meterName": "Other meter"},
+        global_price | {"meterName": None},
+    ]
+    rows = [
+        global_price,
+        global_price | {"meterName": "Connections"},
+        *other,
+        regional,
+        regional | {"reservationTerm": "3 Years"},
+        zonal,
+        zonal | {"unitPrice": 42, "retailPrice": 42},
+    ]
+    result = json.loads(parse_report(envelope(rows).encode(), 100, region="westeurope")[0])
+    assert result["prices"][:2] == [
+        regional | {"matched_by": "region"},
+        regional | {"reservationTerm": "3 Years", "matched_by": "region"},
+    ]
+    assert [r["unitPrice"] for r in result["prices"] if r["matched_by"] == "zone"] == [1243, 42]
+    assert [r for r in result["prices"] if r["matched_by"] == "global"] == [
+        r | {"matched_by": "global"} for r in other
+    ]
+
+
+@pytest.mark.parametrize("region", ["eastus", "westeurope", "unknown-region"])
+def test_regional_private_endpoint_query_returns_global_with_one_execution(region):
+    price = row() | {
+        "region": "Global",
+        "serviceName": "Virtual Network",
+        "productName": "Virtual Network Private Link",
+        "meterName": "Standard Private Endpoint",
+        "armSkuName": "",
+    }
+    tool, backend, sandbox = attach(InProcessSandbox(default_stdout=envelope([price])))
+    items = asyncio.run(tool.func(region=region, filter="meterName eq 'Standard Private Endpoint'"))
+    assert items[0].text == COMPLETED_TEXT
+    assert json.loads(report(items).text)["prices"] == [price | {"matched_by": "global"}]
+    assert len(sandbox.commands) == len(backend.disposed) == 1
+    args = shlex.split(sandbox.commands[0][0])
+    assert not any(arg.startswith("--region=") for arg in args)
+    predicate = next(arg for arg in args if arg.startswith("--filter="))
+    assert f"armRegionName eq '{region}'" in predicate
+    assert "armRegionName eq 'Global'" in predicate
+    assert "and (meterName eq 'Standard Private Endpoint')" in predicate
+
+
+@pytest.mark.parametrize("region", [None, "westeurope"])
+@pytest.mark.parametrize(
+    "predicate",
+    [
+        "armRegionName eq 'Global'",
+        "armRegionName eq ''",
+        "contains(armRegionName, 'Zone')",
+        "ARMREGIONNAME eq 'Zone 1'",
+    ],
+)
+def test_explicit_region_predicate_preserves_query_and_report(region, predicate):
+    tool, _, sandbox = attach()
+    items = asyncio.run(tool.func(region=region, filter=predicate))
+    data = json.loads(report(items).text)
+    assert data["prices"] == [row()]
+    assert "selected_rows" not in data
+    args = shlex.split(sandbox.commands[0][0])
+    assert f"--filter=({predicate})" in args
+    assert ("--region=westeurope" in args) == (region is not None)
+    assert "Global" not in " ".join(args) or "Global" in predicate
+
+
+def test_location_expansion_quotes_literals_and_ignores_field_names_inside_strings():
+    from maf_sandbox_azure_pricing._tool import _argv
+
+    predicate = "meterName eq 'armRegionName and ''quoted''' or meterId eq 'second'"
+    args = _argv(None, None, "eastus' or true", None, None, "USD", False, predicate)
+    query = next(arg for arg in args if arg.startswith("--filter="))
+    assert "armRegionName eq 'eastus'' or true'" in query
+    assert f"and ({predicate})" in query
+    assert "armRegionName eq 'Zone 9'" in query
+    assert "armRegionName eq 'US Gov Zone 2'" in query
+
+
+@pytest.mark.parametrize("region", ["Global", "Zone 1", "Zone 9", "US Gov Zone 2"])
+def test_explicit_price_list_location_remains_exact(region):
+    price = row() | {"region": region}
+    tool, _, sandbox = attach(InProcessSandbox(default_stdout=envelope([price])))
+    items = asyncio.run(tool.func(region=region))
+    assert json.loads(report(items).text)["prices"] == [price]
+    assert f"--region={region}" in shlex.split(sandbox.commands[0][0])
+    assert "--filter=" not in sandbox.commands[0][0]
+
+
+def test_unknown_region_and_family_and_expressroute_are_not_guessed():
+    cases = [
+        ("westeurope", "ExpressRoute", "ExpressRoute", "peering location"),
+        ("westeurope", "Unknown", "Unknown", "Unrecognized service/product"),
+        ("unknown-region", "Virtual Network", "Virtual Network Manager", "Unknown region"),
+        ("usgovvirginia", "Content Delivery Network", "CDN", "No billing-zone mapping"),
+    ]
+    for region, service, product, note in cases:
+        price = row() | {"region": "Zone 1", "serviceName": service, "productName": product}
+        data = json.loads(parse_report(envelope([price]).encode(), 100, region=region)[0])
+        assert not data["prices"] and note in str(data["selection_notes"])
+
+
+def test_selection_does_not_promote_unrelated_locations_or_forged_match_metadata():
+    prices = [
+        row() | {"region": location, "matched_by": "global", "zone": "forged"}
+        for location in ["westeurope", "eastus", "", None, "Zone 1"]
+    ]
+    data = json.loads(parse_report(envelope(prices).encode(), 100, region="westeurope")[0])
+    assert data["prices"] == [row() | {"matched_by": "region"}]
+
+
+def test_selection_precedes_presentation_cap_but_never_hides_upstream_limit():
+    zonal = row() | {
+        "region": "Zone 2",
+        "serviceName": "Virtual Network",
+        "productName": "Virtual Network Manager",
+    }
+    regional = row()
+    data, truncated = parse_report(envelope([zonal, regional]).encode(), 1, region="westeurope")
+    assert not truncated and json.loads(data)["prices"] == [regional | {"matched_by": "region"}]
+    data, truncated = parse_report(
+        envelope([zonal] * 4999 + [regional]).encode(), 1, region="westeurope"
+    )
+    assert truncated and json.loads(data)["upstream_limit_reached"]
+    assert json.loads(data)["received_rows"] == 5000
+    data, truncated = parse_report(envelope([regional, regional]).encode(), 1, region="westeurope")
+    assert truncated and json.loads(data)["selected_rows"] == 2
+    invalid = zonal | {"unitPrice": -1}
+    with pytest.raises(ValueError):
+        parse_report(envelope([regional, invalid]).encode(), 1, region="westeurope")
+
+
+def test_zone_annotations_stay_in_the_price_report_security_boundary():
+    price = row() | {
+        "region": "Zone 6",
+        "serviceName": "Azure Front Door Service",
+        "productName": "Azure Front Door",
+    }
+    tool, _, _ = attach(InProcessSandbox(default_stdout=envelope([price])))
+    items = asyncio.run(tool.func(region="westeurope"))
+    output = report(items)
+    assert json.loads(output.text)["prices"][0]["zone_family"] == "front_door"
+    assert output.additional_properties["security_label"]["integrity"] == "untrusted"
+    assert all("front_door" not in (item.text or "") for item in items if item is not output)
+
+
+def test_estimated_zone_discloses_the_reference_in_the_report():
+    price = row() | {
+        "serviceName": "Virtual Network",
+        "productName": "Virtual Network Manager",
+        "region": "Zone 3",
+    }
+    data = json.loads(parse_report(envelope([price]).encode(), 100, region="qatarcentral")[0])
+    assert data["prices"][0]["zone_basis"] == "nearest_region"
+    assert data["prices"][0]["zone_reference_region"] == "uaecentral"
+    assert "not a published assignment" in str(data["selection_notes"])
