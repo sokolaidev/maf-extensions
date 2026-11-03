@@ -116,6 +116,8 @@ class ObserveHTTP:
         if scope["type"] != "http":
 
             async def lifetime(message):
+                if message["type"] == "lifespan.startup.complete":
+                    self.record(event="startup_complete")
                 if message["type"] == "lifespan.startup.complete" and self.owned_scope is not None:
                     owned = subprocess.check_output(
                         [

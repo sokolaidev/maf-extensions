@@ -243,7 +243,10 @@ def verify_cleanup_refusal(
         "Cleanup refusal is not correlated with failed, poisoned startup",
     )
     require(
-        not any(r.get("event") in {"startup_ready", "request", "response"} for r in evidence),
+        not any(
+            r.get("event") in {"startup_complete", "startup_ready", "request", "response"}
+            for r in evidence
+        ),
         "Failed startup admitted transport work or advertised readiness",
     )
     require(

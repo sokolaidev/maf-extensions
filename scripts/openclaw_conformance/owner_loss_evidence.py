@@ -417,6 +417,14 @@ def verify(
                 and refused["resources"] == settled["resources"],
                 "failed_recovery",
             )
+            require(
+                not any(
+                    r["event"] in {"startup_complete", "startup_ready"}
+                    and settled["mono_ns"] < r["mono_ns"] < refused["mono_ns"]
+                    for r in transport
+                ),
+                "blocked_startup_ready",
+            )
             if case.endswith("denied"):
                 denial = value["denial"]
                 if platform == "Linux":
@@ -441,6 +449,7 @@ def verify(
                     client=denial["client"],
                     nonce=denial["nonce"],
                     denied=True,
+                    require_container=True,
                 )
                 require(denial["container"] in settled["resources"], "denial_orphan_binding")
     else:

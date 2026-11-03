@@ -184,11 +184,28 @@ def verify_failure(value: dict[str, Any], name: str) -> None:
     )
     require(
         not any(
-            r["event"] == "startup_ready"
+            r["event"] in {"startup_complete", "startup_ready"}
             and blocked["mono_ns"] < r["mono_ns"] < restored["mono_ns"]
             for r in value["transport"]
         ),
         "blocked_startup_ready",
+    )
+    completed = [r for r in value["transport"] if r["event"] == "startup_complete"]
+    startups = [r for r in value["transport"] if r["event"] == "startup_ready"]
+    require(
+        len(completed) == len(startups)
+        and all(
+            len(
+                [
+                    r
+                    for r in completed
+                    if r["boot"] == ready["boot"] and r["mono_ns"] < ready["mono_ns"]
+                ]
+            )
+            == 1
+            for ready in startups
+        ),
+        "startup_completion_observation",
     )
     if name == "worker-unavailable":
         require(
@@ -242,6 +259,7 @@ def verify_failure(value: dict[str, Any], name: str) -> None:
             client=denied["client"],
             nonce=denied["nonce"],
             denied=True,
+            require_container=True,
         )
         removals = denied["allowed_removals"]
         require(
@@ -264,5 +282,6 @@ def verify_failure(value: dict[str, Any], name: str) -> None:
             client=denied["client"],
             nonce=denied["nonce"],
             denied=False,
+            require_container=True,
             after_sequence=sequence,
         )

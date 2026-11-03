@@ -81,8 +81,9 @@ def verify_authorization(
     nonce: str,
     denied: bool,
     after_sequence: int = 0,
+    require_container: bool = False,
 ) -> int:
-    """Join one daemon decision per real command using target, client, fault nonce and order."""
+    """Join decisions to selected commands; require inspected IDs for owner-loss records."""
     previous = 0
     for row in rows:
         sequence = row.get("sequence")
@@ -94,6 +95,14 @@ def verify_authorization(
         or re.fullmatch(r"[a-f0-9]{32}", nonce) is None
     ):
         raise RuntimeError("Daemon decision correlation lacks a client or fault identity")
+    if not all(
+        command.get("target") in {target, container}
+        and command.get("container", None if require_container else container) == container
+        and type(command.get("returncode")) is int
+        and (command["returncode"] != 0) is denied
+        for command in removals
+    ):
+        raise RuntimeError("Removal command does not identify the selected container and outcome")
     matching = [
         r
         for r in rows

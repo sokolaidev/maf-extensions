@@ -680,6 +680,7 @@ def case(
                             client=denial.client,
                             nonce=denial.nonce,
                             denied=True,
+                            require_container=True,
                         )
                         write(
                             root / "denial-decisions.json",

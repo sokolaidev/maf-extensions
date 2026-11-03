@@ -106,6 +106,13 @@ def observation(name):
                 "plugin_binary_sha256": "b" * 64,
                 "go_version": "go version go1.27.3 linux/amd64",
             }
+    value["transport"][0]["mono_ns"] = 2
+    value["transport"].extend(
+        dict(r, event="startup_complete", mono_ns=r["mono_ns"] - 1)
+        for r in list(value["transport"])
+        if r["event"] == "startup_ready"
+    )
+    value["transport"].sort(key=lambda r: r["mono_ns"])
     return candidate, value
 
 
@@ -757,3 +764,67 @@ def test_dedicated_daemon_failure_retains_observed_case(tmp_path, monkeypatch, f
         "KeyboardInterrupt" if isinstance(failure, KeyboardInterrupt) else "daemon_volume_cleanup"
     )
     assert profile.read(root / "result.json") == observed
+
+
+@pytest.mark.parametrize("name", ["worker-unavailable", "worker-denied"])
+def test_product_startup_attempt_cannot_be_hidden_by_observer_failure(tmp_path, monkeypatch, name):
+    import asyncio
+
+    observer = importlib.import_module("openclaw_http_observer")
+    candidate, value = observation(name)
+    observed = []
+
+    class App:
+        async def __call__(self, scope, receive, send):
+            await send({"type": "lifespan.startup.complete"})
+
+    class Observer(observer.ObserveHTTP):
+        def record(self, **fields):
+            observed.append({"mono_ns": 860, "boot": "f" * 32, **fields})
+
+    def unavailable(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, ["docker", "ps"])
+
+    monkeypatch.setattr(observer.subprocess, "check_output", unavailable)
+    app = Observer(App(), tmp_path / "unused", owned_scope="owned")
+
+    async def receive():
+        return {}
+
+    async def send(message):
+        pytest.fail("The failed probe must not forward startup completion")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        asyncio.run(app({"type": "lifespan"}, receive, send))
+    value["transport"].extend(observed)
+    value["transport"].sort(key=lambda r: r["mono_ns"])
+    with pytest.raises(ValueError, match="blocked_startup"):
+        profile.verify_case(value, name, candidate, CAMPAIGN)
+
+
+@pytest.mark.parametrize("phase", ["removals", "allowed_removals"])
+@pytest.mark.parametrize("field,bad", [("container", "b" * 64), ("target", "unrelated")])
+def test_denial_rejects_jointly_changed_command_copies(phase, field, bad):
+    candidate, value = observation("worker-denied")
+    # The fixture shares each command object with the raw transport observation.
+    command = value["denial"][phase][0]
+    assert any(row is command for row in value["transport"])
+    command[field] = bad
+    with pytest.raises((ValueError, RuntimeError)):
+        profile.verify_case(value, "worker-denied", candidate, CAMPAIGN)
+
+
+@pytest.mark.parametrize("name", ["worker-unavailable", "worker-denied"])
+@pytest.mark.parametrize("mutation", ["missing", "wrong_boot", "late"])
+def test_docker_faults_require_positive_startup_observer_controls(name, mutation):
+    candidate, value = observation(name)
+    completed = [r for r in value["transport"] if r["event"] == "startup_complete"]
+    if mutation == "missing":
+        value["transport"].remove(completed[-1])
+    elif mutation == "wrong_boot":
+        completed[-1]["boot"] = "f" * 32
+    else:
+        completed[-1]["mono_ns"] = 1001
+        value["transport"].sort(key=lambda r: r["mono_ns"])
+    with pytest.raises(ValueError, match="startup_completion_observation"):
+        profile.verify_case(value, name, candidate, CAMPAIGN)

@@ -21,7 +21,7 @@ from .linux_docker_failures import DENIAL_IMAGE, DENIAL_REFERENCE, denied_case, 
 from .owner_loss_cleanup import cleanup
 from .owner_loss_evidence import CASES, DEADLINES, DENIAL_SOURCE, one, verify
 
-PROFILE = "owner-loss-linux-v3"
+PROFILE = "owner-loss-linux-v4"
 WHEEL = "ebb54bc8b51d4d0ec3e63f1f850c5aa53b55d80ec5567c679ead169a3ed0d545"
 VERSIONS = {
     "maf-sandbox-mcp": "0.2.0",
