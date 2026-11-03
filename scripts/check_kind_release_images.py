@@ -11,20 +11,13 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+import consumer_qualification as consumer
 from container_release import PREFIX, ROOT, read
 from container_release_history import GitHub, History
 from image_release_needed import changed_inputs, release_evidence
 from select_image_security import metadata_only
 
-KIND_IMAGES = {
-    "maf-sandbox-azure-pricing": ("azure-pricing",),
-    "maf-sandbox-document": ("document",),
-    "maf-sandbox-antivirus": ("antivirus",),
-    "maf-sandbox-bicep": ("bicep", "bicep-avm"),
-    "maf-sandbox-drawio": ("drawio", "drawio-export"),
-    "maf-sandbox-shell": ("shell",),
-    "maf-sandbox-terraform": ("terraform-random", "opentofu-random", "terraform-avm"),
-}
+KIND_IMAGES = consumer.KIND_IMAGES
 
 
 def git(root: Path, *args: str) -> str:
@@ -94,6 +87,18 @@ def matching_source(root: Path, source: str, head: str, package: str, profile: s
             f"{package}: image qualification predates changed {profile} image inputs: "
             + ", ".join(image_inputs)
         )
+    harness = [
+        path
+        for path in paths
+        if path.startswith(("scripts/", "tests/fixtures/", ".github/actions/setup-classic-docker/"))
+        or path == consumer.WORKFLOW
+        or path in consumer.HARNESS_INPUTS.get(profile, ())
+    ]
+    if harness:
+        raise ValueError(
+            f"{package}: legacy qualification predates changed consumer harness: "
+            + ", ".join(harness)
+        )
 
 
 def qualified(directory: Path, candidate: dict[str, Any]) -> None:
@@ -116,6 +121,43 @@ def qualified(directory: Path, candidate: dict[str, Any]) -> None:
         raise ValueError("Published image lacks matching successful consumer qualification")
 
 
+def compatibility(
+    root: Path, head: str, package: str, profile: str, record: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Accept legacy matching evidence or independently authenticated consumer checks."""
+    try:
+        matching_source(root, record["sourceCommit"], head, package, profile)
+        if consumer.BACKENDS[profile] == ("docker",):
+            return []
+        legacy_reason = f"{profile}: legacy evidence does not cover every required backend"
+    except (ValueError, subprocess.SubprocessError) as error:
+        legacy_reason = str(error)
+    problems = []
+    changed = consumer.image_changes(root, record["sourceCommit"], head, profile)
+    if changed:
+        problems.append(
+            f"{profile}: publish replacement image; changed inputs: {', '.join(changed)}"
+        )
+    results = []
+    for backend in consumer.BACKENDS[profile]:
+        expected = consumer.inputs(root, head, package, profile, backend, record)
+        try:
+            claim = consumer.verify(expected)
+        except (ValueError, subprocess.SubprocessError) as error:
+            problems.append(f"{profile}/{backend}: {error}")
+            continue
+        results.append(
+            {
+                "backend": backend,
+                "sourceCommit": claim["sourceCommit"],
+                "evidence": f"https://github.com/{consumer.REPOSITORY}/actions/runs/{claim['runId']}",
+            }
+        )
+    if problems:
+        raise ValueError(legacy_reason + "\n" + "\n".join(problems))
+    return results
+
+
 def check(root: Path, head: str, packages: list[str]) -> list[dict[str, Any]]:
     """Require authenticated compatible images without gating packages on image security health."""
     selected = [package for package in packages if package in KIND_IMAGES]
@@ -128,22 +170,28 @@ def check(root: Path, head: str, packages: list[str]) -> list[dict[str, Any]]:
         raise ValueError("No completed image catalogue is available")
     results = []
     checked = {}
+    problems = []
     for package in selected:
         for profile in KIND_IMAGES[package]:
             name = snapshot.catalogue["current"].get(profile)
             if name is None:
-                raise ValueError(
+                problems.append(
                     f"{package}: no completed {profile} image; publish and qualify it first"
                 )
+                continue
             record = snapshot.catalogue["releases"][name]
             checked[profile] = name
             if record["profile"] != profile:
                 raise ValueError("Current catalogue entry identifies another profile")
-            matching_source(root, record["sourceCommit"], head, package, profile)
-            with tempfile.TemporaryDirectory(prefix="kind-release-image-") as temporary:
-                directory = Path(temporary)
-                evidence_url = release_evidence(client, record, directory)
-                qualified(directory, record["candidate"])
+            try:
+                consumer_evidence = compatibility(root, head, package, profile, record)
+                with tempfile.TemporaryDirectory(prefix="kind-release-image-") as temporary:
+                    directory = Path(temporary)
+                    evidence_url = release_evidence(client, record, directory)
+                    qualified(directory, record["candidate"])
+            except ValueError as error:
+                problems.append(str(error))
+                continue
             results.append(
                 {
                     "package": package,
@@ -151,6 +199,7 @@ def check(root: Path, head: str, packages: list[str]) -> list[dict[str, Any]]:
                     "image": f"{PREFIX}/{profile}@{record['registryDigest']}",
                     "qualificationSource": record["sourceCommit"],
                     "evidence": evidence_url,
+                    "consumerQualification": consumer_evidence,
                 }
             )
     latest = history.head()
@@ -159,6 +208,8 @@ def check(root: Path, head: str, packages: list[str]) -> list[dict[str, Any]]:
     for profile, name in checked.items():
         if latest.catalogue["current"].get(profile) != name:
             raise ValueError(f"Current {profile} image changed during verification; retry")
+    if problems:
+        raise ValueError("\n".join(problems))
     return results
 
 
