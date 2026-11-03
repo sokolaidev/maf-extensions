@@ -4,6 +4,8 @@ All notable changes to `maf-sandbox` are documented here. The format follows [Ke
 
 ## [0.52.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.52.0...maf-sandbox-v0.52.1) (2026-11-03)
 
+> **Correction, added after the release.** This version was tagged and a GitHub Release was created, but it never reached PyPI. The [publish run](https://github.com/sokolaidev/maf-extensions/actions/runs/41700670793/job/126142821152) refused its MAF 1.24 requirement because published dependents admit the 0.52 line while requiring MAF 1.23. The replacement is planned as `maf-sandbox` 0.53.0, outside those dependents' `<0.53` ceilings; the 0.52.1 tag remains unchanged.
+
 
 ### Fixes
 
