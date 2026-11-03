@@ -151,18 +151,9 @@ def verify_evidence(directory: Path, expected_hash: str) -> None:
             raise ValueError(f"Changed or missing release evidence: {name}")
 
 
-def hyperlight_payload(expected: dict[str, Any], directory: Path) -> dict[str, Any]:
-    """Preserve the existing payload checks after all release attestations have passed."""
-    inputs_hash = require_digest(expected.get("buildInputsSha256"))
-    index = read(directory / "evidence-index.json")
-    if index.get("hyperlight-build-inputs.json") != inputs_hash:
-        raise ValueError("Hyperlight build inputs differ from the independently selected policy")
-    manifest = directory / "manifest.json"
-    if manifest.is_symlink():
-        raise ValueError("Manifest must be a regular retained file")
-    manifest_bytes = manifest.read_bytes()
-    verify_registry_manifest(manifest_bytes, expected)
-    image = f"{PREFIX}/hyperlight-aks-probe@{expected['registryDigest']}"
+def pull_image(expected: dict[str, Any], manifest_size: int) -> str:
+    """Pull an authenticated manifest and check its local identity on either Docker image store."""
+    image = f"{PREFIX}/{expected['profile']}@{expected['registryDigest']}"
     subprocess.run(["docker", "pull", "--platform", "linux/amd64", image], check=True, timeout=600)
     inspected = subprocess.run(
         ["docker", "image", "inspect", "--format", "{{json .}}", image],
@@ -177,7 +168,7 @@ def hyperlight_payload(expected: dict[str, Any], directory: Path) -> dict[str, A
         "linux",
         "amd64",
     ):
-        raise ValueError("Pulled Hyperlight platform must be linux/amd64")
+        raise ValueError("Pulled image platform must be linux/amd64")
     image_id = require_digest(details.get("Id"))
     descriptor = details.get("Descriptor")
     if descriptor is not None and (
@@ -185,14 +176,29 @@ def hyperlight_payload(expected: dict[str, Any], directory: Path) -> dict[str, A
         or descriptor.get("digest") != expected["registryDigest"]
         or descriptor.get("mediaType") != MANIFEST
         or type(descriptor.get("size")) is not int
-        or descriptor["size"] != len(manifest_bytes)
+        or descriptor["size"] != manifest_size
     ):
-        raise ValueError("Pulled Hyperlight descriptor differs from the verified manifest")
+        raise ValueError("Pulled image descriptor differs from the verified manifest")
     # The containerd store addresses the manifest; the classic store addresses its config.
     if image_id != expected["imageId"] and not (
         image_id == expected["registryDigest"] and descriptor is not None
     ):
-        raise ValueError("Pulled Hyperlight identity differs from the verified manifest")
+        raise ValueError("Pulled image identity differs from the verified manifest")
+    return image_id
+
+
+def hyperlight_payload(expected: dict[str, Any], directory: Path) -> dict[str, Any]:
+    """Preserve the existing payload checks after all release attestations have passed."""
+    inputs_hash = require_digest(expected.get("buildInputsSha256"))
+    index = read(directory / "evidence-index.json")
+    if index.get("hyperlight-build-inputs.json") != inputs_hash:
+        raise ValueError("Hyperlight build inputs differ from the independently selected policy")
+    manifest = directory / "manifest.json"
+    if manifest.is_symlink():
+        raise ValueError("Manifest must be a regular retained file")
+    manifest_bytes = manifest.read_bytes()
+    verify_registry_manifest(manifest_bytes, expected)
+    image_id = pull_image(expected, len(manifest_bytes))
     smoke = verify_image(image_id, inputs_hash.removeprefix("sha256:"))
     source = smoke.get("source")
     if (
