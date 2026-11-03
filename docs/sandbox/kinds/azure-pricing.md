@@ -31,3 +31,4 @@ The [package guide](../../../packages/maf-sandbox-azure-pricing/README.md) descr
 | Decision | State | Tracking |
 |---|---|---|
 | Disposable public pricing kind and GET-only source | Implemented; publication and other-backend qualification remain separate | [#1678](https://github.com/sokolaidev/maf-extensions/issues/1678) (closed) by [#2331](https://github.com/sokolaidev/maf-extensions/pull/2331) (merged) |
+| Regional Global fallback and per-family billing zones | Implemented; nearest-region and serving-edge assumptions remain explicit | [#2418](https://github.com/sokolaidev/maf-extensions/issues/2418) (closed) by [#2420](https://github.com/sokolaidev/maf-extensions/pull/2420) (merged) |
