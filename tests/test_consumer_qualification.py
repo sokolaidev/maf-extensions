@@ -324,7 +324,7 @@ def test_untrusted_context_cannot_produce_evidence(repo, monkeypatch, key, value
     trusted(monkeypatch, root, source)
     monkeypatch.setenv(key, value)
     with pytest.raises(ValueError, match="trusted main"):
-        workflow.trusted_source(root)
+        workflow.verified_source_commit(root)
 
 
 def test_signer_recomputes_transferred_inputs_and_attempt(repo, tmp_path, monkeypatch):
@@ -464,6 +464,18 @@ def test_workflow_separates_execution_from_signing_and_never_publishes_images():
             assert permissions["attestations"] == "read"
     assert jobs["attest"]["permissions"]["id-token"] == "write"
     assert jobs["attest"]["needs"] == ["select", "qualify"]
+    upload = next(
+        step
+        for step in jobs["qualify"]["steps"]
+        if step.get("uses", "").startswith("actions/upload-artifact@")
+    )
+    download = next(
+        step
+        for step in jobs["attest"]["steps"]
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    )
+    assert upload["with"]["overwrite"] is True
+    assert upload["with"]["name"] == download["with"]["name"]
     assert not any(" qualify " in step.get("run", "") for step in jobs["attest"]["steps"])
     signer = jobs["attest"]["steps"][-1]
     assert signer["with"]["predicate-type"] == consumer.PREDICATE

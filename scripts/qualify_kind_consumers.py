@@ -16,7 +16,7 @@ from container_release_history import GitHub, History
 from image_release_needed import release_evidence
 
 
-def trusted_source(root: Path) -> str:
+def verified_source_commit(root: Path) -> str:
     """Only the dedicated workflow's main checkout can produce authoritative evidence."""
     source = consumer.git(root, "rev-parse", "HEAD")
     if (
@@ -72,7 +72,7 @@ def qualify(root: Path, package: str, profile: str, backend: str, output: Path) 
 
     if backend != "docker":
         raise ValueError("No qualification executor for this backend")
-    source = trusted_source(root)
+    source = verified_source_commit(root)
     client = GitHub()
     snapshot = History(client).head()
     if snapshot is None or profile not in snapshot.catalogue["current"]:
@@ -117,7 +117,7 @@ def qualify(root: Path, package: str, profile: str, backend: str, output: Path) 
         "runtime": runtime,
     }
     consumer.validate_record(value, expected)
-    trusted_source(root)
+    verified_source_commit(root)
     write(output / consumer.SUBJECT, expected)
     write(output / "consumer-qualification.json", value)
 
@@ -126,7 +126,7 @@ def validate_for_signing(
     root: Path, directory: Path, package: str, profile: str, backend: str
 ) -> None:
     """Recompute the input subject on a fresh runner before granting it a signature."""
-    source = trusted_source(root)
+    source = verified_source_commit(root)
     value = read(directory / "consumer-qualification.json")
     subject = read(directory / consumer.SUBJECT)
     expected = consumer.inputs(root, source, package, profile, backend, subject)
@@ -155,7 +155,7 @@ def main() -> None:
     if args.operation == "select":
         import json
 
-        trusted_source(ROOT)
+        verified_source_commit(ROOT)
         matrix = selection(ROOT, args.before, args.profile)
         with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
             output.write(f"matrix={json.dumps(matrix)}\n")

@@ -80,6 +80,7 @@ jobs:
             ${{ runner.temp }}/consumer/consumer-qualification.json
           if-no-files-found: error
           retention-days: 90
+          overwrite: true
 
   attest:
     needs: [select, qualify]
