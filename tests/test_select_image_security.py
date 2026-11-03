@@ -494,6 +494,9 @@ def test_mxc_evidence_does_not_hide_build_or_unknown_inputs(repository, path, ex
 @pytest.mark.parametrize(
     "path",
     [
+        "scripts/check_kind_release_images.py",
+        "scripts/consumer_qualification.py",
+        "scripts/qualify_kind_consumers.py",
         "scripts/select_image_security.py",
         "scripts/image_dependency_selection.py",
         "tests/test_image_dependency_selection.py",

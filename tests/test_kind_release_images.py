@@ -532,7 +532,7 @@ def test_version_gate_joins_required_context_and_checks_upload_after_approval():
     job = tests["jobs"]["kind-images"]
     assert "kind-images" in tests["jobs"]["tests"]["needs"]
     assert "if" not in job
-    assert job["permissions"] == {"contents": "read", "actions": "read"}
+    assert job["permissions"] == {"contents": "read", "actions": "read", "attestations": "read"}
     step = next(s for s in job["steps"] if "--base" in s.get("run", ""))
     assert step["if"] == "github.event_name == 'pull_request'"
     assert (

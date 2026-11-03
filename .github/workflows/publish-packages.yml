@@ -101,6 +101,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      attestations: read
     outputs:
       package: ${{ steps.resolve.outputs.package }}
       version: ${{ steps.resolve.outputs.version }}
@@ -553,6 +554,7 @@ jobs:
       # Mints the OIDC token that IS the credential. No secrets involved.
       id-token: write
       actions: read
+      attestations: read
       # A job-level block replaces the workflow's outright, so anything unlisted here is
       # `none` — without this the sparse checkout below cannot read the repository.
       contents: read
