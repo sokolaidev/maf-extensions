@@ -131,16 +131,58 @@ async def check(image: str, proxy_image: str | None = None) -> dict[str, Any]:
     tracker = LabelTrackingFunctionMiddleware(auto_hide_untrusted=False)
     policy = PolicyEnforcementFunctionMiddleware(block_on_violation=True)
     cases: list[dict[str, Any]] = []
+    queries: list[tuple[str, dict[str, Any], dict[str, str]]] = [
+        (
+            category,
+            {
+                "sku": "Standard_D4s_v5",
+                "region": "westeurope",
+                "price_type": category,
+                "include_savings_plan": category == "Consumption",
+            },
+            {"armSkuName": "Standard_D4s_v5", "region": "westeurope", "matched_by": "region"},
+        )
+        for category in ("Reservation", "Consumption")
+    ]
+    for name, service, product, location, family in (
+        ("private-endpoint", "Virtual Network", "Virtual Network Private Link", "Global", None),
+        ("network-zone", "Virtual Network", "Virtual Network Manager", "Zone 1", "network"),
+        ("front-door-zone", "Azure Front Door Service", "Azure Front Door", "Zone 6", "front_door"),
+        (
+            "classic-zone",
+            "Azure Front Door Service",
+            "Azure Front Door Service",
+            "Zone 1",
+            "cdn_classic",
+        ),
+        ("dns-zone", "Azure DNS", "Azure DNS", "Zone 1", "dns"),
+    ):
+        predicate = f"serviceName eq '{service}' and productName eq '{product}'"
+        if family is None:
+            predicate += " and meterName eq 'Standard Private Endpoint'"
+        else:
+            # Isolate zone selection from separate Global base-fee meters.
+            predicate += " and contains(location, 'Zone')"
+        expected = {
+            "serviceName": service,
+            "productName": product,
+            "region": location,
+            "matched_by": "global" if family is None else "zone",
+        }
+        if family:
+            expected.update(zone_family=family, zone=location)
+        queries.append(
+            (
+                name,
+                {"region": "westeurope", "price_type": "Consumption", "filter": predicate},
+                expected,
+            )
+        )
     try:
-        for category in ("Reservation", "Consumption"):
+        for name, arguments, expected in queries:
             context = FunctionInvocationContext(
                 function=tool,
-                arguments={
-                    "sku": "Standard_D4s_v5",
-                    "region": "westeurope",
-                    "price_type": category,
-                    "include_savings_plan": category == "Consumption",
-                },
+                arguments=arguments,
             )
 
             async def invoke() -> None:
@@ -153,7 +195,7 @@ async def check(image: str, proxy_image: str | None = None) -> dict[str, Any]:
             items = context.result
             require(
                 isinstance(items, list) and items[0].text == COMPLETED_TEXT,
-                "Pricing tool did not complete",
+                f"Pricing tool did not complete: {name}",
             )
             reports = [item for item in items if item.text and item.text.startswith('{"prices":')]
             require(len(reports) == 1, "Expected one pricing report")
@@ -165,28 +207,31 @@ async def check(image: str, proxy_image: str | None = None) -> dict[str, Any]:
             )
             data = json.loads(report.text)
             require(
-                bool(data["prices"]) and not data["truncated"], "Expected complete narrow prices"
+                bool(data["prices"]) and not data["truncated"],
+                f"Expected complete narrow prices: {name}",
             )
             require(
                 all(
-                    row["priceType"] == category
-                    and row["region"] == "westeurope"
-                    and row["armSkuName"] == "Standard_D4s_v5"
+                    row["priceType"] == arguments["price_type"]
+                    and all(row.get(field) == value for field, value in expected.items())
                     and row["currencyCode"] == "USD"
-                    and row["retailPrice"] > 0
+                    and row["retailPrice"] >= 0
                     for row in data["prices"]
                 ),
-                "Unexpected price identity or amount",
+                f"Unexpected price identity or amount: {name}",
             )
-            if category == "Reservation":
+            require(any(row["retailPrice"] > 0 for row in data["prices"]), "No positive price")
+            if name == "Reservation":
                 require(all(row.get("reservationTerm") for row in data["prices"]), "Lost terms")
-            else:
+            elif name == "Consumption":
                 require(any(row.get("savingsPlan") for row in data["prices"]), "Lost savings plans")
             require(bool(events) and events[-1].unclean == 0, "Call cleanup failed")
             require(await asyncio.to_thread(remaining, scope) == ([], []), "Call resources remain")
             cases.append(
                 {
-                    "priceType": category,
+                    "case": name,
+                    "priceType": arguments["price_type"],
+                    "expected": expected,
                     "rows": len(data["prices"]),
                     "integrity": "trusted",
                     "seconds": events[-1].seconds,
@@ -214,7 +259,10 @@ async def check(image: str, proxy_image: str | None = None) -> dict[str, Any]:
         finally:
             failure = await backend.dispose(key, kind=spec.kind, instance_id=sandbox.instance_id)
             require(failure is None, "Probe disposal failed")
-        require(len(instances) == 2 and len(set(instances)) == 2, "Calls reused an instance")
+        require(
+            len(instances) == len(queries) and len(set(instances)) == len(queries),
+            "Calls reused an instance",
+        )
         require(await asyncio.to_thread(remaining, scope) == ([], []), "Probe resources remain")
     finally:
         purge = await router.dispose_scope(scope, "pricing")

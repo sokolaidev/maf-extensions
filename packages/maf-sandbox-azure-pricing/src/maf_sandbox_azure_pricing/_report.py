@@ -4,6 +4,7 @@ import json
 import math
 from typing import Any, cast
 
+from ._regions import select_region
 from ._spec import PriceType
 
 UPSTREAM_ROW_LIMIT = 5000
@@ -105,7 +106,7 @@ def _row(raw: object) -> dict[str, Any]:
     return row
 
 
-def parse_report(raw: bytes, max_rows: int) -> tuple[str, bool]:
+def parse_report(raw: bytes, max_rows: int, *, region: str | None = None) -> tuple[str, bool]:
     """Return projected JSON and a conservative indication that more rows may exist."""
     envelope = _object(
         json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=_constant)
@@ -120,15 +121,24 @@ def parse_report(raw: bytes, max_rows: int) -> tuple[str, bool]:
         raise ValueError("Invalid price collection")
     # Validate omitted rows too: a cap must not turn a malformed report into a success.
     projected = [_row(row) for row in rows]
+    selection: dict[str, Any] = {}
+    if region is not None:
+        projected, notes = select_region(projected, region)
+        selection = {
+            "requested_region": region,
+            "selected_rows": len(projected),
+            "selection_notes": notes,
+        }
     upstream_limit = len(rows) == UPSTREAM_ROW_LIMIT
-    truncated = len(rows) > max_rows or upstream_limit
+    truncated = len(projected) > max_rows or upstream_limit
     return json.dumps(
         {
             "prices": projected[:max_rows],
-            "returned_rows": min(len(rows), max_rows),
+            "returned_rows": min(len(projected), max_rows),
             "received_rows": len(rows),
             "truncated": truncated,
             "upstream_limit_reached": upstream_limit,
+            **selection,
         },
         ensure_ascii=True,
         allow_nan=False,
