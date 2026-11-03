@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-azure-pricing-v0.1.1...maf-sandbox-azure-pricing-v0.2.0) (2026-11-03)
+
+
+### Features
+
+* **azure-pricing:** include Global and billing-zone prices in regional queries ([#2420](https://github.com/sokolaidev/maf-extensions/issues/2420)) ([b7d2430](https://github.com/sokolaidev/maf-extensions/commit/b7d2430de4715176a42f3eb870155fa44adb1fdf))
+
 ## [0.1.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-azure-pricing-v0.1.0...maf-sandbox-azure-pricing-v0.1.1) (2026-11-02)
 
 
