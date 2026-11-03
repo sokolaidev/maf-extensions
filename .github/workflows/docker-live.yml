@@ -479,6 +479,10 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.8.1'
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.3'
+          cache: false
       - name: Download verified published worker and prepared compiler
         run: |
           set -euo pipefail
@@ -488,6 +492,7 @@ jobs:
             'https://files.pythonhosted.org/packages/02/48/e687c55991f6b8197ba73e10320e9f7b143edb392d1686112a5b1674ed5d/maf_sandbox_mcp-0.2.0-py3-none-any.whl' --output "$wheel"
           printf '%s  %s\n' 'ebb54bc8b51d4d0ec3e63f1f850c5aa53b55d80ec5567c679ead169a3ed0d545' "$wheel" | sha256sum --check --status
           docker pull "$BICEP_IMAGE"
+          docker pull 'docker:29.8.2-dind@sha256:6316d612722fd7fb2bd7edf9fcbb4439d08915cfb2e0e0b28bf16675fc9f3314'
       - name: Run a fresh installed deterministic baseline
         timeout-minutes: 18
         run: |

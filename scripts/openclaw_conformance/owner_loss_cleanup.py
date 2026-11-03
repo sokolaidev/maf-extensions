@@ -33,6 +33,10 @@ def cleanup(root: Path, case: str, *, remove: bool = True) -> dict[str, Any]:
     removed = []
     remaining = []
     if case == "worker-denied":
+        if (root / "daemon-resources.json").exists():
+            from .linux_docker_failures import inventory
+
+            return inventory(root, remove=remove)
         require(remove, "dedicated_daemon_cleanup_required")
         control = root / "daemon-control.json"
         if control.exists():

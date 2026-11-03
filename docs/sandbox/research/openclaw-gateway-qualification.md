@@ -291,6 +291,7 @@ The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audi
 | GitHub-hosted Linux Gateway-to-Docker sample | Qualified on the recorded Ubuntu candidate with deterministic provider and independent cleanup; broader Linux and real-model claims remain unqualified | [#2214](https://github.com/sokolaidev/maf-extensions/issues/2214) (closed) by [#2217](https://github.com/sokolaidev/maf-extensions/pull/2217) (merged) |
 | GitHub-hosted real-model Bicep sample | Complete for the recorded Ubuntu/Azure OpenAI candidate with reasoning disabled: actual invalid/valid compiler results and independent cleanup passed | [#2288](https://github.com/sokolaidev/maf-extensions/issues/2288) (closed) by [#2294](https://github.com/sokolaidev/maf-extensions/pull/2294) (merged) |
 | GitHub-hosted Linux actor-loss profile | Complete for the recorded Ubuntu v2 candidate: thirteen actor-loss cases and independent cleanup passed; broader failure modes remain unqualified | [#2386](https://github.com/sokolaidev/maf-extensions/issues/2386) (closed) by [#2387](https://github.com/sokolaidev/maf-extensions/pull/2387) (merged) |
+| Linux Docker access and removal failure recovery | Complete for the reviewed v4 candidate: all fifteen cases passed with pre-probe startup observations and exact removal-command joins; broader failures remain unqualified | [#2413](https://github.com/sokolaidev/maf-extensions/issues/2413) (closed) by [#2414](https://github.com/sokolaidev/maf-extensions/pull/2414) (merged) |
 | Linux Gateway-to-Docker sample | Recorded deterministic Linux-on-Docker-Desktop run passed; real-model behavior remains unqualified | [#2185](https://github.com/sokolaidev/maf-extensions/issues/2185) (closed) by [#2191](https://github.com/sokolaidev/maf-extensions/pull/2191) (merged) |
 | Installed worker | Published 0.1.0; historical and fresh fixed-profile qualifications recorded separately below | [#1898](https://github.com/sokolaidev/maf-extensions/issues/1898) (closed) by [#1920](https://github.com/sokolaidev/maf-extensions/pull/1920) (merged) |
 | Bicep host qualification | First-tool design and finite supervised qualification complete; installed worker delivered separately in #1898; actual LLM behavior and full crash recovery remain unqualified | [#1638](https://github.com/sokolaidev/maf-extensions/issues/1638) (closed) by [#1901](https://github.com/sokolaidev/maf-extensions/pull/1901) (merged) |
@@ -1650,3 +1651,217 @@ Complete installed Python inventory for this candidate:
 | uvicorn | `0.54.0` |
 
 Every case passed without harness or parent failure, with independently confirmed resource absence. This result qualifies only the recorded deterministic-provider candidate and bounded operator-driven recovery. Docker unavailability/removal denial, daemon or host loss, escaped process trees, actual-model retry behavior, unattended watchdogs, newer candidates and production remain unqualified. The documentation update that records this result does not constitute another hosted run.
+
+## Linux v3 Docker failure extension (2026-11-03)
+
+[#2413](https://github.com/sokolaidev/maf-extensions/issues/2413) extends the fixed profile to fifteen cases, retaining the thirteen actor-loss cases and adding `worker-unavailable` and `worker-denied`. The installed worker, OpenClaw and principal dependency pins are unchanged. A new campaign must run a fresh installed baseline and all fifteen cases; the historical v2 result does not qualify this extension.
+
+Both new cases kill the pidfd-bound worker while its exact compiler container is independently observed running and paused. The replacement must exit without readiness while the orphan remains. `worker-unavailable` uses a private CLI context pointed at a reserved, non-listening loopback socket, with failed and restored Docker probes using the replacement's environment. It does not stop the parent daemon or qualify an actual daemon outage. `worker-denied` uses the existing Go authorization plugin in a disposable, mutually authenticated daemon and denies DELETE only for the selected compiler. The collector joins the real failed commands to denial decisions and the later successful cleanup to allow decisions, requiring cleanup before replacement readiness.
+
+The dedicated daemon uses `docker:29.8.2-dind@sha256:6316d612722fd7fb2bd7edf9fcbb4439d08915cfb2e0e0b28bf16675fc9f3314` (Linux amd64), whose configuration identity is `sha256:98175203ef6f7a6147c3edbff4f2606d2707b413a61b45fed021004ddbf0ebd1`. The authorization source SHA-256 remains `086f2ddbf7d081a9e18e2d8e7d9abc5cd9dccd2b47d09aa5b67b2dc231f780c4`; the workflow pins Go 1.27.3 and records the built binary hash. The daemon uses the classic overlay2 image store to preserve the hosted parent's prepared compiler configuration identity. The earlier Windows fixture's containerd store remains separate. The disposable daemon is privileged, bounded to two CPUs, 2 GiB and 512 processes, exposes only a random loopback TLS port, and mounts no parent Docker socket. This fixture is not a security-isolation claim.
+
+The v3 evidence retains blocked/restored engine identity, unchanged orphan inventory, sentinel survival, no startup readiness during the blocked interval, subsequent cleanup, stale-authority refusal and usable fresh work without replay. Dedicated-daemon and volume registrations are hashed into each case; postflight rechecks those bytes and inventories the exact parent scope without deleting survivors. Failed or interrupted receipts remain rejected on collection retries. Emergency cleanup is not product recovery. Host and daemon loss, escaped process trees, actual-model retry decisions, unattended watchdogs, newer dependency candidates and production remain outside this profile.
+
+The accepted hosted v3 result is recorded below. Runtime JSON, logs, credentials and private case records stay in temporary directories outside the checkout; the workflow retains only bounded Markdown evidence.
+
+The first v3 [run 41544175541, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/41544175541) at `cd745f7e2fa2e5872040149c339042384b70cb9b` passed the fresh baseline, all thirteen actor-loss cases and removal denial, with independent cleanup confirmed in every case. Connection-loss qualification refused with `private_context_reachable` before starting the blocked replacement, so the campaign remained unqualified. Its Markdown SHA-256 is `c1bc0dfedcc809856650b261ea9a5515e8379353e7a9cd6da427cd34d70a74a4`. The probe relied on the return code of formatted `docker info`; [Docker 28.0.4's implementation](https://github.com/docker/cli/blob/v28.0.4/cli/command/system/info.go#L93-L115) returns the formatter's result even when server information cannot be fetched. The retained report does not establish the underlying connection result. The corrected probe uses a server-side container inventory; the restored probe still requires the original nonempty engine identity. A new complete campaign is required, and the failed attempt is not reinterpreted as acceptance.
+
+The intermediate [run 41546361600, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/41546361600) at `7ceee45e573387b808a350ea022f808899ee920f` passed the fresh baseline and all fifteen cases, with independent cleanup confirmed. Its Markdown SHA-256 is `443d79020eaed308148c4138159afd3ccfdafc767def88ba104a3445f34b4fec`. That run predates the final emergency-cleanup bookkeeping correction; the complete final-source campaign is recorded below.
+
+## Accepted Linux v3 Docker failure result (2026-11-03)
+
+This is the historical v3 result, superseded by the v4 acceptance requirements below. Review identified two verifier gaps: a failed observer probe could hide a product startup attempt, and removal-command copies could agree without identifying the selected orphan. The retained v3 report does not establish those stronger predicates.
+
+[Run 41547803565, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/41547803565) passed the fresh installed baseline and all fifteen cases at source `e3832c4708ba9ef88bba84585d3cc38eb56fe858`. Independent collection returned `qualified: true` for campaign `f323e5fd83234bc0a76540361d4df541` under `owner-loss-linux-v3`. Retained Markdown SHA-256: `6ffae578d2d650978ab8492c2e009db2f35e8ed7e8a4ae3cad57fde74e3fcfc0`.
+
+Both blocked replacement cases passed: startup refused with the exact orphan retained, and restoration allowed product cleanup before readiness. Old token/session/cancellation/deletion authority was rejected while fresh work remained usable without replay. Removal-denial decisions and restored allow decisions matched the real commands. The unrelated sentinel survived, the dedicated daemon did not restart, and independent inventories confirmed absence of registered daemon/container/volume resources. No emergency cleanup established recovery.
+
+Runner: Ubuntu 24.04 image `20261026.354.1`, Linux `7.0.0-1017-azure` / `x86_64`, Python `3.13.15`, Node `v26.8.1`, `uv 0.12.5 (x86_64-unknown-linux-gnu)` and parent Docker `28.0.4` / API `1.48`. The denial daemon was Docker `29.8.2` using `overlay2` and mutual TLS, with `go version go1.27.3 linux/amd64`. Case execution total was 371.773 seconds, excluding setup and collection.
+
+| Identity | Retained value |
+|---|---|
+| Qualification source fingerprint | `4b4530283180f2d92095b31464f18855ad7b90e3dec86cc6bbdede2530c8acbf` |
+| Published worker wheel SHA-256 | `ebb54bc8b51d4d0ec3e63f1f850c5aa53b55d80ec5567c679ead169a3ed0d545` |
+| Compiler image ID | `sha256:fb02b2f79c7428f7595f1fa664cc4f240ed54c349e059d8e4a0dccb0e435fab3` |
+| Compiler configuration SHA-256 | `d3f160d081dcf48e41f0f0cdf006595b380402ac9730f3ee920738ba616d87e1` |
+| Baseline report SHA-256 | `7d81ba1e12884cdaaec54665aabcada9765ece62525d49c5c5fb78e2c5fa1196` |
+| Baseline tool evidence SHA-256 | `079dc7cf73b7b9f617b330ec6776dfad07a9ac60b6e748021a043073a0a0de15` |
+| npm lock SHA-256 | `5db997dec92617c66bc22230ab3aed80f0efea55385950847392cae65f35f0d8` |
+| Installed runtime (43059 files) fingerprint | `4a4ff7d736bab73319f9d5c1a04abc5c8a9cd180a920257c3fe32094bd3b1f07` |
+| Denial daemon image ID | `sha256:98175203ef6f7a6147c3edbff4f2606d2707b413a61b45fed021004ddbf0ebd1` |
+| Authorization source SHA-256 | `086f2ddbf7d081a9e18e2d8e7d9abc5cd9dccd2b47d09aa5b67b2dc231f780c4` |
+| Authorization binary SHA-256 | `923dbc7fe663de0a65a3ee53dff51cb5b38c8a3f7d6f5c1ced5172bb5a725e05` |
+| Daemon registration SHA-256 | `68b31f99366a7a66559d6943ab14e01edd9d298c43ef1b502648ff98568e68cf` |
+| Daemon control SHA-256 | `3765bfc069c2d595bcdc60da31bdbb91260b87e065e92a3ab93da51a0a7d29bc` |
+| Installed worker __init__.py SHA-256 | `6cd4609954365facc1edf656bfffc2366bf5da541f1fc699b88122dd007f2430` |
+| Installed worker server.py SHA-256 | `005eeeccd40ab0dc65a31281a72e3b353eae87cf62d42afb590b447faa3ba2bb` |
+| Installed worker workload_http.py SHA-256 | `4bc49175b2c4bb0159a8c90481703f820380b02058f86ff4f49041f7afa7bb0f` |
+| Installed worker workload_service.py SHA-256 | `3c44b867007dfc8fc026c0e094d106ed64174311c4a82fd4e61bca31a96ab34b` |
+
+| Case | Result | Seconds | Private case evidence SHA-256 |
+|---|---|---:|---|
+| `control` | Passed; independent cleanup confirmed | 15.361 | `f3c76fc8129200b12760079930aca3f7359b030626103d4ae392cb4c98276f11` |
+| `gateway-pre_admission` | Passed; independent cleanup confirmed | 23.104 | `9c7c3eda8a8ba51191d892452e328808a6b23096cd2d61230efea4f72a79a4d7` |
+| `gateway-active` | Passed; independent cleanup confirmed | 24.759 | `868a4fd1eef5451b5bdb729b1f0dd7de42b1e0b635436f48e441308b5ae8a6ac` |
+| `gateway-response` | Passed; independent cleanup confirmed | 23.010 | `864403726d1b61a0461f1cb70beed7853e8fe8ddee919e52e039130942e98134` |
+| `gateway-cleanup` | Passed; independent cleanup confirmed | 23.095 | `8065d5509c3bee3608281e4ab91342f0c5f11551cb39a409dbd81f9de53bfe82` |
+| `client-pre_admission` | Passed; independent cleanup confirmed | 20.262 | `651e7cb79442e3508310c359aafec29b67b8dd3955ba7fb444bad318f90b4599` |
+| `client-active` | Passed; independent cleanup confirmed | 23.466 | `bde2cc5f592380c450c5960a4bbe4842c5e68ffa57205e1890b4b3e776b4f05d` |
+| `client-response` | Passed; independent cleanup confirmed | 24.593 | `edb1a787103e9408a79a34eb7ddaf354bda02d01921da4b3b089e4b4caf18aa4` |
+| `client-cleanup` | Passed; independent cleanup confirmed | 24.216 | `d5870f7611eef1ff6fc27e776e9ce85771a6b678b890cf272cbf70e838cc103b` |
+| `worker-pre_admission` | Passed; independent cleanup confirmed | 25.977 | `ce51db82b1227bd206bcd182c77b33c612c49b99376b6537e8a7c69ba09ebdc7` |
+| `worker-active` | Passed; independent cleanup confirmed | 26.664 | `dc659af677be33eb8ee4202f0f36f598cc247f1c5a7b04e1d490d9a95ef3c568` |
+| `worker-response` | Passed; independent cleanup confirmed | 29.327 | `b465002b5475f912b47f30edd969de53b96bbc9687b423dde2ecdd528e3176f8` |
+| `worker-cleanup` | Passed; independent cleanup confirmed | 29.364 | `48004e28fe3081f42fedb3b59b74c6ab421e589b23fa739cd857f63383c523e9` |
+| `worker-unavailable` | Passed; independent cleanup confirmed | 27.681 | `efafff701e551e42c637d1eceb40a38439c5c526406cf979561b2d21bdfcc7df` |
+| `worker-denied` | Passed; independent cleanup confirmed | 30.891 | `b1388c2a468d2ff5f3d72233087383bc62d2886f72c263e907fbd323d2861900` |
+
+Complete installed Python inventory for this candidate:
+
+| Distribution | Version |
+|---|---|
+| PyJWT | `2.15.1` |
+| PyYAML | `6.0.3` |
+| agent-framework-core | `1.22.0` |
+| annotated-types | `0.8.0` |
+| anyio | `4.16.0` |
+| attrs | `26.1.0` |
+| certifi | `2026.10.23` |
+| cffi | `2.1.1` |
+| click | `8.5.0` |
+| cryptography | `50.0.2` |
+| h11 | `0.16.0` |
+| httpcore | `1.0.9` |
+| httpx | `0.28.1` |
+| httpx-sse | `0.4.3` |
+| idna | `3.20` |
+| jsonschema | `4.26.0` |
+| jsonschema-specifications | `2025.9.1` |
+| maf-sandbox | `0.51.1` |
+| maf-sandbox-bicep | `0.24.0` |
+| maf-sandbox-docker | `0.29.0` |
+| maf-sandbox-mcp | `0.2.0` |
+| mcp | `1.30.0` |
+| msgspec | `0.22.0` |
+| opentelemetry-api | `1.45.2` |
+| pycparser | `3.12` |
+| pydantic | `2.14.2` |
+| pydantic-settings | `2.16.2` |
+| pydantic_core | `2.50.2` |
+| python-dotenv | `1.2.4` |
+| python-multipart | `0.0.33` |
+| referencing | `0.37.0` |
+| regex | `2026.9.29` |
+| rpds-py | `2026.9.1` |
+| sse-starlette | `3.6.0` |
+| starlette | `1.7.0` |
+| typing-inspection | `0.4.4` |
+| typing_extensions | `4.16.0` |
+| uvicorn | `0.54.0` |
+
+This accepts the recorded deterministic-provider candidate and bounded operator-driven recovery only. Connection loss affects the replacement's private Docker context, and removal denial is an exact-target daemon authorization decision. Actual daemon or host loss, escaped process trees, model retry decisions, unattended watchdogs, newer dependencies and production remain unqualified. Only documentation follows the accepted source; recording this result is not another live run.
+
+## Linux v4 review corrections (2026-11-03)
+
+The observer now records the product's `lifespan.startup.complete` before querying Docker. Both failed replacement-startup cases reject that marker while blocked, including when the observer itself fails before recording readiness. Positive startup controls require the same marker before each successful startup, bound to its boot. Shared owner-loss and lifecycle refusal checks also reject attempted startup completion.
+
+Daemon authorization joins now validate each command's selected target and integer exit outcome. Owner-loss observations additionally require the independently inspected full container ID; lifecycle observations retain their separately selected name-only target contract. Rejection tests alter both copied and raw command records together, covering failed and restored removals. Permitted target names and exact IDs remain accepted.
+
+Five of the six initial regression cases reproduced the reported false acceptance; the existing restored-container filter already rejected the sixth. The new regressions and sibling checks cover observer-induced failure, absent or misattributed positive startup markers, missing inspected IDs, target aliases and malformed outcomes. This strengthens qualification evidence without changing the installed product or published dependency pins. The fresh baseline and complete fifteen-case hosted v4 campaign passed as recorded below. Earlier v3 results are not reinterpreted as v4 acceptance.
+
+The next review identified two additional correlations required before v4 acceptance: in both Docker failure cases, restored orphan removal must precede that boot's product `startup_complete`, not the observer's later inventory/ready event, and both retained daemon-registration clients must match the denial observation before any postflight inventory. Regressions reproduce cleanup between those two startup events and swaps of either registration file or both files together with updated hashes. All four reproductions failed before the fixes. These predicates are included in the fresh complete campaign required for acceptance.
+
+The intermediate v4 [run 41630941621, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/41630941621) at `2babb6f1eafd6e37d1a450909eff2fd66ed00497` passed its fresh baseline and all fifteen cases, with Markdown SHA-256 `392dadcaab4417687917558d3e809034c16a2d4fa2c8bf80254526d460375baf`. That source predates the product-startup cleanup deadline and registration-client binding fixes. It does not establish those predicates; the complete reviewed-source result is recorded below.
+
+## Accepted Linux v4 Docker failure result (2026-11-03)
+
+[Run 41632978862, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/41632978862) passed the fresh installed baseline and all fifteen cases at source `8ed98a0d00bd4b59c8ec4ff56f73ba0ab70e553d`. Independent collection returned `qualified: true` for campaign `f9f87c2515c9467685ee5d899d7dd6a7` under `owner-loss-linux-v4`. Retained Markdown SHA-256: `ccc5a4a3d675f3615de3d85133515813612bf34db2eb7847306374c311bff9d9`.
+
+The v4 observer recorded startup completion before each successful startup inventory and observed no completion attempt during either blocked interval. Failed and restored removal records matched the independently inspected orphan ID, selected target and command outcome. In both failure cases, successful orphan removal preceded product startup completion. Postflight bound both registration clients to the denial observation before inventory. These are fresh observations from the corrected source; the historical v3 results do not supply them.
+
+Both blocked replacement cases passed: startup refused with the exact orphan retained, and restoration allowed orphan removal before product startup completion. Old token/session/cancellation/deletion authority was rejected while fresh work remained usable without replay. Removal-denial decisions and restored allow decisions matched the real commands. The unrelated sentinel survived, the dedicated daemon did not restart, and independent inventories confirmed absence of registered daemon/container/volume resources. No emergency cleanup established recovery.
+
+Runner: Ubuntu 24.04 image `20261026.354.1`, Linux `7.0.0-1017-azure` / `x86_64`, Python `3.13.15`, Node `v26.8.1`, `uv 0.12.5 (x86_64-unknown-linux-gnu)` and parent Docker `28.0.4` / API `1.48`. The denial daemon was Docker `29.8.2` using `overlay2` and mutual TLS, with `go version go1.27.3 linux/amd64`. Case execution total was 571.559 seconds, excluding setup and collection.
+
+| Identity | Retained value |
+|---|---|
+| Qualification source fingerprint | `3a5ab87eff7c20570a0ff7658ae9b7605419ad6f443754d116d8586ed9a2500e` |
+| Published worker wheel SHA-256 | `ebb54bc8b51d4d0ec3e63f1f850c5aa53b55d80ec5567c679ead169a3ed0d545` |
+| Compiler image ID | `sha256:fb02b2f79c7428f7595f1fa664cc4f240ed54c349e059d8e4a0dccb0e435fab3` |
+| Compiler configuration SHA-256 | `d3f160d081dcf48e41f0f0cdf006595b380402ac9730f3ee920738ba616d87e1` |
+| Baseline report SHA-256 | `7d81ba1e12884cdaaec54665aabcada9765ece62525d49c5c5fb78e2c5fa1196` |
+| Baseline tool evidence SHA-256 | `06ba1e8176c95304c7c251471ef2780970f317df6e0fbc59f07d61b40fe2789b` |
+| npm lock SHA-256 | `5db997dec92617c66bc22230ab3aed80f0efea55385950847392cae65f35f0d8` |
+| Installed runtime (43059 files) fingerprint | `06e668932827510a257440925bb63d9b9609a69d1f15389c16623e38bd377510` |
+| Denial daemon image ID | `sha256:98175203ef6f7a6147c3edbff4f2606d2707b413a61b45fed021004ddbf0ebd1` |
+| Authorization source SHA-256 | `086f2ddbf7d081a9e18e2d8e7d9abc5cd9dccd2b47d09aa5b67b2dc231f780c4` |
+| Authorization binary SHA-256 | `923dbc7fe663de0a65a3ee53dff51cb5b38c8a3f7d6f5c1ced5172bb5a725e05` |
+| Daemon registration SHA-256 | `6e0d178070d292b1c616d775897fea5c94ae4ef60544b6841c65c9f0e36bd535` |
+| Daemon control SHA-256 | `2570e8f89afc0cb3be2fcef5c4f8cf366322adc34fc9412b4b5d3dfd39df8ab2` |
+| Installed worker __init__.py SHA-256 | `6cd4609954365facc1edf656bfffc2366bf5da541f1fc699b88122dd007f2430` |
+| Installed worker server.py SHA-256 | `005eeeccd40ab0dc65a31281a72e3b353eae87cf62d42afb590b447faa3ba2bb` |
+| Installed worker workload_http.py SHA-256 | `4bc49175b2c4bb0159a8c90481703f820380b02058f86ff4f49041f7afa7bb0f` |
+| Installed worker workload_service.py SHA-256 | `3c44b867007dfc8fc026c0e094d106ed64174311c4a82fd4e61bca31a96ab34b` |
+
+| Case | Result | Seconds | Private case evidence SHA-256 |
+|---|---|---:|---|
+| `control` | Passed; independent cleanup confirmed | 22.310 | `0f77bad78097a2657f95f23b79e1a0cbe3d7f4f9b8911954d605373fd83c64b4` |
+| `gateway-pre_admission` | Passed; independent cleanup confirmed | 35.383 | `26040f4f4190a4dc77602be5af97717c2e21e855b83fba12f95e27168a9fd2ca` |
+| `gateway-active` | Passed; independent cleanup confirmed | 38.741 | `ef6b6d6e6af3d2ea36b3eddf1d30b89225a2e2aa3cccc9e904a761d452d8e989` |
+| `gateway-response` | Passed; independent cleanup confirmed | 34.866 | `fcc51e0dd67f2cd9c23b67065251dcf912b5e0ebbe9a25bb7384fee388d55b00` |
+| `gateway-cleanup` | Passed; independent cleanup confirmed | 34.862 | `6c32bd6dd7f264c7a7b1aaec0be971238379ae20535b4e41afa98e1831058a09` |
+| `client-pre_admission` | Passed; independent cleanup confirmed | 35.243 | `4d91d46256e336cb1b89fa27657de3998eb1d22041fa43d420555dda88a341c8` |
+| `client-active` | Passed; independent cleanup confirmed | 34.500 | `9b5803bcfd54442fba024631f72d8d3942d0722ebb3d822aeb5ae9ee5b01a24e` |
+| `client-response` | Passed; independent cleanup confirmed | 35.494 | `02ab08a7e0d163fa99a4927f4f22e1256ec7cd8eb0e398b976d601d48050f61f` |
+| `client-cleanup` | Passed; independent cleanup confirmed | 36.595 | `afbf53a7296267ae37e733a7fa5cc7ce70772aee561f096ae6e77a20251c967d` |
+| `worker-pre_admission` | Passed; independent cleanup confirmed | 40.034 | `e5a1d9001c5db153763b360c91d90c2eb65d2e2062a76844a4da511c16727000` |
+| `worker-active` | Passed; independent cleanup confirmed | 40.986 | `cc15dcc7bd56e7c1bfdc52ea04d571762ef054634a4726211fea95c8bb9c049a` |
+| `worker-response` | Passed; independent cleanup confirmed | 46.316 | `5897d3ac2d6e7a4062a9f615951620e1fa0afe5b1eea4459c44093dbda43013b` |
+| `worker-cleanup` | Passed; independent cleanup confirmed | 46.909 | `c254d73bfab8344cd35894b522204f4c64096708ecf4188b5914c52a4f0bcff3` |
+| `worker-unavailable` | Passed; independent cleanup confirmed | 42.496 | `05905158a55c2185007438b66fa4e5de6e9621aff452f2e224c467785531ff8e` |
+| `worker-denied` | Passed; independent cleanup confirmed | 46.823 | `dc9bb8e7021b319aa5bc5a509a197b2c8568b072c7d2d7db2b693903cdd69384` |
+
+Complete installed Python inventory for this candidate:
+
+| Distribution | Version |
+|---|---|
+| PyJWT | `2.15.1` |
+| PyYAML | `6.0.3` |
+| agent-framework-core | `1.22.0` |
+| annotated-types | `0.8.0` |
+| anyio | `4.16.0` |
+| attrs | `26.1.0` |
+| certifi | `2026.10.23` |
+| cffi | `2.1.1` |
+| click | `8.5.0` |
+| cryptography | `50.0.2` |
+| h11 | `0.16.0` |
+| httpcore | `1.0.9` |
+| httpx | `0.28.1` |
+| httpx-sse | `0.4.3` |
+| idna | `3.20` |
+| jsonschema | `4.26.0` |
+| jsonschema-specifications | `2025.9.1` |
+| maf-sandbox | `0.51.1` |
+| maf-sandbox-bicep | `0.24.0` |
+| maf-sandbox-docker | `0.29.0` |
+| maf-sandbox-mcp | `0.2.0` |
+| mcp | `1.30.0` |
+| msgspec | `0.22.0` |
+| opentelemetry-api | `1.45.2` |
+| pycparser | `3.12` |
+| pydantic | `2.14.2` |
+| pydantic-settings | `2.16.2` |
+| pydantic_core | `2.50.2` |
+| python-dotenv | `1.2.4` |
+| python-multipart | `0.0.33` |
+| referencing | `0.37.0` |
+| regex | `2026.9.29` |
+| rpds-py | `2026.9.1` |
+| sse-starlette | `3.6.0` |
+| starlette | `1.7.0` |
+| typing-inspection | `0.4.4` |
+| typing_extensions | `4.16.0` |
+| uvicorn | `0.54.0` |
+
+This accepts the recorded deterministic-provider candidate and bounded operator-driven recovery only. Connection loss affects the replacement's private Docker context, and removal denial is an exact-target daemon authorization decision. Actual daemon or host loss, escaped process trees, model retry decisions, unattended watchdogs, newer dependencies and production remain unqualified. Only documentation follows the accepted source; recording this result is not another live run.

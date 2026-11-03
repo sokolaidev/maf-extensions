@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "tests/fixtures")]
 profile = importlib.import_module("openclaw_conformance.linux_owner_loss")
 actors = importlib.import_module("openclaw_conformance.linux_actor")
+docker_faults = importlib.import_module("openclaw_conformance.linux_docker_failures")
 old = importlib.import_module("test_openclaw_owner_loss")
 CAMPAIGN = "a" * 32
 
@@ -55,6 +56,70 @@ def observation(name):
             }
         )
         value["events"].sort(key=lambda row: row["mono_ns"])
+    if name in {"worker-unavailable", "worker-denied"}:
+        for event, at in (("docker_fault_blocked", 850), ("docker_fault_restored", 950)):
+            value["events"].append(
+                {
+                    "event": event,
+                    "mono_ns": at,
+                    "kind": name,
+                    "resources": ["a" * 64],
+                    "sentinel_survived": True,
+                    "engine": "e" * 64,
+                    "context_private": True,
+                    "endpoint_reserved": True,
+                    "probe_returncode": 1 if at == 850 else 0,
+                    "context_same": True,
+                }
+            )
+        value["events"].sort(key=lambda row: row["mono_ns"])
+        allowed = {
+            "event": "docker_removal",
+            "mono_ns": 975,
+            "returncode": 0,
+            "container": "a" * 64,
+            "target": "owned",
+        }
+        value["transport"].append(allowed)
+        if name == "worker-denied":
+            denied = value["denial"]
+            denied["image"] = docker_faults.DENIAL_IMAGE
+            removal = {
+                "event": "docker_removal",
+                "mono_ns": 875,
+                "returncode": 1,
+                "container": "a" * 64,
+                "target": "owned",
+            }
+            denied.update(
+                removals=[removal],
+                allowed_removals=[allowed],
+                restored_decisions=[
+                    *denied["decisions"],
+                    dict(denied["decisions"][0], sequence=2, allowed=True, denied=False, nonce=""),
+                ],
+            )
+            value["transport"].append(removal)
+            value["transport"].sort(key=lambda row: row["mono_ns"])
+            value["daemon"] = {
+                "registration_sha256": "d" * 64,
+                "control_sha256": "e" * 64,
+                "daemon_image": docker_faults.DENIAL_IMAGE,
+                "daemon_version": "29.8.2",
+                "daemon_storage_driver": "overlay2",
+                "daemon_tls": True,
+                "daemon_unchanged": True,
+                "plugin_source_sha256": docker_faults.DENIAL_SOURCE,
+                "plugin_binary_sha256": "b" * 64,
+                "go_version": "go version go1.27.3 linux/amd64",
+            }
+    value["transport"][0]["mono_ns"] = 2
+    value["transport"].extend(
+        dict(r, event="startup_complete", mono_ns=r["mono_ns"] - 1)
+        for r in list(value["transport"])
+        if r["event"] == "startup_ready"
+    )
+    value["transport"].sort(key=lambda r: r["mono_ns"])
     return candidate, value
 
 
@@ -124,7 +189,7 @@ def test_linux_plan_rejects_candidate_upgrade():
         "wheel_sha256": profile.WHEEL,
         "versions": dict(profile.VERSIONS),
     }
-    assert len(profile.plan(candidate, CAMPAIGN)["cases"]) == 13
+    assert len(profile.plan(candidate, CAMPAIGN)["cases"]) == 15
     candidate["versions"]["mcp"] = "2.2.0"
     with pytest.raises(ValueError, match="worker_versions"):
         profile.plan(candidate, CAMPAIGN)
@@ -146,7 +211,8 @@ def test_baseline_reporter_participates_in_source_identity_and_dirty_check(tmp_p
     install = importlib.import_module("openclaw_conformance.install")
     runner = tmp_path / "scripts/openclaw_conformance/install.py"
     reporter = tmp_path / "scripts/report_openclaw_hosted.py"
-    for path in (runner, reporter, tmp_path / "tests/test_mcp_workload_service.py"):
+    plugin = tmp_path / "tests/fixtures/openclaw_docker_authz/main.go"
+    for path in (runner, reporter, plugin, tmp_path / "tests/test_mcp_workload_service.py"):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("original", encoding="utf-8")
     monkeypatch.setattr(install, "__file__", str(runner))
@@ -156,6 +222,9 @@ def test_baseline_reporter_participates_in_source_identity_and_dirty_check(tmp_p
     before = install.runner_hash()
     reporter.write_text("changed acceptance", encoding="utf-8")
     assert install.runner_hash() != before
+    before_plugin = install.runner_hash()
+    plugin.write_text("changed authorization", encoding="utf-8")
+    assert install.runner_hash() != before_plugin
 
     def dirty(command, **kwargs):
         assert "status" in command
@@ -182,6 +251,7 @@ def test_baseline_reporter_participates_in_source_identity_and_dirty_check(tmp_p
         "summary",
         "survivor",
         "collection_interrupt",
+        "registration",
     ],
 )
 def test_collector_rejects_incomplete_or_transplanted_campaign(tmp_path, monkeypatch, mutation):
@@ -208,6 +278,16 @@ def test_collector_rejects_incomplete_or_transplanted_campaign(tmp_path, monkeyp
         summary["plan_sha256"] = "f" * 64
     for name in profile.CASES:
         _, value = observation(name)
+        if name == "worker-denied":
+            (root / name).mkdir()
+            for file, key in (
+                ("daemon-resources.json", "registration_sha256"),
+                ("daemon-control.json", "control_sha256"),
+            ):
+                profile.write(root / name / file, {"client": value["denial"]["client"]})
+                value["daemon"][key] = profile.file_hash(root / name / file)
+            if mutation == "registration":
+                profile.write(root / name / "daemon-resources.json", {"test": "different scope"})
         value["candidate_sha256"] = profile.digest(candidate)
         if name == "worker-active":
             if mutation == "campaign":
@@ -256,6 +336,8 @@ def test_collector_rejects_incomplete_or_transplanted_campaign(tmp_path, monkeyp
         assert row["rejection"] == (
             "case_artifact_digest" if mutation == "case_hash" else "case_campaign_binding"
         )
+    if mutation == "registration":
+        assert report["cases"][-1]["rejection"] == "daemon_registration_changed"
     if mutation in {"survivor", "collection_interrupt"}:
         monkeypatch.setattr(profile, "cleanup", inventory)
         repeated = profile.collect(tmp_path, root)
@@ -290,7 +372,7 @@ def test_incomplete_campaign_retains_failure_and_cleanup_diagnostics(tmp_path, m
     report = profile.collect(tmp_path, tmp_path)
     assert report["qualified"] is False
     assert report["rejection"] == "case_inventory"
-    assert len(report["cases"]) == 13
+    assert len(report["cases"]) == 15
     row = report["cases"][0]
     assert row["parent_failure"] == "fault_case_deadline"
     assert row["failure"] == "redacted"
@@ -485,3 +567,314 @@ def test_owner_loss_workflow_uses_fixed_installed_baseline_and_markdown_only():
     assert upload["if"] == "always()"
     assert upload["with"]["path"] == "${{ runner.temp }}/openclaw-owner-loss.md"
     assert "openclaw-owner-loss" in live["jobs"]["report-failure"]["needs"]
+    assert (
+        docker_faults.DENIAL_REFERENCE
+        in steps["Download verified published worker and prepared compiler"]["run"]
+    )
+    go = next(s for s in job["steps"] if s.get("uses", "").startswith("actions/setup-go@"))
+    assert go["with"] == {"go-version": "1.27.3", "cache": False}
+
+
+@pytest.mark.parametrize("name", ["worker-unavailable", "worker-denied"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_block",
+        "reordered_restore",
+        "orphan_changed",
+        "sentinel_lost",
+        "engine_changed",
+        "ready_while_blocked",
+        "emergency_cleanup",
+    ],
+)
+def test_docker_failure_controls_cannot_be_omitted_or_transplanted(name, mutation):
+    candidate, value = observation(name)
+    if mutation == "missing_block":
+        value["events"] = [r for r in value["events"] if r["event"] != "docker_fault_blocked"]
+    elif mutation == "ready_while_blocked":
+        value["transport"].append(
+            {"event": "startup_ready", "mono_ns": 890, "boot": "f" * 32, "owner_empty": True}
+        )
+        value["transport"].sort(key=lambda r: r["mono_ns"])
+    elif mutation == "emergency_cleanup":
+        value["independent_cleanup"]["removed"] = ["daemon"]
+    else:
+        restored = profile.one(value["events"], "docker_fault_restored")
+        field, bad = {
+            "reordered_restore": ("mono_ns", 800),
+            "orphan_changed": ("resources", []),
+            "sentinel_lost": ("sentinel_survived", False),
+            "engine_changed": ("engine", "f" * 64),
+        }[mutation]
+        restored[field] = bad
+    with pytest.raises(ValueError):
+        profile.verify_case(value, name, candidate, CAMPAIGN)
+
+
+@pytest.mark.parametrize(
+    "field,bad", [("context_private", False), ("endpoint_reserved", False), ("probe_returncode", 0)]
+)
+def test_connection_loss_requires_an_independently_failed_private_probe(field, bad):
+    candidate, value = observation("worker-unavailable")
+    profile.one(value["events"], "docker_fault_blocked")[field] = bad
+    with pytest.raises(ValueError, match="connection_fault_controls"):
+        profile.verify_case(value, "worker-unavailable", candidate, CAMPAIGN)
+
+
+def test_connection_probe_uses_server_inventory_even_when_formatted_info_would_succeed(monkeypatch):
+    environment = {"DOCKER_CONTEXT": "private", "DOCKER_CONFIG": "isolated"}
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        assert kwargs["env"] is environment and kwargs["timeout"] == 15
+        return SimpleNamespace(returncode=1 if command == ["docker", "ps", "-aq"] else 0)
+
+    monkeypatch.setattr(docker_faults.subprocess, "run", run)
+    assert docker_faults.connection_probe(environment) == 1
+    assert commands == [["docker", "ps", "-aq"]]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "image",
+        "plugin",
+        "tls",
+        "restarted",
+        "missing_allow",
+        "wrong_container",
+        "different_command",
+        "late_removal",
+    ],
+)
+def test_denial_requires_exact_daemon_and_real_restored_removal(mutation):
+    candidate, value = observation("worker-denied")
+    denial = value["denial"]
+    if mutation in {"image", "plugin", "tls", "restarted"}:
+        field, bad = {
+            "image": ("daemon_image", "sha256:" + "f" * 64),
+            "plugin": ("plugin_source_sha256", "f" * 64),
+            "tls": ("daemon_tls", False),
+            "restarted": ("daemon_unchanged", False),
+        }[mutation]
+        value["daemon"][field] = bad
+    elif mutation == "missing_allow":
+        denial["restored_decisions"].pop()
+    elif mutation == "wrong_container":
+        denial["restored_decisions"][-1]["target"] = "other"
+    elif mutation == "different_command":
+        denial["allowed_removals"] = [dict(denial["allowed_removals"][0], target="other")]
+    else:
+        denial["allowed_removals"][0]["mono_ns"] = 1001
+        value["transport"].sort(key=lambda r: r["mono_ns"])
+    with pytest.raises((ValueError, RuntimeError)):
+        profile.verify_case(value, "worker-denied", candidate, CAMPAIGN)
+
+
+@pytest.mark.parametrize("survivor", ["none", "daemon", "volume", "parent_changed"])
+def test_dedicated_postflight_is_read_only_and_checks_retained_volume_identity(
+    tmp_path, monkeypatch, survivor
+):
+    host = importlib.import_module("openclaw_docker_denial_check")
+    client, daemon = "a" * 32, "b" * 64
+    profile.write(
+        tmp_path / "daemon-control.json",
+        {"client": client, "name": "qualification-authz-" + client, "host": "unix:///fixture.sock"},
+    )
+    profile.write(
+        tmp_path / "daemon-resources.json",
+        {"client": client, "daemon": daemon, "parent": "original", "volumes": ["owned-volume"]},
+    )
+    calls = []
+
+    def outer(endpoint, *args):
+        calls.append(args)
+        if args[0] == "info":
+            return "changed" if survivor == "parent_changed" else "original"
+        if args[:2] == ("volume", "ls"):
+            return "owned-volume" if survivor == "volume" else "unrelated-volume"
+        assert args[0] == "ps"
+        return daemon if survivor == "daemon" else ""
+
+    monkeypatch.setattr(host, "outer_docker", outer)
+    monkeypatch.setattr(
+        host, "cleanup_daemon", lambda *a: pytest.fail("collector removed a survivor")
+    )
+    for _ in range(2):
+        if survivor == "parent_changed":
+            with pytest.raises(ValueError, match="parent_daemon_changed"):
+                docker_faults.inventory(tmp_path, remove=False)
+        else:
+            result = docker_faults.inventory(tmp_path, remove=False)
+            assert result["confirmed"] is (survivor == "none")
+            assert result["removed"] == []
+    assert all(args[0] in {"info", "ps", "volume"} for args in calls)
+
+
+def test_fallback_does_not_report_a_surviving_orphan_volume_as_removed(tmp_path, monkeypatch):
+    host = importlib.import_module("openclaw_docker_denial_check")
+    client = "a" * 32
+    profile.write(
+        tmp_path / "daemon-control.json",
+        {"client": client, "name": "qualification-authz-" + client, "host": "unix:///fixture.sock"},
+    )
+    profile.write(
+        tmp_path / "daemon-resources.json",
+        {"client": client, "daemon": "b" * 64, "parent": "original", "volumes": ["orphan-volume"]},
+    )
+
+    def outer(endpoint, *args):
+        if args[0] == "info":
+            return "original"
+        return "orphan-volume" if args[0] == "volume" else ""
+
+    monkeypatch.setattr(host, "outer_docker", outer)
+    monkeypatch.setattr(host, "cleanup_daemon", lambda *a: None)
+    result = docker_faults.inventory(tmp_path, remove=True)
+    assert result["confirmed"] is False
+    assert result["remaining"] == ["orphan-volume"]
+    assert result["removed"] == []
+
+
+@pytest.mark.parametrize(
+    "failure", [RuntimeError("Dedicated daemon volume survived cleanup"), KeyboardInterrupt()]
+)
+def test_dedicated_daemon_failure_retains_observed_case(tmp_path, monkeypatch, failure):
+    cases = importlib.import_module("openclaw_conformance.owner_loss_cases")
+    host = importlib.import_module("openclaw_docker_denial_check")
+    denial = importlib.import_module("openclaw_docker_denial")
+    candidate, value = observation("worker-denied")
+    root = tmp_path / "denied"
+
+    def run(args, *, qualifier):
+        assert args.classic_store is True
+        assert args.daemon_image == docker_faults.DENIAL_REFERENCE
+        root.mkdir()
+        qualifier(
+            SimpleNamespace(
+                authz_outer_host="unix:///fixture.sock",
+                authz_daemon="a" * 64,
+                authz_client="b" * 32,
+            )
+        )
+        raise failure
+
+    monkeypatch.setattr(host, "run", run)
+    monkeypatch.setattr(denial, "DockerRemovalDenial", lambda *a: object())
+    monkeypatch.setattr(cases, "case", lambda *a: value)
+    observed = docker_faults.denied_case(root, tmp_path, candidate)
+    assert observed["events"] == value["events"]
+    assert observed["outcome"] == "fail"
+    assert observed["failure"] == (
+        "KeyboardInterrupt" if isinstance(failure, KeyboardInterrupt) else "daemon_volume_cleanup"
+    )
+    assert profile.read(root / "result.json") == observed
+
+
+@pytest.mark.parametrize("name", ["worker-unavailable", "worker-denied"])
+def test_product_startup_attempt_cannot_be_hidden_by_observer_failure(tmp_path, monkeypatch, name):
+    import asyncio
+
+    observer = importlib.import_module("openclaw_http_observer")
+    candidate, value = observation(name)
+    observed = []
+
+    class App:
+        async def __call__(self, scope, receive, send):
+            await send({"type": "lifespan.startup.complete"})
+
+    class Observer(observer.ObserveHTTP):
+        def record(self, **fields):
+            observed.append({"mono_ns": 860, "boot": "f" * 32, **fields})
+
+    def unavailable(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, ["docker", "ps"])
+
+    monkeypatch.setattr(observer.subprocess, "check_output", unavailable)
+    app = Observer(App(), tmp_path / "unused", owned_scope="owned")
+
+    async def receive():
+        return {}
+
+    async def send(message):
+        pytest.fail("The failed probe must not forward startup completion")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        asyncio.run(app({"type": "lifespan"}, receive, send))
+    value["transport"].extend(observed)
+    value["transport"].sort(key=lambda r: r["mono_ns"])
+    with pytest.raises(ValueError, match="blocked_startup"):
+        profile.verify_case(value, name, candidate, CAMPAIGN)
+
+
+@pytest.mark.parametrize("phase", ["removals", "allowed_removals"])
+@pytest.mark.parametrize("field,bad", [("container", "b" * 64), ("target", "unrelated")])
+def test_denial_rejects_jointly_changed_command_copies(phase, field, bad):
+    candidate, value = observation("worker-denied")
+    # The fixture shares each command object with the raw transport observation.
+    command = value["denial"][phase][0]
+    assert any(row is command for row in value["transport"])
+    command[field] = bad
+    with pytest.raises((ValueError, RuntimeError)):
+        profile.verify_case(value, "worker-denied", candidate, CAMPAIGN)
+
+
+@pytest.mark.parametrize("name", ["worker-unavailable", "worker-denied"])
+@pytest.mark.parametrize("mutation", ["missing", "wrong_boot", "late"])
+def test_docker_faults_require_positive_startup_observer_controls(name, mutation):
+    candidate, value = observation(name)
+    completed = [r for r in value["transport"] if r["event"] == "startup_complete"]
+    if mutation == "missing":
+        value["transport"].remove(completed[-1])
+    elif mutation == "wrong_boot":
+        completed[-1]["boot"] = "f" * 32
+    else:
+        completed[-1]["mono_ns"] = 1001
+        value["transport"].sort(key=lambda r: r["mono_ns"])
+    with pytest.raises(ValueError, match="startup_completion_observation"):
+        profile.verify_case(value, name, candidate, CAMPAIGN)
+
+
+@pytest.mark.parametrize("name", ["worker-unavailable", "worker-denied"])
+def test_restored_removal_must_precede_product_startup_completion(name):
+    candidate, value = observation(name)
+    completed = [r for r in value["transport"] if r["event"] == "startup_complete"]
+    completed[-1]["mono_ns"] = 960
+    value["transport"].sort(key=lambda r: r["mono_ns"])
+    with pytest.raises(ValueError, match="restored_removal_binding"):
+        profile.verify_case(value, name, candidate, CAMPAIGN)
+
+
+@pytest.mark.parametrize(
+    "swapped",
+    [
+        ("daemon-resources.json",),
+        ("daemon-control.json",),
+        ("daemon-resources.json", "daemon-control.json"),
+    ],
+)
+def test_postflight_binds_registration_clients_before_inventory(tmp_path, monkeypatch, swapped):
+    name = "worker-denied"
+    root = tmp_path / name
+    root.mkdir()
+    _, value = observation(name)
+    for file, key in (
+        ("daemon-resources.json", "registration_sha256"),
+        ("daemon-control.json", "control_sha256"),
+    ):
+        profile.write(
+            root / file, {"client": "c" * 32 if file in swapped else value["denial"]["client"]}
+        )
+        value["daemon"][key] = profile.file_hash(root / file)
+    case_path = tmp_path / (name + ".json")
+    profile.write(case_path, value)
+
+    def inventory(*args, **kwargs):
+        pytest.fail("Unrelated registrations must be rejected before inventory")
+
+    monkeypatch.setattr(profile, "cleanup", inventory)
+    with pytest.raises(ValueError, match="daemon_registration_client"):
+        profile.postflight(tmp_path, name, profile.file_hash(case_path))
+    assert profile.read(tmp_path / (name + ".postflight.json"))["passed"] is False

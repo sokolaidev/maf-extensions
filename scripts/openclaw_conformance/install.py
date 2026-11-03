@@ -161,6 +161,7 @@ def runner_hash() -> str:
         *FIXTURES.glob("openclaw*.py"),
         *SAMPLE.glob("*.py"),
         REPO / "scripts/report_openclaw_hosted.py",
+        FIXTURES / "openclaw_docker_authz/main.go",
         REPO / "tests/test_mcp_workload_service.py",
     ]
     return digest({p.relative_to(REPO).as_posix(): file_hash(p) for p in sorted(paths)})

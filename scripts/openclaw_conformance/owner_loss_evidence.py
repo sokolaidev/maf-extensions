@@ -417,12 +417,24 @@ def verify(
                 and refused["resources"] == settled["resources"],
                 "failed_recovery",
             )
+            require(
+                not any(
+                    r["event"] in {"startup_complete", "startup_ready"}
+                    and settled["mono_ns"] < r["mono_ns"] < refused["mono_ns"]
+                    for r in transport
+                ),
+                "blocked_startup_ready",
+            )
             if case.endswith("denied"):
                 denial = value["denial"]
+                if platform == "Linux":
+                    from .linux_docker_failures import DENIAL_IMAGE as expected_denial_image
+                else:
+                    expected_denial_image = DENIAL_IMAGE
                 require(
                     denial["daemon_removed"] is True
                     and denial["parent_unchanged"] is True
-                    and denial["image"] == DENIAL_IMAGE,
+                    and denial["image"] == expected_denial_image,
                     "real_denial",
                 )
                 verify_authorization = importlib.import_module(
@@ -437,6 +449,7 @@ def verify(
                     client=denial["client"],
                     nonce=denial["nonce"],
                     denied=True,
+                    require_container=True,
                 )
                 require(denial["container"] in settled["resources"], "denial_orphan_binding")
     else:

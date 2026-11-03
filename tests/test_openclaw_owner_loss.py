@@ -241,7 +241,7 @@ def observation(case, m):
                 "target": "owned",
                 "client": "b" * 32,
                 "nonce": "c" * 32,
-                "removals": [{"returncode": 1}],
+                "removals": [{"returncode": 1, "container": resources[0], "target": "owned"}],
                 "decisions": [
                     {
                         "event": "docker_authz",
@@ -1090,3 +1090,13 @@ def test_retained_client_survivor_requires_original_gateway_session(phase, mutat
         row["session"] = "f" * 64
     with pytest.raises(e.Refused):
         fault.verify(value, case, m)
+
+
+@pytest.mark.parametrize("name", ["worker-unavailable", "worker-denied"])
+def test_refused_owner_replacement_rejects_product_startup_attempt(name):
+    candidate = manifest()
+    value = observation(name, candidate)
+    value["transport"].append({"event": "startup_complete", "mono_ns": 860, "boot": "f" * 32})
+    value["transport"].sort(key=lambda r: r["mono_ns"])
+    with pytest.raises(ValueError, match="blocked_startup_ready"):
+        fault.verify(value, name, candidate)

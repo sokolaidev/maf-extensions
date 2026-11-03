@@ -626,6 +626,30 @@ def case(
                 else:
                     blocked_env = None
                 if blocked_env is not None:
+                    linux_fault = sys.platform == "linux"
+                    engine_identity = docker("info", "--format", "{{.ID}}")
+                    require(bool(engine_identity), "observer_engine_identity")
+                    engine = digest(engine_identity)
+                    if linux_fault:
+                        fields = {}
+                        if private_context:
+                            from .linux_docker_failures import connection_probe
+
+                            probe_returncode = connection_probe(blocked_env)
+                            require(probe_returncode != 0, "private_context_reachable")
+                            fields = {
+                                "context_private": private_context.directory.is_relative_to(root),
+                                "endpoint_reserved": private_context.reserved.getsockname()[1] > 0,
+                                "probe_returncode": probe_returncode,
+                            }
+                        note(
+                            "docker_fault_blocked",
+                            kind=name,
+                            resources=owned(),
+                            sentinel_survived=sentinel_alive(),
+                            engine=engine,
+                            **fields,
+                        )
                     failed_proc, failed_actor = start_worker(blocked_env)
                     wait(lambda: not failed_actor.alive(), "failed_recovery_deadline", 120)
                     code = failed_proc.children[0][0].wait(timeout=10)
@@ -656,6 +680,7 @@ def case(
                             client=denial.client,
                             nonce=denial.nonce,
                             denied=True,
+                            require_container=True,
                         )
                         write(
                             root / "denial-decisions.json",
@@ -669,9 +694,48 @@ def case(
                             },
                         )
                         denial.restore()
+                    if linux_fault:
+                        fields = {}
+                        if private_context:
+                            probe = subprocess.run(
+                                ["docker", "info", "--format", "{{.ID}}"],
+                                env=blocked_env,
+                                capture_output=True,
+                                text=True,
+                                timeout=15,
+                            )
+                            require(
+                                probe.returncode == 0 and digest(probe.stdout.strip()) == engine,
+                                "private_context_not_restored",
+                            )
+                            fields = {
+                                "probe_returncode": probe.returncode,
+                                "context_same": blocked_env["DOCKER_CONTEXT"]
+                                == private_context.name,
+                            }
+                        note(
+                            "docker_fault_restored",
+                            kind=name,
+                            resources=owned(),
+                            sentinel_survived=sentinel_alive(),
+                            engine=digest(docker("info", "--format", "{{.ID}}")),
+                            **fields,
+                        )
                 _, actors["worker"] = start_worker()
                 ready(worker_port, token, actors["worker"])
                 require(not owned(), "replacement_left_orphan")
+                if denial and sys.platform == "linux":
+                    decision_path = root / "denial-decisions.json"
+                    evidence = read(decision_path)
+                    evidence["restored_decisions"] = denial.evidence()
+                    evidence["allowed_removals"] = [
+                        r
+                        for r in rows(root / "transport.jsonl")
+                        if r["event"] == "docker_removal"
+                        and r["returncode"] == 0
+                        and r["container"] == resources[0]
+                    ]
+                    write(decision_path, evidence)
                 fresh_sid = initialize()
                 unauthorized = http(worker_port, old_token, "/mcp", payload(), fresh_sid)[0]
                 stale = http(worker_port, token, "/mcp", payload(), old_sid)[0]

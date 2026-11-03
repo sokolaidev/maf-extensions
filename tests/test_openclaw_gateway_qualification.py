@@ -986,8 +986,8 @@ def test_observer_records_owner_state_before_startup_completion(tmp_path, monkey
 
     async def send(message):
         evidence = checker.records(app.evidence)
-        assert evidence[0]["event"] == "startup_ready"
-        assert evidence[0]["owner_empty"] is (not bool(containers))
+        assert [r["event"] for r in evidence] == ["startup_complete", "startup_ready"]
+        assert evidence[1]["owner_empty"] is (not bool(containers))
 
     asyncio.run(app({"type": "lifespan"}, receive, send))
 
@@ -1059,6 +1059,7 @@ def test_cleanup_refusal_requires_startup_failure_and_two_gateway_errors():
         "session",
         "early_failure",
         "late_failure",
+        "startup_complete",
         "startup_ready",
         "request",
         "response",
@@ -1071,7 +1072,7 @@ def test_cleanup_refusal_rejects_incomplete_contradictory_or_uncorrelated_eviden
         evidence.pop(indices[mutation])
     elif mutation == "extra_fault":
         evidence.append(evidence[1].copy())
-    elif mutation in {"startup_ready", "request", "response", "shutdown"}:
+    elif mutation in {"startup_complete", "startup_ready", "request", "response", "shutdown"}:
         evidence.append({"event": mutation})
     else:
         index, field, value = {
@@ -3198,7 +3199,9 @@ def authz_evidence(denied=True):
 def verify_authz(rows, removals=None, denied=True, after_sequence=0):
     return denial.verify_authorization(
         rows,
-        [{}] if removals is None else removals,
+        [{"target": "compiler", "container": "a" * 64, "returncode": 1 if denied else 0}]
+        if removals is None
+        else removals,
         target="compiler",
         container="a" * 64,
         client="c" * 32,
@@ -4591,3 +4594,47 @@ def test_withheld_response_requires_original_request_identity(tmp_path, request_
         asyncio.run(observed({"type": "http", "method": "POST", "headers": []}, receive, send))
     assert not emitted
     assert not any(row["event"] == "result_withheld" for row in checker.records(observed.evidence))
+
+
+@pytest.mark.parametrize("denied", [True, False])
+@pytest.mark.parametrize("target", ["compiler", "a" * 64])
+@pytest.mark.parametrize("inspected", [True, False])
+def test_authorization_accepts_selected_name_or_exact_id(denied, target, inspected):
+    command = {"target": target, "returncode": 1 if denied else 0}
+    if inspected:
+        command["container"] = "a" * 64
+    assert verify_authz(authz_evidence(denied), [command], denied=denied) == 1
+
+
+@pytest.mark.parametrize("denied", [True, False])
+@pytest.mark.parametrize(
+    "field,bad",
+    [
+        ("target", "other"),
+        ("target", None),
+        ("container", "b" * 64),
+        ("container", None),
+        ("returncode", True),
+        ("returncode", None),
+    ],
+)
+def test_authorization_rejects_wrong_command_identity_or_outcome(denied, field, bad):
+    command = {"target": "compiler", "container": "a" * 64, "returncode": 1 if denied else 0}
+    command[field] = bad
+    with pytest.raises(RuntimeError, match="Removal command"):
+        verify_authz(authz_evidence(denied), [command], denied=denied)
+
+
+@pytest.mark.parametrize("denied", [True, False])
+def test_owner_loss_authorization_requires_inspected_container(denied):
+    with pytest.raises(RuntimeError, match="Removal command"):
+        denial.verify_authorization(
+            authz_evidence(denied),
+            [{"target": "compiler", "returncode": 1 if denied else 0}],
+            target="compiler",
+            container="a" * 64,
+            client="c" * 32,
+            nonce="d" * 32,
+            denied=denied,
+            require_container=True,
+        )

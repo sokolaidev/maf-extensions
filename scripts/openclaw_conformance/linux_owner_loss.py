@@ -17,14 +17,11 @@ from typing import Any
 
 from .evidence import LIMITS, Refused, digest, encode, file_hash, read, require, write
 from .install import FIXTURES, REPO, SAMPLE, runner_hash, runner_revision
+from .linux_docker_failures import DENIAL_IMAGE, DENIAL_REFERENCE, denied_case, verify_failure
 from .owner_loss_cleanup import cleanup
-from .owner_loss_evidence import DEADLINES, PHASES, one, verify
+from .owner_loss_evidence import CASES, DEADLINES, DENIAL_SOURCE, one, verify
 
-PROFILE = "owner-loss-linux-v2"
-CASES = (
-    "control",
-    *(f"{actor}-{phase}" for actor in ("gateway", "client", "worker") for phase in PHASES),
-)
+PROFILE = "owner-loss-linux-v4"
 WHEEL = "ebb54bc8b51d4d0ec3e63f1f850c5aa53b55d80ec5567c679ead169a3ed0d545"
 VERSIONS = {
     "maf-sandbox-mcp": "0.2.0",
@@ -120,6 +117,12 @@ def plan(candidate: dict[str, Any], campaign: str) -> dict[str, Any]:
         "deadlines": DEADLINES,
         "fault_unit": "pidfd_bound_actor_in_supervised_session",
         "replacement": "operator_restart_same_owner_rotated_token",
+        "docker_faults": {
+            "unavailable": "replacement_private_context",
+            "denial_reference": DENIAL_REFERENCE,
+            "denial_image": DENIAL_IMAGE,
+            "denial_source_sha256": DENIAL_SOURCE,
+        },
     }
 
 
@@ -133,6 +136,8 @@ def verify_case(value: dict[str, Any], name: str, candidate: dict[str, Any], cam
     verify(value, name, candidate, platform="Linux")
     require(value["independent_cleanup"].get("removed") == [], "emergency_cleanup_required")
     require(one(value["events"], "harness_leftovers")["resources"] == [], "harness_removed_orphans")
+    if name in {"worker-unavailable", "worker-denied"}:
+        verify_failure(value, name)
 
 
 def run(prepared: Path, root: Path) -> None:
@@ -174,7 +179,11 @@ def run(prepared: Path, root: Path) -> None:
             failure = None
             try:
                 signal.alarm(DEADLINES["case"])
-                value = case(root / name, prepared, candidate, name)
+                value = (
+                    denied_case(root / name, prepared, candidate)
+                    if name == "worker-denied"
+                    else case(root / name, prepared, candidate, name)
+                )
             except (Exception, KeyboardInterrupt) as exc:
                 failure = str(exc) if isinstance(exc, Refused) else type(exc).__name__
             finally:
@@ -243,6 +252,21 @@ def postflight(root: Path, name: str, case_hash: str) -> None:
         require(previous.get("passed") is True, "postflight_previous_failure")
     state = {"case_sha256": case_hash, "passed": False}
     write(receipt, state)
+    if name == "worker-denied":
+        observed = read(root / (name + ".json"), LIMITS["events"])
+        daemon = observed["daemon"]
+        require(
+            file_hash(root / name / "daemon-resources.json") == daemon["registration_sha256"]
+            and file_hash(root / name / "daemon-control.json") == daemon["control_sha256"],
+            "daemon_registration_changed",
+        )
+        require(
+            all(
+                read(root / name / file).get("client") == observed["denial"]["client"]
+                for file in ("daemon-resources.json", "daemon-control.json")
+            ),
+            "daemon_registration_client",
+        )
     remaining = cleanup(root / name, name, remove=False)
     require(
         remaining["confirmed"] is True
@@ -297,6 +321,8 @@ def collect(prepared: Path, root: Path) -> dict[str, Any]:
             verify_case(value, name, candidate, expected["campaign_id"])
             postflight(root, name, row["sha256"])
             row["passed"] = True
+            if name == "worker-denied":
+                row["daemon"] = value["daemon"]
         except Exception as exc:
             row["rejection"] = safe_reason(exc)
     try:
@@ -329,7 +355,7 @@ def main() -> int:
     if args.output:
         text = "# OpenClaw Linux actor-loss qualification\n\n"
         text += "Deterministic provider; actual Gateway, installed worker and compiler. Operator-driven recovery.\n\n"
-        text += "Private logs, tokens and session records are not published. Docker failure, escaped process trees, host loss, watchdogs and production remain unqualified.\n\n"
+        text += "Private logs, tokens and session records are not published. Docker faults cover only replacement connection loss and exact-target removal denial. Actual daemon/host loss, escaped process trees, watchdogs and production remain unqualified.\n\n"
         text += "```json\n" + json.dumps(observed, indent=2, sort_keys=True) + "\n```\n"
         args.output.write_text(text, encoding="utf-8")
     print("Linux actor-loss qualified: " + str(observed["qualified"]), flush=True)
