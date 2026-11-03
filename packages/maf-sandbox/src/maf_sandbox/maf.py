@@ -76,6 +76,7 @@ from ._file_provenance import (
     FileStoreChanged,
     FileStoreProvenance,
     ReadWindow,
+    store_key,
 )
 from ._observer import (
     RECORDED_CALL,
@@ -262,8 +263,8 @@ class _SandboxToolCall:
     #: Conversation acquires retain their hold until a late result has been cleaned.
     acquiring: dict[SandboxKey, int] = field(default_factory=dict[SandboxKey, int])
     retire: Callable[[SandboxKey], Awaitable[None]] | None = None
-    file_windows: dict[tuple[int, int], tuple[Any, ReadWindow]] = field(
-        default_factory=dict[tuple[int, int], tuple[Any, ReadWindow]]
+    file_windows: dict[tuple[int, int], tuple[Any, FileStoreProvenance, ReadWindow]] = field(
+        default_factory=dict[tuple[int, int], tuple[Any, FileStoreProvenance, ReadWindow]]
     )
     file_refusal: str | None = None
 
@@ -1525,6 +1526,8 @@ class SandboxToolSession:
 
         A mutation to an input since this call's listing refuses the whole call. The wrapper
         stops the body and renders a trusted refusal; a direct session read returns that text.
+        Changed inputs are numbered in read order; names and rendering overrides never enter
+        this trusted refusal.
         Unrelated mutations preserve the fold. Host records can raise ``FileStoreChanged``
         from ``state_of`` for a stale snapshot; ``None`` still means unestablished integrity.
 
@@ -1550,18 +1553,25 @@ class SandboxToolSession:
         window = self._file_window(store)
         shown = named if named is not None else echoed_name(listed.name, at=at, hidden=hidden)
         if window is not None:
-            window.paths[listed.name] = shown
+            position = sum(len(held.paths) for _, held in self._file_windows(window)) + 1
+            window.paths.setdefault(listed.name, f"input file {position}")
         try:
             return await self._read_file(store, listed, window=window, shown=shown)
         except FileStoreChanged:
-            changed = (
-                [display for path, display in window.paths.items() if window.changed(path)]
-                if window is not None
-                else []
-            )
+            changed = [
+                display
+                for _, held in self._file_windows(window)
+                for path, display in held.paths.items()
+                if held.changed(path)
+            ]
             self._record_read(listed.name, None, 0, outcome="refused")
+            affected = (
+                ", ".join(changed)
+                if changed
+                else (window.paths[listed.name] if window is not None else "an input file")
+            )
             refusal = (
-                f"Error: {', '.join(changed) if changed else shown} changed while this call "
+                f"Error: {affected} changed while this call "
                 "was reading its inputs; no result was produced. Re-run, and do not run it "
                 "in the same batch as a tool that writes these files."
             )
@@ -1582,10 +1592,19 @@ class SandboxToolSession:
         call = _CALL.get()
         if call is None or call.closed:
             return record.read_window()
-        key = (id(self), id(store))
+        key = (id(record), id(store))
         if key not in call.file_windows:
-            call.file_windows[key] = (store, record.read_window())
-        return call.file_windows[key][1]
+            call.file_windows[key] = (store, record, record.read_window())
+        return call.file_windows[key][2]
+
+    def _file_windows(
+        self, window: ReadWindow | None
+    ) -> list[tuple[FileStoreProvenance, ReadWindow]]:
+        call = _CALL.get()
+        if call is not None and not call.closed:
+            return [(record, held) for _, record, held in call.file_windows.values()]
+        record = self._file_store_provenance
+        return [(record, window)] if record is not None and window is not None else []
 
     async def _read_file(
         self, store: Any, listed: ListedFile, *, window: ReadWindow | None, shown: str
@@ -1596,8 +1615,8 @@ class SandboxToolSession:
             # Inside the boundary, not before it: this raises for a `trusted` floor no
             # middleware observes, which is a supported configuration and so a reachable way out
             # of a read that would otherwise leave no record at all.
-            before = self._recorded_state(listed.name)
-            self._check_file_window(window)
+            before = self._recorded_state(listed.name, window)
+            self._check_file_window(window, current=listed.name)
         except FileStoreChanged:
             raise
         except BaseException:
@@ -1608,6 +1627,7 @@ class SandboxToolSession:
         except FileStoreChanged:
             raise
         except Exception as exc:  # noqa: BLE001
+            self._check_file_window(window)
             self._logger.warning(
                 f"{self._log_prefix}: could not read a listed file: %s", error_detail(exc)
             )
@@ -1710,7 +1730,9 @@ class SandboxToolSession:
             return None
         return key if isinstance(key, SandboxKey) else None
 
-    def _recorded_state(self, name: str) -> tuple[SourceIntegrity | None, int]:
+    def _recorded_state(
+        self, name: str, window: ReadWindow | None = None
+    ) -> tuple[SourceIntegrity | None, int]:
         """What the host's record says about ``name``, and how many times it has moved.
 
         Raises:
@@ -1720,11 +1742,25 @@ class SandboxToolSession:
                 not there meets it here, which is the first moment it can be told.
         """
         record = self._file_store_provenance
-        return (None, 0) if record is None else record.state_of(name)
+        try:
+            return (None, 0) if record is None else record.state_of(name)
+        except FileStoreChanged:
+            if window is not None:
+                window.note_change(store_key(name))
+            raise
 
-    def _check_file_window(self, window: ReadWindow | None) -> None:
-        if window is not None and any(window.changed(path) for path in window.paths):
-            raise FileStoreChanged
+    def _check_file_window(self, window: ReadWindow | None, *, current: str | None = None) -> None:
+        for provenance, held in self._file_windows(window):
+            for path in held.paths:
+                if held.changed(path):
+                    raise FileStoreChanged
+                if held is window and path == current:
+                    continue
+                try:
+                    provenance.state_of(path)
+                except FileStoreChanged:
+                    held.note_change(store_key(path))
+                    raise
 
     async def _folded_integrity(
         self,
@@ -1736,11 +1772,14 @@ class SandboxToolSession:
     ) -> SourceIntegrity | None:
         """Fold stable path evidence, rechecking bytes when a host's counter moved."""
         if self._file_store_provenance is None:
+            self._check_file_window(window)
             return listed.integrity
         integrity, generation = before
-        after, current = self._recorded_state(listed.name)
-        self._check_file_window(window)
+        after, current = self._recorded_state(listed.name, window)
+        self._check_file_window(window, current=listed.name)
         if after != integrity:
+            if window is not None:
+                window.note_change(store_key(listed.name))
             raise FileStoreChanged
         if generation != current:
             try:
@@ -1749,10 +1788,14 @@ class SandboxToolSession:
                 self._logger.warning(
                     f"{self._log_prefix}: could not recheck a listed file: %s", error_detail(exc)
                 )
+                if window is not None:
+                    window.note_change(store_key(listed.name))
                 raise FileStoreChanged from None
-            after, _ = self._recorded_state(listed.name)
-            self._check_file_window(window)
+            after, _ = self._recorded_state(listed.name, window)
+            self._check_file_window(window, current=listed.name)
             if not unchanged or after != integrity:
+                if window is not None:
+                    window.note_change(store_key(listed.name))
                 raise FileStoreChanged
         return weakest_integrity((listed, ListedFile(listed.name, integrity)))
 
@@ -3229,7 +3272,7 @@ def sandboxed_tool(
             )
         finally:
             _CALL.reset(token)
-            for _, window in call.file_windows.values():
+            for _, _, window in call.file_windows.values():
                 window.close()
             call.file_windows.clear()
             close_unclean_notes(notes)
