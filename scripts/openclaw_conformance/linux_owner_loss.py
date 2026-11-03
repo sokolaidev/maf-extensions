@@ -253,11 +253,19 @@ def postflight(root: Path, name: str, case_hash: str) -> None:
     state = {"case_sha256": case_hash, "passed": False}
     write(receipt, state)
     if name == "worker-denied":
-        daemon = read(root / (name + ".json"), LIMITS["events"])["daemon"]
+        observed = read(root / (name + ".json"), LIMITS["events"])
+        daemon = observed["daemon"]
         require(
             file_hash(root / name / "daemon-resources.json") == daemon["registration_sha256"]
             and file_hash(root / name / "daemon-control.json") == daemon["control_sha256"],
             "daemon_registration_changed",
+        )
+        require(
+            all(
+                read(root / name / file).get("client") == observed["denial"]["client"]
+                for file in ("daemon-resources.json", "daemon-control.json")
+            ),
+            "daemon_registration_client",
         )
     remaining = cleanup(root / name, name, remove=False)
     require(

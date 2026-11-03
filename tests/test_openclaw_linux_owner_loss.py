@@ -73,6 +73,14 @@ def observation(name):
                 }
             )
         value["events"].sort(key=lambda row: row["mono_ns"])
+        allowed = {
+            "event": "docker_removal",
+            "mono_ns": 975,
+            "returncode": 0,
+            "container": "a" * 64,
+            "target": "owned",
+        }
+        value["transport"].append(allowed)
         if name == "worker-denied":
             denied = value["denial"]
             denied["image"] = docker_faults.DENIAL_IMAGE
@@ -83,7 +91,6 @@ def observation(name):
                 "container": "a" * 64,
                 "target": "owned",
             }
-            allowed = dict(removal, mono_ns=975, returncode=0)
             denied.update(
                 removals=[removal],
                 allowed_removals=[allowed],
@@ -92,7 +99,7 @@ def observation(name):
                     dict(denied["decisions"][0], sequence=2, allowed=True, denied=False, nonce=""),
                 ],
             )
-            value["transport"].extend([removal, allowed])
+            value["transport"].append(removal)
             value["transport"].sort(key=lambda row: row["mono_ns"])
             value["daemon"] = {
                 "registration_sha256": "d" * 64,
@@ -277,7 +284,7 @@ def test_collector_rejects_incomplete_or_transplanted_campaign(tmp_path, monkeyp
                 ("daemon-resources.json", "registration_sha256"),
                 ("daemon-control.json", "control_sha256"),
             ):
-                profile.write(root / name / file, {"test": "registered"})
+                profile.write(root / name / file, {"client": value["denial"]["client"]})
                 value["daemon"][key] = profile.file_hash(root / name / file)
             if mutation == "registration":
                 profile.write(root / name / "daemon-resources.json", {"test": "different scope"})
@@ -828,3 +835,46 @@ def test_docker_faults_require_positive_startup_observer_controls(name, mutation
         value["transport"].sort(key=lambda r: r["mono_ns"])
     with pytest.raises(ValueError, match="startup_completion_observation"):
         profile.verify_case(value, name, candidate, CAMPAIGN)
+
+
+@pytest.mark.parametrize("name", ["worker-unavailable", "worker-denied"])
+def test_restored_removal_must_precede_product_startup_completion(name):
+    candidate, value = observation(name)
+    completed = [r for r in value["transport"] if r["event"] == "startup_complete"]
+    completed[-1]["mono_ns"] = 960
+    value["transport"].sort(key=lambda r: r["mono_ns"])
+    with pytest.raises(ValueError, match="restored_removal_binding"):
+        profile.verify_case(value, name, candidate, CAMPAIGN)
+
+
+@pytest.mark.parametrize(
+    "swapped",
+    [
+        ("daemon-resources.json",),
+        ("daemon-control.json",),
+        ("daemon-resources.json", "daemon-control.json"),
+    ],
+)
+def test_postflight_binds_registration_clients_before_inventory(tmp_path, monkeypatch, swapped):
+    name = "worker-denied"
+    root = tmp_path / name
+    root.mkdir()
+    _, value = observation(name)
+    for file, key in (
+        ("daemon-resources.json", "registration_sha256"),
+        ("daemon-control.json", "control_sha256"),
+    ):
+        profile.write(
+            root / file, {"client": "c" * 32 if file in swapped else value["denial"]["client"]}
+        )
+        value["daemon"][key] = profile.file_hash(root / file)
+    case_path = tmp_path / (name + ".json")
+    profile.write(case_path, value)
+
+    def inventory(*args, **kwargs):
+        pytest.fail("Unrelated registrations must be rejected before inventory")
+
+    monkeypatch.setattr(profile, "cleanup", inventory)
+    with pytest.raises(ValueError, match="daemon_registration_client"):
+        profile.postflight(tmp_path, name, profile.file_hash(case_path))
+    assert profile.read(tmp_path / (name + ".postflight.json"))["passed"] is False

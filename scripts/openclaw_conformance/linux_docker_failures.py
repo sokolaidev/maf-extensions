@@ -207,6 +207,24 @@ def verify_failure(value: dict[str, Any], name: str) -> None:
         ),
         "startup_completion_observation",
     )
+    completed_ns = one([r for r in completed if r["boot"] == ready["boot"]], "startup_complete")[
+        "mono_ns"
+    ]
+    restored_removals = [
+        r
+        for r in value["transport"]
+        if r["event"] == "docker_removal"
+        and r["returncode"] == 0
+        and r["container"] == blocked["resources"][0]
+    ]
+    require(
+        restored_removals
+        and all(
+            type(r["returncode"]) is int and restored["mono_ns"] < r["mono_ns"] < completed_ns
+            for r in restored_removals
+        ),
+        "restored_removal_binding",
+    )
     if name == "worker-unavailable":
         require(
             blocked["context_private"] is True
@@ -262,18 +280,7 @@ def verify_failure(value: dict[str, Any], name: str) -> None:
             require_container=True,
         )
         removals = denied["allowed_removals"]
-        require(
-            removals
-            == [
-                r
-                for r in value["transport"]
-                if r["event"] == "docker_removal"
-                and r["returncode"] == 0
-                and r["container"] == denied["container"]
-            ]
-            and all(restored["mono_ns"] < r["mono_ns"] < ready["ready_ns"] for r in removals),
-            "restored_removal_binding",
-        )
+        require(removals == restored_removals, "restored_removal_binding")
         authorize(
             denied["restored_decisions"],
             removals,
