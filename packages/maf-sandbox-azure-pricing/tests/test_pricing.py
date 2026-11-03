@@ -651,6 +651,7 @@ def test_westeurope_selects_zones_per_service_and_product(service, product, fami
         ("westeurope", "Zone 1", "Zone 6", "Zone 1"),
         ("australiacentral", "Zone 1", "Zone 4", "Zone 4"),
         ("australiaeast", "Zone 2", "Zone 4", "Zone 4"),
+        ("newzealandnorth", "Zone 2", "Zone 2", "Zone 4"),
         ("koreacentral", "Zone 2", "Zone 8", "Zone 2"),
         ("centralindia", "Zone 2", "Zone 5", "Zone 5"),
         ("japaneast", "Zone 2", "Zone 2", "Zone 2"),
@@ -670,6 +671,32 @@ def test_geographies_do_not_share_one_zone_map(region, network, front_door, cdn)
     ]:
         match = _zone(region, family)
         assert (match["zone"] if match else None) == expected
+
+
+@pytest.mark.parametrize(
+    ("service", "product"),
+    [
+        ("Content Delivery Network", "Premium CDN"),
+        ("Azure Front Door Service", "Azure Front Door Service"),
+    ],
+)
+def test_newzealand_cdn_selects_zone_four_rows(service, product):
+    prices = [
+        row() | {"serviceName": service, "productName": product, "region": location}
+        for location in ("Zone 2", "Zone 4")
+    ]
+    data, truncated = parse_report(envelope(prices).encode(), 1, region="newzealandnorth")
+    result = json.loads(data)
+    assert not truncated and result["selected_rows"] == 1
+    assert result["prices"] == [
+        prices[1]
+        | {
+            "matched_by": "zone",
+            "zone_family": "cdn_classic",
+            "zone": "Zone 4",
+            "zone_basis": "geography",
+        }
+    ]
 
 
 @pytest.mark.parametrize(

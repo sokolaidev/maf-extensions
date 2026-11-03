@@ -133,7 +133,7 @@ def _zone(region: str, family: str | None) -> dict[str, str] | None:
     if family == "front_door" and edge:
         return {"zone": f"Zone {edge}", "zone_basis": "geography"}
     if family == "cdn_classic" and edge and edge != 9:
-        zone = {6: 1, 7: 1, 8: 2}.get(edge, edge)
+        zone = 4 if region == "newzealandnorth" else {6: 1, 7: 1, 8: 2}.get(edge, edge)
         return {"zone": f"Zone {zone}", "zone_basis": "geography"}
     if family == "dns" and edge:
         return {

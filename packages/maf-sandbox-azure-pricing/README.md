@@ -42,13 +42,13 @@ An explicit `armRegionName` field in `filter` disables expansion and selection; 
 
 ### Billing-zone selection
 
-The source tables were checked on 2026-11-03 against Microsoft's [virtual-network pricing FAQ](https://azure.microsoft.com/en-us/pricing/details/virtual-network/), [Front Door pricing](https://azure.microsoft.com/en-us/pricing/details/frontdoor/), [CDN pricing](https://azure.microsoft.com/en-us/pricing/details/cdn/), [DNS pricing](https://azure.microsoft.com/en-us/pricing/details/dns/) and [region locations](https://learn.microsoft.com/en-us/azure/reliability/regions-list). The host uses a bundled mapping, without extra network calls; newly named regions need a mapping update or an explicit location filter. These billing zones are unrelated to Azure availability zones.
+The source tables were checked on 2026-11-03 against Microsoft's [virtual-network pricing FAQ](https://azure.microsoft.com/en-us/pricing/details/virtual-network/), [Front Door pricing](https://azure.microsoft.com/en-us/pricing/details/frontdoor/), [CDN pricing](https://azure.microsoft.com/en-us/pricing/details/cdn/), [CDN billing zones](https://learn.microsoft.com/en-us/azure/cdn/cdn-billing), [DNS pricing](https://azure.microsoft.com/en-us/pricing/details/dns/) and [region locations](https://learn.microsoft.com/en-us/azure/reliability/regions-list). The host uses a bundled mapping, without extra network calls; newly named regions need a mapping update or an explicit location filter. These billing zones are unrelated to Azure availability zones.
 
 | `zone_family` | Service/product match | Selection |
 |---|---|---|
 | `network` | Virtual Network Manager and TAP (`Virtual Network` product), VPN Gateway Bandwidth, Azure Cosmos DB Data Transfer, Azure Multicloud Interconnect | Virtual-network FAQ Zone 1–3; US Gov Arizona/Texas/Virginia use `US Gov Zone 1`. Australia Central is Zone 1, while Australia East is Zone 2. |
 | `front_door` | `Azure Front Door Service` service, `Azure Front Door` product | Geography: North America 1, Asia Pacific 2, South America 3, Australia 4, India 5, Europe 6, Middle East/Africa 7, Korea 8, US Gov 9. |
-| `cdn_classic` | `Content Delivery Network` service, or `Azure Front Door Service` service and product | Geography: North America/Europe/Middle East/Africa 1, Asia Pacific including Korea 2, South America 3, Australia 4, India 5. No inferred government zone. |
+| `cdn_classic` | `Content Delivery Network` service, or `Azure Front Door Service` service and product | Geography: North America/Europe/Middle East/Africa 1, Asia Pacific including Korea 2, South America 3, Australia and New Zealand 4, India 5. No inferred government zone. |
 | `dns` | `Azure DNS` service | One uniform commercial price set, `Zone 1`; the three mapped government regions use `US Gov Zone 1`. |
 | No selection | `ExpressRoute` service | The circuit's peering location determines the zone, not the ARM region. Omit zone rows with a note; query the location explicitly. |
 
