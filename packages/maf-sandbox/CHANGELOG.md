@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.52.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.52.0...maf-sandbox-v0.52.1) (2026-11-03)
+
+
+### Fixes
+
+* preserve provenance and provider lifetimes on MAF 1.24 ([#2344](https://github.com/sokolaidev/maf-extensions/issues/2344)) ([4ff8a3d](https://github.com/sokolaidev/maf-extensions/commit/4ff8a3d310f7ec26a9bcd7858bdec46da03f5f49))
+
 ## [0.52.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.51.1...maf-sandbox-v0.52.0) (2026-10-27)
 
 
