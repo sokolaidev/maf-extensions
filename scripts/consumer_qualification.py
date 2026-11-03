@@ -85,6 +85,7 @@ def inputs(
     for path in (
         "scripts",
         "tests/fixtures",
+        ".github/actions/setup-classic-docker",
         WORKFLOW,
         "pyproject.toml",
         "uv.toml",

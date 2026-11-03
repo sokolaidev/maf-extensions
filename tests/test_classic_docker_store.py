@@ -94,6 +94,7 @@ def test_json_pipeline_cli(operation, payload, succeeds):
         ("container-image-release.yml", "prepare", "scripts/prepare_container_release_dispatch.py"),
         ("container-image-release.yml", "promote", "scripts/container_release_publish.py promote"),
         ("container-image-release.yml", "qualify", "scripts/container_release_publish.py qualify"),
+        ("kind-consumer-qualification.yml", "qualify", "scripts/qualify_kind_consumers.py qualify"),
         ("image-security.yml", "scan", "scripts/build_scan_image.sh"),
     ],
 )

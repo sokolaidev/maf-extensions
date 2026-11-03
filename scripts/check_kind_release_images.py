@@ -90,7 +90,8 @@ def matching_source(root: Path, source: str, head: str, package: str, profile: s
     harness = [
         path
         for path in paths
-        if path.startswith(("scripts/", "tests/fixtures/")) or path == consumer.WORKFLOW
+        if path.startswith(("scripts/", "tests/fixtures/", ".github/actions/setup-classic-docker/"))
+        or path == consumer.WORKFLOW
     ]
     if harness:
         raise ValueError(

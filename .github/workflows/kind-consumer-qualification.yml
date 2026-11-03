@@ -61,6 +61,7 @@ jobs:
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
       - name: Sync locked consumer environment
         run: uv sync --locked
+      - uses: ./.github/actions/setup-classic-docker
       - name: Verify published image and qualify consumers
         env:
           GH_TOKEN: ${{ github.token }}

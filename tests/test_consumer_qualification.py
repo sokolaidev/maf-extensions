@@ -12,7 +12,6 @@ from types import SimpleNamespace
 import pytest
 import test_kind_release_images as legacy
 import yaml
-from test_kind_release_images import PACKAGE, commit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import check_kind_release_images as guard  # noqa: E402
@@ -28,7 +27,7 @@ repo = legacy.repo
 
 
 def expected(root, source):
-    return consumer.inputs(root, source, PACKAGE, "shell", "docker", CANDIDATE)
+    return consumer.inputs(root, source, legacy.PACKAGE, "shell", "docker", CANDIDATE)
 
 
 def claim(inputs, source):
@@ -59,10 +58,11 @@ def claim(inputs, source):
     [
         "packages/maf-sandbox/src/module.py",
         "packages/maf-sandbox-docker/src/module.py",
-        f"packages/{PACKAGE}/src/module.py",
+        f"packages/{legacy.PACKAGE}/src/module.py",
         "scripts/shell_qualification.py",
         "scripts/check_container_release_image.py",
         consumer.WORKFLOW,
+        ".github/actions/setup-classic-docker/action.yml",
         ".python-version",
     ],
 )
@@ -72,28 +72,37 @@ def test_consumer_inputs_change_without_rebuilding_workload(repo, path):
     target = root / path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("changed\n")
-    head = commit(root)
+    head = legacy.commit(root)
     assert expected(root, head) != before
     assert consumer.image_changes(root, base, head, "shell") == []
+
+
+def test_docker_setup_change_invalidates_legacy_qualification(repo):
+    root, base = repo
+    action = root / ".github/actions/setup-classic-docker/action.yml"
+    action.parent.mkdir(parents=True)
+    action.write_text("changed\n")
+    with pytest.raises(ValueError, match="consumer harness"):
+        guard.matching_source(root, base, legacy.commit(root), legacy.PACKAGE, "shell")
 
 
 def test_versions_and_changelog_only_reuse_the_same_subject(repo):
     root, base = repo
     before = expected(root, base)
-    metadata = root / "packages" / PACKAGE / "pyproject.toml"
+    metadata = root / "packages" / legacy.PACKAGE / "pyproject.toml"
     metadata.write_text(metadata.read_text().replace("0.1.0", "0.1.1"))
     lock = root / "uv.lock"
     lock.write_text(lock.read_text().replace("0.1.0", "0.1.1"))
     (metadata.parent / "CHANGELOG.md").write_text("release\n")
-    assert expected(root, commit(root)) == before
+    assert expected(root, legacy.commit(root)) == before
 
 
-@pytest.mark.parametrize("path", ["uv.lock", f"packages/{PACKAGE}/pyproject.toml"])
+@pytest.mark.parametrize("path", ["uv.lock", f"packages/{legacy.PACKAGE}/pyproject.toml"])
 def test_real_dependency_changes_invalidate_consumer_subject(repo, path):
     root, base = repo
     target = root / path
     target.write_text(target.read_text() + '\n[qualification-test]\nrequirement = "new"\n')
-    assert expected(root, commit(root)) != expected(root, base)
+    assert expected(root, legacy.commit(root)) != expected(root, base)
 
 
 def test_normalization_rejects_inconsistent_workspace_version(repo):
@@ -101,7 +110,7 @@ def test_normalization_rejects_inconsistent_workspace_version(repo):
     lock = root / "uv.lock"
     lock.write_text(lock.read_text().replace("0.1.0", "0.1.1"))
     with pytest.raises(ValueError, match="disagree"):
-        expected(root, commit(root))
+        expected(root, legacy.commit(root))
 
 
 @pytest.mark.parametrize(
@@ -112,13 +121,13 @@ def test_image_changes_still_require_replacement(repo, path):
     target = root / path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("new bytes\n")
-    assert consumer.image_changes(root, base, commit(root), "shell") == [path]
+    assert consumer.image_changes(root, base, legacy.commit(root), "shell") == [path]
 
 
 def test_backend_change_passes_with_fresh_consumer_evidence_and_same_image(repo, monkeypatch):
     root, base = repo
     (root / "packages/maf-sandbox-docker/src/module.py").write_text("VALUE = 2\n")
-    head = commit(root)
+    head = legacy.commit(root)
     record = CANDIDATE | {"sourceCommit": base}
     seen = []
 
@@ -127,7 +136,7 @@ def test_backend_change_passes_with_fresh_consumer_evidence_and_same_image(repo,
         return claim(value, head)
 
     monkeypatch.setattr(consumer, "verify", verify)
-    result = guard.compatibility(root, head, PACKAGE, "shell", record)
+    result = guard.compatibility(root, head, legacy.PACKAGE, "shell", record)
     assert result[0]["sourceCommit"] == head
     assert seen == [expected(root, head)]
     assert seen[0]["registryDigest"] == IMAGE
@@ -140,14 +149,14 @@ def test_all_mismatches_report_image_and_consumer_actions(repo, monkeypatch):
     image = root / "images/shell-sandbox/Dockerfile"
     image.parent.mkdir(parents=True)
     image.write_text("FROM scratch\n")
-    head = commit(root)
+    head = legacy.commit(root)
 
     def unavailable(_):
         raise ValueError("Run consumer qualification")
 
     monkeypatch.setattr(consumer, "verify", unavailable)
     with pytest.raises(ValueError) as error:
-        guard.compatibility(root, head, PACKAGE, "shell", CANDIDATE | {"sourceCommit": base})
+        guard.compatibility(root, head, legacy.PACKAGE, "shell", CANDIDATE | {"sourceCommit": base})
     assert "maf-sandbox-docker" in str(error.value)
     assert "publish replacement image" in str(error.value)
     assert "Run consumer qualification" in str(error.value)
@@ -158,10 +167,10 @@ def test_fresh_consumer_evidence_cannot_waive_image_change(repo, monkeypatch):
     image = root / "images/shell-sandbox/Dockerfile"
     image.parent.mkdir(parents=True)
     image.write_text("FROM scratch\n")
-    head = commit(root)
+    head = legacy.commit(root)
     monkeypatch.setattr(consumer, "verify", lambda value: claim(value, head))
     with pytest.raises(ValueError, match="publish replacement image"):
-        guard.compatibility(root, head, PACKAGE, "shell", CANDIDATE | {"sourceCommit": base})
+        guard.compatibility(root, head, legacy.PACKAGE, "shell", CANDIDATE | {"sourceCommit": base})
 
 
 @pytest.mark.parametrize(
@@ -326,11 +335,11 @@ def test_signer_recomputes_transferred_inputs_and_attempt(repo, tmp_path, monkey
     record = claim(subject, source)
     write(directory / consumer.SUBJECT, subject)
     write(directory / "consumer-qualification.json", record)
-    workflow.validate_for_signing(root, directory, PACKAGE, "shell", "docker")
+    workflow.validate_for_signing(root, directory, legacy.PACKAGE, "shell", "docker")
     record["runAttempt"] = "2"
     write(directory / "consumer-qualification.json", record)
     with pytest.raises(ValueError, match="workflow attempt"):
-        workflow.validate_for_signing(root, directory, PACKAGE, "shell", "docker")
+        workflow.validate_for_signing(root, directory, legacy.PACKAGE, "shell", "docker")
 
 
 def test_selection_ignores_metadata_but_selects_backend_changes(repo, monkeypatch):
@@ -343,9 +352,9 @@ def test_selection_ignores_metadata_but_selects_backend_changes(repo, monkeypatc
     )
     assert workflow.selection(root, base, "shell") == []
     (root / "packages/maf-sandbox-docker/src/module.py").write_text("VALUE = 2\n")
-    commit(root)
+    legacy.commit(root)
     assert workflow.selection(root, base, "shell") == [
-        {"package": PACKAGE, "profile": "shell", "backend": "docker"}
+        {"package": legacy.PACKAGE, "profile": "shell", "backend": "docker"}
     ]
 
 
@@ -408,14 +417,14 @@ def test_execution_authenticates_before_pull_and_only_emits_complete_evidence(
     output = tmp_path / "evidence"
     if failure:
         with pytest.raises(ValueError):
-            workflow.qualify(root, PACKAGE, "shell", "docker", output)
+            workflow.qualify(root, legacy.PACKAGE, "shell", "docker", output)
         assert not (output / "consumer-qualification.json").exists()
         if failure == "release-identity":
             assert calls == ["authenticate"]
     else:
-        workflow.qualify(root, PACKAGE, "shell", "docker", output)
+        workflow.qualify(root, legacy.PACKAGE, "shell", "docker", output)
         assert calls == ["authenticate", "initial-qualification", "anonymous-pull", "runtime"]
-        workflow.validate_for_signing(root, output, PACKAGE, "shell", "docker")
+        workflow.validate_for_signing(root, output, legacy.PACKAGE, "shell", "docker")
         assert json.loads((output / consumer.SUBJECT).read_text()) == expected(root, source)
 
 
@@ -431,7 +440,9 @@ def test_legacy_docker_evidence_cannot_cover_an_additional_backend(repo, monkeyp
 
     monkeypatch.setattr(consumer, "verify", verify)
     with pytest.raises(ValueError, match="WSLC evidence unavailable"):
-        guard.compatibility(root, source, PACKAGE, "shell", CANDIDATE | {"sourceCommit": source})
+        guard.compatibility(
+            root, source, legacy.PACKAGE, "shell", CANDIDATE | {"sourceCommit": source}
+        )
 
 
 @pytest.mark.workflow
