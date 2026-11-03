@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -521,7 +521,7 @@ def test_run_unwinds_storage_backend_and_credentials(sample, monkeypatch, failur
     def make_agent(**kwargs):
         [provider] = kwargs["context_providers"]
         assert provider.store is store and provider.disable_write_tools
-        return SimpleNamespace(create_session=object)
+        return nullcontext(SimpleNamespace(create_session=object))
 
     async def flow(ask, validate, read_back, storage, markdown):
         storage.attempted.add("this-call/diagram.drawio")

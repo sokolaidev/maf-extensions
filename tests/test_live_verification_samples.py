@@ -226,7 +226,7 @@ def test_shell_pipeline_cleans_storage_and_never_publishes_failed_output(
             purges.append(args)
             return SimpleNamespace(undisposed=("leftover",) if fault == "purge" else ())
 
-    class Agent:
+    class Agent(Context):
         def __init__(self, **kwargs):
             pass
 

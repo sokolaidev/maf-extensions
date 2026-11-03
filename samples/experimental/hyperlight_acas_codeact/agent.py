@@ -143,7 +143,7 @@ async def run(*, smoke: bool = False) -> int:
             from azure.identity.aio import DefaultAzureCredential
 
             credential = await cleanup.enter_async_context(DefaultAzureCredential())
-            agent = Agent(
+            async with Agent(
                 client=OpenAIChatClient(
                     model=env["AZURE_OPENAI_CHAT_MODEL"],
                     azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
@@ -155,11 +155,11 @@ async def run(*, smoke: bool = False) -> int:
                     "Always call the tool and report exactly the integer it printed."
                 ),
                 tools=tools,
-            )
-            response = await agent.run(TASK)
-            reply = response.text
-            print(quoted(reply))
-            outputs = tool_results(response, "execute_code")
+            ) as agent:
+                response = await agent.run(TASK)
+                reply = response.text
+                print(quoted(reply))
+                outputs = tool_results(response, "execute_code")
 
         print(evidence("CodeAct tool results", outputs, "CodeAct results returned"))
         # A correct reply alone does not prove that the sandbox ran the program.

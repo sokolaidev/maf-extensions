@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from maf_cachebench import ModelPricing, _advise_cli, _cli, _recall_cli, _summary_cli
+from maf_cachebench._providers import ProviderRuntime
 from maf_cachebench._strategies import STRATEGIES_FORCING_RECORDS, STRATEGIES_NEEDING_SUMMARIZER
 
 pytestmark = pytest.mark.anyio
@@ -115,12 +116,11 @@ async def test_dry_run_preserves_local_prompt_metrics(tmp_path: Path) -> None:
 async def test_replay_continues_after_one_provider_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from types import SimpleNamespace
 
     def provider(name: str, **kwargs: Any) -> Any:
         if name == "azure":
             raise ValueError("missing credentials")
-        return SimpleNamespace(model="stub")
+        return ProviderRuntime(None, "stub")
 
     monkeypatch.setattr(_cli, "build_provider", provider)
     monkeypatch.setattr(_cli, "ProviderCaller", lambda *args, **kwargs: _cli._DryRunCaller())
@@ -162,9 +162,8 @@ async def test_advice_requires_pricing_before_measurement(
 async def test_advice_resolves_default_catalogue_model_before_measurement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from types import SimpleNamespace
 
-    runtime = SimpleNamespace(model="resolved-model")
+    runtime = ProviderRuntime(None, "resolved-model")
     events: list[str] = []
     monkeypatch.setattr(_advise_cli, "build_provider", lambda *a, **k: runtime)
 
@@ -268,7 +267,6 @@ async def test_replay_dry_run_ignores_unused_summarizer(
 
 
 async def test_replay_resolves_summarizer_model_selector(monkeypatch: pytest.MonkeyPatch) -> None:
-    from types import SimpleNamespace
 
     from maf_cachebench._tokenizers import build_tokenizer
 
@@ -276,7 +274,7 @@ async def test_replay_resolves_summarizer_model_selector(monkeypatch: pytest.Mon
 
     def build(provider: str, **kwargs: Any) -> Any:
         seen.append((provider, kwargs.get("model")))
-        return SimpleNamespace(client=object(), options={})
+        return ProviderRuntime(object(), "stub")
 
     monkeypatch.setattr(_cli, "build_provider", build)
     args = _cli.build_parser().parse_args(["--summarizer-provider", "azure:summarizer-model"])
@@ -299,7 +297,6 @@ async def test_summary_requires_every_call_to_have_valid_usage(
     phase: str,
     failure: str,
 ) -> None:
-    from types import SimpleNamespace
 
     from maf_cachebench import CallOutcome, build_recall_scenario
 
@@ -319,7 +316,9 @@ async def test_summary_requires_every_call_to_have_valid_usage(
             )
         return CallOutcome(latency_ms=0, input_tokens=100, cached_tokens=50, text="answer")
 
-    monkeypatch.setattr(_summary_cli, "build_provider", lambda *a, **k: SimpleNamespace())
+    monkeypatch.setattr(
+        _summary_cli, "build_provider", lambda *a, **k: ProviderRuntime(None, "stub")
+    )
     monkeypatch.setattr(_summary_cli, "ProviderCaller", lambda *a, **k: caller)
     monkeypatch.setattr(_summary_cli, "build_recall_scenario", lambda **k: scenario)
     args = _summary_cli.build_parser().parse_args(["azure", "--tokenizer", "estimator"])
@@ -477,7 +476,6 @@ async def test_summary_bounds_cache_per_call(
     cached: int | None,
     normalized: int,
 ) -> None:
-    from types import SimpleNamespace
 
     from maf_cachebench import CallOutcome
 
@@ -490,7 +488,9 @@ async def test_summary_bounds_cache_per_call(
             latency_ms=0, input_tokens=100, cached_tokens=cached if calls % 2 else 0, text="answer"
         )
 
-    monkeypatch.setattr(_summary_cli, "build_provider", lambda *a, **k: SimpleNamespace())
+    monkeypatch.setattr(
+        _summary_cli, "build_provider", lambda *a, **k: ProviderRuntime(None, "stub")
+    )
     monkeypatch.setattr(_summary_cli, "ProviderCaller", lambda *a, **k: caller)
     args = _summary_cli.build_parser().parse_args(
         ["azure", "--tokenizer", "estimator", "--filler-turns", "0"]
@@ -585,9 +585,8 @@ async def test_standalone_rejects_negative_workload_before_setup(
 async def test_replay_rejects_resolved_aliases_before_first_cell(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, selection: str
 ) -> None:
-    from types import SimpleNamespace
 
-    monkeypatch.setattr(_cli, "build_provider", lambda *a, **k: SimpleNamespace(model="default"))
+    monkeypatch.setattr(_cli, "build_provider", lambda *a, **k: ProviderRuntime(None, "default"))
 
     def unexpected(*args: Any, **kwargs: Any) -> None:
         pytest.fail("Resolved aliases must fail before any cells or paid calls")
@@ -612,10 +611,9 @@ async def test_replay_rejects_resolved_aliases_before_first_cell(
 async def test_replay_distinct_resolved_models_keep_distinct_cells(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from types import SimpleNamespace
 
     monkeypatch.setattr(
-        _cli, "build_provider", lambda *a, **k: SimpleNamespace(model=k["model"] or "default")
+        _cli, "build_provider", lambda *a, **k: ProviderRuntime(None, k["model"] or "default")
     )
     monkeypatch.setattr(_cli, "ProviderCaller", lambda *a, **k: _cli._DryRunCaller())
     args = _cli.build_parser().parse_args(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections.abc import Sequence
+from contextlib import AsyncExitStack
 
 from agent_framework import Message, apply_compaction
 
@@ -102,37 +103,40 @@ async def _probe(
     )
     strategy = build_strategy(strategy_name, options)
 
-    runtime = build_provider(
-        provider,
-        temperature=None if args.no_temperature else 0.0,
-        response_max_tokens=args.answer_max_tokens,
-        model=model_override,
-    )
-    caller = ProviderCaller(runtime, request_timeout=args.request_timeout or None)
+    async with AsyncExitStack() as resources:
+        runtime = await resources.enter_async_context(
+            build_provider(
+                provider,
+                temperature=None if args.no_temperature else 0.0,
+                response_max_tokens=args.answer_max_tokens,
+                model=model_override,
+            )
+        )
+        caller = ProviderCaller(runtime, request_timeout=args.request_timeout or None)
 
-    history: list[Message] = [scenario.transcript.system]
-    turns = scenario.transcript.turns
-    for turn in turns[:-1]:
-        history.extend(turn.request)
-        # Compaction runs on every turn, exactly as it would in a real agent loop, so the
-        # final prompt reflects the cumulative damage rather than a single trim.
-        await apply_compaction(history, strategy=strategy, tokenizer=tokenizer)
-        history.extend(turn.reply)
+        history: list[Message] = [scenario.transcript.system]
+        turns = scenario.transcript.turns
+        for turn in turns[:-1]:
+            history.extend(turn.request)
+            # Compaction runs on every turn, exactly as it would in a real agent loop, so the
+            # final prompt reflects the cumulative damage rather than a single trim.
+            await apply_compaction(history, strategy=strategy, tokenizer=tokenizer)
+            history.extend(turn.reply)
 
-    history.extend(turns[-1].request)
-    projected = await apply_compaction(history, strategy=strategy, tokenizer=tokenizer)
-    final_prompt = "\n".join(serialize_message(message) for message in projected)
+        history.extend(turns[-1].request)
+        projected = await apply_compaction(history, strategy=strategy, tokenizer=tokenizer)
+        final_prompt = "\n".join(serialize_message(message) for message in projected)
 
-    outcome = await caller(projected)
-    answer = outcome.text or ""
-    return RecallScore(
-        outcomes=score_answer(answer, scenario.facts, final_prompt),
-        answer=answer,
-        messages_left=len(projected),
-        messages_total=len(history),
-        contradictions=scenario.contradictions,
-        error=outcome.error,
-    )
+        outcome = await caller(projected)
+        answer = outcome.text or ""
+        return RecallScore(
+            outcomes=score_answer(answer, scenario.facts, final_prompt),
+            answer=answer,
+            messages_left=len(projected),
+            messages_total=len(history),
+            contradictions=scenario.contradictions,
+            error=outcome.error,
+        )
 
 
 def _render(rows: list[tuple[str, int, RecallScore]], *, show_answers: bool) -> str:

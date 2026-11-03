@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections.abc import Sequence
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
@@ -273,22 +274,25 @@ async def run_advice(args: argparse.Namespace) -> int:
     pricing = None
     if provider != "openrouter" or args.price_input is not None:
         pricing = _resolve_pricing(args, provider, model_override or provider)
-    runtime = build_provider(
-        provider,
-        temperature=None if args.no_temperature else 0.0,
-        response_max_tokens=args.response_max_tokens,
-        model=model_override,
-    )
-    model = runtime.model
-    if pricing is None:
-        pricing = _resolve_pricing(args, provider, model)
-    summaries = await _measure(args, provider, runtime)
-    try:
-        verdict = advise(summaries, pricing)
-    except ValueError as error:
-        raise SystemExit(f"Cannot advise: {error}") from error
-    print(_render(verdict, pricing, model))
-    return 0
+    async with AsyncExitStack() as resources:
+        runtime = await resources.enter_async_context(
+            build_provider(
+                provider,
+                temperature=None if args.no_temperature else 0.0,
+                response_max_tokens=args.response_max_tokens,
+                model=model_override,
+            )
+        )
+        model = runtime.model
+        if pricing is None:
+            pricing = _resolve_pricing(args, provider, model)
+        summaries = await _measure(args, provider, runtime)
+        try:
+            verdict = advise(summaries, pricing)
+        except ValueError as error:
+            raise SystemExit(f"Cannot advise: {error}") from error
+        print(_render(verdict, pricing, model))
+        return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

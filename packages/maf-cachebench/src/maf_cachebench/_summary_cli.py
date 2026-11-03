@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections.abc import Sequence
+from contextlib import AsyncExitStack
 
 from agent_framework import Message, apply_compaction
 
@@ -150,72 +151,75 @@ async def _measure(
             max_output_tokens=args.max_output_tokens,
         ),
     )
-    runtime = build_provider(
-        provider,
-        temperature=None if args.no_temperature else 0.0,
-        response_max_tokens=args.answer_max_tokens,
-        model=model_override,
-    )
-    # Intermediate turns are billed but their output is discarded, so cap generation there;
-    # only the final turn needs room for a real answer.
-    interim = ProviderCaller(
-        runtime, extra_options={"max_tokens": 16}, request_timeout=args.request_timeout or None
-    )
-    final = ProviderCaller(runtime, request_timeout=args.request_timeout or None)
+    async with AsyncExitStack() as resources:
+        runtime = await resources.enter_async_context(
+            build_provider(
+                provider,
+                temperature=None if args.no_temperature else 0.0,
+                response_max_tokens=args.answer_max_tokens,
+                model=model_override,
+            )
+        )
+        # Intermediate turns are billed but their output is discarded, so cap generation there;
+        # only the final turn needs room for a real answer.
+        interim = ProviderCaller(
+            runtime, extra_options={"max_tokens": 16}, request_timeout=args.request_timeout or None
+        )
+        final = ProviderCaller(runtime, request_timeout=args.request_timeout or None)
 
-    cache_reported = True
+        cache_reported = True
 
-    async def measured(caller: ProviderCaller, messages: list[Message]) -> CallOutcome:
-        nonlocal cache_reported
-        outcome = await caller(messages)
-        cache_reported = cache_reported and outcome.cached_tokens is not None
-        if outcome.error or not outcome.input_tokens or outcome.input_tokens < 0:
-            reason = outcome.error or "provider omitted positive input usage"
-            raise SystemExit(f"Cannot measure {strategy_name!r}: {reason}.")
-        return outcome
+        async def measured(caller: ProviderCaller, messages: list[Message]) -> CallOutcome:
+            nonlocal cache_reported
+            outcome = await caller(messages)
+            cache_reported = cache_reported and outcome.cached_tokens is not None
+            if outcome.error or not outcome.input_tokens or outcome.input_tokens < 0:
+                reason = outcome.error or "provider omitted positive input usage"
+                raise SystemExit(f"Cannot measure {strategy_name!r}: {reason}.")
+            return outcome
 
-    history: list[Message] = [scenario.transcript.system]
-    input_tokens = cached_tokens = 0
-    turns = scenario.transcript.turns
-    for turn in turns[:-1]:
-        history.extend(turn.request)
+        history: list[Message] = [scenario.transcript.system]
+        input_tokens = cached_tokens = 0
+        turns = scenario.transcript.turns
+        for turn in turns[:-1]:
+            history.extend(turn.request)
+            projected = await apply_compaction(history, strategy=strategy, tokenizer=tokenizer)
+            outcome = await measured(interim, projected)
+            input_tokens += outcome.input_tokens or 0
+            cached_tokens += clamp_cached_tokens(outcome.input_tokens or 0, outcome.cached_tokens)
+            history.extend(turn.reply)
+
+        history.extend(turns[-1].request)
         projected = await apply_compaction(history, strategy=strategy, tokenizer=tokenizer)
-        outcome = await measured(interim, projected)
-        input_tokens += outcome.input_tokens or 0
-        cached_tokens += clamp_cached_tokens(outcome.input_tokens or 0, outcome.cached_tokens)
-        history.extend(turn.reply)
+        final_prompt = "\n".join(serialize_message(message) for message in projected)
+        answer_outcome = await measured(final, projected)
+        input_tokens += answer_outcome.input_tokens or 0
+        cached_tokens += clamp_cached_tokens(
+            answer_outcome.input_tokens or 0, answer_outcome.cached_tokens
+        )
+        answer = answer_outcome.text or ""
 
-    history.extend(turns[-1].request)
-    projected = await apply_compaction(history, strategy=strategy, tokenizer=tokenizer)
-    final_prompt = "\n".join(serialize_message(message) for message in projected)
-    answer_outcome = await measured(final, projected)
-    input_tokens += answer_outcome.input_tokens or 0
-    cached_tokens += clamp_cached_tokens(
-        answer_outcome.input_tokens or 0, answer_outcome.cached_tokens
-    )
-    answer = answer_outcome.text or ""
-
-    fresh = max(input_tokens - cached_tokens, 0)
-    cost = (
-        fresh * pricing.input_per_million + cached_tokens * pricing.cached_read_per_million
-    ) / 1_000_000
-    return JointOutcome(
-        strategy=strategy_name,
-        cost=cost,
-        input_tokens=input_tokens,
-        cached_tokens=cached_tokens,
-        cache_reported=cache_reported,
-        messages_left=len(projected),
-        messages_total=len(history),
-        score=RecallScore(
-            outcomes=score_answer(answer, scenario.facts, final_prompt),
-            answer=answer,
+        fresh = max(input_tokens - cached_tokens, 0)
+        cost = (
+            fresh * pricing.input_per_million + cached_tokens * pricing.cached_read_per_million
+        ) / 1_000_000
+        return JointOutcome(
+            strategy=strategy_name,
+            cost=cost,
+            input_tokens=input_tokens,
+            cached_tokens=cached_tokens,
+            cache_reported=cache_reported,
             messages_left=len(projected),
             messages_total=len(history),
-            contradictions=scenario.contradictions,
-            error=answer_outcome.error,
-        ),
-    )
+            score=RecallScore(
+                outcomes=score_answer(answer, scenario.facts, final_prompt),
+                answer=answer,
+                messages_left=len(projected),
+                messages_total=len(history),
+                contradictions=scenario.contradictions,
+                error=answer_outcome.error,
+            ),
+        )
 
 
 def _render(verdict: JointVerdict, pricing: ModelPricing, model: str, *, show_answers: bool) -> str:
@@ -308,25 +312,28 @@ async def run_summary(args: argparse.Namespace) -> int:
         ),
     )
 
-    probe = build_provider(
-        provider,
-        temperature=None if args.no_temperature else 0.0,
-        response_max_tokens=16,
-        model=model_override,
-    )
-    pricing = _resolve_pricing(args, provider, probe.model)
+    async with AsyncExitStack() as resources:
+        probe = await resources.enter_async_context(
+            build_provider(
+                provider,
+                temperature=None if args.no_temperature else 0.0,
+                response_max_tokens=16,
+                model=model_override,
+            )
+        )
+        pricing = _resolve_pricing(args, provider, probe.model)
 
-    outcomes: list[JointOutcome] = []
-    for strategy_name in strategies:
-        print(f"-> {strategy_name}", flush=True)
-        outcomes.append(await _measure(args, provider, model_override, strategy_name, pricing))
+        outcomes: list[JointOutcome] = []
+        for strategy_name in strategies:
+            print(f"-> {strategy_name}", flush=True)
+            outcomes.append(await _measure(args, provider, model_override, strategy_name, pricing))
 
-    try:
-        verdict = recommend(outcomes, min_correctness=args.min_correctness)
-    except ValueError as error:
-        raise SystemExit(f"Cannot summarize: {error}") from error
-    print(_render(verdict, pricing, probe.model, show_answers=args.show_answers))
-    return 0
+        try:
+            verdict = recommend(outcomes, min_correctness=args.min_correctness)
+        except ValueError as error:
+            raise SystemExit(f"Cannot summarize: {error}") from error
+        print(_render(verdict, pricing, probe.model, show_answers=args.show_answers))
+        return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

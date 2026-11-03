@@ -614,7 +614,8 @@ async def one_route(
     print(f"== {heading} ==\n")
     agent = agent_for(env, credential, tools, how)
     started = time.perf_counter()
-    response = await agent.run(TASK)
+    async with agent:
+        response = await agent.run(TASK)
     seconds = time.perf_counter() - started
     print(quoted(response.text))
     print()
