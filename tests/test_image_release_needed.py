@@ -1494,6 +1494,14 @@ def test_changed_inputs_preserve_git_quoted_filenames_and_prevent_closure(tmp_pa
     assert not result["resolved"]
 
 
+def test_core_python_source_remains_an_image_release_input(tmp_path):
+    tracker.git(tmp_path, "init")
+    base = commit(tmp_path, {"README.md": "baseline"})
+    path = "packages/maf-sandbox/src/maf_sandbox/maf.py"
+    head = commit(tmp_path, {path: "changed core behavior"})
+    assert tracker.changed_inputs(tmp_path, base, head, "hyperlight-aks-probe") == [path]
+
+
 @pytest.mark.parametrize("path", ["packages/maf-sandbox/pyproject.toml", "uv.lock"])
 @pytest.mark.parametrize("change", ["added", "deleted", "malformed"])
 def test_unclassifiable_metadata_remains_a_release_input(tmp_path, path, change):

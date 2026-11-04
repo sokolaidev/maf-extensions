@@ -293,6 +293,65 @@ def test_build_input_mapping(path, expected):
     assert list(affected(path)) == expected
 
 
+@pytest.mark.parametrize("event", ["pull_request", "push"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_core_python_changes_select_runtime_without_security_scan(repository, event, reverse):
+    root, base = repository
+    path = "packages/maf-sandbox/src/maf_sandbox/maf.py"
+    head = commit(root, {path: "changed core behavior"})
+    if reverse:
+        base, head = head, base
+    assert select(root, event, base, head)[0] == []
+    assert select(root, event, base, head, runtime=True)[0] == ["hyperlight-aks-probe"]
+    assert changed_profiles(root, base, head, path) == ("hyperlight-aks-probe",)
+
+
+@pytest.mark.parametrize(
+    "path,content,expected",
+    [
+        ("images/hyperlight-sandbox/Dockerfile", "FROM scratch", ["hyperlight-aks-probe"]),
+        ("scripts/build_hyperlight_aks_image.py", "changed builder", ["hyperlight-aks-probe"]),
+        ("images/graphviz-sandbox/Dockerfile", "FROM scratch", ["graphviz"]),
+        ("packages/maf-sandbox/src/maf_sandbox/runtime.so", "binary", ["hyperlight-aks-probe"]),
+        ("scripts/unknown_builder.py", "unknown", list(PROFILES)),
+        ("uv.lock", LOCK.replace("sha256:original", "sha256:changed"), list(PROFILES)),
+        (
+            f"{PACKAGE}/pyproject.toml",
+            METADATA.replace("dependencies = []", 'dependencies = ["dependency>=2"]'),
+            list(PROFILES),
+        ),
+    ],
+)
+def test_core_changes_do_not_hide_other_security_inputs(repository, path, content, expected):
+    root, base = repository
+    head = commit(
+        root,
+        {"packages/maf-sandbox/src/maf_sandbox/maf.py": "changed", path: content},
+    )
+    assert select(root, "pull_request", base, head)[0] == expected
+
+
+def test_core_only_cli_keeps_native_validation_selected(repository, tmp_path, monkeypatch):
+    import select_image_security as selector
+
+    root, base = repository
+    head = commit(root, {"packages/maf-sandbox/src/maf_sandbox/maf.py": "changed"})
+    output, summary = tmp_path / "output", tmp_path / "summary"
+    monkeypatch.setattr(selector, "__file__", str(root / "scripts/select_image_security.py"))
+    monkeypatch.setattr(
+        sys, "argv", ["selector", "--event", "pull_request", "--base", base, "--head", head]
+    )
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    selector.main()
+    values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert json.loads(values["profiles"]) == []
+    assert values["scan"] == values["python"] == "false"
+    assert values["hyperlight"] == "true"
+    assert "runtime validation remains selected" in summary.read_text()
+    assert "no image build, scan or security evidence" in summary.read_text()
+
+
 @pytest.fixture
 def shared_inputs(repository):
     root, _ = repository
@@ -557,15 +616,17 @@ def test_deleted_image_input_and_new_profile_both_select_scans(repository):
 
 
 @pytest.mark.parametrize("event", ["schedule", "workflow_dispatch"])
-def test_scheduled_runs_do_not_rebuild_antivirus_seed(tmp_path, event):
+@pytest.mark.parametrize("runtime", [False, True])
+def test_scheduled_runs_do_not_rebuild_antivirus_seed(tmp_path, event, runtime):
     expected = [p for p in PROFILES if event != "schedule" or p != "antivirus"]
-    assert select(tmp_path, event, "", "")[0] == expected
+    assert select(tmp_path, event, "", "", runtime=runtime)[0] == expected
 
 
 @pytest.mark.parametrize("base", ["", "0" * 40, "a" * 40, "--all"])
-def test_missing_or_invalid_comparison_selects_all_profiles(repository, base):
+@pytest.mark.parametrize("runtime", [False, True])
+def test_missing_or_invalid_comparison_selects_all_profiles(repository, base, runtime):
     root, head = repository
-    assert select(root, "push", base, head)[0] == list(PROFILES)
+    assert select(root, "push", base, head, runtime=runtime)[0] == list(PROFILES)
 
 
 def test_malformed_or_deleted_metadata_cannot_skip_scans(repository):
