@@ -163,8 +163,8 @@ def test_changed_image_and_backend_require_consumer_qualification(repo, monkeypa
     assert "maf-sandbox-docker" in str(error.value)
     assert "publish replacement image" not in str(error.value)
     assert "Run consumer qualification" in str(error.value)
-    assert "No replacement image is required" not in str(error.value)
-    assert "image inputs are unchanged" not in str(error.value)
+    assert "Image source differences alone do not require replacement" in str(error.value)
+    assert "--ref main -f profile=shell" in str(error.value)
 
 
 @pytest.mark.parametrize(
@@ -188,9 +188,9 @@ def test_consumer_only_failure_prescribes_same_digest_qualification(repo, monkey
     message = str(error.value)
     assert failure in message
     assert "shell/docker" in message
-    assert "image inputs are unchanged" in message
+    assert "verify or refresh consumer qualification" in message
     assert f"{guard.PREFIX}/shell@{IMAGE}" in message
-    assert "No replacement image is required" in message
+    assert "Image source differences alone do not require replacement" in message
     assert message.splitlines()[-1] == (
         "gh workflow run kind-consumer-qualification.yml "
         f"--repo {consumer.REPOSITORY} --ref main -f profile=shell"

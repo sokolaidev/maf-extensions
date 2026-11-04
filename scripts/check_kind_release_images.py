@@ -150,16 +150,15 @@ def compatibility(
             }
         )
     if problems:
-        if not changed:
-            problems.append(
-                f"{profile}: image inputs are unchanged; verify or refresh consumer qualification "
-                f"for the existing image {PREFIX}/{profile}@{record['registryDigest']}. "
-                "No replacement image is required for these consumer changes. "
-                "Check the qualification run and attestation availability. "
-                "The main inputs must match the release being checked. To refresh, run:\n"
-                f"gh workflow run {Path(consumer.WORKFLOW).name} --repo {consumer.REPOSITORY} "
-                f"--ref main -f profile={profile}"
-            )
+        problems.append(
+            f"{profile}: verify or refresh consumer qualification "
+            f"for the existing image {PREFIX}/{profile}@{record['registryDigest']}. "
+            "Image source differences alone do not require replacement. "
+            "Check the qualification run and attestation availability. "
+            "The main inputs must match the release being checked. To refresh, run:\n"
+            f"gh workflow run {Path(consumer.WORKFLOW).name} --repo {consumer.REPOSITORY} "
+            f"--ref main -f profile={profile}"
+        )
         raise ValueError(
             "Legacy qualification cannot be reused: " + legacy_reason + "\n" + "\n".join(problems)
         )
