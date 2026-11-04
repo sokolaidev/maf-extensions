@@ -95,7 +95,7 @@ Each package gets its own Release PR, so ordering is a matter of which you merge
 
 ### Kind releases verify image identity and consumer compatibility
 
-A release of an image-bound kind requires an authenticated published image and matching consumer qualification before its version PR can merge. Consumer-only changes can reuse the existing image digest after requalification; they do not require a new image version. `scripts/check_kind_release_images.py` detects version changes from package metadata rather than PR titles, labels or authors. Its `Kind release image and consumer compatibility` job feeds the already-required `Python (pytest + ruff + pyright)` check. Implementation PRs without a version change remain mergeable so qualification can use reviewed `main` before release-please cuts the Python release.
+A release of an image-bound kind requires an authenticated published image and matching consumer qualification before its version PR can merge. Consumer-only changes can reuse the existing image digest after requalification; they do not require a new image version. `scripts/check_kind_release_images.py` detects version changes from package metadata rather than PR titles, labels or authors. Its `Kind release image readiness` job feeds the already-required `Python (pytest + ruff + pyright)` check. Implementation PRs without a version change remain mergeable so qualification can use reviewed `main` before release-please cuts the Python release.
 
 | Kind package | Required current image profiles |
 |---|---|

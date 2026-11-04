@@ -82,7 +82,7 @@ jobs:
         run: python3 scripts/select_image_security.py
 
   kind-images:
-    name: Kind release image and consumer compatibility
+    name: Kind release image readiness
     needs: changes
     permissions:
       contents: read
@@ -95,7 +95,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Verify published image identity and consumer compatibility for kind releases
+      - name: Require qualified matching images for kind version changes
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
