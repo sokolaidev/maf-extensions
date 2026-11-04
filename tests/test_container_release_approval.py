@@ -173,6 +173,20 @@ def test_suppressed_findings_and_failed_runtime_are_visible(prepared):
     assert "| Ignored/suppressed matches | <code>1</code>" in result
 
 
+def test_non_applicability_does_not_hide_raw_severity_counts(prepared):
+    prepared.reports["grype.json"]["matches"] = [
+        {"vulnerability": {"id": "CVE-2026-119586", "severity": "High"}}
+    ]
+    prepared.reports["assessment.json"]["notAffected"] = [
+        {"id": "CVE-2026-119586", "status": "not_affected", "expiresAt": "2026-12-04T00:00:00Z"}
+    ]
+    prepared.save()
+    result = approval.render(prepared.candidate, prepared.directory, "release", "evidence")
+    assert "| Vulnerability matches: High | <code>1</code>" in result
+    assert "Reviewed non-applicable matches" in result
+    assert "CVE-2026-119586" in result and "2026-12-04T00:00:00Z" in result
+
+
 def test_evidence_and_abandonment_reason_cannot_inject_markdown(prepared):
     reason = "</code><script>alert(1)</script>\n| pass | [click](https://example.com)"
     result = approval.render(

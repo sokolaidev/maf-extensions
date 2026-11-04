@@ -366,6 +366,8 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
     )
     if ignored:
         rows.append(("Ignored/suppressed details", ignored))
+    if assessment.get("notAffected"):
+        rows.append(("Reviewed non-applicable matches", assessment["notAffected"]))
     return rows
 
 

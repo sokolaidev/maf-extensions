@@ -983,6 +983,7 @@ def test_vulnerable_image_cannot_reach_registry_publication(monkeypatch, tmp_pat
     write(tmp_path / "candidate.json", CANDIDATE)
     write(tmp_path / "manifest.json", {})
     write(tmp_path / "grype.json", raw)
+    write(tmp_path / "sbom.syft.json", {})
     write(tmp_path / "assessment.json", scan_result(raw, CANDIDATE["imageId"], AT))
     monkeypatch.setattr(registry, "validate_preparation", lambda *a: None)
     monkeypatch.setattr(registry, "validate_layout", lambda *a: {})

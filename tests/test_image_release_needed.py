@@ -1186,7 +1186,8 @@ def test_image_refresh_baseline_still_requires_clean_original_scan(monkeypatch, 
     assessment = {"assessedAt": "2026-01-01T00:00:00Z", "outcome": "vulnerable"}
     (tmp_path / "assessment.json").write_text(json.dumps(assessment))
     (tmp_path / "grype.json").write_text("{}")
-    monkeypatch.setattr(tracker, "scan_result", lambda *a: assessment)
+    (tmp_path / "sbom.syft.json").write_text("{}")
+    monkeypatch.setattr(tracker, "scan_result", lambda *a, **kw: assessment)
     with pytest.raises(ValueError, match="release gate"):
         tracker.baseline(GitHub(), RECORD | {"candidate": {}}, tmp_path)
 

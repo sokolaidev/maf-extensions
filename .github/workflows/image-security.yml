@@ -289,10 +289,13 @@ jobs:
           output-format: json
           output-file: ${{ runner.temp }}/image-security/grype.json
           severity-cutoff: high
-          fail-build: ${{ github.event_name != 'pull_request' }}
+          fail-build: false
           only-fixed: false
           config: ${{ runner.temp }}/image-security/grype.yaml
           cache-db: false
+      - name: Enforce image vulnerability applicability
+        if: steps.build.outcome == 'success'
+        run: python3 scripts/assess_image_scan.py "$RUNNER_TEMP/image-security" --event "$GITHUB_EVENT_NAME"
       - name: Retain evidence even when the scan fails
         if: always() && steps.identity.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -356,7 +359,7 @@ jobs:
           --marker '<!-- image-security-failure-tracker -->'
           --title 'Container image security checks failed'
           --reproduce 'Re-run the linked attempt or dispatch image-security.yml against the failing commit. Inspect the failed profile and its retained inventory and Grype report; build and scanner errors also fail this workflow.'
-          --expected 'All selected Linux/amd64 profiles build and produce matching nonempty inventories, with no High or Critical findings, including unfixed findings. Scheduled runs exclude antivirus; manual runs select all profiles or one chosen profile, subject to the documented Hyperlight release-transition preflight.'
+          --expected 'All selected Linux/amd64 profiles build and produce matching nonempty inventories, with no applicable High or Critical findings, including unfixed findings. Raw findings and reviewed component decisions remain visible. Scheduled runs exclude antivirus; manual runs select all profiles or one chosen profile, subject to the documented Hyperlight release-transition preflight.'
           --packages maf-sandbox maf-sandbox-docker maf-sandbox-bicep maf-sandbox-terraform maf-sandbox-document maf-sandbox-antivirus maf-sandbox-drawio maf-sandbox-hyperlight
           --recovery 'A successful manual full-profile run on the default branch automatically closes this issue with a recovery link. Partial runs and deferred scans leave it open.'
 

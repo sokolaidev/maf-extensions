@@ -455,7 +455,12 @@ def finish(directory: Path) -> None:
                     from drawio_export_qualification import verify_inventory as verify_application
 
                 verify_application(read(root / "sbom.syft.json"), runtime)
-            verified = scan_result(read(root / "grype.json"), image_id, assessment["assessedAt"])
+            verified = scan_result(
+                read(root / "grype.json"),
+                image_id,
+                assessment["assessedAt"],
+                sbom=read(root / "sbom.syft.json"),
+            )
             if any(assessment.get(field) != expected for field, expected in verified.items()):
                 raise ValueError("Monitor result differs from its retained scanner report")
             if read(root / "assessment.json") != verified:

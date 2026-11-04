@@ -10,6 +10,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from sqlite_vulnerability import not_affected
+
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = "sokolaidev/maf-extensions"
 PREFIX = f"ghcr.io/{REPOSITORY}"
@@ -661,7 +663,9 @@ def observe(catalogue: dict[str, Any], name: str, assessment: dict[str, Any]) ->
     return result
 
 
-def scan_result(report: dict[str, Any], image_id: str, at: str) -> dict[str, Any]:
+def scan_result(
+    report: dict[str, Any], image_id: str, at: str, *, sbom: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Require an identified Grype assessment with a valid database and no ignored matches."""
     require_digest(image_id)
     timestamp(at)
@@ -686,6 +690,7 @@ def scan_result(report: dict[str, Any], image_id: str, at: str) -> dict[str, Any
     if not isinstance(matches, list) or report.get("ignoredMatches", []) != []:
         raise ValueError("Incomplete or filtered vulnerability report")
     high = []
+    decisions = []
     for match in matches:
         vuln = match["vulnerability"]
         severity = vuln["severity"]
@@ -699,6 +704,10 @@ def scan_result(report: dict[str, Any], image_id: str, at: str) -> dict[str, Any
             versions = fix.get("versions") or []
             if not isinstance(versions, list) or any(not isinstance(v, str) for v in versions):
                 raise ValueError("Invalid vulnerability fix versions")
+            decision = not_affected(match, sbom, image_id, at)
+            if decision is not None:
+                decisions.append(decision)
+                continue
             high.append(
                 {
                     "id": vuln["id"],
@@ -711,4 +720,5 @@ def scan_result(report: dict[str, Any], image_id: str, at: str) -> dict[str, Any
         "outcome": "vulnerable" if high else "clean",
         "database": database,
         "findings": high,
+        **({"notAffected": decisions} if decisions else {}),
     }

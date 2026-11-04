@@ -162,11 +162,14 @@ def assess(directory: Path, image_id: str, *, require_clean: bool = True) -> dic
     if scan.returncode not in (0, 2):
         raise ValueError("Vulnerability scanner did not complete")
     report = read(directory / "grype.json")
-    result = scan_result(report, image_id, now())
+    result = scan_result(report, image_id, now(), sbom=read(directory / "sbom.syft.json"))
     write(directory / "assessment.json", result)
-    if (scan.returncode == 0) != (result["outcome"] == "clean"):
+    raw = scan_result(report, image_id, result["assessedAt"])
+    if (scan.returncode == 0) != (raw["outcome"] == "clean"):
         raise ValueError("Scanner exit status disagrees with the retained assessment")
-    if require_clean and (scan.returncode or result["outcome"] != "clean"):
+    for decision in result.get("notAffected", []):
+        print("Reviewed non-applicability: " + json.dumps(decision, ensure_ascii=True))
+    if require_clean and result["outcome"] != "clean":
         raise ValueError(assessment_failure(report))
     return result
 
