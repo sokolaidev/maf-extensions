@@ -3,10 +3,12 @@
 import asyncio
 import gc
 import logging
+import threading
 from weakref import ref
 
 import pytest
 
+import maf_sandbox.maf as maf_module
 from maf_sandbox import (
     CallerContext,
     FileStoreChanged,
@@ -19,6 +21,7 @@ from maf_sandbox import (
     SourceIntegrity,
     StoreFileRead,
 )
+from maf_sandbox._observer import fed_with
 from maf_sandbox.maf import (
     NOT_COMPLETED_TEXT,
     SandboxResult,
@@ -573,6 +576,306 @@ def test_concurrent_calls_have_independent_windows_and_can_retry():
         assert not record._readers
 
     asyncio.run(exercise())
+
+
+class ContendedLock:
+    def __init__(self, contended):
+        self._lock = threading.Lock()
+        self.contended = contended
+
+    def __enter__(self):
+        if not self._lock.acquire(blocking=False):
+            self.contended.set()
+            assert self._lock.acquire(timeout=5)
+        return self
+
+    def __exit__(self, *_args):
+        self._lock.release()
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_threaded_readers_retain_one_window(monkeypatch, changed):
+    entered = threading.Event()
+    proceed = threading.Event()
+    files = maf_module._FileReads()
+    monkeypatch.setattr(files, "lock", ContendedLock(proceed))
+    monkeypatch.setattr(maf_module, "_FileReads", lambda: files)
+    record = trusted_record()
+    make_window = record.read_window
+    windows = []
+
+    def paused_window():
+        if not entered.is_set():
+            entered.set()
+            assert proceed.wait(5)
+        window = make_window()
+        windows.append(window)
+        return window
+
+    monkeypatch.setattr(record, "read_window", paused_window)
+    store = Store({"a": "first", "b": "second", "c": "last"})
+
+    def build(session):
+        def read(path):
+            try:
+                return asyncio.run(session.read_file(store, ListedFile(path, None)))
+            finally:
+                if path == "b":
+                    proceed.set()
+
+        async def read_inputs():
+            first = asyncio.create_task(asyncio.to_thread(read, "a"))
+            assert await asyncio.to_thread(entered.wait, 5)
+            second = asyncio.create_task(asyncio.to_thread(read, "b"))
+            await asyncio.gather(first, second)
+            if changed:
+                record.record("b")
+                record.forget("b")
+            await session.read_file(store, ListedFile("c", None))
+            return SandboxResult(completed=True, output=("report",))
+
+        return read_inputs
+
+    tool = sandboxed_tool(
+        build,
+        router=SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE),
+        context=CallerContext(lambda: "scope", lambda: "thread", lambda _: None),
+        agent_id="agent",
+        spec=SandboxSpec(kind="test"),
+        name="read_inputs",
+        result_contract=True,
+        file_store_provenance=record,
+        source_integrity=SourceIntegrity.UNTRUSTED,
+    )[0]
+    items = asyncio.run(tool.invoke())
+    if changed:
+        assert items[0].text == NOT_COMPLETED_TEXT
+    else:
+        assert items[-1].text == "report"
+    assert len(windows) == 1
+    assert not record._readers
+
+
+def test_threaded_input_numbers_are_unique(monkeypatch):
+    entered = threading.Event()
+    proceed = threading.Event()
+
+    class PausedInputs(dict):
+        def __len__(self):
+            size = super().__len__()
+            if not entered.is_set():
+                entered.set()
+                assert proceed.wait(5)
+            return size
+
+    files = maf_module._FileReads()
+    monkeypatch.setattr(files, "lock", ContendedLock(proceed))
+    files.file_inputs = PausedInputs()
+    monkeypatch.setattr(maf_module, "_FileReads", lambda: files)
+
+    def fail_read(_path):
+        raise OSError
+
+    store = Store(during=fail_read)
+
+    def build(session):
+        def read(path):
+            try:
+                return asyncio.run(session.read_file(store, ListedFile(path, None)))
+            finally:
+                if path == "b":
+                    proceed.set()
+
+        async def read_inputs():
+            first = asyncio.create_task(asyncio.to_thread(read, "a"))
+            assert await asyncio.to_thread(entered.wait, 5)
+            second = asyncio.create_task(asyncio.to_thread(read, "b"))
+            results = await asyncio.gather(first, second)
+            assert results == [
+                "Error: input file 1 could not be read from the file store",
+                "Error: input file 2 could not be read from the file store",
+            ]
+            return SandboxResult(completed=True, output=("report",))
+
+        return read_inputs
+
+    tool = sandboxed_tool(
+        build,
+        router=SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE),
+        context=CallerContext(lambda: "scope", lambda: "thread", lambda _: None),
+        agent_id="agent",
+        spec=SandboxSpec(kind="test"),
+        name="read_inputs",
+        result_contract=True,
+        source_integrity=SourceIntegrity.UNTRUSTED,
+    )[0]
+    asyncio.run(tool.invoke())
+
+
+def test_threaded_readers_can_add_inputs_during_consistency_checks():
+    checking = threading.Event()
+    added = threading.Event()
+    armed = False
+
+    class Record(FileStoreProvenance):
+        def state_of(self, path):
+            if armed and path == "a" and threading.current_thread().name == "checking":
+                checking.set()
+                assert added.wait(5)
+            return SourceIntegrity.TRUSTED, 0
+
+    record = Record()
+    store = Store({"a": "first", "b": "second", "c": "last"})
+
+    def build(session):
+        def read(path):
+            thread = threading.current_thread()
+            previous = thread.name
+            thread.name = "checking" if path == "b" else "adding"
+            try:
+                return asyncio.run(session.read_file(store, ListedFile(path, None)))
+            finally:
+                thread.name = previous
+                if path == "c":
+                    added.set()
+
+        async def read_inputs():
+            nonlocal armed
+            await session.read_file(store, ListedFile("a", None))
+            armed = True
+            first = asyncio.create_task(asyncio.to_thread(read, "b"))
+            assert await asyncio.to_thread(checking.wait, 5)
+            second = asyncio.create_task(asyncio.to_thread(read, "c"))
+            await asyncio.gather(first, second)
+            return SandboxResult(completed=True, output=("report",))
+
+        return read_inputs
+
+    tool = sandboxed_tool(
+        build,
+        router=SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE),
+        context=CallerContext(lambda: "scope", lambda: "thread", lambda _: None),
+        agent_id="agent",
+        spec=SandboxSpec(kind="test"),
+        name="read_inputs",
+        result_contract=True,
+        file_store_provenance=record,
+        source_integrity=SourceIntegrity.UNTRUSTED,
+    )[0]
+    items = asyncio.run(tool.invoke())
+    assert items[-1].text == "report"
+    assert not record._readers
+
+
+def test_threaded_reads_preserve_the_weakest_input_label(monkeypatch):
+    entered = threading.Event()
+    proceed = threading.Event()
+    files = maf_module._FileReads()
+    monkeypatch.setattr(files, "lock", ContendedLock(proceed))
+    monkeypatch.setattr(maf_module, "_FileReads", lambda: files)
+
+    def paused_fold(fed, integrity):
+        if integrity is SourceIntegrity.TRUSTED:
+            entered.set()
+            assert proceed.wait(5)
+        return fed_with(fed, integrity)
+
+    monkeypatch.setattr(maf_module, "fed_with", paused_fold)
+    store = Store()
+
+    def build(session):
+        def read(path, integrity):
+            try:
+                return asyncio.run(session.read_file(store, ListedFile(path, integrity)))
+            finally:
+                if path == "b":
+                    proceed.set()
+
+        async def read_inputs():
+            first = asyncio.create_task(asyncio.to_thread(read, "a", SourceIntegrity.TRUSTED))
+            assert await asyncio.to_thread(entered.wait, 5)
+            second = asyncio.create_task(asyncio.to_thread(read, "b", SourceIntegrity.UNTRUSTED))
+            await asyncio.gather(first, second)
+            return SandboxResult(completed=True, output=("report",))
+
+        return read_inputs
+
+    tool = sandboxed_tool(
+        build,
+        router=SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE),
+        context=CallerContext(lambda: "scope", lambda: "thread", lambda _: None),
+        agent_id="agent",
+        spec=SandboxSpec(kind="test"),
+        name="read_inputs",
+        result_contract=True,
+        source_integrity=SourceIntegrity.UNTRUSTED,
+    )[0]
+    items = asyncio.run(tool.invoke())
+    assert items[-1].text == "report"
+    assert items[-1].additional_properties["security_label"]["integrity"] == "untrusted"
+
+
+@pytest.mark.parametrize("provenance", [False, True])
+@pytest.mark.parametrize("in_flight", [False, True])
+def test_threaded_reads_do_not_reopen_a_closed_call(provenance, in_flight):
+    entered = threading.Event()
+    proceed = threading.Event()
+    record = trusted_record() if provenance else None
+    children = []
+    calls = []
+
+    class WaitingStore(Store):
+        async def read(self, path):
+            if in_flight:
+                entered.set()
+                assert proceed.wait(5)
+            return await super().read(path)
+
+    store = WaitingStore()
+
+    def build(session):
+        def read():
+            if not in_flight:
+                entered.set()
+                assert proceed.wait(5)
+            return asyncio.run(session.read_file(store, ListedFile("a", None)))
+
+        async def read_inputs():
+            calls.append(maf_module._FILE_READS.get())
+            children.append(asyncio.create_task(asyncio.to_thread(read)))
+            assert await asyncio.to_thread(entered.wait, 5)
+            return SandboxResult(completed=True, output=("report",))
+
+        return read_inputs
+
+    tool = sandboxed_tool(
+        build,
+        router=SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE),
+        context=CallerContext(lambda: "scope", lambda: "thread", lambda _: None),
+        agent_id="agent",
+        spec=SandboxSpec(kind="test"),
+        name="read_inputs",
+        result_contract=True,
+        file_store_provenance=record,
+        source_integrity=SourceIntegrity.UNTRUSTED,
+    )[0]
+
+    async def exercise():
+        await tool.invoke()
+        proceed.set()
+        if in_flight and provenance:
+            with pytest.raises(RuntimeError, match="closed"):
+                await children[0]
+        else:
+            result = await children[0]
+            assert result.text == "private workload"
+
+    asyncio.run(exercise())
+    if record is not None:
+        assert not record._readers
+    assert calls[0].closed
+    assert not calls[0].file_windows
+    assert not calls[0].file_inputs
 
 
 def test_read_window_does_not_keep_permanent_path_history():

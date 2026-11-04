@@ -265,6 +265,8 @@ A host with its own provenance snapshots should raise `FileStoreChanged` (export
 
 For counter-only records, each read window retains the input's label, counter and content fingerprint. When a counter moves, core rechecks affected inputs against their original stores, including earlier inputs when a later read fails or returns no content. Verification requires equal counters around the read and a final check of every tracked input. Two verification passes bound repeated concurrent changes; if the evidence still cannot be verified, the call refuses instead of returning a report. Native provenance records can use their path-specific mutation observations to clear unrelated counter changes. Both synchronous and asynchronous tools share this refusal handling and release all windows at call exit.
 
+Readers dispatched to threads share the call's window and input-number registries under a lock. Window bookkeeping and the weakest-input label fold are also synchronized; no lock is held across an awaited store read. A child that starts a read after its call has returned uses a standalone read window, without reopening the closed call or attributing events to it. An in-flight read whose window closes cannot resume using that released evidence.
+
 The read window ends with input collection: a later write during guest execution does not invalidate bytes already staged. This is mutation detection, not a transactional snapshot or a store lock. One limit remains: middleware records when the writing call returns. Bytes already written by an unfinished call are not yet recorded. A trusted floor includes the host's responsibility for that interval.
 
 ## Classify derived tool results

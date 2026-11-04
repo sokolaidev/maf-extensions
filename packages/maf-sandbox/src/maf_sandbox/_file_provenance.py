@@ -25,7 +25,7 @@ from __future__ import annotations
 import re
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from weakref import WeakSet
 
 from ._protocol import SourceIntegrity
@@ -47,7 +47,7 @@ class FileStoreChanged(Exception):
     """
 
 
-@dataclass
+@dataclass(frozen=True)
 class ReadSnapshot:
     """A reader's verified state and content fingerprint."""
 
@@ -60,12 +60,42 @@ class ReadWindow:
     """Path mutations retained only while a reader holds this window."""
 
     def __init__(self, release: Callable[[ReadWindow], None] | None = None) -> None:
-        self.paths: dict[str, str] = {}
-        self.reads: dict[str, ReadSnapshot] = {}
+        self._paths: dict[str, str] = {}
+        self._reads: dict[str, ReadSnapshot] = {}
         self._lock = threading.Lock()
         self._changed: set[str] = set()
         self._closed = False
         self._release = release
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("The file-read window has closed")
+
+    def track(self, path: str, shown: str) -> None:
+        with self._lock:
+            self._require_open()
+            self._paths.setdefault(path, shown)
+
+    def paths(self) -> tuple[tuple[str, str], ...]:
+        with self._lock:
+            self._require_open()
+            return tuple(self._paths.items())
+
+    def snapshot(self, path: str) -> ReadSnapshot | None:
+        with self._lock:
+            self._require_open()
+            return self._reads.get(path)
+
+    def remember(self, path: str, snapshot: ReadSnapshot) -> ReadSnapshot:
+        with self._lock:
+            self._require_open()
+            return self._reads.setdefault(path, snapshot)
+
+    def verified(self, path: str, snapshot: ReadSnapshot, generation: int) -> None:
+        with self._lock:
+            self._require_open()
+            if self._reads.get(path) is snapshot:
+                self._reads[path] = replace(snapshot, generation=generation)
 
     def note_change(self, key: str) -> None:
         with self._lock:
@@ -80,8 +110,8 @@ class ReadWindow:
         with self._lock:
             self._closed = True
             self._changed.clear()
-            self.paths.clear()
-            self.reads.clear()
+            self._paths.clear()
+            self._reads.clear()
             release, self._release = self._release, None
         if release is not None:
             release(self)

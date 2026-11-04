@@ -56,6 +56,7 @@ import threading
 import time
 import warnings
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from contextlib import nullcontext
 from contextvars import ContextVar
 from copy import copy
 from dataclasses import dataclass, field, replace
@@ -271,6 +272,7 @@ class _SandboxToolCall:
 class _FileReads:
     """Input consistency shared by synchronous and asynchronous tool bodies."""
 
+    lock: threading.Lock = field(default_factory=threading.Lock)
     closed: bool = False
     file_windows: dict[tuple[int, int], tuple[Any, FileStoreProvenance, ReadWindow]] = field(
         default_factory=dict[tuple[int, int], tuple[Any, FileStoreProvenance, ReadWindow]]
@@ -281,11 +283,13 @@ class _FileReads:
     file_refusal: str | None = None
 
     def close(self) -> None:
-        self.closed = True
-        for _, _, window in self.file_windows.values():
+        with self.lock:
+            self.closed = True
+            windows = list(self.file_windows.values())
+            self.file_windows.clear()
+            self.file_inputs.clear()
+        for _, _, window in windows:
             window.close()
-        self.file_windows.clear()
-        self.file_inputs.clear()
 
 
 _FILE_READS: ContextVar[_FileReads | None] = ContextVar("sandbox_file_reads", default=None)
@@ -1586,14 +1590,14 @@ class SandboxToolSession:
         window = self._file_window(store)
         shown = self._file_input(store, listed.name)
         if window is not None:
-            window.paths.setdefault(listed.name, shown)
+            window.track(listed.name, shown)
         try:
             return await self._read_file(store, listed, window=window, shown=shown)
         except FileStoreChanged:
             changed = [
                 display
                 for _, _, held in self._file_windows(store, window)
-                for path, display in held.paths.items()
+                for path, display in held.paths()
                 if held.changed(path)
             ]
             self._record_read(listed.name, None, 0, outcome="refused")
@@ -1604,9 +1608,11 @@ class SandboxToolSession:
                 "in the same batch as a tool that writes these files."
             )
             call = _FILE_READS.get()
-            if call is not None and not call.closed:
-                call.file_refusal = refusal
-                raise _FileReadChanged(refusal) from None
+            if call is not None:
+                with call.lock:
+                    if not call.closed:
+                        call.file_refusal = refusal
+                        raise _FileReadChanged(refusal) from None
             return refusal
         finally:
             call = _FILE_READS.get()
@@ -1615,31 +1621,39 @@ class SandboxToolSession:
 
     def _file_input(self, store: Any, path: str) -> str:
         call = _FILE_READS.get()
-        if call is None or call.closed:
+        if call is None:
             return "input file 1"
         key = (id(store), path)
-        if key not in call.file_inputs:
-            call.file_inputs[key] = (store, f"input file {len(call.file_inputs) + 1}")
-        return call.file_inputs[key][1]
+        with call.lock:
+            if call.closed:
+                return "input file 1"
+            if key not in call.file_inputs:
+                call.file_inputs[key] = (store, f"input file {len(call.file_inputs) + 1}")
+            return call.file_inputs[key][1]
 
     def _file_window(self, store: Any) -> ReadWindow | None:
         record = self._file_store_provenance
         if record is None:
             return None
         call = _FILE_READS.get()
-        if call is None or call.closed:
+        if call is None:
             return record.read_window()
         key = (id(record), id(store))
-        if key not in call.file_windows:
-            call.file_windows[key] = (store, record, record.read_window())
-        return call.file_windows[key][2]
+        with call.lock:
+            if call.closed:
+                return record.read_window()
+            if key not in call.file_windows:
+                call.file_windows[key] = (store, record, record.read_window())
+            return call.file_windows[key][2]
 
     def _file_windows(
         self, store: Any, window: ReadWindow | None
     ) -> list[tuple[Any, FileStoreProvenance, ReadWindow]]:
         call = _FILE_READS.get()
-        if call is not None and not call.closed:
-            return list(call.file_windows.values())
+        if call is not None:
+            with call.lock:
+                if not call.closed:
+                    return list(call.file_windows.values())
         record = self._file_store_provenance
         return [(store, record, window)] if record is not None and window is not None else []
 
@@ -1720,8 +1734,15 @@ class SandboxToolSession:
         # Before the observer guard: the fold belongs to the call, and a second session whose
         # own router records nothing still fed it.
         recording = RECORDED_CALL.get()
-        if outcome == "read" and recording is not None and not recording.closed:
-            recording.fed = fed_with(recording.fed, integrity)
+        files = _FILE_READS.get()
+        with files.lock if files is not None else nullcontext():
+            if (
+                outcome == "read"
+                and recording is not None
+                and not recording.closed
+                and (files is None or not files.closed)
+            ):
+                recording.fed = fed_with(recording.fed, integrity)
         observer = self.observer
         if observer is None:
             return
@@ -1796,7 +1817,7 @@ class SandboxToolSession:
         for attempt in range(3):
             pending: list[tuple[Any, FileStoreProvenance, ReadWindow, str, ReadSnapshot]] = []
             for source, provenance, held in windows:
-                for path in held.paths:
+                for path, _ in held.paths():
                     state = (
                         current[1]
                         if attempt == 0
@@ -1807,7 +1828,7 @@ class SandboxToolSession:
                     )
                     if held.changed(path):
                         raise FileStoreChanged
-                    snapshot = held.reads.get(path)
+                    snapshot = held.snapshot(path)
                     if snapshot is None:
                         continue
                     if state[0] != snapshot.integrity:
@@ -1815,7 +1836,7 @@ class SandboxToolSession:
                         raise FileStoreChanged
                     if state[1] != snapshot.generation:
                         if type(provenance) is FileStoreProvenance:
-                            snapshot.generation = state[1]
+                            held.verified(path, snapshot, state[1])
                         else:
                             pending.append((source, provenance, held, path, snapshot))
             if not pending:
@@ -1844,7 +1865,7 @@ class SandboxToolSession:
                     held.note_change(store_key(path))
                     raise FileStoreChanged
                 if after[1] == before[1]:
-                    snapshot.generation = after[1]
+                    held.verified(path, snapshot, after[1])
 
     async def _folded_integrity(
         self,
@@ -1861,7 +1882,7 @@ class SandboxToolSession:
         integrity, generation = before
         if window is not None:
             fingerprint = _file_fingerprint(text)
-            snapshot = window.reads.setdefault(
+            snapshot = window.remember(
                 listed.name, ReadSnapshot(integrity, generation, fingerprint)
             )
             if snapshot.content != fingerprint:
