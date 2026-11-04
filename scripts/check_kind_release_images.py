@@ -1,4 +1,4 @@
-"""Require completed, qualified matching images before releasing image-bound kinds."""
+"""Verify published image identity and consumer compatibility before releasing kinds."""
 
 from __future__ import annotations
 
@@ -154,7 +154,19 @@ def compatibility(
             }
         )
     if problems:
-        raise ValueError(legacy_reason + "\n" + "\n".join(problems))
+        if not changed:
+            problems.append(
+                f"{profile}: image inputs are unchanged; verify or refresh consumer qualification "
+                f"for the existing image {PREFIX}/{profile}@{record['registryDigest']}. "
+                "No replacement image is required for these consumer changes. "
+                "Check the qualification run and attestation availability. "
+                "The main inputs must match the release being checked. To refresh, run:\n"
+                f"gh workflow run {Path(consumer.WORKFLOW).name} --repo {consumer.REPOSITORY} "
+                f"--ref main -f profile={profile}"
+            )
+        raise ValueError(
+            "Legacy qualification cannot be reused: " + legacy_reason + "\n" + "\n".join(problems)
+        )
     return results
 
 
@@ -190,7 +202,9 @@ def check(root: Path, head: str, packages: list[str]) -> list[dict[str, Any]]:
                     evidence_url = release_evidence(client, record, directory)
                     qualified(directory, record["candidate"])
             except ValueError as error:
-                problems.append(str(error))
+                problems.append(
+                    f"{package}/{profile} ({PREFIX}/{profile}@{record['registryDigest']}): {error}"
+                )
                 continue
             results.append(
                 {

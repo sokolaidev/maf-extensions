@@ -160,6 +160,40 @@ def test_all_mismatches_report_image_and_consumer_actions(repo, monkeypatch):
     assert "maf-sandbox-docker" in str(error.value)
     assert "publish replacement image" in str(error.value)
     assert "Run consumer qualification" in str(error.value)
+    assert "No replacement image is required" not in str(error.value)
+    assert "image inputs are unchanged" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "Matching authenticated consumer qualification unavailable",
+        "Consumer attestation subject or predicate differs",
+    ],
+)
+def test_consumer_only_failure_prescribes_same_digest_qualification(repo, monkeypatch, failure):
+    root, base = repo
+    (root / "packages/maf-sandbox-docker/src/module.py").write_text("VALUE = 2\n")
+    head = legacy.commit(root)
+
+    def unavailable(_):
+        raise ValueError(failure)
+
+    monkeypatch.setattr(consumer, "verify", unavailable)
+    with pytest.raises(ValueError) as error:
+        guard.compatibility(root, head, legacy.PACKAGE, "shell", CANDIDATE | {"sourceCommit": base})
+    message = str(error.value)
+    assert failure in message
+    assert "shell/docker" in message
+    assert "image inputs are unchanged" in message
+    assert f"{guard.PREFIX}/shell@{IMAGE}" in message
+    assert "No replacement image is required" in message
+    assert message.splitlines()[-1] == (
+        "gh workflow run kind-consumer-qualification.yml "
+        f"--repo {consumer.REPOSITORY} --ref main -f profile=shell"
+    )
+    assert "main inputs must match the release" in message
+    assert "publish replacement image" not in message
 
 
 def test_fresh_consumer_evidence_cannot_waive_image_change(repo, monkeypatch):
