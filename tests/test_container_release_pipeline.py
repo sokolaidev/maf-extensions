@@ -1254,9 +1254,13 @@ def test_workflow_writer_locks_and_privilege_separation():
     monitor_workflow = yaml.safe_load(
         (ROOT / ".github/workflows/container-image-monitor.yml").read_text()
     )
+    recovery = yaml.safe_load((ROOT / ".github/workflows/container-image-recover.yml").read_text())
+    tracking = yaml.safe_load((ROOT / ".github/workflows/image-release-needed.yml").read_text())
     for workflow, jobs in [
         (release, ("reserve", "complete", "deliver", "abandon", "retire-lost-candidate")),
         (monitor_workflow, ("begin", "finish")),
+        (recovery, ("write",)),
+        (tracking, ("reconcile",)),
     ]:
         for name in jobs:
             assert workflow["jobs"][name]["concurrency"] == {
