@@ -104,7 +104,16 @@ def test_image_jobs_configure_the_store_before_using_image_ids(filename, job_nam
     setup = [i for i, step in enumerate(steps) if step.get("uses") == ACTION]
     assert len(setup) == 1
     assert "if" not in steps[setup[0]]
-    assert setup[0] < next(i for i, step in enumerate(steps) if command in step.get("run", ""))
+    consumers = [
+        i
+        for i, step in enumerate(steps)
+        if command in step.get("run", "")
+        and not (
+            command == "scripts/prepare_container_release_dispatch.py"
+            and "--plan-only" in step["run"]
+        )
+    ]
+    assert consumers and all(setup[0] < i for i in consumers)
     for i, step in enumerate(steps):
         if step.get("uses") == "./.github/actions/setup-sbx":
             assert i < setup[0]
