@@ -274,6 +274,7 @@ class _FileReads:
 
     lock: threading.Lock = field(default_factory=threading.Lock)
     closed: bool = False
+    revision: int = 0
     file_windows: dict[tuple[int, int], tuple[Any, FileStoreProvenance, ReadWindow]] = field(
         default_factory=dict[tuple[int, int], tuple[Any, FileStoreProvenance, ReadWindow]]
     )
@@ -293,6 +294,14 @@ class _FileReads:
 
 
 _FILE_READS: ContextVar[_FileReads | None] = ContextVar("sandbox_file_reads", default=None)
+
+
+def _file_read_revision() -> int | None:
+    call = _FILE_READS.get()
+    if call is None:
+        return None
+    with call.lock:
+        return None if call.closed else call.revision
 
 
 def _file_fingerprint(content: str | bytes | None) -> tuple[bool, bytes] | None:
@@ -1629,6 +1638,7 @@ class SandboxToolSession:
                 return "input file 1"
             if key not in call.file_inputs:
                 call.file_inputs[key] = (store, f"input file {len(call.file_inputs) + 1}")
+                call.revision += 1
             return call.file_inputs[key][1]
 
     def _file_window(self, store: Any) -> ReadWindow | None:
@@ -1644,6 +1654,7 @@ class SandboxToolSession:
                 return record.read_window()
             if key not in call.file_windows:
                 call.file_windows[key] = (store, record, record.read_window())
+                call.revision += 1
             return call.file_windows[key][2]
 
     def _file_windows(
@@ -1811,10 +1822,11 @@ class SandboxToolSession:
         *,
         current: tuple[str, tuple[SourceIntegrity | None, int]] | None = None,
     ) -> None:
-        windows = self._file_windows(store, window)
         # A later verification read can invalidate an earlier one; the final pass samples all
         # inputs again. Two verification passes bound hosts whose counters never settle.
         for attempt in range(3):
+            revision = _file_read_revision()
+            windows = self._file_windows(store, window)
             pending: list[tuple[Any, FileStoreProvenance, ReadWindow, str, ReadSnapshot]] = []
             for source, provenance, held in windows:
                 for path, _ in held.paths():
@@ -1840,7 +1852,11 @@ class SandboxToolSession:
                         else:
                             pending.append((source, provenance, held, path, snapshot))
             if not pending:
-                return
+                if _file_read_revision() == revision:
+                    return
+                if attempt == 2:
+                    raise FileStoreChanged
+                continue
             if attempt == 2:
                 for _, _, held, path, _ in pending:
                     held.note_change(store_key(path))
@@ -1882,9 +1898,12 @@ class SandboxToolSession:
         integrity, generation = before
         if window is not None:
             fingerprint = _file_fingerprint(text)
-            snapshot = window.remember(
-                listed.name, ReadSnapshot(integrity, generation, fingerprint)
-            )
+            candidate = ReadSnapshot(integrity, generation, fingerprint)
+            files = _FILE_READS.get()
+            with files.lock if files is not None else nullcontext():
+                snapshot = window.remember(listed.name, candidate)
+                if files is not None and not files.closed and snapshot is candidate:
+                    files.revision += 1
             if snapshot.content != fingerprint:
                 window.note_change(store_key(listed.name))
                 raise FileStoreChanged

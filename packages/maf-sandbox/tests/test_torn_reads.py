@@ -815,6 +815,165 @@ def test_threaded_reads_preserve_the_weakest_input_label(monkeypatch):
     assert items[-1].additional_properties["security_label"]["integrity"] == "untrusted"
 
 
+@pytest.mark.parametrize("phase", ["verification", "acceptance"])
+@pytest.mark.parametrize("other_store", [False, True])
+@pytest.mark.parametrize("changed", [False, True])
+def test_checks_include_inputs_added_concurrently(phase, other_store, changed):
+    entered = threading.Event()
+    proceed = threading.Event()
+
+    class Record(FileStoreProvenance):
+        counter = 0
+        samples = 0
+
+        def state_of(self, path):
+            if threading.current_thread().name == "checking" and path == "a":
+                self.samples += 1
+                if phase == "acceptance" and self.samples == 2:
+                    entered.set()
+                    assert proceed.wait(5)
+            return SourceIntegrity.TRUSTED, self.counter
+
+    record = Record()
+
+    class WaitingStore(Store):
+        async def read(self, path):
+            self.reads.append(path)
+            if path == "a" and phase == "verification":
+                if self.reads.count("a") == 1:
+                    record.counter += 1
+                elif self.reads.count("a") == 2:
+                    entered.set()
+                    assert proceed.wait(5)
+            return self.files.get(path)
+
+    first_store = WaitingStore({"a": "first", "c": "second"})
+    later_store = Store({"c": "second"}) if other_store else first_store
+    later_record = trusted_record() if other_store else record
+    router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
+    context = CallerContext(lambda: "scope", lambda: "thread", lambda _: None)
+
+    def build(session):
+        other = SandboxToolSession(
+            router,
+            context,
+            "other",
+            SandboxSpec(kind="test"),
+            name="other",
+            logger=logging.getLogger(__name__),
+            file_store_provenance=later_record,
+        )
+
+        def read():
+            thread = threading.current_thread()
+            previous = thread.name
+            thread.name = "checking"
+            try:
+                return asyncio.run(
+                    session.read_file(first_store, ListedFile("a", SourceIntegrity.TRUSTED))
+                )
+            finally:
+                thread.name = previous
+
+        async def read_inputs():
+            first = asyncio.create_task(asyncio.to_thread(read))
+            assert await asyncio.to_thread(entered.wait, 5)
+            try:
+                await other.read_file(later_store, ListedFile("c", SourceIntegrity.TRUSTED))
+                if changed:
+                    later_record.record("c")
+            finally:
+                proceed.set()
+            await first
+            return SandboxResult(completed=True, output=("report",))
+
+        return read_inputs
+
+    tool = sandboxed_tool(
+        build,
+        router=router,
+        context=context,
+        agent_id="agent",
+        spec=SandboxSpec(kind="test"),
+        name="read_inputs",
+        result_contract=True,
+        file_store_provenance=record,
+        source_integrity=SourceIntegrity.UNTRUSTED,
+    )[0]
+    items = asyncio.run(tool.invoke())
+    if changed:
+        assert items[0].text == NOT_COMPLETED_TEXT
+    else:
+        assert items[-1].text == "report"
+        assert items[-1].additional_properties["security_label"]["integrity"] == "trusted"
+    assert not record._readers
+    assert not later_record._readers
+
+
+def test_continuous_input_registration_has_a_bounded_retry_budget():
+    requested = [threading.Event() for _ in range(3)]
+    released = [threading.Event() for _ in range(3)]
+
+    class Record(FileStoreProvenance):
+        samples = 0
+
+        def state_of(self, path):
+            if threading.current_thread().name == "checking" and path == "a":
+                self.samples += 1
+                if self.samples > 1:
+                    index = self.samples - 2
+                    assert index < len(requested)
+                    requested[index].set()
+                    assert released[index].wait(5)
+            return SourceIntegrity.TRUSTED, 0
+
+    record = Record()
+    first_store = Store({"a": "first", **{f"b{index}": "later" for index in range(3)}})
+
+    def build(session):
+        def read():
+            thread = threading.current_thread()
+            previous = thread.name
+            thread.name = "checking"
+            try:
+                return asyncio.run(
+                    session.read_file(first_store, ListedFile("a", SourceIntegrity.TRUSTED))
+                )
+            finally:
+                thread.name = previous
+
+        async def read_inputs():
+            first = asyncio.create_task(asyncio.to_thread(read))
+            for index, (request, release) in enumerate(zip(requested, released, strict=True)):
+                assert await asyncio.to_thread(request.wait, 5)
+                try:
+                    await session.read_file(
+                        first_store, ListedFile(f"b{index}", SourceIntegrity.TRUSTED)
+                    )
+                finally:
+                    release.set()
+            await first
+            return SandboxResult(completed=True, output=("report",))
+
+        return read_inputs
+
+    tool = sandboxed_tool(
+        build,
+        router=SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE),
+        context=CallerContext(lambda: "scope", lambda: "thread", lambda _: None),
+        agent_id="agent",
+        spec=SandboxSpec(kind="test"),
+        name="read_inputs",
+        result_contract=True,
+        file_store_provenance=record,
+        source_integrity=SourceIntegrity.UNTRUSTED,
+    )[0]
+    items = asyncio.run(tool.invoke())
+    assert items[0].text == NOT_COMPLETED_TEXT
+    assert record.samples == 4
+    assert not record._readers
+
+
 @pytest.mark.parametrize("provenance", [False, True])
 @pytest.mark.parametrize("in_flight", [False, True])
 def test_threaded_reads_do_not_reopen_a_closed_call(provenance, in_flight):
