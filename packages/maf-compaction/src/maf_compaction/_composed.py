@@ -55,6 +55,7 @@ from ._toolsummary import (
     PRESERVE_REASON_UNRECORDED,
     RecordDecisions,
     ToolResultAnchoredSummarizationCompactionStrategy,
+    _distinctive_tokens,  # pyright: ignore[reportPrivateUsage]
     _is_written_record,  # pyright: ignore[reportPrivateUsage]
     _newest_record_identity,  # pyright: ignore[reportPrivateUsage]
     build_record_message,
@@ -63,6 +64,7 @@ from ._toolsummary import (
     record_anchor_position,
     record_bodies,
 )
+from ._toolsummary import _tokens as _record_tokens  # pyright: ignore[reportPrivateUsage]
 from ._usersummary import SUMMARY_MODE_RECOMPACT, UserTurnAnchoredSummarizationCompactionStrategy
 
 if TYPE_CHECKING:
@@ -519,6 +521,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._user_merges_rejected = 0
         self._record_rewrites = 0
         self._record_rewrites_rejected = 0
+        self._record_consolidations_lossy = 0
         self._record_merges_skipped = 0
         self._record_rewrites_skipped = 0
         self._record_summary_failures = 0
@@ -788,7 +791,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
     @property
     def record_merges_rejected(self) -> int:
-        """Merges of the records that came back no smaller than the records, and were discarded.
+        """Merges of the records that came back no smaller, or lossy, and were discarded.
 
         Step a refused on the generic rule: the old records stayed and the chain moved on. Counted
         once per refusal: the same records met again, on the other list or on a later pass, are
@@ -821,8 +824,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return self._record_rewrites
 
     @property
+    def record_consolidations_lossy(self) -> int:
+        """Of the refused merges and rewrites, those that were smaller but dropped values.
+
+        Counted inside :attr:`record_merges_rejected` and :attr:`record_rewrites_rejected`
+        rather than beside them: a lossy answer is refused exactly like one that is no smaller.
+        See :meth:`_keeps_values`. ``RECLOSSY``.
+        """
+        return self._record_consolidations_lossy
+
+    @property
     def record_rewrites_rejected(self) -> int:
-        """Of :attr:`record_rewrites`, the ones that came back no smaller. ``RECHARDERREJ``.
+        """Of :attr:`record_rewrites`, those refused as no smaller or lossy. ``RECHARDERREJ``.
 
         Counted once per refusal, as :attr:`record_merges_rejected` is: the attempt met again on
         the same record is skipped, under :attr:`record_rewrites_skipped`.
@@ -1350,7 +1363,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
           told to keep every value and cut the rest to about a third, the summarizer cut nothing.
           Asking it to cut less is weaker pressure towards the same outcome. The case is common --
           attempt one kept, attempt two refused on the kept record -- and without this every such
-          record would buy one more refusal on the next pass.
+          record would buy one more refusal on the next pass. A rewrite refused as lossy
+          (:meth:`_keeps_values`) is foreclosed the same way: the milder attempt was asked first on
+          this pass, so the record it would revisit is one the chain already had its chance at,
+          and the record simply stands at its size until it changes.
 
         A record refused at attempt ``harder_attempts`` is therefore incompressible until it
         changes; a merge folding new material in, or a kept rewrite, gives it a new transcript and
@@ -1397,11 +1413,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     async def _consolidate(
         self, messages: list[Message], groups: list[dict[str, Any]], *, prompt: str, transcript: str
     ) -> _Consolidation:
-        """Ask for one record in place of ``groups``, and put it there if it is smaller.
+        """Ask for one record in place of ``groups``, and put it there if it is smaller and whole.
 
         A replacement must be non-empty -- a
-        summarizer that answers with nothing is a failure -- and fewer tokens than the records it
-        replaces. Both sides are measured in the form the replacement is inserted in: the
+        summarizer that answers with nothing is a failure -- fewer tokens than the records it
+        replaces, and it must keep their values (:meth:`_keeps_values`). Both sizes are measured in
+        the form the replacement is inserted in: the
         candidate as built, and each replaced record rebuilt from its body the same way, rather
         than the replaced messages themselves. A record the model made carries its text twice,
         once in the call's arguments, and a candidate measured against that would come out at
@@ -1417,16 +1434,20 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             transcript: ``groups`` as :func:`_transcript` numbers them.
 
         Returns:
-            Whether the replacement was kept, refused as no smaller, or never arrived.
+            Whether the replacement was kept, refused as no smaller or as lossy, or never arrived.
         """
         text = await self._ask(prompt=prompt, transcript=transcript)
         if text is None:
             return "failed"
+        bodies = record_bodies(messages, groups)
         candidate = [build_record_message(text)]
-        replaced = [build_record_message(body) for body in record_bodies(messages, groups)]
+        replaced = [build_record_message(body) for body in bodies]
         annotate_token_counts(candidate, tokenizer=self.tokenizer, force_retokenize=True)
         annotate_token_counts(replaced, tokenizer=self.tokenizer, force_retokenize=True)
         if included_token_count(candidate) >= included_token_count(replaced):
+            return "rejected"
+        if not self._keeps_values(bodies, text):
+            self._record_consolidations_lossy += 1
             return "rejected"
         self.tool_results.consolidate_records(messages, groups, text)
         self._kept_records[(transcript, len(groups))] = text
@@ -1435,6 +1456,31 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # replacement is already decided, so it is taken here rather than asked for again.
         self._keep_records(messages)
         return "accepted"
+
+    def _keeps_values(self, bodies: list[str], text: str) -> bool:
+        """Whether ``text`` quotes enough of the values the records ``bodies`` hold.
+
+        The record half's own rule, applied one level up. A record may stand in for a tool group
+        only if it quotes ``coverage_share`` of the group's distinctive values (see
+        :meth:`~._toolsummary.ToolResultAnchoredSummarizationCompactionStrategy._is_covered`); a
+        record that replaces records is held to the same share of theirs, with the same
+        generic token rule, so nothing here is fitted to one workload's values.
+
+        Without it a merge was kept on size alone, and the harder rewrites ask for a third of the
+        length: measured on a long agentic session, merges of 24 and of 11 records came back
+        keeping 9% and 5% of their values, while every one-record rewrite kept 97% or more. The
+        records they replaced were the only account of the tool results behind them.
+
+        Records holding no distinctive value have nothing to check and pass, as a tool group with
+        none falls back to its own rule.
+        """
+        values: set[str] = set()
+        for body in bodies:
+            values |= _distinctive_tokens(body)
+        if not values:
+            return True
+        quoted = set(_record_tokens(text, fold_case=False))
+        return len(values & quoted) >= ceil(len(values) * self.tool_results.coverage_share)
 
     async def _ask(self, *, prompt: str, transcript: str) -> str | None:
         """Return the summarizer's answer to one merge or rewrite request.

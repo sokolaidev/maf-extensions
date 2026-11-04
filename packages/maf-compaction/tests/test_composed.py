@@ -37,6 +37,7 @@ defaults to recompacting and remembers one request.
 from __future__ import annotations
 
 import copy
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -1753,6 +1754,12 @@ _CHAIN_CEILING = 500
 _SHORT_RECORD = "lookup_1: CODE-1. lookup_2: CODE-2."
 
 
+#: Every value the replay test's records hold, first in few words and then in many: a harder
+#: rewrite can shorten the wordy one to the terse one without dropping a value.
+_TERSE_RECORD = "lookup_1: CODE-1. lookup_2: CODE-2. lookup_9: CODE-9."
+_WORDY_RECORD = _TERSE_RECORD + " " + "The lookups succeeded as expected. " * 12
+
+
 def _longer(body: str) -> str:
     """Answer with more than was sent, which the chain must refuse as no smaller."""
     return body + " " + body
@@ -2038,6 +2045,88 @@ async def test_a_merge_that_is_no_smaller_is_refused_and_the_old_records_stay() 
         (message,) = (m for m in messages if m.message_id == message_id)
         assert is_preserved(message) and not message.additional_properties.get(EXCLUDED_KEY, False)
     assert not [m for m in messages if _is_written_record(m)], "nothing inserted"
+
+
+async def test_a_smaller_merge_that_drops_values_is_refused_and_the_old_records_stay() -> None:
+    """A merge is held to the record half's own coverage rule, not kept on size alone.
+
+    The answer is far smaller than the two records, but it quotes two of their four distinctive
+    values, under the default share of 0.8: refused like an answer that is no smaller, counted as
+    lossy, and nothing mutated. Live, merges of 24 and 11 records kept 9% and 5% of their values
+    and were the only account of the tool results behind them.
+    """
+    summarizer = _RoutingSummarizer(merge=lambda body: "lookup_1: CODE-1.", fold=_short_summary)
+    budget = await _post_record_size() - 500
+    strategy = _chain_composed(summarizer, ceiling=budget)
+    messages = _chain_conversation()
+
+    await strategy(messages)
+
+    assert summarizer.log[:2] == ["merge", "fold"], "refused, and the chain moved on"
+    assert (strategy.records_merged, strategy.record_merges_rejected) == (0, 1)
+    assert strategy.record_consolidations_lossy == 1
+    assert _active_record_ids(messages) == ["rec1_res", "rec2_res"], "both records still being sent"
+    assert not [m for m in messages if _is_written_record(m)], "nothing inserted"
+
+
+async def test_a_merge_that_keeps_the_values_and_cuts_the_wording_is_kept() -> None:
+    summarizer = _RoutingSummarizer(merge=_short_record, fold=_short_summary)
+    strategy = _chain_composed(summarizer, ceiling=await _post_record_size() - 500)
+    messages = _chain_conversation()
+
+    await strategy(messages)
+
+    assert (strategy.records_merged, strategy.record_consolidations_lossy) == (1, 0)
+    assert _active_record_ids(messages) == [f"written:{_SHORT_RECORD}"]
+
+
+async def test_a_harder_rewrite_that_drops_values_is_refused_as_lossy() -> None:
+    summarizer = _RoutingSummarizer(harder=lambda attempt, body: "lookup_1: CODE-1.")
+    strategy = _chain_composed(summarizer, harder_attempts=1)
+    messages = _chain_conversation(trailing=True)
+
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
+
+    assert "harder1" in summarizer.log
+    assert (strategy.record_rewrites, strategy.record_rewrites_rejected) == (1, 1)
+    assert strategy.record_consolidations_lossy == 1
+    assert _active_record_ids(messages) == ["rec1_res", "rec2_res"]
+
+
+@pytest.mark.parametrize(("share", "kept"), [(0.5, True), (0.8, False)])
+async def test_the_merge_rule_uses_the_record_halfs_coverage_share(
+    share: float, kept: bool
+) -> None:
+    """Two of four values quoted: enough at a share of 0.5, not at 0.8."""
+    summarizer = _RoutingSummarizer(merge=lambda body: "lookup_1: CODE-1.", fold=_short_summary)
+    strategy = _chain_composed(summarizer, ceiling=await _post_record_size() - 500)
+    strategy.tool_results.coverage_share = share
+    messages = _chain_conversation()
+
+    await strategy(messages)
+
+    assert strategy.records_merged == (1 if kept else 0)
+    assert strategy.record_consolidations_lossy == (0 if kept else 1)
+
+
+async def test_records_with_no_distinctive_value_are_merged_on_size_alone() -> None:
+    """Nothing to check, so the rule passes, as a tool group with no value falls back to its own."""
+    messages = [Message(role="system", contents=["You are an assistant."], message_id="sys")]
+    messages += [
+        Message(role="user", contents=["Turn 0: the task."], message_id="u0"),
+        *_record_messages("all lookups succeeded " + "r" * _CHAIN_PADDING_CHARS, call_id="rec1"),
+        Message(role="user", contents=["Turn 1: next."], message_id="u1"),
+        *_record_messages("nothing was found " + "r" * _CHAIN_PADDING_CHARS, call_id="rec2"),
+        Message(role="user", contents=["Turn 2: last."], message_id="u2"),
+        Message(role="assistant", contents=["Reply 2."], message_id="a2"),
+    ]
+    summarizer = _RoutingSummarizer(merge=lambda body: "Lookups succeeded; nothing found.")
+    strategy = _chain_composed(summarizer, ceiling=1_000)
+
+    await strategy(messages)
+
+    assert (strategy.records_merged, strategy.record_consolidations_lossy) == (1, 0)
 
 
 async def test_mixed_recall_batch_survives_the_composed_merge_and_rewrite_chain() -> None:
@@ -2534,7 +2623,9 @@ async def test_a_refusal_forecloses_its_own_attempt_and_milder_ones_but_not_hars
     kept = _RoutingSummarizer(
         merge=_longer,
         fold=_longer,
-        harder=lambda attempt, body: body[: len(body) // 2] if attempt == 1 else _longer(body),
+        harder=lambda attempt, body: (
+            _shorter_each_attempt(2, body) if attempt == 1 else _longer(body)
+        ),
     )
     strategy = _chain_composed(kept)
     messages = _chain_conversation()
@@ -2735,7 +2826,7 @@ async def test_a_written_record_is_merged_again_and_rewritten_harder() -> None:
     assert _active_record_ids(messages) == [f"written:{_SHORT_RECORD}"]
 
     messages += _record_messages("lookup_9: CODE-9.", call_id="rec9")
-    again = "lookup_1: CODE-1. lookup_9: CODE-9."
+    again = "lookup_1: CODE-1; lookup_2: CODE-2; lookup_9: CODE-9."
     summarizer.merge = lambda body: again
     with pytest.raises(CompactionBudgetExceeded):
         await strategy(messages)
@@ -2752,7 +2843,7 @@ async def test_a_written_record_is_merged_again_and_rewritten_harder() -> None:
     assert first.additional_properties[EXCLUDE_REASON_KEY] == CONSOLIDATE_EXCLUDE_REASON
     assert not is_preserved(first)
 
-    harder = "CODE-1 CODE-9"
+    harder = "lookup_1 CODE-1 lookup_2 CODE-2 lookup_9 CODE-9"
     summarizer.harder = lambda attempt, body: harder
     strategy.harder_attempts = 1
     messages.append(Message(role="user", contents=["Turn 5: more."], message_id="u5"))
@@ -3288,8 +3379,10 @@ async def test_after_a_firing_the_chain_leaves_the_next_turns_alone_until_the_pr
 
 
 def _shorter_each_attempt(attempt: int, body: str) -> str:
-    """Answer the ``attempt``-th rewrite with the first fifth fewer of the body than the one before."""
-    return body[: int(len(body) * (1.0 - 0.2 * attempt))]
+    """Answer the ``attempt``-th rewrite with a fifth less of each record's padding than the one
+    before, keeping every value, as the rewrite prompt asks."""
+    keep = 1.0 - 0.2 * attempt
+    return re.sub(r"r{10,}", lambda run: run.group(0)[: int(len(run.group(0)) * keep)], body)
 
 
 @pytest.mark.parametrize(
@@ -3325,11 +3418,11 @@ async def test_a_new_record_reading_as_one_already_rewritten_takes_the_rewrite_w
     already decided and is put in at once, rather than asked for again.
     """
     summarizer = _RoutingSummarizer(
-        merge=_short_record, fold=_longer, harder=lambda attempt, body: "lookup_1: CODE-1."
+        merge=lambda body: _WORDY_RECORD, fold=_longer, harder=lambda attempt, body: _TERSE_RECORD
     )
     merged = _chain_conversation()
     merging = _chain_composed(
-        _RoutingSummarizer(merge=_short_record),
+        _RoutingSummarizer(merge=lambda body: _WORDY_RECORD),
         ceiling=await _post_record_size() - 500,
         chain_gain_fraction=0.0,
     )
@@ -3346,7 +3439,7 @@ async def test_a_new_record_reading_as_one_already_rewritten_takes_the_rewrite_w
     await strategy(changed)
 
     assert summarizer.log[3:] == ["merge"], "the rewrite taken, not asked for again"
-    assert _active_record_ids(changed) == ["written:lookup_1: CODE-1."]
+    assert _active_record_ids(changed) == [f"written:{_TERSE_RECORD}"]
 
 
 def test_the_chains_wait_is_taken_and_put_back_with_the_record_halfs_decisions() -> None:
