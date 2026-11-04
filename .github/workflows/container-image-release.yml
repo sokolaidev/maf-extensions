@@ -55,7 +55,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: container-image-publication
+  group: container-image-publication-${{ inputs.profile }}
   queue: max
   cancel-in-progress: false
 

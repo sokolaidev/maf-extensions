@@ -87,6 +87,16 @@ For `bicep`, `bicep-avm` and `bicep-docker-sbx`, the release dispatch's `bicep_r
 
 For this initial Linux/amd64 scope, an OCI index must contain exactly one runnable image manifest: the assessed Linux/amd64 manifest. Reject additional runnable children, nested image indexes and unrecognized descriptor types before publication and during consumer verification; an attested index alone does not establish assessment of its children. Non-runnable attestation descriptors may accompany that manifest only when identified and validated as evidence for it. Record both the top-level index digest, when present, and the assessed manifest digest, preserving their relationship in the signed evidence. A local Docker configuration ID is not a registry manifest digest, and an attestation for one must not be accepted as an attestation for the other.
 
+### Parallel publication and workflow rollout
+
+Release, abandonment and storage recovery share the workflow-wide `container-image-publication-${{ inputs.profile }}` concurrency group. Different profiles can build, scan, await approval and publish concurrently; all versions and operations for one profile queue behind its active workflow through evidence delivery. Queues retain pending work with `queue: max` and never cancel an active publication automatically. Publication order within a profile is not a version-order guarantee: the reservation gate rechecks eligibility when each run proceeds.
+
+Catalogue transactions retain the repository-wide `container-security-catalogue` group across publication, recovery, monitoring and release-request reconciliation. Every writer reads the current history under that lock, preserving other profiles' changes. Keep this group global even though publication groups are per profile. Existing candidate approvals, scan freshness, immutable identities and signature/qualification checks still apply independently to each release.
+
+Before activating a workflow revision that changes concurrency groups, pause new release/recovery dispatches and drain all active, queued and approval-waiting runs using the previous groups. Rerunning an older run uses its original workflow and lock name. Do not overlap such a rerun with publication, abandonment or recovery of the same profile under the new group; finish the older attempt before admitting that profile again. For an older failure eligible for storage recovery, dispatch the current recovery workflow with the original profile/version and retained evidence, then keep the profile idle while any required original signing/delivery rerun completes. Do not cancel an in-flight registry write just to shorten the drain, or rebuild a reserved candidate to migrate it.
+
+A core or dependent-package version bump does not by itself require an image release. Version/changelog-only changes reuse matching evidence; consumer source or dependency changes can qualify the existing digest through [independent consumer qualification](#independent-consumer-qualification). Publish replacement images only when image inputs require them, then wait for each kind's required consumer evidence before its Python release. See [release ordering](../../RELEASING.md#kind-releases-require-qualified-images).
+
 ## Evidence and verification
 
 ### Independent consumer qualification
@@ -354,6 +364,7 @@ Builds use profile `graphviz`, source path `images/graphviz-sandbox`, and regist
 
 | Decision | State | Tracking |
 |---|---|---|
+| Parallel publication across profiles with shared catalogue serialization | Implemented with local regression coverage; hosted concurrency and recovery rehearsal remain unverified | [#2467](https://github.com/sokolaidev/maf-extensions/issues/2467) (closed) by [#2469](https://github.com/sokolaidev/maf-extensions/pull/2469) (merged) |
 | Independent consumer qualification of published image digests | Implemented; hosted signing and execution pending | [#2415](https://github.com/sokolaidev/maf-extensions/issues/2415) (closed) by [#2419](https://github.com/sokolaidev/maf-extensions/pull/2419) (merged) |
 | Approval context and Mobile usability | Presentation implemented; maintainer confirmed actual Mobile approval and requested closure; separate web observation not recorded | [#1854](https://github.com/sokolaidev/maf-extensions/issues/1854) (closed) by [#1856](https://github.com/sokolaidev/maf-extensions/pull/1856) (merged) |
 | Remaining approval UI observations | Closed by maintainer acceptance of the recorded publication views; browser/Mobile versions, browser fallback, full scrolling, freshness-policy rendering, recovery and abandonment remain unverified | [#1904](https://github.com/sokolaidev/maf-extensions/issues/1904) (closed); [maintainer acceptance](https://github.com/sokolaidev/maf-extensions/issues/1904#issuecomment-6256275245) |
