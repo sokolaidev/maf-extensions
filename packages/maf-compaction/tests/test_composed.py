@@ -2052,8 +2052,7 @@ async def test_a_smaller_merge_that_drops_values_is_refused_and_the_old_records_
 
     The answer is far smaller than the two records, but it quotes two of their four distinctive
     values, under the default share of 0.8: refused like an answer that is no smaller, counted as
-    lossy, and nothing mutated. Live, merges of 24 and 11 records kept 9% and 5% of their values
-    and were the only account of the tool results behind them.
+    lossy, and nothing mutated.
     """
     summarizer = _RoutingSummarizer(merge=lambda body: "lookup_1: CODE-1.", fold=_short_summary)
     budget = await _post_record_size() - 500

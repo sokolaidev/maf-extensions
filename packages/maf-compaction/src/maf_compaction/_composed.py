@@ -1458,21 +1458,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return "accepted"
 
     def _keeps_values(self, bodies: list[str], text: str) -> bool:
-        """Whether ``text`` quotes enough of the values the records ``bodies`` hold.
+        """Whether ``text`` quotes ``coverage_share`` of the distinctive values in ``bodies``.
 
-        The record half's own rule, applied one level up. A record may stand in for a tool group
-        only if it quotes ``coverage_share`` of the group's distinctive values (see
-        :meth:`~._toolsummary.ToolResultAnchoredSummarizationCompactionStrategy._is_covered`); a
-        record that replaces records is held to the same share of theirs, with the same
-        generic token rule, so nothing here is fitted to one workload's values.
-
-        Without it a merge was kept on size alone, and the harder rewrites ask for a third of the
-        length: measured on a long agentic session, merges of 24 and of 11 records came back
-        keeping 9% and 5% of their values, while every one-record rewrite kept 97% or more. The
-        records they replaced were the only account of the tool results behind them.
-
-        Records holding no distinctive value have nothing to check and pass, as a tool group with
-        none falls back to its own rule.
+        The rule a record meets before it may stand in for a tool group (see
+        :meth:`~._toolsummary.ToolResultAnchoredSummarizationCompactionStrategy._is_covered`),
+        applied to a record that replaces records. Records holding no distinctive value pass.
         """
         values: set[str] = set()
         for body in bodies:
