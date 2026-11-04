@@ -258,7 +258,7 @@ jobs:
       - name: Sync workspace
         run: uv sync --locked
 
-      - name: Require qualified matching kind images before building
+      - name: Verify published image identity and consumer compatibility before building
         env:
           GH_TOKEN: ${{ github.token }}
           PACKAGE: ${{ steps.resolve.outputs.package }}
@@ -629,7 +629,7 @@ jobs:
             python3 release-guard/scripts/check_published_dependents_work.py "$VERSION" \
             "dist/maf_sandbox-${VERSION}-py3-none-any.whl" --since-snapshot admitting-snapshot.json
 
-      - name: Recheck kind image readiness after the approval wait
+      - name: Recheck published image identity and consumer compatibility after approval
         env:
           GH_TOKEN: ${{ github.token }}
           PACKAGE: ${{ needs.build.outputs.package }}
