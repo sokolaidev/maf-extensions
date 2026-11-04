@@ -1333,6 +1333,13 @@ class _FileReadChanged(Exception):
     """Stop the tool body before it can use a partial input set."""
 
 
+def _only_file_read_changes(raised: BaseException) -> bool:
+    if isinstance(raised, BaseExceptionGroup):
+        group = cast("BaseExceptionGroup[BaseException]", raised)
+        return group.split(_FileReadChanged)[1] is None
+    return isinstance(raised, _FileReadChanged)
+
+
 class SandboxToolSession:
     """Everything a sandbox workload's tool body needs, minus anything the model supplies.
 
@@ -3287,11 +3294,12 @@ def sandboxed_tool(
             try:
                 try:
                     result = body(*args, **kwargs)
-                except _FileReadChanged:
-                    result = None
                 except BaseException as raised:
-                    raised_by_body = raised
-                    raise
+                    if _only_file_read_changes(raised):
+                        result = None
+                    else:
+                        raised_by_body = raised
+                        raise
                 return _label_tool_result(
                     result,
                     tool=name,
@@ -3382,11 +3390,12 @@ def sandboxed_tool(
         try:
             try:
                 result = await body(*args, **kwargs)
-            except _FileReadChanged:
-                result = None
             except BaseException as raised:
-                raised_by_body = raised
-                raise
+                if _only_file_read_changes(raised):
+                    result = None
+                else:
+                    raised_by_body = raised
+                    raise
             # Gated, because `_call_name` is also what tells the reclaim a directory is named
             # after this call: a tool with no `{call_id}` sentence must not gain one here.
             return _label_tool_result(

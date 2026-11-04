@@ -407,6 +407,101 @@ def test_synchronous_tools_refuse_torn_reads_and_close_windows(contract, when, s
     assert not record._readers
 
 
+@pytest.mark.parametrize("synchronous", [False, True])
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("contract", [False, True])
+def test_task_groups_refuse_changed_inputs(synchronous, nested, contract):
+    record = trusted_record()
+    store = Store(during=record.record)
+
+    def build(session):
+        async def read_inputs():
+            async with asyncio.TaskGroup() as group:
+                for path in ("a", "b"):
+                    group.create_task(session.read_file(store, ListedFile(path, None)))
+            pytest.fail("changed inputs must stop the body")
+
+        async def grouped():
+            if nested:
+                async with asyncio.TaskGroup() as group:
+                    group.create_task(read_inputs())
+            else:
+                await read_inputs()
+
+        def sync_body():
+            return asyncio.run(grouped())
+
+        return sync_body if synchronous else grouped
+
+    tool = sandboxed_tool(
+        build,
+        router=SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE),
+        context=CallerContext(lambda: "scope", lambda: "thread", lambda _: None),
+        agent_id="agent",
+        spec=SandboxSpec(kind="test"),
+        name="read_inputs",
+        source_integrity=SourceIntegrity.UNTRUSTED,
+        result_contract=contract,
+        file_store_provenance=record,
+    )[0]
+    items = asyncio.run(tool.invoke())
+    assert any("changed while this call" in item.text for item in items)
+    assert all("private workload" not in item.text for item in items)
+    if contract:
+        assert items[0].text == NOT_COMPLETED_TEXT
+    else:
+        assert items[0].additional_properties["security_label"]["integrity"] == "trusted"
+    assert not record._readers
+
+
+@pytest.mark.parametrize("synchronous", [False, True])
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("changed", [False, True])
+@pytest.mark.parametrize("failure_type", [ValueError, asyncio.CancelledError])
+def test_file_change_handlers_preserve_other_group_failures(
+    synchronous, nested, changed, failure_type
+):
+    record = trusted_record()
+    store = Store(during=record.record)
+    raised_groups = []
+    failure = failure_type("unrelated failure")
+
+    def build(session):
+        async def read_inputs():
+            errors = [failure]
+            if changed:
+                with pytest.raises(maf_module._FileReadChanged) as caught:
+                    await session.read_file(store, ListedFile("a", None))
+                errors.append(caught.value)
+            group = BaseExceptionGroup("work failed", errors)
+            if nested:
+                group = BaseExceptionGroup("outer", [group])
+            raised_groups.append(group)
+            raise group
+
+        def sync_body():
+            return asyncio.run(read_inputs())
+
+        return sync_body if synchronous else read_inputs
+
+    tool = sandboxed_tool(
+        build,
+        router=SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE),
+        context=CallerContext(lambda: "scope", lambda: "thread", lambda _: None),
+        agent_id="agent",
+        spec=SandboxSpec(kind="test"),
+        name="read_inputs",
+        source_integrity=SourceIntegrity.UNTRUSTED,
+        result_contract=True,
+        file_store_provenance=record,
+    )[0]
+    with pytest.raises(BaseExceptionGroup) as caught:
+        asyncio.run(tool.invoke())
+    assert caught.value is raised_groups[0]
+    assert caught.value.subgroup(failure_type) is not None
+    assert not record._readers
+
+
 @pytest.mark.parametrize("changed", [False, True])
 @pytest.mark.parametrize("other_store", [False, True])
 @pytest.mark.parametrize("outcome", ["content", "error", "absent"])
