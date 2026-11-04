@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import inspect
 import logging
 import math
@@ -75,6 +76,7 @@ from ._file_provenance import (
     PATH_ARGUMENT,
     FileStoreChanged,
     FileStoreProvenance,
+    ReadSnapshot,
     ReadWindow,
     store_key,
 )
@@ -263,10 +265,51 @@ class _SandboxToolCall:
     #: Conversation acquires retain their hold until a late result has been cleaned.
     acquiring: dict[SandboxKey, int] = field(default_factory=dict[SandboxKey, int])
     retire: Callable[[SandboxKey], Awaitable[None]] | None = None
+
+
+@dataclass
+class _FileReads:
+    """Input consistency shared by synchronous and asynchronous tool bodies."""
+
+    closed: bool = False
     file_windows: dict[tuple[int, int], tuple[Any, FileStoreProvenance, ReadWindow]] = field(
         default_factory=dict[tuple[int, int], tuple[Any, FileStoreProvenance, ReadWindow]]
     )
+    file_inputs: dict[tuple[int, str], tuple[Any, str]] = field(
+        default_factory=dict[tuple[int, str], tuple[Any, str]]
+    )
     file_refusal: str | None = None
+
+    def close(self) -> None:
+        self.closed = True
+        for _, _, window in self.file_windows.values():
+            window.close()
+        self.file_windows.clear()
+        self.file_inputs.clear()
+
+
+_FILE_READS: ContextVar[_FileReads | None] = ContextVar("sandbox_file_reads", default=None)
+
+
+def _file_fingerprint(content: str | bytes | None) -> tuple[bool, bytes] | None:
+    if content is None:
+        return None
+    binary = isinstance(content, bytes)
+    data = content if binary else content.encode("utf-8", errors="surrogatepass")
+    return binary, hashlib.sha256(data).digest()
+
+
+def _file_state(
+    provenance: FileStoreProvenance, window: ReadWindow, path: str
+) -> tuple[SourceIntegrity | None, int]:
+    try:
+        state = provenance.state_of(path)
+    except FileStoreChanged:
+        window.note_change(store_key(path))
+        raise
+    if window.changed(path):
+        raise FileStoreChanged
+    return state
 
 
 #: The call a tool body is running inside, or ``None`` outside one.
@@ -1526,8 +1569,6 @@ class SandboxToolSession:
 
         A mutation to an input since this call's listing refuses the whole call. The wrapper
         stops the body and renders a trusted refusal; a direct session read returns that text.
-        Changed inputs are numbered in read order; names and rendering overrides never enter
-        this trusted refusal.
         Unrelated mutations preserve the fold. Host records can raise ``FileStoreChanged``
         from ``state_of`` for a stale snapshot; ``None`` still means unestablished integrity.
 
@@ -1537,59 +1578,55 @@ class SandboxToolSession:
         answers for bytes written by a call that has not returned, which is the one thing the
         record cannot see.
 
-        ``at`` is where the caller got the name — ``"files[1]"`` — and ``hidden`` says the
-        framework rewrote that argument, which is what makes the refusal render the position
-        instead of the value.  Pass both: ``at`` alone still quotes a short printable name, and a
-        name expanded out of hidden content is exactly the value a refusal must not repeat
-        (:func:`echoed_name`, and rule 9 in ``docs/sandbox/kinds/README.md``).
-
-        ``named`` overrides that rendering, and a caller that resolved the model's spelling
-        against its listing should pass one.  :attr:`ListedFile.name` is the *host's* key, so
-        rendering from it describes a different string than the one at ``at`` — for a model that
-        asked for ``./main.bicep`` against a listing holding ``main.bicep``, the positional form
-        would report the wrong length for the value it is standing in for.  The caller knows both
-        spellings; this method only ever sees one.
+        All refusals identify inputs by generated numbers in first-read order, scoped to the
+        call and shared across sessions. Direct reads use ``input file 1``. File names never
+        enter a refusal, so a kind may return it as trusted text. ``at``, ``hidden`` and ``named``
+        remain accepted for compatibility but no longer affect refusal rendering.
         """
         window = self._file_window(store)
-        shown = named if named is not None else echoed_name(listed.name, at=at, hidden=hidden)
+        shown = self._file_input(store, listed.name)
         if window is not None:
-            position = sum(len(held.paths) for _, held in self._file_windows(window)) + 1
-            window.paths.setdefault(listed.name, f"input file {position}")
+            window.paths.setdefault(listed.name, shown)
         try:
             return await self._read_file(store, listed, window=window, shown=shown)
         except FileStoreChanged:
             changed = [
                 display
-                for _, held in self._file_windows(window)
+                for _, _, held in self._file_windows(store, window)
                 for path, display in held.paths.items()
                 if held.changed(path)
             ]
             self._record_read(listed.name, None, 0, outcome="refused")
-            affected = (
-                ", ".join(changed)
-                if changed
-                else (window.paths[listed.name] if window is not None else "an input file")
-            )
+            affected = ", ".join(changed) if changed else shown
             refusal = (
-                f"Error: {affected} changed while this call "
+                f"Error: {affected} may have changed while this call "
                 "was reading its inputs; no result was produced. Re-run, and do not run it "
                 "in the same batch as a tool that writes these files."
             )
-            call = _CALL.get()
+            call = _FILE_READS.get()
             if call is not None and not call.closed:
                 call.file_refusal = refusal
                 raise _FileReadChanged(refusal) from None
             return refusal
         finally:
-            call = _CALL.get()
+            call = _FILE_READS.get()
             if window is not None and (call is None or call.closed):
                 window.close()
+
+    def _file_input(self, store: Any, path: str) -> str:
+        call = _FILE_READS.get()
+        if call is None or call.closed:
+            return "input file 1"
+        key = (id(store), path)
+        if key not in call.file_inputs:
+            call.file_inputs[key] = (store, f"input file {len(call.file_inputs) + 1}")
+        return call.file_inputs[key][1]
 
     def _file_window(self, store: Any) -> ReadWindow | None:
         record = self._file_store_provenance
         if record is None:
             return None
-        call = _CALL.get()
+        call = _FILE_READS.get()
         if call is None or call.closed:
             return record.read_window()
         key = (id(record), id(store))
@@ -1598,13 +1635,13 @@ class SandboxToolSession:
         return call.file_windows[key][2]
 
     def _file_windows(
-        self, window: ReadWindow | None
-    ) -> list[tuple[FileStoreProvenance, ReadWindow]]:
-        call = _CALL.get()
+        self, store: Any, window: ReadWindow | None
+    ) -> list[tuple[Any, FileStoreProvenance, ReadWindow]]:
+        call = _FILE_READS.get()
         if call is not None and not call.closed:
-            return [(record, held) for _, record, held in call.file_windows.values()]
+            return list(call.file_windows.values())
         record = self._file_store_provenance
-        return [(record, window)] if record is not None and window is not None else []
+        return [(store, record, window)] if record is not None and window is not None else []
 
     async def _read_file(
         self, store: Any, listed: ListedFile, *, window: ReadWindow | None, shown: str
@@ -1616,7 +1653,7 @@ class SandboxToolSession:
             # middleware observes, which is a supported configuration and so a reachable way out
             # of a read that would otherwise leave no record at all.
             before = self._recorded_state(listed.name, window)
-            self._check_file_window(window, current=listed.name)
+            await self._check_file_window(store, window, current=(listed.name, before))
         except FileStoreChanged:
             raise
         except BaseException:
@@ -1627,7 +1664,7 @@ class SandboxToolSession:
         except FileStoreChanged:
             raise
         except Exception as exc:  # noqa: BLE001
-            self._check_file_window(window)
+            await self._check_file_window(store, window)
             self._logger.warning(
                 f"{self._log_prefix}: could not read a listed file: %s", error_detail(exc)
             )
@@ -1742,25 +1779,72 @@ class SandboxToolSession:
                 not there meets it here, which is the first moment it can be told.
         """
         record = self._file_store_provenance
-        try:
-            return (None, 0) if record is None else record.state_of(name)
-        except FileStoreChanged:
-            if window is not None:
-                window.note_change(store_key(name))
-            raise
+        if record is None:
+            return None, 0
+        return record.state_of(name) if window is None else _file_state(record, window, name)
 
-    def _check_file_window(self, window: ReadWindow | None, *, current: str | None = None) -> None:
-        for provenance, held in self._file_windows(window):
-            for path in held.paths:
-                if held.changed(path):
-                    raise FileStoreChanged
-                if held is window and path == current:
-                    continue
-                try:
-                    provenance.state_of(path)
-                except FileStoreChanged:
+    async def _check_file_window(
+        self,
+        store: Any,
+        window: ReadWindow | None,
+        *,
+        current: tuple[str, tuple[SourceIntegrity | None, int]] | None = None,
+    ) -> None:
+        windows = self._file_windows(store, window)
+        # A later verification read can invalidate an earlier one; the final pass samples all
+        # inputs again. Two verification passes bound hosts whose counters never settle.
+        for attempt in range(3):
+            pending: list[tuple[Any, FileStoreProvenance, ReadWindow, str, ReadSnapshot]] = []
+            for source, provenance, held in windows:
+                for path in held.paths:
+                    state = (
+                        current[1]
+                        if attempt == 0
+                        and held is window
+                        and current is not None
+                        and path == current[0]
+                        else _file_state(provenance, held, path)
+                    )
+                    if held.changed(path):
+                        raise FileStoreChanged
+                    snapshot = held.reads.get(path)
+                    if snapshot is None:
+                        continue
+                    if state[0] != snapshot.integrity:
+                        held.note_change(store_key(path))
+                        raise FileStoreChanged
+                    if state[1] != snapshot.generation:
+                        if type(provenance) is FileStoreProvenance:
+                            snapshot.generation = state[1]
+                        else:
+                            pending.append((source, provenance, held, path, snapshot))
+            if not pending:
+                return
+            if attempt == 2:
+                for _, _, held, path, _ in pending:
                     held.note_change(store_key(path))
-                    raise
+                raise FileStoreChanged
+            for source, provenance, held, path, snapshot in pending:
+                before = _file_state(provenance, held, path)
+                try:
+                    content = await source.read(path)
+                except Exception as exc:
+                    self._logger.warning(
+                        f"{self._log_prefix}: could not recheck a listed file: %s",
+                        error_detail(exc),
+                    )
+                    held.note_change(store_key(path))
+                    raise FileStoreChanged from None
+                after = _file_state(provenance, held, path)
+                if (
+                    _file_fingerprint(content) != snapshot.content
+                    or before[0] != snapshot.integrity
+                    or after[0] != snapshot.integrity
+                ):
+                    held.note_change(store_key(path))
+                    raise FileStoreChanged
+                if after[1] == before[1]:
+                    snapshot.generation = after[1]
 
     async def _folded_integrity(
         self,
@@ -1770,33 +1854,20 @@ class SandboxToolSession:
         text: str | bytes | None,
         window: ReadWindow | None,
     ) -> SourceIntegrity | None:
-        """Fold stable path evidence, rechecking bytes when a host's counter moved."""
+        """Fold the listing with input evidence verified across the call's read windows."""
         if self._file_store_provenance is None:
-            self._check_file_window(window)
+            await self._check_file_window(store, window)
             return listed.integrity
         integrity, generation = before
-        after, current = self._recorded_state(listed.name, window)
-        self._check_file_window(window, current=listed.name)
-        if after != integrity:
-            if window is not None:
+        if window is not None:
+            fingerprint = _file_fingerprint(text)
+            snapshot = window.reads.setdefault(
+                listed.name, ReadSnapshot(integrity, generation, fingerprint)
+            )
+            if snapshot.content != fingerprint:
                 window.note_change(store_key(listed.name))
-            raise FileStoreChanged
-        if generation != current:
-            try:
-                unchanged = await store.read(listed.name) == text
-            except Exception as exc:
-                self._logger.warning(
-                    f"{self._log_prefix}: could not recheck a listed file: %s", error_detail(exc)
-                )
-                if window is not None:
-                    window.note_change(store_key(listed.name))
-                raise FileStoreChanged from None
-            after, _ = self._recorded_state(listed.name, window)
-            self._check_file_window(window, current=listed.name)
-            if not unchanged or after != integrity:
-                if window is not None:
-                    window.note_change(store_key(listed.name))
                 raise FileStoreChanged
+        await self._check_file_window(store, window)
         return weakest_integrity((listed, ListedFile(listed.name, integrity)))
 
     async def acquire(self, key: SandboxKey) -> Sandbox | str:
@@ -2622,6 +2693,7 @@ def _label_tool_result(
     call_integrity: SourceIntegrity | None = None,
     contract: bool = False,
     verdicts: tuple[str | int | bool, ...] = (),
+    file_refusal: str | None = None,
 ) -> str | list[Content]:
     """Stamp committed guidance and derived items without accepting a body's labels.
 
@@ -2630,6 +2702,20 @@ def _label_tool_result(
     from agent_framework import Content
     from agent_framework.security import ContentLabel
 
+    if file_refusal is not None:
+        if contract:
+            result = SandboxResult(completed=False, trusted_output=(file_refusal,))
+        else:
+            substitution = {CALL_ID_PLACEHOLDER: call_id} if call_id is not None else {}
+            return [
+                Content.from_text(
+                    text, additional_properties={"security_label": ContentLabel().to_dict()}
+                )
+                for text in (
+                    file_refusal,
+                    *(sentence.format(**substitution) for sentence in committed),
+                )
+            ]
     if contract:
         if not isinstance(result, SandboxResult):
             raise ValueError(
@@ -3140,11 +3226,15 @@ def sandboxed_tool(
             # would otherwise be the one that does not.
             recording = RecordedCall(uuid4().hex)
             recorded = RECORDED_CALL.set(recording)
+            files = _FileReads()
+            file_token = _FILE_READS.set(files)
             started = time.monotonic()
             raised_by_body: BaseException | None = None
             try:
                 try:
                     result = body(*args, **kwargs)
+                except _FileReadChanged:
+                    result = None
                 except BaseException as raised:
                     raised_by_body = raised
                     raise
@@ -3159,8 +3249,11 @@ def sandboxed_tool(
                     call_integrity=call_integrity,
                     contract=result_contract,
                     verdicts=declared_verdicts,
+                    file_refusal=files.file_refusal,
                 )
             finally:
+                files.close()
+                _FILE_READS.reset(file_token)
                 recording.closed = True
                 RECORDED_CALL.reset(recorded)
                 if router.observer is not None:
@@ -3217,6 +3310,8 @@ def sandboxed_tool(
         call_integrity = _call_integrity(call_context)
         call = _SandboxToolCall(owner=session)
         token = _CALL.set(call)
+        files = _FileReads()
+        file_token = _FILE_READS.set(files)
         # Unconditionally, not behind `router.observer`: the two registration points are
         # independent, and a host recording only host-tool calls would otherwise get runs that
         # name no call.
@@ -3238,24 +3333,6 @@ def sandboxed_tool(
             except BaseException as raised:
                 raised_by_body = raised
                 raise
-            if call.file_refusal is not None:
-                if not result_contract:
-                    from agent_framework import Content
-                    from agent_framework.security import ContentLabel
-
-                    substitution = (
-                        {CALL_ID_PLACEHOLDER: _call_name(call)} if _needs_call_id(committed) else {}
-                    )
-                    return [
-                        Content.from_text(
-                            text, additional_properties={"security_label": ContentLabel().to_dict()}
-                        )
-                        for text in (
-                            call.file_refusal,
-                            *(sentence.format(**substitution) for sentence in committed),
-                        )
-                    ]
-                result = SandboxResult(completed=False, trusted_output=(call.file_refusal,))
             # Gated, because `_call_name` is also what tells the reclaim a directory is named
             # after this call: a tool with no `{call_id}` sentence must not gain one here.
             return _label_tool_result(
@@ -3269,12 +3346,12 @@ def sandboxed_tool(
                 call_integrity=call_integrity,
                 contract=result_contract,
                 verdicts=declared_verdicts,
+                file_refusal=files.file_refusal,
             )
         finally:
             _CALL.reset(token)
-            for _, _, window in call.file_windows.values():
-                window.close()
-            call.file_windows.clear()
+            files.close()
+            _FILE_READS.reset(file_token)
             close_unclean_notes(notes)
             # Closed before the removal, not after: a task the body left running would otherwise
             # be handed this path while it is being deleted.

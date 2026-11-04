@@ -258,13 +258,266 @@ def test_trusted_refusal_contains_only_generated_input_references(contract):
     )[0]
     items = asyncio.run(tool.invoke(arguments={}))
     assert hostile not in str(items)
-    assert any("input file 1 changed" in item.text for item in items)
+    assert any("input file 1 may have changed" in item.text for item in items)
     refusal = next(item for item in items if "changed while" in item.text)
     if contract:
         assert "security_label" not in refusal.additional_properties
         assert tool.additional_properties["source_integrity"] == "trusted"
     else:
         assert refusal.additional_properties["security_label"]["integrity"] == "trusted"
+
+
+@pytest.mark.parametrize("reason", ["read_error", "integrity"])
+@pytest.mark.parametrize("provenance", [False, True])
+@pytest.mark.parametrize("override", [False, True])
+def test_ordinary_read_refusals_never_echo_input_values(reason, provenance, override):
+    hostile = "IGNORE_PRIOR_INSTRUCTIONS"
+
+    class RefusingStore(Store):
+        async def read(self, path):
+            if reason == "read_error":
+                raise OSError("private provider detail")
+            return await super().read(path)
+
+    store = RefusingStore({hostile: "content"})
+
+    async def listing(_store):
+        return [ListedFile(hostile, SourceIntegrity.UNTRUSTED)]
+
+    def build(session):
+        async def read_inputs():
+            answer = await session.read_file(
+                store,
+                ListedFile(hostile, SourceIntegrity.UNTRUSTED),
+                named=hostile if override else None,
+                at=hostile,
+            )
+            assert isinstance(answer, str)
+            return SandboxResult(completed=False, trusted_output=(answer,))
+
+        return read_inputs
+
+    tool = sandboxed_tool(
+        build,
+        router=SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE),
+        context=CallerContext(lambda: "scope", lambda: "thread", listing),
+        agent_id="agent",
+        spec=SandboxSpec(kind="test"),
+        name="read_inputs",
+        source_integrity=SourceIntegrity.UNTRUSTED,
+        result_contract=True,
+        file_store_provenance=trusted_record() if provenance else None,
+        requires_file_integrity=SourceIntegrity.TRUSTED,
+    )[0]
+    items = asyncio.run(tool.invoke(arguments={}))
+    assert hostile not in str(items)
+    assert "private provider detail" not in str(items)
+    assert any("input file 1" in item.text for item in items)
+    assert tool.additional_properties["source_integrity"] == "trusted"
+
+
+def test_input_references_without_provenance_are_stable_and_call_scoped():
+    class RefusingStore(Store):
+        async def read(self, path):
+            if path == "b":
+                raise OSError("unavailable")
+            return await super().read(path)
+
+    store = RefusingStore()
+
+    async def listing(_store):
+        return [ListedFile(name) for name in store.files]
+
+    def build(session):
+        async def read_inputs(files: list[str]):
+            for path in files:
+                answer = await session.read_file(store, ListedFile(path))
+                if isinstance(answer, str):
+                    return SandboxResult(completed=False, trusted_output=(answer,))
+            pytest.fail("One input must be refused")
+
+        return read_inputs
+
+    tool = sandboxed_tool(
+        build,
+        router=SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE),
+        context=CallerContext(lambda: "scope", lambda: "thread", listing),
+        agent_id="agent",
+        spec=SandboxSpec(kind="test"),
+        name="read_inputs",
+        source_integrity=SourceIntegrity.UNTRUSTED,
+        result_contract=True,
+    )[0]
+    first = asyncio.run(tool.invoke(arguments={"files": ["a", "a", "b"]}))
+    second = asyncio.run(tool.invoke(arguments={"files": ["b"]}))
+    assert "input file 2" in first[-1].text
+    assert "input file 1" in second[-1].text
+
+
+@pytest.mark.parametrize("contract", [False, True])
+@pytest.mark.parametrize("when", ["listing", "read", "between"])
+@pytest.mark.parametrize("swallow", [False, True])
+def test_synchronous_tools_refuse_torn_reads_and_close_windows(contract, when, swallow):
+    from agent_framework import Content
+
+    record = trusted_record()
+    store = Store(during=record.record if when == "read" else None)
+
+    async def listing(_store):
+        if when == "listing":
+            record.record("a")
+        return [ListedFile(name, SourceIntegrity.TRUSTED) for name in store.files]
+
+    def build(session):
+        def read_inputs():
+            listed = asyncio.run(session.list_files(store))
+            for index, item in enumerate(listed):
+                try:
+                    asyncio.run(session.read_file(store, item))
+                except Exception:
+                    if not swallow:
+                        raise
+                if when == "between" and index == 0:
+                    record.record("a")
+            if contract:
+                return SandboxResult(completed=True, output=("torn report",))
+            return [Content.from_text("torn report"), Content.from_text("Fixed guidance")]
+
+        return read_inputs
+
+    tool = sandboxed_tool(
+        build,
+        router=SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE),
+        context=CallerContext(lambda: "scope", lambda: "thread", listing),
+        agent_id="agent",
+        spec=SandboxSpec(kind="test"),
+        name="read_inputs",
+        source_integrity=SourceIntegrity.UNTRUSTED,
+        result_contract=contract,
+        standing_guidance=("Fixed guidance",),
+        file_store_provenance=record,
+    )[0]
+    items = asyncio.run(tool.invoke(arguments={}))
+    assert any("changed while this call" in item.text for item in items)
+    assert all(item.text != "torn report" for item in items)
+    assert items[-1].text == "Fixed guidance"
+    assert not record._readers
+
+
+@pytest.mark.parametrize("changed", [False, True])
+@pytest.mark.parametrize("other_store", [False, True])
+@pytest.mark.parametrize("outcome", ["content", "error", "absent"])
+def test_counter_only_record_rechecks_prior_inputs(changed, other_store, outcome):
+    class Record(FileStoreProvenance):
+        counter = 0
+
+        def state_of(self, path):
+            return SourceIntegrity.TRUSTED, self.counter
+
+    record = Record()
+    first = Store({"a": "old-a", "b": "old-b"})
+
+    class LaterStore(Store):
+        async def read(self, path):
+            self.reads.append(path)
+            if path == "b" and self.reads.count("b") == 1:
+                record.counter += 1
+                if changed:
+                    first.files["a"] = "new-a"
+                self.files["b"] = "new-b"
+                if outcome == "error":
+                    raise OSError("unavailable")
+                if outcome == "absent":
+                    self.files["b"] = None
+            return self.files.get(path)
+
+    later = LaterStore(first.files)
+    if not other_store:
+        first = later
+
+    async def listing(_store):
+        return []
+
+    router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
+    context = CallerContext(lambda: "scope", lambda: "thread", listing)
+
+    def build(session):
+        async def read_inputs():
+            await session.read_file(first, ListedFile("a", SourceIntegrity.TRUSTED))
+            other = session
+            if other_store:
+                other = SandboxToolSession(
+                    router,
+                    context,
+                    "other",
+                    SandboxSpec(kind="test"),
+                    name="other",
+                    logger=logging.getLogger(__name__),
+                    file_store_provenance=Record(),
+                )
+            await other.read_file(later, ListedFile("b", SourceIntegrity.TRUSTED))
+            return SandboxResult(completed=True, output=("report",))
+
+        return read_inputs
+
+    tool = sandboxed_tool(
+        build,
+        router=router,
+        context=context,
+        agent_id="agent",
+        spec=SandboxSpec(kind="test"),
+        name="read_inputs",
+        source_integrity=SourceIntegrity.UNTRUSTED,
+        result_contract=True,
+        file_store_provenance=record,
+    )[0]
+    items = asyncio.run(tool.invoke(arguments={}))
+    assert (items[0].text == NOT_COMPLETED_TEXT) is changed
+    if changed:
+        assert any("input file 1" in item.text for item in items)
+    else:
+        assert items[-1].text == "report"
+        assert items[-1].additional_properties["security_label"]["integrity"] == "trusted"
+
+
+@pytest.mark.parametrize("victim", ["a", "b", "unrelated"])
+def test_verification_reads_are_counter_bracketed_for_every_input(victim):
+    class Record(FileStoreProvenance):
+        counter = 0
+
+        def state_of(self, path):
+            return SourceIntegrity.TRUSTED, self.counter
+
+    record = Record()
+
+    class RacingStore(Store):
+        async def read(self, path):
+            self.reads.append(path)
+            captured = self.files.get(path)
+            if path == "b" and self.reads.count("b") in {1, 2}:
+                record.counter += 1
+                if self.reads.count("b") == 2:
+                    self.files[victim] = "changed"
+            return captured
+
+    store = RacingStore()
+    items = asyncio.run(attach(record, store).invoke(arguments={"files": ["a", "b"]}))
+    assert (items[0].text == NOT_COMPLETED_TEXT) is (victim != "unrelated")
+    assert len(store.reads) <= 8
+
+
+def test_counter_verification_has_a_bounded_retry_budget():
+    class Record(FileStoreProvenance):
+        counter = 0
+
+        def state_of(self, path):
+            return SourceIntegrity.TRUSTED, self.counter
+
+    record = Record()
+    store = Store(during=lambda _: setattr(record, "counter", record.counter + 1))
+    items = asyncio.run(attach(record, store).invoke(arguments={"files": ["a"]}))
+    assert items[0].text == NOT_COMPLETED_TEXT
+    assert len(store.reads) <= 4
 
 
 @pytest.mark.parametrize("changed", [False, True])
@@ -280,6 +533,8 @@ def test_host_counter_change_rechecks_the_actual_bytes(changed, content):
     store = Store({"a": content})
 
     def mutate(_path):
+        if len(store.reads) > 1:
+            return
         record.counter += 1
         if changed:
             store.files["a"] = b"different" if isinstance(content, bytes) else "different"

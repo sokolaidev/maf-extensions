@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import re
 import threading
+from collections.abc import Callable
+from dataclasses import dataclass
 from weakref import WeakSet
 
 from ._protocol import SourceIntegrity
@@ -45,14 +47,25 @@ class FileStoreChanged(Exception):
     """
 
 
+@dataclass
+class ReadSnapshot:
+    """A reader's verified state and content fingerprint."""
+
+    integrity: SourceIntegrity | None
+    generation: int
+    content: tuple[bool, bytes] | None
+
+
 class ReadWindow:
     """Path mutations retained only while a reader holds this window."""
 
-    def __init__(self) -> None:
+    def __init__(self, release: Callable[[ReadWindow], None] | None = None) -> None:
         self.paths: dict[str, str] = {}
+        self.reads: dict[str, ReadSnapshot] = {}
         self._lock = threading.Lock()
         self._changed: set[str] = set()
         self._closed = False
+        self._release = release
 
     def note_change(self, key: str) -> None:
         with self._lock:
@@ -67,6 +80,11 @@ class ReadWindow:
         with self._lock:
             self._closed = True
             self._changed.clear()
+            self.paths.clear()
+            self.reads.clear()
+            release, self._release = self._release, None
+        if release is not None:
+            release(self)
 
 
 #: The ``FileAccessProvider`` tools that change what a path holds.  Named here rather than
@@ -161,9 +179,13 @@ class FileStoreProvenance:
     def read_window(self) -> ReadWindow:
         """Observe path mutations until the returned window is closed or released."""
         with self._lock:
-            window = ReadWindow()
+            window = ReadWindow(self._release_reader)
             self._readers.add(window)
             return window
+
+    def _release_reader(self, window: ReadWindow) -> None:
+        with self._lock:
+            self._readers.discard(window)
 
     def _changed(self, key: str) -> None:
         for reader in self._readers:

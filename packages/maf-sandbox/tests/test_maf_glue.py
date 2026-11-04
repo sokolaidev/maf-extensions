@@ -4294,7 +4294,8 @@ class TestSessionReadFile:
 
         assert isinstance(answer, str)
         assert "s3cr3t" not in answer
-        assert "a.txt" in answer
+        assert "input file 1" in answer
+        assert "a.txt" not in answer
 
     def test_a_refusal_about_a_hidden_expanded_name_renders_the_position_not_the_value(self):
         """The name is a string the model typed, and when the framework expanded a reference
@@ -4310,7 +4311,7 @@ class TestSessionReadFile:
 
         assert isinstance(answer, str)
         assert "secret.bicep" not in answer
-        assert "files[0]" in answer
+        assert "input file 1" in answer
 
 
 class TestTheRecordSamplesValueAndCountTogether:
@@ -4595,7 +4596,10 @@ class TestFileIntegrityAdmission:
             assert item.additional_properties.get(SOURCE_INTEGRITY_PROPERTY) == integrity
         else:
             assert isinstance(item, str)
-            assert item == f"Error: 'a.txt' does not meet the required file integrity ({required})"
+            assert (
+                item
+                == f"Error: input file 1 does not meet the required file integrity ({required})"
+            )
 
     @pytest.mark.parametrize("listed_integrity", [None, *SourceIntegrity])
     @pytest.mark.parametrize("recorded_integrity", [None, *SourceIntegrity])
@@ -4647,27 +4651,26 @@ class TestFileIntegrityAdmission:
             assert "content" not in item
 
     @pytest.mark.parametrize(
-        ("name", "options", "shown"),
+        ("name", "options"),
         [
-            ("a.txt", {"at": "files[0]"}, "'a.txt'"),
-            ("a.txt", {"at": "files[0]", "hidden": True}, "the 5-character value at files[0]"),
-            ("a.txt", {"hidden": True}, "a 5-character value"),
-            ("a\nb.txt", {"at": "files[1]"}, "the 7-character value at files[1]"),
+            ("a.txt", {"at": "files[0]"}),
+            ("a.txt", {"at": "files[0]", "hidden": True}),
+            ("a.txt", {"hidden": True}),
+            ("a\nb.txt", {"at": "files[1]"}),
             (
                 "main.bicep",
                 {"at": "files[1]", "hidden": True, "named": "the 12-character value at files[1]"},
-                "the 12-character value at files[1]",
             ),
         ],
     )
-    def test_a_refusal_uses_the_callers_rendering(self, name, options, shown):
+    def test_a_refusal_never_echoes_names_or_rendering_overrides(self, name, options):
         item = asyncio.run(
             _session(requires_file_integrity=SourceIntegrity.TRUSTED).read_file(
                 _ReadStore({name: "content"}), ListedFile(name), **options
             )
         )
 
-        assert item == f"Error: {shown} does not meet the required file integrity (trusted)"
+        assert item == "Error: input file 1 does not meet the required file integrity (trusted)"
 
     @pytest.mark.parametrize("second_reading", [False, True])
     def test_a_provenance_wiring_error_still_raises(self, second_reading):
@@ -4693,7 +4696,7 @@ class TestFileIntegrityAdmission:
             asyncio.run(
                 session.read_file(_ReadStore({}, fails=RuntimeError("down")), ListedFile("a.txt"))
             )
-            == "Error: 'a.txt' could not be read from the file store"
+            == "Error: input file 1 could not be read from the file store"
         )
 
     def test_a_string_requirement_is_coerced(self):
