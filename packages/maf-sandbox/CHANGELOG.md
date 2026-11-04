@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.53.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.53.0...maf-sandbox-v0.53.1) (2026-11-04)
+
+
+### Fixes
+
+* **sandbox:** refuse calls when file inputs change during reading ([#2452](https://github.com/sokolaidev/maf-extensions/issues/2452)) ([671e646](https://github.com/sokolaidev/maf-extensions/commit/671e64690f8c9aa15ec6cbee241fa5841a42ab1f))
+
 ## [0.53.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.52.1...maf-sandbox-v0.53.0) (2026-11-03)
 
 
