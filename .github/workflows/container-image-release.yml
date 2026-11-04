@@ -130,7 +130,7 @@ jobs:
       approval_name: ${{ steps.approval-summary.outputs.approval_name }}
       summary_url: ${{ steps.approval-summary.outputs.summary_url }}
       mode: ${{ steps.candidate.outputs.mode }}
-      lost: ${{ steps.candidate.outputs.lost }}
+      lost: ${{ steps.candidate.outputs.lost || steps.plan.outputs.lost }}
       candidate_sha256: ${{ steps.candidate.outputs.candidate_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -138,8 +138,19 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - name: Decide whether preparation can build or must recover
+        id: plan
+        env:
+          PROFILE: ${{ inputs.profile }}
+          VERSION: ${{ inputs.version }}
+          BICEP_ROUTE: ${{ inputs.bicep_route }}
+        run: |
+          uv run --locked python scripts/prepare_container_release_dispatch.py \
+            --profile "$PROFILE" --version "$VERSION" \
+            --bicep-route "$BICEP_ROUTE" --plan-only \
+            --directory "$RUNNER_TEMP/candidate" --selection "$RUNNER_TEMP/selection"
       - name: Prepare Docker Sandboxes consumer host
-        if: inputs.profile == 'bicep-docker-sbx' && github.run_attempt == 1
+        if: inputs.profile == 'bicep-docker-sbx' && steps.plan.outputs.mode == 'built'
         uses: ./.github/actions/setup-sbx
         with:
           docker-username: ${{ secrets.DOCKER_USERNAME }}
@@ -147,14 +158,14 @@ jobs:
       - name: Require configuration-based Docker image IDs
         uses: ./.github/actions/setup-classic-docker
       - name: Make room for the AVM provider toolchain and build cache
-        if: inputs.profile == 'terraform-avm' && github.run_attempt == 1
+        if: inputs.profile == 'terraform-avm' && steps.plan.outputs.mode == 'built'
         run: |
           test "$RUNNER_ENVIRONMENT" = github-hosted
           sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup
           df -h /
-      - name: Install preparation tools on the initial attempt
+      - name: Install preparation tools for a new candidate
         timeout-minutes: 10
-        if: github.run_attempt == 1
+        if: steps.plan.outputs.mode == 'built'
         run: |
           apt_options=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
           sudo apt-get "${apt_options[@]}" update --error-on=any
@@ -162,21 +173,22 @@ jobs:
           python3 scripts/install_container_scanners.py --directory "$RUNNER_TEMP/scan-tools"
       - name: Prepare reusable provider packages
         id: providers
-        if: github.run_attempt == 1 && (startsWith(inputs.profile, 'terraform-') || startsWith(inputs.profile, 'opentofu-'))
+        if: steps.plan.outputs.mode == 'built' && (startsWith(inputs.profile, 'terraform-') || startsWith(inputs.profile, 'opentofu-'))
         uses: ./.github/actions/prepare-provider-cache
         with:
           profile: ${{ inputs.profile }}
-      - name: Build once or recover original bytes
+      - name: Prepare a new candidate or recover original bytes
         id: candidate
         env:
           PROFILE: ${{ inputs.profile }}
           VERSION: ${{ inputs.version }}
           BICEP_ROUTE: ${{ inputs.bicep_route }}
           MAF_PROVIDER_BUILDS: ${{ steps.providers.outputs.directory }}
+          PREPARATION_MODE: ${{ steps.plan.outputs.mode }}
         run: |
           uv run --locked python scripts/prepare_container_release_dispatch.py \
             --profile "$PROFILE" --version "$VERSION" \
-            --bicep-route "$BICEP_ROUTE" \
+            --bicep-route "$BICEP_ROUTE" --expected-mode "$PREPARATION_MODE" \
             --directory "$RUNNER_TEMP/candidate" --selection "$RUNNER_TEMP/selection"
       - name: Retain provider preparation timings
         if: always() && steps.providers.outputs.directory != ''
@@ -192,6 +204,7 @@ jobs:
           name: retained-image-${{ github.run_id }}
           path: ${{ runner.temp }}/candidate/
           if-no-files-found: error
+          overwrite: true
           retention-days: 30
           compression-level: 0
       - name: Retain failed preparation reports
