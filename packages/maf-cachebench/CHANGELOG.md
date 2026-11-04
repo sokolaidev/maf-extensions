@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.1](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.5.0...maf-cachebench-v0.5.1) (2026-11-04)
+
+
+### Fixes
+
+* **maf-compaction:** keep a record merge or rewrite only if it also keeps the records' values ([#2456](https://github.com/sokolaidev/maf-extensions/issues/2456)) ([450d646](https://github.com/sokolaidev/maf-extensions/commit/450d6466ef04df06966bda3bc5c0e835121d3a84))
+* preserve provenance and provider lifetimes on MAF 1.24 ([#2344](https://github.com/sokolaidev/maf-extensions/issues/2344)) ([4ff8a3d](https://github.com/sokolaidev/maf-extensions/commit/4ff8a3d310f7ec26a9bcd7858bdec46da03f5f49))
+
 ## [0.5.0](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.4.1...maf-cachebench-v0.5.0) (2026-10-28)
 
 
