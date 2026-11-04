@@ -710,7 +710,7 @@ class LiveOutcome:
     and zero on every other strategy: they say how far down the chain a row went.
     """
     record_merges_rejected: int = 0
-    """Record merges discarded because they came back no smaller. ``RECMERGEREJ``."""
+    """Record merges discarded because they came back no smaller or lossy. ``RECMERGEREJ``."""
     user_summaries_merged: int = 0
     """Passes where the chain folded the standing user summaries into one: step b. ``USERMERGE``."""
     user_merges_rejected: int = 0
@@ -718,7 +718,7 @@ class LiveOutcome:
     record_rewrites: int = 0
     """Harder rewrites of the record the chain tried, kept or not: step c. ``RECHARDER``."""
     record_rewrites_rejected: int = 0
-    """Of those, the rewrites discarded because they came back no smaller. ``RECHARDERREJ``."""
+    """Of those, the rewrites discarded as no smaller or lossy. ``RECHARDERREJ``."""
     record_rewrites_skipped: int = 0
     """Rewrite attempts not made, because the same record had already been refused at them.
 
@@ -1028,6 +1028,7 @@ def _strategy_notes(strategy: Any) -> tuple[str, ...]:
         ("user_merges_rejected", "USERMERGEREJ"),
         ("record_rewrites", "RECHARDER"),
         ("record_rewrites_rejected", "RECHARDERREJ"),
+        ("record_consolidations_lossy", "RECLOSSY"),
         ("record_rewrites_skipped", "RECHARDERSKIP"),
         ("record_merges_skipped", "RECMERGESKIP"),
         ("record_summary_failures", "RECSUMMFAIL"),
