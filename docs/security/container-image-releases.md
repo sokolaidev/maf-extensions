@@ -364,7 +364,7 @@ Builds use profile `graphviz`, source path `images/graphviz-sandbox`, and regist
 
 | Decision | State | Tracking |
 |---|---|---|
-| Parallel publication across profiles with shared catalogue serialization | Pending implementation; hosted concurrency and recovery rehearsal remain unverified | [#2467](https://github.com/sokolaidev/maf-extensions/issues/2467) (open) |
+| Parallel publication across profiles with shared catalogue serialization | Implemented with local regression coverage; hosted concurrency and recovery rehearsal remain unverified | [#2467](https://github.com/sokolaidev/maf-extensions/issues/2467) (closed) by [#2469](https://github.com/sokolaidev/maf-extensions/pull/2469) (merged) |
 | Independent consumer qualification of published image digests | Implemented; hosted signing and execution pending | [#2415](https://github.com/sokolaidev/maf-extensions/issues/2415) (closed) by [#2419](https://github.com/sokolaidev/maf-extensions/pull/2419) (merged) |
 | Approval context and Mobile usability | Presentation implemented; maintainer confirmed actual Mobile approval and requested closure; separate web observation not recorded | [#1854](https://github.com/sokolaidev/maf-extensions/issues/1854) (closed) by [#1856](https://github.com/sokolaidev/maf-extensions/pull/1856) (merged) |
 | Remaining approval UI observations | Closed by maintainer acceptance of the recorded publication views; browser/Mobile versions, browser fallback, full scrolling, freshness-policy rendering, recovery and abandonment remain unverified | [#1904](https://github.com/sokolaidev/maf-extensions/issues/1904) (closed); [maintainer acceptance](https://github.com/sokolaidev/maf-extensions/issues/1904#issuecomment-6256275245) |
