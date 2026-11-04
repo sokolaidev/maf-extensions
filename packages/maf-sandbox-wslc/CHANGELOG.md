@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.31.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.31.2...maf-sandbox-wslc-v0.31.3) (2026-11-04)
+
+
+### Fixes
+
+* bump the proxy-images group across 2 directories with 1 update ([#2393](https://github.com/sokolaidev/maf-extensions/issues/2393)) ([5e04298](https://github.com/sokolaidev/maf-extensions/commit/5e04298f824fb8af486b424a4d450faa409de31e))
+* bump the proxy-modules group across 2 directories with 1 update ([#2406](https://github.com/sokolaidev/maf-extensions/issues/2406)) ([0ff8f58](https://github.com/sokolaidev/maf-extensions/commit/0ff8f588cd6e088fd318ccd87cb3b6edd4ed9add))
+* require maf-sandbox 0.53.0 in the dependents, and admit the 0.53 line ([#2440](https://github.com/sokolaidev/maf-extensions/issues/2440)) ([333e291](https://github.com/sokolaidev/maf-extensions/commit/333e29138ca2f87782f488b89d8664a2a764a341))
+
 ## [0.31.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.31.1...maf-sandbox-wslc-v0.31.2) (2026-11-02)
 
 
