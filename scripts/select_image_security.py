@@ -419,8 +419,10 @@ def changed_profiles(root: Path, base: str, head: str, path: str) -> tuple[str, 
         return affected(path)
 
 
-def select(root: Path, event: str, base: str, head: str) -> tuple[list[str], str]:
-    """Return ordered profiles and a scope explanation, defaulting to full coverage on uncertainty."""
+def select(
+    root: Path, event: str, base: str, head: str, *, runtime: bool = False
+) -> tuple[list[str], str]:
+    """Select security or runtime inputs; uncertain comparisons retain full coverage."""
     if event == "schedule":
         return (
             [profile for profile in PROFILES if profile != "antivirus"],
@@ -435,6 +437,13 @@ def select(root: Path, event: str, base: str, head: str) -> tuple[list[str], str
     try:
         paths = _git(root, "diff", "--name-only", "--no-renames", "-z", base, head, "--")
         changed = [path for path in paths.split("\0") if path]
+        if not runtime:
+            # Core Python behavior needs runtime qualification; its dependencies need scans.
+            changed = [
+                path
+                for path in changed
+                if not (path.startswith("packages/maf-sandbox/src/") and path.endswith(".py"))
+            ]
         ignored = metadata_only(root, base, head, changed)
         dependency_paths = {
             path
@@ -466,7 +475,7 @@ def select(root: Path, event: str, base: str, head: str) -> tuple[list[str], str
     reason = (
         "Selected profiles whose build inputs changed."
         if selected
-        else "No image build inputs changed; no image build, scan or security evidence produced."
+        else "No image security inputs changed; no image build, scan or security evidence produced."
     )
     return selected, reason
 
@@ -479,6 +488,9 @@ def main() -> None:
     parser.add_argument("--head", default=os.environ.get("GITHUB_SHA", ""))
     args = parser.parse_args()
     profiles, reason = select(Path(__file__).resolve().parents[1], args.event, args.base, args.head)
+    runtime_profiles, _ = select(
+        Path(__file__).resolve().parents[1], args.event, args.base, args.head, runtime=True
+    )
     requested = os.environ.get("SELECTED_PROFILE", "all")
     if args.event == "workflow_dispatch" and requested != "all":
         if requested not in PROFILES:
@@ -487,11 +499,12 @@ def main() -> None:
             [requested],
             "Manually selected profile; other profiles were not scanned.",
         )
+        runtime_profiles = profiles
     output = f"profiles={json.dumps(profiles)}\nscan={str(bool(profiles)).lower()}\n"
     python_profiles = [profile for profile in profiles if profile in PYTHON_PROFILES]
     output += f"python={str(bool(python_profiles)).lower()}\n"
     output += f"python_profiles={json.dumps(python_profiles)}\n"
-    output += f"hyperlight={str('hyperlight-aks-probe' in profiles).lower()}\n"
+    output += f"hyperlight={str('hyperlight-aks-probe' in runtime_profiles).lower()}\n"
     print(output, end="")
     if target := os.environ.get("GITHUB_OUTPUT"):
         with Path(target).open("a", encoding="utf-8") as stream:
@@ -499,6 +512,8 @@ def main() -> None:
     summary = "### Image security selection\n\n" + reason + "\n"
     if profiles:
         summary += "\nProfiles: " + ", ".join(profiles) + ".\n"
+    if "hyperlight-aks-probe" in runtime_profiles and "hyperlight-aks-probe" not in profiles:
+        summary += "\nHyperlight runtime validation remains selected without a probe-image security scan.\n"
     if target := os.environ.get("GITHUB_STEP_SUMMARY"):
         with Path(target).open("a", encoding="utf-8") as stream:
             stream.write(summary)

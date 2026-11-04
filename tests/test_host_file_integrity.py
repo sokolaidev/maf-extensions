@@ -11,7 +11,9 @@ from agent_framework.security import (
     PolicyEnforcementFunctionMiddleware,
 )
 from maf_sandbox import (
+    DEFAULT_CAPABILITIES,
     CallerContext,
+    Capability,
     Egress,
     FileStoreProvenance,
     Isolation,
@@ -20,10 +22,12 @@ from maf_sandbox import (
     OsFamily,
     SandboxRouter,
     SourceIntegrity,
+    make_file_system_sink,
 )
 from maf_sandbox.maf import (
     COMPLETED_TEXT,
     DERIVED_INTEGRITY_PROPERTY,
+    NOT_COMPLETED_TEXT,
     file_store_provenance_middleware,
 )
 from maf_sandbox.testing import (
@@ -32,8 +36,12 @@ from maf_sandbox.testing import (
     InProcessSandbox,
     InProcessSandboxBackend,
 )
+from maf_sandbox_antivirus import make_antivirus_tools
 from maf_sandbox_bicep import make_bicep_tools
 from maf_sandbox_codeact import make_codeact_tools
+from maf_sandbox_document import make_document_tools
+from maf_sandbox_drawio import DrawioExport, make_drawio_export_tools
+from maf_sandbox_shell import ShellFlavor, make_shell_tools
 from maf_sandbox_terraform import make_terraform_tools
 
 _REPORT = "host-vouched diagnostic text"
@@ -198,9 +206,11 @@ def test_bicep_trusted_egress_keeps_read_time_provenance_checks(mutation):
         mutation=mutation,
     )
     items = asyncio.run(attached.invoke(arguments=arguments))
+    if mutation is not None:
+        _assert_torn_refusal(items)
+        return
     report = next(item for item in items if _REPORT in (item.text or ""))
-    expected = "trusted" if mutation is None else "untrusted"
-    assert report.additional_properties["security_label"]["integrity"] == expected
+    assert report.additional_properties["security_label"]["integrity"] == "trusted"
 
 
 @pytest.mark.parametrize("kind", ["bicep", "terraform", "codeact"])
@@ -258,14 +268,22 @@ def test_shipped_report_uses_stable_provenance(kind, state, expected):
         mutation=state,
     )
     items = asyncio.run(attached.invoke(arguments=arguments))
+    if state in {"after-listing", "during-read", "changed-back"}:
+        _assert_torn_refusal(items)
+        return
     report = next(item for item in items if _REPORT in (item.text or ""))
     assert report.additional_properties["security_label"]["integrity"] == expected
 
 
 @pytest.mark.parametrize("kind", ["bicep", "terraform", "codeact"])
-def test_trusted_report_allows_a_following_write_with_conservative_name_redaction(kind):
+@pytest.mark.parametrize("mutation", [None, "after-listing", "during-read", "changed-back"])
+def test_trusted_report_or_torn_refusal_allows_a_following_write(kind, mutation):
     async def exercise():
-        attached, arguments = _attach(kind, [SourceIntegrity.TRUSTED])
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+        attached, arguments = _attach(
+            kind, [SourceIntegrity.TRUSTED], provenance=record, mutation=mutation
+        )
         tracker = LabelTrackingFunctionMiddleware(auto_hide_untrusted=False)
         policy = PolicyEnforcementFunctionMiddleware()
         written = []
@@ -288,15 +306,18 @@ def test_trusted_report_allows_a_following_write_with_conservative_name_redactio
             return context.result
 
         items = await call(attached, arguments)
-        expected = (
-            "Guest diagnostic text and locations withheld because argument names are hidden."
-            if kind == "terraform"
-            else _REPORT
-        )
-        report = next(item for item in items if expected in (item.text or ""))
-        if kind == "terraform":
-            assert not any(_REPORT in (item.text or "") for item in items)
-        assert not report.additional_properties.get("_variable_reference")
+        if mutation is not None:
+            _assert_torn_refusal(items)
+        else:
+            expected = (
+                "Guest diagnostic text and locations withheld because argument names are hidden."
+                if kind == "terraform"
+                else _REPORT
+            )
+            report = next(item for item in items if expected in (item.text or ""))
+            if kind == "terraform":
+                assert not any(_REPORT in (item.text or "") for item in items)
+            assert not report.additional_properties.get("_variable_reference")
         assert tracker.get_context_label().integrity.value == "trusted"
         await call(write_file, {"text": "fixed content"})
         assert written == ["fixed content"]
@@ -310,3 +331,83 @@ def test_trusted_files_do_not_clear_a_kinds_network_source(kind):
     items = asyncio.run(attached.invoke(arguments=arguments))
     report = next(item for item in items if _REPORT in (item.text or ""))
     assert report.additional_properties["security_label"]["integrity"] == "untrusted"
+
+
+def _assert_torn_refusal(items):
+    assert items[0].text == NOT_COMPLETED_TEXT
+    assert any("changed while this call" in (item.text or "") for item in items)
+    assert not any(_REPORT in (item.text or "") for item in items)
+    assert all(
+        item.additional_properties.get("security_label", {}).get("integrity", "trusted")
+        == "trusted"
+        for item in items
+    )
+
+
+@pytest.mark.parametrize("kind", ["shell", "document", "drawio", "antivirus"])
+@pytest.mark.parametrize("when", ["listing", "read"])
+def test_other_file_reading_kinds_stop_before_execution(kind, when, tmp_path):
+    record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+    file_store_provenance_middleware(record)
+    name = {
+        "shell": "main.sh",
+        "document": "input.pdf",
+        "drawio": "input.drawio",
+        "antivirus": "input.zip",
+    }[kind]
+
+    class Store:
+        async def read(self, path):
+            if when == "read":
+                record.record(path)
+            return b"private bytes" if kind in {"document", "antivirus"} else "private text"
+
+    async def listing(_store):
+        if when == "listing":
+            record.record(name)
+        return [ListedFile(name, SourceIntegrity.TRUSTED)]
+
+    class Guest(InProcessSandbox):
+        async def exec(self, *args, **kwargs):
+            pytest.fail("A changed-input call must not execute a guest program")
+
+    backend = InProcessSandboxBackend(
+        Guest(),
+        isolation=Isolation.CONTAINER,
+        declarations=replace(
+            FAKE_BACKEND_DECLARATIONS,
+            capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT},
+            os_families=frozenset({OsFamily.POSIX}),
+            isolation_scopes=frozenset(IsolationScope),
+        ),
+    )
+    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+    context = CallerContext(lambda: "scope", lambda: "thread", listing)
+    store = Store()
+    sink = make_file_system_sink(tmp_path)
+    if kind == "shell":
+        attached = make_shell_tools(
+            router, store, "agent", context, flavor=ShellFlavor.BASH, file_store_provenance=record
+        )[0]
+    elif kind == "document":
+        attached = make_document_tools(
+            router, store, "agent", context, sink, file_store_provenance=record
+        )[0]
+    elif kind == "drawio":
+        attached = make_drawio_export_tools(
+            router,
+            "agent",
+            context,
+            sink,
+            store,
+            export=DrawioExport(),
+            file_store_provenance=record,
+        )[0]
+    else:
+        attached = make_antivirus_tools(
+            router, store, "agent", context, file_store_provenance=record
+        )[0]
+    arguments = {"files": [name]} if kind == "shell" else {"file": name}
+    items = asyncio.run(attached.invoke(arguments=arguments))
+    _assert_torn_refusal(items)
+    assert "private bytes" not in str(items) and "private text" not in str(items)

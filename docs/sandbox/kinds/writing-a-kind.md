@@ -85,7 +85,7 @@ def _build_json_tool(
         if listed is None:
             return "Error: the requested file is not in the listing."
 
-        content = await session.read_file(store, listed, named="the requested file")
+        content = await session.read_file(store, listed)
         if isinstance(content, str):
             return content
         if content is None or content.text is None:

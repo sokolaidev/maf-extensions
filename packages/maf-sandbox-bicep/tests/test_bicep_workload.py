@@ -290,7 +290,7 @@ def test_integrity_admission_skips_a_refused_file_and_compiles_the_rest():
 
     out = _run(tool, ["weak.bicep", "trusted.bicep"])
 
-    assert "'weak.bicep' does not meet the required file integrity (trusted)" in out
+    assert "does not meet the required file integrity (trusted)" in out
     assert "secret" not in out
     assert {_store_part(path) for path in _written(backend)} == {"trusted.bicep"}
     commands = [command for command, _, _ in _commands(backend)]
