@@ -974,11 +974,11 @@ def test_continuous_input_registration_has_a_bounded_retry_budget():
     assert not record._readers
 
 
-@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize(("native", "collection"), [(False, 1), (True, 1), (True, 2)])
 @pytest.mark.parametrize("other_store", [False, True])
 @pytest.mark.parametrize("changed", [False, True])
 def test_later_state_checks_cannot_invalidate_earlier_inputs(
-    monkeypatch, native, other_store, changed
+    monkeypatch, native, collection, other_store, changed
 ):
     class CounterRecord(FileStoreProvenance):
         counter = 0
@@ -994,10 +994,13 @@ def test_later_state_checks_cannot_invalidate_earlier_inputs(
     later_store = Store({"b": "second"}) if other_store else first_store
     sampled = later_record.state_of
     mutated = False
+    samples = 0
 
     def sample(path):
-        nonlocal mutated
-        if path == "b" and "b" in later_store.reads and not mutated:
+        nonlocal mutated, samples
+        if path == "b" and "b" in later_store.reads:
+            samples += 1
+        if path == "b" and samples == collection and not mutated:
             mutated = True
             victim = "a" if changed else "unrelated"
             first_store.files[victim] = "changed"

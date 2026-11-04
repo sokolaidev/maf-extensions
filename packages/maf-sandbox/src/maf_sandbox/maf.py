@@ -1863,6 +1863,9 @@ class SandboxToolSession:
                         type(provenance) is not FileStoreProvenance and latest[1] != state[1]
                     ):
                         stable = False
+                # Provider queries may record mutations to paths already scanned.
+                if any(held.has_changed_inputs() for _, _, held in windows):
+                    raise FileStoreChanged
                 if stable and _file_read_revision() == revision:
                     return
                 if attempt == 2:

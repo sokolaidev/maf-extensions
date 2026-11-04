@@ -106,6 +106,11 @@ class ReadWindow:
         with self._lock:
             return store_key(path) in self._changed
 
+    def has_changed_inputs(self) -> bool:
+        with self._lock:
+            self._require_open()
+            return any(store_key(path) in self._changed for path in self._paths)
+
     def close(self) -> None:
         with self._lock:
             self._closed = True
