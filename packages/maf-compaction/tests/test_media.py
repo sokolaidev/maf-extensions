@@ -513,3 +513,84 @@ async def test_full_text_prefix_stops_before_another_media_description(first_med
     assert not later.additional_properties.get(EXCLUDED_KEY)
     for request in client.requests:
         assert fits_summary_input(request[0].text, request[1].text, tokenizer=BASE, limit=650)
+
+
+PDF = "application/pdf"
+
+
+def document(name="spec"):
+    return Content.from_uri(f"data:{PDF};base64,JVBERi0{name}", media_type=PDF)
+
+
+def is_document(part):
+    return part.media_type == PDF
+
+
+def mixed_history():
+    return [
+        Message("user", ["head"], message_id="head"),
+        Message("user", ["Explain this.", image()], message_id="image"),
+        Message("user", ["Read this.", document()], message_id="document"),
+        Message("user", ["And then?"], message_id="later"),
+        Message("user", ["tail"], message_id="tail"),
+    ]
+
+
+async def test_a_selector_holds_the_media_it_declines_and_folds_past_it():
+    seen = []
+
+    async def describe(part, turn):
+        seen.append(part.media_type)
+        return "the spec's outline"
+
+    client = Summarizer()
+    strategy = users(client, describe_media=describe, describes_media=is_document)
+    messages = mixed_history()
+    held = deepcopy(messages[1].contents)
+
+    assert await strategy(messages)
+
+    by_id = {message.message_id: message for message in messages}
+    assert seen == [PDF]
+    assert is_preserved(by_id["image"])
+    assert by_id["image"].contents == held
+    assert not by_id["image"].additional_properties.get(EXCLUDED_KEY)
+    assert by_id["document"].additional_properties[EXCLUDED_KEY]
+    assert by_id["later"].additional_properties[EXCLUDED_KEY]
+    assert [m.message_id for m in project_included_messages(messages)][:2] == ["head", "image"]
+    transcript = client.requests[0][1].text
+    assert "the spec's outline" in transcript and "And then?" in transcript
+    assert "Explain this." not in transcript
+
+
+async def test_without_a_selector_a_declined_image_stops_the_band():
+    # What the selector exists for: a None description retains the turn by stopping the band
+    # there, so every turn after it stays too.
+    async def describe(part, turn):
+        return "the spec's outline" if part.media_type == PDF else None
+
+    client = Summarizer()
+    messages = mixed_history()
+
+    assert not await users(client, describe_media=describe)(messages)
+
+    assert not any(m.additional_properties.get(EXCLUDED_KEY) for m in messages)
+    assert not client.requests
+
+
+async def test_a_turn_with_any_declined_part_is_held_whole():
+    async def describe(part, turn):
+        return "the spec's outline"
+
+    strategy = users(describe_media=describe, describes_media=is_document)
+    messages = history(["Compare.", document(), image()])
+
+    assert not await strategy(messages)
+
+    assert is_preserved(messages[1])
+    assert not messages[1].additional_properties.get(EXCLUDED_KEY)
+
+
+def test_a_selector_needs_the_hook_it_selects_for():
+    with pytest.raises(ValueError, match="describes_media requires describe_media"):
+        users(describes_media=is_document)
