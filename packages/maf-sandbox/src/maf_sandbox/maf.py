@@ -1828,6 +1828,9 @@ class SandboxToolSession:
             revision = _file_read_revision()
             windows = self._file_windows(store, window)
             pending: list[tuple[Any, FileStoreProvenance, ReadWindow, str, ReadSnapshot]] = []
+            observed: list[
+                tuple[FileStoreProvenance, ReadWindow, str, tuple[SourceIntegrity | None, int]]
+            ] = []
             for source, provenance, held in windows:
                 for path, _ in held.paths():
                     state = (
@@ -1843,6 +1846,7 @@ class SandboxToolSession:
                     snapshot = held.snapshot(path)
                     if snapshot is None:
                         continue
+                    observed.append((provenance, held, path, state))
                     if state[0] != snapshot.integrity:
                         held.note_change(store_key(path))
                         raise FileStoreChanged
@@ -1852,7 +1856,14 @@ class SandboxToolSession:
                         else:
                             pending.append((source, provenance, held, path, snapshot))
             if not pending:
-                if _file_read_revision() == revision:
+                stable = True
+                for provenance, held, path, state in observed:
+                    latest = _file_state(provenance, held, path)
+                    if latest[0] != state[0] or (
+                        type(provenance) is not FileStoreProvenance and latest[1] != state[1]
+                    ):
+                        stable = False
+                if stable and _file_read_revision() == revision:
                     return
                 if attempt == 2:
                     raise FileStoreChanged

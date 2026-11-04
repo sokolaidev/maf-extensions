@@ -920,8 +920,8 @@ def test_continuous_input_registration_has_a_bounded_retry_budget():
         def state_of(self, path):
             if threading.current_thread().name == "checking" and path == "a":
                 self.samples += 1
-                if self.samples > 1:
-                    index = self.samples - 2
+                if self.samples % 2 == 0:
+                    index = (self.samples - 2) // 2
                     assert index < len(requested)
                     requested[index].set()
                     assert released[index].wait(5)
@@ -970,7 +970,100 @@ def test_continuous_input_registration_has_a_bounded_retry_budget():
     )[0]
     items = asyncio.run(tool.invoke())
     assert items[0].text == NOT_COMPLETED_TEXT
-    assert record.samples == 4
+    assert record.samples == 7
+    assert not record._readers
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("other_store", [False, True])
+@pytest.mark.parametrize("changed", [False, True])
+def test_later_state_checks_cannot_invalidate_earlier_inputs(
+    monkeypatch, native, other_store, changed
+):
+    class CounterRecord(FileStoreProvenance):
+        counter = 0
+
+        def state_of(self, path):
+            return SourceIntegrity.TRUSTED, self.counter
+
+    first_record = trusted_record() if native else CounterRecord()
+    later_record = (
+        (trusted_record() if native else CounterRecord()) if other_store else first_record
+    )
+    first_store = Store({"a": "first", "b": "second"})
+    later_store = Store({"b": "second"}) if other_store else first_store
+    sampled = later_record.state_of
+    mutated = False
+
+    def sample(path):
+        nonlocal mutated
+        if path == "b" and "b" in later_store.reads and not mutated:
+            mutated = True
+            victim = "a" if changed else "unrelated"
+            first_store.files[victim] = "changed"
+            if isinstance(first_record, CounterRecord):
+                first_record.counter += 1
+            else:
+                first_record.record(victim)
+        return sampled(path)
+
+    monkeypatch.setattr(later_record, "state_of", sample)
+    router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
+    context = CallerContext(lambda: "scope", lambda: "thread", lambda _: None)
+
+    def build(session):
+        other = SandboxToolSession(
+            router,
+            context,
+            "other",
+            SandboxSpec(kind="test"),
+            name="other",
+            logger=logging.getLogger(__name__),
+            file_store_provenance=later_record,
+        )
+
+        async def read_inputs():
+            await session.read_file(first_store, ListedFile("a", SourceIntegrity.TRUSTED))
+            await other.read_file(later_store, ListedFile("b", SourceIntegrity.TRUSTED))
+            return SandboxResult(completed=True, output=("report",))
+
+        return read_inputs
+
+    tool = sandboxed_tool(
+        build,
+        router=router,
+        context=context,
+        agent_id="agent",
+        spec=SandboxSpec(kind="test"),
+        name="read_inputs",
+        result_contract=True,
+        file_store_provenance=first_record,
+        source_integrity=SourceIntegrity.UNTRUSTED,
+    )[0]
+    items = asyncio.run(tool.invoke())
+    assert mutated
+    if changed:
+        assert items[0].text == NOT_COMPLETED_TEXT
+    else:
+        assert items[-1].text == "report"
+        assert items[-1].additional_properties["security_label"]["integrity"] == "trusted"
+
+
+def test_native_record_can_clear_continuous_unrelated_writes(monkeypatch):
+    record = trusted_record()
+    sampled = record.state_of
+    samples = 0
+
+    def sample(path):
+        nonlocal samples
+        samples += 1
+        record.record(f"unrelated/{samples}")
+        return sampled(path)
+
+    monkeypatch.setattr(record, "state_of", sample)
+    items = asyncio.run(attach(record, Store()).invoke(arguments={"files": ["a", "b"]}))
+    assert items[-1].text == "report"
+    assert items[-1].additional_properties["security_label"]["integrity"] == "trusted"
     assert not record._readers
 
 
