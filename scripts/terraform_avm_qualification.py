@@ -172,7 +172,9 @@ def command(engine: str = "terraform") -> list[str]:
     ]
 
 
-def evidence(output: bytes, engine: str = "terraform") -> dict[str, Any]:
+def evidence(
+    output: bytes, engine: str = "terraform", *, published: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Refuse receipt drift, incomplete checks and false-positive validation."""
     result = json.loads(output)
     cases = CASES
@@ -181,10 +183,15 @@ def evidence(output: bytes, engine: str = "terraform") -> dict[str, Any]:
         if engine == "terraform"
         else "dependencies.opentofu-avm-network.json"
     )
-    if result["receipt"] != expected_receipt(manifest):
+    receipt = expected_receipt(manifest) if published is None else published["receipt"]
+    if result["receipt"] != receipt:
         raise ValueError("Terraform AVM receipt differs from the selected release policy")
     checks = result["checks"]
-    version = read(CONTEXT / "image.json")["engines"][engine]["version"]
+    version = (
+        read(CONTEXT / "image.json")["engines"][engine]["version"]
+        if published is None
+        else published[f"{engine}Version"]
+    )
     if not isinstance(checks, list) or len(checks) != len(cases):
         raise ValueError("Terraform AVM qualification cases are incomplete")
     for actual, name in zip(checks, cases, strict=True):

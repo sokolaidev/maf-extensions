@@ -78,18 +78,13 @@ def qualify(root: Path, package: str, profile: str, backend: str, output: Path) 
     if snapshot is None or profile not in snapshot.catalogue["current"]:
         raise ValueError("No completed image is available for consumer qualification")
     record = snapshot.catalogue["releases"][snapshot.catalogue["current"][profile]]
-    changed = consumer.image_changes(root, record["sourceCommit"], source, profile)
-    if changed:
-        raise ValueError(
-            "Publish matching image inputs before qualification: " + ", ".join(changed)
-        )
     expected = consumer.inputs(root, source, package, profile, backend, record)
     evidence = output / "image-release"
     evidence.mkdir(parents=True)
     release_url = release_evidence(client, record, evidence)
-    qualified(evidence, record["candidate"])
+    published_runtime = qualified(evidence, record["candidate"])
     image_id = anonymous_pull(record["candidate"])
-    runtime = check(profile, image_id, evidence)
+    runtime = check(profile, image_id, evidence, published_runtime=published_runtime)
     distributions = sorted(
         {(d.metadata["Name"], d.version) for d in importlib.metadata.distributions()}
     )

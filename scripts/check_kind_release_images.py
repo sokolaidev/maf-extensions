@@ -101,7 +101,7 @@ def matching_source(root: Path, source: str, head: str, package: str, profile: s
         )
 
 
-def qualified(directory: Path, candidate: dict[str, Any]) -> None:
+def qualified(directory: Path, candidate: dict[str, Any]) -> dict[str, Any]:
     """Require indexed anonymous-pull and runtime evidence for the authenticated image."""
     index = read(directory / "evidence-index.json")
     if "qualification.json" not in index:
@@ -119,6 +119,7 @@ def qualified(directory: Path, candidate: dict[str, Any]) -> None:
         or runtime.get("containersRemaining") != []
     ):
         raise ValueError("Published image lacks matching successful consumer qualification")
+    return runtime
 
 
 def compatibility(
@@ -133,11 +134,6 @@ def compatibility(
     except (ValueError, subprocess.SubprocessError) as error:
         legacy_reason = str(error)
     problems = []
-    changed = consumer.image_changes(root, record["sourceCommit"], head, profile)
-    if changed:
-        problems.append(
-            f"{profile}: publish replacement image; changed inputs: {', '.join(changed)}"
-        )
     results = []
     for backend in consumer.BACKENDS[profile]:
         expected = consumer.inputs(root, head, package, profile, backend, record)

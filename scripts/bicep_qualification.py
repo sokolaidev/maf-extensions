@@ -109,14 +109,24 @@ def command() -> list[str]:
     return ["sh", "-ec", "\n".join(lines)]
 
 
-def evidence(output: bytes) -> dict[str, Any]:
+def evidence(output: bytes, *, published: dict[str, Any] | None = None) -> dict[str, Any]:
     """Refuse mismatched payloads, unexpected diagnostics and missing compiled templates."""
     result = json.loads(output)
-    version, _ = read_pin(CONTEXT / "Dockerfile")
-    if not result["bicepVersion"].startswith(f"Bicep CLI version {version.removeprefix('v')} "):
-        raise ValueError("Bicep compiler version differs from the selected source")
-    build = verify_receipt(result.get("buildReceipt"), result["compilerSha256"], CONTEXT)
-    expected_identities = identities() | {"compilerSha256": build["compilerSha256"]}
+    if published is None:
+        version, _ = read_pin(CONTEXT / "Dockerfile")
+        if not result["bicepVersion"].startswith(f"Bicep CLI version {version.removeprefix('v')} "):
+            raise ValueError("Bicep compiler version differs from the selected source")
+        build = verify_receipt(result.get("buildReceipt"), result["compilerSha256"], CONTEXT)
+        expected_identities = identities() | {"compilerSha256": build["compilerSha256"]}
+    else:
+        build = result.get("buildReceipt")
+        if build is None:
+            build = {"route": "upstream", "compilerSha256": result["compilerSha256"]}
+        if build != published["build"] or result["bicepVersion"] != published["bicepVersion"]:
+            raise ValueError("Bicep build differs from the authenticated published image")
+        expected_identities = {
+            key: published[key] for key in ("compilerSha256", "configSha256", "licenseSha256")
+        }
     for key, expected in expected_identities.items():
         if result[key] != expected:
             raise ValueError(f"Bicep payload differs from the selected source: {key}")

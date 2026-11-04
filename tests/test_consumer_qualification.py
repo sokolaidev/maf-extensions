@@ -19,6 +19,7 @@ import consumer_qualification as consumer  # noqa: E402
 import qualify_kind_consumers as workflow  # noqa: E402
 from container_release import write  # noqa: E402
 from container_release_history import sha256  # noqa: E402
+from image_release_needed import changed_inputs  # noqa: E402
 
 IMAGE = "sha256:" + "b" * 64
 CONFIG = "sha256:" + "c" * 64
@@ -74,7 +75,6 @@ def test_consumer_inputs_change_without_rebuilding_workload(repo, path):
     target.write_text("changed\n")
     head = legacy.commit(root)
     assert expected(root, head) != before
-    assert consumer.image_changes(root, base, head, "shell") == []
 
 
 def test_docker_setup_change_invalidates_legacy_qualification(repo):
@@ -116,12 +116,15 @@ def test_normalization_rejects_inconsistent_workspace_version(repo):
 @pytest.mark.parametrize(
     "path", ["images/shell-sandbox/Dockerfile", "images/shell-sandbox/runner.py"]
 )
-def test_image_changes_still_require_replacement(repo, path):
+def test_image_changes_invalidate_consumer_evidence_and_remain_refresh_inputs(repo, path):
     root, base = repo
+    before = expected(root, base)
     target = root / path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("new bytes\n")
-    assert consumer.image_changes(root, base, legacy.commit(root), "shell") == [path]
+    head = legacy.commit(root)
+    assert expected(root, head) != before
+    assert changed_inputs(root, base, head, "shell") == [path]
 
 
 def test_backend_change_passes_with_fresh_consumer_evidence_and_same_image(repo, monkeypatch):
@@ -143,7 +146,7 @@ def test_backend_change_passes_with_fresh_consumer_evidence_and_same_image(repo,
     assert record["sourceCommit"] == base
 
 
-def test_all_mismatches_report_image_and_consumer_actions(repo, monkeypatch):
+def test_changed_image_and_backend_require_consumer_qualification(repo, monkeypatch):
     root, base = repo
     (root / "packages/maf-sandbox-docker/src/module.py").write_text("VALUE = 2\n")
     image = root / "images/shell-sandbox/Dockerfile"
@@ -158,7 +161,7 @@ def test_all_mismatches_report_image_and_consumer_actions(repo, monkeypatch):
     with pytest.raises(ValueError) as error:
         guard.compatibility(root, head, legacy.PACKAGE, "shell", CANDIDATE | {"sourceCommit": base})
     assert "maf-sandbox-docker" in str(error.value)
-    assert "publish replacement image" in str(error.value)
+    assert "publish replacement image" not in str(error.value)
     assert "Run consumer qualification" in str(error.value)
     assert "No replacement image is required" not in str(error.value)
     assert "image inputs are unchanged" not in str(error.value)
@@ -196,15 +199,38 @@ def test_consumer_only_failure_prescribes_same_digest_qualification(repo, monkey
     assert "publish replacement image" not in message
 
 
-def test_fresh_consumer_evidence_cannot_waive_image_change(repo, monkeypatch):
+@pytest.mark.parametrize("path", ["Dockerfile", "runner.py", "dependencies.json"])
+@pytest.mark.parametrize("evidence", ["fresh", "stale", "other-image", "failed-runtime"])
+def test_changed_image_inputs_require_passing_evidence_for_current_consumer_and_image(
+    repo, monkeypatch, path, evidence
+):
     root, base = repo
-    image = root / "images/shell-sandbox/Dockerfile"
+    before = expected(root, base)
+    image = root / "images/shell-sandbox" / path
     image.parent.mkdir(parents=True)
-    image.write_text("FROM scratch\n")
+    image.write_text("changed image input\n")
     head = legacy.commit(root)
-    monkeypatch.setattr(consumer, "verify", lambda value: claim(value, head))
-    with pytest.raises(ValueError, match="publish replacement image"):
-        guard.compatibility(root, head, legacy.PACKAGE, "shell", CANDIDATE | {"sourceCommit": base})
+    subject = before if evidence == "stale" else expected(root, head)
+    if evidence == "other-image":
+        subject["registryDigest"] = "sha256:" + "f" * 64
+    record = claim(subject, base if evidence == "stale" else head)
+    if evidence == "failed-runtime":
+        record["runtime"]["passed"] = False
+
+    def verify(value):
+        consumer.validate_record(record, value)
+        return record
+
+    monkeypatch.setattr(consumer, "verify", verify)
+    candidate = CANDIDATE | {"sourceCommit": base}
+    if evidence == "fresh":
+        result = guard.compatibility(root, head, legacy.PACKAGE, "shell", candidate)
+        assert result[0]["sourceCommit"] == head
+        assert subject["registryDigest"] == IMAGE
+        assert candidate["sourceCommit"] == base
+    else:
+        with pytest.raises(ValueError, match="mismatched identity|Consumer runtime failed"):
+            guard.compatibility(root, head, legacy.PACKAGE, "shell", candidate)
 
 
 @pytest.mark.parametrize(
@@ -392,17 +418,25 @@ def test_selection_ignores_metadata_but_selects_backend_changes(repo, monkeypatc
     ]
 
 
+@pytest.mark.parametrize("changed_image", [False, True])
 @pytest.mark.parametrize("failure", [None, "release-identity", "runtime"])
 def test_execution_authenticates_before_pull_and_only_emits_complete_evidence(
-    repo, tmp_path, monkeypatch, failure
+    repo, tmp_path, monkeypatch, failure, changed_image
 ):
     import check_container_release_image
     import container_release_registry
 
-    root, source = repo
+    root, published_source = repo
+    if changed_image:
+        image = root / "images/shell-sandbox/Dockerfile"
+        image.parent.mkdir(parents=True)
+        image.write_text("FROM scratch\n")
+        source = legacy.commit(root)
+    else:
+        source = published_source
     trusted(monkeypatch, root, source)
     candidate = CANDIDATE | {"profile": "shell"}
-    record = candidate | {"sourceCommit": source, "candidate": candidate}
+    record = candidate | {"sourceCommit": published_source, "candidate": candidate}
     catalogue = {"current": {"shell": "shell/0.1.0"}, "releases": {"shell/0.1.0": record}}
     monkeypatch.setattr(
         workflow,
@@ -419,14 +453,16 @@ def test_execution_authenticates_before_pull_and_only_emits_complete_evidence(
 
     def initial(*_):
         calls.append("initial-qualification")
+        return {"original": "authenticated runtime"}
 
     def pull(selected):
         assert selected == candidate
         calls.append("anonymous-pull")
         return CONFIG
 
-    def runtime(profile, image_id, _):
+    def runtime(profile, image_id, _, *, published_runtime):
         assert (profile, image_id) == ("shell", CONFIG)
+        assert published_runtime == {"original": "authenticated runtime"}
         calls.append("runtime")
         return {
             "passed": failure != "runtime",
@@ -507,7 +543,6 @@ def test_shared_drawio_notice_requires_fresh_export_evidence(repo, monkeypatch):
     head = legacy.commit(root)
     after = consumer.inputs(root, head, package, "drawio-export", "docker", CANDIDATE)
     assert after != before
-    assert consumer.image_changes(root, base, head, "drawio-export") == []
     assert workflow.selection(root, base, "drawio-export") == [
         {"package": package, "profile": "drawio-export", "backend": "docker"}
     ]
@@ -535,7 +570,6 @@ def test_workspace_package_changes_require_independent_evidence(repo, monkeypatc
     head = legacy.commit(root)
     with pytest.raises(subprocess.CalledProcessError):
         guard.matching_source(root, base, head, legacy.PACKAGE, "shell")
-    assert consumer.image_changes(root, base, head, "shell") == []
 
     def verify(value):
         if not fresh:
