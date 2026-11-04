@@ -597,7 +597,16 @@ def assessment_status(record: dict[str, Any], at: str) -> str:
     age = clock - timestamp(attempt.get("assessedAt"))
     if age < timedelta(0):
         return "unavailable"
-    return "stale" if age >= timedelta(hours=48) else "clean"
+    decisions = attempt.get("notAffected", [])
+    if not isinstance(decisions, list):
+        return "unavailable"
+    try:
+        expiries = [timestamp(decision["expiresAt"]) for decision in decisions]
+    except (KeyError, TypeError, ValueError):
+        return "unavailable"
+    return (
+        "stale" if age >= timedelta(hours=48) or any(clock >= end for end in expiries) else "clean"
+    )
 
 
 def release_scope(catalogue: dict[str, Any], name: str) -> str:
