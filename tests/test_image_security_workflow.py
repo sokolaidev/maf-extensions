@@ -77,7 +77,7 @@ def test_workflow_output_identifies_the_same_image_as_the_retained_record(tmp_pa
         assert "Policy: fail on" not in summary.read_text()
     else:
         assert (
-            "Policy: fail on High/Critical findings, including unfixed findings"
+            "Policy: fail on applicable High/Critical findings, including unfixed findings"
             in summary.read_text()
         )
     assert "scanner and evidence-upload errors fail the workflow" in summary.read_text()
@@ -131,7 +131,13 @@ def test_pr_findings_warn_while_operational_errors_and_non_pr_findings_still_fai
     assert inventory["with"]["image"] == "docker:${{ steps.identity.outputs.image_id }}"
     assert scan["with"]["sbom"] == inventory["with"]["output-file"]
     assert scan["with"]["severity-cutoff"] == "high"
-    assert scan["with"]["fail-build"] == "${{ github.event_name != 'pull_request' }}"
+    assert scan["with"]["fail-build"] is False
+    gate = next(s for s in steps if s.get("name") == "Enforce image vulnerability applicability")
+    assert gate["run"] == (
+        'python3 scripts/assess_image_scan.py "$RUNNER_TEMP/image-security" '
+        '--event "$GITHUB_EVENT_NAME"'
+    )
+    assert steps.index(scan) < steps.index(gate) < steps.index(upload)
     assert scan["with"]["only-fixed"] is False
     assert scan["with"]["config"]
     assert upload["if"] == "always() && steps.identity.outcome == 'success'"
@@ -237,6 +243,7 @@ def test_hyperlight_release_transition_defers_the_entire_scan_evidence_chain():
         "Inventory the exact built image",
         "Verify inventory identity and component presence",
         "Scan the retained inventory",
+        "Enforce image vulnerability applicability",
     }
     assert all(step["if"] == "steps.build.outcome == 'success'" for step in evidence_steps)
     assert steps[-1]["if"] == "always() && steps.identity.outcome == 'success'"

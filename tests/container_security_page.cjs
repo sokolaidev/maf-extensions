@@ -87,8 +87,10 @@ test('render separates current health and historical warnings and names the repl
   const nodes = Object.fromEntries(['releases', 'summary', 'historical-summary', 'monitoring-summary'].map(id => [id, node()]));
   context.document = {getElementById: id => nodes[id], createElement: node};
   context.value = {catalogue: healthCatalogue()}; context.run = run; context.at = at;
+  context.value.catalogue.releases['bicep/0.1.1'].latestAttempt = {...record.latestAttempt, counts: {High: 1}, notAffected: [{expiresAt: '2026-01-03T00:00:00Z'}]};
   vm.runInContext('render(value, run, at)', context);
-  assert.match(nodes.summary.textContent, /Current releases have completed delivery/);
+  assert.match(nodes.summary.textContent, /fresh scans with no applicable High\/Critical findings/);
+  assert.equal(context.value.catalogue.releases['bicep/0.1.1'].latestAttempt.counts.High, 1);
   assert.match(nodes['historical-summary'].textContent, /1 within the 90-day monitoring window; 1 with warnings/);
   assert.equal(nodes.releases.children[0].children[2].textContent, 'vulnerable');
   assert.match(nodes.releases.children[0].children[8].textContent, /historical; replacement: bicep\/0.1.1/);
@@ -103,6 +105,36 @@ test('render separates current health and historical warnings and names the repl
   context.run.stateDeliveryVerified = true;
   vm.runInContext('render(value, run, at)', context);
   assert.match(nodes['monitoring-summary'].textContent, /evidence is available for all active images/);
+});
+
+test('browser status and health expire exceptions without a new monitoring attempt', () => {
+  const catalogue = healthCatalogue();
+  const current = catalogue.releases['bicep/0.1.1'];
+  current.latestAttempt = {...record.latestAttempt, assessedAt: '2026-12-03T23:59:59Z', notAffected: [
+    {expiresAt: '2026-12-05T00:00:00Z'}, {expiresAt: '2026-12-04T00:00:00+00:00'},
+  ]};
+  const before = JSON.stringify(catalogue);
+  const expiry = Date.parse('2026-12-04T00:00:00Z');
+  for (const [checkedAt, expected] of [[expiry - 1, 'clean'], [expiry, 'stale'], [expiry + 1, 'stale']]) {
+    assert.equal(status(current, run, checkedAt), expected);
+    const result = health(catalogue, run, checkedAt);
+    assert.equal(result.current['bicep/0.1.1'], expected);
+    assert.deepEqual(result.monitoringProblems, expected === 'clean' ? [] : ['bicep/0.1.1']);
+  }
+  assert.equal(JSON.stringify(catalogue), before);
+});
+
+test('browser status refuses malformed exception expiry evidence', () => {
+  const invalid = [null, {}, [null], [{}], ...[
+    null, 0, 'invalid', '2026-12-04', '2026-12-04T00:00:00', '2026-12-04T00:00:00+01:00', '2026-02-30T00:00:00Z',
+  ].map(expiresAt => [{expiresAt}])];
+  for (const notAffected of invalid) {
+    const catalogue = healthCatalogue();
+    catalogue.releases['bicep/0.1.1'].latestAttempt = {...record.latestAttempt, notAffected};
+    const result = health(catalogue, run, at);
+    assert.equal(result.current['bicep/0.1.1'], 'unavailable');
+    assert.deepEqual(result.monitoringProblems, ['bicep/0.1.1']);
+  }
 });
 
 test('fresh clean status requires the actual latest successful attempt', () => {

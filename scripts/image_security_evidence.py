@@ -147,7 +147,7 @@ def main() -> None:
         "Policy: High/Critical findings are warnings on pull requests, including unfixed findings. "
         "A passing PR check does not establish image release eligibility. "
         if os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
-        else "Policy: fail on High/Critical findings, including unfixed findings. "
+        else "Policy: fail on applicable High/Critical findings, including unfixed findings. "
     )
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
         summary.write(
@@ -155,6 +155,7 @@ def main() -> None:
             f"Source: `{revision}`; platform: `linux/amd64`.\n\n"
             f"Local image ID (not a registry manifest digest): `{evidence['local_image_id']}`.\n\n"
             f"{policy}"
+            "Raw matches and reviewed component decisions remain in the retained reports. "
             "Build, runtime, inventory, scanner and evidence-upload errors fail the workflow. "
             "Inventory and scan results are retained as workflow artifacts for 30 days.\n"
         )

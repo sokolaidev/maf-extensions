@@ -224,7 +224,10 @@ def baseline(client: GitHub, record: dict[str, Any], directory: Path) -> dict[st
     candidate = record["candidate"]
     assessment = read(directory / "assessment.json")
     verified = scan_result(
-        read(directory / "grype.json"), record["imageId"], assessment["assessedAt"]
+        read(directory / "grype.json"),
+        record["imageId"],
+        assessment["assessedAt"],
+        sbom=read(directory / "sbom.syft.json"),
     )
     if verified != assessment or verified["outcome"] != "clean":
         raise ValueError("Published assessment does not satisfy the release gate")
@@ -448,7 +451,10 @@ def candidates(
                 )
             if not route_only:
                 result[profile]["assessment"] = scan_result(
-                    read(target / "grype.json"), build["local_image_id"], producer["completed_at"]
+                    read(target / "grype.json"),
+                    build["local_image_id"],
+                    producer["completed_at"],
+                    sbom=sbom,
                 )
         except (OSError, ValueError, KeyError, TypeError) as error:
             result.pop(profile, None)

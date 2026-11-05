@@ -103,6 +103,20 @@ def test_status_ages_without_another_monitor_run(current):
 
 
 @pytest.mark.parametrize(
+    "at, expected",
+    [("2026-12-03T23:59:59Z", "clean"), ("2026-12-04T00:00:00Z", "stale")],
+)
+def test_public_status_expires_a_clean_exception_without_another_monitor_run(current, at, expected):
+    attempt = current["snapshot"].catalogue["releases"]["bicep/0.1.0"]["latestAttempt"]
+    attempt["assessedAt"] = "2026-12-03T23:59:59Z"
+    attempt["notAffected"] = [{"expiresAt": "2026-12-04T00:00:00Z"}]
+    before = copy.deepcopy(attempt)
+    result = report(CANDIDATE, at=at)
+    assert result["monitoringStatus"] == expected
+    assert result["latestAttempt"] == before
+
+
+@pytest.mark.parametrize(
     "status,conclusion",
     [
         ("completed", "failure"),

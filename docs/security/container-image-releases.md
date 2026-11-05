@@ -2,7 +2,7 @@
 
 This document defines the contract for published container images and their release evidence, complementing the [candidate image checks](container-images.md). Implementation progress is recorded in the [Status table](#status).
 
-Release eligibility is separate from merging source. PR checks require working builds, runtime behavior and complete scan evidence, with vulnerability findings reported as warnings. Image publication still refuses High/Critical findings, including unfixed ones. Python package publication requires authenticated image identity and matching consumer qualification before building and immediately before upload; regular PR CI does not enforce that live release state.
+Release eligibility is separate from merging source. PR checks require working builds, runtime behavior and complete scan evidence, with vulnerability findings reported as warnings. Image publication still refuses applicable High/Critical findings, including unfixed ones. Python package publication requires authenticated image identity and matching consumer qualification before building and immediately before upload; regular PR CI does not enforce that live release state.
 
 ## Outcome
 
@@ -13,7 +13,7 @@ A consumer can select a released image, pull its immutable registry digest, veri
 | Decision | Choice | State |
 |---|---|---|
 | Registry | Public packages under `ghcr.io/sokolaidev/maf-extensions/`, linked to this repository | Accepted |
-| Vulnerability gate | Refuse every High/Critical finding, including unfixed findings; no exclusions | Accepted |
+| Vulnerability gate | Refuse applicable High/Critical findings, including unfixed findings; only the [reviewed SQLite library decision](container-images.md#reviewed-sqlite-library-applicability) may establish non-applicability from exact component evidence; no scanner ignore rules | Accepted |
 | Release version | Independent SemVer for each image profile, separate from Python and upstream tool versions | Accepted, decision 1 |
 | Initial scope and names | The eleven currently scanned Linux/amd64 profiles, each in its own image repository | Accepted, decision 2 |
 | Release control | Maintainer-triggered release; build/test/scan before one protected publication approval | Accepted, decision 3 |

@@ -106,14 +106,20 @@ def fresh_assessment(directory: Path, candidate: dict[str, Any]) -> None:
     """Refresh an expired approval-time assessment against the same retained image bytes."""
     assessment = read(directory / "assessment.json")
     result = scan_result(
-        read(directory / "grype.json"), candidate["imageId"], assessment["assessedAt"]
+        read(directory / "grype.json"),
+        candidate["imageId"],
+        assessment["assessedAt"],
+        sbom=read(directory / "sbom.syft.json"),
     )
     if result != assessment or result["outcome"] != "clean":
         raise ValueError("Retained assessment is not a complete passing scan")
     age = timestamp(now()) - timestamp(assessment["assessedAt"])
     if age < timedelta(0):
         raise ValueError("Candidate assessment is dated in the future")
-    if age >= timedelta(hours=24):
+    expired_decision = any(
+        timestamp(now()) >= timestamp(item["expiresAt"]) for item in result.get("notAffected", [])
+    )
+    if age >= timedelta(hours=24) or expired_decision:
         for name in (
             "assessment.json",
             "grype.json",

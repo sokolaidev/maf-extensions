@@ -79,7 +79,9 @@ def test_failure_diagnostics_bound_output_and_escape_untrusted_fields():
         "vulnerability": {"id": "CVE-test\n::warning::injected", "severity": "High"},
         "artifact": {"name": "test\npackage"},
     }
-    message = preparation.assessment_failure({"matches": [finding] * 22})
+    message = preparation.assessment_failure(
+        {"matches": [finding] * 22}, "sha256:" + "a" * 64, "2026-01-01T00:00:00Z"
+    )
     assert message.count("  Finding:") == 20
     assert "2 additional blocking findings omitted" in message
     assert "\\n::warning::injected" in message

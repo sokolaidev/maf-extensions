@@ -125,7 +125,11 @@ function status(record, monitor, at) {
   if (a.outcome === "vulnerable") return "vulnerable";
   if (Object.values(record.unexpectedDigests || {}).some(entry => monitoringEnd(unexpectedRecord(entry)) === null) || record.registryDiscovery?.outcome === "unavailable") return "unavailable";
   if (!monitorDelivered(monitor) || a.outcome !== "clean") return "unavailable";
-  return at - date(a.assessedAt) >= 48 * HOUR ? "stale" : "clean";
+  const decisions = a.notAffected === undefined ? [] : a.notAffected;
+  if (!Array.isArray(decisions)) return "unavailable";
+  const expiries = decisions.map(d => d?.expiresAt);
+  if (expiries.some(value => typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\+00:00)$/.test(value) || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString().slice(0, 19) !== value.slice(0, 19))) return "unavailable";
+  return at - date(a.assessedAt) >= 48 * HOUR || expiries.some(value => at >= date(value)) ? "stale" : "clean";
 }
 
 async function verifySnapshot(raw, records) {
@@ -208,7 +212,7 @@ function render(value, monitor, at) {
   }
   const current = Object.values(groups.current);
   const publications = Object.keys(groups.publication).length;
-  document.getElementById("summary").textContent = (current.length === 0 ? "No current completed releases." : current.every(s => s === "clean") ? "Current releases have completed delivery and fresh scans with no known High/Critical findings at the time checked." : "Current release health needs attention. Review delivery and monitoring status below.") + (publications ? ` ${publications} incomplete, abandoned or unexpected publications also need attention.` : "");
+  document.getElementById("summary").textContent = (current.length === 0 ? "No current completed releases." : current.every(s => s === "clean") ? "Current releases have completed delivery and fresh scans with no applicable High/Critical findings at the time checked." : "Current release health needs attention. Review delivery and monitoring status below.") + (publications ? ` ${publications} incomplete, abandoned or unexpected publications also need attention.` : "");
   const historical = Object.values(groups.historical);
   const warnings = historical.filter(s => s !== "clean").length;
   document.getElementById("historical-summary").textContent = `Historical releases: ${historical.length} within the 90-day monitoring window; ${warnings} with warnings. Their findings and replacement releases remain listed below.`;
