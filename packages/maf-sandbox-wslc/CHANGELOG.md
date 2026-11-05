@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.4](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.31.3...maf-sandbox-wslc-v0.31.4) (2026-11-05)
+
+
+### Fixes
+
+* patch x/net vulnerability in Docker and WSLC egress proxies ([#2482](https://github.com/sokolaidev/maf-extensions/issues/2482)) ([955bb4f](https://github.com/sokolaidev/maf-extensions/commit/955bb4f8b8ecb71c409d1e725804b82bf8c8d807))
+
 ## [0.31.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.31.2...maf-sandbox-wslc-v0.31.3) (2026-11-04)
 
 
