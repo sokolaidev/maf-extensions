@@ -17,8 +17,6 @@ on:
       - 'tests/test_mxc_prelaunch.py'
       - 'scripts/experiments/mxc_streams_patch/**'
       - 'scripts/experiments/mxc_files_patch/**'
-      - 'uv.lock'
-      - 'pyproject.toml'
   workflow_dispatch:
 
 permissions:
