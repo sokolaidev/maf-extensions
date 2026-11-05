@@ -9,8 +9,6 @@ on:
       - 'tests/test_mxc_remote_authority.py'
       - 'tests/test_mxc_remote_api.py'
       - 'tests/test_mxc_cross_runner.py'
-      - 'uv.lock'
-      - 'pyproject.toml'
   workflow_dispatch:
 
 permissions:
