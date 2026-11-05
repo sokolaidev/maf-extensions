@@ -1848,7 +1848,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-mcp"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "packages/maf-sandbox-mcp" }
 dependencies = [
     { name = "agent-framework-core" },
