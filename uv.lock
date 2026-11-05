@@ -1799,7 +1799,7 @@ requires-dist = [{ name = "maf-sandbox", editable = "packages/maf-sandbox" }]
 
 [[package]]
 name = "maf-sandbox-document"
-version = "0.2.1"
+version = "0.2.2"
 source = { editable = "packages/maf-sandbox-document" }
 dependencies = [
     { name = "agent-framework-core" },
