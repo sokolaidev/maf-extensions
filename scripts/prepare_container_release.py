@@ -32,6 +32,7 @@ from container_release_oci import blob, validate_layout
 from container_release_preflight import preflight
 from image_layer_archive import ACAS_PROFILES, check_layer_archive
 from image_security_evidence import record, verify_inventory
+from sqlite_vulnerability import not_affected
 
 
 def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -73,12 +74,15 @@ def require_source(revision: str) -> None:
         raise ValueError("Release preparation requires a clean checkout")
 
 
-def assessment_failure(report: dict[str, Any]) -> str:
+def assessment_failure(
+    report: dict[str, Any], image_id: str, at: str, *, sbom: dict[str, Any] | None = None
+) -> str:
     """Describe blocking packages without emitting untrusted workflow commands."""
     findings = [
         match
         for match in report["matches"]
         if match["vulnerability"]["severity"] in {"High", "Critical"}
+        and not_affected(match, sbom, image_id, at) is None
     ]
     lines = ["High/Critical assessment failed, including unfixed findings:"]
     for match in findings[:20]:
@@ -120,7 +124,8 @@ def assess(directory: Path, image_id: str, *, require_clean: bool = True) -> dic
             f"spdx-json={directory / 'sbom.spdx.json'}",
         ]
     )
-    verify_inventory(read(directory / "sbom.syft.json"), image_id)
+    sbom = read(directory / "sbom.syft.json")
+    verify_inventory(sbom, image_id)
     runtime = directory / "runtime.json"
     if runtime.exists() and read(runtime).get("profile") in BICEP_PROFILES:
         from bicep_source import verify_inventory as verify_bicep_inventory
@@ -162,7 +167,7 @@ def assess(directory: Path, image_id: str, *, require_clean: bool = True) -> dic
     if scan.returncode not in (0, 2):
         raise ValueError("Vulnerability scanner did not complete")
     report = read(directory / "grype.json")
-    result = scan_result(report, image_id, now(), sbom=read(directory / "sbom.syft.json"))
+    result = scan_result(report, image_id, now(), sbom=sbom)
     write(directory / "assessment.json", result)
     raw = scan_result(report, image_id, result["assessedAt"])
     if (scan.returncode == 0) != (raw["outcome"] == "clean"):
@@ -170,7 +175,7 @@ def assess(directory: Path, image_id: str, *, require_clean: bool = True) -> dic
     for decision in result.get("notAffected", []):
         print("Reviewed non-applicability: " + json.dumps(decision, ensure_ascii=True))
     if require_clean and result["outcome"] != "clean":
-        raise ValueError(assessment_failure(report))
+        raise ValueError(assessment_failure(report, image_id, result["assessedAt"], sbom=sbom))
     return result
 
 
