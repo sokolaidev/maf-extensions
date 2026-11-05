@@ -1,4 +1,4 @@
-"""Pull a qualified published image matching the live sample's committed image inputs."""
+"""Pull an authenticated published image compatible with the live sample's committed consumer."""
 
 from __future__ import annotations
 
@@ -10,16 +10,22 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from check_kind_release_images import qualified, revision
+from check_kind_release_images import KIND_IMAGES, compatibility, qualified, revision
 from container_release import PREFIX
 from container_release_history import GitHub, History
-from image_release_needed import changed_inputs, release_evidence
+from image_release_needed import release_evidence
 from verify_container_release import pull_image
 
 PROFILE_ENV = {
     "shell": "SHELL_SANDBOX_IMAGE",
     "terraform-random": "TERRAFORM_SANDBOX_IMAGE",
     "opentofu-random": "OPENTOFU_SANDBOX_IMAGE",
+}
+PROFILE_PACKAGE = {
+    profile: package
+    for package, profiles in KIND_IMAGES.items()
+    for profile in profiles
+    if profile in PROFILE_ENV
 }
 
 
@@ -36,11 +42,7 @@ def resolve(root: Path, head: str, profile: str) -> dict[str, Any]:
     record = snapshot.catalogue["releases"][name]
     if record["profile"] != profile:
         raise ValueError("Current catalogue entry identifies another profile")
-    changed = changed_inputs(root, record["sourceCommit"], head, profile)
-    if changed:
-        raise ValueError(
-            f"Published {profile} image has different build inputs: {', '.join(changed)}"
-        )
+    consumer_evidence = compatibility(root, head, PROFILE_PACKAGE[profile], profile, record)
     with tempfile.TemporaryDirectory(prefix="live-image-") as temporary:
         directory = Path(temporary)
         evidence = release_evidence(client, record, directory)
@@ -58,6 +60,7 @@ def resolve(root: Path, head: str, profile: str) -> dict[str, Any]:
         "sourceCommit": record["sourceCommit"],
         "sampleCommit": head,
         "evidence": evidence,
+        "consumerQualification": consumer_evidence,
     }
 
 

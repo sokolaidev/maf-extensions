@@ -2646,6 +2646,7 @@ jobs:
     environment: live-verify
     permissions:
       contents: read
+      attestations: read
       id-token: write
     env:
       AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
@@ -2742,6 +2743,7 @@ jobs:
     environment: live-verify
     permissions:
       contents: read
+      attestations: read
       id-token: write
     env:
       AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
@@ -3345,6 +3347,7 @@ jobs:
     environment: live-verify
     permissions:
       contents: read
+      attestations: read
       id-token: write
     env:
       AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
