@@ -2,6 +2,14 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.25.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.25.0...maf-sandbox-bicep-v0.25.1) (2026-11-05)
+
+
+### Fixes
+
+* preserve provenance and provider lifetimes on MAF 1.24 ([#2344](https://github.com/sokolaidev/maf-extensions/issues/2344)) ([4ff8a3d](https://github.com/sokolaidev/maf-extensions/commit/4ff8a3d310f7ec26a9bcd7858bdec46da03f5f49))
+* require maf-sandbox 0.53.0 in the dependents, and admit the 0.53 line ([#2440](https://github.com/sokolaidev/maf-extensions/issues/2440)) ([333e291](https://github.com/sokolaidev/maf-extensions/commit/333e29138ca2f87782f488b89d8664a2a764a341))
+
 ## [0.25.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.24.0...maf-sandbox-bicep-v0.25.0) (2026-10-29)
 
 
