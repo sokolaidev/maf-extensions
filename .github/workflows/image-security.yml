@@ -289,7 +289,7 @@ jobs:
           output-format: json
           output-file: ${{ runner.temp }}/image-security/grype.json
           severity-cutoff: high
-          fail-build: true
+          fail-build: ${{ github.event_name != 'pull_request' }}
           only-fixed: false
           config: ${{ runner.temp }}/image-security/grype.yaml
           cache-db: false

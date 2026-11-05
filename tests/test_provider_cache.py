@@ -230,4 +230,4 @@ def test_cache_workflow_preserves_qualification_and_uses_fresh_benchmark_runners
     release = yaml.safe_load((ROOT / ".github/workflows/container-image-release.yml").read_text())
     assert release["jobs"]["approve"]["environment"]["name"] == "container-release"
     providers = next(s for s in release["jobs"]["prepare"]["steps"] if s.get("id") == "providers")
-    assert "github.run_attempt == 1" in providers["if"]
+    assert "steps.plan.outputs.mode == 'built'" in providers["if"]
