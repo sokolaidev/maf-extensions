@@ -166,7 +166,12 @@ updates:
       - "/packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/dependencies"
       - "/packages/maf-sandbox-wslc/src/maf_sandbox_wslc/_proxy/dependencies"
     schedule:
-      interval: "weekly"
+      # Include weekends; Dependabot's daily interval only runs on weekdays.
+      interval: "cron"
+      cronjob: "0 4 * * *"
+      timezone: "Etc/UTC"
+    cooldown:
+      default-days: 0
     groups:
       proxy-modules:
         patterns: ["*"]
@@ -175,6 +180,6 @@ updates:
         patterns: ["*"]
     ignore:
       - dependency-name: "*"
-        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "fix"
