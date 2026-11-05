@@ -87,8 +87,10 @@ test('render separates current health and historical warnings and names the repl
   const nodes = Object.fromEntries(['releases', 'summary', 'historical-summary', 'monitoring-summary'].map(id => [id, node()]));
   context.document = {getElementById: id => nodes[id], createElement: node};
   context.value = {catalogue: healthCatalogue()}; context.run = run; context.at = at;
+  context.value.catalogue.releases['bicep/0.1.1'].latestAttempt = {...record.latestAttempt, counts: {High: 1}, notAffected: [{expiresAt: '2026-01-03T00:00:00Z'}]};
   vm.runInContext('render(value, run, at)', context);
-  assert.match(nodes.summary.textContent, /Current releases have completed delivery/);
+  assert.match(nodes.summary.textContent, /fresh scans with no applicable High\/Critical findings/);
+  assert.equal(context.value.catalogue.releases['bicep/0.1.1'].latestAttempt.counts.High, 1);
   assert.match(nodes['historical-summary'].textContent, /1 within the 90-day monitoring window; 1 with warnings/);
   assert.equal(nodes.releases.children[0].children[2].textContent, 'vulnerable');
   assert.match(nodes.releases.children[0].children[8].textContent, /historical; replacement: bicep\/0.1.1/);
