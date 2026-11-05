@@ -1909,7 +1909,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-terraform"
-version = "0.8.1"
+version = "0.8.2"
 source = { editable = "packages/maf-sandbox-terraform" }
 dependencies = [
     { name = "agent-framework-core" },
