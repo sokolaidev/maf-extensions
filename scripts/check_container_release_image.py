@@ -19,11 +19,34 @@ from build_hyperlight_aks_image import _smoke_output, verify_image
 from container_release import ROOT, now, profiles, read, require_digest, write
 
 
-def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
-    """Qualify the selected profile; controlled fixtures do not establish deployment support."""
+def check(
+    profile: str, image_id: str, directory: Path, *, published_runtime: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Run current probes; published_runtime must come from authenticated release qualification."""
     require_digest(image_id)
     if profile not in profiles():
         raise ValueError("Unknown image profile")
+    published = None
+    if published_runtime is not None:
+        if (
+            published_runtime.get("passed") is not True
+            or published_runtime.get("profile") != profile
+            or published_runtime.get("imageId") != image_id
+            or published_runtime.get("containersRemaining") != []
+        ):
+            raise ValueError("Published runtime does not qualify the selected image")
+        identity_key = {
+            "bicep": "bicep",
+            "bicep-avm": "bicepAvm",
+            "terraform-avm": "terraformAvm",
+            "opentofu-avm": "opentofuAvm",
+            "terraform-random": "terraformRandom",
+            "opentofu-random": "opentofuRandom",
+        }.get(profile)
+        if identity_key is not None:
+            published = published_runtime[identity_key]
+            if not isinstance(published, dict) or not published:
+                raise ValueError("Published runtime lacks the image's build identity")
     if profile == "antivirus":
         import antivirus_qualification
 
@@ -130,7 +153,7 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
         command = (
             bicep_qualification.command()
             if profile == "bicep"
-            else bicep_avm_qualification.command()
+            else bicep_avm_qualification.command(published=published)
         )
     elif profile == "shell":
         command = [
@@ -205,18 +228,20 @@ def check(profile: str, image_id: str, directory: Path) -> dict[str, Any]:
         evidence_key = "bicepAvm" if profile == "bicep-avm" else "terraformAvm"
         if profile == "bicep":
             evidence_key = "bicep"
-            result = bicep_qualification.evidence(output)
+            result = bicep_qualification.evidence(output, published=published)
         elif profile == "bicep-avm":
-            result = bicep_avm_qualification.evidence(output)
+            result = bicep_avm_qualification.evidence(output, published=published)
         elif profile in {"terraform-avm", "opentofu-avm"}:
             evidence_key = "terraformAvm" if profile == "terraform-avm" else "opentofuAvm"
-            result = terraform_avm_qualification.evidence(output, profile.split("-")[0])
+            result = terraform_avm_qualification.evidence(
+                output, profile.split("-")[0], published=published
+            )
         elif profile == "terraform-random":
             evidence_key = "terraformRandom"
-            result = terraform_random_qualification.evidence(output)
+            result = terraform_random_qualification.evidence(output, published=published)
         elif profile == "opentofu-random":
             evidence_key = "opentofuRandom"
-            result = opentofu_random_qualification.evidence(output)
+            result = opentofu_random_qualification.evidence(output, published=published)
     finally:
         subprocess.run(
             ["docker", "rm", "--force", name], check=True, capture_output=True, timeout=30

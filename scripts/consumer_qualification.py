@@ -11,7 +11,6 @@ from typing import Any
 
 from container_release import ISSUER, REPOSITORY, decode, require_digest, timestamp, write
 from container_release_history import encode, sha256
-from image_release_needed import changed_inputs
 from select_image_security import IMAGE_INPUTS
 
 WORKFLOW = ".github/workflows/kind-consumer-qualification.yml"
@@ -30,27 +29,6 @@ KIND_IMAGES = {
 # Coverage is a release requirement, not an assertion of support on other backends.
 BACKENDS = {profile: ("docker",) for profiles in KIND_IMAGES.values() for profile in profiles}
 HARNESS_INPUTS = {"drawio-export": ("images/drawio-sandbox/DEJAVU-LICENSE",)}
-QUALIFICATION_ONLY = {
-    "scripts/check_live_azure_pricing.py",
-    "scripts/antivirus_qualification.py",
-    "scripts/antivirus_cdiff_check.py",
-    "scripts/document_qualification.py",
-    "scripts/document_fixtures.py",
-    "scripts/drawio_qualification.py",
-    "scripts/drawio_export_qualification.py",
-    "scripts/drawio_export_runtime.py",
-    "scripts/check_drawio_exports.py",
-    "scripts/check_drawio_renderer.py",
-    "scripts/check_drawio_docker.py",
-    "scripts/shell_qualification.py",
-    "scripts/shell_runtime_devices.py",
-    "scripts/check_shell_image.py",
-    "scripts/bicep_qualification.py",
-    "scripts/bicep_avm_qualification.py",
-    "scripts/terraform_avm_qualification.py",
-    "scripts/terraform_random_qualification.py",
-    "scripts/opentofu_random_qualification.py",
-}
 
 
 def git(root: Path, *args: str) -> str:
@@ -58,17 +36,6 @@ def git(root: Path, *args: str) -> str:
     return subprocess.check_output(
         ["git", *args], cwd=root, encoding="utf-8", stderr=subprocess.PIPE
     ).strip()
-
-
-def image_changes(root: Path, source: str, head: str, profile: str) -> list[str]:
-    """Separate consumer-only inputs from the existing conservative image comparison."""
-    return [
-        path
-        for path in changed_inputs(root, source, head, profile)
-        if path not in QUALIFICATION_ONLY
-        and not path.startswith("tests/")
-        and not path.startswith(tuple(f"packages/{name}/src/" for name in KIND_IMAGES))
-    ]
 
 
 def inputs(
