@@ -24,6 +24,7 @@ from container_release import (
     now,
     profiles,
     read,
+    release_scan_passes,
     require_digest,
     reserve,
     scan_result,
@@ -111,7 +112,7 @@ def fresh_assessment(directory: Path, candidate: dict[str, Any]) -> None:
         assessment["assessedAt"],
         sbom=read(directory / "sbom.syft.json"),
     )
-    if result != assessment or result["outcome"] != "clean":
+    if result != assessment or not release_scan_passes(result):
         raise ValueError("Retained assessment is not a complete passing scan")
     age = timestamp(now()) - timestamp(assessment["assessedAt"])
     if age < timedelta(0):

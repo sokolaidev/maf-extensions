@@ -1181,15 +1181,27 @@ def test_release_identity_is_independent_of_vulnerability_assessment(monkeypatch
         tracker.release_evidence(GitHub(), record | {"evidenceIndexSha256": "other"}, tmp_path)
 
 
-def test_image_refresh_baseline_still_requires_clean_original_scan(monkeypatch, tmp_path):
+@pytest.mark.parametrize("severity", ["High", "Critical"])
+def test_image_refresh_baseline_uses_publication_threshold(monkeypatch, tmp_path, severity):
     monkeypatch.setattr(tracker, "release_evidence", lambda *a: "release")
-    assessment = {"assessedAt": "2026-01-01T00:00:00Z", "outcome": "vulnerable"}
+    assessment = {
+        "assessedAt": "2026-01-01T00:00:00Z",
+        "outcome": "vulnerable",
+        "findings": [{"severity": severity}],
+    }
     (tmp_path / "assessment.json").write_text(json.dumps(assessment))
     (tmp_path / "grype.json").write_text("{}")
     (tmp_path / "sbom.syft.json").write_text("{}")
     monkeypatch.setattr(tracker, "scan_result", lambda *a, **kw: assessment)
-    with pytest.raises(ValueError, match="release gate"):
-        tracker.baseline(GitHub(), RECORD | {"candidate": {}}, tmp_path)
+    monkeypatch.setattr(tracker, "components", lambda *a: [])
+    if severity == "Critical":
+        with pytest.raises(ValueError, match="release gate"):
+            tracker.baseline(GitHub(), RECORD | {"candidate": {}}, tmp_path)
+    else:
+        assert tracker.baseline(GitHub(), RECORD | {"candidate": {}}, tmp_path) == {
+            "components": [],
+            "evidence": "release",
+        }
 
 
 @pytest.mark.parametrize(

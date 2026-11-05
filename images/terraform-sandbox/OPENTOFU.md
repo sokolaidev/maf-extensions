@@ -51,7 +51,7 @@ bash scripts/build_scan_image.sh opentofu-random
 
 The image gate runs without networking, with a read-only root filesystem, dropped capabilities and bounded resources. It checks exact and matching-lock initialization and validation with the exported module; unavailable provider versions, missing local modules, wrong lock checksums, upstream-only archive locks and Terraform registry identities must be refused. Successful checks require providers linked from the baked mirror, unchanged source and locks, matching engine source provenance, and module files matching the receipt. The host verifies container removal. Results are retained under `runtime.opentofuRandom` in release qualification evidence and are repeated after anonymous pull of the signed candidate.
 
-Image execution and scanning run in the release gate and explicit image-security runs; ordinary PR updates use code and workflow checks. Every High or Critical vulnerability blocks release, including findings without a fix. Scan results are time-bound evidence, not proof of absence of malware or backdoors. This profile qualifies initialization and validation on Docker, not apply, plan, cloud authentication, production suitability, or operation on other backends.
+Image execution and scanning run in the release gate and explicit image-security runs; ordinary PR updates use code and workflow checks. Every applicable Critical vulnerability blocks release, including findings without a fix. Scan results are time-bound evidence, not proof of absence of malware or backdoors. This profile qualifies initialization and validation on Docker, not apply, plan, cloud authentication, production suitability, or operation on other backends.
 
 ## Updates and support
 

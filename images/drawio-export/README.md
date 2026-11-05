@@ -16,7 +16,7 @@ gh release download "image-drawio-export-v$VERSION" --repo sokolaidev/maf-extens
 python3 scripts/verify_container_release.py --policy drawio-export-policy.json --evidence "$EVIDENCE" --bundles
 ```
 
-Require `releaseIdentityVerified: true` before execution and pin `ghcr.io/sokolaidev/maf-extensions/drawio-export@sha256:<verified-manifest-digest>`. The verifier authenticates provenance, SPDX and completion evidence; the registry manifest digest differs from the Docker configuration identity. The [public security report](https://sokolaidev.github.io/maf-extensions/) separately reports daily monitoring, with assessments expiring after 48 hours and superseded versions monitored for 90 days. The release gate refuses all High/Critical findings, including unfixed findings. A clean assessment is dated evidence, not a guarantee against malware or unknown vulnerabilities.
+Require `releaseIdentityVerified: true` before execution and pin `ghcr.io/sokolaidev/maf-extensions/drawio-export@sha256:<verified-manifest-digest>`. The verifier authenticates provenance, SPDX and completion evidence; the registry manifest digest differs from the Docker configuration identity. The [public security report](https://sokolaidev.github.io/maf-extensions/) separately reports daily monitoring, with assessments expiring after 48 hours and superseded versions monitored for 90 days. The release gate refuses all applicable Critical findings, including unfixed findings. A clean assessment is dated evidence, not a guarantee against malware or unknown vulnerabilities.
 
 ## Dedicated Docker configuration
 

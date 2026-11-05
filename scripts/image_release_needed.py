@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from container_release import REPOSITORY, ROOT, read, scan_result, timestamp
+from container_release import REPOSITORY, ROOT, read, release_scan_passes, scan_result, timestamp
 from container_release_assets import Evidence, image_tag
 from container_release_history import GitHub, History, decode, encode, sha256
 from image_scan_policy import BICEP_ROUTES, evidence_route
@@ -219,7 +219,7 @@ def release_evidence(client: GitHub, record: dict[str, Any], directory: Path) ->
 
 
 def baseline(client: GitHub, record: dict[str, Any], directory: Path) -> dict[str, Any]:
-    """Require authenticated completion and a clean original assessment for image refreshes."""
+    """Require authenticated completion and a release-eligible original scan for image refreshes."""
     evidence_url = release_evidence(client, record, directory)
     candidate = record["candidate"]
     assessment = read(directory / "assessment.json")
@@ -229,7 +229,7 @@ def baseline(client: GitHub, record: dict[str, Any], directory: Path) -> dict[st
         assessment["assessedAt"],
         sbom=read(directory / "sbom.syft.json"),
     )
-    if verified != assessment or verified["outcome"] != "clean":
+    if verified != assessment or not release_scan_passes(verified):
         raise ValueError("Published assessment does not satisfy the release gate")
     result = {
         "components": components(read(directory / "sbom.syft.json"), record["imageId"]),
@@ -831,7 +831,7 @@ def body(profile: str, state: dict[str, Any]) -> str:
                 f"They do not establish a vulnerability in the published image. Status: **{state['status']}**."
             )
         )
-        + "\n\nPublication requires the existing exact-candidate runtime, SBOM, High/Critical scan, approval and signature checks. A passing daily scan does not close this request.\n\n"
+        + "\n\nPublication requires the existing exact-candidate runtime, SBOM, Critical scan, approval and signature checks. High findings remain monitoring warnings and remediation requests. A passing daily scan does not close this request.\n\n"
         "**Describe alternatives you've considered**\n\n"
         "Do not publish automatically or treat a scanner outage as evidence that a new image is needed.\n\n"
         "**Additional context**\n\n"

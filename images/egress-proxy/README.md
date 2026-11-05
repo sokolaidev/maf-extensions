@@ -8,7 +8,7 @@ The initial public release is tracked in [#1846](https://github.com/sokolaidev/m
 
 Follow the [consumer verification procedure](../../docs/security/container-image-releases.md#evidence-and-verification): independently select the expected source and digests, download the release evidence, and verify provenance, SPDX and completion bundles before execution. Require `releaseIdentityVerified: true`, then pin `ghcr.io/sokolaidev/maf-extensions/egress-proxy@sha256:<verified-manifest-digest>`. The manifest digest and Docker image/configuration identity are recorded separately; do not substitute one for the other.
 
-The [public security report](https://sokolaidev.github.io/maf-extensions/) reports monitoring separately from signed release identity. Publication refuses all known High/Critical findings, including unfixed findings; build, inventory and scanner errors also fail. Assessments expire after 48 hours, and superseded completed releases remain monitored for 90 days. A clean scan is dated evidence, not a malware-free or production-safety guarantee.
+The [public security report](https://sokolaidev.github.io/maf-extensions/) reports monitoring separately from signed release identity. Publication refuses all known applicable Critical findings, including unfixed findings; build, inventory and scanner errors also fail. Assessments expire after 48 hours, and superseded completed releases remain monitored for 90 days. A clean scan is dated evidence, not a malware-free or production-safety guarantee.
 
 ## Use with a backend
 

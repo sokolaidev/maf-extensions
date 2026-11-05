@@ -23,6 +23,7 @@ from container_release import (
     now,
     profiles,
     read,
+    release_scan_passes,
     scan_result,
     validate_identity,
     version,
@@ -81,10 +82,10 @@ def assessment_failure(
     findings = [
         match
         for match in report["matches"]
-        if match["vulnerability"]["severity"] in {"High", "Critical"}
+        if match["vulnerability"]["severity"] == "Critical"
         and not_affected(match, sbom, image_id, at) is None
     ]
-    lines = ["High/Critical assessment failed, including unfixed findings:"]
+    lines = ["Critical assessment failed, including unfixed findings:"]
     for match in findings[:20]:
         vulnerability = match["vulnerability"]
         artifact = match.get("artifact") or {}
@@ -111,7 +112,7 @@ def assessment_failure(
 
 
 def assess(directory: Path, image_id: str, *, require_clean: bool = True) -> dict[str, Any]:
-    """Refresh the exact image's inventory and strict High/Critical assessment."""
+    """Retain High/Critical monitoring evidence and enforce the Critical publication threshold."""
     directory.mkdir(parents=True, exist_ok=True)
     run(
         [
@@ -152,7 +153,7 @@ def assess(directory: Path, image_id: str, *, require_clean: bool = True) -> dic
             "--config",
             str(directory / "grype.yaml"),
             "--fail-on",
-            "high",
+            "critical",
             "--output",
             "json",
             "--file",
@@ -170,12 +171,16 @@ def assess(directory: Path, image_id: str, *, require_clean: bool = True) -> dic
     result = scan_result(report, image_id, now(), sbom=sbom)
     write(directory / "assessment.json", result)
     raw = scan_result(report, image_id, result["assessedAt"])
-    if (scan.returncode == 0) != (raw["outcome"] == "clean"):
+    if (scan.returncode == 0) != release_scan_passes(raw):
         raise ValueError("Scanner exit status disagrees with the retained assessment")
     for decision in result.get("notAffected", []):
         print("Reviewed non-applicability: " + json.dumps(decision, ensure_ascii=True))
-    if require_clean and result["outcome"] != "clean":
+    if require_clean and not release_scan_passes(result):
         raise ValueError(assessment_failure(report, image_id, result["assessedAt"], sbom=sbom))
+    if require_clean and result["outcome"] == "vulnerable":
+        print(
+            "::warning::High findings remain; publication permits them. See assessment.json and grype.json"
+        )
     return result
 
 

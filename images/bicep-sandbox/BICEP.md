@@ -37,7 +37,7 @@ python3 scripts/verify_container_release.py \
 
 Require successful verification and `releaseIdentityVerified: true` before execution. Pin `ghcr.io/sokolaidev/maf-extensions/bicep@<approved-registry-digest>`; the registry digest identifies the runnable manifest, whereas `imageId` is the Docker configuration identity and cannot replace it in the pull reference.
 
-Release identity and monitoring are separate results. Inspect the public report's assessment time and findings and apply your application's vulnerability policy. Publication requires no High/Critical findings, including unfixed findings; lower-severity findings remain visible. A stale, unavailable, failing or retired monitoring result is not clean, and a passing scan does not establish absence of malware or backdoors or suitability for every production application.
+Release identity and monitoring are separate results. Inspect the public report's assessment time and findings and apply your application's vulnerability policy. Publication requires no applicable Critical findings, including unfixed findings; High and lower-severity findings remain visible. A stale, unavailable, failing or retired monitoring result is not clean, and a passing scan does not establish absence of malware or backdoors or suitability for every production application.
 
 ## Compile local input
 
