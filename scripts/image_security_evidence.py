@@ -143,13 +143,19 @@ def main() -> None:
     (directory / "build.json").write_text(json.dumps(evidence, indent=2) + "\n")
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
         output.write(f"image_id={evidence['local_image_id']}\n")
+    policy = (
+        "Policy: High/Critical findings are warnings on pull requests, including unfixed findings. "
+        "A passing PR check does not establish image release eligibility. "
+        if os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
+        else "Policy: fail on High/Critical findings, including unfixed findings. "
+    )
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
         summary.write(
             f"### Image security: {evidence['profile']}\n\n"
             f"Source: `{revision}`; platform: `linux/amd64`.\n\n"
             f"Local image ID (not a registry manifest digest): `{evidence['local_image_id']}`.\n\n"
-            "Policy: fail on High/Critical findings, including unfixed findings. "
-            "A build or scanner failure also fails the workflow. "
+            f"{policy}"
+            "Build, runtime, inventory, scanner and evidence-upload errors fail the workflow. "
             "Inventory and scan results are retained as workflow artifacts for 30 days.\n"
         )
 

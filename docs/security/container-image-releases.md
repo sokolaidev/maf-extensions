@@ -2,6 +2,8 @@
 
 This document defines the contract for published container images and their release evidence, complementing the [candidate image checks](container-images.md). Implementation progress is recorded in the [Status table](#status).
 
+Release eligibility is separate from merging source. PR checks require working builds, runtime behavior and complete scan evidence, with vulnerability findings reported as warnings. Image publication still refuses High/Critical findings, including unfixed ones. Python package publication requires authenticated image identity and matching consumer qualification before building and immediately before upload; regular PR CI does not enforce that live release state.
+
 ## Outcome
 
 A consumer can select a released image, pull its immutable registry digest, verify its publisher and source revision, and inspect the SBOM and vulnerability assessment for those same bytes. A release record distinguishes packaging tests from deployment qualification and identifies which Python package versions were tested with the image.

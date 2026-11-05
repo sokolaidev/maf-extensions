@@ -550,18 +550,14 @@ def test_non_image_packages_and_implementation_changes_need_no_catalogue(monkeyp
 
 
 @pytest.mark.workflow
-def test_version_gate_joins_required_context_and_checks_upload_after_approval():
+def test_image_readiness_gates_publication_only_and_is_rechecked_after_approval():
     root = Path(__file__).resolve().parents[1]
     tests = yaml.safe_load((root / ".github/workflows/tests.yml").read_text(encoding="utf-8"))
-    job = tests["jobs"]["kind-images"]
-    assert "kind-images" in tests["jobs"]["tests"]["needs"]
-    assert "if" not in job
-    assert job["permissions"] == {"contents": "read", "actions": "read", "attestations": "read"}
-    step = next(s for s in job["steps"] if "--base" in s.get("run", ""))
-    assert step["if"] == "github.event_name == 'pull_request'"
-    assert (
-        "--base" in step["run"]
-        and step["env"]["BASE_SHA"] == "${{ github.event.pull_request.base.sha }}"
+    assert "kind-images" not in tests["jobs"]["tests"]["needs"]
+    assert not any(
+        "check_kind_release_images.py" in step.get("run", "")
+        for job in tests["jobs"].values()
+        for step in job.get("steps", [])
     )
     publish = yaml.safe_load(
         (root / ".github/workflows/publish-packages.yml").read_text(encoding="utf-8")
