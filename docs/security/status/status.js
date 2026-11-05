@@ -125,7 +125,11 @@ function status(record, monitor, at) {
   if (a.outcome === "vulnerable") return "vulnerable";
   if (Object.values(record.unexpectedDigests || {}).some(entry => monitoringEnd(unexpectedRecord(entry)) === null) || record.registryDiscovery?.outcome === "unavailable") return "unavailable";
   if (!monitorDelivered(monitor) || a.outcome !== "clean") return "unavailable";
-  return at - date(a.assessedAt) >= 48 * HOUR ? "stale" : "clean";
+  const decisions = a.notAffected === undefined ? [] : a.notAffected;
+  if (!Array.isArray(decisions)) return "unavailable";
+  const expiries = decisions.map(d => d?.expiresAt);
+  if (expiries.some(value => typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\+00:00)$/.test(value) || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString().slice(0, 19) !== value.slice(0, 19))) return "unavailable";
+  return at - date(a.assessedAt) >= 48 * HOUR || expiries.some(value => at >= date(value)) ? "stale" : "clean";
 }
 
 async function verifySnapshot(raw, records) {
