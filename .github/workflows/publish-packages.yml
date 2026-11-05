@@ -1004,6 +1004,7 @@ jobs:
       # Passed down to the called workflow, which mints the Azure OIDC token.
       id-token: write
       contents: read
+      attestations: read
     # Required for the called jobs' own `environment: live-verify` secrets to resolve, which
     # reads as redundant and is not: a called workflow gets that environment's `vars` from the
     # `environment:` key alone, but its secrets arrive empty unless the caller inherits
