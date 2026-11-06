@@ -12,7 +12,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Any, cast
 
-from agent_framework import AgentSession, CharacterEstimatorTokenizer
+from agent_framework import AgentSession, CharacterEstimatorTokenizer, HistoryProvider, Message
 from agent_framework._compaction import EXCLUDED_KEY
 from maf_compaction import (
     MediaTokenEstimator,
@@ -175,9 +175,32 @@ async def _persistence(
         "notification": request["notified"] == (scenario == "after_save"),
     }
     stored = store.snapshots[store.destination if expected_commit else store.source]
+    history_source = next(
+        provider.source_id
+        for provider in experiment.binding.agent.context_providers
+        if isinstance(provider, HistoryProvider)
+    )
+    saved_history = [
+        Message.from_dict(message)
+        for message in stored["state"].get(history_source, {}).get("messages", [])
+    ]
+    expected_history = [
+        ("user", "Remember CODE-2466."),
+        ("assistant", "Fixture answer CODE-2466."),
+    ]
     if expected_commit:
         stack = stored["state"].get(experiment.registry.state_key, {})
-        checks["history_committed"] = "Remember CODE-2466." in json.dumps(stored)
+        checks["history_committed"] = [
+            (message.role, message.text) for message in saved_history
+        ] == expected_history
+        if history_mode == "replay":
+            replay = [
+                Message.from_dict(message)
+                for message in stored["state"].get("cachebench_original_history", [])
+            ]
+            checks["replay_archive_committed"] = [
+                (message.role, message.text) for message in replay
+            ] == expected_history
         checks["compaction_state_committed"] = (
             stack.get("version") == 5 and stack.get("middleware", {}).get("value_free_streak") == 2
         )
@@ -185,7 +208,7 @@ async def _persistence(
         if returned is not None:
             checks["returned_saved_id"] = returned.session_id == store.destination
     else:
-        checks["history_not_committed"] = "Remember CODE-2466." not in json.dumps(stored)
+        checks["history_not_committed"] = not saved_history
         checks["stored_snapshot_unchanged"] = stored == store.source_snapshot
     if scenario == "branch":
         source = store.snapshots[store.source]
@@ -206,6 +229,7 @@ async def _persistence(
         "streams_closed": model.closed,
         "snapshots": deepcopy(store.snapshots),
         "expected_error": expected_failure,
+        "history_source": history_source,
     }
     return (
         {

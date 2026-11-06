@@ -209,17 +209,21 @@ class StrategyOptions:
     compaction: CompactionOptions = field(default_factory=CompactionOptions)
 
     def __post_init__(self) -> None:
+        base = self.tokenizer
+        if isinstance(base, MediaTokenEstimator) and isinstance(
+            base.estimate_media, FixtureMediaEstimate
+        ):
+            if (
+                self.compaction.media_profile != "none"
+                and base.estimate_media.tokens == self.compaction.media_tokens
+            ):
+                return
+            base = base.tokenizer
         if self.compaction.media_profile != "none":
-            base = self.tokenizer
-            if isinstance(base, MediaTokenEstimator):
-                base = base.tokenizer
-            object.__setattr__(
-                self,
-                "tokenizer",
-                MediaTokenEstimator(
-                    base, estimate_media=FixtureMediaEstimate(self.compaction.media_tokens)
-                ),
+            base = MediaTokenEstimator(
+                base, estimate_media=FixtureMediaEstimate(self.compaction.media_tokens)
             )
+        object.__setattr__(self, "tokenizer", base)
 
     def rewrite_kwargs(self) -> dict[str, Any]:
         """Resolve the fixture rewrite policy for every result-compaction path."""

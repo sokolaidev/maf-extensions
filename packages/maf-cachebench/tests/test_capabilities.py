@@ -8,23 +8,16 @@ from dataclasses import replace
 from typing import Any, cast
 
 import pytest
-from agent_framework import AgentSession, CharacterEstimatorTokenizer, Content
-from maf_compaction import CompactionStack
+from agent_framework import AgentSession, CharacterEstimatorTokenizer, Content, Message
+from maf_compaction import CompactionStack, MediaTokenEstimator
 
+import maf_cachebench._capabilities as capabilities
 from maf_cachebench import (
     CompactionOptions,
     StrategyOptions,
     build_live_scenario,
     build_strategy,
     run_live,
-)
-from maf_cachebench._capabilities import (
-    MEDIA_SCENARIOS,
-    PERSISTENCE_SCENARIOS,
-    RESULT_SCENARIOS,
-    _binding,
-    main,
-    run_capability_scenario,
 )
 from maf_cachebench._capability_fixtures import (
     FixtureClient,
@@ -46,7 +39,7 @@ def anyio_backend():
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("scenario", PERSISTENCE_SCENARIOS)
+@pytest.mark.parametrize("scenario", capabilities.PERSISTENCE_SCENARIOS)
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("session_mode", ["roundtrip", "restart"])
 @pytest.mark.parametrize("history_mode", ["incremental", "replay"])
@@ -55,9 +48,9 @@ async def test_persistence_matrix_reports_observed_commits_and_cleanup(
 ):
     if scenario == "interrupted_stream" and not stream:
         with pytest.raises(ValueError, match="requires streaming"):
-            await run_capability_scenario(scenario, stream=False)
+            await capabilities.run_capability_scenario(scenario, stream=False)
         return
-    record = await run_capability_scenario(
+    record = await capabilities.run_capability_scenario(
         scenario, stream=stream, session_mode=session_mode, history_mode=history_mode
     )
     assert record.passed, record.to_dict()
@@ -72,17 +65,19 @@ async def test_persistence_matrix_reports_observed_commits_and_cleanup(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("scenario", (*MEDIA_SCENARIOS, *RESULT_SCENARIOS))
+@pytest.mark.parametrize(
+    "scenario", (*capabilities.MEDIA_SCENARIOS, *capabilities.RESULT_SCENARIOS)
+)
 async def test_host_hook_scenarios_measure_retained_content(scenario):
-    record = await run_capability_scenario(scenario)
+    record = await capabilities.run_capability_scenario(scenario)
     assert record.passed, record.to_dict()
     assert json.loads(json.dumps(record.to_dict()))["passed"]
 
 
 @pytest.mark.anyio
 async def test_media_estimator_changes_projection_without_changing_description():
-    small = await run_capability_scenario("media_select_pdf", media_tokens=100)
-    large = await run_capability_scenario("media_select_pdf", media_tokens=1500)
+    small = await capabilities.run_capability_scenario("media_select_pdf", media_tokens=100)
+    large = await capabilities.run_capability_scenario("media_select_pdf", media_tokens=1500)
     assert small.passed and large.passed
     assert (
         large.observations["estimated_tokens_before"]
@@ -102,7 +97,7 @@ async def test_branch_can_continue_without_mutating_its_source():
         persistence_scenario="branch", session_mode="restart", history_mode="replay"
     )
     model = FixtureClient()
-    experiment = SessionExperiment(lambda: _binding(model, controls), controls)
+    experiment = SessionExperiment(lambda: capabilities._binding(model, controls), controls)
     assert experiment.binding.recall is not None
     behavior = experiment.binding.recall.session_state()
     behavior["value_free_streak"] = 2
@@ -130,7 +125,7 @@ async def test_stale_scenario_fails_if_store_ignores_fencing(monkeypatch):
         self.events.extend(["save_attempt", "committed"])
 
     monkeypatch.setattr(ScenarioStore, "save", unsafe_save)
-    record = await run_capability_scenario("stale")
+    record = await capabilities.run_capability_scenario("stale")
     assert not record.passed
     assert not record.checks["commit_outcome"]
     assert not record.checks["stored_snapshot_unchanged"]
@@ -147,7 +142,7 @@ async def test_scenario_fails_if_restart_loses_recall_state(monkeypatch, scenari
         restore(self, data)
 
     monkeypatch.setattr(CompactionStack, "restore", lose_state)
-    record = await run_capability_scenario(scenario)
+    record = await capabilities.run_capability_scenario(scenario)
     assert not record.passed
     assert not record.checks["compaction_state_committed"]
     if scenario == "branch":
@@ -157,8 +152,6 @@ async def test_scenario_fails_if_restart_loses_recall_state(monkeypatch, scenari
 @pytest.mark.anyio
 @pytest.mark.parametrize("scenario", ["media_describe", "media_select_pdf", "result_rewrite"])
 async def test_scenario_fails_when_builder_drops_the_requested_hook(monkeypatch, scenario):
-    import maf_cachebench._capabilities as capabilities
-
     def omit_hooks(name, options):
         return build_strategy(
             name,
@@ -171,8 +164,78 @@ async def test_scenario_fails_when_builder_drops_the_requested_hook(monkeypatch,
         )
 
     monkeypatch.setattr(capabilities, "build_strategy", omit_hooks)
-    record = await run_capability_scenario(scenario)
+    record = await capabilities.run_capability_scenario(scenario)
     assert not record.passed
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("scenario", ["fenced", "branch", "after_save_failure"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("lost_role", ["user", "assistant", "all"])
+async def test_scenario_rejects_lost_provider_history(monkeypatch, scenario, stream, lost_role):
+    save = ScenarioStore.save
+
+    async def lose_history(self, session_id, data, *, lease):
+        data = deepcopy(data)
+        for key, state in data["state"].items():
+            if (
+                key != "cachebench_original_history"
+                and isinstance(state, dict)
+                and "messages" in state
+            ):
+                state["messages"] = [
+                    message
+                    for message in state["messages"]
+                    if lost_role != "all" and message["role"] != lost_role
+                ]
+        await save(self, session_id, data, lease=lease)
+
+    monkeypatch.setattr(ScenarioStore, "save", lose_history)
+    record = await capabilities.run_capability_scenario(scenario, stream=stream)
+    assert not record.passed
+    assert not record.checks["history_committed"]
+    destination = record.observations["request"]["destination"]
+    assert record.observations["snapshots"][destination]["state"]["cachebench_original_history"]
+
+
+@pytest.mark.parametrize("profile", ["preserve", "describe", "decline", "select_pdf"])
+def test_media_normalization_preserves_composed_tokenizer_identity(profile):
+    options = StrategyOptions(
+        tokenizer=CharacterEstimatorTokenizer(),
+        max_context_window_tokens=1000,
+        max_output_tokens=0,
+        summarizer=cast(Any, FixtureSummarizer()),
+        compaction=CompactionOptions(media_profile=profile),
+    )
+    replaced = replace(options, record_target_tokens=50)
+    assert replaced.tokenizer is options.tokenizer
+    strategy = cast(Any, build_strategy("tool_and_user_summary_anchored", replaced))
+    assert strategy.tokenizer is strategy.tool_results.tokenizer is strategy.user_turns.tokenizer
+
+
+@pytest.mark.parametrize("custom_estimator", [False, True])
+def test_media_normalization_updates_cost_and_restores_original_tokenizer(custom_estimator):
+    base = CharacterEstimatorTokenizer()
+    original = MediaTokenEstimator(base, image_tokens=73) if custom_estimator else base
+    options = StrategyOptions(
+        tokenizer=original,
+        max_context_window_tokens=1000,
+        max_output_tokens=0,
+        compaction=CompactionOptions(media_profile="preserve", media_tokens=100),
+    )
+    changed = replace(options, compaction=replace(options.compaction, media_tokens=200))
+    message = Message(
+        "user", [Content.from_uri("https://example.invalid/image", media_type="image/png")]
+    )
+    assert isinstance(changed.tokenizer, MediaTokenEstimator)
+    assert isinstance(options.tokenizer, MediaTokenEstimator)
+    assert (
+        changed.tokenizer.count_message_tokens(message)
+        - options.tokenizer.count_message_tokens(message)
+        == 100
+    )
+    disabled = replace(changed, compaction=replace(changed.compaction, media_profile="none"))
+    assert disabled.tokenizer is original
 
 
 @pytest.mark.anyio
@@ -367,24 +430,24 @@ def test_invalid_controls_fail_before_model_work(controls):
 
 def test_cli_writes_distinct_records_and_refuses_to_overwrite(tmp_path):
     target = tmp_path / "capabilities.jsonl"
-    assert main(["--scenario", "all", "--stream", "--output", str(target)]) == 0
+    assert capabilities.main(["--scenario", "all", "--stream", "--output", str(target)]) == 0
     records = [json.loads(line) for line in target.read_text().splitlines()]
-    assert len(records) == len(PERSISTENCE_SCENARIOS) + len(MEDIA_SCENARIOS) + len(RESULT_SCENARIOS)
+    assert len(records) == len(capabilities.PERSISTENCE_SCENARIOS) + len(
+        capabilities.MEDIA_SCENARIOS
+    ) + len(capabilities.RESULT_SCENARIOS)
     assert all(row["passed"] and row["record_type"] == "cachebench_capability" for row in records)
     previous = target.read_bytes()
     with pytest.raises(FileExistsError):
-        main(["--scenario", "fenced", "--output", str(target)])
+        capabilities.main(["--scenario", "fenced", "--output", str(target)])
     assert target.read_bytes() == previous
 
 
 def test_cli_returns_nonzero_for_a_failed_contract(monkeypatch, capsys):
-    import maf_cachebench._capabilities as capabilities
-
     real = capabilities.run_capability_scenario
 
     async def fail(*args, **kwargs):
         return replace(await real(*args, **kwargs), checks={"deliberate_failure": False})
 
     monkeypatch.setattr(capabilities, "run_capability_scenario", fail)
-    assert main(["--scenario", "fenced"]) == 1
+    assert capabilities.main(["--scenario", "fenced"]) == 1
     assert not json.loads(capsys.readouterr().out)["passed"]
