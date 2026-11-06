@@ -18,6 +18,7 @@ from select_image_security import affected  # noqa: E402
 
 BINARY = b"verified upstream compiler"
 DIGEST = "sha256:" + hashlib.sha256(BINARY).hexdigest()
+COMMIT = "a" * 40
 
 
 def metadata():
@@ -38,7 +39,7 @@ def metadata():
 
 @pytest.fixture
 def image_root(tmp_path):
-    for name in updater.FILES:
+    for name in (*updater.FILES, "source.Dockerfile", "dependencies.csproj"):
         shutil.copyfile(updater.ROOT / name, tmp_path / name)
     return tmp_path
 
@@ -46,13 +47,18 @@ def image_root(tmp_path):
 @pytest.fixture
 def upstream(monkeypatch):
     document = metadata()
-    monkeypatch.setattr(updater, "fetch", lambda url: json.dumps(document).encode())
+    monkeypatch.setattr(
+        updater,
+        "fetch",
+        lambda url: json.dumps({"sha": COMMIT} if "/commits/" in url else document).encode(),
+    )
     monkeypatch.setattr(updater.urllib.request, "urlopen", lambda *a, **kw: io.BytesIO(BINARY))
     return document
 
 
 def test_upgrade_keeps_modules_and_binds_updated_policy(image_root, upstream):
     before = json.loads((image_root / updater.FILES[2]).read_bytes())
+    old_source = json.loads((image_root / "source.json").read_bytes())
     changes, body = updater.updates(image_root, "latest")
     policy = json.loads(changes[updater.FILES[1]])
     manifest = json.loads(changes[updater.FILES[2]])
@@ -63,6 +69,12 @@ def test_upgrade_keeps_modules_and_binds_updated_policy(image_root, upstream):
     }
     assert b"ARG BICEP_VERSION=v1.2.3" in changes["Dockerfile"]
     assert DIGEST.removeprefix("sha256:").encode() in changes["Dockerfile"]
+    assert json.loads(changes["source.json"]) == {
+        **old_source,
+        "version": "1.2.3",
+        "sourceCommit": COMMIT,
+    }
+    assert COMMIT in body
     assert "Critical" in body and "maintainer approval" in body
     assert set().union(*(set(affected(f"images/bicep-sandbox/{name}")) for name in changes)) == {
         "bicep",
@@ -166,6 +178,43 @@ def test_release_downgrade_is_refused(image_root, upstream):
     )
     with pytest.raises(ValueError, match="downgrade"):
         updater.updates(image_root, "latest")
+
+
+def test_inconsistent_source_version_refuses_refresh(image_root, upstream):
+    path = image_root / "source.json"
+    source = json.loads(path.read_bytes())
+    source["version"] = "0.0.0"
+    path.write_text(json.dumps(source))
+    with pytest.raises(ValueError, match="disagree"):
+        updater.updates(image_root, "latest")
+
+
+@pytest.mark.parametrize("commit", [None, "main", "a" * 39, "A" * 40])
+def test_invalid_source_commit_leaves_inputs_unchanged(image_root, upstream, monkeypatch, commit):
+    before = {p.name: p.read_bytes() for p in image_root.iterdir()}
+    monkeypatch.setattr(
+        updater,
+        "fetch",
+        lambda url: json.dumps({"sha": commit} if "/commits/" in url else upstream).encode(),
+    )
+    with pytest.raises(ValueError, match="source commit"):
+        updater.updates(image_root, "latest")
+    assert before == {p.name: p.read_bytes() for p in image_root.iterdir()}
+
+
+def test_same_release_source_replacement_is_refused(image_root, upstream, monkeypatch):
+    changes, _ = updater.updates(image_root, "latest")
+    for name, data in changes.items():
+        (image_root / name).write_bytes(data)
+    before = {p.name: p.read_bytes() for p in image_root.iterdir()}
+    monkeypatch.setattr(
+        updater,
+        "fetch",
+        lambda url: json.dumps({"sha": "b" * 40} if "/commits/" in url else upstream).encode(),
+    )
+    with pytest.raises(ValueError, match="source commit changed"):
+        updater.updates(image_root, "latest")
+    assert before == {p.name: p.read_bytes() for p in image_root.iterdir()}
 
 
 def test_cli_check_is_read_only_then_updates_are_idempotent(image_root, upstream, monkeypatch):

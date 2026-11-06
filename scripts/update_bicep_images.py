@@ -12,10 +12,16 @@ from typing import Any
 
 from bicep_dependencies import load_policy, sha256
 from bicep_image_pin import PIN_PATTERNS, VERSION, read_pin
+from bicep_source import policy as source_policy
 from update_bicep_catalog import fetch
 
 ROOT = Path(__file__).resolve().parents[1] / "images/bicep-sandbox"
-FILES = ("Dockerfile", "dependencies.bicep-avm.policy.json", "dependencies.bicep-avm.json")
+FILES = (
+    "Dockerfile",
+    "dependencies.bicep-avm.policy.json",
+    "dependencies.bicep-avm.json",
+    "source.json",
+)
 LIMIT = 256 * 1024 * 1024
 
 
@@ -75,10 +81,14 @@ def updates(root: Path, release: str) -> tuple[dict[str, bytes], str]:
     policy_path = root / FILES[1]
     policy = load_policy(policy_path)
     manifest = json.loads((root / FILES[2]).read_bytes())
+    source_path = root / "source.json"
+    source = json.loads(source_path.read_bytes())
+    reviewed_source = source_policy(source_path)
     if (
         manifest.get("schema") != 1
         or policy["bicep_version"] != current
         or manifest["bicep_version"] != current
+        or reviewed_source["version"] != current
         or manifest["policy_sha256"] != sha256(policy_path.read_bytes())
         or manifest["excluded"] != policy["excluded"]
         or [entry["reference"] for entry in manifest["modules"]] != policy["modules"]
@@ -88,9 +98,16 @@ def updates(root: Path, release: str) -> tuple[dict[str, bytes], str]:
     checksum = asset["digest"].removeprefix("sha256:")
     if tuple(map(int, version.split("."))) < tuple(map(int, current.split("."))):
         raise ValueError("refusing to downgrade the Bicep compiler")
+    commit = json.loads(fetch(f"https://api.github.com/repos/Azure/bicep/commits/v{version}"))[
+        "sha"
+    ]
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("invalid Bicep source commit")
     if version == current:
         if checksum != previous_checksum:
             raise ValueError("published checksum changed for the pinned Bicep release")
+        if commit != source["sourceCommit"]:
+            raise ValueError("published source commit changed for the pinned Bicep release")
         return {}, "The Bicep image compiler pin is current.\n"
     verify_binary(asset)
     for name, value in (("BICEP_VERSION", f"v{version}"), ("BICEP_SHA256", checksum)):
@@ -99,10 +116,12 @@ def updates(root: Path, release: str) -> tuple[dict[str, bytes], str]:
     policy_bytes = (json.dumps(policy, indent=2) + "\n").encode()
     manifest["bicep_version"] = version
     manifest["policy_sha256"] = sha256(policy_bytes)
+    source.update(version=version, sourceCommit=commit)
     changes = {
         FILES[0]: dockerfile.encode(),
         FILES[1]: policy_bytes,
         FILES[2]: (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(),
+        "source.json": (json.dumps(source, indent=2) + "\n").encode(),
     }
     body = f"""## Summary
 
@@ -112,6 +131,7 @@ Update the compiler used by `bicep`, `bicep-avm` and `bicep-docker-sbx` from `{c
 
 - Pin the [upstream Linux x64 binary]({asset["browser_download_url"]}) to SHA-256 `{checksum}`.
 - Align the AVM compiler requirement and policy fingerprint; preserve every module version, module digest and exclusion.
+- Pin the source-build route to upstream commit `{commit}`; preserve the reviewed runtime, SDK and dependency overrides.
 
 ## Verification
 

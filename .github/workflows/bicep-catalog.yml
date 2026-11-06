@@ -79,6 +79,7 @@ jobs:
             images/bicep-sandbox/Dockerfile
             images/bicep-sandbox/dependencies.bicep-avm.policy.json
             images/bicep-sandbox/dependencies.bicep-avm.json
+            images/bicep-sandbox/source.json
       - name: Report the image proposal
         if: steps.proposal.outputs.pull-request-url != ''
         env:

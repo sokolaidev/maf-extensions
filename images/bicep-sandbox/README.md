@@ -20,7 +20,7 @@ Both samples run this one image. [`samples/01_acas_bicep`](../../samples/01_acas
 
 The Bicep kind uploads its selected configuration into each call directory before staging sources. It uses the [packaged configuration](../../packages/maf-sandbox-bicep/src/maf_sandbox_bicep/bicepconfig.json) by default, or the host's `config` argument. Bicep finds that file by walking up from the source directory. The selected policy takes precedence over the image's fallback config, including for nested sources and reused sandboxes.
 
-Clients that do not stage a configuration depend on the fallback at `/maf-sandbox/work`. The pinned CLI has no `--config-file` flag. Compiling outside that directory uses built-in defaults, which changes these sample diagnostics:
+Clients that do not stage a configuration depend on the fallback at `/maf-sandbox/work`. Bicep 0.49.2 also accepts `--config <path>` to select a configuration for every file loaded by a command; the kind continues to use discovery for compatibility with older host-selected compilers. Compiling outside that directory without an explicit configuration uses built-in defaults, which changes these sample diagnostics:
 
 | | Compiled under `/maf-sandbox/work` | Compiled elsewhere |
 |---|---|---|
@@ -56,7 +56,7 @@ uv run python scripts/build_bicep_prepared_image.py --base-image bicep-sandbox:s
 
 The source route uses a .NET SDK image pinned by digest and publishes a Linux x64 self-contained CLI. It pins `System.Security.Cryptography.Xml` and `System.Security.Cryptography.Pkcs` to `10.0.14` and `MessagePack` to `3.1.12`, and checks the resolved dependency graph. Only the compiler, build receipt, license notices and runtime files enter the final image. `/usr/share/maf-bicep/build.json` records the source commit, SDK image, runtime version, package overrides, policy and builder hashes, and compiler SHA-256. Qualification compares that receipt with the reviewed source and actual binary; scanning must inventory the patched application packages.
 
-Updating the upstream compiler does not silently move the source build. Review the source policy, SDK in `source.Dockerfile` and NuGet project alongside an upgrade; the source route refuses a version that differs from the upstream recipe and AVM policy. An upstream upgrade can still use the standard route while that review is pending. Build inputs and resolved dependencies are recorded; package repositories still prevent a promise of byte-for-byte reproducibility.
+The weekly compiler updater proposes the upstream binary pin, source version and immutable commit, and AVM compiler requirement together. It preserves the reviewed runtime, SDK in `source.Dockerfile` and NuGet overrides; review their compatibility alongside an upgrade. The source route refuses a version that differs from the upstream recipe and AVM policy. Build inputs and resolved dependencies are recorded; package repositories still prevent a promise of byte-for-byte reproducibility.
 
 Every new release candidate builds its selected route once. Retries recover the retained OCI bytes and reject a different route. Changing routes requires a new dispatch and an unused image version. Both routes retain the existing runtime, inventory, vulnerability, approval and signature gates; a successful source compilation alone does not establish remediation or publication.
 
