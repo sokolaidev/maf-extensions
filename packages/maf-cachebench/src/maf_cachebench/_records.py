@@ -261,7 +261,8 @@ __all__ = [
 #: Older records retain unknown telemetry and their original stored costs.
 # Schema 23 meters every recall attempt and restores full behavioral state between probes.
 # Older costs and decisions cannot be pooled with these measurements.
-SCHEMA_VERSION: Final[int] = 23
+# Named persistence and host-hook profiles are part of schema 24's cell identity.
+SCHEMA_VERSION: Final[int] = 24
 
 #: Versions this reader accepts, which is not only the current one.
 #:
@@ -352,7 +353,7 @@ SCHEMA_VERSION: Final[int] = 23
 #:
 #: Version 20 joins on the same argument: it priced no long-context tier, so the tier reads back
 #: as absent and its token counts as zero.
-_READABLE_SCHEMAS: Final[frozenset[int]] = frozenset({*range(2, 23), SCHEMA_VERSION})
+_READABLE_SCHEMAS: Final[frozenset[int]] = frozenset({*range(2, 24), SCHEMA_VERSION})
 
 #: The parameters that make two records the same cell, and so aggregable into one row.
 #:

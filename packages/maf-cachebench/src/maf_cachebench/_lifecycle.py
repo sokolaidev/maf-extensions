@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -17,6 +18,7 @@ from agent_framework import Agent, AgentSession, HistoryProvider, Message
 from ._behavior import restore_behavior, snapshot_behavior
 from ._configuration import CompactionOptions, validate_session_support
 from ._diagnostics import OBSERVATION_LABELS, counters, summary_measurements
+from ._persistence_scenarios import ScenarioInterruption, ScenarioStore
 from ._tokenizers import REASONING_TOKENS_KEY
 
 _REPLAY_MESSAGES: ContextVar[dict[str, dict[str, Any]] | None] = ContextVar(
@@ -86,6 +88,11 @@ class SessionExperiment:
         self.observations = {name: 0 for name in OBSERVATION_LABELS}
         self.registry = self._registry()
         validate_session_support(options, has_recall=self.binding.recall is not None)
+        self.persistence_store = (
+            ScenarioStore(options.persistence_scenario)
+            if options.persistence_scenario != "none" and self.binding.recall is not None
+            else None
+        )
 
     def _registry(self) -> maf_compaction.SessionCompactionRegistry:
         def build() -> maf_compaction.CompactionStack:
@@ -95,9 +102,17 @@ class SessionExperiment:
         return maf_compaction.SessionCompactionRegistry(build, max_cached_sessions=1)
 
     async def run(
-        self, session: AgentSession, text: str, options: dict[str, Any]
+        self,
+        session: AgentSession,
+        text: str,
+        options: dict[str, Any],
+        *,
+        interrupt_stream: bool = False,
     ) -> tuple[Any, AgentSession]:
         """Execute one complete request and return its accepted session."""
+        if interrupt_stream and (not self.options.stream or self.persistence_store is None):
+            raise ValueError("Stream interruption requires a streaming persistence scenario.")
+        persistence_started = False
         inputs: Any = text
         replay_key = "cachebench_original_history"
         original = [
@@ -107,14 +122,17 @@ class SessionExperiment:
         user = Message("user", [text], message_id=f"cachebench_user_{len(original)}")
         if self.options.history_mode == "replay":
             session = AgentSession.from_dict(_json_snapshot(session.to_dict()))
-            for provider in self.binding.agent.context_providers:
-                if isinstance(provider, HistoryProvider):
-                    session.state.pop(provider.source_id, None)
             inputs = [*(Message.from_dict(item) for item in original), user]
 
         before: dict[str, int] | None = None
 
         captured = {item["message_id"]: deepcopy(item) for item in original}
+
+        def prepare_replay(active: AgentSession) -> None:
+            if self.options.history_mode == "replay":
+                for provider in self.binding.agent.context_providers:
+                    if isinstance(provider, HistoryProvider):
+                        active.state.pop(provider.source_id, None)
 
         def remember(active: AgentSession) -> None:
             user_strategy = maf_compaction.find_nested_strategy(
@@ -135,6 +153,7 @@ class SessionExperiment:
 
         async def call(active: AgentSession) -> Any:
             nonlocal before
+            prepare_replay(active)
             before = counters(self.binding.strategy, self.binding.recall)
             if self.options.stream:
                 response = self.binding.agent.run(
@@ -181,7 +200,16 @@ class SessionExperiment:
                         yield
 
                 persistence_type: Any = getattr(maf_compaction, "SessionPersistence")
-                persistence = persistence_type(self.registry, load=load, save=save, lease=lease)
+                request_kwargs: dict[str, Any] = {}
+                if self.persistence_store is None:
+                    persistence = persistence_type(self.registry, load=load, save=save, lease=lease)
+                else:
+                    save_as = self.persistence_store.seed(data)
+                    persistence_started = True
+                    request_kwargs["save_as"] = save_as
+                    persistence = persistence_type(
+                        self.registry, **self.persistence_store.callbacks()
+                    )
 
                 async def complete(active: AgentSession) -> Any:
                     with self.registry.activate(active):
@@ -193,20 +221,30 @@ class SessionExperiment:
                     def stream(active: AgentSession) -> Any:
                         nonlocal before, active_session
                         active_session = active
+                        prepare_replay(active)
                         before = counters(self.binding.strategy, self.binding.recall)
                         return self.binding.agent.run(
                             inputs, session=active, options=options, stream=True
                         ).with_consumption_context_manager(lambda: self.registry.activate(active))
 
-                    async with persistence.stream(session.session_id, stream) as response:
+                    async with persistence.stream(
+                        session.session_id, stream, **request_kwargs
+                    ) as response:
+                        if interrupt_stream:
+                            await anext(response)
+                            raise ScenarioInterruption("consumer stopped before final response")
                         result = await response.get_final_response()
                         assert active_session is not None
                         remember(active_session)
                 else:
-                    result = await persistence.run(session.session_id, complete)
+                    result = await persistence.run(session.session_id, complete, **request_kwargs)
+                if self.persistence_store is not None:
+                    data = self.persistence_store.snapshots[self.persistence_store.destination]
                 session = AgentSession.from_dict(data)
             return result, session
         finally:
+            if persistence_started and self.persistence_store is not None:
+                self.persistence_store.finish(sys.exception())
             _REPLAY_MESSAGES.reset(token)
             if before is not None:
                 after = counters(self.binding.strategy, self.binding.recall)

@@ -2036,6 +2036,7 @@ async def run_live(
 
     seed_prompt_tokens = recorder.calls[-1].input_tokens if recorder.calls else 0
     snapshot = snapshot_state(session)
+    snapshot_session_id = session.session_id
     decided = snapshot_decisions(strategy, recall_middleware)
     snapshot_prompt = serialize_history(agent, snapshot)
 
@@ -2056,6 +2057,8 @@ async def run_live(
             )
             answered = 0
             for repeat in range(1, wanted + 1):
+                if options.compaction.persistence_scenario == "branch":
+                    session = AgentSession(session_id=snapshot_session_id)
                 restore_state(session, snapshot, recall_middleware, strategy, decided)
                 mark = len(recorder.calls)
                 response = await _send(
@@ -2155,6 +2158,11 @@ async def run_live(
         replies=tuple(replies),
     )
     diagnostics: dict[str, Any] = {**experiment.totals, **experiment.observations}
+    if experiment.persistence_store is not None:
+        diagnostics["persistence_requests"] = experiment.persistence_store.requests
+        diagnostics["storage_evidence"] = "simulated_in_memory"
+    elif options.compaction.persistence_scenario != "none":
+        diagnostics["storage_evidence"] = "not_applicable_no_recall_stack"
     if recall_middleware is not None:
         diagnostics.update(
             pin_disabled=recall_middleware.pin_disabled,
