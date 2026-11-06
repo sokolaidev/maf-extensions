@@ -234,7 +234,7 @@ cmd = "python scripts/check_doc_paths.py"
 help = "Refuse two literals in a list, tuple or set that read as a missing comma"
 cmd = "python scripts/check_implicit_concatenation.py"
 
-# Outside `gate`, and for the reason `md-blocks` is: the gate is hermetic, and this one asks
+# Outside `gate`: the gate is hermetic, and this one asks
 # GitHub what a Status row's tracker actually says. It skips rather than fails without a token
 # or a network, so putting it in the sequence would add a step that is silent exactly when a
 # contributor is offline — the case the gate is most useful in.
