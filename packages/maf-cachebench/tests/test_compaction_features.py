@@ -271,7 +271,10 @@ async def test_lifecycle_restores_history_and_counts_both_requests(mode, history
     if mode == "restart":
         assert len(built) == 4
     if mode != "memory":
-        assert session.state[experiment.registry.state_key]["version"] == 5
+        assert (
+            session.state[experiment.registry.state_key]["version"]
+            == (experiment.registry.build().to_dict()["version"])
+        )
 
 
 @pytest.mark.parametrize("stream", [False, True])
