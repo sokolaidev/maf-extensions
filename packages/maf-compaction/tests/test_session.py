@@ -534,7 +534,8 @@ async def test_gate_is_persisted_and_tool_uses_its_injected_session():
 
 @pytest.mark.parametrize("accepted", [False, True])
 async def test_cold_chain_replays_content_decisions_without_summarizer_requests(accepted):
-    summarizer = Summarizer("tiny" if accepted else "x" * 50000)
+    # The accepted merge keeps both records' values, as a merge must (it drops the repetition).
+    summarizer = Summarizer("a123 b456" if accepted else "x" * 50000)
 
     def build():
         return build_stack(summarizer, budget=1000)
@@ -598,7 +599,9 @@ async def test_cold_user_summary_replays_same_text_and_id():
 
 
 async def test_provider_compacts_loaded_context_and_stored_history():
-    registry = SessionCompactionRegistry(lambda: build_stack(budget=1000))
+    registry = SessionCompactionRegistry(
+        lambda: build_stack(Summarizer("fact123 fact456"), budget=1000)
+    )
     provider = SessionCompactionProvider(registry, tokenizer=TOKENIZER)
     session = AgentSession()
     messages = [build_record_message("fact123 " * 900), build_record_message("fact456 " * 900)]
@@ -876,7 +879,7 @@ async def test_harness_refuses_irreducible_overflow_before_contacting_model(stre
 
 @pytest.mark.parametrize("stream", [False, True])
 async def test_harness_compacts_loaded_history_before_the_first_model_request(stream):
-    summarizer = Summarizer("merged facts")
+    summarizer = Summarizer("merged facts: fact123 fact456")
     registry = SessionCompactionRegistry(lambda: build_stack(summarizer, budget=4000))
     model = Model()
     agent = harness(registry, model)
@@ -893,8 +896,8 @@ async def test_harness_compacts_loaded_history_before_the_first_model_request(st
     assert summarizer.requests
     first_prompt = "\n".join(model.prompts[0][0])
     assert "merged facts" in first_prompt
-    assert "fact123" not in first_prompt
-    assert "fact456" not in first_prompt
+    assert first_prompt.count("fact123") == 1, "the merge kept the value and dropped the repetition"
+    assert first_prompt.count("fact456") == 1
 
 
 @pytest.mark.parametrize("stream", [False, True])

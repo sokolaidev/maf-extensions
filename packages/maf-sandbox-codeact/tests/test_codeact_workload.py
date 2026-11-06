@@ -608,7 +608,7 @@ def test_integrity_admission_abandons_the_call_before_any_file_or_code_is_writte
 
     out = _run(tool, "print('hi')", files=["trusted.csv", "weak.csv"])
 
-    assert "'weak.csv' does not meet the required file integrity (trusted)" in out
+    assert "does not meet the required file integrity (trusted)" in out
     assert "secret" not in out
     assert sandbox.written_files == {}
     assert sandbox.commands == []

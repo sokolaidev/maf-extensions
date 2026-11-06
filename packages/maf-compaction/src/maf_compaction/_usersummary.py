@@ -525,6 +525,11 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         describe_media: Async hook receiving a media part and its complete user turn as copies.
             Return a description or None to retain the turn. Successful descriptions persist
             with the session; references and hook configuration must stay stable across restores.
+        describes_media: Which media parts ``describe_media`` describes, given each part itself,
+            which it must not change. A user turn holding any other media part is held whole
+            and passed over, as every media turn is without ``describe_media``, rather than
+            stopping the band the way a turn whose description fails does. None, the default,
+            hands every media part to ``describe_media``. Requires ``describe_media``.
     """
 
     def __init__(
@@ -550,6 +555,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         fold_prompt: str | None = None,
         remembered_requests: int = 1,
         describe_media: Callable[[Content, Message], Awaitable[str | None]] | None = None,
+        describes_media: Callable[[Content], bool] | None = None,
     ) -> None:
         """Validate and store the configuration.
 
@@ -565,6 +571,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 the share existed, kept so the two can be run side by side. An unknown mode is
                 refused rather than read as the default, because a misspelt mode that quietly
                 ran the default would be a row measuring the wrong arm under the right name.
+                Also if ``describes_media`` is given without ``describe_media``, which would
+                select parts for a hook that is not there.
         """
         if max_input_tokens <= 0:
             raise ValueError("max_input_tokens must be positive.")
@@ -578,6 +586,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             raise ValueError("min_band_share must be in [0.0, 1.0).")
         if summary_mode not in SUMMARY_MODES:
             raise ValueError(f"summary_mode must be one of {SUMMARY_MODES}, not {summary_mode!r}.")
+        if describes_media is not None and describe_media is None:
+            raise ValueError("describes_media requires describe_media.")
         if max_summary_input_tokens is None:
             max_summary_input_tokens = max(1, max_input_tokens // 2)
         if type(max_summary_input_tokens) is not int or max_summary_input_tokens <= 0:
@@ -620,6 +630,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self.tokenizer = tokenizer
         self.client = client
         self.describe_media = describe_media
+        self.describes_media = describes_media
         self._media_descriptions: dict[str, str] = {}
         self.keep_head_user_turns = keep_head_user_turns
         self.keep_tail_user_turns = keep_tail_user_turns
@@ -1112,7 +1123,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 continue
             nontext = [part for part in message.contents if part.type != "text"]
             must_keep = bool(nontext) and (
-                self.describe_media is None or any(part.type not in MEDIA_TYPES for part in nontext)
+                self.describe_media is None or any(not self._describes(part) for part in nontext)
             )
             own_hold = message.additional_properties.get(PRESERVE_REASON_KEY) == "user_media"
             if own_hold and not must_keep:
@@ -1120,6 +1131,12 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 message.additional_properties.pop(PRESERVE_REASON_KEY, None)
             elif must_keep and not any_preserved([message]):
                 set_preserved(message, preserved=True, reason="user_media")
+
+    def _describes(self, part: Content) -> bool:
+        """Whether ``part`` is media that ``describe_media`` is configured to describe."""
+        return part.type in MEDIA_TYPES and (
+            self.describes_media is None or self.describes_media(part)
+        )
 
     async def _describe_band(
         self, messages: list[Message], band: list[dict[str, Any]]

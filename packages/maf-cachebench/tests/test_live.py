@@ -61,8 +61,9 @@ from maf_compaction import (
     find_record_index,
     make_recall_tool,
 )
-from maf_compaction._composed import DEFAULT_RECORD_MERGE_PROMPT
+from maf_compaction._composed import DEFAULT_RECORD_MERGE_PROMPT, harder_record_prompt
 from maf_compaction._preserve import is_preserved
+from maf_compaction._toolsummary import _distinctive_tokens  # pyright: ignore[reportPrivateUsage]
 from maf_compaction._usersummary import (
     SUMMARY_ID_PREFIX,
     SUMMARY_MODE_RECOMPACT,
@@ -1416,6 +1417,9 @@ def test_a_value_outside_a_strategys_range_is_refused_before_anything_is_spent(
     assert match in str(error.value)
 
 
+_REWRITE_PROMPT_START = harder_record_prompt(1).split(" so that ")[0]
+
+
 class _StubSummarizer:
     """The smallest thing ``user_summary_anchored`` will accept as a summarizer.
 
@@ -1431,6 +1435,15 @@ class _StubSummarizer:
 
     async def get_response(self, messages: Any, *, stream: bool = False, **kwargs: Any) -> Any:
         self.calls += 1
+        prompt = (messages[0].text or "") if messages else ""
+        if prompt == DEFAULT_RECORD_MERGE_PROMPT or prompt.startswith(_REWRITE_PROMPT_START):
+            # Record merges and rewrites must keep the records' values (the chain refuses one
+            # that drops them), so answer as an obedient summarizer would: the values, no wording.
+            values = sorted(_distinctive_tokens(messages[-1].text or ""))
+            if values:
+                return ChatResponse(
+                    messages=[Message(role="assistant", contents=[" ".join(values)])]
+                )
         return ChatResponse(messages=[Message(role="assistant", contents=[self.text])])
 
 

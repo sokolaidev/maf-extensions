@@ -461,6 +461,30 @@ def test_authenticated_compatibility_rejects_changed_evidence(repo, authenticate
         guard.check(root, source, [PACKAGE])
 
 
+def test_changed_image_recipe_passes_release_with_independent_consumer_evidence(
+    repo, authenticated_release, monkeypatch
+):
+    root, source = repo
+    _, _, _, calls, candidate, _ = authenticated_release
+    image = root / "images/shell-sandbox/Dockerfile"
+    image.parent.mkdir(parents=True)
+    image.write_text("FROM scratch\n")
+    head = commit(root)
+    subjects = []
+
+    def verify(subject):
+        subjects.append(subject)
+        return {"sourceCommit": head, "runId": "123"}
+
+    monkeypatch.setattr(guard.consumer, "verify", verify)
+    result = guard.check(root, head, [PACKAGE])
+    assert subjects == [guard.consumer.inputs(root, head, PACKAGE, "shell", "docker", candidate)]
+    assert result[0]["image"].endswith(candidate["registryDigest"])
+    assert result[0]["qualificationSource"] == source
+    assert result[0]["consumerQualification"][0]["sourceCommit"] == head
+    assert calls == [PROVENANCE, SPDX, COMPLETION]
+
+
 def test_current_entry_must_identify_the_required_profile(evidence):
     evidence[0]["releases"]["shell/0.1.0"]["profile"] = "other"
     with pytest.raises(ValueError, match="another profile"):
@@ -526,18 +550,14 @@ def test_non_image_packages_and_implementation_changes_need_no_catalogue(monkeyp
 
 
 @pytest.mark.workflow
-def test_version_gate_joins_required_context_and_checks_upload_after_approval():
+def test_image_readiness_gates_publication_only_and_is_rechecked_after_approval():
     root = Path(__file__).resolve().parents[1]
     tests = yaml.safe_load((root / ".github/workflows/tests.yml").read_text(encoding="utf-8"))
-    job = tests["jobs"]["kind-images"]
-    assert "kind-images" in tests["jobs"]["tests"]["needs"]
-    assert "if" not in job
-    assert job["permissions"] == {"contents": "read", "actions": "read", "attestations": "read"}
-    step = next(s for s in job["steps"] if "--base" in s.get("run", ""))
-    assert step["if"] == "github.event_name == 'pull_request'"
-    assert (
-        "--base" in step["run"]
-        and step["env"]["BASE_SHA"] == "${{ github.event.pull_request.base.sha }}"
+    assert "kind-images" not in tests["jobs"]["tests"]["needs"]
+    assert not any(
+        "check_kind_release_images.py" in step.get("run", "")
+        for job in tests["jobs"].values()
+        for step in job.get("steps", [])
     )
     publish = yaml.safe_load(
         (root / ".github/workflows/publish-packages.yml").read_text(encoding="utf-8")

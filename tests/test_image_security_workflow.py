@@ -42,7 +42,8 @@ def test_evidence_refuses_an_unidentified_or_uncovered_target(details, revision)
         record(details, revision, "bicep")
 
 
-def test_workflow_output_identifies_the_same_image_as_the_retained_record(tmp_path):
+@pytest.mark.parametrize("event", ["pull_request", "schedule", "workflow_dispatch"])
+def test_workflow_output_identifies_the_same_image_as_the_retained_record(tmp_path, event):
     (tmp_path / "image-inspect.json").write_text(json.dumps([image()]))
     output = tmp_path / "output"
     summary = tmp_path / "summary"
@@ -56,6 +57,7 @@ def test_workflow_output_identifies_the_same_image_as_the_retained_record(tmp_pa
             "GITHUB_REPOSITORY": "sokolaidev/maf-extensions",
             "GITHUB_RUN_ID": "123",
             "GITHUB_RUN_ATTEMPT": "2",
+            "GITHUB_EVENT_NAME": event,
             "GITHUB_OUTPUT": str(output),
             "GITHUB_STEP_SUMMARY": str(summary),
         },
@@ -69,6 +71,16 @@ def test_workflow_output_identifies_the_same_image_as_the_retained_record(tmp_pa
     assert evidence["run_id"] == "123"
     assert evidence["run_attempt"] == "2"
     assert "not a registry manifest digest" in summary.read_text()
+    if event == "pull_request":
+        assert "findings are warnings on pull requests" in summary.read_text()
+        assert "does not establish image release eligibility" in summary.read_text()
+        assert "Policy: fail on" not in summary.read_text()
+    else:
+        assert (
+            "Policy: fail on applicable High/Critical findings, including unfixed findings"
+            in summary.read_text()
+        )
+    assert "scanner and evidence-upload errors fail the workflow" in summary.read_text()
     assert evidence["run_url"] == "https://github.com/sokolaidev/maf-extensions/actions/runs/123"
 
 
@@ -100,7 +112,7 @@ def test_matching_image_inventory_is_accepted():
     )
 
 
-def test_scans_fail_on_unfixed_high_findings_and_keep_failure_evidence():
+def test_pr_findings_warn_while_operational_errors_and_non_pr_findings_still_fail():
     workflow = yaml.safe_load((ROOT / ".github/workflows/image-security.yml").read_text())
     assert workflow["permissions"] == {"contents": "read"}
     job = workflow["jobs"]["scan"]
@@ -119,7 +131,13 @@ def test_scans_fail_on_unfixed_high_findings_and_keep_failure_evidence():
     assert inventory["with"]["image"] == "docker:${{ steps.identity.outputs.image_id }}"
     assert scan["with"]["sbom"] == inventory["with"]["output-file"]
     assert scan["with"]["severity-cutoff"] == "high"
-    assert scan["with"]["fail-build"] is True
+    assert scan["with"]["fail-build"] is False
+    gate = next(s for s in steps if s.get("name") == "Enforce image vulnerability applicability")
+    assert gate["run"] == (
+        'python3 scripts/assess_image_scan.py "$RUNNER_TEMP/image-security" '
+        '--event "$GITHUB_EVENT_NAME"'
+    )
+    assert steps.index(scan) < steps.index(gate) < steps.index(upload)
     assert scan["with"]["only-fixed"] is False
     assert scan["with"]["config"]
     assert upload["if"] == "always() && steps.identity.outcome == 'success'"
@@ -225,6 +243,7 @@ def test_hyperlight_release_transition_defers_the_entire_scan_evidence_chain():
         "Inventory the exact built image",
         "Verify inventory identity and component presence",
         "Scan the retained inventory",
+        "Enforce image vulnerability applicability",
     }
     assert all(step["if"] == "steps.build.outcome == 'success'" for step in evidence_steps)
     assert steps[-1]["if"] == "always() && steps.identity.outcome == 'success'"

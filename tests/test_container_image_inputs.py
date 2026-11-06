@@ -83,6 +83,53 @@ def test_shared_wolfi_references_have_one_reviewed_digest():
     assert group["patterns"] == ["chainguard/wolfi-base"]
 
 
+def test_proxy_modules_receive_daily_minor_updates_in_both_mirrors():
+    updates = yaml.safe_load((ROOT / ".github/dependabot.yml").read_text())["updates"]
+    modules = [update for update in updates if update["package-ecosystem"] == "gomod"]
+    assert len(modules) == 1
+    update = modules[0]
+    assert set(update["directories"]) == {
+        f"/packages/maf-sandbox-{backend}/src/maf_sandbox_{backend}/_proxy/dependencies"
+        for backend in ("docker", "wslc")
+    }
+    assert update["schedule"] == {
+        "interval": "cron",
+        "cronjob": "0 4 * * *",
+        "timezone": "Etc/UTC",
+    }
+    assert update["cooldown"] == {"default-days": 0}
+    assert update["ignore"] == [
+        {"dependency-name": "*", "update-types": ["version-update:semver-major"]}
+    ]
+    assert "allow" not in update
+    assert "exclude-paths" not in update
+    assert "target-branch" not in update
+    assert update["groups"] == {
+        "proxy-modules": {"patterns": ["*"]},
+        "proxy-modules-security": {"applies-to": "security-updates", "patterns": ["*"]},
+    }
+    assert update["commit-message"]["prefix"] == "fix"
+
+
+def test_native_minor_updates_do_not_widen_image_compatibility_lines():
+    updates = yaml.safe_load((ROOT / ".github/dependabot.yml").read_text())["updates"]
+    restricted = [
+        update
+        for update in updates
+        if update["package-ecosystem"] in {"docker", "nuget"}
+        or update.get("directory") == "/images/drawio-export"
+    ]
+    assert len(restricted) == 4
+    for update in restricted:
+        assert update["schedule"]["interval"] == "weekly"
+        assert update["ignore"] == [
+            {
+                "dependency-name": "*",
+                "update-types": ["version-update:semver-major", "version-update:semver-minor"],
+            }
+        ]
+
+
 @pytest.mark.parametrize(
     "recipe",
     [

@@ -23,6 +23,7 @@ from container_release import (
     now,
     profiles,
     read,
+    release_scan_passes,
     scan_result,
     validate_identity,
     version,
@@ -32,6 +33,7 @@ from container_release_oci import blob, validate_layout
 from container_release_preflight import preflight
 from image_layer_archive import ACAS_PROFILES, check_layer_archive
 from image_security_evidence import record, verify_inventory
+from sqlite_vulnerability import not_affected
 
 
 def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -73,14 +75,17 @@ def require_source(revision: str) -> None:
         raise ValueError("Release preparation requires a clean checkout")
 
 
-def assessment_failure(report: dict[str, Any]) -> str:
+def assessment_failure(
+    report: dict[str, Any], image_id: str, at: str, *, sbom: dict[str, Any] | None = None
+) -> str:
     """Describe blocking packages without emitting untrusted workflow commands."""
     findings = [
         match
         for match in report["matches"]
-        if match["vulnerability"]["severity"] in {"High", "Critical"}
+        if match["vulnerability"]["severity"] == "Critical"
+        and not_affected(match, sbom, image_id, at) is None
     ]
-    lines = ["High/Critical assessment failed, including unfixed findings:"]
+    lines = ["Critical assessment failed, including unfixed findings:"]
     for match in findings[:20]:
         vulnerability = match["vulnerability"]
         artifact = match.get("artifact") or {}
@@ -107,7 +112,7 @@ def assessment_failure(report: dict[str, Any]) -> str:
 
 
 def assess(directory: Path, image_id: str, *, require_clean: bool = True) -> dict[str, Any]:
-    """Refresh the exact image's inventory and strict High/Critical assessment."""
+    """Retain High/Critical monitoring evidence and enforce the Critical publication threshold."""
     directory.mkdir(parents=True, exist_ok=True)
     run(
         [
@@ -120,7 +125,8 @@ def assess(directory: Path, image_id: str, *, require_clean: bool = True) -> dic
             f"spdx-json={directory / 'sbom.spdx.json'}",
         ]
     )
-    verify_inventory(read(directory / "sbom.syft.json"), image_id)
+    sbom = read(directory / "sbom.syft.json")
+    verify_inventory(sbom, image_id)
     runtime = directory / "runtime.json"
     if runtime.exists() and read(runtime).get("profile") in BICEP_PROFILES:
         from bicep_source import verify_inventory as verify_bicep_inventory
@@ -147,7 +153,7 @@ def assess(directory: Path, image_id: str, *, require_clean: bool = True) -> dic
             "--config",
             str(directory / "grype.yaml"),
             "--fail-on",
-            "high",
+            "critical",
             "--output",
             "json",
             "--file",
@@ -162,12 +168,19 @@ def assess(directory: Path, image_id: str, *, require_clean: bool = True) -> dic
     if scan.returncode not in (0, 2):
         raise ValueError("Vulnerability scanner did not complete")
     report = read(directory / "grype.json")
-    result = scan_result(report, image_id, now())
+    result = scan_result(report, image_id, now(), sbom=sbom)
     write(directory / "assessment.json", result)
-    if (scan.returncode == 0) != (result["outcome"] == "clean"):
+    raw = scan_result(report, image_id, result["assessedAt"])
+    if (scan.returncode == 0) != release_scan_passes(raw):
         raise ValueError("Scanner exit status disagrees with the retained assessment")
-    if require_clean and (scan.returncode or result["outcome"] != "clean"):
-        raise ValueError(assessment_failure(report))
+    for decision in result.get("notAffected", []):
+        print("Reviewed non-applicability: " + json.dumps(decision, ensure_ascii=True))
+    if require_clean and not release_scan_passes(result):
+        raise ValueError(assessment_failure(report, image_id, result["assessedAt"], sbom=sbom))
+    if require_clean and result["outcome"] == "vulnerable":
+        print(
+            "::warning::High findings remain; publication permits them. See assessment.json and grype.json"
+        )
     return result
 
 

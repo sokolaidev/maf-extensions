@@ -1600,7 +1600,7 @@ wheels = [
 
 [[package]]
 name = "maf-cachebench"
-version = "0.5.0"
+version = "0.5.1"
 source = { editable = "packages/maf-cachebench" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -1650,7 +1650,7 @@ provides-extras = ["openai", "foundry", "mistral", "ollama", "tiktoken"]
 
 [[package]]
 name = "maf-compaction"
-version = "0.10.0"
+version = "0.11.0"
 source = { editable = "packages/maf-compaction" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -1661,7 +1661,7 @@ requires-dist = [{ name = "agent-framework-core", specifier = ">=1.24.0,<1.25" }
 
 [[package]]
 name = "maf-sandbox"
-version = "0.53.0"
+version = "0.53.1"
 source = { editable = "packages/maf-sandbox" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -1672,7 +1672,7 @@ requires-dist = [{ name = "agent-framework-core", specifier = ">=1.24.0,<1.25" }
 
 [[package]]
 name = "maf-sandbox-acas"
-version = "0.32.1"
+version = "0.32.2"
 source = { editable = "packages/maf-sandbox-acas" }
 dependencies = [
     { name = "azure-containerapps-sandbox" },
@@ -1691,7 +1691,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-antivirus"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "packages/maf-sandbox-antivirus" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -1706,7 +1706,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-azure-pricing"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "packages/maf-sandbox-azure-pricing" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -1721,7 +1721,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-bicep"
-version = "0.25.0"
+version = "0.25.1"
 source = { editable = "packages/maf-sandbox-bicep" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -1736,7 +1736,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-bubblewrap"
-version = "0.4.1"
+version = "0.4.2"
 source = { editable = "packages/maf-sandbox-bubblewrap" }
 dependencies = [
     { name = "maf-sandbox" },
@@ -1747,7 +1747,7 @@ requires-dist = [{ name = "maf-sandbox", editable = "packages/maf-sandbox" }]
 
 [[package]]
 name = "maf-sandbox-codeact"
-version = "0.26.1"
+version = "0.26.2"
 source = { editable = "packages/maf-sandbox-codeact" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -1762,7 +1762,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-deepagents"
-version = "0.7.1"
+version = "0.7.2"
 source = { editable = "packages/maf-sandbox-deepagents" }
 dependencies = [
     { name = "deepagents" },
@@ -1777,7 +1777,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-docker"
-version = "0.30.3"
+version = "0.30.6"
 source = { editable = "packages/maf-sandbox-docker" }
 dependencies = [
     { name = "maf-sandbox" },
@@ -1788,7 +1788,7 @@ requires-dist = [{ name = "maf-sandbox", editable = "packages/maf-sandbox" }]
 
 [[package]]
 name = "maf-sandbox-docker-sbx"
-version = "0.8.1"
+version = "0.8.2"
 source = { editable = "packages/maf-sandbox-docker-sbx" }
 dependencies = [
     { name = "maf-sandbox" },
@@ -1799,7 +1799,7 @@ requires-dist = [{ name = "maf-sandbox", editable = "packages/maf-sandbox" }]
 
 [[package]]
 name = "maf-sandbox-document"
-version = "0.2.1"
+version = "0.2.2"
 source = { editable = "packages/maf-sandbox-document" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -1814,7 +1814,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-drawio"
-version = "0.7.0"
+version = "0.7.1"
 source = { editable = "packages/maf-sandbox-drawio" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -1829,7 +1829,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-hyperlight"
-version = "0.11.1"
+version = "0.11.2"
 source = { editable = "packages/maf-sandbox-hyperlight" }
 dependencies = [
     { name = "hyperlight-sandbox" },
@@ -1848,7 +1848,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-mcp"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "packages/maf-sandbox-mcp" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -1879,7 +1879,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-otel"
-version = "0.11.1"
+version = "0.11.2"
 source = { editable = "packages/maf-sandbox-otel" }
 dependencies = [
     { name = "maf-sandbox" },
@@ -1894,7 +1894,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-shell"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "packages/maf-sandbox-shell" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -1909,7 +1909,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-terraform"
-version = "0.8.1"
+version = "0.8.2"
 source = { editable = "packages/maf-sandbox-terraform" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -1924,7 +1924,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-tui"
-version = "0.6.1"
+version = "0.6.2"
 source = { editable = "packages/maf-sandbox-tui" }
 dependencies = [
     { name = "maf-sandbox" },
@@ -1941,7 +1941,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-wslc"
-version = "0.31.2"
+version = "0.31.5"
 source = { editable = "packages/maf-sandbox-wslc" }
 dependencies = [
     { name = "maf-sandbox" },

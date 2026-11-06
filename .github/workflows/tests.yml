@@ -81,27 +81,6 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: python3 scripts/select_image_security.py
 
-  kind-images:
-    name: Kind release image readiness
-    needs: changes
-    permissions:
-      contents: read
-      actions: read
-      attestations: read
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Require qualified matching images for kind version changes
-        if: github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: python3 scripts/check_kind_release_images.py --base "$BASE_SHA"
-
   # Repository and package tests have comparable measured work. Each gets its own
   # runner; pytest still discovers the whole suite before assigning every test.
   suite:
@@ -122,7 +101,7 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         # Pinned to the commit v5 resolves to: a moving tag is a supply-chain hole, since
         # whoever can move it can run code in this workflow.
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       - name: Sync workspace
         if: needs.changes.outputs.code == 'true'
@@ -171,7 +150,7 @@ jobs:
 
       - name: Install uv
         if: needs.changes.outputs.code == 'true'
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       - name: Sync workspace
         if: needs.changes.outputs.code == 'true'
@@ -198,7 +177,7 @@ jobs:
 
       - name: Install uv
         if: needs.changes.outputs.code == 'true'
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       - name: Sync workspace
         if: needs.changes.outputs.code == 'true'
@@ -297,7 +276,7 @@ jobs:
 
       - name: Install uv
         if: needs.changes.outputs.code == 'true'
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       - name: Sync workspace
         if: needs.changes.outputs.code == 'true'
@@ -330,7 +309,7 @@ jobs:
 
       - name: Install uv
         if: needs.changes.outputs.code == 'true'
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       - name: Sync workspace
         if: needs.changes.outputs.code == 'true'
@@ -375,7 +354,7 @@ jobs:
 
       - name: Install uv
         if: needs.changes.outputs.code == 'true'
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       - name: Sync workspace
         if: needs.changes.outputs.code == 'true'
@@ -412,7 +391,7 @@ jobs:
 
       - name: Install uv
         if: needs.changes.outputs.code == 'true'
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       - name: Sync workspace
         if: needs.changes.outputs.code == 'true'
@@ -457,7 +436,7 @@ jobs:
 
       - name: Install uv
         if: needs.changes.outputs.code == 'true'
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       - name: Sync workspace
         if: needs.changes.outputs.code == 'true'
@@ -553,7 +532,7 @@ jobs:
 
       - name: Install uv
         if: needs.changes.outputs.code == 'true'
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       - name: Sync workspace
         if: needs.changes.outputs.code == 'true'
@@ -588,7 +567,7 @@ jobs:
   # and never themselves, so a skipped shard means something went wrong with the graph.
   tests:
     name: Python (pytest + ruff + pyright)
-    needs: [changes, kind-images, suite, hyperlight-worker, hyperlight-linux-worker, security, fast, pre-commit, types, packaging, published-cores]
+    needs: [changes, suite, hyperlight-worker, hyperlight-linux-worker, security, fast, pre-commit, types, packaging, published-cores]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

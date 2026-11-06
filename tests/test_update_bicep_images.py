@@ -63,7 +63,7 @@ def test_upgrade_keeps_modules_and_binds_updated_policy(image_root, upstream):
     }
     assert b"ARG BICEP_VERSION=v1.2.3" in changes["Dockerfile"]
     assert DIGEST.removeprefix("sha256:").encode() in changes["Dockerfile"]
-    assert "High/Critical" in body and "maintainer approval" in body
+    assert "Critical" in body and "maintainer approval" in body
     assert set().union(*(set(affected(f"images/bicep-sandbox/{name}")) for name in changes)) == {
         "bicep",
         "bicep-avm",

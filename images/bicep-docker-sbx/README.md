@@ -55,7 +55,7 @@ The checks verify template archive identity and platform, load it into sbx, acqu
 
 These checks establish one controlled Docker Sandboxes configuration. They do not prove general containment, Azure deployment, Windows/macOS compatibility or production readiness. Ordinary PR updates run mocked gate tests; actual image execution happens in the release gate and manual/scheduled image security workflow.
 
-Publication refuses all High/Critical findings, including unfixed ones. Consult the [public security report](https://sokolaidev.github.io/maf-extensions/) for the current assessment time and findings, separately from signed release identity. A stale or unavailable assessment is not a clean result. Scanner results do not establish the absence of malware or backdoors. Test the exact SDK/backend/image pairing and application policy you plan to deploy.
+Publication refuses all applicable Critical findings, including unfixed ones. Consult the [public security report](https://sokolaidev.github.io/maf-extensions/) for the current assessment time and findings, separately from signed release identity. A stale or unavailable assessment is not a clean result. Scanner results do not establish the absence of malware or backdoors. Test the exact SDK/backend/image pairing and application policy you plan to deploy.
 
 ## Development and support
 

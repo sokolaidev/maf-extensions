@@ -153,24 +153,31 @@ def command() -> list[str]:
     ]
 
 
-def evidence(output: bytes) -> dict[str, Any]:
+def evidence(output: bytes, *, published: dict[str, Any] | None = None) -> dict[str, Any]:
     """Bind runtime results to the reviewed dependency policy and source build."""
     result = json.loads(output)
-    if result["receipt"] != expected_receipt("dependencies.terraform.json"):
-        raise ValueError("Terraform receipt differs from the selected release policy")
-    engine = read(CONTEXT / "image.json")["engines"]["terraform"]
-    if (
-        result["build"]["source"] != engine["source_build"]
-        or result["build"].get("go_version")
-        != "go version go"
-        + stage_image(CONTEXT / "Dockerfile", "terraform-build").split(":")[1].split("-")[0]
-        + " linux/amd64"
-        or result["moduleFilesVerified"] is not True
-    ):
+    if published is None:
+        if result["receipt"] != expected_receipt("dependencies.terraform.json"):
+            raise ValueError("Terraform receipt differs from the selected release policy")
+        engine = read(CONTEXT / "image.json")["engines"]["terraform"]
+        if (
+            result["build"]["source"] != engine["source_build"]
+            or result["build"].get("go_version")
+            != "go version go"
+            + stage_image(CONTEXT / "Dockerfile", "terraform-build").split(":")[1].split("-")[0]
+            + " linux/amd64"
+        ):
+            raise ValueError("Terraform build or module identity differs from the selected release")
+        provider = read(CONTEXT / "dependencies.terraform.json")["providers"][0]
+        if result["providerBuild"] != provider["source_build"]:
+            raise ValueError("Terraform provider build identity differs from the selected release")
+        version = engine["version"]
+    else:
+        if any(result[key] != published[key] for key in ("receipt", "build", "providerBuild")):
+            raise ValueError("Terraform identity differs from the authenticated published image")
+        version = published["terraformVersion"]
+    if result["moduleFilesVerified"] is not True:
         raise ValueError("Terraform build or module identity differs from the selected release")
-    provider = read(CONTEXT / "dependencies.terraform.json")["providers"][0]
-    if result["providerBuild"] != provider["source_build"]:
-        raise ValueError("Terraform provider build identity differs from the selected release")
     checks = result["checks"]
     if not isinstance(checks, list) or len(checks) != len(CASES):
         raise ValueError("Terraform qualification cases are incomplete")
@@ -178,7 +185,7 @@ def evidence(output: bytes) -> dict[str, Any]:
         success = name in SUCCESS
         if (
             actual["name"] != name
-            or actual["version"] != engine["version"]
+            or actual["version"] != version
             or actual["error"] is not None
             or actual["sourceUnchanged"] is not True
             or actual["generatedLock"] is not (name == "pinned")
@@ -206,7 +213,7 @@ def evidence(output: bytes) -> dict[str, Any]:
         ):
             raise ValueError(f"Terraform consumer probe failed: {name}")
     return {
-        "terraformVersion": engine["version"],
+        "terraformVersion": version,
         **result,
         "checks": [item | {"passed": True} for item in checks],
     }

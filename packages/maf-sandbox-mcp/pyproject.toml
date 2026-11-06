@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-mcp"
-version = "0.3.0"
+version = "0.3.1"
 description = "Supervised local MCP service with a closed-network Bicep worker."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: System :: Monitoring",
 ]
 dependencies = [
-    "maf-sandbox>=0.52.1,<0.53",
+    "maf-sandbox>=0.53.0,<0.54",
     "maf-sandbox-bicep>=0.25.0,<0.26",
     "maf-sandbox-docker>=0.28.1,<0.31",
     "agent-framework-core>=1.24.0,<1.25",

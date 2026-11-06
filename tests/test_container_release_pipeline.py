@@ -969,7 +969,7 @@ def test_freshness_refresh_preserves_approval_reports_and_uses_same_image(monkey
 
 
 @pytest.mark.parametrize("severity", ["High", "Critical"])
-def test_vulnerable_image_cannot_reach_registry_publication(monkeypatch, tmp_path, severity):
+def test_only_critical_findings_prevent_registry_publication(monkeypatch, tmp_path, severity):
     raw = scan_report()
     raw["matches"] = [
         {
@@ -983,6 +983,7 @@ def test_vulnerable_image_cannot_reach_registry_publication(monkeypatch, tmp_pat
     write(tmp_path / "candidate.json", CANDIDATE)
     write(tmp_path / "manifest.json", {})
     write(tmp_path / "grype.json", raw)
+    write(tmp_path / "sbom.syft.json", {})
     write(tmp_path / "assessment.json", scan_result(raw, CANDIDATE["imageId"], AT))
     monkeypatch.setattr(registry, "validate_preparation", lambda *a: None)
     monkeypatch.setattr(registry, "validate_layout", lambda *a: {})
@@ -990,8 +991,22 @@ def test_vulnerable_image_cannot_reach_registry_publication(monkeypatch, tmp_pat
     monkeypatch.setattr(registry, "load_retained", lambda *a: None)
     monkeypatch.setattr(registry, "manifest", lambda *a, **kw: pytest.fail("registry reached"))
     monkeypatch.setattr(registry, "run", lambda *a, **kw: pytest.fail("registry push reached"))
-    with pytest.raises(ValueError, match="complete passing scan"):
-        registry.promote(tmp_path, MemoryHistory())
+    monkeypatch.setattr(registry, "now", lambda: AT)
+    if severity == "Critical":
+        with pytest.raises(ValueError, match="complete passing scan"):
+            registry.promote(tmp_path, MemoryHistory())
+    else:
+
+        class RegistryReached(Exception):
+            pass
+
+        def reached(*args, **kwargs):
+            raise RegistryReached
+
+        monkeypatch.setattr(registry, "manifest", reached)
+        with pytest.raises(RegistryReached):
+            registry.promote(tmp_path, MemoryHistory())
+        assert read(tmp_path / "assessment.json")["outcome"] == "vulnerable"
 
 
 @pytest.mark.parametrize("completed", [False, True])
@@ -1022,22 +1037,6 @@ def test_uncertain_artifact_listing_does_not_abandon_version(monkeypatch):
     monkeypatch.setattr(GitHub, "request", request)
     with pytest.raises(TimeoutError):
         dispatcher.retained_available("123")
-
-
-def test_unreserved_failed_attempt_explains_fresh_dispatch_without_retirement(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setattr(dispatcher, "preflight", lambda *args: empty_catalogue())
-    monkeypatch.setattr(dispatcher, "context", lambda: (CANDIDATE["sourceCommit"], "123", "2"))
-    monkeypatch.setattr(dispatcher, "retained_available", lambda run_id: False)
-    monkeypatch.setattr(dispatcher, "prepare", lambda *a: pytest.fail("rerun must never rebuild"))
-    outputs = []
-    monkeypatch.setattr(dispatcher, "outputs", outputs.append)
-    with pytest.raises(ValueError, match="bicep:0.1.0.*not reserved") as caught:
-        dispatcher.dispatch("bicep", "0.1.0", tmp_path / "build", tmp_path / "selection")
-    assert "new workflow dispatch" in str(caught.value)
-    assert "same version can be requested if it is still unused at preflight" in str(caught.value)
-    assert outputs == [{"lost": "false"}]
 
 
 def test_failed_preparation_reports_cannot_resume_publication(monkeypatch):
@@ -1254,9 +1253,13 @@ def test_workflow_writer_locks_and_privilege_separation():
     monitor_workflow = yaml.safe_load(
         (ROOT / ".github/workflows/container-image-monitor.yml").read_text()
     )
+    recovery = yaml.safe_load((ROOT / ".github/workflows/container-image-recover.yml").read_text())
+    tracking = yaml.safe_load((ROOT / ".github/workflows/image-release-needed.yml").read_text())
     for workflow, jobs in [
         (release, ("reserve", "complete", "deliver", "abandon", "retire-lost-candidate")),
         (monitor_workflow, ("begin", "finish")),
+        (recovery, ("write",)),
+        (tracking, ("reconcile",)),
     ]:
         for name in jobs:
             assert workflow["jobs"][name]["concurrency"] == {

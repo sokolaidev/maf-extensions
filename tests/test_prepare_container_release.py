@@ -23,8 +23,9 @@ def test_release_labels_do_not_replace_upstream_version():
 
 @pytest.mark.parametrize("require_clean", [False, True])
 @pytest.mark.parametrize("fixed", [False, True])
+@pytest.mark.parametrize("severity", ["High", "Critical"])
 def test_assessment_reports_blocking_packages_and_retains_evidence(
-    monkeypatch, tmp_path, require_clean, fixed
+    monkeypatch, tmp_path, capsys, require_clean, fixed, severity
 ):
     image_id = "sha256:" + "a" * 64
     report = {
@@ -43,7 +44,7 @@ def test_assessment_reports_blocking_packages_and_retains_evidence(
             {
                 "vulnerability": {
                     "id": "CVE-example",
-                    "severity": "Critical",
+                    "severity": severity,
                     "fix": {"state": "fixed", "versions": ["1.2.4-r0"]}
                     if fixed
                     else {"state": "not-fixed"},
@@ -56,11 +57,14 @@ def test_assessment_reports_blocking_packages_and_retains_evidence(
     preparation.write(tmp_path / "sbom.syft.json", {})
     monkeypatch.setattr(preparation, "verify_inventory", lambda *a: None)
     monkeypatch.setattr(preparation, "run", lambda *a, **kw: None)
-    monkeypatch.setattr(
-        preparation.subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a, 2)
-    )
-    if require_clean:
-        with pytest.raises(ValueError, match="High/Critical assessment failed") as caught:
+
+    def scan(command, **kwargs):
+        assert command[command.index("--fail-on") + 1] == "critical"
+        return subprocess.CompletedProcess(command, 2 if severity == "Critical" else 0)
+
+    monkeypatch.setattr(preparation.subprocess, "run", scan)
+    if require_clean and severity == "Critical":
+        with pytest.raises(ValueError, match="Critical assessment failed") as caught:
             preparation.assess(tmp_path, image_id)
         message = str(caught.value)
         for detail in ("Critical", "CVE-example", "python-test", "1.2.3-r0", "apk", "grype.json"):
@@ -68,18 +72,23 @@ def test_assessment_reports_blocking_packages_and_retains_evidence(
         assert ("1.2.4-r0" if fixed else "not-fixed") in message
     else:
         assert (
-            preparation.assess(tmp_path, image_id, require_clean=False)["outcome"] == "vulnerable"
+            preparation.assess(tmp_path, image_id, require_clean=require_clean)["outcome"]
+            == "vulnerable"
         )
+    if require_clean and severity == "High":
+        assert "::warning::High findings remain" in capsys.readouterr().out
     assert preparation.read(tmp_path / "grype.json") == report
     assert preparation.read(tmp_path / "assessment.json")["outcome"] == "vulnerable"
 
 
 def test_failure_diagnostics_bound_output_and_escape_untrusted_fields():
     finding = {
-        "vulnerability": {"id": "CVE-test\n::warning::injected", "severity": "High"},
+        "vulnerability": {"id": "CVE-test\n::warning::injected", "severity": "Critical"},
         "artifact": {"name": "test\npackage"},
     }
-    message = preparation.assessment_failure({"matches": [finding] * 22})
+    message = preparation.assessment_failure(
+        {"matches": [finding] * 22}, "sha256:" + "a" * 64, "2026-01-01T00:00:00Z"
+    )
     assert message.count("  Finding:") == 20
     assert "2 additional blocking findings omitted" in message
     assert "\\n::warning::injected" in message

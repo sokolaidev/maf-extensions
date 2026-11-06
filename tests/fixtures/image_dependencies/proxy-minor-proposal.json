@@ -1,0 +1,132 @@
+{
+  "observedAt": "2026-11-05",
+  "scope": "Local official Dependabot CLI comparison of routine version updates on authentic pre-fix manifests; no hosted bot PR, scheduled timer, image qualification or publication",
+  "cliVersion": "1.97.0",
+  "cliArchiveSha256": "e8a383018fa44b1cbbbd543c9add601a187f962983e4c9fe3f55cd518f93cfa9",
+  "updaterImage": "ghcr.io/dependabot/dependabot-updater-gomod@sha256:07cd6937c0bb3333e4c7e0b16abfb54415f7afc33b94a119517f0d1ae99c08a7",
+  "proxyImage": "ghcr.io/dependabot/proxy@sha256:13982e0447ae292382c4240f36b4b1589154688dce9a79a14087888e97e080e7",
+  "imageAttestationsVerified": true,
+  "updaterProducerCommit": "14d605870b70aa9edb4b5860ba217d4b351ad7ca",
+  "proxyProducerCommit": "8232624e0a642edf5b77ac4927db0bb774e43777",
+  "updaterEnvironment": {
+    "GOPROXY": "https://proxy.golang.org,direct",
+    "GONOPROXY": "none",
+    "GONOSUMDB": "none"
+  },
+  "credentialsSupplied": false,
+  "job": {
+    "allowed-updates": [
+      {
+        "dependency-name": "golang.org/x/net",
+        "dependency-type": "all",
+        "update-type": "all"
+      }
+    ],
+    "cooldown": {
+      "default-days": 0
+    },
+    "dependency-groups": [
+      {
+        "name": "proxy-modules",
+        "rules": {
+          "patterns": [
+            "*"
+          ]
+        }
+      }
+    ],
+    "ignore-conditions": [
+      {
+        "dependency-name": "*",
+        "update-types": [
+          "version-update:semver-major"
+        ]
+      }
+    ],
+    "package-manager": "go_modules",
+    "security-advisories": [],
+    "security-updates-only": false,
+    "source": {
+      "commit": "ea2989aca95824d6a3846bf0a6ee10378ec76d16",
+      "directories": [
+        "/packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/dependencies",
+        "/packages/maf-sandbox-wslc/src/maf_sandbox_wslc/_proxy/dependencies"
+      ],
+      "provider": "github",
+      "repo": "sokolaidev/maf-extensions"
+    }
+  },
+  "baselineIgnoreConditions": [
+    {
+      "dependency-name": "*",
+      "update-types": [
+        "version-update:semver-major",
+        "version-update:semver-minor"
+      ]
+    }
+  ],
+  "baseline": {
+    "exitCode": 0,
+    "proposals": 0,
+    "reason": "All updates for golang.org/x/net were ignored"
+  },
+  "updatedPolicy": {
+    "exitCode": 0,
+    "proposals": 1
+  },
+  "rawOutputSha256": {
+    "baseline": "0740b67ce993876bd8adc999b8659ca5a22aba8477f03fdde5924b2d11a468f0",
+    "minor": "21bf05492ce19fe6459013ccf714bed723a64afef4e553caba5703d36fa80b70"
+  },
+  "rawLogSha256": {
+    "baseline": "15510ccbde820eb0ff211d97ddf8d1fe45fe045dae2cac43c0ad40cf76627b93",
+    "minor": "df95e2a01106519da97b7ca5742dd87f9dd3f067acaa3616c83a14f7077ca175"
+  },
+  "proposal": {
+    "group": "proxy-modules",
+    "dependencies": [
+      {
+        "name": "golang.org/x/net",
+        "previous-version": "0.60.0",
+        "version": "0.62.0",
+        "directory": "/packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/dependencies"
+      },
+      {
+        "name": "golang.org/x/net",
+        "previous-version": "0.60.0",
+        "version": "0.62.0",
+        "directory": "/packages/maf-sandbox-wslc/src/maf_sandbox_wslc/_proxy/dependencies"
+      }
+    ],
+    "files": [
+      {
+        "name": "go.mod",
+        "directory": "/packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/dependencies",
+        "sha256": "d67a44d495899b9bacd9b293f1980203aa7d22fda9ceee6d70d2abd78eb78b6f"
+      },
+      {
+        "name": "go.sum",
+        "directory": "/packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy/dependencies",
+        "sha256": "dd1936e4796504d6d46929ebc58d8bf8f5af6367e78629fedc7b85de47a0f504"
+      },
+      {
+        "name": "go.mod",
+        "directory": "/packages/maf-sandbox-wslc/src/maf_sandbox_wslc/_proxy/dependencies",
+        "sha256": "d67a44d495899b9bacd9b293f1980203aa7d22fda9ceee6d70d2abd78eb78b6f"
+      },
+      {
+        "name": "go.sum",
+        "directory": "/packages/maf-sandbox-wslc/src/maf_sandbox_wslc/_proxy/dependencies",
+        "sha256": "dd1936e4796504d6d46929ebc58d8bf8f5af6367e78629fedc7b85de47a0f504"
+      }
+    ]
+  },
+  "validation": {
+    "mirrorsByteIdentical": true,
+    "matchesMergedFixCommit": "955bb4f8b8ecb71c409d1e725804b82bf8c8d807",
+    "securityAdvisoriesSupplied": false,
+    "scheduledExecutionVerified": false,
+    "hostedBotProposalVerified": false
+  },
+  "earlierAttempt": "An initial direct-repository-fetch attempt was stopped during dependency resolution; both recorded comparison jobs used the same public Go proxy settings and completed successfully."
+}

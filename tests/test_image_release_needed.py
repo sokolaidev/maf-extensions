@@ -1181,14 +1181,112 @@ def test_release_identity_is_independent_of_vulnerability_assessment(monkeypatch
         tracker.release_evidence(GitHub(), record | {"evidenceIndexSha256": "other"}, tmp_path)
 
 
-def test_image_refresh_baseline_still_requires_clean_original_scan(monkeypatch, tmp_path):
+@pytest.mark.parametrize("severity", ["High", "Critical"])
+def test_image_refresh_baseline_uses_publication_threshold(monkeypatch, tmp_path, severity):
     monkeypatch.setattr(tracker, "release_evidence", lambda *a: "release")
-    assessment = {"assessedAt": "2026-01-01T00:00:00Z", "outcome": "vulnerable"}
+    assessment = {
+        "assessedAt": "2026-01-01T00:00:00Z",
+        "outcome": "vulnerable",
+        "findings": [{"severity": severity}],
+    }
     (tmp_path / "assessment.json").write_text(json.dumps(assessment))
     (tmp_path / "grype.json").write_text("{}")
-    monkeypatch.setattr(tracker, "scan_result", lambda *a: assessment)
-    with pytest.raises(ValueError, match="release gate"):
-        tracker.baseline(GitHub(), RECORD | {"candidate": {}}, tmp_path)
+    (tmp_path / "sbom.syft.json").write_text("{}")
+    monkeypatch.setattr(tracker, "scan_result", lambda *a, **kw: assessment)
+    monkeypatch.setattr(tracker, "components", lambda *a: [])
+    if severity == "Critical":
+        with pytest.raises(ValueError, match="release gate"):
+            tracker.baseline(GitHub(), RECORD | {"candidate": {}}, tmp_path)
+    else:
+        assert tracker.baseline(GitHub(), RECORD | {"candidate": {}}, tmp_path) == {
+            "components": [],
+            "evidence": "release",
+            "assessment": assessment,
+        }
+
+
+@pytest.fixture
+def high_release(monkeypatch, tmp_path):
+    assessment = {
+        "assessedAt": "2026-01-03T00:00:00Z",
+        "outcome": "vulnerable",
+        "findings": [FINDING],
+    }
+    monkeypatch.setattr(tracker, "release_evidence", lambda *a: "release")
+    monkeypatch.setattr(tracker, "scan_result", lambda *a, **kw: assessment)
+    monkeypatch.setattr(tracker, "components", lambda *a: RELEASED["components"])
+    for name, value in (
+        ("assessment.json", assessment),
+        ("grype.json", {}),
+        ("sbom.syft.json", {}),
+    ):
+        (tmp_path / name).write_text(json.dumps(value))
+    return tracker.baseline(GitHub(), replacement() | {"candidate": {}}, tmp_path)
+
+
+@pytest.mark.parametrize("outcome", [None, "unavailable", "running", "clean", "vulnerable"])
+@pytest.mark.parametrize("assessed_at", ["2026-01-02", "2026-01-03", "2026-01-04"])
+def test_release_findings_keep_replacement_issue_open_until_newer_monitor(
+    high_release, outcome, assessed_at
+):
+    client = Issues()
+    previous = desired(
+        record=RECORD
+        | {
+            "latestAttempt": {
+                "outcome": "vulnerable",
+                "findings": [FINDING],
+                "evidenceRelease": "old",
+            }
+        }
+    )
+    tracker.reconcile(client, "graphviz", previous, None)
+    record = replacement()
+    monitoring_finding = FINDING | {"id": "CVE-2026-5678"}
+    if outcome is not None:
+        record = record | {
+            "latestAttempt": {
+                "outcome": outcome,
+                "assessedAt": assessed_at + "T00:00:00Z",
+                "findings": [monitoring_finding] if outcome == "vulnerable" else [],
+                "evidenceRelease": "new",
+            }
+        }
+    state = desired(record=record, released=high_release, previous=previous)
+    tracker.reconcile(client, "graphviz", state, client.items[0])
+    newer = assessed_at == "2026-01-04"
+    resolved = outcome == "clean" and newer
+    assert state["resolved"] == resolved
+    assert client.items[0]["state"] == ("closed" if resolved else "open")
+    if not resolved:
+        reason = state["reasons"]["vulnerabilities"]
+        assert reason["baselineDigest"] == record["registryDigest"]
+        monitored = outcome == "vulnerable" and newer
+        assert reason["findings"] == ([monitoring_finding] if monitored else [FINDING])
+        assert reason["evidence"] == (
+            f"https://github.com/{tracker.REPOSITORY}/releases/tag/new" if monitored else "release"
+        )
+
+
+@pytest.mark.parametrize("assessed_at", ["2026-01-02", "2026-01-04"])
+def test_release_findings_compete_with_last_known_monitor_after_outage(high_release, assessed_at):
+    monitoring_finding = FINDING | {"id": "CVE-2026-5678"}
+    record = replacement() | {
+        "latestAttempt": {"outcome": "unavailable", "assessedAt": "2026-01-05T00:00:00Z"},
+        "lastKnownVulnerable": {
+            "outcome": "vulnerable",
+            "assessedAt": assessed_at + "T00:00:00Z",
+            "findings": [monitoring_finding],
+            "evidenceRelease": "monitor",
+        },
+    }
+    state = desired(record=record, released=high_release)
+    reason = state["reasons"]["vulnerabilities"]
+    monitored = assessed_at == "2026-01-04"
+    assert reason["findings"] == ([monitoring_finding] if monitored else [FINDING])
+    assert reason["evidence"] == (
+        f"https://github.com/{tracker.REPOSITORY}/releases/tag/monitor" if monitored else "release"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1492,6 +1590,14 @@ def test_changed_inputs_preserve_git_quoted_filenames_and_prevent_closure(tmp_pa
     previous = desired(changed=[path])
     result = desired(record=replacement(), changed=changed, previous=previous)
     assert not result["resolved"]
+
+
+def test_core_python_source_remains_an_image_release_input(tmp_path):
+    tracker.git(tmp_path, "init")
+    base = commit(tmp_path, {"README.md": "baseline"})
+    path = "packages/maf-sandbox/src/maf_sandbox/maf.py"
+    head = commit(tmp_path, {path: "changed core behavior"})
+    assert tracker.changed_inputs(tmp_path, base, head, "hyperlight-aks-probe") == [path]
 
 
 @pytest.mark.parametrize("path", ["packages/maf-sandbox/pyproject.toml", "uv.lock"])

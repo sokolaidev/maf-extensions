@@ -43,6 +43,7 @@ COUNTER_LABELS = {
     "user_merges_rejected": "USERMERGEREJ",
     "record_rewrites": "RECHARDER",
     "record_rewrites_rejected": "RECHARDERREJ",
+    "record_consolidations_lossy": "RECLOSSY",
     "record_rewrites_skipped": "RECHARDERSKIP",
     "record_merges_skipped": "RECMERGESKIP",
     "record_summary_failures": "RECSUMMFAIL",
