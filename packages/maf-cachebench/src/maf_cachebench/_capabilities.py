@@ -198,8 +198,7 @@ async def _persistence(
         detached = AgentSession.from_dict(deepcopy(stored))
         with experiment.registry.activate(detached):
             checks["branch_restores"] = (
-                experiment.binding.recall is not None
-                and experiment.binding.recall.session_state()["value_free_streak"] == 2
+                experiment.binding.recall.session_state()["value_free_streak"] == 2
             )
     observations = {
         "request": request,
