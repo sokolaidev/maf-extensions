@@ -6,7 +6,7 @@
 #     "agent-framework-openai",
 #     "azure-core[aio]",
 #     "azure-identity",
-#     "maf-sandbox>=0.52",
+#     "maf-sandbox>=0.53",
 #     "maf-sandbox-antivirus>=0.1.0",
 #     "maf-sandbox-azure-pricing>=0.1.0",
 #     "maf-sandbox-document>=0.2.1",
