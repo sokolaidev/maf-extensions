@@ -416,6 +416,7 @@ async def test_overflow_reserve_is_bounded_for_history_many_times_the_budget(wit
     original = deepcopy(messages)
     current = stack(budget=20_000)
     strategy = current.strategy
+    assert isinstance(strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy)
     options = {"instructions": "Instructions " * 100} if sending else {}
     budget = strategy.sending_budget(options) if sending else strategy.max_input_tokens
     assert size(messages) > 3 * budget
@@ -469,6 +470,9 @@ async def test_before_run_replays_shedding_before_record_phase(identity, with_re
 
         def build():
             fresh = stack()
+            assert isinstance(
+                fresh.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+            )
             records = fresh.strategy.tool_results
             compact = records.compact_against
 
