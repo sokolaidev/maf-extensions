@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import argparse
 import copy
+import ctypes
+import errno
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -16,6 +20,27 @@ from container_release import ROOT, read, write
 from plan_go_remediation import CONTEXT, RECIPE, digest, inputs, plan, semver
 from terraform_dependencies import load_manifest, verify_built_provider
 from terraform_manifest import render
+
+AT_FDCWD = -100
+RENAME_NOREPLACE = 1
+
+
+def publish(source: Path, destination: Path) -> None:
+    """Atomically publish a complete directory without replacing a concurrent destination."""
+    if sys.platform == "win32":
+        source.rename(destination)
+        return
+    if not sys.platform.startswith("linux"):
+        raise OSError(errno.ENOTSUP, "Exclusive proposal publication requires Windows or Linux")
+    library = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(library, "renameat2", None)
+    if rename is None:
+        raise OSError(errno.ENOSYS, "Exclusive proposal publication requires renameat2")
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(AT_FDCWD, os.fsencode(source), AT_FDCWD, os.fsencode(destination), RENAME_NOREPLACE):
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(destination))
 
 
 def selected_modules(requested: dict[str, str], work: Path, env: dict[str, str]) -> dict[str, str]:
@@ -173,7 +198,7 @@ def prepare(root: Path, directories: list[Path], expected: dict[str, Any], outpu
                 "qualification": "pending-image-build-and-rescan",
             },
         )
-        payload.rename(destination)
+        publish(payload, destination)
 
 
 def main() -> None:

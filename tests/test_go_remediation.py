@@ -575,6 +575,40 @@ def test_failed_preparation_does_not_publish_partial_files(checkout, tmp_path, m
     assert provider(checkout)["source_build"]["modules"][MODULE] == "v0.60.0"
 
 
+def test_concurrent_output_directory_is_never_replaced(checkout, tmp_path, monkeypatch):
+    directory = retained(tmp_path)
+    expected = planner.plan(checkout, [directory])
+    destination = tmp_path / "proposal"
+    original_plan = preparation.plan
+    calls = 0
+    identity = None
+
+    def replan(root, directories):
+        nonlocal calls, identity
+        result = original_plan(root, directories)
+        calls += 1
+        if calls == 2:
+            destination.mkdir()
+            identity = destination.stat().st_ino
+        return result
+
+    monkeypatch.setattr(preparation, "plan", replan)
+    with pytest.raises(FileExistsError):
+        preparation.prepare(checkout, [directory], expected, destination)
+    assert list(destination.iterdir()) == []
+    assert destination.stat().st_ino == identity
+
+
+def test_publication_without_exclusive_rename_support_fails_closed(tmp_path, monkeypatch):
+    source, destination = tmp_path / "source", tmp_path / "destination"
+    source.mkdir()
+    monkeypatch.setattr(preparation.sys, "platform", "unsupported")
+    with pytest.raises(OSError, match="Exclusive proposal publication"):
+        preparation.publish(source, destination)
+    assert source.is_dir()
+    assert not destination.exists()
+
+
 def test_commands_prepare_reviewable_files_and_replanning_is_idempotent(checkout, tmp_path):
     directory = retained(tmp_path)
     planned, output = tmp_path / "plan.json", tmp_path / "proposal"
