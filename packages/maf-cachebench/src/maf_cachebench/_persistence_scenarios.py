@@ -15,7 +15,7 @@ def snapshot(data: dict[str, Any]) -> dict[str, Any]:
 
 
 class ScenarioFailure(ValueError):
-    """An injected storage fault; never a reason to retry model work."""
+    """A persistence-scenario failure; never a reason to retry model work."""
 
 
 class ScenarioInterruption(ValueError):

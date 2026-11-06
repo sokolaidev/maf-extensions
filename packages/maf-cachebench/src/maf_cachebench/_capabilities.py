@@ -139,7 +139,7 @@ async def _persistence(
     request = store.requests[-1]
     expected_failure = {
         "stale": "ScenarioFailure",
-        "invalid_migration": "ValueError",
+        "invalid_migration": "ScenarioFailure",
         "save_failure": "ScenarioFailure",
         "after_save_failure": "ScenarioFailure",
         "request_failure": "RuntimeError",

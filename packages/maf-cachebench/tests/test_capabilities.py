@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from copy import deepcopy
 from dataclasses import replace
@@ -28,7 +29,7 @@ from maf_cachebench._capability_fixtures import (
 from maf_cachebench._configuration import compaction_options
 from maf_cachebench._lifecycle import SessionExperiment
 from maf_cachebench._live_cli import _strategy_options, _strategy_settings, build_parser
-from maf_cachebench._persistence_scenarios import ScenarioStore
+from maf_cachebench._persistence_scenarios import ScenarioFailure, ScenarioStore
 from maf_cachebench._providers import ProviderRuntime
 from maf_cachebench._records import _settings_from_dict
 
@@ -326,12 +327,65 @@ class _UnsupportedOption(ValueError):
     param = "tool_choice"
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure", ["invalid_migration", "load", "save", "after_save"])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_persistence_failure_retains_its_native_cause(monkeypatch, failure, stream):
+    scenario = failure if failure in {"invalid_migration", "after_save"} else "fenced"
+    controls = CompactionOptions(
+        persistence_scenario=scenario, session_mode="restart", stream=stream
+    )
+    model = FixtureClient()
+    experiment = SessionExperiment(lambda: capabilities._binding(model, controls), controls)
+    store = experiment.persistence_store
+    assert store is not None
+    if failure != "invalid_migration":
+
+        async def fail_storage(*args, **kwargs):
+            raise ConnectionError("storage connection failed")
+
+        monkeypatch.setattr(store, failure, fail_storage)
+    with pytest.raises(ScenarioFailure) as caught:
+        await experiment.run(AgentSession(session_id="setup"), "hello", {})
+    assert isinstance(
+        caught.value.__cause__, ValueError if scenario == "invalid_migration" else ConnectionError
+    )
+    assert len(model.requests) == (0 if failure in {"invalid_migration", "load"} else 1)
+    assert store.requests[0]["committed"] is (failure == "after_save")
+    assert not store.lock.locked()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_persistence_setup_cancellation_remains_cancellation(monkeypatch, stream):
+    controls = CompactionOptions(
+        persistence_scenario="fenced", session_mode="restart", stream=stream
+    )
+    model = FixtureClient()
+    experiment = SessionExperiment(lambda: capabilities._binding(model, controls), controls)
+    store = experiment.persistence_store
+    assert store is not None
+
+    async def cancel_load(session_id):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(store, "load", cancel_load)
+    with pytest.raises(asyncio.CancelledError):
+        await experiment.run(AgentSession(session_id="cancelled"), "hello", {})
+    assert not model.requests
+    assert store.requests[0]["error"] == "CancelledError"
+    assert not store.requests[0]["committed"]
+    assert not store.lock.locked()
+
+
 class _RateLimitError(RuntimeError):
     status_code = 429
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("scenario", ["save_failure", "after_save_failure", "stale"])
+@pytest.mark.parametrize(
+    "scenario", ["save_failure", "after_save_failure", "stale", "invalid_migration"]
+)
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize(
     "caller_error", [None, ConnectionError, TimeoutError, _UnsupportedOption, _RateLimitError]
@@ -373,7 +427,7 @@ async def test_live_runner_records_storage_outcome_without_retrying_model(
         except caller_error:
             outcome = await run
     assert outcome.error
-    assert len(model.requests) == 1
+    assert len(model.requests) == (0 if scenario == "invalid_migration" else 1)
     assert not waits
     assert not outcome.dropped_options
     assert outcome.rate_limit_retries == 0
