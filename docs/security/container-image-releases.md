@@ -366,8 +366,8 @@ Builds use profile `graphviz`, source path `images/graphviz-sandbox`, and regist
 
 | Decision | State | Tracking |
 |---|---|---|
-| Automatic image-remediation PRs | In progress; source proposals, hosted PR automation and published-image recovery are separate evidence | [#2514](https://github.com/sokolaidev/maf-extensions/issues/2514) (open) |
-| Deterministic Go engine/provider remediation | Local command implementation; full rebuilt-image qualification remains integration work | [#2515](https://github.com/sokolaidev/maf-extensions/issues/2515) (open) |
+| Automatic image-remediation PRs | In progress; local Go proposals implemented, hosted automation and Bicep/OS adapters pending | [#2514](https://github.com/sokolaidev/maf-extensions/issues/2514) (open) |
+| Deterministic Go engine/provider remediation | Implemented; full rebuilt-image qualification remains integration work | [#2515](https://github.com/sokolaidev/maf-extensions/issues/2515) (closed) by [#2520](https://github.com/sokolaidev/maf-extensions/pull/2520) (merged) |
 | Trusted remediation PR workflow | Planned; requires authenticated current evidence, rebuilt-image qualification and hosted PR lifecycle proof | [#2516](https://github.com/sokolaidev/maf-extensions/issues/2516) (open) |
 | Bicep and OS-package remediation adapters | Planned; keep upstream/source routes and vendor package availability explicit | [#2517](https://github.com/sokolaidev/maf-extensions/issues/2517) (open) |
 | Parallel publication across profiles with shared catalogue serialization | Implemented with local regression coverage; hosted concurrency and recovery rehearsal remain unverified | [#2467](https://github.com/sokolaidev/maf-extensions/issues/2467) (closed) by [#2469](https://github.com/sokolaidev/maf-extensions/pull/2469) (merged) |
