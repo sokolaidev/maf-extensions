@@ -44,6 +44,8 @@ The supplied config must be self-contained. `extends` is rejected because the to
 
 The packaged config lists every linter rule in its recorded upstream release, including disabled rules. It preserves upstream defaults except for `no-unused-params=error` and `use-recent-api-versions=warning` with `maxAgeInDays=730`. A supplied config replaces that policy, including its levels and disabled rules; Bicep merges it with its own defaults. The trusted diagnostic summary still uses only packaged rule IDs. Compiler IDs live separately in `compiler_codes.json`; `catalog_source.json` records the release, commit and upstream settings. These files ship in the wheel and source archive. Updating the catalog does not upgrade the host-selected compiler.
 
+The catalog covers Bicep 0.49.2, including `no-conflicting-version-constraints=error` and `no-incompatible-entrypoint-version=warning`. The packaged `use-recent-az-powershell-version` rule requires Az PowerShell 15.0 or later for deployment scripts, matching that compiler's default. Older compilers do not gain new checks from the catalog; use a compatible image to execute them.
+
 `exec_timeout_seconds` defaults to 120 per compiler command. Cancellation waits for the bounded active command before cleanup. A cancelled host wait alone does not prove that the guest stopped.
 
 ## Network access
