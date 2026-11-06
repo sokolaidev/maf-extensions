@@ -234,6 +234,7 @@ def baseline(client: GitHub, record: dict[str, Any], directory: Path) -> dict[st
     result = {
         "components": components(read(directory / "sbom.syft.json"), record["imageId"]),
         "evidence": evidence_url,
+        "assessment": verified,
     }
     if record["profile"] in BICEP_ROUTES:
         route = candidate.get("bicepRoute", "upstream")
@@ -651,20 +652,24 @@ def desired(
         reasons.pop("components", None)
     observation = record.get("latestAttempt", {})
     pending_vulnerabilities = reasons.get("vulnerabilities")
-    vulnerable = (
-        observation
-        if observation.get("outcome") == "vulnerable"
-        else (
-            record.get("lastKnownVulnerable", {}) if observation.get("outcome") != "clean" else {}
-        )
-    )
-    if vulnerable:
+    if observation.get("outcome") not in {"clean", "vulnerable"}:
+        observation = record.get("lastKnownVulnerable", {})
+    release_assessment = released.get("assessment")
+    evidence = released["evidence"]
+    if release_assessment and (
+        not observation
+        or timestamp(observation["assessedAt"]) <= timestamp(release_assessment["assessedAt"])
+    ):
+        observation = release_assessment
+    elif observation.get("outcome") == "vulnerable":
+        evidence = f"https://github.com/{REPOSITORY}/releases/tag/{observation['evidenceRelease']}"
+    if observation.get("outcome") == "vulnerable":
         reasons["vulnerabilities"] = {
             "baselineDigest": record["registryDigest"],
             "findings": sorted(
-                vulnerable["findings"], key=lambda item: json.dumps(item, sort_keys=True)
+                observation["findings"], key=lambda item: json.dumps(item, sort_keys=True)
             ),
-            "evidence": f"https://github.com/{REPOSITORY}/releases/tag/{vulnerable['evidenceRelease']}",
+            "evidence": evidence,
         }
     elif (
         pending_vulnerabilities
