@@ -36,6 +36,9 @@
         "no-conflicting-metadata": {
           "level": "warning"
         },
+        "no-conflicting-version-constraints": {
+          "level": "error"
+        },
         "no-deployments-resources": {
           "level": "warning"
         },
@@ -67,6 +70,9 @@
         },
         "no-hardcoded-outputs": {
           "level": "off"
+        },
+        "no-incompatible-entrypoint-version": {
+          "level": "warning"
         },
         "no-loc-expr-outside-params": {
           "level": "off"
@@ -150,7 +156,7 @@
         },
         "use-recent-az-powershell-version": {
           "level": "warning",
-          "minimumVersion": "11.0"
+          "minimumVersion": "15.0"
         },
         "use-recent-module-versions": {
           "level": "off"
