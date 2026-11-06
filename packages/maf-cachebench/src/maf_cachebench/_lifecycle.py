@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -113,6 +112,7 @@ class SessionExperiment:
         if interrupt_stream and (not self.options.stream or self.persistence_store is None):
             raise ValueError("Stream interruption requires a streaming persistence scenario.")
         persistence_started = False
+        request_error: BaseException | None = None
         inputs: Any = text
         replay_key = "cachebench_original_history"
         original = [
@@ -242,9 +242,12 @@ class SessionExperiment:
                     data = self.persistence_store.snapshots[self.persistence_store.destination]
                 session = AgentSession.from_dict(data)
             return result, session
+        except BaseException as exc:
+            request_error = exc
+            raise
         finally:
             if persistence_started and self.persistence_store is not None:
-                self.persistence_store.finish(sys.exception())
+                self.persistence_store.finish(request_error)
             _REPLAY_MESSAGES.reset(token)
             if before is not None:
                 after = counters(self.binding.strategy, self.binding.recall)

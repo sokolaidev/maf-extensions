@@ -75,6 +75,23 @@ async def test_host_hook_scenarios_measure_retained_content(scenario):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("session_mode", ["roundtrip", "restart"])
+@pytest.mark.parametrize("history_mode", ["incremental", "replay"])
+async def test_successful_request_does_not_record_callers_handled_exception(
+    stream, session_mode, history_mode
+):
+    try:
+        raise ValueError("unrelated caller failure")
+    except ValueError:
+        record = await capabilities.run_capability_scenario(
+            "fenced", stream=stream, session_mode=session_mode, history_mode=history_mode
+        )
+    assert record.passed, record.to_dict()
+    assert record.observations["request"]["error"] is None
+
+
+@pytest.mark.anyio
 async def test_media_estimator_changes_projection_without_changing_description():
     small = await capabilities.run_capability_scenario("media_select_pdf", media_tokens=100)
     large = await capabilities.run_capability_scenario("media_select_pdf", media_tokens=1500)

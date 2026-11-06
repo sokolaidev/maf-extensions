@@ -167,6 +167,7 @@ async def _persistence(
     expected_events.append("lease_released")
     checks = {
         "expected_error": failure == expected_failure,
+        "recorded_error": request["error"] == expected_failure,
         "commit_outcome": request["committed"] == expected_commit,
         "ordering": events == expected_events,
         "no_model_retry": len(model.requests) == (0 if scenario == "invalid_migration" else 1),
