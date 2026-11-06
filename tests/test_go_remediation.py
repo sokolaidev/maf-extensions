@@ -425,3 +425,141 @@ def test_proposal_never_overwrites_checkout_or_existing_output(checkout, tmp_pat
         output.mkdir()
     with pytest.raises(ValueError):
         preparation.prepare(checkout, [directory], planner.plan(checkout, [directory]), output)
+
+
+@pytest.mark.parametrize("destination", ["source", "new-source", "symlink", "hardlink", "evidence"])
+def test_plan_output_cannot_overwrite_inputs(checkout, tmp_path, monkeypatch, destination):
+    directory = retained(tmp_path)
+    original = (checkout / planner.RECIPE).read_bytes()
+    report = (directory / "grype.json").read_bytes()
+    output = tmp_path / "plan.json"
+    if destination == "source":
+        output = checkout / planner.RECIPE
+    elif destination == "new-source":
+        output = checkout / "new" / "plan.json"
+    elif destination == "evidence":
+        output = directory / "grype.json"
+    else:
+        try:
+            if destination == "symlink":
+                output.symlink_to(checkout / planner.RECIPE)
+            else:
+                output.hardlink_to(checkout / planner.RECIPE)
+        except OSError:
+            pytest.skip("Filesystem links unavailable")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["plan", "--root", str(checkout), "--evidence", str(directory), "--output", str(output)],
+    )
+    with pytest.raises((ValueError, FileExistsError)):
+        planner.main()
+    assert (checkout / planner.RECIPE).read_bytes() == original
+    assert (directory / "grype.json").read_bytes() == report
+    assert not (checkout / "new").exists()
+
+
+@pytest.mark.parametrize("component", ["terraform", "opentofu", "provider"])
+def test_main_module_requires_source_upgrade_using_inventory_metadata(
+    checkout, tmp_path, component
+):
+    module = "github.com/hashicorp/terraform"
+    guest_path = "/usr/local/bin/terraform"
+    profile = "terraform-random"
+    if component == "opentofu":
+        module, guest_path, profile = (
+            "github.com/opentofu/opentofu",
+            "/usr/local/bin/tofu",
+            "opentofu-random",
+        )
+    elif component == "provider":
+        module, guest_path = (
+            "github.com/hashicorp/terraform-provider-random",
+            provider_path(provider(checkout)),
+        )
+    match = finding(guest_path, module=module, installed="v1.2.0", fixed="1.2.1")
+    directory = retained(tmp_path, [match], profile=profile)
+    sbom = read(directory / "sbom.syft.json")
+    sbom["artifacts"][0]["metadata"] = {"mainModule": module}
+    write(directory / "sbom.syft.json", sbom)
+    result = planner.plan(checkout, [directory])
+    assert result["updates"] == []
+    assert result["findings"][0]["decisions"] == [{"status": "source-version-upgrade"}]
+
+
+def restore_on_read(monkeypatch, path, original):
+    read_bytes, read_text = Path.read_bytes, Path.read_text
+
+    def bytes_and_restore(target):
+        result = read_bytes(target)
+        if target == path:
+            target.write_bytes(original)
+        return result
+
+    def text_and_restore(target, *args, **kwargs):
+        result = read_text(target, *args, **kwargs)
+        if target == path:
+            target.write_bytes(original)
+        return result
+
+    monkeypatch.setattr(Path, "read_bytes", bytes_and_restore)
+    monkeypatch.setattr(Path, "read_text", text_and_restore)
+
+
+@pytest.mark.parametrize("filename", ["image.json", "dependencies.terraform.json"])
+def test_source_documents_and_hashes_use_the_same_bytes(checkout, monkeypatch, filename):
+    path = checkout / planner.CONTEXT / filename
+    original = path.read_bytes()
+    changed = read(path)
+    source = (
+        changed["engines"]["terraform"] if filename == "image.json" else changed["providers"][0]
+    )
+    source["source_build"]["modules"][MODULE] = "v0.61.0"
+    raw = (json.dumps(changed) + "\n").encode()
+    path.write_bytes(raw)
+    restore_on_read(monkeypatch, path, original)
+    documents, hashes = planner.inputs(checkout)
+    name = path.relative_to(checkout).as_posix()
+    assert documents[name] == changed
+    assert hashes[name] == hashlib.sha256(raw).hexdigest()
+    assert path.read_bytes() == original
+
+
+def test_preparation_rejects_a_transient_snapshot_before_building(checkout, tmp_path, monkeypatch):
+    directory = retained(tmp_path, [finding(provider_path(provider(checkout)))])
+    expected = planner.plan(checkout, [directory])
+    path = checkout / planner.CONTEXT / "dependencies.terraform.json"
+    original = path.read_bytes()
+    changed = read(path)
+    changed["providers"][0]["source_build"]["modules"][MODULE] = "v0.61.0"
+    original_inputs = planner.inputs
+
+    def transient_inputs(root):
+        write(path, changed)
+        try:
+            return original_inputs(root)
+        finally:
+            path.write_bytes(original)
+
+    monkeypatch.setattr(preparation, "inputs", transient_inputs)
+    monkeypatch.setattr(
+        preparation, "rebuild", lambda *_: pytest.fail("must reject before building")
+    )
+    with pytest.raises(ValueError, match="snapshot"):
+        preparation.prepare(checkout, [directory], expected, tmp_path / "proposal")
+    assert not (tmp_path / "proposal").exists()
+
+
+@pytest.mark.parametrize("filename", ["observation.json", "sbom.syft.json", "grype.json"])
+def test_evidence_hashes_bind_the_parsed_snapshot(tmp_path, monkeypatch, filename):
+    directory = retained(tmp_path)
+    path = directory / filename
+    original = path.read_bytes()
+    changed = read(path)
+    changed["transient"] = True
+    raw = (json.dumps(changed) + "\n").encode()
+    path.write_bytes(raw)
+    restore_on_read(monkeypatch, path, original)
+    _, _, hashes = planner.evidence(directory)
+    assert hashes[filename] == hashlib.sha256(raw).hexdigest()
+    assert path.read_bytes() == original

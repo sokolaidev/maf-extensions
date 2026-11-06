@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from container_release import ROOT, read, scan_result, validate_identity, write
+from container_release import ROOT, decode, scan_result, validate_identity
 from image_security_evidence import PROVIDER_MANIFESTS, verify_inventory
 from terraform_dependencies import load_manifest
 
@@ -76,11 +76,12 @@ def inputs(root: Path) -> tuple[dict[str, Any], dict[str, str]]:
     for path in paths:
         if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
             raise ValueError("Source input escapes the checkout")
-        document = read(path)
+        raw = path.read_bytes()
+        document = decode(raw.decode("utf-8-sig"))
         name = path.relative_to(root).as_posix()
         if not name.endswith(".policy.json"):
-            documents[name] = document if name == RECIPE else load_manifest(path.read_bytes())
-        hashes[name] = digest(path)
+            documents[name] = document if name == RECIPE else load_manifest(raw)
+        hashes[name] = hashlib.sha256(raw).hexdigest()
     for name in ("Dockerfile", "prepared.Dockerfile"):
         path = root / CONTEXT / name
         if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
@@ -103,12 +104,15 @@ def evidence(directory: Path) -> tuple[dict[str, Any], list[dict[str, Any]], dic
     for name in files:
         if (directory / name).is_symlink():
             raise ValueError("Evidence symlinks are not supported")
-    observation = read(directory / "observation.json")
+    snapshots = {name: (directory / name).read_bytes() for name in files}
+    observation = decode(snapshots["observation.json"].decode("utf-8-sig"))
     candidate, assessment = observation["candidate"], observation["assessment"]
     validate_identity(candidate)
     if assessment.get("digest") != candidate["registryDigest"]:
         raise ValueError("Assessment identifies another registry digest")
-    sbom, report = read(directory / "sbom.syft.json"), read(directory / "grype.json")
+    sbom, report = (
+        decode(snapshots[name].decode("utf-8-sig")) for name in ("sbom.syft.json", "grype.json")
+    )
     verify_inventory(sbom, candidate["imageId"])
     verified = scan_result(report, candidate["imageId"], assessment["assessedAt"], sbom=sbom)
     if any(assessment.get(key) != value for key, value in verified.items()):
@@ -130,12 +134,16 @@ def evidence(directory: Path) -> tuple[dict[str, Any], list[dict[str, Any]], dic
         ):
             raise ValueError("Vulnerable component differs from retained inventory")
         if (vulnerability["id"], artifact["id"]) not in excluded:
-            matches.append(match)
+            matches.append({**match, "artifact": actual})
     identity = {
         key: candidate[key] for key in ("profile", "imageId", "registryDigest", "sourceCommit")
     }
     identity["assessedAt"] = assessment["assessedAt"]
-    return identity, matches, {name: digest(directory / name) for name in files}
+    return (
+        identity,
+        matches,
+        {name: hashlib.sha256(raw).hexdigest() for name, raw in snapshots.items()},
+    )
 
 
 def owners(
@@ -210,6 +218,9 @@ def plan(root: Path, directories: list[Path]) -> dict[str, Any]:
             if artifact["type"] != "go-module" or not module_name(artifact["name"]):
                 decisions.append({"status": "unsupported-component"})
                 continue
+            if artifact["name"] == artifact.get("metadata", {}).get("mainModule"):
+                decisions.append({"status": "source-version-upgrade"})
+                continue
             try:
                 target = fixed_version(artifact["version"], row["fix"])
             except ValueError:
@@ -273,7 +284,16 @@ def main() -> None:
     parser.add_argument("--evidence", type=Path, action="append", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    write(args.output, plan(args.root, args.evidence))
+    destination = args.output.resolve()
+    if destination.is_relative_to(args.root.resolve()):
+        raise ValueError("Plan output must be outside the source checkout")
+    if args.output.exists() or args.output.is_symlink():
+        raise ValueError("Plan output must not already exist")
+    result = plan(args.root, args.evidence)
+    payload = (json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n").encode()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("xb") as stream:
+        stream.write(payload)
 
 
 if __name__ == "__main__":

@@ -37,7 +37,9 @@ def prepare(root: Path, directories: list[Path], expected: dict[str, Any], outpu
         raise ValueError("Proposal output must not already exist")
     if destination.is_relative_to(root.resolve()) or root.resolve().is_relative_to(destination):
         raise ValueError("Proposal output must be outside the source checkout")
-    documents, _ = inputs(root)
+    documents, hashes = inputs(root)
+    if hashes != expected["inputs"]:
+        raise ValueError("Remediation source snapshot differs from the plan")
     proposed = copy.deepcopy(documents)
     changed_providers: set[tuple[str, int]] = set()
     changed = set()
