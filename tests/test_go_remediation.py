@@ -214,6 +214,7 @@ def test_unsupported_findings_are_retained_without_changes(checkout, tmp_path, c
         "image",
         "sbom",
         "digest",
+        "assessed-manifest",
         "database",
         "ignored",
         "observation",
@@ -233,6 +234,8 @@ def test_inconsistent_evidence_is_refused(checkout, tmp_path, fault):
         sbom["source"]["metadata"]["imageID"] = DIGEST
     elif fault == "digest":
         observation["assessment"]["digest"] = IMAGE
+    elif fault == "assessed-manifest":
+        observation["candidate"]["assessedManifestDigest"] = IMAGE
     elif fault == "database":
         report["descriptor"]["db"]["status"]["valid"] = False
     elif fault == "ignored":
@@ -253,6 +256,15 @@ def test_inconsistent_evidence_is_refused(checkout, tmp_path, fault):
         write(directory / name, value)
     with pytest.raises(ValueError):
         planner.plan(checkout, [directory])
+
+
+def test_evidence_preserves_the_complete_validated_identity(tmp_path):
+    directory = retained(tmp_path)
+    observation = read(directory / "observation.json")
+    observation["candidate"].update(buildInputsSha256=IMAGE, preparationEvidenceSha256=DIGEST)
+    write(directory / "observation.json", observation)
+    identity, _, _ = planner.evidence(directory)
+    assert all(identity[key] == value for key, value in observation["candidate"].items())
 
 
 def test_existing_override_is_not_downgraded_or_called_a_verified_fix(checkout, tmp_path):

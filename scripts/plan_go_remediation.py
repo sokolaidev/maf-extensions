@@ -9,7 +9,14 @@ import re
 from pathlib import Path
 from typing import Any
 
-from container_release import ROOT, decode, scan_result, validate_identity
+from container_release import (
+    IDENTITY_FIELDS,
+    OPTIONAL_IDENTITY_FIELDS,
+    ROOT,
+    decode,
+    scan_result,
+    validate_identity,
+)
 from image_security_evidence import PROVIDER_MANIFESTS, verify_inventory
 from terraform_dependencies import load_manifest
 
@@ -108,6 +115,8 @@ def evidence(directory: Path) -> tuple[dict[str, Any], list[dict[str, Any]], dic
     observation = decode(snapshots["observation.json"].decode("utf-8-sig"))
     candidate, assessment = observation["candidate"], observation["assessment"]
     validate_identity(candidate)
+    if candidate["assessedManifestDigest"] != candidate["registryDigest"]:
+        raise ValueError("Remediation requires a single assessed registry manifest")
     if assessment.get("digest") != candidate["registryDigest"]:
         raise ValueError("Assessment identifies another registry digest")
     sbom, report = (
@@ -135,9 +144,8 @@ def evidence(directory: Path) -> tuple[dict[str, Any], list[dict[str, Any]], dic
             raise ValueError("Vulnerable component differs from retained inventory")
         if (vulnerability["id"], artifact["id"]) not in excluded:
             matches.append({**match, "artifact": actual})
-    identity = {
-        key: candidate[key] for key in ("profile", "imageId", "registryDigest", "sourceCommit")
-    }
+    identity = {key: candidate[key] for key in IDENTITY_FIELDS}
+    identity.update({key: candidate[key] for key in OPTIONAL_IDENTITY_FIELDS if key in candidate})
     identity["assessedAt"] = assessment["assessedAt"]
     return (
         identity,
