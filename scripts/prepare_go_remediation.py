@@ -7,7 +7,6 @@ import copy
 import ctypes
 import errno
 import hashlib
-import importlib.util
 import json
 import os
 import subprocess
@@ -17,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from container_release import ROOT, read, write
-from plan_go_remediation import CONTEXT, RECIPE, digest, inputs, plan, semver
+from plan_go_remediation import RECIPE, TOOLING, digest, inputs, plan, semver
 from terraform_dependencies import load_manifest, verify_built_provider
 from terraform_manifest import render
 
@@ -101,15 +100,39 @@ def resolve_modules(requested: dict[str, str], work: Path, env: dict[str, str]) 
                 path.write_bytes(raw)
 
 
-def rebuild(provider: dict[str, Any], work: Path) -> tuple[bytes, dict[str, str]]:
-    """Use the existing authenticated source builder and its pinned local Go toolchain."""
-    spec = importlib.util.spec_from_file_location(
-        "remediation_provider_builder", ROOT / CONTEXT / "build_providers.py"
+def snapshot_tooling(expected: dict[str, str], destination: Path) -> None:
+    """Copy the exact verified bytes used by the isolated builder and its repository imports."""
+    snapshots = {name: (ROOT / name).read_bytes() for name in TOOLING}
+    if {name: hashlib.sha256(raw).hexdigest() for name, raw in snapshots.items()} != expected:
+        raise ValueError("Remediation tooling snapshot differs from the plan")
+    for name, raw in snapshots.items():
+        target = destination / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+
+
+def rebuild(provider: dict[str, Any], work: Path, tooling: Path) -> tuple[bytes, dict[str, str]]:
+    """Run verified tooling in a fresh interpreter without live-checkout imports."""
+    request, result, package = (
+        work.parent / (work.name + suffix) for suffix in (".json", ".result.json", ".zip")
     )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.build(provider, work, resolve_modules=resolve_modules)
+    write(request, provider)
+    subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(tooling / "scripts/go_remediation_worker.py"),
+            str(request),
+            str(work),
+            str(result),
+            str(package),
+        ],
+        cwd=tooling,
+        check=True,
+    )
+    record = read(result)
+    provider["source_build"]["modules"] = record["modules"]
+    return package.read_bytes(), record["moduleFiles"]
 
 
 def prepare(root: Path, directories: list[Path], expected: dict[str, Any], output: Path) -> None:
@@ -140,6 +163,8 @@ def prepare(root: Path, directories: list[Path], expected: dict[str, Any], outpu
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="go-remediation-", dir=destination.parent) as folder:
         staging = Path(folder)
+        tooling = staging / "tooling"
+        snapshot_tooling(expected["tooling"], tooling)
         payload = staging / "proposal"
         payload.mkdir()
         built: dict[str, tuple[bytes, dict[str, str], dict[str, str]]] = {}
@@ -153,7 +178,7 @@ def prepare(root: Path, directories: list[Path], expected: dict[str, Any], outpu
             if key not in built:
                 work = staging / f"build-{len(built)}"
                 work.mkdir()
-                data, module_files = rebuild(provider, work)
+                data, module_files = rebuild(provider, work, tooling)
                 built[key] = data, module_files, source["modules"].copy()
             data, module_files, resolved = built[key]
             source["modules"] = resolved.copy()

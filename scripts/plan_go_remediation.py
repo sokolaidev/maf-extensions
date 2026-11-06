@@ -25,12 +25,14 @@ RECIPE = f"{CONTEXT}/image.json"
 TOOLING = (
     "scripts/plan_go_remediation.py",
     "scripts/prepare_go_remediation.py",
+    "scripts/go_remediation_worker.py",
     "scripts/container_release.py",
     "scripts/image_security_evidence.py",
     "scripts/sqlite_vulnerability.py",
     "scripts/terraform_dependencies.py",
     "scripts/terraform_manifest.py",
     f"{CONTEXT}/build_providers.py",
+    f"{CONTEXT}/runner.py",
 )
 
 

@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "images/terraform-sandbox"))
 import build_providers as builder  # noqa: E402
+import go_remediation_worker as worker  # noqa: E402
 import plan_go_remediation as planner  # noqa: E402
 import prepare_go_remediation as preparation  # noqa: E402
 from container_release import read, scan_result, write  # noqa: E402
@@ -310,7 +311,7 @@ def test_required_companion_updates_propagate_to_shared_locks(checkout, tmp_path
     expected = planner.plan(checkout, [directory])
     calls = []
 
-    def build(item, work):
+    def build(item, work, tooling):
         calls.append(item)
         item["source_build"]["modules"]["golang.org/x/crypto"] = "v0.58.0"
         return built(item, work)
@@ -401,10 +402,10 @@ def test_remediation_build_resolves_companions_before_exact_pin_verification(tmp
     monkeypatch.setattr(builder.subprocess, "run", run)
     monkeypatch.setattr(builder.prep, "fetch", lambda *a, **kw: b"source")
     monkeypatch.setattr(builder, "unpack", lambda *a: None)
-    monkeypatch.setattr(preparation.importlib.util, "module_from_spec", lambda *_: builder)
+    monkeypatch.setattr(worker.importlib.util, "module_from_spec", lambda *_: builder)
     monkeypatch.setattr(importlib.machinery.SourceFileLoader, "exec_module", lambda *_: None)
     with pytest.raises(ValueError, match="security dependency mismatch"):
-        preparation.rebuild(item, tmp_path)
+        worker.build(item, tmp_path)
     assert calls[0][:3] == ["go", "mod", "edit"]
     assert ["go", "mod", "verify"] in calls
 
@@ -479,7 +480,7 @@ def test_shared_provider_locks_are_rebuilt_once_and_keep_upstream_identity(
     expected = planner.plan(checkout, [directory])
     calls = []
 
-    def build(item, work):
+    def build(item, work, tooling):
         calls.append(copy.deepcopy(item))
         return built(item, work)
 
@@ -497,6 +498,72 @@ def test_shared_provider_locks_are_rebuilt_once_and_keep_upstream_identity(
     assert after["source_build"]["module_files"] != before["source_build"]["module_files"]
     assert read(checkout / planner.CONTEXT / "dependencies.terraform.json") == original
     assert read(destination / "proposal.json")["qualification"] == "pending-image-build-and-rescan"
+
+
+@pytest.mark.parametrize(
+    "changed", ["build_providers.py", "terraform_dependencies.py", "runner.py"]
+)
+def test_builder_uses_verified_tooling_despite_transient_checkout_edits(
+    checkout, tmp_path, monkeypatch, changed
+):
+    tooling = tmp_path / "tooling"
+    for name in (*planner.TOOLING, f"{planner.CONTEXT}/runner.py"):
+        target = tooling / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / name, target)
+    item = provider(checkout)
+    item["source_build"]["modules"][MODULE] = "v0.62.0"
+    data, hashes = built(item, tmp_path)
+    builder_path = tooling / planner.CONTEXT / "build_providers.py"
+    builder_path.write_text(
+        "import sys\nfrom pathlib import Path\n"
+        "sys.path.insert(0, str(Path(__file__).resolve().parents[2]))\n"
+        "from scripts import terraform_dependencies\n"
+        "def build(provider, work, **kwargs):\n"
+        f"    return {data!r}, {hashes!r}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(planner, "ROOT", tooling)
+    monkeypatch.setattr(preparation, "ROOT", tooling)
+    directory = retained(tmp_path, [finding(provider_path(item))])
+    expected = planner.plan(checkout, [directory])
+    actual_rebuild = preparation.rebuild
+    path = tooling / (
+        f"scripts/{changed}"
+        if changed == "terraform_dependencies.py"
+        else f"{planner.CONTEXT}/{changed}"
+    )
+    original = path.read_bytes()
+
+    def build(*args):
+        monkeypatch.delitem(sys.modules, "scripts", raising=False)
+        monkeypatch.delitem(sys.modules, "scripts.terraform_dependencies", raising=False)
+        path.write_text("raise AssertionError('transient tooling executed')\n", encoding="utf-8")
+        try:
+            return actual_rebuild(*args)
+        finally:
+            path.write_bytes(original)
+
+    monkeypatch.setattr(preparation, "rebuild", build)
+    destination = tmp_path / "proposal"
+    preparation.prepare(checkout, [directory], expected, destination)
+    package = read(destination / "proposal.json")["providers"][0]["package"]
+    assert (destination / package).read_bytes() == data
+
+
+def test_tooling_snapshot_hashes_the_bytes_it_copies(tmp_path, monkeypatch):
+    expected = {name: planner.digest(ROOT / name) for name in planner.TOOLING}
+    original_read = Path.read_bytes
+    target = ROOT / planner.CONTEXT / "build_providers.py"
+
+    def read_bytes(path):
+        raw = original_read(path)
+        return raw + b"\nraise AssertionError('different tooling')\n" if path == target else raw
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    with pytest.raises(ValueError, match="tooling snapshot"):
+        preparation.snapshot_tooling(expected, tmp_path / "snapshot")
+    assert not (tmp_path / "snapshot").exists()
 
 
 def test_shared_provider_source_drift_is_not_silently_overwritten(checkout, tmp_path):
@@ -569,7 +636,7 @@ def test_failed_preparation_does_not_publish_partial_files(checkout, tmp_path, m
     directory = retained(tmp_path, [finding(provider_path(provider(checkout)))])
     expected = planner.plan(checkout, [directory])
 
-    def build(item, work):
+    def build(item, work, tooling):
         if fault == "builder":
             raise RuntimeError("build failed")
         data, hashes = built(item, work)
