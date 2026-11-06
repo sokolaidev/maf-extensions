@@ -17,6 +17,7 @@ from container_release import (
     digest,
     profiles,
     read,
+    release_scan_passes,
     timestamp,
     validate_identity,
     version,
@@ -181,7 +182,14 @@ def evidence_rows(reports: dict[str, Any], candidate: dict[str, Any]) -> list[tu
             if isinstance(inventory.get("artifacts"), list)
             else UNAVAILABLE,
         ),
-        ("High/Critical gate, including unfixed findings", assessment.get("outcome", UNAVAILABLE)),
+        (
+            "Critical release gate, including unfixed findings",
+            ("passed" if release_scan_passes(assessment) else "blocked")
+            if assessment.get("outcome") in {"clean", "vulnerable"}
+            and isinstance(assessment.get("findings"), list)
+            else UNAVAILABLE,
+        ),
+        ("High/Critical monitoring assessment", assessment.get("outcome", UNAVAILABLE)),
         ("Assessed at (UTC)", assessment.get("assessedAt", UNAVAILABLE)),
         ("Database source / identity", database.get("from", UNAVAILABLE)),
         ("Database schema", database.get("schemaVersion", UNAVAILABLE)),

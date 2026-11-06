@@ -26,6 +26,7 @@ from container_release import (  # noqa: E402
     observe,
     profiles,
     read,
+    release_scan_passes,
     reserve,
     scan_result,
     version,
@@ -534,3 +535,35 @@ def test_unassessed_sibling_and_nested_index_are_rejected(tmp_path, nested):
     )
     with pytest.raises(ValueError):
         validate_layout(tmp_path, config["digest"])
+
+
+@pytest.mark.parametrize("severity,allowed", [("High", True), ("Critical", False)])
+@pytest.mark.parametrize("state", ["fixed", "not-fixed", "wont-fix", "unknown"])
+def test_release_threshold_preserves_monitoring_findings(severity, allowed, state):
+    report = scan()
+    report["matches"] = [
+        {"vulnerability": {"id": "CVE-example", "severity": severity, "fix": {"state": state}}}
+    ]
+    assessment = scan_result(report, candidate()["imageId"], AT)
+    assert release_scan_passes(assessment) is allowed
+    assert assessment["outcome"] == "vulnerable"
+    assert assessment["findings"] == [
+        {"id": "CVE-example", "severity": severity, "fix": {"state": state, "versions": []}}
+    ]
+
+
+@pytest.mark.parametrize(
+    "assessment",
+    [
+        {},
+        {"outcome": "clean"},
+        {"outcome": "unavailable", "findings": []},
+        {"outcome": "running", "findings": []},
+        {"outcome": "vulnerable", "findings": []},
+        {"outcome": "clean", "findings": [{"severity": "Critical"}]},
+        {"outcome": "vulnerable", "findings": [{"severity": "unexpected"}]},
+        {"outcome": "vulnerable", "findings": [None]},
+    ],
+)
+def test_release_threshold_refuses_incomplete_assessments(assessment):
+    assert not release_scan_passes(assessment)

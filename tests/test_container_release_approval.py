@@ -43,6 +43,7 @@ def prepared(tmp_path):
         "assessment.json": {
             "assessedAt": "2026-10-11T12:00:00Z",
             "outcome": "clean",
+            "findings": [],
             "database": {
                 "built": "2026-10-11T06:00:00Z",
                 "valid": True,
@@ -505,3 +506,18 @@ def test_terraform_random_summary_renders_cases_receipt_and_version(prepared, ac
     assert f"| Prepared Terraform receipt | {approval.literal(retained['receipt'])}" in result
     assert f"/blob/{'a' * 40}/images/terraform-sandbox/TERRAFORM.md" in result
     assert "Bicep AVM check" not in result
+
+
+@pytest.mark.parametrize("severity,gate", [("High", "passed"), ("Critical", "blocked")])
+def test_approval_separates_release_threshold_from_monitoring(prepared, severity, gate):
+    prepared.reports["assessment.json"].update(
+        outcome="vulnerable", findings=[{"id": "CVE-example", "severity": severity}]
+    )
+    prepared.reports["grype.json"]["matches"] = [
+        {"vulnerability": {"id": "CVE-example", "severity": severity}}
+    ]
+    prepared.save()
+    result = approval.render(prepared.candidate, prepared.directory, "release", "evidence")
+    assert f"| Critical release gate, including unfixed findings | <code>{gate}</code>" in result
+    assert "| High/Critical monitoring assessment | <code>vulnerable</code>" in result
+    assert f"| Vulnerability matches: {severity} | <code>1</code>" in result

@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from container_release import REPOSITORY, ROOT, read, scan_result, timestamp
+from container_release import REPOSITORY, ROOT, read, release_scan_passes, scan_result, timestamp
 from container_release_assets import Evidence, image_tag
 from container_release_history import GitHub, History, decode, encode, sha256
 from image_scan_policy import BICEP_ROUTES, evidence_route
@@ -219,7 +219,7 @@ def release_evidence(client: GitHub, record: dict[str, Any], directory: Path) ->
 
 
 def baseline(client: GitHub, record: dict[str, Any], directory: Path) -> dict[str, Any]:
-    """Require authenticated completion and a clean original assessment for image refreshes."""
+    """Require authenticated completion and a release-eligible original scan for image refreshes."""
     evidence_url = release_evidence(client, record, directory)
     candidate = record["candidate"]
     assessment = read(directory / "assessment.json")
@@ -229,11 +229,12 @@ def baseline(client: GitHub, record: dict[str, Any], directory: Path) -> dict[st
         assessment["assessedAt"],
         sbom=read(directory / "sbom.syft.json"),
     )
-    if verified != assessment or verified["outcome"] != "clean":
+    if verified != assessment or not release_scan_passes(verified):
         raise ValueError("Published assessment does not satisfy the release gate")
     result = {
         "components": components(read(directory / "sbom.syft.json"), record["imageId"]),
         "evidence": evidence_url,
+        "assessment": verified,
     }
     if record["profile"] in BICEP_ROUTES:
         route = candidate.get("bicepRoute", "upstream")
@@ -651,20 +652,24 @@ def desired(
         reasons.pop("components", None)
     observation = record.get("latestAttempt", {})
     pending_vulnerabilities = reasons.get("vulnerabilities")
-    vulnerable = (
-        observation
-        if observation.get("outcome") == "vulnerable"
-        else (
-            record.get("lastKnownVulnerable", {}) if observation.get("outcome") != "clean" else {}
-        )
-    )
-    if vulnerable:
+    if observation.get("outcome") not in {"clean", "vulnerable"}:
+        observation = record.get("lastKnownVulnerable", {})
+    release_assessment = released.get("assessment")
+    evidence = released["evidence"]
+    if release_assessment and (
+        not observation
+        or timestamp(observation["assessedAt"]) <= timestamp(release_assessment["assessedAt"])
+    ):
+        observation = release_assessment
+    elif observation.get("outcome") == "vulnerable":
+        evidence = f"https://github.com/{REPOSITORY}/releases/tag/{observation['evidenceRelease']}"
+    if observation.get("outcome") == "vulnerable":
         reasons["vulnerabilities"] = {
             "baselineDigest": record["registryDigest"],
             "findings": sorted(
-                vulnerable["findings"], key=lambda item: json.dumps(item, sort_keys=True)
+                observation["findings"], key=lambda item: json.dumps(item, sort_keys=True)
             ),
-            "evidence": f"https://github.com/{REPOSITORY}/releases/tag/{vulnerable['evidenceRelease']}",
+            "evidence": evidence,
         }
     elif (
         pending_vulnerabilities
@@ -831,7 +836,7 @@ def body(profile: str, state: dict[str, Any]) -> str:
                 f"They do not establish a vulnerability in the published image. Status: **{state['status']}**."
             )
         )
-        + "\n\nPublication requires the existing exact-candidate runtime, SBOM, High/Critical scan, approval and signature checks. A passing daily scan does not close this request.\n\n"
+        + "\n\nPublication requires the existing exact-candidate runtime, SBOM, Critical scan, approval and signature checks. High findings remain monitoring warnings and remediation requests. A passing daily scan does not close this request.\n\n"
         "**Describe alternatives you've considered**\n\n"
         "Do not publish automatically or treat a scanner outage as evidence that a new image is needed.\n\n"
         "**Additional context**\n\n"

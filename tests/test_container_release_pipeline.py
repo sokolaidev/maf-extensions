@@ -969,7 +969,7 @@ def test_freshness_refresh_preserves_approval_reports_and_uses_same_image(monkey
 
 
 @pytest.mark.parametrize("severity", ["High", "Critical"])
-def test_vulnerable_image_cannot_reach_registry_publication(monkeypatch, tmp_path, severity):
+def test_only_critical_findings_prevent_registry_publication(monkeypatch, tmp_path, severity):
     raw = scan_report()
     raw["matches"] = [
         {
@@ -991,8 +991,22 @@ def test_vulnerable_image_cannot_reach_registry_publication(monkeypatch, tmp_pat
     monkeypatch.setattr(registry, "load_retained", lambda *a: None)
     monkeypatch.setattr(registry, "manifest", lambda *a, **kw: pytest.fail("registry reached"))
     monkeypatch.setattr(registry, "run", lambda *a, **kw: pytest.fail("registry push reached"))
-    with pytest.raises(ValueError, match="complete passing scan"):
-        registry.promote(tmp_path, MemoryHistory())
+    monkeypatch.setattr(registry, "now", lambda: AT)
+    if severity == "Critical":
+        with pytest.raises(ValueError, match="complete passing scan"):
+            registry.promote(tmp_path, MemoryHistory())
+    else:
+
+        class RegistryReached(Exception):
+            pass
+
+        def reached(*args, **kwargs):
+            raise RegistryReached
+
+        monkeypatch.setattr(registry, "manifest", reached)
+        with pytest.raises(RegistryReached):
+            registry.promote(tmp_path, MemoryHistory())
+        assert read(tmp_path / "assessment.json")["outcome"] == "vulnerable"
 
 
 @pytest.mark.parametrize("completed", [False, True])

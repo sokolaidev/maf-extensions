@@ -202,12 +202,12 @@ def test_artifact_loss_after_recovery_plan_cannot_build_without_tools(monkeypatc
 
 def test_failed_rebuild_does_not_emit_candidate_selection(monkeypatch, tmp_path, retry):
     def prepare(*args, **kwargs):
-        raise ValueError("High/Critical assessment failed")
+        raise ValueError("Critical assessment failed")
 
     outputs = []
     monkeypatch.setattr(dispatcher, "outputs", outputs.append)
     monkeypatch.setattr(dispatcher, "prepare", prepare)
-    with pytest.raises(ValueError, match="High/Critical"):
+    with pytest.raises(ValueError, match="Critical"):
         dispatcher.dispatch("bicep", "0.1.0", tmp_path, tmp_path / "selection")
     assert outputs == []
     assert not (tmp_path / "selection").exists()

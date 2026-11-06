@@ -672,6 +672,16 @@ def observe(catalogue: dict[str, Any], name: str, assessment: dict[str, Any]) ->
     return result
 
 
+def release_scan_passes(assessment: dict[str, Any]) -> bool:
+    """Apply the Critical publication threshold to a validated scan, retaining High warnings."""
+    findings = assessment.get("findings")
+    return (
+        isinstance(findings, list)
+        and assessment.get("outcome") == ("vulnerable" if findings else "clean")
+        and all(isinstance(item, dict) and item.get("severity") == "High" for item in findings)
+    )
+
+
 def scan_result(
     report: dict[str, Any], image_id: str, at: str, *, sbom: dict[str, Any] | None = None
 ) -> dict[str, Any]:
