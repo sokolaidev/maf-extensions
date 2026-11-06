@@ -321,18 +321,40 @@ async def test_selector_preserves_whole_mixed_turn_and_replay_does_not_repay_sum
     assert len(client.requests) == first_requests
 
 
+class _UnsupportedOption(ValueError):
+    code = "unsupported_parameter"
+    param = "tool_choice"
+
+
+class _RateLimitError(RuntimeError):
+    status_code = 429
+
+
 @pytest.mark.anyio
-@pytest.mark.parametrize("scenario", ["save_failure", "after_save_failure"])
-async def test_live_runner_records_storage_outcome_without_retrying_model(scenario):
+@pytest.mark.parametrize("scenario", ["save_failure", "after_save_failure", "stale"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "caller_error", [None, ConnectionError, TimeoutError, _UnsupportedOption, _RateLimitError]
+)
+async def test_live_runner_records_storage_outcome_without_retrying_model(
+    scenario, stream, caller_error
+):
     model = FixtureClient()
-    controls = CompactionOptions(persistence_scenario=scenario, session_mode="restart")
+    controls = CompactionOptions(
+        persistence_scenario=scenario, session_mode="restart", stream=stream
+    )
     options = StrategyOptions(
         tokenizer=CharacterEstimatorTokenizer(),
         max_context_window_tokens=100_000,
         max_output_tokens=1000,
         compaction=controls,
     )
-    outcome = await run_live(
+    waits = []
+
+    async def wait(delay):
+        waits.append(delay)
+
+    run = run_live(
         ProviderRuntime(model, "fixture", {}),
         strategy_name="tool_summary_anchored",
         options=options,
@@ -341,10 +363,23 @@ async def test_live_runner_records_storage_outcome_without_retrying_model(scenar
         ),
         probe_repeats=1,
         combined_repeats=1,
+        sleep=wait,
     )
+    if caller_error is None:
+        outcome = await run
+    else:
+        try:
+            raise caller_error("unrelated caller failure")
+        except caller_error:
+            outcome = await run
     assert outcome.error
     assert len(model.requests) == 1
+    assert not waits
+    assert not outcome.dropped_options
+    assert outcome.rate_limit_retries == 0
+    assert outcome.connection_retries == 0
     assert outcome.compaction_diagnostics["storage_evidence"] == "simulated_in_memory"
+    assert len(outcome.compaction_diagnostics["persistence_requests"]) == 1
     request = outcome.compaction_diagnostics["persistence_requests"][0]
     assert request["committed"] == (scenario == "after_save_failure")
 

@@ -73,6 +73,7 @@ from ._lifecycle import (
     update_original_reasoning,
 )
 from ._metrics import clamp_cached_tokens, serialize_message
+from ._persistence_scenarios import ScenarioFailure
 from ._recall import (
     COMBINED_SCOPE,
     FactOutcome,
@@ -1935,6 +1936,8 @@ async def run_live(
                         agent = experiment.binding.agent
                         strategy = experiment.binding.strategy
                         recall_middleware = experiment.binding.recall
+                except ScenarioFailure:
+                    raise
                 except Exception as exc:
                     # Throttling first. The two predicates disagree about a 429 by
                     # construction -- a status the provider answered with is a decision, and
@@ -2012,7 +2015,7 @@ async def run_live(
             try:
                 return await _attempt(text, turn_options, before, before_decisions)
             except Exception as exc:
-                option = unsupported_option(exc)
+                option = None if isinstance(exc, ScenarioFailure) else unsupported_option(exc)
                 if option is None or option in dropped or not drop_option(turn_options, option):
                     error = f"{label}: {type(exc).__name__}: {exc}"
                     return None
