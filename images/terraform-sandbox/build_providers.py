@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -166,8 +167,13 @@ def unpack(data: bytes, target: Path) -> None:
             path.write_bytes(archive.read(entry))
 
 
-def build(provider: dict[str, Any], work: Path) -> tuple[bytes, dict[str, str]]:
-    """Verify source and security overrides and build a self-identifying provider package."""
+def build(
+    provider: dict[str, Any],
+    work: Path,
+    *,
+    resolve_modules: Callable[[dict[str, str], Path, dict[str, str]], dict[str, str]] | None = None,
+) -> tuple[bytes, dict[str, str]]:
+    """Build verified source; an optional resolver updates pins before exact verification."""
     plan = provider["source_build"]
     if subprocess.check_output(["go", "env", "GOVERSION"], text=True).strip() != plan["go_version"]:
         raise ValueError("Provider build toolchain mismatch")
@@ -193,6 +199,8 @@ def build(provider: dict[str, Any], work: Path) -> tuple[bytes, dict[str, str]]:
     def run(arguments: list[str]) -> None:
         subprocess.run(["go", *arguments], cwd=work, env=env, check=True)
 
+    if resolve_modules is not None:
+        plan["modules"] = resolve_modules(plan["modules"], work, env)
     if plan["modules"]:
         run(["get", *(name + "@" + version for name, version in sorted(plan["modules"].items()))])
     run(["mod", "verify"])

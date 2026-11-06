@@ -7,14 +7,47 @@ import copy
 import hashlib
 import importlib.util
 import json
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from container_release import ROOT, read, write
-from plan_go_remediation import CONTEXT, RECIPE, digest, inputs, plan
+from plan_go_remediation import CONTEXT, RECIPE, digest, inputs, plan, semver
 from terraform_dependencies import load_manifest, verify_built_provider
 from terraform_manifest import render
+
+
+def resolve_modules(requested: dict[str, str], work: Path, env: dict[str, str]) -> dict[str, str]:
+    """Resolve required companion pins without downgrades, replacements or major upgrades."""
+    if not requested:
+        return {}
+    subprocess.run(
+        ["go", "mod", "edit", *(f"-require={n}@{v}" for n, v in sorted(requested.items()))],
+        cwd=work,
+        env=env,
+        check=True,
+    )
+    raw = subprocess.check_output(
+        ["go", "list", "-m", "-json", "all"], cwd=work, env=env, text=True
+    )
+    resolved = {}
+    decoder = json.JSONDecoder()
+    while raw.strip():
+        row, end = decoder.raw_decode(raw.lstrip())
+        raw = raw.lstrip()[end:]
+        name, version = row.get("Path"), row.get("Version")
+        if name not in requested:
+            continue
+        if name in resolved or "Replace" in row or row.get("Main"):
+            raise ValueError("Unexpected resolved Go module")
+        before, after = semver(requested[name]), semver(version)
+        if after[0] != before[0] or after < before:
+            raise ValueError("Unsafe companion module update: " + name)
+        resolved[name] = version
+    if resolved.keys() != requested.keys():
+        raise ValueError("Missing resolved Go modules")
+    return resolved
 
 
 def rebuild(provider: dict[str, Any], work: Path) -> tuple[bytes, dict[str, str]]:
@@ -25,7 +58,7 @@ def rebuild(provider: dict[str, Any], work: Path) -> tuple[bytes, dict[str, str]
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.build(provider, work)
+    return module.build(provider, work, resolve_modules=resolve_modules)
 
 
 def prepare(root: Path, directories: list[Path], expected: dict[str, Any], output: Path) -> None:
@@ -58,17 +91,32 @@ def prepare(root: Path, directories: list[Path], expected: dict[str, Any], outpu
         staging = Path(folder)
         payload = staging / "proposal"
         payload.mkdir()
-        built: dict[str, tuple[bytes, dict[str, str]]] = {}
+        built: dict[str, tuple[bytes, dict[str, str], dict[str, str]]] = {}
         provider_records = []
+        companion_updates = []
         for path, index in sorted(changed_providers):
             provider = proposed[path]["providers"][index]
             source = provider["source_build"]
+            requested = source["modules"].copy()
             key = json.dumps(provider, sort_keys=True)
             if key not in built:
                 work = staging / f"build-{len(built)}"
                 work.mkdir()
-                built[key] = rebuild(provider, work)
-            data, module_files = built[key]
+                data, module_files = rebuild(provider, work)
+                built[key] = data, module_files, source["modules"].copy()
+            data, module_files, resolved = built[key]
+            source["modules"] = resolved.copy()
+            companion_updates.extend(
+                {
+                    "path": path,
+                    "owner": str(index),
+                    "module": name,
+                    "before": requested[name],
+                    "after": version,
+                }
+                for name, version in sorted(resolved.items())
+                if requested[name] != version
+            )
             source["sha256"] = hashlib.sha256(data).hexdigest()
             source["module_files"] = module_files
             verify_built_provider(provider, data)
@@ -95,6 +143,7 @@ def prepare(root: Path, directories: list[Path], expected: dict[str, Any], outpu
                 "schemaVersion": 1,
                 "files": files,
                 "providers": provider_records,
+                "companionUpdates": companion_updates,
                 "qualification": "pending-image-build-and-rescan",
             },
         )

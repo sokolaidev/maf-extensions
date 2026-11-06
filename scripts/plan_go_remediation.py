@@ -53,7 +53,7 @@ def module_name(value: str) -> bool:
 
 
 def fixed_version(installed: str, fix: dict[str, Any]) -> str | None:
-    """Choose the first stable fix above the installed version on the same major line."""
+    """Choose the highest listed stable fix on the installed major line."""
     current = semver(installed)
     if fix.get("state") != "fixed":
         return None
@@ -65,7 +65,7 @@ def fixed_version(installed: str, fix: dict[str, Any]) -> str | None:
             continue
         if parsed[0] == current[0] and parsed > current:
             candidates.append(parsed)
-    return "v" + ".".join(map(str, min(candidates))) if candidates else None
+    return "v" + ".".join(map(str, max(candidates))) if candidates else None
 
 
 def inputs(root: Path) -> tuple[dict[str, Any], dict[str, str]]:
@@ -259,6 +259,8 @@ def plan(root: Path, directories: list[Path]) -> dict[str, Any]:
                             "after": target,
                         },
                     )
+                    if semver(target)[0] != semver(update["after"])[0]:
+                        raise ValueError(f"Conflicting target majors for {key}")
                     if semver(target) > semver(update["after"]):
                         update["after"] = target
 

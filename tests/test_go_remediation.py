@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib.machinery
 import json
 import shutil
 import subprocess
@@ -169,7 +170,7 @@ def test_multiple_findings_take_the_highest_required_fix(checkout, tmp_path):
 @pytest.mark.parametrize(
     "installed,versions,wanted",
     [
-        ("v0.60.0", ["0.62.0", "0.61.0", "1.0.0"], "v0.61.0"),
+        ("v0.60.0", ["0.62.0", "0.61.0", "1.0.0"], "v0.62.0"),
         ("v1.19.2", ["1.20.2"], "v1.20.2"),
         ("v1.19.2", ["2.0.0", "1.20.0-rc.1", "1.19.1"], None),
         ("v1.19.2", [], None),
@@ -261,6 +262,137 @@ def test_existing_override_is_not_downgraded_or_called_a_verified_fix(checkout, 
     proposal = planner.plan(checkout, [retained(tmp_path)])
     assert proposal["updates"] == []
     assert proposal["findings"][0]["decisions"][0]["status"] == "override-already-sufficient"
+
+
+def test_existing_override_on_another_minor_line_still_receives_its_fix(checkout, tmp_path):
+    recipe = read(checkout / planner.RECIPE)
+    recipe["engines"]["terraform"]["source_build"]["modules"][MODULE] = "v1.20.1"
+    write(checkout / planner.RECIPE, recipe)
+    match = finding(installed="v1.19.1")
+    match["vulnerability"]["fix"]["versions"] = ["1.19.2", "1.20.2"]
+    proposal = planner.plan(checkout, [retained(tmp_path, [match])])
+    assert proposal["updates"][0]["after"] == "v1.20.2"
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_conflicting_target_majors_are_refused(checkout, tmp_path, reverse):
+    directories = [
+        retained(tmp_path, [finding(module="example.com/dep", installed=old, fixed=new)], name=name)
+        for old, new, name in [("v0.9.0", "0.10.0", "zero"), ("v1.0.0", "1.1.0", "one")]
+    ]
+    with pytest.raises(ValueError, match="Conflicting target majors"):
+        planner.plan(checkout, list(reversed(directories)) if reverse else directories)
+
+
+def test_required_companion_updates_propagate_to_shared_locks(checkout, tmp_path, monkeypatch):
+    original = read(checkout / planner.CONTEXT / "dependencies.terraform.json")
+    original["providers"][0]["source_build"]["modules"]["golang.org/x/crypto"] = "v0.57.0"
+    for name in ("dependencies.terraform.json", "dependencies.terraform-avm.json"):
+        document = read(checkout / planner.CONTEXT / name)
+        for item in document["providers"]:
+            if item["source"] == original["providers"][0]["source"]:
+                item["source_build"]["modules"]["golang.org/x/crypto"] = "v0.57.0"
+        write(checkout / planner.CONTEXT / name, document)
+    write(checkout / planner.CONTEXT / "dependencies.shared.json", original)
+    directory = retained(tmp_path, [finding(provider_path(provider(checkout)))])
+    expected = planner.plan(checkout, [directory])
+    calls = []
+
+    def build(item, work):
+        calls.append(item)
+        item["source_build"]["modules"]["golang.org/x/crypto"] = "v0.58.0"
+        return built(item, work)
+
+    monkeypatch.setattr(preparation, "rebuild", build)
+    destination = tmp_path / "proposal"
+    preparation.prepare(checkout, [directory], expected, destination)
+    assert len(calls) == 1
+    report = read(destination / "proposal.json")
+    assert len(report["companionUpdates"]) == 3
+    for change in report["companionUpdates"]:
+        assert change["before"] == "v0.57.0"
+        assert change["after"] == "v0.58.0"
+        item = read(destination / "files" / change["path"])["providers"][int(change["owner"])]
+        assert item["source_build"]["modules"][change["module"]] == change["after"]
+
+
+@pytest.mark.parametrize("fault", [None, "downgrade", "major", "replacement", "missing"])
+def test_companion_resolution_uses_go_graph_and_refuses_unsafe_changes(
+    tmp_path, monkeypatch, fault
+):
+    requested = {MODULE: "v0.62.0", "golang.org/x/crypto": "v0.57.0"}
+    selected = {MODULE: "v0.62.0", "golang.org/x/crypto": "v0.58.0"}
+    if fault == "downgrade":
+        selected[MODULE] = "v0.60.0"
+    if fault == "major":
+        selected[MODULE] = "v1.0.0"
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        assert kwargs["cwd"] == tmp_path
+        assert kwargs["env"]["GOTOOLCHAIN"] == "local"
+
+    def output(command, **kwargs):
+        commands.append(command)
+        rows: list[dict[str, object]] = [
+            {"Path": name, "Version": version} for name, version in sorted(selected.items())
+        ]
+        if fault == "replacement":
+            rows[0]["Replace"] = {"Dir": "/other"}
+        if fault == "missing":
+            rows.pop()
+        return "\n".join(json.dumps(row) for row in rows)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "check_output", output)
+    if fault is None:
+        assert (
+            preparation.resolve_modules(requested, tmp_path, {"GOTOOLCHAIN": "local"}) == selected
+        )
+        assert commands[0] == [
+            "go",
+            "mod",
+            "edit",
+            *[f"-require={n}@{v}" for n, v in sorted(requested.items())],
+        ]
+        assert commands[1] == ["go", "list", "-m", "-json", "all"]
+    else:
+        with pytest.raises(ValueError):
+            preparation.resolve_modules(requested, tmp_path, {"GOTOOLCHAIN": "local"})
+
+
+def test_remediation_build_resolves_companions_before_exact_pin_verification(tmp_path, monkeypatch):
+    item = provider(ROOT)
+    item["source_build"]["modules"] = {MODULE: "v0.62.0", "golang.org/x/crypto": "v0.57.0"}
+    calls = []
+
+    def output(command, **kwargs):
+        if command == ["go", "env", "GOVERSION"]:
+            return item["source_build"]["go_version"]
+        if command[-1] == "all":
+            return "\n".join(
+                json.dumps({"Path": name, "Version": version})
+                for name, version in {MODULE: "v0.62.0", "golang.org/x/crypto": "v0.58.0"}.items()
+            )
+        return json.dumps({"Version": "v0.1.0"})
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[:2] == ["go", "get"]:
+            assert "golang.org/x/crypto@v0.58.0" in command
+        assert command[:2] != ["go", "build"]
+
+    monkeypatch.setattr(builder.subprocess, "check_output", output)
+    monkeypatch.setattr(builder.subprocess, "run", run)
+    monkeypatch.setattr(builder.prep, "fetch", lambda *a, **kw: b"source")
+    monkeypatch.setattr(builder, "unpack", lambda *a: None)
+    monkeypatch.setattr(preparation.importlib.util, "module_from_spec", lambda *_: builder)
+    monkeypatch.setattr(importlib.machinery.SourceFileLoader, "exec_module", lambda *_: None)
+    with pytest.raises(ValueError, match="security dependency mismatch"):
+        preparation.rebuild(item, tmp_path)
+    assert calls[0][:3] == ["go", "mod", "edit"]
+    assert ["go", "mod", "verify"] in calls
 
 
 def test_shared_provider_locks_are_rebuilt_once_and_keep_upstream_identity(
