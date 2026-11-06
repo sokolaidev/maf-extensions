@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from copy import deepcopy
@@ -149,26 +150,48 @@ class GitHub:
         return self.request(f"repos/{REPOSITORY}/releases/assets/{asset_id}", binary=True)
 
     def download_file(self, asset_id: int, destination: Path) -> None:
-        """Stream large retained reports rather than buffering entire archives in memory."""
+        """Stream assets with bounded read retries, leaving no partial file on failure."""
         positive_id(asset_id)
         with destination.open("xb") as output:
-            subprocess.run(
-                [
-                    "gh",
-                    "api",
-                    "--hostname",
-                    "github.com",
-                    f"repos/{REPOSITORY}/releases/assets/{asset_id}",
-                    "-H",
-                    "Accept: application/octet-stream",
-                    "-H",
-                    "Cache-Control: no-cache",
-                ],
-                stdout=output,
-                stderr=subprocess.PIPE,
-                check=True,
-                timeout=600,
-            )
+            try:
+                for attempt in range(3):
+                    output.seek(0)
+                    output.truncate()
+                    try:
+                        subprocess.run(
+                            [
+                                "gh",
+                                "api",
+                                "--hostname",
+                                "github.com",
+                                f"repos/{REPOSITORY}/releases/assets/{asset_id}",
+                                "-H",
+                                "Accept: application/octet-stream",
+                                "-H",
+                                "Cache-Control: no-cache",
+                            ],
+                            stdout=output,
+                            stderr=subprocess.PIPE,
+                            check=True,
+                            timeout=600,
+                        )
+                        return
+                    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                        detail = (
+                            (error.stderr or b"").decode("utf-8", errors="replace") or str(error)
+                        )[:4096]
+                        note = (
+                            f"Release asset {asset_id} download attempt {attempt + 1}/3: {detail}"
+                        )
+                        error.add_note(note)
+                        if attempt == 2 or not retryable_download(error):
+                            raise
+                        print(note, file=sys.stderr)
+                        time.sleep(attempt + 1)
+            except BaseException:
+                output.close()
+                destination.unlink()
+                raise
 
     def tag_commit(self, tag: str) -> str | None:
         """Resolve an existing tag instead of trusting the nominal target_commitish field."""
@@ -255,6 +278,31 @@ class Snapshot:
     def lineage(self) -> list[dict[str, Any]]:
         """Bind every committed predecessor without downloading historical scan records."""
         return [*self.document["ancestors"], self.reference]
+
+
+def retryable_download(error: subprocess.CalledProcessError | subprocess.TimeoutExpired) -> bool:
+    """Retry transport failures and temporary HTTP responses, never permanent refusals."""
+    if isinstance(error, subprocess.TimeoutExpired):
+        return True
+    detail = (error.stderr or b"").decode("utf-8", errors="replace").lower()
+    status = re.search(r"\bhttp (\d{3})\b", detail)
+    if status:
+        code = int(status[1])
+        return code in {408, 429} or 500 <= code < 600
+    return error.returncode == 1 and any(
+        message in detail
+        for message in (
+            "unexpected eof",
+            ": eof",
+            "connection reset",
+            "connection refused",
+            "timeout",
+            "timed out",
+            "temporary failure",
+            "no such host",
+            "error connecting to",
+        )
+    )
 
 
 def positive_id(value: Any) -> int:
