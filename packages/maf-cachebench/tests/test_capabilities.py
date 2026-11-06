@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 from agent_framework import AgentSession, CharacterEstimatorTokenizer, Content
+from maf_compaction import CompactionStack
 
 from maf_cachebench import (
     CompactionOptions,
@@ -102,6 +103,10 @@ async def test_branch_can_continue_without_mutating_its_source():
     )
     model = FixtureClient()
     experiment = SessionExperiment(lambda: _binding(model, controls), controls)
+    assert experiment.binding.recall is not None
+    behavior = experiment.binding.recall.session_state()
+    behavior["value_free_streak"] = 2
+    experiment.binding.recall.restore_session_state(behavior)
     _, branch = await experiment.run(AgentSession(session_id="source"), "Remember SOURCE-2466.", {})
     store = experiment.persistence_store
     assert store is not None
@@ -129,6 +134,24 @@ async def test_stale_scenario_fails_if_store_ignores_fencing(monkeypatch):
     assert not record.passed
     assert not record.checks["commit_outcome"]
     assert not record.checks["stored_snapshot_unchanged"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("scenario", ["fenced", "branch"])
+async def test_scenario_fails_if_restart_loses_recall_state(monkeypatch, scenario):
+    restore = CompactionStack.restore
+
+    def lose_state(self, data):
+        data = deepcopy(data)
+        data["middleware"]["value_free_streak"] = 0
+        restore(self, data)
+
+    monkeypatch.setattr(CompactionStack, "restore", lose_state)
+    record = await run_capability_scenario(scenario)
+    assert not record.passed
+    assert not record.checks["compaction_state_committed"]
+    if scenario == "branch":
+        assert not record.checks["branch_restores"]
 
 
 @pytest.mark.anyio

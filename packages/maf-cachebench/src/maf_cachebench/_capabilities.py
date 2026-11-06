@@ -85,9 +85,6 @@ def _binding(model: FixtureClient, controls: CompactionOptions) -> LiveBinding:
         arm=gate.arm,
         disarm=gate.disarm,
     )
-    behavior = recall.session_state()
-    behavior["value_free_streak"] = 2
-    recall.restore_session_state(behavior)
     agent = build_live_agent(
         ProviderRuntime(model, "offline-fixture", {}),
         kind="plain",
@@ -119,6 +116,10 @@ async def _persistence(
     )
     model = FixtureClient(fail=scenario == "request_failure")
     experiment = SessionExperiment(lambda: _binding(model, controls), controls)
+    assert experiment.binding.recall is not None
+    behavior = experiment.binding.recall.session_state()
+    behavior["value_free_streak"] = 2
+    experiment.binding.recall.restore_session_state(behavior)
     store = experiment.persistence_store
     assert store is not None
     model.on_event = lambda event: store.events.append(event)
@@ -196,7 +197,10 @@ async def _persistence(
         )
         detached = AgentSession.from_dict(deepcopy(stored))
         with experiment.registry.activate(detached):
-            checks["branch_restores"] = experiment.binding.recall is not None
+            checks["branch_restores"] = (
+                experiment.binding.recall is not None
+                and experiment.binding.recall.session_state()["value_free_streak"] == 2
+            )
     observations = {
         "request": request,
         "model_requests": len(model.requests),
