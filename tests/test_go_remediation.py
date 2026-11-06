@@ -335,6 +335,8 @@ def test_companion_resolution_uses_go_graph_and_refuses_unsafe_changes(
 
     def output(command, **kwargs):
         commands.append(command)
+        if len(commands) == 1:
+            return json.dumps({"Path": MODULE, "Version": "v0.60.0"})
         rows: list[dict[str, object]] = [
             {"Path": name, "Version": version} for name, version in sorted(selected.items())
         ]
@@ -350,13 +352,13 @@ def test_companion_resolution_uses_go_graph_and_refuses_unsafe_changes(
         assert (
             preparation.resolve_modules(requested, tmp_path, {"GOTOOLCHAIN": "local"}) == selected
         )
-        assert commands[0] == [
+        assert commands[1] == [
             "go",
             "mod",
             "edit",
             *[f"-require={n}@{v}" for n, v in sorted(requested.items())],
         ]
-        assert commands[1] == ["go", "list", "-m", "-json", "all"]
+        assert commands[0] == commands[2] == ["go", "list", "-m", "-json", "all"]
     else:
         with pytest.raises(ValueError):
             preparation.resolve_modules(requested, tmp_path, {"GOTOOLCHAIN": "local"})
@@ -393,6 +395,66 @@ def test_remediation_build_resolves_companions_before_exact_pin_verification(tmp
         preparation.rebuild(item, tmp_path)
     assert calls[0][:3] == ["go", "mod", "edit"]
     assert ["go", "mod", "verify"] in calls
+
+
+@pytest.mark.parametrize("source_version", ["v0.63.0", "v1.0.0"])
+def test_remediation_preserves_source_graph_requirements(tmp_path, monkeypatch, source_version):
+    selected = {MODULE: source_version}
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        for flag in command[3:]:
+            name, version = flag.removeprefix("-require=").split("@")
+            selected[name] = version
+
+    def output(command, **kwargs):
+        commands.append(command)
+        return json.dumps({"Path": MODULE, "Version": selected[MODULE]})
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "check_output", output)
+    if source_version == "v1.0.0":
+        with pytest.raises(ValueError, match="Unsafe"):
+            preparation.resolve_modules({MODULE: "v0.62.0"}, tmp_path, {})
+        assert all(command[:3] != ["go", "mod", "edit"] for command in commands)
+    else:
+        assert preparation.resolve_modules({MODULE: "v0.62.0"}, tmp_path, {}) == selected
+        assert selected[MODULE] == source_version
+
+
+@pytest.mark.parametrize("sum_exists", [False, True])
+@pytest.mark.parametrize("fail", [False, True])
+def test_resolver_restores_module_files_for_builder_replay(tmp_path, monkeypatch, sum_exists, fail):
+    original = {"go.mod": b"original module bytes\r\n", "go.sum": b"original sums\r\n"}
+    (tmp_path / "go.mod").write_bytes(original["go.mod"])
+    if sum_exists:
+        (tmp_path / "go.sum").write_bytes(original["go.sum"])
+    selected = "v0.60.0"
+
+    def output(command, **kwargs):
+        (tmp_path / "go.sum").write_bytes(b"extra graph checksums")
+        return json.dumps({"Path": MODULE, "Version": selected})
+
+    def run(command, **kwargs):
+        nonlocal selected
+        (tmp_path / "go.mod").write_bytes(b"resolved requirements")
+        selected = "v0.62.0"
+        if fail:
+            raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "check_output", output)
+    if fail:
+        with pytest.raises(subprocess.CalledProcessError):
+            preparation.resolve_modules({MODULE: "v0.62.0"}, tmp_path, {})
+    else:
+        assert preparation.resolve_modules({MODULE: "v0.62.0"}, tmp_path, {}) == {MODULE: "v0.62.0"}
+    assert (tmp_path / "go.mod").read_bytes() == original["go.mod"]
+    if sum_exists:
+        assert (tmp_path / "go.sum").read_bytes() == original["go.sum"]
+    else:
+        assert not (tmp_path / "go.sum").exists()
 
 
 def test_shared_provider_locks_are_rebuilt_once_and_keep_upstream_identity(

@@ -18,16 +18,8 @@ from terraform_dependencies import load_manifest, verify_built_provider
 from terraform_manifest import render
 
 
-def resolve_modules(requested: dict[str, str], work: Path, env: dict[str, str]) -> dict[str, str]:
-    """Resolve required companion pins without downgrades, replacements or major upgrades."""
-    if not requested:
-        return {}
-    subprocess.run(
-        ["go", "mod", "edit", *(f"-require={n}@{v}" for n, v in sorted(requested.items()))],
-        cwd=work,
-        env=env,
-        check=True,
-    )
+def selected_modules(requested: dict[str, str], work: Path, env: dict[str, str]) -> dict[str, str]:
+    """Read requested modules from the full source graph, refusing replacements."""
     raw = subprocess.check_output(
         ["go", "list", "-m", "-json", "all"], cwd=work, env=env, text=True
     )
@@ -41,13 +33,47 @@ def resolve_modules(requested: dict[str, str], work: Path, env: dict[str, str]) 
             continue
         if name in resolved or "Replace" in row or row.get("Main"):
             raise ValueError("Unexpected resolved Go module")
-        before, after = semver(requested[name]), semver(version)
-        if after[0] != before[0] or after < before:
-            raise ValueError("Unsafe companion module update: " + name)
         resolved[name] = version
-    if resolved.keys() != requested.keys():
-        raise ValueError("Missing resolved Go modules")
     return resolved
+
+
+def resolve_modules(requested: dict[str, str], work: Path, env: dict[str, str]) -> dict[str, str]:
+    """Resolve companion pins without lowering source requirements or crossing major versions."""
+    if not requested:
+        return {}
+    snapshots = {
+        path: path.read_bytes() if path.exists() else None
+        for path in (work / "go.mod", work / "go.sum")
+    }
+    try:
+        required = requested.copy()
+        for name, version in selected_modules(requested, work, env).items():
+            source, target = semver(version), semver(requested[name])
+            if source[0] != target[0]:
+                raise ValueError("Unsafe source module major change: " + name)
+            if source > target:
+                required[name] = version
+        subprocess.run(
+            ["go", "mod", "edit", *(f"-require={n}@{v}" for n, v in sorted(required.items()))],
+            cwd=work,
+            env=env,
+            check=True,
+        )
+        resolved = selected_modules(required, work, env)
+        if resolved.keys() != requested.keys():
+            raise ValueError("Missing resolved Go modules")
+        for name, version in resolved.items():
+            before, after = semver(required[name]), semver(version)
+            if after[0] != before[0] or after < before:
+                raise ValueError("Unsafe companion module update: " + name)
+        return resolved
+    finally:
+        # The ordinary builder must regenerate identical module files from original source.
+        for path, raw in snapshots.items():
+            if raw is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(raw)
 
 
 def rebuild(provider: dict[str, Any], work: Path) -> tuple[bytes, dict[str, str]]:
