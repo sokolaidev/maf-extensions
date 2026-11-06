@@ -746,6 +746,27 @@ class TestWhichHalfFailedIsInTheExitStatus:
     def test_a_repair_that_did_not_converge_asks_for_another_attempt(self, tmp_path):
         assert self._status(tmp_path, _SWAPPED) == check.MODEL_DID_NOT_CONVERGE
 
+    @pytest.mark.parametrize("rules", ["no-unused-params", "BCP035", "no-unused-params; BCP035"])
+    @pytest.mark.parametrize("cleanup_failed", [False, True])
+    def test_suppression_is_retryable_only_with_successful_cleanup(
+        self, tmp_path, rules, cleanup_failed
+    ):
+        output = _HEALTHY.replace(
+            "  [measured] tracked rules suppressed: 0 — none",
+            f"  [measured] tracked rules suppressed: {len(rules.split(';'))} — {rules}",
+        )
+        assert output != _HEALTHY
+        if cleanup_failed:
+            output += "\n  [measured] Not fully disposed: timeout\n"
+        assert self._status(tmp_path, output) == (
+            1 if cleanup_failed else check.MODEL_DID_NOT_CONVERGE
+        )
+
+    def test_missing_suppression_evidence_is_not_retryable(self, tmp_path):
+        output = _HEALTHY.replace("  [measured] tracked rules suppressed: 0 — none\n", "")
+        assert output != _HEALTHY
+        assert self._status(tmp_path, output) == 1
+
     def test_turn_1_counts_as_the_model_s_half_as_much_as_turn_2(self, tmp_path):
         """Both turns are one model doing open-ended work, so both earn the second loop.
 

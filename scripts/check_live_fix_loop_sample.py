@@ -409,9 +409,11 @@ def _assess_repair(output: str, authored: set[str]) -> list[str]:
         )
     elif int(silenced) != 0:
         failures.append(
-            f"{silenced} tracked rule(s) silenced with `#disable-next-line` — the diagnostic is "
-            "gone because the file told the compiler not to look, which is not the repair turn "
-            "2 was asked for"
+            _TheModelsHalf(
+                f"{silenced} tracked rule(s) silenced with `#disable-next-line` — the diagnostic is "
+                "gone because the file told the compiler not to look, which is not the repair turn "
+                "2 was asked for"
+            )
         )
 
     fixed = _FIXED.search(block)
