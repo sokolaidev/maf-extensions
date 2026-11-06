@@ -32,6 +32,8 @@ Hourly VM cost is `quantity × hours per resource per month × retailPrice`, usi
 
 The table shows quantity, unit price, usage, monthly cost and assumptions. `estimate.json` also retains document evidence, extracted requirements, the matched meter ID, effective date, retrieval time and selected image references. An unresolved row has `monthly_cost: null`, and any unresolved row makes `inventory_total: null`; `estimated_subtotal` is explicitly partial. Even when every extracted row is priced, the result is a scoped inventory estimate, not a billing quote.
 
+For failed prices, inspect `pricing_failures` in `estimate.json`, keyed by catalog product. Each entry records the query, region, currency, failure stage (`lookup`, `tool_result` or `selection`), exception type and message, and the returned tool text or parsed response when available. Error and response snapshots each retain at most 65,536 characters of JSON text and flag truncation explicitly. Meter-matching errors include the number of matches; the response retains the completeness flags and candidate rows. Diagnostics stay in the saved JSON report and never make an unresolved price acceptable to the live checker.
+
 Open `estimate.md` to view the result table. The sample does not print the table's document-derived names and notes to stdout; successful runs log package versions, timings, cleanup, artifact hashes and counts. Both report files can contain sensitive document content, including verbatim evidence in JSON, so retain them with the same access restrictions as the input. On POSIX, the new report directory and files use owner-only permissions (`0700` and `0600`). The live workflow uploads reports only from the checked-in public fixture.
 
 ## Validation
