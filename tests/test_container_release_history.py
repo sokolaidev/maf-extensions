@@ -15,6 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from container_release import (  # noqa: E402
+    abandon,
     complete,
     empty_catalogue,
     observe,
@@ -126,6 +127,55 @@ def append_reservation(history, operation="123/reserve", candidate=CANDIDATE, at
         source=SOURCE,
         at=at,
     )
+
+
+def test_interleaved_profiles_preserve_commits_after_uncertain_completion():
+    gh = FakeGitHub()
+    first = History(gh)
+    second = History(gh)
+    graphviz = CANDIDATE | {"profile": "graphviz", "attemptId": "456"}
+    append_reservation(first)
+    append_reservation(second, "456/reserve", graphviz)
+
+    def finish(history, candidate):
+        return history.append(
+            lambda catalogue: complete(catalogue, candidate, DIGEST, LATER),
+            operation=f"{candidate['attemptId']}/complete",
+            source=SOURCE,
+            at=LATER,
+        )
+
+    gh.failure = "after-publish"
+    with pytest.raises(TimeoutError, match="acknowledgement lost"):
+        finish(second, graphviz)
+    committed = finish(first, CANDIDATE)
+    retried = finish(second, graphviz)
+    assert retried.reference == committed.reference
+    assert len(gh.entries) == 4
+    assert retried.catalogue["current"] == {"bicep": "bicep/0.1.0", "graphviz": "graphviz/0.1.0"}
+    graphviz_record = copy.deepcopy(retried.catalogue["releases"]["graphviz/0.1.0"])
+    assert graphviz_record["state"] == "completed"
+    assert graphviz_record["completedAt"] == LATER
+
+    replacement = CANDIDATE | {"version": "0.1.1", "attemptId": "789"}
+    append_reservation(first, "789/reserve", replacement, at=LATER)
+    updated = finish(first, replacement)
+    assert updated.catalogue["current"] == {"bicep": "bicep/0.1.1", "graphviz": "graphviz/0.1.0"}
+    assert updated.catalogue["releases"]["graphviz/0.1.0"] == graphviz_record
+    assert updated.catalogue["releases"]["bicep/0.1.0"]["supersededAt"] == LATER
+
+    unfinished = graphviz | {"version": "0.1.1", "attemptId": "987"}
+    append_reservation(second, "987/reserve", unfinished, at=LATER)
+    retired = second.append(
+        lambda catalogue: abandon(catalogue, "graphviz/0.1.1", "candidate lost", LATER),
+        operation="987/abandon",
+        source=SOURCE,
+        at=LATER,
+    )
+    assert retired.catalogue["current"] == updated.catalogue["current"]
+    for name, record in updated.catalogue["releases"].items():
+        assert retired.catalogue["releases"][name] == record
+    assert retired.catalogue["releases"]["graphviz/0.1.1"]["state"] == "abandoned"
 
 
 def test_fresh_namespace_ignores_experimental_history_and_starts_at_one():

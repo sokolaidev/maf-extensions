@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.30.6](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.30.5...maf-sandbox-docker-v0.30.6) (2026-11-05)
+
+
+### Fixes
+
+* bump the proxy-modules group across 2 directories with 17 updates ([#2488](https://github.com/sokolaidev/maf-extensions/issues/2488)) ([9fda655](https://github.com/sokolaidev/maf-extensions/commit/9fda655acca4713dd299a6e4842cdcc2d5bffc15))
+
+## [0.30.5](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.30.4...maf-sandbox-docker-v0.30.5) (2026-11-05)
+
+
+### Fixes
+
+* patch x/net vulnerability in Docker and WSLC egress proxies ([#2482](https://github.com/sokolaidev/maf-extensions/issues/2482)) ([955bb4f](https://github.com/sokolaidev/maf-extensions/commit/955bb4f8b8ecb71c409d1e725804b82bf8c8d807))
+
+## [0.30.4](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.30.3...maf-sandbox-docker-v0.30.4) (2026-11-04)
+
+
+### Fixes
+
+* require maf-sandbox 0.53.0 in the dependents, and admit the 0.53 line ([#2440](https://github.com/sokolaidev/maf-extensions/issues/2440)) ([333e291](https://github.com/sokolaidev/maf-extensions/commit/333e29138ca2f87782f488b89d8664a2a764a341))
+
 ## [0.30.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.30.2...maf-sandbox-docker-v0.30.3) (2026-11-02)
 
 

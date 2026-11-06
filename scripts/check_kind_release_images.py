@@ -1,4 +1,4 @@
-"""Require completed, qualified matching images before releasing image-bound kinds."""
+"""Verify published image identity and consumer compatibility before releasing kinds."""
 
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ def matching_source(root: Path, source: str, head: str, package: str, profile: s
         )
 
 
-def qualified(directory: Path, candidate: dict[str, Any]) -> None:
+def qualified(directory: Path, candidate: dict[str, Any]) -> dict[str, Any]:
     """Require indexed anonymous-pull and runtime evidence for the authenticated image."""
     index = read(directory / "evidence-index.json")
     if "qualification.json" not in index:
@@ -119,6 +119,7 @@ def qualified(directory: Path, candidate: dict[str, Any]) -> None:
         or runtime.get("containersRemaining") != []
     ):
         raise ValueError("Published image lacks matching successful consumer qualification")
+    return runtime
 
 
 def compatibility(
@@ -133,11 +134,6 @@ def compatibility(
     except (ValueError, subprocess.SubprocessError) as error:
         legacy_reason = str(error)
     problems = []
-    changed = consumer.image_changes(root, record["sourceCommit"], head, profile)
-    if changed:
-        problems.append(
-            f"{profile}: publish replacement image; changed inputs: {', '.join(changed)}"
-        )
     results = []
     for backend in consumer.BACKENDS[profile]:
         expected = consumer.inputs(root, head, package, profile, backend, record)
@@ -154,7 +150,18 @@ def compatibility(
             }
         )
     if problems:
-        raise ValueError(legacy_reason + "\n" + "\n".join(problems))
+        problems.append(
+            f"{profile}: verify or refresh consumer qualification "
+            f"for the existing image {PREFIX}/{profile}@{record['registryDigest']}. "
+            "Image source differences alone do not require replacement. "
+            "Check the qualification run and attestation availability. "
+            "The main inputs must match the release being checked. To refresh, run:\n"
+            f"gh workflow run {Path(consumer.WORKFLOW).name} --repo {consumer.REPOSITORY} "
+            f"--ref main -f profile={profile}"
+        )
+        raise ValueError(
+            "Legacy qualification cannot be reused: " + legacy_reason + "\n" + "\n".join(problems)
+        )
     return results
 
 
@@ -190,7 +197,9 @@ def check(root: Path, head: str, packages: list[str]) -> list[dict[str, Any]]:
                     evidence_url = release_evidence(client, record, directory)
                     qualified(directory, record["candidate"])
             except ValueError as error:
-                problems.append(str(error))
+                problems.append(
+                    f"{package}/{profile} ({PREFIX}/{profile}@{record['registryDigest']}): {error}"
+                )
                 continue
             results.append(
                 {

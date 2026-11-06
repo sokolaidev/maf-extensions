@@ -1,4 +1,4 @@
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:fd50bd0cdeb808cf4f45c9c9189e0cc7f7fcc27195d69abd6622c80527e7e021 AS assembled
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:8acb3a7694eda954b3ad4256aec3291bdd92715d7a8c030abd1a21546337b4e4 AS assembled
 
 ARG BICEP_VERSION=v0.48.1
 # SHA-256 of that version's bicep-linux-x64; bump it with BICEP_VERSION.

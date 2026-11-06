@@ -26,6 +26,7 @@ from container_release import (  # noqa: E402
     observe,
     profiles,
     read,
+    release_scan_passes,
     reserve,
     scan_result,
     version,
@@ -252,6 +253,42 @@ def test_scanner_failure_does_not_erase_known_vulnerability():
     history = observe(completed(), "bicep/0.1.0", assessment("vulnerable"))
     failed = observe(history, "bicep/0.1.0", assessment("unavailable", LATER))
     assert failed["releases"]["bicep/0.1.0"]["lastKnownVulnerable"]["outcome"] == "vulnerable"
+
+
+@pytest.mark.parametrize(
+    "at, expected",
+    [
+        ("2026-12-03T23:59:59Z", "clean"),
+        ("2026-12-04T00:00:00Z", "stale"),
+        ("2026-12-04T00:00:01Z", "stale"),
+    ],
+)
+def test_monitoring_health_expires_a_clean_exception_without_another_scan(at, expected):
+    attempt = assessment(at="2026-12-03T23:59:59Z") | {
+        "notAffected": [
+            {"expiresAt": "2026-12-05T00:00:00Z"},
+            {"expiresAt": "2026-12-04T00:00:00Z"},
+        ]
+    }
+    history = observe(completed(), "bicep/0.1.0", attempt)
+    record = history["releases"]["bicep/0.1.0"]
+    record["delivery"] = "complete"
+    before = copy.deepcopy(history)
+    assert assessment_status(record, at) == expected
+    health = monitoring_health(history, at)
+    assert health["current"] == {"bicep/0.1.0": expected}
+    assert health["monitoringProblems"] == ([] if expected == "clean" else ["bicep/0.1.0"])
+    assert health["attention"] is (expected != "clean")
+    assert history == before
+
+
+@pytest.mark.parametrize(
+    "decisions",
+    [None, {}, [None], [{}], [{"expiresAt": "invalid"}], [{"expiresAt": "2026-12-04"}]],
+)
+def test_invalid_exception_expiry_cannot_produce_clean_status(decisions):
+    history = observe(completed(), "bicep/0.1.0", assessment() | {"notAffected": decisions})
+    assert assessment_status(history["releases"]["bicep/0.1.0"], AT) == "unavailable"
 
 
 def test_every_superseded_release_gets_90_days_but_incomplete_has_no_expiry():
@@ -498,3 +535,35 @@ def test_unassessed_sibling_and_nested_index_are_rejected(tmp_path, nested):
     )
     with pytest.raises(ValueError):
         validate_layout(tmp_path, config["digest"])
+
+
+@pytest.mark.parametrize("severity,allowed", [("High", True), ("Critical", False)])
+@pytest.mark.parametrize("state", ["fixed", "not-fixed", "wont-fix", "unknown"])
+def test_release_threshold_preserves_monitoring_findings(severity, allowed, state):
+    report = scan()
+    report["matches"] = [
+        {"vulnerability": {"id": "CVE-example", "severity": severity, "fix": {"state": state}}}
+    ]
+    assessment = scan_result(report, candidate()["imageId"], AT)
+    assert release_scan_passes(assessment) is allowed
+    assert assessment["outcome"] == "vulnerable"
+    assert assessment["findings"] == [
+        {"id": "CVE-example", "severity": severity, "fix": {"state": state, "versions": []}}
+    ]
+
+
+@pytest.mark.parametrize(
+    "assessment",
+    [
+        {},
+        {"outcome": "clean"},
+        {"outcome": "unavailable", "findings": []},
+        {"outcome": "running", "findings": []},
+        {"outcome": "vulnerable", "findings": []},
+        {"outcome": "clean", "findings": [{"severity": "Critical"}]},
+        {"outcome": "vulnerable", "findings": [{"severity": "unexpected"}]},
+        {"outcome": "vulnerable", "findings": [None]},
+    ],
+)
+def test_release_threshold_refuses_incomplete_assessments(assessment):
+    assert not release_scan_passes(assessment)

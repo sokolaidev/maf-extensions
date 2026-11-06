@@ -1,0 +1,246 @@
+{
+  "imageId": "sha256:be4a792579b8625eb361f50a2492373e681954b7bdaee3d54bbdfde26abda75d",
+  "match": {
+    "vulnerability": {
+      "id": "CVE-2026-119586",
+      "namespace": "nvd:cpe",
+      "severity": "High",
+      "fix": {
+        "versions": [],
+        "state": ""
+      }
+    },
+    "artifact": {
+      "id": "87ef05041d9667f8",
+      "name": "sqlite-libs",
+      "version": "3.54.1-r0",
+      "type": "apk",
+      "locations": [
+        {
+          "path": "/usr/lib/apk/db/installed",
+          "layerID": "sha256:36a94afc0f4e98f98c2487d24972f5ddc4a6d20a80ae2752d1f7291080096e3b",
+          "accessPath": "/usr/lib/apk/db/installed",
+          "annotations": {
+            "evidence": "primary"
+          }
+        }
+      ],
+      "language": "",
+      "licenses": [
+        "blessing"
+      ],
+      "cpes": [
+        "cpe:2.3:a:sqlite-libs:sqlite-libs:3.54.1-r0:*:*:*:*:*:*:*",
+        "cpe:2.3:a:sqlite-libs:sqlite_libs:3.54.1-r0:*:*:*:*:*:*:*",
+        "cpe:2.3:a:sqlite_libs:sqlite-libs:3.54.1-r0:*:*:*:*:*:*:*",
+        "cpe:2.3:a:sqlite_libs:sqlite_libs:3.54.1-r0:*:*:*:*:*:*:*",
+        "cpe:2.3:a:sqlite:sqlite-libs:3.54.1-r0:*:*:*:*:*:*:*",
+        "cpe:2.3:a:sqlite:sqlite_libs:3.54.1-r0:*:*:*:*:*:*:*"
+      ],
+      "purl": "pkg:apk/wolfi/sqlite-libs@3.54.1-r0?arch=x86_64&distro=wolfi-20230201&upstream=sqlite",
+      "upstreams": [
+        {
+          "name": "sqlite"
+        }
+      ],
+      "metadataType": "ApkMetadata",
+      "metadata": {
+        "files": [
+          {
+            "path": "/usr"
+          },
+          {
+            "path": "/usr/lib"
+          },
+          {
+            "path": "/usr/lib/libsqlite3.so.0"
+          },
+          {
+            "path": "/usr/lib/libsqlite3.so.3.54.1"
+          },
+          {
+            "path": "/var"
+          },
+          {
+            "path": "/var/lib"
+          },
+          {
+            "path": "/var/lib/db"
+          },
+          {
+            "path": "/var/lib/db/sbom"
+          },
+          {
+            "path": "/var/lib/db/sbom/sqlite-libs-3.54.1-r0.spdx.json"
+          }
+        ],
+        "Arch": "x86_64"
+      }
+    },
+    "matchDetails": [
+      {
+        "type": "cpe-match",
+        "matcher": "apk-matcher",
+        "searchedBy": {
+          "namespace": "nvd:cpe",
+          "cpes": [
+            "cpe:2.3:a:sqlite:sqlite:3.54.1:*:*:*:*:*:*:*"
+          ],
+          "package": {
+            "name": "sqlite",
+            "version": "3.54.1-r0"
+          }
+        },
+        "found": {
+          "vulnerabilityID": "CVE-2026-119586",
+          "versionConstraint": "<= 3.54.1 (unknown)",
+          "cpes": [
+            "cpe:2.3:a:sqlite:sqlite:*:*:*:*:*:*:*:*"
+          ]
+        }
+      }
+    ]
+  },
+  "sbom": {
+    "source": {
+      "type": "image",
+      "metadata": {
+        "imageID": "sha256:be4a792579b8625eb361f50a2492373e681954b7bdaee3d54bbdfde26abda75d"
+      }
+    },
+    "artifacts": [
+      {
+        "id": "87ef05041d9667f8",
+        "name": "sqlite-libs",
+        "version": "3.54.1-r0",
+        "type": "apk",
+        "purl": "pkg:apk/wolfi/sqlite-libs@3.54.1-r0?arch=x86_64&distro=wolfi-20230201&upstream=sqlite",
+        "metadata": {
+          "package": "sqlite-libs",
+          "originPackage": "sqlite",
+          "maintainer": "wolfi",
+          "version": "3.54.1-r0",
+          "architecture": "x86_64",
+          "url": "",
+          "description": "sqlite library",
+          "size": 989586,
+          "installedSize": 1852624,
+          "pullDependencies": [
+            "so:libc.so.6",
+            "so:libm.so.6"
+          ],
+          "provides": [
+            "so-ver:libsqlite3.so.0=3.54.1-r0",
+            "so:libsqlite3.so.0=0"
+          ],
+          "pullChecksum": "Q1VRLw0RR5HoAu1uTfKALfMDoAMco=",
+          "gitCommitOfApkPort": "b0ca8c95606371be2557980059c10b34df30fa9f",
+          "files": [
+            {
+              "path": "/usr"
+            },
+            {
+              "path": "/usr/lib"
+            },
+            {
+              "path": "/usr/lib/libsqlite3.so.0",
+              "ownerUid": "0",
+              "ownerGid": "0",
+              "permissions": "777",
+              "digest": {
+                "algorithm": "'Q1'+base64(sha1)",
+                "value": "Q1pPE7V34msStBM9F1IM/MOyBPAQc="
+              }
+            },
+            {
+              "path": "/usr/lib/libsqlite3.so.3.54.1",
+              "ownerUid": "0",
+              "ownerGid": "0",
+              "permissions": "755",
+              "digest": {
+                "algorithm": "'Q1'+base64(sha1)",
+                "value": "Q1JklFxqJqtLTbwDSxr8nFjJdCEGI="
+              }
+            },
+            {
+              "path": "/var"
+            },
+            {
+              "path": "/var/lib"
+            },
+            {
+              "path": "/var/lib/db"
+            },
+            {
+              "path": "/var/lib/db/sbom"
+            },
+            {
+              "path": "/var/lib/db/sbom/sqlite-libs-3.54.1-r0.spdx.json",
+              "digest": {
+                "algorithm": "'Q1'+base64(sha1)",
+                "value": "Q1qSQBwJJNDrSe+gyeEUz7CNL9W1Q="
+              }
+            }
+          ]
+        },
+        "locations": [
+          {
+            "path": "/usr/lib/apk/db/installed",
+            "layerID": "sha256:36a94afc0f4e98f98c2487d24972f5ddc4a6d20a80ae2752d1f7291080096e3b",
+            "accessPath": "/usr/lib/apk/db/installed",
+            "annotations": {
+              "evidence": "primary"
+            }
+          }
+        ]
+      }
+    ],
+    "files": [
+      {
+        "id": "5a6b7255ff701a6b",
+        "location": {
+          "path": "/usr/lib/libsqlite3.so.3.54.1",
+          "layerID": "sha256:36a94afc0f4e98f98c2487d24972f5ddc4a6d20a80ae2752d1f7291080096e3b"
+        },
+        "metadata": {
+          "mode": 755,
+          "type": "RegularFile",
+          "userID": 0,
+          "groupID": 0,
+          "mimeType": "application/x-sharedlib",
+          "size": 1818536
+        },
+        "digests": [
+          {
+            "algorithm": "sha1",
+            "value": "264945c6a26ab4b4dbc034b1afc9c58c97421062"
+          },
+          {
+            "algorithm": "sha256",
+            "value": "7c8f466fe08716da0c3ce29ef451e8443313b296717fd8ef98b020030fb282f7"
+          }
+        ],
+        "executable": {
+          "format": "elf",
+          "hasExports": true,
+          "hasEntrypoint": false,
+          "importedLibraries": [
+            "libm.so.6",
+            "libc.so.6"
+          ],
+          "elfSecurityFeatures": {
+            "symbolTableStripped": false,
+            "stackCanary": true,
+            "nx": true,
+            "relRO": "full",
+            "pie": false,
+            "dso": true,
+            "safeStack": false,
+            "cfi": false,
+            "fortify": true
+          }
+        }
+      }
+    ]
+  }
+}

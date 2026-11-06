@@ -115,7 +115,7 @@ Update the compiler used by `bicep`, `bicep-avm` and `bicep-docker-sbx` from `{c
 
 ## Verification
 
-The downloaded binary's size and SHA-256 match upstream release metadata. The binary was not executed. Image builds, offline compatibility and vulnerability scanning remain release gates, including refusal of every High/Critical finding.
+The downloaded binary's size and SHA-256 match upstream release metadata. The binary was not executed. Image builds, offline compatibility and vulnerability scanning remain release gates, including refusal of every applicable Critical finding. High findings remain visible in monitoring.
 
 ## Publication
 

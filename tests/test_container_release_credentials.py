@@ -143,9 +143,18 @@ def test_release_policy_refuses_missing_app_configuration_before_prepare():
     assert workflow["jobs"]["prepare"]["needs"] == "policy"
 
 
-def test_recovery_keeps_protected_approval_and_both_writer_locks():
+@pytest.mark.parametrize("filename", ["container-image-release.yml", "container-image-recover.yml"])
+def test_publication_lock_covers_all_versions_and_operations_of_one_profile(filename):
+    workflow = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
+    assert workflow["concurrency"] == {
+        "group": "container-image-publication-${{ inputs.profile }}",
+        "queue": "max",
+        "cancel-in-progress": False,
+    }
+
+
+def test_recovery_keeps_protected_approval_and_catalogue_writer_lock():
     workflow = yaml.safe_load((ROOT / ".github/workflows/container-image-recover.yml").read_text())
-    assert workflow["concurrency"]["group"] == "container-image-publication"
     writer = workflow["jobs"]["write"]
     assert writer["environment"]["name"] == "container-release"
     assert writer["concurrency"]["group"] == "container-security-catalogue"

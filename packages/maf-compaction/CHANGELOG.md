@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.10.1...maf-compaction-v0.11.0) (2026-11-04)
+
+
+### Features
+
+* **maf-compaction:** describes_media, a per-part selector beside describe_media ([#2461](https://github.com/sokolaidev/maf-extensions/issues/2461)) ([63cf621](https://github.com/sokolaidev/maf-extensions/commit/63cf621a4fa831605177095bd1e298eb9dd27b18))
+
 ## [0.10.1](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.10.0...maf-compaction-v0.10.1) (2026-11-04)
 
 
