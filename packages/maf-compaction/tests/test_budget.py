@@ -5,9 +5,17 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from math import ceil
+from uuid import uuid4
 
 import pytest
-from agent_framework import CharacterEstimatorTokenizer, ChatContext, ChatResponse, Message
+from agent_framework import (
+    AgentSession,
+    CharacterEstimatorTokenizer,
+    ChatContext,
+    ChatResponse,
+    Message,
+    SessionContext,
+)
 from agent_framework._compaction import (
     EXCLUDED_KEY,
     annotate_token_counts,
@@ -21,6 +29,8 @@ from maf_compaction import (
     CompactionBudgetExceeded,
     CompactionStack,
     RecallGate,
+    SessionCompactionProvider,
+    SessionCompactionRegistry,
     ToolResultAnchoredSummarizationCompactionStrategy,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     ToolResultRecallMiddleware,
@@ -133,7 +143,7 @@ async def test_no_record_sheds_with_headroom_and_replays(fraction, sending):
         await current.strategy(messages)
     lost = {m.message_id for m in messages if m.additional_properties.get(EXCLUDED_KEY)}
     first = next(i for i, m in enumerate(original) if m.message_id in lost)
-    assert size(messages) <= effective - ceil(fraction * size(original[first:]))
+    assert size(messages) <= effective - ceil(fraction * min(size(original[first:]), effective))
     assert all(m.contents == original_results[m.message_id] for m in messages if m.role == "tool")
     cold = stack(budget=budget, fraction=fraction)
     cold.restore(json.loads(json.dumps(current.to_dict())))
@@ -237,7 +247,7 @@ async def test_overflow_shed_reserves_headroom_behind_its_first_removal(
     lost = {m.message_id for m in messages if m.additional_properties.get(EXCLUDED_KEY)}
     first = next(i for i, m in enumerate(original) if m.message_id in lost)
     assert first == 1 + 2 * protected_groups
-    target = budget - ceil(fraction * size(original[first:]))
+    target = budget - ceil(fraction * min(size(original[first:]), budget))
     assert size(messages) <= target
     assert caplog.text.count("lost message IDs") == 1
     if fraction == 0:
@@ -281,7 +291,9 @@ async def test_overflow_headroom_uses_the_sending_budget():
     assert sending_budget < size(messages) < budget
     behind = size(messages[1:])
     await current.strategy.compact_before(messages, options=options)
-    assert size(messages) <= sending_budget - ceil(DEFAULT_CHAIN_GAIN_FRACTION * behind)
+    assert size(messages) <= sending_budget - ceil(
+        DEFAULT_CHAIN_GAIN_FRACTION * min(behind, sending_budget)
+    )
 
 
 async def test_unreachable_headroom_keeps_protected_material_when_it_fits():
@@ -393,3 +405,135 @@ async def test_irreducible_protected_material_raises(kind):
 def test_invalid_overflow_policy_is_rejected():
     with pytest.raises(ValueError, match="overflow_policy"):
         stack(policy="silently drop")
+
+
+@pytest.mark.parametrize("with_record", [False, True])
+@pytest.mark.parametrize("sending", [False, True])
+async def test_overflow_reserve_is_bounded_for_history_many_times_the_budget(with_record, sending):
+    messages = conversation()
+    if not with_record:
+        del messages[-2]
+    original = deepcopy(messages)
+    current = stack(budget=20_000)
+    strategy = current.strategy
+    options = {"instructions": "Instructions " * 100} if sending else {}
+    budget = strategy.sending_budget(options) if sending else strategy.max_input_tokens
+    assert size(messages) > 3 * budget
+    if sending:
+        await strategy.compact_before(messages, options=options)
+    else:
+        await strategy(messages)
+    target = budget - ceil(DEFAULT_CHAIN_GAIN_FRACTION * budget)
+    # Whole groups can cross the target by at most one group's removable tokens.
+    largest_group = max(size(table(index)) for index in range(10))
+    assert target - largest_group < size(messages) <= target
+    assert any(not m.additional_properties.get(EXCLUDED_KEY) for m in messages if m.role == "tool")
+    cold = stack(budget=20_000)
+    cold.restore(json.loads(json.dumps(current.to_dict())))
+    await cold.strategy(original)
+    assert [m.contents for m in project_included_messages(original)] == [
+        m.contents for m in project_included_messages(messages)
+    ]
+
+
+@pytest.mark.parametrize("identity", ["stable", "missing", "positional", "mixed"])
+@pytest.mark.parametrize("with_record", [False, True])
+async def test_before_run_replays_shedding_before_record_phase(identity, with_record, caplog):
+    messages = conversation()
+    if not with_record:
+        del messages[-2]
+    for index, message in enumerate(messages):
+        message.message_id = (
+            None
+            if identity == "missing"
+            else f"msg_{index}"
+            if identity == "positional" or (identity == "mixed" and index % 2)
+            else str(uuid4())
+        )
+    original = deepcopy(messages)
+    session = AgentSession()
+    registry = SessionCompactionRegistry(stack)
+    with registry.activate(session) as current:
+        await current.strategy(messages)
+    expected = [m.contents for m in project_included_messages(messages)]
+    saved = session.state["maf_compaction"]["strategy"]
+    assert all(not value.startswith("msg_") for value in saved["shed_ids"])
+    assert bool(saved["shed_groups"]) == (identity != "stable")
+    for _ in range(3):
+        session = AgentSession.from_dict(json.loads(json.dumps(session.to_dict())))
+        rebuilt = deepcopy(original)
+        for message in rebuilt:
+            if not message.message_id or message.message_id.startswith("msg_"):
+                message.message_id = str(uuid4())
+        seen = []
+
+        def build():
+            fresh = stack()
+            records = fresh.strategy.tool_results
+            compact = records.compact_against
+
+            async def observe(messages, **kwargs):
+                seen.append(kwargs["prompt_tokens"])
+                assert [m.contents for m in project_included_messages(messages)] == expected
+                return await compact(messages, **kwargs)
+
+            records.compact_against = observe
+            return fresh
+
+        provider = SessionCompactionProvider(SessionCompactionRegistry(build), tokenizer=TOKENIZER)
+        context = SessionContext(input_messages=[], context_messages={"in_memory": rebuilt})
+        caplog.clear()
+        await provider.before_run(agent=None, session=session, context=context, state={})
+        assert seen and seen[0] <= BUDGET
+        assert [m.contents for m in context.get_messages()] == expected
+        assert "lost message IDs" not in caplog.text
+
+
+async def test_content_replay_refuses_changed_or_ambiguous_groups():
+    messages = conversation()
+    del messages[-2]
+    for message in messages:
+        message.message_id = None
+    original = deepcopy(messages)
+    first = stack()
+    await first.strategy(messages)
+    lost_call = next(
+        m.contents[0].call_id
+        for m in messages
+        if m.role == "tool" and m.additional_properties.get(EXCLUDED_KEY)
+    )
+    group = [m for m in original if any(c.call_id == lost_call for c in m.contents)]
+    assert len(group) == 2
+    for change in ("result", "arguments", "duplicate", "extra_content", "host_hold"):
+        rebuilt = [Message("user", ["Task"], message_id="task"), *deepcopy(group)]
+        if change == "result":
+            rebuilt[-1].contents[0].result = "changed123"
+        elif change == "arguments":
+            rebuilt[-2].contents[0].arguments = '{"new": true}'
+        elif change == "duplicate":
+            rebuilt += deepcopy(group)
+        elif change == "extra_content":
+            rebuilt[-2].contents += Message("assistant", ["new narration"]).contents
+        else:
+            set_preserved(rebuilt[-1], preserved=True, reason="host")
+        for message in rebuilt:
+            message.message_id = str(uuid4())
+        cold = stack(budget=1_000_000)
+        cold.restore(json.loads(json.dumps(first.to_dict())))
+        await cold.strategy(rebuilt)
+        assert all(not m.additional_properties.get(EXCLUDED_KEY) for m in rebuilt)
+
+
+async def test_legacy_positional_shed_ids_cannot_remove_unrelated_messages():
+    first = stack()
+    snapshot = first.to_dict()
+    snapshot["version"] = 5
+    snapshot["strategy"].pop("shed_groups")
+    snapshot["strategy"]["shed_ids"] = ["msg_1", "msg_2", "stable"]
+    first.restore(snapshot)
+    messages = [Message("user", ["Task"], message_id="task"), *table(0)]
+    messages[1].message_id = "msg_1"
+    messages[2].message_id = "msg_2"
+    await first.strategy(messages)
+    assert all(not m.additional_properties.get(EXCLUDED_KEY) for m in messages)
+    assert first.to_dict()["strategy"]["shed_ids"] == ["stable"]

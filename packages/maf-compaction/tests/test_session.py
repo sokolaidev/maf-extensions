@@ -242,13 +242,17 @@ def test_unknown_record_identity_schema_is_rejected_before_restore():
 
 
 @pytest.mark.parametrize("composed", [False, True])
-def test_stack_writes_v5_snapshots_and_restores_v1(composed):
+@pytest.mark.parametrize("version", [1, 2, 3, 4, 5])
+def test_stack_writes_v6_snapshots_and_restores_older_versions(composed, version):
     stack = build_stack(composed=composed)
     stack.gate.arm()
     stack.middleware._force_next = True
     snapshot = round_trip(stack.to_dict())
-    assert snapshot["version"] == 5
-    legacy = snapshot | {"version": 1}
+    assert snapshot["version"] == 6
+    legacy = snapshot | {"version": version}
+    if composed:
+        legacy = deepcopy(legacy)
+        legacy["strategy"].pop("shed_groups")
     restored = build_stack(composed=composed)
     restored.restore(legacy)
     assert restored.to_dict() == snapshot
@@ -294,7 +298,7 @@ async def test_stack_restores_fold_keys_and_replays_without_a_request(version):
     ]
     assert not restored_users.refold(stored)
     assert len(summarizer.requests) == 1
-    assert restored.to_dict()["version"] == 5
+    assert restored.to_dict()["version"] == 6
 
 
 def test_cache_is_bounded_and_session_state_wins_on_hits_and_resets():
