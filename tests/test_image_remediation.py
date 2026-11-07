@@ -22,14 +22,14 @@ import image_remediation_evidence as acquisition  # noqa: E402
 import image_remediation_pr as publication  # noqa: E402
 import plan_go_remediation as planner  # noqa: E402
 import prepare_go_remediation as preparation  # noqa: E402
-import test_go_remediation as remediation_fixtures  # noqa: E402
 from container_release import REPOSITORY, read, scan_result, write  # noqa: E402
 from container_release_history import encode  # noqa: E402
-from test_go_remediation import (  # noqa: E402  # noqa: E402
+from test_go_remediation import (  # noqa: E402
     AT,
     IMAGE,
     MODULE,
     built,
+    copy_checkout,
     finding,
     provider_path,
     retained,
@@ -58,7 +58,7 @@ def proposal(checkout, tmp_path):
 def test_proposal_fixtures_survive_remediated_repository(
     tmp_path, monkeypatch, request, fixture_name
 ):
-    upstream = remediation_fixtures.copy_checkout(tmp_path / "upstream", ROOT)
+    upstream = copy_checkout(tmp_path / "upstream", ROOT)
     for name, document in planner.inputs(upstream)[0].items():
         components = (
             document["engines"].values() if name == planner.RECIPE else document["providers"]
@@ -72,7 +72,7 @@ def test_proposal_fixtures_survive_remediated_repository(
                 if module in modules:
                     modules[module] = version
         write(upstream / name, document)
-    monkeypatch.setattr(remediation_fixtures, "ROOT", upstream)
+    monkeypatch.setattr("test_go_remediation.ROOT", upstream)
     root, work = request.getfixturevalue(fixture_name)
     assert read(work / "plan.json")["updates"]
     assert remediation.proposal_files(root, work / "proposal")
@@ -253,6 +253,29 @@ def scan_artifact(
     artifacts = [copy.deepcopy(match["artifact"])]
     if variant == "candidate":
         artifacts[0]["version"] = "v0.62.0"
+    engine = original[planner.RECIPE]["engines"][profile.split("-", 1)[0]]
+    engine_module = (
+        engine["source_build"]["repository"].removeprefix("https://").removesuffix(".git")
+    )
+    artifacts.extend(
+        [
+            {
+                "id": "engine-main",
+                "type": "go-module",
+                "name": engine_module,
+                "version": f"v{engine['version']}+dirty",
+                "metadata": {"mainModule": engine_module, "goCompiledVersion": "go1.27.3"},
+                "locations": [{"path": binary}],
+            },
+            {
+                "id": "engine-stdlib",
+                "type": "go-module",
+                "name": "stdlib",
+                "version": "go1.27.3",
+                "locations": [{"path": binary}],
+            },
+        ]
+    )
     for index, provider in enumerate(manifest["providers"]):
         name = provider["source"].rsplit("/", 1)[-1]
         location = provider_path(provider)
@@ -337,10 +360,8 @@ def test_complete_qualification_requires_targets_removed(qualified):
     assert sum(row["targetedFindings"] for row in report["scans"]) == 4
 
 
-@pytest.mark.parametrize("stale_module", [False, True])
-def test_provider_proposal_qualifies_only_with_rebuilt_inventory(
-    provider_proposal, tmp_path, monkeypatch, stale_module
-):
+@pytest.fixture
+def provider_qualified(provider_proposal, tmp_path, monkeypatch):
     root, work = provider_proposal
     results = tmp_path / "provider-results"
     monkeypatch.setattr(remediation, "git", lambda *_: SOURCE)
@@ -355,6 +376,12 @@ def test_provider_proposal_qualifies_only_with_rebuilt_inventory(
                 target_present=variant == "baseline",
                 provider_target=True,
             )
+    return root, work, results
+
+
+@pytest.mark.parametrize("stale_module", [False, True])
+def test_provider_proposal_qualifies_only_with_rebuilt_inventory(provider_qualified, stale_module):
+    root, work, results = provider_qualified
     if stale_module:
         path = results / "candidate-terraform-random/sbom.syft.json"
         sbom = read(path)
@@ -366,6 +393,42 @@ def test_provider_proposal_qualifies_only_with_rebuilt_inventory(
             remediation.qualify(root, work, results)
     else:
         assert remediation.qualify(root, work, results)["status"] == "ready"
+
+
+@pytest.mark.parametrize("variant", ["baseline", "candidate"])
+@pytest.mark.parametrize("profile", ["terraform-random", "opentofu-avm"])
+@pytest.mark.parametrize(
+    "mutation", ["absent", "main", "stdlib", "path", "compiler", "module", "version"]
+)
+def test_provider_only_qualification_requires_engine_inventory(
+    provider_qualified, variant, profile, mutation
+):
+    root, work, results = provider_qualified
+    directory = results / f"{variant}-{profile}"
+    sbom = read(directory / "sbom.syft.json")
+    engine = [item for item in sbom["artifacts"] if item["id"].startswith("engine-")]
+    if mutation in {"absent", "main", "stdlib"}:
+        sbom["artifacts"] = [
+            item
+            for item in sbom["artifacts"]
+            if not (item in engine and (mutation == "absent" or item["id"] == f"engine-{mutation}"))
+        ]
+    elif mutation == "path":
+        for item in engine:
+            item["locations"] = [{"path": "/usr/local/bin/other"}]
+    elif mutation == "compiler":
+        engine[1]["version"] = "go1.0.0"
+    elif mutation == "module":
+        engine[0]["metadata"]["mainModule"] = "example.invalid/engine"
+    else:
+        engine[0]["version"] = "v0.0.0"
+    write(directory / "sbom.syft.json", sbom)
+    write(
+        directory / "assessment.json",
+        scan_result(read(directory / "grype.json"), IMAGE, AT, sbom=sbom),
+    )
+    with pytest.raises(ValueError, match="Engine"):
+        remediation.qualify(root, work, results)
 
 
 def test_source_already_fixed_is_noop(qualified):
@@ -623,6 +686,7 @@ class FakeGitHub(publication.GitHub):
         self.fail_after = None
         self.fail_before = None
         self.body_edit_after = None
+        self.head_edit_after_tree = None
         self.race = False
         self.writes = []
 
@@ -677,6 +741,11 @@ class FakeGitHub(publication.GitHub):
             sha = hashlib.sha256(encode(data)).hexdigest()[:40]
             self.trees[sha] = data["tree"]
             result = {"sha": sha}
+            if self.head_edit_after_tree:
+                self.head = {"human": "human", "deleted": None, "base": SOURCE}[
+                    self.head_edit_after_tree
+                ]
+                self.head_edit_after_tree = None
         elif path == "git/commits":
             sha = hashlib.sha256(encode(data)).hexdigest()[:40]
             self.commits[sha] = {**data, "tree": {"sha": data["tree"]}}
@@ -751,6 +820,68 @@ def test_pr_create_retry_and_refresh_are_idempotent(publisher):
     assert publish()["status"] == "updated"
     assert first in client.commits[client.head]["parents"]
     assert len(client.pulls) == 1
+
+
+@pytest.mark.parametrize("change", ["human", "deleted", "base"])
+@pytest.mark.parametrize("cycle", ["unchanged", "refresh", "merged"])
+def test_pr_writes_recheck_live_branch_after_tree_creation(publisher, change, cycle):
+    client, files, report, publish = publisher
+    publish()
+    body = client.pulls[0]["body"]
+    if cycle != "unchanged":
+        files[planner.RECIPE] = b"later fix"
+        report["files"][planner.RECIPE] = hashlib.sha256(files[planner.RECIPE]).hexdigest()
+    if cycle == "merged":
+        client.pulls[0].update(state="closed", merged_at=AT)
+    client.head_edit_after_tree = change
+    client.writes.clear()
+    with pytest.raises(ValueError, match="branch changed"):
+        publish()
+    assert client.head == {"human": "human", "deleted": None, "base": SOURCE}[change]
+    assert client.pulls[0]["body"] == body
+    assert not any(path.startswith("pulls") or path == "graphql" for path, _ in client.writes)
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_final_pr_write_rechecks_head_after_freshness(publisher, monkeypatch, existing):
+    client, files, report, publish = publisher
+    if existing:
+        publish()
+        files[planner.RECIPE] = b"later fix"
+        report["files"][planner.RECIPE] = hashlib.sha256(files[planner.RECIPE]).hexdigest()
+    calls = []
+
+    def freshness(*_):
+        calls.append(True)
+        if len(calls) == 3:
+            client.head = "human"
+
+    monkeypatch.setattr(publication, "current", freshness)
+    client.writes.clear()
+    with pytest.raises(ValueError, match="branch changed"):
+        publish()
+    assert client.head == "human"
+    assert len(client.pulls) == int(existing)
+    assert sum(path.startswith("pulls") for path, _ in client.writes) == int(existing)
+
+
+def test_unchanged_refresh_rechecks_evidence_freshness(publisher, monkeypatch):
+    client, _, _, publish = publisher
+    publish()
+    body = client.pulls[0]["body"]
+    calls = []
+
+    def freshness(*_):
+        calls.append(True)
+        if len(calls) == 2:
+            raise ValueError("Evidence changed")
+
+    monkeypatch.setattr(publication, "current", freshness)
+    client.writes.clear()
+    with pytest.raises(ValueError, match="Evidence changed"):
+        publish()
+    assert client.pulls[0]["body"] == body
+    assert not any(path.startswith("pulls") for path, _ in client.writes)
 
 
 @pytest.mark.parametrize("operation", ["graphql", "pulls"])

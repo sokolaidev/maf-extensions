@@ -169,6 +169,40 @@ def verify_modules(
             raise ValueError("Built executable does not contain its proposed module fix")
 
 
+def verify_engine(sbom: dict[str, Any], profile: str, recipe: dict[str, Any]) -> None:
+    """Require the engine main module and its Go runtime at the declared executable path."""
+    engine = profile.split("-", 1)[0]
+    expected = recipe["engines"][engine]
+    guest_path = f"/usr/local/bin/{expected['executable']}"
+    module = {
+        "terraform": "github.com/hashicorp/terraform",
+        "opentofu": "github.com/opentofu/opentofu",
+    }[engine]
+    artifacts = [
+        item
+        for item in sbom["artifacts"]
+        if item.get("type") == "go-module" and guest_path in locations(item)
+    ]
+    mains = [
+        item
+        for item in artifacts
+        if item.get("name") == module and item.get("metadata", {}).get("mainModule") == module
+    ]
+    if len(mains) != 1:
+        raise ValueError(f"Engine main module is missing or ambiguous: {guest_path}")
+    compiler = mains[0]["metadata"].get("goCompiledVersion", "")
+    version = mains[0].get("version")
+    versions = {item.get("version") for item in artifacts if item.get("name") == "stdlib"}
+    if (
+        not isinstance(version, str)
+        or version.split("+", 1)[0] != f"v{expected['version']}"
+        or not isinstance(compiler, str)
+        or not re.fullmatch(r"go\d+\.\d+\.\d+", compiler)
+        or versions != {compiler}
+    ):
+        raise ValueError(f"Engine Go inventory is incomplete or contradictory: {guest_path}")
+
+
 def scan(root: Path, work: Path, profile: str, variant: str, output: Path) -> None:
     """Build ordinary recipes on a fresh runner, then test and scan the exact local image ID."""
     if profile not in PROVIDER_MANIFESTS or variant not in {"baseline", "candidate"}:
@@ -201,6 +235,7 @@ def scan(root: Path, work: Path, profile: str, variant: str, output: Path) -> No
     image = build["local_image_id"]
     write(output / "runtime.json", check(profile, image, output))
     assess(output, image, require_clean=False)
+    verify_engine(read(output / "sbom.syft.json"), profile, read(root / RECIPE))
     write(
         output / "qualification.json",
         {
@@ -261,6 +296,7 @@ def qualify(root: Path, work: Path, results: Path) -> dict[str, Any]:
                 for name in ("sbom.syft.json", "grype.json", "assessment.json")
             )
             verify_inventory(sbom, image)
+            verify_engine(sbom, profile, documents[RECIPE])
             verify_providers(sbom, documents[f"{CONTEXT}/{PROVIDER_MANIFESTS[profile]}"])
             if scan_result(report, image, assessment["assessedAt"], sbom=sbom) != assessment:
                 raise ValueError("Assessment differs from retained scan bytes")

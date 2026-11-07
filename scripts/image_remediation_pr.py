@@ -84,6 +84,21 @@ def update_branch(client: GitHub, before: str | None, after: str) -> None:
         raise ValueError("Remediation branch compare-and-swap was not confirmed")
 
 
+def branch_head(client: GitHub) -> str | None:
+    """Read the exact owned ref without admitting similarly prefixed branch names."""
+    references = client.pages(f"repos/{REPOSITORY}/git/matching-refs/heads/{BRANCH}")
+    exact = [item for item in references if item["ref"] == f"refs/heads/{BRANCH}"]
+    if len(exact) > 1:
+        raise ValueError("Ambiguous remediation branch")
+    return exact[0]["object"]["sha"] if exact else None
+
+
+def require_head(client: GitHub, expected: str | None) -> None:
+    """Refuse PR writes when the live branch no longer names the admitted head."""
+    if branch_head(client) != expected:
+        raise ValueError("Remediation branch changed during refresh")
+
+
 def marker(body: str) -> dict[str, Any]:
     """Require one complete ownership record, including interrupted-write state."""
     matches = re.findall(MARKER_PATTERN, body)
@@ -111,12 +126,15 @@ def with_marker(text: str, state: dict[str, Any]) -> str:
     )
 
 
-def update_body(client: GitHub, pull: dict[str, Any], text: str) -> dict[str, Any]:
+def update_body(
+    client: GitHub, pull: dict[str, Any], text: str, head: str | None
+) -> dict[str, Any]:
     """Refuse observed edits between ownership discovery and each body replacement."""
     path = f"pulls/{pull['number']}"
     latest = request(client, path)
     if latest.get("body") != pull.get("body"):
         raise ValueError("Pull-request body changed during refresh")
+    require_head(client, head)
     result = request(client, path, method="PATCH", payload=encode({"body": text}))
     pull["body"] = text
     return result
@@ -192,11 +210,7 @@ def publish(
     pull = pulls[0] if pulls else None
     ownership_pull = pull
     ownership_state = None
-    references = client.pages(f"repos/{REPOSITORY}/git/matching-refs/heads/{BRANCH}")
-    exact = [item for item in references if item["ref"] == f"refs/heads/{BRANCH}"]
-    if len(exact) > 1:
-        raise ValueError("Ambiguous remediation branch")
-    head = exact[0]["object"]["sha"] if exact else None
+    head = branch_head(client)
     previous = None
     if pull is not None:
         if (
@@ -254,8 +268,9 @@ def publish(
         ),
     )
     if previous is not None and previous["base"] == base and previous["files"] == hashes and pull:
+        current(client, receipt)
         state = {"schemaVersion": 1, "current": previous, "pending": None}
-        update_body(client, pull, body(state, report, evidence_url))
+        update_body(client, pull, body(state, report, evidence_url), head)
         return {"status": "unchanged", "url": pull["html_url"]}
     user = decode(client.request(f"users/{bot}"))
     identity = {
@@ -287,18 +302,21 @@ def publish(
     state = {"schemaVersion": 1, "current": previous, "pending": proposed}
     current(client, receipt)
     if pull:
-        update_body(client, pull, body(state, report, evidence_url))
+        update_body(client, pull, body(state, report, evidence_url), head)
     elif ownership_pull and ownership_state:
         # Keep the merged PR's qualification intact while recording the next branch write.
         ownership_state["pending"] = proposed
-        update_body(client, ownership_pull, with_marker(ownership_pull["body"], ownership_state))
+        update_body(
+            client, ownership_pull, with_marker(ownership_pull["body"], ownership_state), head
+        )
     if head != proposed["head"]:
         update_branch(client, head, proposed["head"])
     state = {"schemaVersion": 1, "current": proposed, "pending": None}
     current(client, receipt)
     if pull:
-        result = update_body(client, pull, body(state, report, evidence_url))
+        result = update_body(client, pull, body(state, report, evidence_url), proposed["head"])
     else:
+        require_head(client, proposed["head"])
         result = request(
             client,
             "pulls",
