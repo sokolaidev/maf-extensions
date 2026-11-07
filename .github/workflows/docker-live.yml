@@ -429,10 +429,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/openclaw-wheel"
-          wheel="$RUNNER_TEMP/openclaw-wheel/maf_sandbox_mcp-0.2.0-py3-none-any.whl"
+          wheel="$RUNNER_TEMP/openclaw-wheel/maf_sandbox_mcp-0.3.1-py3-none-any.whl"
           curl --fail --silent --show-error --location \
-            'https://files.pythonhosted.org/packages/02/48/e687c55991f6b8197ba73e10320e9f7b143edb392d1686112a5b1674ed5d/maf_sandbox_mcp-0.2.0-py3-none-any.whl' --output "$wheel"
-          printf '%s  %s\n' 'ebb54bc8b51d4d0ec3e63f1f850c5aa53b55d80ec5567c679ead169a3ed0d545' "$wheel" | sha256sum --check --status
+            'https://files.pythonhosted.org/packages/b9/2f/7958be1bb8a8bcfdca8b14817f6ea8bc74a0e4bd432a24eb591c1c7a0a53/maf_sandbox_mcp-0.3.1-py3-none-any.whl' --output "$wheel"
+          printf '%s  %s\n' '36d1af36ef6ed6fc174eeedc34a2c5f9a5e6a670134e0f6682d9c35955b079b1' "$wheel" | sha256sum --check --status
           docker pull "$BICEP_IMAGE"
       - name: Run the installed sample with Azure OpenAI
         timeout-minutes: 18
@@ -448,7 +448,7 @@ jobs:
           printf '::add-mask::%s\n' "$OPENAI_API_KEY"
           export OPENAI_API_KEY
           uv run --no-project --python 3.13.15 samples/experimental/openclaw_bicep_e2e/agent.py \
-            --mode model --reasoning-effort none --wheel "$RUNNER_TEMP/openclaw-wheel/maf_sandbox_mcp-0.2.0-py3-none-any.whl" \
+            --mode model --reasoning-effort none --wheel "$RUNNER_TEMP/openclaw-wheel/maf_sandbox_mcp-0.3.1-py3-none-any.whl" \
             --image "$BICEP_IMAGE" --output "$RUNNER_TEMP/openclaw-bicep-private"
       - name: Record bounded evidence and independently check owner scope
         if: always()
@@ -491,20 +491,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/openclaw-wheel"
-          wheel="$RUNNER_TEMP/openclaw-wheel/maf_sandbox_mcp-0.2.0-py3-none-any.whl"
+          wheel="$RUNNER_TEMP/openclaw-wheel/maf_sandbox_mcp-0.3.1-py3-none-any.whl"
           curl --fail --silent --show-error --location \
-            'https://files.pythonhosted.org/packages/02/48/e687c55991f6b8197ba73e10320e9f7b143edb392d1686112a5b1674ed5d/maf_sandbox_mcp-0.2.0-py3-none-any.whl' --output "$wheel"
-          printf '%s  %s\n' 'ebb54bc8b51d4d0ec3e63f1f850c5aa53b55d80ec5567c679ead169a3ed0d545' "$wheel" | sha256sum --check --status
+            'https://files.pythonhosted.org/packages/b9/2f/7958be1bb8a8bcfdca8b14817f6ea8bc74a0e4bd432a24eb591c1c7a0a53/maf_sandbox_mcp-0.3.1-py3-none-any.whl' --output "$wheel"
+          printf '%s  %s\n' '36d1af36ef6ed6fc174eeedc34a2c5f9a5e6a670134e0f6682d9c35955b079b1' "$wheel" | sha256sum --check --status
           docker pull "$BICEP_IMAGE"
           docker pull 'docker:29.8.2-dind@sha256:6316d612722fd7fb2bd7edf9fcbb4439d08915cfb2e0e0b28bf16675fc9f3314'
       - name: Run a fresh installed deterministic baseline
         timeout-minutes: 18
         run: |
           set -euo pipefail
-          printf 'mcp==1.30.0\n' > "$RUNNER_TEMP/openclaw-constraints.txt"
+          printf 'mcp==2.2.0\n' > "$RUNNER_TEMP/openclaw-constraints.txt"
           export UV_CONSTRAINT="$RUNNER_TEMP/openclaw-constraints.txt"
           uv run --no-project --python 3.13.15 samples/experimental/openclaw_bicep_e2e/agent.py \
-            --wheel "$RUNNER_TEMP/openclaw-wheel/maf_sandbox_mcp-0.2.0-py3-none-any.whl" \
+            --wheel "$RUNNER_TEMP/openclaw-wheel/maf_sandbox_mcp-0.3.1-py3-none-any.whl" \
             --image "$BICEP_IMAGE" --output "$RUNNER_TEMP/openclaw-bicep-private"
       - name: Qualify the fixed Linux actor-loss cases
         timeout-minutes: 70

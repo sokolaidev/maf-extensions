@@ -183,14 +183,15 @@ def test_linux_evidence_does_not_satisfy_windows_profile():
         old.fault.verify(value, "worker-active", candidate)
 
 
-def test_linux_plan_rejects_candidate_upgrade():
+@pytest.mark.parametrize("mcp_version", ["1.30.0", "2.3.0"])
+def test_linux_plan_rejects_candidate_upgrade(mcp_version):
     candidate = {
         "host": {"platform": "Linux"},
         "wheel_sha256": profile.WHEEL,
         "versions": dict(profile.VERSIONS),
     }
     assert len(profile.plan(candidate, CAMPAIGN)["cases"]) == 15
-    candidate["versions"]["mcp"] = "2.2.0"
+    candidate["versions"]["mcp"] = mcp_version
     with pytest.raises(ValueError, match="worker_versions"):
         profile.plan(candidate, CAMPAIGN)
 
@@ -559,7 +560,7 @@ def test_owner_loss_workflow_uses_fixed_installed_baseline_and_markdown_only():
     assert "environment" not in job and "permissions" not in job
     steps = {s.get("name"): s for s in job["steps"]}
     assert profile.WHEEL in steps["Download verified published worker and prepared compiler"]["run"]
-    assert "mcp==1.30.0" in steps["Run a fresh installed deterministic baseline"]["run"]
+    assert "mcp==2.2.0" in steps["Run a fresh installed deterministic baseline"]["run"]
     run = steps["Qualify the fixed Linux actor-loss cases"]["run"]
     assert 'worker/bin/python" -I -B' in run and "linux_owner_loss" in run
     assert steps["Re-evaluate and retain bounded actor-loss evidence"]["if"] == "always()"
@@ -573,6 +574,48 @@ def test_owner_loss_workflow_uses_fixed_installed_baseline_and_markdown_only():
     )
     go = next(s for s in job["steps"] if s.get("uses", "").startswith("actions/setup-go@"))
     assert go["with"] == {"go-version": "1.27.3", "cache": False}
+
+
+def test_published_candidate_matches_sample_and_both_hosted_profiles():
+    import ast
+
+    import yaml
+
+    source = ast.parse((ROOT / "samples/experimental/openclaw_bicep_e2e/agent.py").read_text())
+    requirements = next(
+        ast.literal_eval(node.value)
+        for node in source.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "WORKER_REQUIREMENTS"
+            for target in node.targets
+        )
+    )
+    assert dict(item.split("==") for item in requirements) == {
+        key: value for key, value in profile.VERSIONS.items() if key != "maf-sandbox-mcp"
+    }
+    workflow = yaml.safe_load((ROOT / ".github/workflows/docker-live.yml").read_text())
+    wheel = f"maf_sandbox_mcp-{profile.VERSIONS['maf-sandbox-mcp']}-py3-none-any.whl"
+    downloads = []
+    for name in ("openclaw-bicep-model", "openclaw-owner-loss"):
+        steps = workflow["jobs"][name]["steps"]
+        download = next(
+            step["run"]
+            for step in steps
+            if step.get("name") == "Download verified published worker and prepared compiler"
+        )
+        assert profile.WHEEL in download
+        assert download.count(wheel) == 2
+        downloads.append(
+            next(line.strip() for line in download.splitlines() if "files.pythonhosted.org" in line)
+        )
+        sample = next(
+            step["run"]
+            for step in steps
+            if "samples/experimental/openclaw_bicep_e2e/agent.py" in step.get("run", "")
+        )
+        assert wheel in sample
+    assert downloads[0] == downloads[1]
 
 
 @pytest.mark.parametrize("name", ["worker-unavailable", "worker-denied"])

@@ -21,15 +21,15 @@ from .linux_docker_failures import DENIAL_IMAGE, DENIAL_REFERENCE, denied_case, 
 from .owner_loss_cleanup import cleanup
 from .owner_loss_evidence import CASES, DEADLINES, DENIAL_SOURCE, one, verify
 
-PROFILE = "owner-loss-linux-v4"
-WHEEL = "ebb54bc8b51d4d0ec3e63f1f850c5aa53b55d80ec5567c679ead169a3ed0d545"
+PROFILE = "owner-loss-linux-v5"
+WHEEL = "36d1af36ef6ed6fc174eeedc34a2c5f9a5e6a670134e0f6682d9c35955b079b1"
 VERSIONS = {
-    "maf-sandbox-mcp": "0.2.0",
-    "maf-sandbox": "0.51.1",
-    "maf-sandbox-bicep": "0.24.0",
-    "maf-sandbox-docker": "0.29.0",
-    "agent-framework-core": "1.22.0",
-    "mcp": "1.30.0",
+    "maf-sandbox-mcp": "0.3.1",
+    "maf-sandbox": "0.53.1",
+    "maf-sandbox-bicep": "0.25.1",
+    "maf-sandbox-docker": "0.30.6",
+    "agent-framework-core": "1.24.0",
+    "mcp": "2.2.0",
 }
 
 

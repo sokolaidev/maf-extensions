@@ -291,6 +291,7 @@ The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audi
 | GitHub-hosted Linux Gateway-to-Docker sample | Qualified on the recorded Ubuntu candidate with deterministic provider and independent cleanup; broader Linux and real-model claims remain unqualified | [#2214](https://github.com/sokolaidev/maf-extensions/issues/2214) (closed) by [#2217](https://github.com/sokolaidev/maf-extensions/pull/2217) (merged) |
 | GitHub-hosted real-model Bicep sample | Complete for the recorded Ubuntu/Azure OpenAI candidate with reasoning disabled: actual invalid/valid compiler results and independent cleanup passed | [#2288](https://github.com/sokolaidev/maf-extensions/issues/2288) (closed) by [#2294](https://github.com/sokolaidev/maf-extensions/pull/2294) (merged) |
 | GitHub-hosted Linux actor-loss profile | Complete for the recorded Ubuntu v2 candidate: thirteen actor-loss cases and independent cleanup passed; broader failure modes remain unqualified | [#2386](https://github.com/sokolaidev/maf-extensions/issues/2386) (closed) by [#2387](https://github.com/sokolaidev/maf-extensions/pull/2387) (merged) |
+| Current published Docker/Bicep candidate | In progress: worker 0.3.1 and compatible MAF/MCP pins selected; fresh hosted qualification pending | [#2542](https://github.com/sokolaidev/maf-extensions/issues/2542) (open) |
 | Linux Docker access and removal failure recovery | Complete for the reviewed v4 candidate: all fifteen cases passed with pre-probe startup observations and exact removal-command joins; broader failures remain unqualified | [#2413](https://github.com/sokolaidev/maf-extensions/issues/2413) (closed) by [#2414](https://github.com/sokolaidev/maf-extensions/pull/2414) (merged) |
 | Linux Gateway-to-Docker sample | Recorded deterministic Linux-on-Docker-Desktop run passed; real-model behavior remains unqualified | [#2185](https://github.com/sokolaidev/maf-extensions/issues/2185) (closed) by [#2191](https://github.com/sokolaidev/maf-extensions/pull/2191) (merged) |
 | Installed worker | Published 0.1.0; historical and fresh fixed-profile qualifications recorded separately below | [#1898](https://github.com/sokolaidev/maf-extensions/issues/1898) (closed) by [#1920](https://github.com/sokolaidev/maf-extensions/pull/1920) (merged) |
@@ -1865,3 +1866,22 @@ Complete installed Python inventory for this candidate:
 | uvicorn | `0.54.0` |
 
 This accepts the recorded deterministic-provider candidate and bounded operator-driven recovery only. Connection loss affects the replacement's private Docker context, and removal denial is an exact-target daemon authorization decision. Actual daemon or host loss, escaped process trees, model retry decisions, unattended watchdogs, newer dependencies and production remain unqualified. Only documentation follows the accepted source; recording this result is not another live run.
+
+## Published candidate refresh (2026-11-07)
+
+[#2542](https://github.com/sokolaidev/maf-extensions/issues/2542) selects a new published package candidate for the existing Docker/Bicep integration. PyPI metadata and a clean Windows/Python 3.13.12 installation confirm compatible requirements; `uv pip check` passed for all 38 installed distributions. This is installation evidence only. The fresh GitHub-hosted deterministic baseline, fifteen-case recovery campaign and real-model sample are pending.
+
+| Component | Accepted Linux v4 candidate | Selected Linux v5 candidate | Relevant change |
+|---|---|---|---|
+| Published worker | 0.2.0 | 0.3.1 | MCP 2 transport adaptation and MAF 1.24 compatibility; existing bounded HTTP/service lifecycle |
+| Core | 0.51.1 | 0.53.1 | MAF provenance/provider-lifetime adaptation, binary store support and refusal of inputs changed during reading |
+| Bicep | 0.24.0 | 0.25.1 | MAF 1.24 compatibility and the core 0.53 dependency line |
+| Docker backend | 0.29.0 | 0.30.6 | Core 0.53 compatibility and managed proxy dependency updates; this closed-network Bicep profile does not exercise credentialed proxy behavior |
+| MAF Core | 1.22.0 | 1.24.0 | Installed provider/provenance contracts consumed by the published worker and kind |
+| MCP SDK | 1.30.0 | 2.2.0 | Worker transport uses the MCP 2.2 API and refuses other SDK versions; published 2.3.0 is outside its exact requirement |
+
+Package deltas are recorded in the [worker](../../../packages/maf-sandbox-mcp/CHANGELOG.md), [core](../../../packages/maf-sandbox/CHANGELOG.md), [Bicep](../../../packages/maf-sandbox-bicep/CHANGELOG.md) and [Docker](../../../packages/maf-sandbox-docker/CHANGELOG.md) release histories. Source/workspace compatibility does not establish behavior of the installed artifacts. No package requirement or generated release metadata is changed by this qualification refresh.
+
+The [published worker wheel](https://files.pythonhosted.org/packages/b9/2f/7958be1bb8a8bcfdca8b14817f6ea8bc74a0e4bd432a24eb591c1c7a0a53/maf_sandbox_mcp-0.3.1-py3-none-any.whl) has verified SHA-256 `36d1af36ef6ed6fc174eeedc34a2c5f9a5e6a670134e0f6682d9c35955b079b1`. Both hosted profiles select that wheel and the same six principal package versions. The sample pins MCP explicitly; the recovery planner rejects both the historical 1.30 and newer unsupported 2.3 SDK. Other transitive packages resolve at installation and their complete inventories must be recorded and compared between hosted runs; the principal pins are not a full transitive lock.
+
+OpenClaw 2026.9.7, the compiler image, the fifteen recovery cases and their evidence predicates stay fixed. Linux v5 distinguishes this published candidate from the historical v4 acceptance, which remains bound to its recorded source and packages. Real-model acceptance additionally requires actual upstream tool-result observations with reasoning disabled, both compiler verdicts and independent cleanup. Actual daemon/host loss, escaped process trees, model retries after injected failure, unattended watchdogs, newer candidates and production remain unqualified. No new workload tool is introduced, and no experiment JSON is retained.
