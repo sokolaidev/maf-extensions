@@ -291,7 +291,7 @@ The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audi
 | GitHub-hosted Linux Gateway-to-Docker sample | Qualified on the recorded Ubuntu candidate with deterministic provider and independent cleanup; broader Linux and real-model claims remain unqualified | [#2214](https://github.com/sokolaidev/maf-extensions/issues/2214) (closed) by [#2217](https://github.com/sokolaidev/maf-extensions/pull/2217) (merged) |
 | GitHub-hosted real-model Bicep sample | Complete for the recorded Ubuntu/Azure OpenAI candidate with reasoning disabled: actual invalid/valid compiler results and independent cleanup passed | [#2288](https://github.com/sokolaidev/maf-extensions/issues/2288) (closed) by [#2294](https://github.com/sokolaidev/maf-extensions/pull/2294) (merged) |
 | GitHub-hosted Linux actor-loss profile | Complete for the recorded Ubuntu v2 candidate: thirteen actor-loss cases and independent cleanup passed; broader failure modes remain unqualified | [#2386](https://github.com/sokolaidev/maf-extensions/issues/2386) (closed) by [#2387](https://github.com/sokolaidev/maf-extensions/pull/2387) (merged) |
-| Current published Docker/Bicep candidate | In progress: worker 0.3.1 and compatible MAF/MCP pins selected; fresh hosted qualification pending | [#2542](https://github.com/sokolaidev/maf-extensions/issues/2542) (open) |
+| Current published Docker/Bicep candidate | Complete for the recorded worker 0.3.1 candidate: fresh baseline, all fifteen recovery cases and real-model Bicep sample passed | [#2542](https://github.com/sokolaidev/maf-extensions/issues/2542) (closed) by [#2545](https://github.com/sokolaidev/maf-extensions/pull/2545) (merged) |
 | Linux Docker access and removal failure recovery | Complete for the reviewed v4 candidate: all fifteen cases passed with pre-probe startup observations and exact removal-command joins; broader failures remain unqualified | [#2413](https://github.com/sokolaidev/maf-extensions/issues/2413) (closed) by [#2414](https://github.com/sokolaidev/maf-extensions/pull/2414) (merged) |
 | Linux Gateway-to-Docker sample | Recorded deterministic Linux-on-Docker-Desktop run passed; real-model behavior remains unqualified | [#2185](https://github.com/sokolaidev/maf-extensions/issues/2185) (closed) by [#2191](https://github.com/sokolaidev/maf-extensions/pull/2191) (merged) |
 | Installed worker | Published 0.1.0; historical and fresh fixed-profile qualifications recorded separately below | [#1898](https://github.com/sokolaidev/maf-extensions/issues/1898) (closed) by [#1920](https://github.com/sokolaidev/maf-extensions/pull/1920) (merged) |
@@ -1869,7 +1869,7 @@ This accepts the recorded deterministic-provider candidate and bounded operator-
 
 ## Published candidate refresh (2026-11-07)
 
-[#2542](https://github.com/sokolaidev/maf-extensions/issues/2542) selects a new published package candidate for the existing Docker/Bicep integration. PyPI metadata and a clean Windows/Python 3.13.12 installation confirm compatible requirements; `uv pip check` passed for all 38 installed distributions. This is installation evidence only. The fresh GitHub-hosted deterministic baseline, fifteen-case recovery campaign and real-model sample are pending.
+[#2542](https://github.com/sokolaidev/maf-extensions/issues/2542) selects a new published package candidate for the existing Docker/Bicep integration. PyPI metadata and a clean Windows/Python 3.13.12 installation confirm compatible requirements; `uv pip check` passed for all 38 installed distributions. This is installation evidence only. The fresh GitHub-hosted deterministic baseline, fifteen-case recovery campaign and real-model sample passed as recorded below.
 
 | Component | Accepted Linux v4 candidate | Selected Linux v5 candidate | Relevant change |
 |---|---|---|---|
@@ -1893,3 +1893,104 @@ OpenClaw 2026.9.7, the compiler image, the fifteen recovery cases and their evid
 A clean published-environment reproduction identifies the import: recovery reused `compiler_running` through the legacy MAF ownership fixture, which imports `httpx`; the MCP 2 candidate supplies `httpx2`. The unchanged standard-library process predicate now lives in the shared Gateway helper and both callers use it. This avoids adding a legacy HTTP client to the selected candidate. The regression fails before the move and passes afterward; the actual published environment also reaches the resource-setup boundary without importing the legacy fixture. A fresh complete recovery campaign is required.
 
 The separate [real-model run 42388117416, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/42388117416) passed at the same source `c32410c056753290104fef3248f121c5b7a06d5a`: six forwarded model responses, two observed Bicep results (one invalid and one valid), reasoning disabled, no provider errors, confirmed per-call cleanup, stopped processes, released owner lock and independently observed zero owned containers. Retained Markdown SHA-256: `39e97b0b9d59b9682afa1fbaa22da4299705ab92caad6eb66979f2f842f9e1b2`. This is model-path evidence for the selected published packages; it does not establish recovery. The subsequent import correction affects only recovery/legacy qualification fixtures, not the sample or published wheel.
+
+## Accepted published candidate campaigns (2026-11-07)
+
+[Recovery run 42388961604, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/42388961604) passed a fresh installed deterministic baseline and all fifteen Linux v5 cases at `c8f541460f95a004000a75f3e3ccdda67e4327bf`. Independent collection returned `qualified: true` for campaign `5fe843b1bc91449e9d6786f034f91f22`, with cleanup confirmed for every case and no emergency cleanup required. Retained Markdown SHA-256: `d9d1b1d7ff292dacdfaebac4e419eebbf9d777ddf1607bc94b236e8fe31ecdcb`.
+
+[Real-model run 42388117416, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/42388117416) passed at `c32410c056753290104fef3248f121c5b7a06d5a` with the same published wheel, worker module hashes, principal dependencies, Gateway version and compiler image/configuration. Retained Markdown SHA-256: `39e97b0b9d59b9682afa1fbaa22da4299705ab92caad6eb66979f2f842f9e1b2`. The later source change only removes the recovery harness's incidental legacy-client dependency; the model sample bytes are unchanged.
+
+The model completed 6 requests and 6 forwarded responses, with 2 observed Bicep results, no provider errors and reasoning disabled. Both compiler verdicts and per-call cleanup were observed. Final checks confirmed stopped processes, owner-lock release and independently observed zero owned containers.
+
+Recovery host: Ubuntu image `20261101.360.1`, Linux `7.0.0-1017-azure` / `x86_64`, Python `3.13.15`, Node `v26.8.1`, `uv 0.12.5 (x86_64-unknown-linux-gnu)`, Docker `28.0.4` / API `1.48`. Model host: Ubuntu image `20261101.360.1`, `Linux-7.0.0-1017-azure-x86_64-with-glibc2.39`, `Python 3.13.15`, Node `v26.8.1`, `uv 0.12.5 (x86_64-unknown-linux-gnu)`, Docker `28.0.4`. Recovery case execution total: 323.414 seconds, excluding setup and collection.
+
+| Identity | Recorded value |
+|---|---|
+| Recovery source fingerprint | `550c78dd8132c26691153dead6c4433015c5a3ea0e0684c4668db6c13b346bf1` |
+| Published worker SHA-256 | `36d1af36ef6ed6fc174eeedc34a2c5f9a5e6a670134e0f6682d9c35955b079b1` |
+| Compiler image | `sha256:fb02b2f79c7428f7595f1fa664cc4f240ed54c349e059d8e4a0dccb0e435fab3` |
+| Compiler configuration SHA-256 | `d3f160d081dcf48e41f0f0cdf006595b380402ac9730f3ee920738ba616d87e1` |
+| Baseline report SHA-256 | `f61ed3de8bc04b75cbf3dc65623f461cbd8ef40ca46c4b7eb15c732e20fc6a5e` |
+| Baseline tool evidence SHA-256 | `9aae2d1e282657460631b530051121c53614085b1c42d2e2923b5c7646126330` |
+| npm lock SHA-256 | `6d37a9e295c8716bb5e5e31c0d43b436c8c3ef3c71bdb61e2c70dc4c9f2eebd7` |
+| Recovery runtime fingerprint | `51ccf1bf16897962f1364a1ecc42fb713085a564c39858c219b53c67b2ab6175` |
+| Model sample SHA-256 | `bc8392eeb0158cca6dc08896f5be358cf3e75a657b8d8c07f04e13df58f39bd6` |
+| Model report SHA-256 | `877f4c5c92025dc4df2b1e676917910d33ad6511e17ae21e7452cb02e62ecb96` |
+| Model tool evidence SHA-256 | `2201ae964819f5c1165d01c6e7cb9a2b509c4e68da35140949046e7c4d94d1bc` |
+| Model endpoint SHA-256 | `308241e7111832947f4614c87b2bb7f8a135c63fbac6cf5fce09ffa744c635de` |
+| Requested model SHA-256 | `9a7e60cd1c7bb9d5493832103af02aca05272564b29e49852a9a0b5d8d96ec2c` |
+| Returned model SHA-256 | `b8be814ffed8fd2f3fc7c660d5f2038c33c02a1d0ed3a6a31e542bb97c23813a` |
+| Installed worker __init__.py SHA-256 | `6cd4609954365facc1edf656bfffc2366bf5da541f1fc699b88122dd007f2430` |
+| Installed worker server.py SHA-256 | `c69866ad7b3d35d7dc4fd1373493ccd404a1153101af45f72d7a6dcc1a31a89b` |
+| Installed worker workload_http.py SHA-256 | `6d0047e30349d80ef076f34eef7172bf0f0e8ad07a00e6fae4f7aab8a6d57f07` |
+| Installed worker workload_service.py SHA-256 | `f9cd38791fac1ed5254aac7bbb170a4a395d289712dd8468ac8a70c538b8ca91` |
+| Denial fixture daemon_image | `sha256:98175203ef6f7a6147c3edbff4f2606d2707b413a61b45fed021004ddbf0ebd1` |
+| Denial fixture daemon_version | `29.8.2` |
+| Denial fixture daemon_storage_driver | `overlay2` |
+| Denial fixture go_version | `go version go1.27.3 linux/amd64` |
+| Denial fixture plugin_source_sha256 | `086f2ddbf7d081a9e18e2d8e7d9abc5cd9dccd2b47d09aa5b67b2dc231f780c4` |
+| Denial fixture plugin_binary_sha256 | `923dbc7fe663de0a65a3ee53dff51cb5b38c8a3f7d6f5c1ced5172bb5a725e05` |
+| Denial fixture registration_sha256 | `9488961deed368a4e8dacbe3a717ecc01d65edb887f266dd4cde4345486981dd` |
+| Denial fixture control_sha256 | `c5516acb6a02eacddb8f8a304223b58752c0c043b251056d5c58ff5178e7bb0c` |
+
+| Case | Result | Seconds | Private evidence SHA-256 |
+|---|---|---:|---|
+| `control` | Passed; independent cleanup confirmed | 13.540 | `05b511ae2af9e4077f646a6ee119943a9751841282ce4fb8f39746058ce386b8` |
+| `gateway-pre_admission` | Passed; independent cleanup confirmed | 20.267 | `a9c0e91e578803fb6c4206ea858cc84792383cae8e1b07eeef6ad12529f6b638` |
+| `gateway-active` | Passed; independent cleanup confirmed | 21.383 | `6eeba45787d66dae03e20165966f6b6ae8c6217032a0451d4c20f54e13fe8554` |
+| `gateway-response` | Passed; independent cleanup confirmed | 19.950 | `06d0c88b8767a193af186758fb218de2d01ee5b717d4dca62367cc7908be384d` |
+| `gateway-cleanup` | Passed; independent cleanup confirmed | 20.544 | `8dddc9587e3a770f698b6719cd3d44531672bf11d4ff727e604bc8fa0b27e242` |
+| `client-pre_admission` | Passed; independent cleanup confirmed | 17.351 | `ff9b7602ad143ea69cd36a7b1010516b1371063875e6c8048d93eaaacc3a2520` |
+| `client-active` | Passed; independent cleanup confirmed | 19.982 | `1914f83ff789ae16e2bb519c8d1fd119584b93f91c4504150d0bff1229e8c799` |
+| `client-response` | Passed; independent cleanup confirmed | 20.948 | `a7a577543dc549f9cbc55a907be37fe929724a62b16128b6ea09c77705424b30` |
+| `client-cleanup` | Passed; independent cleanup confirmed | 20.956 | `0c5b00a58f8e2328d5f70f4f34844732005cde34a93e2e914db299301a29d523` |
+| `worker-pre_admission` | Passed; independent cleanup confirmed | 22.394 | `b219fdb802aab7bd860e1aa3b74c5922d1e7936ad09808400a4f7ad2a19a2783` |
+| `worker-active` | Passed; independent cleanup confirmed | 23.066 | `02e75a055528942fd8c4d6d8d3243734fed419cc5d53dfb316925e7c996ee62c` |
+| `worker-response` | Passed; independent cleanup confirmed | 26.200 | `ed9b3d185b28e3312306a622ee096368386706872c594422f7a76167a4687971` |
+| `worker-cleanup` | Passed; independent cleanup confirmed | 25.869 | `5f5253bab88ef8e19e0b5fe7f66be66a4901e1c7da04a18e570cb3ef687c5fec` |
+| `worker-unavailable` | Passed; independent cleanup confirmed | 24.033 | `60ddde5a40f87cd9a2847d45feed5c48a26cf24a25c3b7d88eb07e7a12dbb3f6` |
+| `worker-denied` | Passed; independent cleanup confirmed | 26.932 | `8c5abad4a61a0c9937cb96433fabc461adc238ee9a95d5bf2fc296552e7e70e6` |
+
+Complete installed Python inventories are compared below. Matching version strings do not imply byte-identical environments: the recovery runtime and worker identities above retain their separate evidence.
+
+| Distribution | Recovery | Model |
+|---|---|---|
+| PyJWT | `2.15.1` | `2.15.1` |
+| PyYAML | `6.0.3` | `6.0.3` |
+| agent-framework-core | `1.24.0` | `1.24.0` |
+| annotated-types | `0.8.0` | `0.8.0` |
+| anyio | `4.16.0` | `4.16.0` |
+| attrs | `26.1.0` | `26.1.0` |
+| cffi | `2.1.1` | `2.1.1` |
+| click | `8.5.1` | `8.5.1` |
+| cryptography | `50.0.2` | `50.0.2` |
+| h11 | `0.16.0` | `0.16.0` |
+| httpcore2 | `2.16.0` | `2.16.0` |
+| httpx2 | `2.16.0` | `2.16.0` |
+| idna | `3.20` | `3.20` |
+| jsonschema | `4.26.0` | `4.26.0` |
+| jsonschema-specifications | `2025.9.1` | `2025.9.1` |
+| maf-sandbox | `0.53.1` | `0.53.1` |
+| maf-sandbox-bicep | `0.25.1` | `0.25.1` |
+| maf-sandbox-docker | `0.30.6` | `0.30.6` |
+| maf-sandbox-mcp | `0.3.1` | `0.3.1` |
+| mcp | `2.2.0` | `2.2.0` |
+| mcp-types | `2.2.0` | `2.2.0` |
+| msgspec | `0.22.0` | `0.22.0` |
+| opentelemetry-api | `1.45.2` | `1.45.2` |
+| pycparser | `3.12` | `3.12` |
+| pydantic | `2.14.3` | `2.14.3` |
+| pydantic_core | `2.50.4` | `2.50.4` |
+| python-dotenv | `1.2.4` | `1.2.4` |
+| python-multipart | `0.0.33` | `0.0.33` |
+| referencing | `0.37.0` | `0.37.0` |
+| regex | `2026.11.7` | `2026.11.7` |
+| rpds-py | `2026.9.1` | `2026.9.1` |
+| sse-starlette | `3.7.0` | `3.7.0` |
+| starlette | `1.7.0` | `1.7.0` |
+| truststore | `0.10.5` | `0.10.5` |
+| typing-inspection | `0.4.5` | `0.4.5` |
+| typing_extensions | `4.16.0` | `4.16.0` |
+| uvicorn | `0.54.0` | `0.54.0` |
+
+This accepts the selected published candidate for the recorded Linux deterministic recovery profile and separately observed real-model Bicep path. It does not qualify model decisions after injected failures, actual daemon/host loss, escaped process trees, unattended watchdogs, newer package sets or production. Historical campaigns remain unchanged; the failed initial recovery run is not counted toward acceptance. Only a workflow pin assertion and documentation follow the final recovery source.
