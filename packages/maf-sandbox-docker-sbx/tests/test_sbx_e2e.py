@@ -4,8 +4,9 @@ Skipped unless ``MAF_SANDBOX_SBX_E2E=1``.  ``MAF_SANDBOX_SBX_PATH`` names the CL
 not on ``PATH``.  The host must pass the backend's own checks — SSH agent forwarding off, no MCP
 server registered — except on a host whose settings the tester may not change, where
 ``MAF_SANDBOX_SBX_E2E_ACCEPT_HOST=1`` skips those two checks.  ``test_sbx_e2e_host.py`` asserts
-them.  ``MAF_SANDBOX_SBX_E2E_IMAGES`` names templates, comma-separated, that the file, exec and
-egress tests also run on, beside Docker's default one.  The allowlist tests set rules scoped to
+them. Build and load the shell fixture in ``tests/images`` first, or select a prepared template
+with ``MAF_SANDBOX_SBX_E2E_IMAGE``. ``MAF_SANDBOX_SBX_E2E_IMAGES`` names additional templates,
+comma-separated, for file, exec and egress tests. The allowlist tests set rules scoped to
 their own sandboxes only, and refuse on a host whose global rules or secrets reach the hosts they
 allow.
 """
@@ -62,11 +63,12 @@ from maf_sandbox_docker_sbx._backend import sandbox_name
 from maf_sandbox_docker_sbx._plane import WorkspacePlane
 
 _SBX = os.environ.get("MAF_SANDBOX_SBX_PATH", "sbx")
+_IMAGE = os.environ.get("MAF_SANDBOX_SBX_E2E_IMAGE", "maf-sbx-e2e-shell:local")
 _ACCEPT_HOST = os.environ.get("MAF_SANDBOX_SBX_E2E_ACCEPT_HOST") == "1"
 _WORK = "/maf-sandbox/work"
 _NO_SYMLINK_PRIVILEGE = 1314
-_IMAGES = [None, *(i for i in os.environ.get("MAF_SANDBOX_SBX_E2E_IMAGES", "").split(",") if i)]
-_BY_IMAGE = pytest.mark.parametrize("image", _IMAGES, ids=lambda image: image or "default")
+_IMAGES = [_IMAGE, *(i for i in os.environ.get("MAF_SANDBOX_SBX_E2E_IMAGES", "").split(",") if i)]
+_BY_IMAGE = pytest.mark.parametrize("image", _IMAGES)
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("MAF_SANDBOX_SBX_E2E") != "1",
@@ -96,6 +98,7 @@ def _key(label: str) -> SandboxKey:
 
 
 def _spec(kind: str = "e2e", **overrides: object) -> SandboxSpec:
+    overrides.setdefault("image", _IMAGE)
     requires = frozenset(
         {
             Capability.EXEC,
@@ -450,7 +453,7 @@ def test_host_tools_answer_on_each_template(tmp_path, image):
     "mode", ["idle", "async", "sync", "timeout", "cancel", "sibling", "stop", "dispose"]
 )
 def test_host_tools_lifecycle(tmp_path, mode):
-    asyncio.run(_host_tools_case(tmp_path, None, mode))
+    asyncio.run(_host_tools_case(tmp_path, _IMAGE, mode))
 
 
 async def _host_tools_case(tmp_path, image, mode):
@@ -569,7 +572,7 @@ async def _host_tools_case(tmp_path, image, mode):
             json.dumps(
                 {
                     "host_tools": mode,
-                    "image": image or "default",
+                    "image": image,
                     "effects": len(effects),
                     "seconds": round(time.monotonic() - started, 3),
                 }

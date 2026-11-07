@@ -4,7 +4,8 @@ Skipped unless ``MAF_SANDBOX_SBX_E2E=1``.  A test that has to change that state 
 forwarding, an MCP registration, the login, or the daemon API socket — also needs
 ``MAF_SANDBOX_SBX_E2E_HOST=1``, and restores what it changed.  Set it only on a host no one
 else is using: while a test runs, every other sandbox on the host sees the changed state.
-Logging back in reads ``DOCKER_USERNAME`` and ``DOCKER_PAT``.
+Logging back in reads ``DOCKER_USERNAME`` and ``DOCKER_PAT``. Build and load the shell fixture
+in ``tests/images`` first, or name a prepared template with ``MAF_SANDBOX_SBX_E2E_IMAGE``.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from maf_sandbox_docker_sbx import (
 from maf_sandbox_docker_sbx._backend import sandbox_name
 
 _SBX = os.environ.get("MAF_SANDBOX_SBX_PATH", "sbx")
+_IMAGE = os.environ.get("MAF_SANDBOX_SBX_E2E_IMAGE", "maf-sbx-e2e-shell:local")
 _MAY_CHANGE_HOST = os.environ.get("MAF_SANDBOX_SBX_E2E_HOST") == "1"
 _FORWARDING = "ssh.agentForwardingEnabled"
 
@@ -68,7 +70,9 @@ def _key(label: str) -> SandboxKey:
 
 
 def _spec() -> SandboxSpec:
-    return SandboxSpec(kind="e2e", requires=frozenset({Capability.EXEC, Capability.FILES_IN}))
+    return SandboxSpec(
+        kind="e2e", image=_IMAGE, requires=frozenset({Capability.EXEC, Capability.FILES_IN})
+    )
 
 
 def _listed(name: str) -> bool:
@@ -194,6 +198,7 @@ def test_engine_fault_responses_do_not_mean_an_absent_sandbox(tmp_path):
 def _allowlist(*hosts: str) -> SandboxSpec:
     return SandboxSpec(
         kind="e2e",
+        image=_IMAGE,
         requires=frozenset({Capability.EXEC}),
         egress=Egress.ALLOWLIST,
         egress_allow=hosts,

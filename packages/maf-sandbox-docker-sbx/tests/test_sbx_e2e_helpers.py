@@ -11,6 +11,32 @@ import test_sbx_e2e as live
 import test_sbx_e2e_host as host
 
 
+def test_prepared_image_reaches_every_live_spec(monkeypatch):
+    image = "prepared-shell:test"
+    monkeypatch.setattr(live, "_IMAGE", image)
+    monkeypatch.setattr(host, "_IMAGE", image)
+    assert live._spec().image == image
+    assert live._spec(kind="second").image == image
+    assert host._spec().image == image
+    assert host._allowlist("example.com").image == image
+    assert live._spec(image="other:test").image == "other:test"
+
+
+@pytest.mark.parametrize(
+    "mode", ["idle", "async", "sync", "timeout", "cancel", "sibling", "stop", "dispose"]
+)
+def test_host_tool_lifecycle_uses_the_prepared_image(monkeypatch, tmp_path, mode):
+    observed = []
+
+    async def scenario(path, image, selected_mode):
+        observed.append((path, image, selected_mode))
+
+    monkeypatch.setattr(live, "_IMAGE", "prepared-shell:test")
+    monkeypatch.setattr(live, "_host_tools_case", scenario)
+    live.test_host_tools_lifecycle(tmp_path, mode)
+    assert observed == [(tmp_path, "prepared-shell:test", mode)]
+
+
 @pytest.mark.parametrize("failure", [None, "body", "restart"])
 def test_host_setting_is_restored_after_success_or_failure(monkeypatch, failure):
     setting, before = host._FORWARDING, "true"

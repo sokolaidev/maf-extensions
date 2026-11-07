@@ -38,6 +38,8 @@ Both remove in the guest, at the guest's own authority, but they check different
 
 The image needs `/bin/sh` and `/bin/bash`, without which `sbx` cannot start it, and `base64`, `setsid`, `mount`, `unshare` with `--map-user` and `--map-group` (util-linux 2.37.2 on Ubuntu 22.04 has both), `mkdir`, `cat`, `rm` and `sleep`. Acquire checks for all of them.
 
+The [shell fixture](../../../packages/maf-sandbox-docker-sbx/tests/images/README.md) builds from a digest-pinned Docker shell kit, installs Debian's separate `mount` package, and restores the non-root user. The live suites select this prepared image explicitly; `MAF_SANDBOX_SBX_E2E_IMAGE` selects another prepared image for local qualification. The backend still leaves image selection to `SandboxSpec.image`; callers relying on an upstream default must ensure it supplies the required guest utilities.
+
 ## Network
 
 Every sandbox is created with a per-sandbox `--deny-network "**"`, which beats every global allow rule, so a `CLOSED` sandbox has no network whatever the host's policy says.
