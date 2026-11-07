@@ -22,13 +22,13 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0"
+          "golang.org/x/net": "v0.62.0"
         },
         "module_files": {
-          "go.mod": "7d301455b35ec877fad536605cc70736ce870e08022b2248cbf4f9666c3ae3f5",
-          "go.sum": "b43a372a0504fcb3a49fad3cf4f428510dc7c9959c2638fcfc627afba3899935"
+          "go.mod": "d5b17ee492485530f1ed5a28a80684b14cfbc440039e14f7341dffb93525a2df",
+          "go.sum": "fff4643afad6f6891acd37961065c9d039f493866749757259aae05bde7a130f"
         },
-        "sha256": "da096e763cf4f01c88ac5a77b28cb0f04665f277ed5d09875ccc025ecca4d408"
+        "sha256": "a1ae6629858a417307e93a930ad83cea8d350a26ee298d8e5317cbca01a486cc"
       }
     }
   ],
