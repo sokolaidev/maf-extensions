@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from maf_sandbox import Sandbox, SandboxKey, SandboxRouter, SandboxSpec
+from maf_sandbox import Isolation, Sandbox, SandboxKey, SandboxRouter, SandboxSpec
 from maf_sandbox_document import ExportOptions, export_pdf
 from pypdf import PdfReader
 
@@ -131,7 +131,7 @@ async def check(image_id: str, *, directory: Path | None = None) -> dict[str, An
                 )
             return cleaned
 
-    router = Router([backend])
+    router = Router([backend], min_isolation=Isolation.CONTAINER)
     key = SandboxKey(scope, "export", "qualification")
     evidence: dict[str, Any] = {}
     try:
