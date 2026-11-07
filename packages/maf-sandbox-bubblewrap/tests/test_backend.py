@@ -151,8 +151,10 @@ def test_live_startup_refuses_unusable_shell(
     blocked.chmod(0o644)
     original = backend_module._arguments
 
-    def arguments(settings: BubblewrapSandboxConfig) -> list[str]:
-        args = original(settings)
+    def arguments(
+        settings: BubblewrapSandboxConfig, proxy: backend_module.Proxy | None = None
+    ) -> list[str]:
+        args = original(settings, proxy)
         index = args.index("--")
         args[index:index] = ["--ro-bind", str(blocked), "/bin/sh"]
         return args

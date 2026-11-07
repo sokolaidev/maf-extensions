@@ -45,6 +45,16 @@ Lock files remain after disposal so a concurrent owner cannot lock a replacement
 
 Ownership records are published atomically before cgroup creation, so a host that dies during startup leaves either no cgroup or a complete cleanup record. Failed setup removes its record after cgroup cleanup succeeds. Commands whose requested timeout exceeds `max_timeout` (180 seconds by default) are rejected with `ValueError` before execution. Accepted deadlines include time waiting for the request lock; only the remaining budget reaches the broker.
 
-## Offline Draw.io
+## Method-filtered HTTPS egress
+
+Configure `egress_proxy` as the absolute path to a trusted native build of the repository's pinned, patched iron-proxy and `egress_proxy_sha256` as its lowercase SHA-256. Without both, admission remains `CLOSED` only. With both, the backend supports `ALLOWLIST`, `EGRESS_METHODS` and `EGRESS_PATHS`; attached credential authority is refused. The binary is checked before each proxy starts. Keep it and its ancestors immutable to untrusted principals.
+
+Each allowlisted sandbox receives its own proxy under the same cgroup and owner-death supervision. The private guest network reaches it through a mounted Unix socket and loopback relay. Only the CA certificate and socket enter the guest; signing keys remain host-side. Upstream TLS is verified, and HTTP methods and paths are enforced after TLS termination. Private, loopback and link-local upstream addresses are denied. Proxy connections and diagnostic retention are bounded. Disposal removes the proxy, guest and proxy files, including after timeout or cancellation.
+
+`exec_bounded` applies a caller-selected combined stdout/stderr budget, capped by `output_bytes`. The broker enforces it while executing and the host bounds response frames before decoding. Overflow raises `SandboxExecOutputLimitExceeded`; no partial result is returned.
+
+The [experimental pricing sample](https://github.com/sokolaidev/maf-extensions/tree/main/samples/experimental/azure_pricing) provides runtime/proxy provisioning, dedicated cgroup setup, retained identities and real pricing/enforcement probes.
+
+## Offline Draw.io runtime
 
 The [runtime provisioning script](https://github.com/sokolaidev/maf-extensions/blob/main/images/drawio-export/build-runtime.sh) uses debootstrap and the pinned Draw.io Desktop package directly, with the same offline assets, fonts and exporter as the image profile. Provisioning needs network access and root; rendering needs neither. Run the host outside that runtime and register this backend with `maf-sandbox-drawio`, passing the configured runtime id as `image`. Linux is the only supported host platform; native Windows and macOS backends are separate work.

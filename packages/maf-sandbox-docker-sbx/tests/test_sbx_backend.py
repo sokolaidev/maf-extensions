@@ -21,6 +21,7 @@ from maf_sandbox import (
     EgressRule,
     HttpMethod,
     Isolation,
+    IsolationScope,
     OsFamily,
     SandboxBackend,
     SandboxCapabilityNotSupported,
@@ -286,6 +287,30 @@ def sbx(backend: SbxSandboxBackend, request: pytest.FixtureRequest) -> FakeSbx:
     return fake
 
 
+def test_call_keys_dispose_only_their_own_generation(backend, sbx):
+    async def run():
+        first = SandboxKey(KEY.scope, KEY.thread_id, KEY.agent_id, call_id="first")
+        second = SandboxKey(KEY.scope, KEY.thread_id, KEY.agent_id, call_id="second")
+        one = await backend.acquire(first, _spec())
+        two = await backend.acquire(second, _spec())
+        assert one.instance_id != two.instance_id
+        assert one.mount.host != two.mount.host
+        await one.write_file("marker", "first", working_directory=".")
+        await two.write_file("marker", "second", working_directory=".")
+        assert await backend.dispose(first, instance_id=one.instance_id) is None
+        assert not one.mount.host.exists()
+        assert await two.read_file("marker", working_directory=".", max_bytes=10) == b"second"
+        replacement = await backend.acquire(first, _spec())
+        assert replacement.instance_id != one.instance_id
+        assert await backend.dispose(first, instance_id=one.instance_id) is None
+        assert replacement.mount.host.exists()
+        assert (await backend.dispose_scope(KEY.scope, KEY.thread_id)).undisposed is None
+        assert not replacement.mount.host.exists()
+        assert not two.mount.host.exists()
+
+    asyncio.run(run())
+
+
 class TestDeclarations:
     def test_microvm_closed_or_allowlisted_posix_and_the_workspace_capabilities(self, backend):
         declared = backend.declarations
@@ -294,6 +319,7 @@ class TestDeclarations:
         assert declared.egress_modes == frozenset({Egress.CLOSED, Egress.ALLOWLIST})
         assert declared.os_families == frozenset({OsFamily.POSIX})
         assert declared.observes_egress is False
+        assert declared.isolation_scopes == {IsolationScope.CALL, IsolationScope.CONVERSATION}
         assert declared.egress_method_tokens == frozenset(str(m) for m in HttpMethod)
         assert declared.capabilities == frozenset(
             {

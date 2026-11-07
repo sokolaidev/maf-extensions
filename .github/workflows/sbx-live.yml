@@ -15,6 +15,10 @@ on:
       - "images/graphviz-sandbox/**"
       - "samples/07_docker_diagram/diagram_kind.py"
       - "packages/maf-sandbox-codeact/src/**"
+      - "packages/maf-sandbox-azure-pricing/**"
+      - "samples/experimental/azure_pricing/**"
+      - "images/azure-pricing-sandbox/**"
+      - "scripts/check_live_backend_pricing.py"
       - ".github/actions/setup-sbx/**"
   schedule:
     # Offset from Docker live at 04:50 UTC.
@@ -70,6 +74,14 @@ jobs:
           docker build -q -t graphviz-sandbox:local images/graphviz-sandbox
           docker save -o "$RUNNER_TEMP/graphviz.tar" graphviz-sandbox:local
           sbx template load "$RUNNER_TEMP/graphviz.tar"
+          docker build -t maf-pricing-base:qualification images/azure-pricing-sandbox
+          docker build --build-arg PRICING_IMAGE=maf-pricing-base:qualification \
+            -t maf-pricing-native:qualification -f images/azure-pricing-sandbox/native.Dockerfile \
+            images/azure-pricing-sandbox
+          docker image inspect --format '{{.Id}}' maf-pricing-native:qualification | tee pricing-template.id
+          docker save -o "$RUNNER_TEMP/pricing.tar" maf-pricing-native:qualification
+          sha256sum "$RUNNER_TEMP/pricing.tar" | tee pricing-template.sha256
+          sbx template load "$RUNNER_TEMP/pricing.tar"
 
       - name: Run the host-state refusals and faults
         env:
@@ -95,6 +107,18 @@ jobs:
           uv run pytest -q -rs -s --durations=0 packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e.py tests/test_sbx_codeact_e2e.py tests/test_graphviz_sbx_e2e.py | tee suite.log
           ! grep -q '^SKIPPED' suite.log
 
+      - name: Qualify Azure pricing and per-call disposal
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          uv run python samples/experimental/azure_pricing/agent.py \
+            --backend docker-sbx --image maf-pricing-native:qualification \
+            --workspace "$RUNNER_TEMP/pricing-workspaces" --source "$SOURCE_SHA" \
+            --no-model --qualify | tee pricing.log
+          uv run python scripts/check_live_backend_pricing.py pricing.log \
+            --backend docker-sbx --no-model --require-probes
+
       - name: Retain live evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -104,6 +128,9 @@ jobs:
             suite.log
             host.log
             shell-image.json
+            pricing.log
+            pricing-template.id
+            pricing-template.sha256
           retention-days: 30
 
       - name: Remove leftover sandboxes

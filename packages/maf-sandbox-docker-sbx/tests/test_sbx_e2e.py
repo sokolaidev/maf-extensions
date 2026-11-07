@@ -46,6 +46,7 @@ from maf_sandbox.bounded_exec import SandboxExecOutputLimitExceeded
 from maf_sandbox.conformance import (
     ExecEgressMethodsSubject,
     PosixGuestSubject,
+    assert_call_scope_conformance,
     assert_egress_conformance,
     assert_egress_methods_conformance,
     assert_exec_conformance,
@@ -69,6 +70,39 @@ _WORK = "/maf-sandbox/work"
 _NO_SYMLINK_PRIVILEGE = 1314
 _IMAGES = [_IMAGE, *(i for i in os.environ.get("MAF_SANDBOX_SBX_E2E_IMAGES", "").split(",") if i)]
 _BY_IMAGE = pytest.mark.parametrize("image", _IMAGES)
+
+
+@_BY_IMAGE
+def test_call_scope_conformance(tmp_path: Path, image: str | None) -> None:
+    async def run() -> None:
+        backend = _backend(tmp_path)
+        first = _key("call-scope")
+        first = SandboxKey(first.scope, first.thread_id, first.agent_id, call_id="first")
+        other = SandboxKey(first.scope, first.thread_id, first.agent_id, call_id="other")
+        spec = _spec(image=image)
+        sandbox = await backend.acquire(first, spec)
+        subject = PosixGuestSubject(sandbox, _WORK, backend.declarations.capabilities)
+
+        async def acquire_other() -> PosixGuestSubject:
+            sibling = await backend.acquire(other, spec)
+            assert sibling.instance_id != sandbox.instance_id
+            return PosixGuestSubject(sibling, _WORK, backend.declarations.capabilities)
+
+        async def dispose_first() -> None:
+            assert await backend.dispose(first) is None
+
+        async def dispose_other() -> None:
+            assert await backend.dispose(other) is None
+
+        try:
+            await assert_call_scope_conformance(
+                subject, acquire_other, dispose_first, dispose_other
+            )
+        finally:
+            assert (await backend.dispose_scope(first.scope, first.thread_id)).undisposed is None
+
+    asyncio.run(run())
+
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("MAF_SANDBOX_SBX_E2E") != "1",

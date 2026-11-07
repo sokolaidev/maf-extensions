@@ -6,8 +6,8 @@
 |---|---|
 | Host | Linux; tested on Ubuntu 24.04 under WSL 2 |
 | Isolation | `CONTAINER`, meaning namespaces plus cgroups; explicit host opt-in |
-| Capabilities | `EXEC`, `FILES_IN`, `FILES_OUT` |
-| Network | `CLOSED`; no host network or sockets mounted |
+| Capabilities | `EXEC`, `FILES_IN`, `FILES_OUT`; configured native proxy adds `EGRESS_METHODS`, `EGRESS_PATHS` |
+| Network | `CLOSED` by default; explicit verified native proxy enables method/path-filtered `ALLOWLIST` through a dedicated Unix socket while retaining the private network namespace |
 | Guest | POSIX root directory containing Python 3 and the workload's native dependencies |
 | Runtime selection | `image=None` or the configured `runtime_id`; no `image_id` |
 | Storage | Private bounded tmpfs, base `/maf-sandbox/work` |
@@ -39,9 +39,13 @@ uv run pytest packages/maf-sandbox-bubblewrap/tests -q
 
 Candidate-specific measurements and remaining platform work are recorded in the [Draw.io decision record](../research/drawio-export.md). The default repository gate does not provision this privileged host delegation or qualify every Linux distribution.
 
+The [experimental Azure pricing sample](../../../samples/experimental/azure_pricing/) provisions the pinned CLI and native proxy, keeps signing keys outside the guest and verifies real consumption/reservation reports. Its local Linux tool-only checks cover GET-only pricing traffic, disallowed destinations/methods, direct-network refusal, output overflow, timeout, cancellation and per-instance cleanup. Imported-source hashes and runtime/proxy identities distinguish checkout evidence from published releases. Model execution and hosted qualification remain separate.
+
 ## Status
 
 | Area | State | Reference |
 |---|---|---|
 | Native Linux rendering | Implemented | [#1656](https://github.com/sokolaidev/maf-extensions/issues/1656) (closed) by [#1667](https://github.com/sokolaidev/maf-extensions/pull/1667) (merged); [decision record](../research/drawio-export.md) |
+| Filtered native HTTPS and bounded execution | Implemented; local Linux qualification, publication pending | [#2540](https://github.com/sokolaidev/maf-extensions/issues/2540) (open) |
+| Azure pricing sample | Experimental workspace sample; model path unverified | [#2473](https://github.com/sokolaidev/maf-extensions/issues/2473) (open) |
 | Windows and macOS native rendering | Not implemented | untracked; separate platform qualification required |
