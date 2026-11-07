@@ -578,6 +578,8 @@ def test_owner_loss_workflow_uses_fixed_installed_baseline_and_markdown_only():
 
 def test_published_candidate_matches_sample_and_both_hosted_profiles():
     import ast
+    import shlex
+    from urllib.parse import urlsplit
 
     import yaml
 
@@ -606,9 +608,12 @@ def test_published_candidate_matches_sample_and_both_hosted_profiles():
         )
         assert profile.WHEEL in download
         assert download.count(wheel) == 2
-        downloads.append(
-            next(line.strip() for line in download.splitlines() if "files.pythonhosted.org" in line)
-        )
+        urls = [urlsplit(token) for token in shlex.split(download) if token.startswith("https://")]
+        assert len(urls) == 1
+        url = urls[0]
+        assert url.hostname == "files.pythonhosted.org"
+        assert url.path.rsplit("/", 1)[-1] == wheel
+        downloads.append(url)
         sample = next(
             step["run"]
             for step in steps
