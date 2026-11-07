@@ -1120,6 +1120,59 @@ def test_merged_pr_changes_stop_next_cycle(publisher, monkeypatch, change, after
     assert changed and len(client.pulls) == 1
 
 
+@pytest.fixture
+def publisher_with_history(publisher):
+    client, files, report, publish = publisher
+    publish()
+    client.pulls[0].update(state="closed", merged_at=AT)
+    files[planner.RECIPE] = b"next cycle"
+    report["files"][planner.RECIPE] = hashlib.sha256(files[planner.RECIPE]).hexdigest()
+    publish()
+    return publisher
+
+
+@pytest.mark.parametrize("latest", ["open", "merged", "dismissed"])
+@pytest.mark.parametrize("base", ["main", "other"])
+def test_older_open_pr_stops_managed_branch_writes(publisher_with_history, latest, base):
+    client, _, _, publish = publisher_with_history
+    client.pulls[0].update(state="open", merged_at=None)
+    client.pulls[0]["base"]["ref"] = base
+    if latest != "open":
+        client.pulls[1].update(state="closed", merged_at=AT if latest == "merged" else None)
+    client.writes.clear()
+    with pytest.raises(ValueError, match="Older open"):
+        publish()
+    assert client.writes == [] and len(client.pulls) == 2
+
+
+@pytest.mark.parametrize("merged", [False, True])
+@pytest.mark.parametrize("after", ["git/trees", "pulls/2", "graphql"])
+def test_reopened_older_pr_stops_refresh(publisher_with_history, monkeypatch, merged, after):
+    client, files, report, publish = publisher_with_history
+    if merged:
+        client.pulls[1].update(state="closed", merged_at=AT)
+    files[planner.RECIPE] = b"later proposal"
+    report["files"][planner.RECIPE] = hashlib.sha256(files[planner.RECIPE]).hexdigest()
+    original = client.request
+    changed = False
+
+    def reopening(endpoint, *, method="GET", **kwargs):
+        nonlocal changed
+        path = endpoint.removeprefix(f"repos/{REPOSITORY}/")
+        if changed and method != "GET" and (path.startswith("pulls") or path == "graphql"):
+            pytest.fail(f"Wrote {path} after an older PR was reopened")
+        result = original(endpoint, method=method, **kwargs)
+        if path == after and method != "GET":
+            changed = True
+            client.pulls[0].update(state="open", merged_at=None)
+        return result
+
+    monkeypatch.setattr(client, "request", reopening)
+    with pytest.raises(ValueError, match="Older open"):
+        publish()
+    assert changed and len(client.pulls) == 2
+
+
 @pytest.mark.parametrize("change", ["head", "author", "marker", "closed", "race", "race-base"])
 def test_human_changes_are_preserved(publisher, change):
     client, files, report, publish = publisher

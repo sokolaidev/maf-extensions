@@ -131,9 +131,12 @@ def with_marker(text: str, state: dict[str, Any]) -> str:
 
 
 def latest_pull(client: GitHub) -> dict[str, Any] | None:
-    """Include retargeted requests so changing base cannot hide an ownership record."""
+    """Include every base and refuse older open requests sharing the managed branch."""
     pulls = client.pages(f"repos/{REPOSITORY}/pulls?state=all&head=sokolaidev:{BRANCH}")
-    return max(pulls, key=lambda item: positive_id(item["number"])) if pulls else None
+    latest = max(pulls, key=lambda item: positive_id(item["number"])) if pulls else None
+    if any(item.get("state") == "open" and item is not latest for item in pulls):
+        raise ValueError("Older open pull request competes for the remediation branch")
+    return latest
 
 
 def require_pull(client: GitHub, pull: dict[str, Any] | None) -> None:
