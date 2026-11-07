@@ -138,6 +138,7 @@ jobs:
           docker-pat: ${{ secrets.DOCKER_PAT }}
 
       - name: Load the pricing template
+        id: pricing_template
         run: |
           set -euo pipefail
           docker build -t maf-pricing-base:qualification images/azure-pricing-sandbox
@@ -150,6 +151,7 @@ jobs:
           sbx template load "$RUNNER_TEMP/pricing.tar"
 
       - name: Qualify pricing-template host refusals and faults
+        if: ${{ !cancelled() && steps.pricing_template.outcome == 'success' }}
         env:
           MAF_SANDBOX_SBX_E2E: "1"
           MAF_SANDBOX_SBX_E2E_HOST: "1"
@@ -159,10 +161,13 @@ jobs:
         run: |
           set -euo pipefail
           eval "$(ssh-agent -s)"
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/pricing-agent-key"
+          ssh-add "$RUNNER_TEMP/pricing-agent-key"
           uv run pytest -q -rs -s packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e_host.py | tee pricing-host.log
           ! grep -q '^SKIPPED' pricing-host.log
 
       - name: Qualify Azure pricing and per-call disposal
+        if: ${{ !cancelled() && steps.pricing_template.outcome == 'success' }}
         env:
           SOURCE_SHA: ${{ github.sha }}
         run: |
@@ -175,6 +180,7 @@ jobs:
             --backend docker-sbx --no-model --require-probes
 
       - name: Qualify concurrent call isolation
+        if: ${{ !cancelled() && steps.pricing_template.outcome == 'success' }}
         env:
           MAF_SANDBOX_SBX_E2E: "1"
           MAF_SANDBOX_SBX_E2E_IMAGES: maf-pricing-native:qualification
