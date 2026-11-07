@@ -15,6 +15,23 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 
+@pytest.mark.parametrize("actual", ["0.1.2", "0.1.7"])
+def test_native_gateway_health_requires_selected_release(monkeypatch, actual):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts/experiments"))
+    probe = importlib.import_module("openshell_replay_probe")
+    client = SimpleNamespace(
+        expected_version="0.1.7",
+        pb=SimpleNamespace(HealthRequest=lambda: None),
+        grpc=SimpleNamespace(RpcError=ConnectionError),
+        rpc=lambda *args: SimpleNamespace(version=actual),
+    )
+    if actual != "0.1.7":
+        with pytest.raises(RuntimeError, match="requires gateway 0.1.7"):
+            probe.wait_gateway(client)
+    else:
+        probe.wait_gateway(client)
+
+
 @pytest.fixture
 def injection(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts/experiments"))

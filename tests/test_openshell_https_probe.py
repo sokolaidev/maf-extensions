@@ -226,8 +226,9 @@ def test_missing_supervisor_trust_is_a_specific_finding_not_a_qualification_pass
 
 
 @pytest.mark.parametrize("failure", ["RemoteDisconnected", "TimeoutError"])
+@pytest.mark.parametrize("operator_trust", [False, True])
 def test_native_trust_finding_preserves_failed_qualification_and_unrun_cases(
-    oracle, monkeypatch, tmp_path, failure
+    oracle, monkeypatch, tmp_path, failure, operator_trust
 ):
     import asyncio
     import hashlib
@@ -277,8 +278,8 @@ def test_native_trust_finding_preserves_failed_qualification_and_unrun_cases(
         async def exec(self, command, **kwargs):
             if command[-1] != "request":
                 body = {
-                    "installed_ca_sha256": fingerprint,
-                    "system_bundle_contains_ca": True,
+                    "expected_ca_sha256" if operator_trust else "installed_ca_sha256": fingerprint,
+                    "system_bundle_contains_ca": not operator_trust,
                     "effective_bundle_contains_ca": False,
                 }
             elif self.closed:
@@ -303,9 +304,13 @@ def test_native_trust_finding_preserves_failed_qualification_and_unrun_cases(
         acquire=acquire,
         dispose=dispose,
     )
-    if failure == "TimeoutError":
+    if failure == "TimeoutError" or operator_trust:
         with pytest.raises(RuntimeError, match="unexpected native HTTPS"):
-            asyncio.run(probe.measure_native_https(fixture, "10.23.45.67", tmp_path / "ca.pem"))
+            asyncio.run(
+                probe.measure_native_https(
+                    fixture, "10.23.45.67", tmp_path / "ca.pem", operator_trust=operator_trust
+                )
+            )
         assert "blocked_by" not in fixture.report["https"]
         assert len(created) == len(disposed) == 1
     else:

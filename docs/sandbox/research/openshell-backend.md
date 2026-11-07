@@ -2,9 +2,7 @@
 
 > Research: OpenShell v0.1.2 contract characterization for [#1797](https://github.com/sokolaidev/maf-extensions/issues/1797), under [#1796](https://github.com/sokolaidev/maf-extensions/issues/1796). Installed-SDK fixture probes and gateway startup were measured on 2026-10-08; live Docker workload/lifecycle cases were measured on 2026-10-09 and OIDC authorization on 2026-10-10; guest file access, filesystem policy, native SFTP and bounded HTTP/HTTPS egress matrices, anonymous provider composition, serial policy revisions, synthetic credential binding, multi-provider static updates, elapsed credential expiry and bounded gateway-managed OAuth refresh were characterized on 2026-10-11. The spike concludes with a defer decision; the current adoption boundary is recorded in the [backend index](../backends/README.md#openshell-evaluation). No suite adapter or runtime is qualified.
 
-## Spike conclusion - 2026-10-11
-
-### Official v0.1.7 destination trust follow-up — 2026-11-07
+## Official v0.1.7 destination trust follow-up — 2026-11-07
 
 The native qualification fixture now targets the official [v0.1.7 release](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.7), source `5d25211b25a8fc887e8d5c606d57d6ab22f1d76c`. It includes [destination CA delivery #3292](https://github.com/NVIDIA/OpenShell/pull/3292); the associated upstream request [#3295](https://github.com/NVIDIA/OpenShell/issues/3295) is closed. This removes the missing configuration mechanism behind the historical v0.1.2 HTTPS blocker, but does not itself qualify this repository's egress contract. Historical observations below retain their original version and scope.
 
@@ -26,6 +24,8 @@ Immutable release inputs:
 The [CA lifecycle probe](../../../scripts/experiments/openshell_ca_probe.py) supplements the eight HTTPS policy/certificate cases with ten fresh-connection observations. Independent direct TLS controls establish that each destination is healthy under its own root. A refusal requires both an exact guest disconnect and a correlated origin certificate alert with no HTTP request. Timeouts, stale journals, identity replacement and uncertain lifecycle mutations fail the experiment; mutations are not automatically replayed. Source-only overlap must leave the new root untrusted; applied overlap must trust both; removing the original root must reject its leaf while the new leaf remains usable. Each traffic bracket requires stable observed runtime processes. This does not promise continuity across operator stop/start, instant revocation of existing connections, or gateway-mTLS separation (the fixture gateway listener is plaintext).
 
 Hosted results are pending. The workflow retains JSON reports and gateway logs even on failure for 14 days, and runs HTTPS independently after artifact preparation so an earlier baseline failure cannot hide its evidence. #1834 remains open; #1835 credential lifecycle remains separate.
+
+## Spike conclusion - 2026-10-11
 
 **Defer general OpenShell backend adoption.** The bounded spike has enough source, offline and live evidence to make that decision. It does not approve an adapter package or any suite capability. OpenShell v0.1.2 can execute owned workloads through the raw transport under the measured conditions, but a stale first name-addressed deletion can remove a replacement, and bounded create replay cannot establish the original admission after retained history expires. Official upstream recovery and conditional deletion remain dependencies under [#1817](https://github.com/sokolaidev/maf-extensions/issues/1817) and [#1818](https://github.com/sokolaidev/maf-extensions/issues/1818).
 

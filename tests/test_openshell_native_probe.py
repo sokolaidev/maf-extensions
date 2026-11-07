@@ -374,6 +374,13 @@ def test_workflow_retains_evidence_on_failure():
     assert "--egress-restart" in composition["run"]
     assert "restart.json" in composition["run"]
     assert "restart.log" in composition["run"]
+    https = next(s for s in job["steps"] if "--https-ca" in s.get("run", ""))
+    assert "steps.prepare.outcome == 'success'" in https["if"]
+    assert "!cancelled()" in https["if"]
+    assert "additional_ca_bundle" in https["run"]
+    assert "active-ca.pem" in https["run"]
+    assert "update-ca-certificates" not in https["run"]
+    assert "trust_image" not in https["run"]
 
 
 @pytest.mark.parametrize(

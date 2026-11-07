@@ -593,6 +593,7 @@ def main() -> int:
             "EGRESS_PATHS": "measurement only; normalization and origin interpretation differ",
         }
     args.report.parent.mkdir(parents=True, exist_ok=True)
+    source = None
     if args.https_ca:
         from openshell_ca_probe import ca_source
 
