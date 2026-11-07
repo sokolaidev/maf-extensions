@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.6](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.31.5...maf-sandbox-wslc-v0.31.6) (2026-11-07)
+
+
+### Fixes
+
+* bump the proxy-modules group across 2 directories with 5 updates ([#2531](https://github.com/sokolaidev/maf-extensions/issues/2531)) ([9262409](https://github.com/sokolaidev/maf-extensions/commit/9262409250207cc476b0030f5a71121dbbb011c5))
+
 ## [0.31.5](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.31.4...maf-sandbox-wslc-v0.31.5) (2026-11-05)
 
 
