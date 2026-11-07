@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PLATFORM = "linux/amd64"
 PYTHON_PROFILES = (
     "document",
+    "document-export",
     "drawio",
     "drawio-export",
     "shell",

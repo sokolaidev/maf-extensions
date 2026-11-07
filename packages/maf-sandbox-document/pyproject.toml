@@ -1,7 +1,7 @@
 [project]
 name = "maf-sandbox-document"
 version = "0.2.2"
-description = "Guarded PDF, DOCX, PPTX and RTF extraction in disposable sandboxes."
+description = "Guarded document extraction and Markdown to PDF export in disposable sandboxes."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]

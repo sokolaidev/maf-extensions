@@ -24,6 +24,7 @@ on:
           - bicep-avm
           - bicep-docker-sbx
           - document
+          - document-export
           - drawio
           - drawio-export
           - egress-proxy

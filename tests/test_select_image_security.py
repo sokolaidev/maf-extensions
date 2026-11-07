@@ -235,6 +235,8 @@ def test_release_with_image_change_selects_that_image(repository):
         ("images/graphviz-sandbox/Dockerfile", ["graphviz"]),
         ("images/drawio-sandbox/render.py", ["drawio"]),
         ("images/drawio-export/export.py", ["drawio-export"]),
+        ("images/document-export/render.py", ["document-export"]),
+        ("images/document-export/mermaid.json", ["document-export"]),
         (
             "images/terraform-sandbox/install.py",
             ["terraform-random", "opentofu-random", "terraform-avm", "opentofu-avm"],
@@ -261,6 +263,7 @@ def test_release_with_image_change_selects_that_image(repository):
         ("scripts/bicep_qualification.py", ["bicep", "bicep-docker-sbx"]),
         ("scripts/drawio_qualification.py", ["drawio", "drawio-export"]),
         ("scripts/drawio_export_qualification.py", ["drawio-export"]),
+        ("scripts/document_export_qualification.py", ["document-export"]),
         ("scripts/drawio_export_runtime.py", ["drawio-export"]),
         ("scripts/check_drawio_exports.py", ["drawio-export"]),
         ("scripts/check_drawio_renderer.py", ["drawio-export"]),

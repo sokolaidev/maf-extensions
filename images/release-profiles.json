@@ -9,6 +9,7 @@
     "bicep-docker-sbx",
     "graphviz",
     "document",
+    "document-export",
     "drawio",
     "drawio-export",
     "shell",

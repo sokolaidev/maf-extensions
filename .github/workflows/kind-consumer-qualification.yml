@@ -12,7 +12,7 @@ on:
       profile:
         description: Published image profile to requalify
         type: choice
-        options: [all, azure-pricing, antivirus, document, drawio, drawio-export, shell, bicep, bicep-avm, terraform-random, opentofu-random, terraform-avm]
+        options: [all, azure-pricing, antivirus, document, document-export, drawio, drawio-export, shell, bicep, bicep-avm, terraform-random, opentofu-random, terraform-avm]
         default: all
 
 permissions:

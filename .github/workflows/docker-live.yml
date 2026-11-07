@@ -67,6 +67,8 @@ jobs:
           uv sync --locked
           uv run --locked python scripts/build_wolfi_python.py --platform linux/amd64 -t maf-document:ci images/document-sandbox
           uv run python scripts/document_qualification.py --image maf-document:ci --output out/document
+          uv run --locked python scripts/build_wolfi_python.py --platform linux/amd64 -t maf-document-export:ci images/document-export
+          uv run python scripts/document_export_qualification.py --image maf-document-export:ci --output out/document/export
       - name: Retain document qualification
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

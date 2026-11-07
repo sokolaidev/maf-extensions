@@ -950,15 +950,22 @@ def _smoke_maf_sandbox_document() -> str:
     from importlib.resources import files
 
     from maf_sandbox import Capability, IsolationScope
-    from maf_sandbox_document import document_sandbox_spec
+    from maf_sandbox_document import (
+        ExportOptions,
+        document_export_sandbox_spec,
+        document_sandbox_spec,
+        export_pdf,
+    )
 
     spec = document_sandbox_spec()
     assert spec.isolation_scope == IsolationScope.CALL
     assert Capability.FILES_OUT in spec.requires
-    for name in ("_guest.py", "_pdf_guard.py"):
+    assert document_export_sandbox_spec("document-export:smoke").image == "document-export:smoke"
+    assert ExportOptions().page_size == "A4" and callable(export_pdf)
+    for name in ("_guest.py", "_pdf_guard.py", "_export_contract.py"):
         source = files("maf_sandbox_document").joinpath(name).read_text("utf-8")
         compile(source, name, "exec")
-    return "call-isolated document spec and both fixed guest programs are present"
+    return "call-isolated reader/export specs, host export API and fixed guest programs are present"
 
 
 def _smoke_maf_sandbox_azure_pricing() -> str:
