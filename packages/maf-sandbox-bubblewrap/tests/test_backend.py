@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import posixpath
 import socket
 import sys
 from dataclasses import replace
@@ -36,6 +37,7 @@ from maf_sandbox.conformance import (
 
 import maf_sandbox_bubblewrap._backend as backend_module
 from maf_sandbox_bubblewrap import BubblewrapSandboxBackend, BubblewrapSandboxConfig
+from maf_sandbox_bubblewrap._egress import Proxy
 
 live = pytest.mark.skipif(
     sys.platform != "linux"
@@ -151,12 +153,18 @@ def test_live_startup_refuses_unusable_shell(
     blocked.chmod(0o644)
     original = backend_module._arguments
 
-    def arguments(
-        settings: BubblewrapSandboxConfig, proxy: backend_module.Proxy | None = None
-    ) -> list[str]:
+    def arguments(settings: BubblewrapSandboxConfig, proxy: Proxy | None = None) -> list[str]:
         args = original(settings, proxy)
         index = args.index("--")
-        args[index:index] = ["--ro-bind", str(blocked), "/bin/sh"]
+        guest_shell = "/bin/sh"
+        for _ in range(8):
+            shell = settings.runtime_root / guest_shell.lstrip("/")
+            if not shell.is_symlink():
+                break
+            guest_shell = posixpath.normpath(
+                posixpath.join(posixpath.dirname(guest_shell), shell.readlink().as_posix())
+            )
+        args[index:index] = ["--ro-bind", str(blocked), guest_shell]
         return args
 
     monkeypatch.setattr(backend_module, "_arguments", arguments)

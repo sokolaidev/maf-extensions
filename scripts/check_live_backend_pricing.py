@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +34,29 @@ def check(
         bool(identity.get("source")) and bool(identity.get("runtime")),
         "Missing source/runtime identity",
     )
-    require(bool(identity.get("versions")), "Missing installed versions")
+    versions = identity.get("versions", {})
+    require(
+        isinstance(versions, dict)
+        and all(
+            isinstance(versions.get(name), str) and versions[name]
+            for name in ("maf-sandbox", "maf-sandbox-azure-pricing", "maf-sandbox-" + backend)
+        ),
+        "Missing installed versions",
+    )
+    sources = identity.get("source_sha256", {})
+    require(
+        isinstance(sources, dict)
+        and all(
+            isinstance(sources.get(name), str) and re.fullmatch("[0-9a-f]{64}", sources[name])
+            for name in (
+                "sample",
+                "maf_sandbox",
+                "maf_sandbox_azure_pricing",
+                "maf_sandbox_" + backend.replace("-", "_"),
+            )
+        ),
+        "Missing imported-source hashes",
+    )
     if backend == "bubblewrap":
         digest = identity.get("proxy_sha256")
         require(isinstance(digest, str) and len(digest) == 64, "Missing proxy identity")

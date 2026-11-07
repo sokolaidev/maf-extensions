@@ -29,7 +29,20 @@ def records():
             "source": "a" * 40,
             "runtime": "sha256:" + "b" * 64,
             "proxy_sha256": "c" * 64,
-            "versions": {"maf-sandbox": "0.53.0"},
+            "versions": {
+                "maf-sandbox": "0.53.0",
+                "maf-sandbox-azure-pricing": "0.2.1",
+                "maf-sandbox-bubblewrap": "0.4.2",
+            },
+            "source_sha256": {
+                name: "d" * 64
+                for name in (
+                    "sample",
+                    "maf_sandbox",
+                    "maf_sandbox_azure_pricing",
+                    "maf_sandbox_bubblewrap",
+                )
+            },
         }
     ]
     for index, category in enumerate(("Consumption", "Reservation")):
@@ -68,6 +81,11 @@ def test_complete_tool_only_evidence_is_explicitly_not_model_qualification():
     assert check(log(records()), "bubblewrap", model=False)["calls"] == 2
     with pytest.raises(ValueError):
         check(log(records()), "bubblewrap")
+
+
+def test_quoted_model_records_cannot_supply_host_evidence():
+    with pytest.raises(ValueError):
+        check("Model: " + json.dumps(log(records())), "bubblewrap", model=False)
 
 
 @pytest.mark.parametrize(
