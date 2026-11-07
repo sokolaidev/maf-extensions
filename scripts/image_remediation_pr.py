@@ -18,6 +18,7 @@ from image_remediation_evidence import current
 
 BRANCH = "bot/go-image-remediation"
 MARKER = "maf-image-remediation-v1"
+MARKER_PATTERN = r"<!-- " + MARKER + r" (.+?) -->"
 TITLE = "build: rebuild Go image dependencies with verified security fixes"
 
 
@@ -85,13 +86,40 @@ def update_branch(client: GitHub, before: str | None, after: str) -> None:
 
 def marker(body: str) -> dict[str, Any]:
     """Require one complete ownership record, including interrupted-write state."""
-    matches = re.findall(r"<!-- " + MARKER + r" (.+?) -->", body)
+    matches = re.findall(MARKER_PATTERN, body)
     if len(matches) != 1:
         raise ValueError("Pull request has no unique ownership marker")
     value = json.loads(matches[0])
     if value.get("schemaVersion") != 1:
         raise ValueError("Unsupported pull-request ownership marker")
+    content = re.sub(MARKER_PATTERN, "", body)
+    if value.get("bodySha256") != hashlib.sha256(content.encode()).hexdigest():
+        raise ValueError("Pull-request body was modified outside automation")
     return value
+
+
+def with_marker(text: str, state: dict[str, Any]) -> str:
+    """Bind the surrounding prose to its ownership record without changing it."""
+    if len(re.findall(MARKER_PATTERN, text)) != 1:
+        raise ValueError("Pull request has no unique ownership marker")
+    content = re.sub(MARKER_PATTERN, "", text)
+    value = {**state, "bodySha256": hashlib.sha256(content.encode()).hexdigest()}
+    return re.sub(
+        MARKER_PATTERN,
+        lambda _: f"<!-- {MARKER} {json.dumps(value, sort_keys=True, separators=(',', ':'))} -->",
+        text,
+    )
+
+
+def update_body(client: GitHub, pull: dict[str, Any], text: str) -> dict[str, Any]:
+    """Refuse observed edits between ownership discovery and each body replacement."""
+    path = f"pulls/{pull['number']}"
+    latest = request(client, path)
+    if latest.get("body") != pull.get("body"):
+        raise ValueError("Pull-request body changed during refresh")
+    result = request(client, path, method="PATCH", payload=encode({"body": text}))
+    pull["body"] = text
+    return result
 
 
 def body(state: dict[str, Any], report: dict[str, Any], evidence_url: str) -> str:
@@ -101,7 +129,7 @@ def body(state: dict[str, Any], report: dict[str, Any], evidence_url: str) -> st
         f"- {row['profile']}: `{row['imageId']}`; assessment `{row['assessment']['outcome']}`."
         for row in scans
     )
-    return (
+    text = (
         "## Summary\n\nRebuild Go module overlays and provider locks to remove the targeted "
         "image findings. All four affected profiles passed ordinary builds, runtime checks, "
         "inventory checks and rescans.\n\n## Related issue\n\nRefs #2514, #2516.\n\n"
@@ -110,8 +138,9 @@ def body(state: dict[str, Any], report: dict[str, Any], evidence_url: str) -> st
         f"{summary}\n\n## Notes\n\nUnrelated findings remain in the retained assessments. "
         "No image was published; deployed images and release-needed issues remain unchanged. "
         "Review the source diff and residual findings before merging.\n\n"
-        f"<!-- {MARKER} {json.dumps(state, sort_keys=True, separators=(',', ':'))} -->\n"
+        f"<!-- {MARKER} {{}} -->\n"
     )
+    return with_marker(text, state)
 
 
 def owned(client: GitHub, head: str, state: dict[str, Any], bot: str) -> None:
@@ -226,12 +255,7 @@ def publish(
     )
     if previous is not None and previous["base"] == base and previous["files"] == hashes and pull:
         state = {"schemaVersion": 1, "current": previous, "pending": None}
-        request(
-            client,
-            f"pulls/{pull['number']}",
-            method="PATCH",
-            payload=encode({"body": body(state, report, evidence_url)}),
-        )
+        update_body(client, pull, body(state, report, evidence_url))
         return {"status": "unchanged", "url": pull["html_url"]}
     user = decode(client.request(f"users/{bot}"))
     identity = {
@@ -263,37 +287,17 @@ def publish(
     state = {"schemaVersion": 1, "current": previous, "pending": proposed}
     current(client, receipt)
     if pull:
-        request(
-            client,
-            f"pulls/{pull['number']}",
-            method="PATCH",
-            payload=encode({"body": body(state, report, evidence_url)}),
-        )
+        update_body(client, pull, body(state, report, evidence_url))
     elif ownership_pull and ownership_state:
         # Keep the merged PR's qualification intact while recording the next branch write.
         ownership_state["pending"] = proposed
-        pending_body = re.sub(
-            r"<!-- " + MARKER + r" (.+?) -->",
-            lambda _: f"<!-- {MARKER} {json.dumps(ownership_state, sort_keys=True)} -->",
-            ownership_pull["body"],
-        )
-        request(
-            client,
-            f"pulls/{ownership_pull['number']}",
-            method="PATCH",
-            payload=encode({"body": pending_body}),
-        )
+        update_body(client, ownership_pull, with_marker(ownership_pull["body"], ownership_state))
     if head != proposed["head"]:
         update_branch(client, head, proposed["head"])
     state = {"schemaVersion": 1, "current": proposed, "pending": None}
     current(client, receipt)
     if pull:
-        result = request(
-            client,
-            f"pulls/{pull['number']}",
-            method="PATCH",
-            payload=encode({"body": body(state, report, evidence_url)}),
-        )
+        result = update_body(client, pull, body(state, report, evidence_url))
     else:
         result = request(
             client,

@@ -22,6 +22,7 @@ import image_remediation_evidence as acquisition  # noqa: E402
 import image_remediation_pr as publication  # noqa: E402
 import plan_go_remediation as planner  # noqa: E402
 import prepare_go_remediation as preparation  # noqa: E402
+import test_go_remediation as remediation_fixtures  # noqa: E402
 from container_release import REPOSITORY, read, scan_result, write  # noqa: E402
 from container_release_history import encode  # noqa: E402
 from test_go_remediation import (  # noqa: E402  # noqa: E402
@@ -51,6 +52,30 @@ def proposal(checkout, tmp_path):
     write(work / "plan.json", plan)
     preparation.prepare(checkout, [evidence], plan, work / "proposal")
     return checkout, work
+
+
+@pytest.mark.parametrize("fixture_name", ["proposal", "provider_proposal"])
+def test_proposal_fixtures_survive_remediated_repository(
+    tmp_path, monkeypatch, request, fixture_name
+):
+    upstream = remediation_fixtures.copy_checkout(tmp_path / "upstream", ROOT)
+    for name, document in planner.inputs(upstream)[0].items():
+        components = (
+            document["engines"].values() if name == planner.RECIPE else document["providers"]
+        )
+        for component in components:
+            modules = component.get("source_build", {}).get("modules", {})
+            for module, version in {
+                MODULE: "v0.62.0",
+                "github.com/klauspost/compress": "v1.20.2",
+            }.items():
+                if module in modules:
+                    modules[module] = version
+        write(upstream / name, document)
+    monkeypatch.setattr(remediation_fixtures, "ROOT", upstream)
+    root, work = request.getfixturevalue(fixture_name)
+    assert read(work / "plan.json")["updates"]
+    assert remediation.proposal_files(root, work / "proposal")
 
 
 def test_proposal_allows_only_planned_overlay(proposal):
@@ -597,6 +622,7 @@ class FakeGitHub(publication.GitHub):
         self.commits = {SOURCE: {"tree": {"sha": "base-tree"}, "committer": {"date": AT}}}
         self.fail_after = None
         self.fail_before = None
+        self.body_edit_after = None
         self.race = False
         self.writes = []
 
@@ -686,7 +712,10 @@ class FakeGitHub(publication.GitHub):
             result.update(data)
         else:
             raise AssertionError((path, method))
-        if path == self.fail_after:
+        if method != "GET" and path == self.body_edit_after:
+            self.body_edit_after = None
+            self.pulls[0]["body"] += "\nMaintainer note: preserve this.\n"
+        if method != "GET" and path == self.fail_after:
             self.fail_after = None
             raise OSError("Response lost after mutation")
         return encode(result)
@@ -774,6 +803,45 @@ def test_human_changes_are_preserved(publisher, change):
             assert client.head == "human"
         if change == "race-base":
             assert client.head == SOURCE
+
+
+@pytest.mark.parametrize("cycle", ["unchanged", "refresh", "merged"])
+@pytest.mark.parametrize("timing", ["before", "after-tree"])
+def test_body_edits_preserving_marker_stop_refresh(publisher, cycle, timing):
+    client, files, report, publish = publisher
+    publish()
+    original = client.pulls[0]["body"]
+    first = client.head
+    if cycle != "unchanged":
+        files[planner.RECIPE] = b"later fix"
+        report["files"][planner.RECIPE] = hashlib.sha256(files[planner.RECIPE]).hexdigest()
+    if cycle == "merged":
+        client.pulls[0].update(state="closed", merged_at=AT)
+    if timing == "before":
+        client.pulls[0]["body"] += "\nMaintainer note: preserve this.\n"
+    else:
+        client.body_edit_after = "git/trees"
+    client.writes.clear()
+    with pytest.raises(ValueError, match="body"):
+        publish()
+    assert client.pulls[0]["body"] == original + "\nMaintainer note: preserve this.\n"
+    assert client.head == first and len(client.pulls) == 1
+    assert not any(path.startswith("pulls") for path, _ in client.writes)
+    if timing == "before":
+        assert client.writes == []
+
+
+def test_body_edit_after_pending_write_is_not_overwritten(publisher):
+    client, files, report, publish = publisher
+    publish()
+    files[planner.RECIPE] = b"later fix"
+    report["files"][planner.RECIPE] = hashlib.sha256(files[planner.RECIPE]).hexdigest()
+    client.body_edit_after = "pulls/1"
+    client.writes.clear()
+    with pytest.raises(ValueError, match="body changed"):
+        publish()
+    assert client.pulls[0]["body"].endswith("\nMaintainer note: preserve this.\n")
+    assert sum(path == "pulls/1" for path, _ in client.writes) == 1
 
 
 def test_stale_receipt_prevents_any_api_write(publisher, monkeypatch):
@@ -896,6 +964,7 @@ def test_workflow_keeps_writes_after_all_read_only_gates():
         "actions": "read",
         "pull-requests": "read",
     }
+    assert jobs["checks"]["permissions"] == {"contents": "read", "pull-requests": "read"}
     assert jobs["scan"]["strategy"]["matrix"]["variant"] == ["baseline", "candidate"]
     assert set(jobs["scan"]["strategy"]["matrix"]["profile"]) == set(remediation.PROVIDER_MANIFESTS)
     steps = jobs["publish"]["steps"]

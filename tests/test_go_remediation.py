@@ -31,10 +31,13 @@ MODULE = "golang.org/x/net"
 
 @pytest.fixture
 def checkout(tmp_path):
-    root = tmp_path / "checkout"
+    return copy_checkout(tmp_path / "checkout", ROOT)
+
+
+def copy_checkout(root, source_root):
     directory = root / planner.CONTEXT
     directory.mkdir(parents=True)
-    source = ROOT / planner.CONTEXT
+    source = source_root / planner.CONTEXT
     for path in [
         source / "image.json",
         source / "Dockerfile",
@@ -42,6 +45,20 @@ def checkout(tmp_path):
         *source.glob("dependencies.*.json"),
     ]:
         shutil.copyfile(path, directory / path.name)
+    for path in directory.glob("*.json"):
+        document = read(path)
+        components = (
+            document["engines"].values() if path.name == "image.json" else document["providers"]
+        )
+        for component in components:
+            modules = component.get("source_build", {}).get("modules", {})
+            for module, version in {
+                MODULE: "v0.60.0",
+                "github.com/klauspost/compress": "v1.19.1",
+            }.items():
+                if module in modules:
+                    modules[module] = version
+        write(path, document)
     return root
 
 
