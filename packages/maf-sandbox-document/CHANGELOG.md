@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-document-v0.2.2...maf-sandbox-document-v0.3.0) (2026-11-07)
+
+
+### Features
+
+* **document:** export Markdown reports as PDFs with Mermaid and SVG assets ([#2528](https://github.com/sokolaidev/maf-extensions/issues/2528)) ([97bf3a7](https://github.com/sokolaidev/maf-extensions/commit/97bf3a706cd5bcb733ba6302f3d05fdf80537b35))
+
 ## [0.2.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-document-v0.2.1...maf-sandbox-document-v0.2.2) (2026-11-05)
 
 

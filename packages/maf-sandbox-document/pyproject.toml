@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-document"
-version = "0.2.2"
+version = "0.3.0"
 description = "Guarded document extraction and Markdown to PDF export in disposable sandboxes."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
