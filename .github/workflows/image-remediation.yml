@@ -148,6 +148,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -174,10 +175,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: uv run --locked python scripts/image_remediation.py qualify --work "$RUNNER_TEMP/remediation" --results "$RUNNER_TEMP/results"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: retain
         with:
-          name: remediation-qualification
-          path: ${{ runner.temp }}/remediation/qualified.json
-          overwrite: true
+          name: remediation-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/remediation
+            ${{ runner.temp }}/results
           if-no-files-found: error
           retention-days: 30
       - name: Mint the dedicated remediation identity
@@ -197,7 +200,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           IMAGE_REMEDIATION_TOKEN: ${{ steps.app.outputs.token }}
           BOT: ${{ steps.app.outputs.app-slug }}[bot]
-        run: uv run --locked python scripts/image_remediation_pr.py --work "$RUNNER_TEMP/remediation" --results "$RUNNER_TEMP/results" --bot "$BOT"
+          ARTIFACT_ID: ${{ steps.retain.outputs.artifact-id }}
+        run: uv run --locked python scripts/image_remediation_pr.py --work "$RUNNER_TEMP/remediation" --results "$RUNNER_TEMP/results" --bot "$BOT" --artifact-id "$ARTIFACT_ID"
 
   report-failure:
     needs: [prepare, scan, checks, publish]

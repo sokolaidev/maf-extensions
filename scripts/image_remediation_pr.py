@@ -147,7 +147,10 @@ def publish(
     """Reconcile uncertain writes on retry; never force a ref or reopen a human-closed PR."""
     if not re.fullmatch(r"[a-z0-9-]+\[bot\]", bot):
         raise ValueError("Expected a dedicated GitHub App bot identity")
-    if not re.fullmatch(rf"https://github.com/{REPOSITORY}/actions/runs/[1-9][0-9]*", evidence_url):
+    if not re.fullmatch(
+        rf"https://github.com/{REPOSITORY}/actions/runs/[1-9][0-9]*/artifacts/[1-9][0-9]*",
+        evidence_url,
+    ):
         raise ValueError("Expected retained workflow evidence")
     if report["status"] != "ready" or report["source"] != receipt["source"]:
         raise ValueError("Proposal has not passed current-source image qualification")
@@ -158,6 +161,8 @@ def publish(
     pulls = client.pages(f"repos/{REPOSITORY}/pulls?state=all&head=sokolaidev:{BRANCH}&base=main")
     pulls.sort(key=lambda item: positive_id(item["number"]), reverse=True)
     pull = pulls[0] if pulls else None
+    ownership_pull = pull
+    ownership_state = None
     references = client.pages(f"repos/{REPOSITORY}/git/matching-refs/heads/{BRANCH}")
     exact = [item for item in references if item["ref"] == f"refs/heads/{BRANCH}"]
     if len(exact) > 1:
@@ -175,6 +180,7 @@ def publish(
         if pull["state"] == "closed" and not pull.get("merged_at"):
             return {"status": "dismissed", "url": pull["html_url"]}
         state = marker(pull["body"] or "")
+        ownership_state = state
         previous = next(
             (
                 item
@@ -250,6 +256,8 @@ def publish(
         ),
     )
     proposed = {"head": commit["sha"], "base": base, "files": hashes}
+    if previous is not None and previous["base"] == base and previous["files"] == hashes:
+        proposed = previous
     if head is not None and previous is None and head != proposed["head"]:
         raise ValueError("Unclaimed remediation branch differs from the deterministic proposal")
     state = {"schemaVersion": 1, "current": previous, "pending": proposed}
@@ -260,6 +268,20 @@ def publish(
             f"pulls/{pull['number']}",
             method="PATCH",
             payload=encode({"body": body(state, report, evidence_url)}),
+        )
+    elif ownership_pull and ownership_state:
+        # Keep the merged PR's qualification intact while recording the next branch write.
+        ownership_state["pending"] = proposed
+        pending_body = re.sub(
+            r"<!-- " + MARKER + r" (.+?) -->",
+            lambda _: f"<!-- {MARKER} {json.dumps(ownership_state, sort_keys=True)} -->",
+            ownership_pull["body"],
+        )
+        request(
+            client,
+            f"pulls/{ownership_pull['number']}",
+            method="PATCH",
+            payload=encode({"body": pending_body}),
         )
     if head != proposed["head"]:
         update_branch(client, head, proposed["head"])
@@ -296,6 +318,7 @@ def main() -> None:
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--results", type=Path, required=True)
     parser.add_argument("--bot", required=True)
+    parser.add_argument("--artifact-id", type=int, required=True)
     args = parser.parse_args()
     report = qualify(ROOT, args.work, args.results)
     if report != read(args.work / "qualified.json"):
@@ -307,7 +330,7 @@ def main() -> None:
         proposal_files(ROOT, args.work / "proposal"),
         args.bot,
         f"https://github.com/{REPOSITORY}/actions/runs/"
-        f"{positive_id(int(os.environ['GITHUB_RUN_ID']))}",
+        f"{positive_id(int(os.environ['GITHUB_RUN_ID']))}/artifacts/{positive_id(args.artifact_id)}",
     )
     write(args.work / "publication.json", result)
     print(json.dumps(result))

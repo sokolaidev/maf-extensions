@@ -124,7 +124,9 @@ def restore_monitor(
                         or not 0 < member.file_size <= MAX_MEMBER
                     ):
                         raise ValueError("Unsafe or duplicate monitor member")
-                    target = directory / member.filename
+                    target = (directory / member.filename).resolve()
+                    if not target.is_relative_to(directory.resolve()):
+                        raise ValueError("Monitor member escapes its evidence directory")
                     target.parent.mkdir(exist_ok=True)
                     with bundle.open(member) as incoming, target.open("xb") as outgoing:
                         shutil.copyfileobj(incoming, outgoing)

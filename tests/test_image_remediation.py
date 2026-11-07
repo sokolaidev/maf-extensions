@@ -24,13 +24,22 @@ import plan_go_remediation as planner  # noqa: E402
 import prepare_go_remediation as preparation  # noqa: E402
 from container_release import REPOSITORY, read, scan_result, write  # noqa: E402
 from container_release_history import encode  # noqa: E402
-from test_go_remediation import AT, IMAGE, MODULE, finding, retained  # noqa: E402
+from test_go_remediation import (  # noqa: E402  # noqa: E402
+    AT,
+    IMAGE,
+    MODULE,
+    built,
+    finding,
+    provider_path,
+    retained,
+)
 from test_go_remediation import checkout as checkout  # noqa: E402, F401
+from test_go_remediation import provider as fixture_provider  # noqa: E402
 
 pytestmark = pytest.mark.workflow
 SOURCE = "c" * 40
 BOT = "image-remediation[bot]"
-URL = f"https://github.com/{REPOSITORY}/actions/runs/123"
+URL = f"https://github.com/{REPOSITORY}/actions/runs/123/artifacts/456"
 
 
 @pytest.fixture
@@ -53,6 +62,108 @@ def test_proposal_allows_only_planned_overlay(proposal):
         read(root / planner.RECIPE)["engines"]["terraform"]["source_build"]["modules"][MODULE]
         == "v0.62.0"
     )
+
+
+@pytest.fixture
+def provider_proposal(checkout, tmp_path, monkeypatch):
+    original = read(checkout / planner.CONTEXT / "dependencies.terraform.json")
+    original["providers"][0]["source_build"]["modules"]["golang.org/x/crypto"] = "v0.57.0"
+    for name in ("dependencies.terraform.json", "dependencies.terraform-avm.json"):
+        document = read(checkout / planner.CONTEXT / name)
+        for item in document["providers"]:
+            if item["source"] == original["providers"][0]["source"]:
+                item["source_build"]["modules"]["golang.org/x/crypto"] = "v0.57.0"
+        write(checkout / planner.CONTEXT / name, document)
+    write(checkout / planner.CONTEXT / "dependencies.shared.json", original)
+
+    def build(item, work, tooling):
+        item["source_build"]["modules"]["golang.org/x/crypto"] = "v0.58.0"
+        return built(item, work)
+
+    monkeypatch.setattr(preparation, "rebuild", build)
+    work = tmp_path / "provider-work"
+    evidence = retained(work / "evidence", [finding(provider_path(fixture_provider(checkout)))])
+    plan = planner.plan(checkout, [evidence])
+    write(work / "receipt.json", {"source": SOURCE, "directories": [evidence.name]})
+    write(work / "plan.json", plan)
+    preparation.prepare(checkout, [evidence], plan, work / "proposal")
+    return checkout, work
+
+
+def test_provider_packages_and_companions_are_applied_together(provider_proposal):
+    root, work = provider_proposal
+    metadata = read(work / "proposal/proposal.json")
+    assert len(metadata["providers"]) == len(metadata["companionUpdates"]) == 3
+    files = remediation.proposal_files(root, work / "proposal")
+    assert set(files) == {item["path"] for item in metadata["providers"]}
+    remediation.apply(root, work / "proposal")
+    for item in metadata["providers"]:
+        source = read(root / item["path"])["providers"][item["index"]]["source_build"]
+        assert source["modules"][MODULE] == "v0.62.0"
+        assert source["modules"]["golang.org/x/crypto"] == "v0.58.0"
+        assert source["sha256"] == planner.digest(work / "proposal" / item["package"])
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "package",
+        "missing",
+        "extra",
+        "duplicate",
+        "malformed",
+        "downgrade",
+        "major",
+        "before",
+        "module",
+        "owner",
+    ],
+)
+def test_provider_proposal_rejects_invalid_packages_and_companions(provider_proposal, mutation):
+    root, work = provider_proposal
+    directory = work / "proposal"
+    metadata = read(directory / "proposal.json")
+    if mutation == "package":
+        (directory / metadata["providers"][0]["package"]).write_bytes(b"corrupted archive")
+    elif mutation == "missing":
+        metadata["providers"].pop()
+    elif mutation in {"extra", "duplicate"}:
+        item = copy.deepcopy(metadata["providers"][0])
+        if mutation == "extra":
+            item["index"] = 999
+        metadata["providers"].append(item)
+    else:
+        update = metadata["companionUpdates"][0]
+        if mutation in {"malformed", "downgrade", "major"}:
+            update["after"] = {"malformed": "latest", "downgrade": "v0.56.0", "major": "v1.0.0"}[
+                mutation
+            ]
+            if mutation != "malformed":
+                path = directory / "files" / update["path"]
+                document = read(path)
+                item = document["providers"][int(update["owner"])]
+                source = item["source_build"]
+                source["modules"][update["module"]] = update["after"]
+                raw, module_files = built(item, directory)
+                source.update(sha256=hashlib.sha256(raw).hexdigest(), module_files=module_files)
+                package = f"providers/{source['sha256']}.zip"
+                (directory / package).write_bytes(raw)
+                write(path, document)
+                metadata["files"][update["path"]] = planner.digest(path)
+                for record in metadata["providers"]:
+                    if (record["path"], record["index"]) == (update["path"], int(update["owner"])):
+                        record["package"] = package
+        elif mutation == "before":
+            update["before"] = "v0.56.0"
+        elif mutation == "module":
+            update["module"] = "example.invalid/unplanned"
+        else:
+            update["owner"] = "999"
+    write(directory / "proposal.json", metadata)
+    before = {name: (root / name).read_bytes() for name in metadata["files"]}
+    with pytest.raises(ValueError):
+        remediation.apply(root, directory)
+    assert {name: (root / name).read_bytes() for name in before} == before
 
 
 @pytest.mark.parametrize("mutation", ["repository", "file", "companion", "hash", "empty", "plan"])
@@ -95,7 +206,9 @@ def test_proposal_refuses_unplanned_mutations(proposal, mutation):
     assert (root / planner.RECIPE).read_bytes() == before
 
 
-def scan_artifact(root, work, results, profile, variant, *, target_present=False):
+def scan_artifact(
+    root, work, results, profile, variant, *, target_present=False, provider_target=False
+):
     original, hashes = planner.inputs(root)
     if variant == "candidate":
         original.update(
@@ -108,14 +221,16 @@ def scan_artifact(root, work, results, profile, variant, *, target_present=False
     binary = (
         "/usr/local/bin/terraform" if profile.startswith("terraform") else "/usr/local/bin/tofu"
     )
-    match = finding(guest_path=binary)
+    manifest = original[f"{planner.CONTEXT}/{remediation.PROVIDER_MANIFESTS[profile]}"]
+    match = finding(
+        guest_path=provider_path(manifest["providers"][0]) if provider_target else binary
+    )
     artifacts = [copy.deepcopy(match["artifact"])]
     if variant == "candidate":
         artifacts[0]["version"] = "v0.62.0"
-    manifest = original[f"{planner.CONTEXT}/{remediation.PROVIDER_MANIFESTS[profile]}"]
     for index, provider in enumerate(manifest["providers"]):
         name = provider["source"].rsplit("/", 1)[-1]
-        location = f"/opt/maf-terraform/mirror/{provider['source']}/{provider['version']}/{provider['platform']}/terraform-provider-{name}"
+        location = provider_path(provider)
         module = f"github.com/example/terraform-provider-{name}"
         artifacts.extend(
             [
@@ -136,6 +251,18 @@ def scan_artifact(root, work, results, profile, variant, *, target_present=False
                 },
             ]
         )
+        for number, (module, version) in enumerate(
+            provider.get("source_build", {}).get("modules", {}).items()
+        ):
+            artifacts.append(
+                {
+                    "id": f"overlay-{index}-{number}",
+                    "type": "go-module",
+                    "name": module,
+                    "version": version,
+                    "locations": [{"path": location}],
+                }
+            )
     sbom = {"source": {"type": "image", "metadata": {"imageID": IMAGE}}, "artifacts": artifacts}
     report = read(retained(results, name=f"source-{variant}-{profile}") / "grype.json")
     report["matches"] = [match] if target_present else []
@@ -183,6 +310,37 @@ def test_complete_qualification_requires_targets_removed(qualified):
     assert report["status"] == "ready"
     assert len(report["scans"]) == 8
     assert sum(row["targetedFindings"] for row in report["scans"]) == 4
+
+
+@pytest.mark.parametrize("stale_module", [False, True])
+def test_provider_proposal_qualifies_only_with_rebuilt_inventory(
+    provider_proposal, tmp_path, monkeypatch, stale_module
+):
+    root, work = provider_proposal
+    results = tmp_path / "provider-results"
+    monkeypatch.setattr(remediation, "git", lambda *_: SOURCE)
+    for variant in ("baseline", "candidate"):
+        for profile in remediation.PROVIDER_MANIFESTS:
+            scan_artifact(
+                root,
+                work,
+                results,
+                profile,
+                variant,
+                target_present=variant == "baseline",
+                provider_target=True,
+            )
+    if stale_module:
+        path = results / "candidate-terraform-random/sbom.syft.json"
+        sbom = read(path)
+        for item in sbom["artifacts"]:
+            if item["name"] == MODULE:
+                item["version"] = "v0.60.0"
+        write(path, sbom)
+        with pytest.raises(ValueError, match="module"):
+            remediation.qualify(root, work, results)
+    else:
+        assert remediation.qualify(root, work, results)["status"] == "ready"
 
 
 def test_source_already_fixed_is_noop(qualified):
@@ -373,10 +531,15 @@ def test_acquisition_binds_release_catalogue_and_monitor(
 
 
 @pytest.mark.parametrize(
-    "mutation", ["none", "digest", "duplicate", "missing", "mutable", "producer"]
+    "mutation",
+    ["none", "digest", "duplicate", "missing", "mutable", "producer", "traversal", "absolute"],
 )
 def test_retained_monitor_assets_are_authenticated(tmp_path, monkeypatch, mutation):
     target = "terraform-random-0.2.3"
+    if mutation == "traversal":
+        target = "../escaped"
+    elif mutation == "absolute":
+        target = (tmp_path / "escaped").as_posix()
     content = {f"{target}/{name}": b"{}\n" for name in acquisition.FILES}
     index = {
         "runId": "123",
@@ -422,6 +585,7 @@ def test_retained_monitor_assets_are_authenticated(tmp_path, monkeypatch, mutati
             acquisition.restore_monitor(
                 client, {"id": 123, "run_attempt": 1}, SOURCE, {target}, tmp_path / "restored"
             )
+        assert not (tmp_path / "escaped").exists()
 
 
 class FakeGitHub(publication.GitHub):
@@ -432,6 +596,7 @@ class FakeGitHub(publication.GitHub):
         self.trees = {}
         self.commits = {SOURCE: {"tree": {"sha": "base-tree"}, "committer": {"date": AT}}}
         self.fail_after = None
+        self.fail_before = None
         self.race = False
         self.writes = []
 
@@ -448,6 +613,9 @@ class FakeGitHub(publication.GitHub):
         path = endpoint.removeprefix(f"repos/{REPOSITORY}/")
         data = json.loads(payload) if payload is not None else {}
         result = {}
+        if path == self.fail_before:
+            self.fail_before = None
+            raise OSError("Request failed before mutation")
         if method != "GET":
             self.writes.append((path, data))
         if path == f"repos/{REPOSITORY}":
@@ -537,7 +705,7 @@ def publisher(monkeypatch):
     }
 
     def publish():
-        return publication.publish(client, {"source": SOURCE}, report, files, BOT, URL)
+        return publication.publish(client, {"source": report["source"]}, report, files, BOT, URL)
 
     return client, files, report, publish
 
@@ -545,6 +713,7 @@ def publisher(monkeypatch):
 def test_pr_create_retry_and_refresh_are_idempotent(publisher):
     client, files, report, publish = publisher
     assert publish()["status"] == "created"
+    assert f"[Retained qualification]({URL})" in client.pulls[0]["body"]
     first = client.head
     assert publish()["status"] == "unchanged"
     assert client.head == first and len(client.pulls) == 1
@@ -629,6 +798,56 @@ def test_merged_pr_allows_new_fix_without_reopening(publisher):
     assert len(client.pulls) == 2 and client.pulls[0]["state"] == "closed"
 
 
+@pytest.mark.parametrize("deleted_branch", [False, True])
+@pytest.mark.parametrize("failure", ["pending", "branch", "create-before", "create-after"])
+def test_merged_cycle_recovers_uncertain_writes(publisher, deleted_branch, failure):
+    client, files, report, publish = publisher
+    publish()
+    client.pulls[0].update(state="closed", merged_at=AT)
+    old_body = client.pulls[0]["body"]
+    old_current = publication.marker(old_body)["current"]
+    base = "d" * 40
+    client.commits[base] = {"tree": {"sha": "merged-main-tree"}, "committer": {"date": AT}}
+    report["source"] = base
+    if deleted_branch:
+        client.head = None
+    files[planner.RECIPE] = b"later fix"
+    report["files"][planner.RECIPE] = hashlib.sha256(files[planner.RECIPE]).hexdigest()
+    if failure == "create-before":
+        client.fail_before = "pulls"
+    else:
+        client.fail_after = {"pending": "pulls/1", "branch": "graphql", "create-after": "pulls"}[
+            failure
+        ]
+    with pytest.raises(OSError):
+        publish()
+    written = client.head
+    assert publish()["status"] in {"created", "unchanged"}
+    if failure != "pending":
+        assert client.head == written
+    assert len(client.pulls) == 2 and client.pulls[0]["state"] == "closed"
+    old_state = publication.marker(client.pulls[0]["body"])
+    assert old_state["current"] == old_current
+    assert client.pulls[0]["body"].split("<!--")[0] == old_body.split("<!--")[0]
+    assert publication.marker(client.pulls[1]["body"])["current"]["head"] == client.head
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        URL.rsplit("/artifacts/", 1)[0],
+        URL + "/extra",
+        URL.replace("/456", "/0"),
+        URL.replace(REPOSITORY, "other/repo"),
+    ],
+)
+def test_publisher_requires_exact_retained_artifact(publisher, url):
+    client, files, report, _ = publisher
+    with pytest.raises(ValueError, match="retained workflow evidence"):
+        publication.publish(client, {"source": SOURCE}, report, files, BOT, url)
+    assert client.writes == []
+
+
 def test_refresh_uses_new_main_tree_and_preserves_owned_ancestry(publisher):
     client, files, report, publish = publisher
     publish()
@@ -672,10 +891,29 @@ def test_workflow_keeps_writes_after_all_read_only_gates():
     assert set(workflow["permissions"].values()) == {"read"}
     jobs = workflow["jobs"]
     assert jobs["publish"]["needs"] == ["prepare", "scan", "checks"]
+    assert jobs["publish"]["permissions"] == {
+        "contents": "read",
+        "actions": "read",
+        "pull-requests": "read",
+    }
     assert jobs["scan"]["strategy"]["matrix"]["variant"] == ["baseline", "candidate"]
     assert set(jobs["scan"]["strategy"]["matrix"]["profile"]) == set(remediation.PROVIDER_MANIFESTS)
     steps = jobs["publish"]["steps"]
     app = next(item for item in steps if item.get("id") == "app")
+    retain = next(item for item in steps if item.get("id") == "retain")
+    assert steps.index(retain) < steps.index(app)
+    assert (
+        retain["with"]["name"]
+        == "remediation-qualification-${{ github.run_id }}-${{ github.run_attempt }}"
+    )
+    assert retain["with"].get("overwrite", False) is False
+    assert retain["with"]["path"].splitlines() == [
+        "${{ runner.temp }}/remediation",
+        "${{ runner.temp }}/results",
+    ]
+    publish = steps[-1]
+    assert publish["env"]["ARTIFACT_ID"] == "${{ steps.retain.outputs.artifact-id }}"
+    assert '--artifact-id "$ARTIFACT_ID"' in publish["run"]
     assert {key: value for key, value in app["with"].items() if key.startswith("permission-")} == {
         "permission-contents": "write",
         "permission-pull-requests": "write",
