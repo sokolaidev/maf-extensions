@@ -136,12 +136,17 @@ class Coordinator:
         sessions: Mapping[str, Session],
         *,
         enabled: bool = False,
+        initialize: bool = False,
         scratch_policy: remote_scratch.Policy | None = None,
         fencing_policy: Policy = Policy(),
         boundary: Callable[[str], None] = lambda _: None,
     ):
         if enabled is not True:
             raise Refused("remote coordinator requires explicit opt-in")
+        if type(initialize) is not bool:
+            raise Refused("coordinator initialization requires an explicit boolean")
+        if not initialize and not root.is_dir():
+            raise Refused("existing coordinator root is unavailable")
         if not grants or not sessions or len(grants) > 128 or len(sessions) > 128:
             raise Refused("invalid coordinator configuration size")
         if any(not re.fullmatch(r"[0-9a-f]{64}", key) for key in grants):
@@ -158,7 +163,7 @@ class Coordinator:
         self.scratch_policy = scratch_policy
         self.fencing_policy = fencing_policy
         self.boundary = boundary
-        self.stores: dict[str, tuple[Owner, SharedStore]] = {}
+        self.stores: dict[str, tuple[Owner | None, SharedStore]] = {}
         prepare(root)
         self.root = root.resolve()
         check_file(self.root / "service.lock")
@@ -168,11 +173,28 @@ class Coordinator:
                 self.lock.write(b"0")
                 self.lock.flush()
             _lock(self.lock, True)
-            with self.authority():
+            if initialize and any(p.name != "service.lock" for p in self.root.iterdir()):
+                raise Refused("coordinator initialization requires an empty root")
+            with Authority(
+                self.root / "ownership",
+                enabled=True,
+                scratch_policy=self.scratch_policy,
+                policy=self.fencing_policy,
+                existing_only=not initialize,
+            ):
                 pass
+            for name, config in self.sessions.items():
+                store = SharedStore(
+                    self.root / "publication",
+                    name,
+                    dict(config.profile),
+                    config.limits,
+                    existing_only=not initialize,
+                )
+                self.stores[name] = None, store
             self._clear_transfer()
         except BaseException:
-            self.lock.close()
+            self.close()
             raise
 
     def authority(self) -> Authority:
@@ -182,6 +204,7 @@ class Coordinator:
             enabled=True,
             scratch_policy=self.scratch_policy,
             policy=self.fencing_policy,
+            existing_only=True,
         )
 
     def fence(
@@ -229,6 +252,9 @@ class Coordinator:
 
     def _store(self, owner: Owner) -> SharedStore:
         cached = self.stores.get(owner.session)
+        if cached is not None and cached[0] is None:
+            self.stores[owner.session] = owner, cached[1]
+            return cached[1]
         if cached is not None and cached[0] == owner:
             return cached[1]
         if cached is not None:
@@ -236,7 +262,11 @@ class Coordinator:
             del self.stores[owner.session]
         config = self.sessions[owner.session]
         store = SharedStore(
-            self.root / "publication", owner.session, dict(config.profile), config.limits
+            self.root / "publication",
+            owner.session,
+            dict(config.profile),
+            config.limits,
+            existing_only=True,
         )
         self.stores[owner.session] = owner, store
         return store

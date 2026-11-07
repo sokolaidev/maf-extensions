@@ -63,6 +63,38 @@ def participants(tmp_path, monkeypatch):
     return roots, bundle, peers
 
 
+def test_orchestration_initializes_only_before_first_service_start(tmp_path, monkeypatch):
+    commands = []
+
+    class Process:
+        def __init__(self, command, **kwargs):
+            commands.append(command)
+            self.returncode = None
+
+        def wait(self, **kwargs):
+            self.returncode = 0
+            return 0
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 1
+
+    def scenario(a, b, coordinator, restart, **kwargs):
+        restart()
+        restart()
+        return {"completed": True}
+
+    monkeypatch.setattr(cross.subprocess, "Popen", Process)
+    monkeypatch.setattr(cross, "_client", lambda root, peers, role: role)
+    monkeypatch.setattr(cross, "_ready", lambda client: None)
+    monkeypatch.setattr(cross, "call", lambda *args, **kwargs: {})
+    monkeypatch.setattr(cross, "scenario", scenario)
+    assert cross.orchestrate(tmp_path, tmp_path / "bundle", {}) == {"completed": True}
+    assert ["--initialize" in command for command in commands] == [True, False, False]
+
+
 def test_bootstrap_exposes_no_private_key(participants):
     roots, _, peers = participants
     cross.validate_peers(peers, cross._binding())
@@ -234,7 +266,7 @@ def test_three_endpoints_restore_replay_fence_and_reconcile(participants, monkey
     )
     monkeypatch.setattr(cross.remote_host, "execute", execute)
     service_context = endpoint(
-        lambda: cross.Service(roots["coordinator"], peers), roots["coordinator"]
+        lambda: cross.Service(roots["coordinator"], peers, initialize=True), roots["coordinator"]
     )
     _, addresses["coordinator"] = service_context.__enter__()
     try:
