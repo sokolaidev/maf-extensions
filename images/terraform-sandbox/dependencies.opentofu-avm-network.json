@@ -22,16 +22,16 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
           "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "a1721ad92dba8658075e8912148ccc85422450f610a48383db04cb5bce34429e",
-          "go.sum": "31dd1e4ac5dafa7433c082d83317fc1ae2008bb2707cf67b4143b96374d3498e"
+          "go.mod": "b010e32130ce57a99897d37c42a17b8e5e0a69af7a9f3381842ed9791d15a5f9",
+          "go.sum": "9f7e410a1794856b7acb9b5d7d950815d39efd4c5c05fa4ee9b9c9575db9ba05"
         },
-        "sha256": "cfab3ad07a1b1cb60c31ba7ced053cabb1471ebecfd92ef85990c22c5a750470"
+        "sha256": "b18a0cf42f8ddcf4f520a870e9592071ea4e6851573bef58b5a23bb3d4c27b2e"
       }
     },
     {
@@ -54,17 +54,17 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
           "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "6ad2f00a218d30369af088ef8e452fbb8ddc6ed477b48fc28380461e15e116e8",
-          "go.sum": "b4d9f50ff06b3e79ecf8e60024ac0556e70ea7bb1f86911461658b657e8d8a09"
+          "go.mod": "9d7ac8d3509887e40bdaaf7360de1dee4709e7bd50ed8f92bdac045ceebb7aac",
+          "go.sum": "0b1228cfb95b7bdd6e92b1825eeca184de69a9c05b75fcf4ec47e144ff9f2e7d"
         },
-        "sha256": "6b74e2cad880e2bb5b1f66895d6d155ea862efa899942e5ab20e582bbfa3556b"
+        "sha256": "01199fe9e6afbe3bf3a566a64bbee49429cd33fab4d214b8702dc76600ffdb14"
       }
     },
     {
@@ -87,17 +87,17 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
           "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "f61c86466b4e220ca18bbee0f029ef940e2aa7b666afd0915b4b2aec2fcee399",
-          "go.sum": "b4a24dd70281d535d5060de52be0b08a1640f5a235ac074720d936bd12bb459b"
+          "go.mod": "85bfaa7364c695c9e760d507a1aa036f1815d395b8de347d751a8ba0f8e2da49",
+          "go.sum": "24cc70bcb0a0a040bee69388111ac5e174e115619e51dade6b56691ce9abf6cf"
         },
-        "sha256": "e11d1455df35c9e0ac2e05bbfecb75c4c6132612cd7a542fdffde59b0aa5c081"
+        "sha256": "70589f793c82f302da33b9e766624ea168d5cfa39230fa4b47fc01824afd8fed"
       }
     }
   ],
