@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-mcp-v0.3.1...maf-sandbox-mcp-v0.3.2) (2026-11-07)
+
+
+### Fixes
+
+* **mcp:** allow installation with maf-sandbox-bicep 0.26 ([#2552](https://github.com/sokolaidev/maf-extensions/issues/2552)) ([0ff308e](https://github.com/sokolaidev/maf-extensions/commit/0ff308e91e2980c23dde69a3a59d8c519f5b59c3))
+
 ## [0.3.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-mcp-v0.3.0...maf-sandbox-mcp-v0.3.1) (2026-11-05)
 
 
