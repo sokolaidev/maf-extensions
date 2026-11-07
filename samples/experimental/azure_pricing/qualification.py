@@ -33,15 +33,23 @@ try:
 except urllib.error.HTTPError as error:
     print(json.dumps({'status': error.code}))
 except urllib.error.URLError as error:
-    print(json.dumps({'denied': '403' in str(error.reason)}))
+    print(json.dumps({'denied': '403' in str(error.reason), 'reason': str(error.reason)[:512]}))
 """
-DIRECT_PROBE = """import socket
+DIRECT_PROBE = """import socket, ssl
 try:
-    socket.create_connection(('1.1.1.1', 443), timeout=2).close()
+    with socket.create_connection(('1.1.1.1', 443), timeout=2) as connection:
+        with ssl.create_default_context().wrap_socket(connection, server_hostname='one.one.one.one') as tls:
+            tls.sendall(b'GET / HTTP/1.1\\r\\nHost: one.one.one.one\\r\\nConnection: close\\r\\n\\r\\n')
+            response = tls.recv(4096)
+except ssl.SSLCertVerificationError:
+    raise
 except OSError:
     print('blocked')
 else:
-    raise RuntimeError('Direct networking bypassed the proxy')
+    if not response or (b'403' in response.split(b'\\r\\n', 1)[0] and b'Blocked' in response):
+        print('blocked')
+    else:
+        raise RuntimeError('Direct HTTPS traffic was not blocked: ' + repr(response[:256]))
 """
 
 
@@ -80,7 +88,7 @@ async def probes(
                     raise ValueError("HTTP probe failed: " + result.stderr)
                 value = json.loads(result.stdout)
                 if value.get("status") != 403 and value.get("denied") is not True:
-                    raise ValueError("Disallowed HTTP request was not denied")
+                    raise ValueError(f"Disallowed {name} request was not denied: {value!r}")
             elif name == "direct":
                 result = await sandbox.exec_bounded(
                     ["/usr/bin/python3", "-c", DIRECT_PROBE],
@@ -89,7 +97,9 @@ async def probes(
                     max_output_bytes=4096,
                 )
                 if result.exit_code != 0 or result.stdout.strip() != "blocked":
-                    raise ValueError("Direct networking was not refused")
+                    raise ValueError(
+                        "Direct HTTPS was not refused: " + result.stdout + result.stderr
+                    )
             elif name == "output":
                 try:
                     await sandbox.exec_bounded(
