@@ -907,6 +907,106 @@ def test_refresh_uncertain_write_is_reconciled(publisher, operation):
     assert len(client.pulls) == 1
 
 
+@pytest.mark.parametrize("operation", ["pending", "branch", "final"])
+@pytest.mark.parametrize("timing", ["before", "after"])
+def test_interrupted_refresh_displays_only_completed_qualification(
+    publisher, monkeypatch, operation, timing
+):
+    client, files, report, publish = publisher
+    report["scans"] = [
+        {
+            "variant": "candidate",
+            "profile": "terraform-random",
+            "imageId": "sha256:old",
+            "assessment": {"outcome": "clean"},
+        }
+    ]
+    publish()
+    old_head = client.head
+    old_body = client.pulls[0]["body"]
+    old_current = publication.marker(old_body)["current"]
+    files[planner.RECIPE] = b"new proposal"
+    report["files"][planner.RECIPE] = hashlib.sha256(files[planner.RECIPE]).hexdigest()
+    report["scans"][0]["imageId"] = "sha256:new"
+    new_url = URL + "1"
+    original = client.request
+    patches = 0
+    armed = True
+
+    def interrupted(endpoint, *, method="GET", **kwargs):
+        nonlocal patches, armed
+        step = "branch" if endpoint == "graphql" else None
+        if method == "PATCH":
+            patches += 1
+            step = "pending" if patches == 1 else "final"
+        fail = armed and step == operation
+        if fail:
+            armed = False
+        if fail and timing == "before":
+            raise OSError("Write refused")
+        result = original(endpoint, method=method, **kwargs)
+        if fail:
+            raise OSError("Write response lost")
+        return result
+
+    monkeypatch.setattr(client, "request", interrupted)
+
+    def refresh():
+        return publication.publish(client, {"source": SOURCE}, report, files, BOT, new_url)
+
+    with pytest.raises(OSError):
+        refresh()
+    text = client.pulls[0]["body"]
+    completed = operation == "final" and timing == "after"
+    if completed:
+        assert "sha256:new" in text and new_url in text
+        assert f"Qualified commit: `{client.head}`" in text
+        assert not text.startswith("## Refresh incomplete")
+    else:
+        assert "sha256:old" in text and f"]({URL})" in text
+        assert "sha256:new" not in text and new_url not in text
+        assert publication.marker(text)["current"] == old_current
+        if operation == "pending" and timing == "before":
+            assert text == old_body
+        else:
+            assert text.startswith("## Refresh incomplete")
+            assert "does not qualify the current branch" in text
+            assert f"Qualified commit: `{old_head}`" in text
+    if operation == "pending" or (operation == "branch" and timing == "before"):
+        assert client.head == old_head
+    else:
+        assert client.head != old_head
+    assert refresh()["status"] in {"updated", "unchanged"}
+    text = client.pulls[0]["body"]
+    assert "sha256:new" in text and new_url in text and "sha256:old" not in text
+    assert f"Qualified commit: `{client.head}`" in text
+    assert not text.startswith("## Refresh incomplete")
+    assert publication.marker(text)["pending"] is None
+
+
+def test_new_candidate_retry_preserves_last_completed_qualification(publisher):
+    client, files, report, publish = publisher
+    publish()
+    original = client.pulls[0]["body"]
+    for proposal, failure in [(b"first", "after"), (b"second", "before")]:
+        before = client.head
+        files[planner.RECIPE] = proposal
+        report["files"][planner.RECIPE] = hashlib.sha256(proposal).hexdigest()
+        setattr(client, f"fail_{failure}", "graphql")
+        with pytest.raises(OSError):
+            publish()
+        text = client.pulls[0]["body"]
+        assert text.count("## Refresh incomplete") == 1
+        assert publication.marker(text)["current"]["head"] == before
+        assert (
+            text.split("## Summary", 1)[1].split("<!--")[0]
+            == original.split("## Summary", 1)[1].split("<!--")[0]
+        )
+    assert publish()["status"] == "updated"
+    assert "## Refresh incomplete" not in client.pulls[0]["body"]
+    assert publication.marker(client.pulls[0]["body"])["current"]["head"] == client.head
+
+
 @pytest.mark.parametrize("change", ["head", "author", "marker", "closed", "race", "race-base"])
 def test_human_changes_are_preserved(publisher, change):
     client, files, report, publish = publisher

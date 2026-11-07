@@ -20,6 +20,10 @@ BRANCH = "bot/go-image-remediation"
 MARKER = "maf-image-remediation-v1"
 MARKER_PATTERN = r"<!-- " + MARKER + r" (.+?) -->"
 TITLE = "build: rebuild Go image dependencies with verified security fixes"
+PENDING_NOTICE = (
+    "## Refresh incomplete\n\nThe qualification below is from the last completed refresh "
+    "and does not qualify the current branch. Do not merge until the refresh completes.\n\n"
+)
 
 
 class BotGitHub(GitHub):
@@ -140,6 +144,11 @@ def update_body(
     return result
 
 
+def pending_body(text: str, state: dict[str, Any]) -> str:
+    """Retain completed qualification while visibly withholding admission during a refresh."""
+    return with_marker(PENDING_NOTICE + text.removeprefix(PENDING_NOTICE), state)
+
+
 def body(state: dict[str, Any], report: dict[str, Any], evidence_url: str) -> str:
     """Report residual findings without implying publication or closing release requests."""
     scans = [row for row in report["scans"] if row["variant"] == "candidate"]
@@ -152,7 +161,8 @@ def body(state: dict[str, Any], report: dict[str, Any], evidence_url: str) -> st
         "image findings. All four affected profiles passed ordinary builds, runtime checks, "
         "inventory checks and rescans.\n\n## Related issue\n\nRefs #2514, #2516.\n\n"
         "## Changes\n\nOnly planned module overrides and regenerated provider locks change.\n\n"
-        f"## Verification\n\nBase: `{report['source']}`. [Retained qualification]({evidence_url}).\n\n"
+        f"## Verification\n\nQualified commit: `{state['current']['head']}`. "
+        f"Base: `{report['source']}`. [Retained qualification]({evidence_url}).\n\n"
         f"{summary}\n\n## Notes\n\nUnrelated findings remain in the retained assessments. "
         "No image was published; deployed images and release-needed issues remain unchanged. "
         "Review the source diff and residual findings before merging.\n\n"
@@ -302,7 +312,7 @@ def publish(
     state = {"schemaVersion": 1, "current": previous, "pending": proposed}
     current(client, receipt)
     if pull:
-        update_body(client, pull, body(state, report, evidence_url), head)
+        update_body(client, pull, pending_body(pull["body"], state), head)
     elif ownership_pull and ownership_state:
         # Keep the merged PR's qualification intact while recording the next branch write.
         ownership_state["pending"] = proposed
