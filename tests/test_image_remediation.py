@@ -1,0 +1,685 @@
+"""Automatic image fixes require current evidence, complete rebuilds and exclusive bot ownership."""
+
+from __future__ import annotations
+
+import base64
+import copy
+import hashlib
+import json
+import shutil
+import sys
+import zipfile
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+import image_remediation as remediation  # noqa: E402
+import image_remediation_evidence as acquisition  # noqa: E402
+import image_remediation_pr as publication  # noqa: E402
+import plan_go_remediation as planner  # noqa: E402
+import prepare_go_remediation as preparation  # noqa: E402
+from container_release import REPOSITORY, read, scan_result, write  # noqa: E402
+from container_release_history import encode  # noqa: E402
+from test_go_remediation import AT, IMAGE, MODULE, finding, retained  # noqa: E402
+from test_go_remediation import checkout as checkout  # noqa: E402, F401
+
+pytestmark = pytest.mark.workflow
+SOURCE = "c" * 40
+BOT = "image-remediation[bot]"
+URL = f"https://github.com/{REPOSITORY}/actions/runs/123"
+
+
+@pytest.fixture
+def proposal(checkout, tmp_path):
+    work = tmp_path / "work"
+    evidence = retained(work / "evidence")
+    plan = planner.plan(checkout, [evidence])
+    write(work / "receipt.json", {"source": SOURCE, "directories": [evidence.name]})
+    write(work / "plan.json", plan)
+    preparation.prepare(checkout, [evidence], plan, work / "proposal")
+    return checkout, work
+
+
+def test_proposal_allows_only_planned_overlay(proposal):
+    root, work = proposal
+    files = remediation.proposal_files(root, work / "proposal")
+    assert set(files) == {planner.RECIPE}
+    remediation.apply(root, work / "proposal")
+    assert (
+        read(root / planner.RECIPE)["engines"]["terraform"]["source_build"]["modules"][MODULE]
+        == "v0.62.0"
+    )
+
+
+@pytest.mark.parametrize("mutation", ["repository", "file", "companion", "hash", "empty", "plan"])
+def test_proposal_refuses_unplanned_mutations(proposal, mutation):
+    root, work = proposal
+    directory = work / "proposal"
+    recipe = directory / "files" / planner.RECIPE
+    document = read(recipe)
+    metadata = read(directory / "proposal.json")
+    if mutation == "repository":
+        document["engines"]["terraform"]["source_build"]["repository"] = (
+            "https://example.invalid/source"
+        )
+        write(recipe, document)
+        metadata["files"][planner.RECIPE] = planner.digest(recipe)
+    elif mutation == "file":
+        metadata["files"][".github/workflows/tests.yml"] = "a" * 64
+    elif mutation == "companion":
+        metadata["companionUpdates"] = [
+            {
+                "path": planner.RECIPE,
+                "owner": "opentofu",
+                "module": MODULE,
+                "before": None,
+                "after": "v0.62.0",
+            }
+        ]
+    elif mutation == "hash":
+        recipe.write_bytes(b"{}")
+    elif mutation == "empty":
+        metadata["files"] = {}
+    else:
+        document = read(directory / "plan.json")
+        document["updates"][0]["after"] = "v0.63.0"
+        write(directory / "plan.json", document)
+    write(directory / "proposal.json", metadata)
+    before = (root / planner.RECIPE).read_bytes()
+    with pytest.raises(ValueError):
+        remediation.proposal_files(root, directory)
+    assert (root / planner.RECIPE).read_bytes() == before
+
+
+def scan_artifact(root, work, results, profile, variant, *, target_present=False):
+    original, hashes = planner.inputs(root)
+    if variant == "candidate":
+        original.update(
+            {
+                name: json.loads(raw)
+                for name, raw in remediation.proposal_files(root, work / "proposal").items()
+            }
+        )
+        hashes.update(read(work / "proposal/proposal.json")["files"])
+    binary = (
+        "/usr/local/bin/terraform" if profile.startswith("terraform") else "/usr/local/bin/tofu"
+    )
+    match = finding(guest_path=binary)
+    artifacts = [copy.deepcopy(match["artifact"])]
+    if variant == "candidate":
+        artifacts[0]["version"] = "v0.62.0"
+    manifest = original[f"{planner.CONTEXT}/{remediation.PROVIDER_MANIFESTS[profile]}"]
+    for index, provider in enumerate(manifest["providers"]):
+        name = provider["source"].rsplit("/", 1)[-1]
+        location = f"/opt/maf-terraform/mirror/{provider['source']}/{provider['version']}/{provider['platform']}/terraform-provider-{name}"
+        module = f"github.com/example/terraform-provider-{name}"
+        artifacts.extend(
+            [
+                {
+                    "id": f"provider-{index}",
+                    "type": "go-module",
+                    "name": module,
+                    "version": "v" + provider["version"],
+                    "metadata": {"mainModule": module},
+                    "locations": [{"path": location}],
+                },
+                {
+                    "id": f"stdlib-{index}",
+                    "type": "go-module",
+                    "name": "stdlib",
+                    "version": provider.get("source_build", {}).get("go_version", "go1.27.2"),
+                    "locations": [{"path": location}],
+                },
+            ]
+        )
+    sbom = {"source": {"type": "image", "metadata": {"imageID": IMAGE}}, "artifacts": artifacts}
+    report = read(retained(results, name=f"source-{variant}-{profile}") / "grype.json")
+    report["matches"] = [match] if target_present else []
+    directory = results / f"{variant}-{profile}"
+    write(
+        directory / "qualification.json",
+        {
+            "schemaVersion": 1,
+            "source": SOURCE,
+            "profile": profile,
+            "variant": variant,
+            "plan": planner.digest(work / "plan.json"),
+            "inputs": hashes,
+        },
+    )
+    write(
+        directory / "build.json",
+        {"local_image_id": IMAGE, "profile": profile, "source_commit": SOURCE},
+    )
+    write(
+        directory / "runtime.json",
+        {"passed": True, "profile": profile, "imageId": IMAGE, "containersRemaining": []},
+    )
+    write(directory / "sbom.syft.json", sbom)
+    write(directory / "grype.json", report)
+    write(directory / "assessment.json", scan_result(report, IMAGE, AT, sbom=sbom))
+
+
+@pytest.fixture
+def qualified(proposal, tmp_path, monkeypatch):
+    root, work = proposal
+    results = tmp_path / "results"
+    monkeypatch.setattr(remediation, "git", lambda *_: SOURCE)
+    for variant in ("baseline", "candidate"):
+        for profile in remediation.PROVIDER_MANIFESTS:
+            scan_artifact(
+                root, work, results, profile, variant, target_present=variant == "baseline"
+            )
+    return root, work, results
+
+
+def test_complete_qualification_requires_targets_removed(qualified):
+    root, work, results = qualified
+    report = remediation.qualify(root, work, results)
+    assert report["status"] == "ready"
+    assert len(report["scans"]) == 8
+    assert sum(row["targetedFindings"] for row in report["scans"]) == 4
+
+
+def test_source_already_fixed_is_noop(qualified):
+    root, work, results = qualified
+    for profile in remediation.PROVIDER_MANIFESTS:
+        scan_artifact(root, work, results, profile, "baseline")
+    assert remediation.qualify(root, work, results)["status"] == "source-already-fixed"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing",
+        "source",
+        "image",
+        "runtime",
+        "assessment",
+        "module",
+        "target",
+        "ignored",
+        "unrelated",
+    ],
+)
+def test_qualification_rejects_incomplete_or_contradictory_evidence(qualified, mutation):
+    root, work, results = qualified
+    directory = results / "candidate-terraform-random"
+    if mutation == "missing":
+        (directory / "runtime.json").unlink()
+    else:
+        filename = {
+            "source": "qualification.json",
+            "image": "runtime.json",
+            "runtime": "runtime.json",
+            "assessment": "assessment.json",
+            "module": "sbom.syft.json",
+            "target": "grype.json",
+            "ignored": "grype.json",
+            "unrelated": "grype.json",
+        }[mutation]
+        document = read(directory / filename)
+        if mutation == "source":
+            document["source"] = "d" * 40
+        elif mutation == "image":
+            document["imageId"] = "sha256:" + "d" * 64
+        elif mutation == "runtime":
+            document["containersRemaining"] = ["leaked-container"]
+        elif mutation == "assessment":
+            document["outcome"] = "vulnerable"
+        elif mutation == "module":
+            document["artifacts"][0]["version"] = "v0.61.0"
+        else:
+            item = finding(installed="v0.62.0")
+            item["vulnerability"]["severity"] = "Low"
+            if mutation == "unrelated":
+                item["vulnerability"]["id"] = "GO-OTHER"
+            document["ignoredMatches" if mutation == "ignored" else "matches"] = [item]
+        write(directory / filename, document)
+    if mutation == "unrelated":
+        assert remediation.qualify(root, work, results)["status"] == "ready"
+    else:
+        with pytest.raises((ValueError, FileNotFoundError)):
+            remediation.qualify(root, work, results)
+
+
+@pytest.fixture
+def current_state(monkeypatch):
+    monitor = {"id": 123, "run_attempt": 1, "status": "completed", "conclusion": "success"}
+    receipt = {
+        "source": SOURCE,
+        "catalogue": {"sequence": 1},
+        "monitor": monitor,
+        "acquiredAt": AT,
+        "oldestAssessment": AT,
+    }
+    monkeypatch.setattr(acquisition, "now", lambda: AT)
+    monkeypatch.setattr(acquisition, "main_head", lambda _: SOURCE)
+    monkeypatch.setattr(
+        acquisition,
+        "History",
+        lambda _: SimpleNamespace(head=lambda: SimpleNamespace(reference=receipt["catalogue"])),
+    )
+    monkeypatch.setattr(acquisition, "latest_monitor", lambda _: monitor)
+    return receipt
+
+
+@pytest.mark.parametrize("change", ["none", "main", "catalogue", "monitor", "age"])
+def test_latest_state_is_rechecked(current_state, monkeypatch, change):
+    receipt = copy.deepcopy(current_state)
+    if change == "main":
+        monkeypatch.setattr(acquisition, "main_head", lambda _: "d" * 40)
+    elif change == "catalogue":
+        receipt["catalogue"] = {"sequence": 2}
+    elif change == "monitor":
+        receipt["monitor"]["run_attempt"] = 2
+    elif change == "age":
+        receipt["acquiredAt"] = "2026-11-01T12:00:00Z"
+    if change == "none":
+        acquisition.current(acquisition.GitHub(), receipt)
+    else:
+        with pytest.raises(ValueError):
+            acquisition.current(acquisition.GitHub(), receipt)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("head_branch", "feature"),
+        ("path", ".github/workflows/other.yml"),
+        ("run_attempt", 2),
+        ("event", "pull_request"),
+        ("status", "in_progress"),
+    ],
+)
+def test_monitor_requires_trusted_exact_attempt(current_state, field, value):
+    monitor = current_state["monitor"]
+    run = {
+        **monitor,
+        "head_branch": "main",
+        "path": ".github/workflows/container-image-monitor.yml",
+        "head_repository": {"full_name": REPOSITORY},
+        "event": "schedule",
+        "head_sha": SOURCE,
+    }
+    client: Any = SimpleNamespace(request=lambda _: encode(run))
+    assert acquisition.monitor_source(client, monitor) == SOURCE
+    run[field] = value
+    with pytest.raises(ValueError):
+        acquisition.monitor_source(client, monitor)
+
+
+def test_failed_monitor_requires_verified_delivery(current_state):
+    monitor = {**current_state["monitor"], "conclusion": "failure"}
+    with pytest.raises(ValueError, match="verified delivery"):
+        acquisition.monitor_source(acquisition.GitHub(), monitor)
+
+
+@pytest.mark.parametrize(
+    "mutation", ["none", "stale", "digest", "unavailable", "observation", "signature"]
+)
+def test_acquisition_binds_release_catalogue_and_monitor(
+    checkout, tmp_path, current_state, monkeypatch, mutation
+):
+    seed = retained(tmp_path, name="seed")
+    observation = read(seed / "observation.json")
+    observation["assessment"].update(monitorRunId="123", monitorRunAttempt=1)
+    write(seed / "observation.json", observation)
+    candidate = observation["candidate"]
+    attempt = {**observation["assessment"], "evidenceRelease": "image-monitor-123-1"}
+    record = {**candidate, "candidate": candidate, "latestAttempt": attempt}
+    if mutation == "stale":
+        attempt["assessedAt"] = "2026-11-01T12:00:00Z"
+    elif mutation == "digest":
+        attempt["digest"] = "sha256:" + "0" * 64
+    elif mutation == "unavailable":
+        attempt["outcome"] = "unavailable"
+    elif mutation == "observation":
+        observation["candidate"]["sourceCommit"] = "d" * 40
+        write(seed / "observation.json", observation)
+        record["candidate"] = {**candidate, "sourceCommit": SOURCE}
+    name = "terraform-random-0.2.3"
+    catalogue = {"current": {"terraform-random": name}, "releases": {name: record}}
+    snapshot = SimpleNamespace(reference=current_state["catalogue"], catalogue=catalogue)
+    monkeypatch.setattr(acquisition, "History", lambda _: SimpleNamespace(head=lambda: snapshot))
+    monkeypatch.setattr(acquisition, "PROVIDER_MANIFESTS", {"terraform-random": "unused"})
+    monkeypatch.setattr(acquisition, "git", lambda *_: SOURCE)
+    monkeypatch.setattr(acquisition, "monitor_source", lambda *_: SOURCE)
+    verified = []
+
+    def authenticate(*_):
+        if mutation == "signature":
+            raise ValueError("Invalid provenance")
+        verified.append(name)
+
+    monkeypatch.setattr(acquisition, "release_evidence", authenticate)
+    monkeypatch.setattr(
+        acquisition,
+        "restore_monitor",
+        lambda client, monitor, source, targets, directory: shutil.copytree(seed, directory / name),
+    )
+    if mutation == "none":
+        result = acquisition.acquire(acquisition.GitHub(), checkout, tmp_path / "acquired")
+        assert result["updates"] and verified == [name]
+        assert read(tmp_path / "acquired/receipt.json")["oldestAssessment"] == AT
+    else:
+        with pytest.raises(ValueError):
+            acquisition.acquire(acquisition.GitHub(), checkout, tmp_path / "acquired")
+        assert not (tmp_path / "acquired/plan.json").exists()
+
+
+@pytest.mark.parametrize(
+    "mutation", ["none", "digest", "duplicate", "missing", "mutable", "producer"]
+)
+def test_retained_monitor_assets_are_authenticated(tmp_path, monkeypatch, mutation):
+    target = "terraform-random-0.2.3"
+    content = {f"{target}/{name}": b"{}\n" for name in acquisition.FILES}
+    index = {
+        "runId": "123",
+        "runAttempt": 1,
+        "files": {
+            name: "sha256:" + hashlib.sha256(raw).hexdigest() for name, raw in content.items()
+        },
+    }
+    if mutation == "digest":
+        index["files"][next(iter(content))] = "sha256:" + "0" * 64
+    archive = tmp_path / "archive.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        for number, (name, raw) in enumerate(content.items()):
+            if mutation != "missing" or number:
+                bundle.writestr(name, raw)
+        if mutation == "duplicate":
+            with pytest.warns(UserWarning):
+                bundle.writestr(next(iter(content)), b"{}\n")
+    payloads = {"monitor-index.json": encode(index), "reports-0000.zip": archive.read_bytes()}
+    assets = [
+        {"name": name, "size": len(raw), "digest": "sha256:" + hashlib.sha256(raw).hexdigest()}
+        for name, raw in payloads.items()
+    ]
+    release = {"id": 1, "draft": False, "immutable": mutation != "mutable"}
+    monkeypatch.setattr(
+        acquisition,
+        "Evidence",
+        lambda _: SimpleNamespace(
+            find=lambda _: release,
+            download=lambda asset, path, _: path.write_bytes(payloads[asset["name"]]),
+        ),
+    )
+    client: Any = SimpleNamespace(
+        assets=lambda _: assets, tag_commit=lambda _: SOURCE if mutation != "producer" else "d" * 40
+    )
+    if mutation == "none":
+        acquisition.restore_monitor(
+            client, {"id": 123, "run_attempt": 1}, SOURCE, {target}, tmp_path / "restored"
+        )
+        assert len(list((tmp_path / "restored" / target).iterdir())) == 4
+    else:
+        with pytest.raises(ValueError):
+            acquisition.restore_monitor(
+                client, {"id": 123, "run_attempt": 1}, SOURCE, {target}, tmp_path / "restored"
+            )
+
+
+class FakeGitHub(publication.GitHub):
+    def __init__(self):
+        self.head = None
+        self.pulls = []
+        self.blobs = {}
+        self.trees = {}
+        self.commits = {SOURCE: {"tree": {"sha": "base-tree"}, "committer": {"date": AT}}}
+        self.fail_after = None
+        self.race = False
+        self.writes = []
+
+    def pages(self, endpoint):
+        if "/pulls?" in endpoint:
+            return copy.deepcopy(self.pulls)
+        return (
+            []
+            if self.head is None
+            else [{"ref": f"refs/heads/{publication.BRANCH}", "object": {"sha": self.head}}]
+        )
+
+    def request(self, endpoint, *, method="GET", payload=None, **kwargs):
+        path = endpoint.removeprefix(f"repos/{REPOSITORY}/")
+        data = json.loads(payload) if payload is not None else {}
+        result = {}
+        if method != "GET":
+            self.writes.append((path, data))
+        if path == f"repos/{REPOSITORY}":
+            result = {"full_name": REPOSITORY, "node_id": "repository-id"}
+        elif path == f"users/{BOT}":
+            result = {"id": 42}
+        elif path.startswith("git/commits/"):
+            result = self.commits[path.split("/")[-1]]
+        elif path.startswith("commits/"):
+            result = {"author": {"login": BOT}}
+        elif path.startswith("compare/"):
+            sha = path.rsplit("...", 1)[1]
+            entries = self.trees[self.commits[sha]["tree"]["sha"]]
+            result = {
+                "files": [
+                    {"filename": item["path"], "sha": item["sha"], "status": "modified"}
+                    for item in entries
+                ]
+            }
+        elif path.startswith("git/blobs/"):
+            raw = self.blobs[path.split("/")[-1]]
+            result = {
+                "encoding": "base64",
+                "content": base64.b64encode(raw).decode(),
+                "size": len(raw),
+            }
+        elif path == "git/blobs":
+            raw = base64.b64decode(data["content"])
+            sha = hashlib.sha256(raw).hexdigest()[:40]
+            self.blobs[sha] = raw
+            result = {"sha": sha}
+        elif path == "git/trees":
+            sha = hashlib.sha256(encode(data)).hexdigest()[:40]
+            self.trees[sha] = data["tree"]
+            result = {"sha": sha}
+        elif path == "git/commits":
+            sha = hashlib.sha256(encode(data)).hexdigest()[:40]
+            self.commits[sha] = {**data, "tree": {"sha": data["tree"]}}
+            result = {"sha": sha}
+        elif path == "graphql":
+            update = data["variables"]["input"]["refUpdates"][0]
+            assert update["force"] is False
+            if self.race:
+                self.head = SOURCE if self.race == "base" else "human"
+            if (self.head or "0" * 40) != update["beforeOid"]:
+                raise ValueError("Head changed")
+            if (
+                self.head is not None
+                and self.head not in self.commits[update["afterOid"]]["parents"]
+            ):
+                raise ValueError("Not a fast forward")
+            self.head = update["afterOid"]
+            result = {"data": {"updateRefs": {"clientMutationId": self.head}}}
+        elif path == "pulls":
+            result = {
+                **data,
+                "number": len(self.pulls) + 1,
+                "state": "open",
+                "user": {"login": BOT},
+                "html_url": f"https://github.com/{REPOSITORY}/pull/1",
+                "merged_at": None,
+                "head": {"ref": publication.BRANCH, "repo": {"full_name": REPOSITORY}},
+                "base": {"ref": "main"},
+            }
+            self.pulls.append(result)
+        elif path.startswith("pulls/"):
+            result = self.pulls[int(path.split("/")[-1]) - 1]
+            result.update(data)
+        else:
+            raise AssertionError((path, method))
+        if path == self.fail_after:
+            self.fail_after = None
+            raise OSError("Response lost after mutation")
+        return encode(result)
+
+
+@pytest.fixture
+def publisher(monkeypatch):
+    client = FakeGitHub()
+    monkeypatch.setattr(publication, "current", lambda *_: None)
+    files = {planner.RECIPE: b"proposal"}
+    report = {
+        "status": "ready",
+        "source": SOURCE,
+        "scans": [],
+        "files": {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()},
+    }
+
+    def publish():
+        return publication.publish(client, {"source": SOURCE}, report, files, BOT, URL)
+
+    return client, files, report, publish
+
+
+def test_pr_create_retry_and_refresh_are_idempotent(publisher):
+    client, files, report, publish = publisher
+    assert publish()["status"] == "created"
+    first = client.head
+    assert publish()["status"] == "unchanged"
+    assert client.head == first and len(client.pulls) == 1
+    files[planner.RECIPE] = b"new proposal"
+    report["files"][planner.RECIPE] = hashlib.sha256(files[planner.RECIPE]).hexdigest()
+    assert publish()["status"] == "updated"
+    assert first in client.commits[client.head]["parents"]
+    assert len(client.pulls) == 1
+
+
+@pytest.mark.parametrize("operation", ["graphql", "pulls"])
+def test_initial_uncertain_write_is_reconciled(publisher, operation):
+    client, _, _, publish = publisher
+    client.fail_after = operation
+    with pytest.raises(OSError):
+        publish()
+    assert publish()["status"] in {"created", "unchanged"}
+    assert len(client.pulls) == 1
+
+
+@pytest.mark.parametrize("operation", ["pulls/1", "graphql"])
+def test_refresh_uncertain_write_is_reconciled(publisher, operation):
+    client, files, report, publish = publisher
+    publish()
+    files[planner.RECIPE] = b"new proposal"
+    report["files"][planner.RECIPE] = hashlib.sha256(files[planner.RECIPE]).hexdigest()
+    client.fail_after = operation
+    with pytest.raises(OSError):
+        publish()
+    assert publish()["status"] in {"updated", "unchanged"}
+    assert len(client.pulls) == 1
+
+
+@pytest.mark.parametrize("change", ["head", "author", "marker", "closed", "race", "race-base"])
+def test_human_changes_are_preserved(publisher, change):
+    client, files, report, publish = publisher
+    publish()
+    if change == "head":
+        client.head = "human"
+    elif change == "author":
+        client.pulls[0]["user"]["login"] = "human"
+    elif change == "marker":
+        client.pulls[0]["body"] = "human text"
+    elif change == "closed":
+        client.pulls[0]["state"] = "closed"
+    else:
+        client.race = "base" if change == "race-base" else True
+        files[planner.RECIPE] = b"new proposal"
+        report["files"][planner.RECIPE] = hashlib.sha256(files[planner.RECIPE]).hexdigest()
+    if change == "closed":
+        before = len(client.writes)
+        assert publish()["status"] == "dismissed"
+        assert len(client.writes) == before
+    else:
+        with pytest.raises(ValueError):
+            publish()
+        if change in {"head", "race"}:
+            assert client.head == "human"
+        if change == "race-base":
+            assert client.head == SOURCE
+
+
+def test_stale_receipt_prevents_any_api_write(publisher, monkeypatch):
+    client, _, _, publish = publisher
+
+    def stale(*_):
+        raise ValueError("Main changed")
+
+    monkeypatch.setattr(publication, "current", stale)
+    with pytest.raises(ValueError, match="Main changed"):
+        publish()
+    assert client.writes == []
+
+
+def test_merged_pr_allows_new_fix_without_reopening(publisher):
+    client, files, report, publish = publisher
+    publish()
+    client.pulls[0].update(state="closed", merged_at=AT)
+    files[planner.RECIPE] = b"later fix"
+    report["files"][planner.RECIPE] = hashlib.sha256(files[planner.RECIPE]).hexdigest()
+    assert publish()["status"] == "created"
+    assert len(client.pulls) == 2 and client.pulls[0]["state"] == "closed"
+
+
+def test_refresh_uses_new_main_tree_and_preserves_owned_ancestry(publisher):
+    client, files, report, publish = publisher
+    publish()
+    previous = client.head
+    base = "d" * 40
+    client.commits[base] = {"tree": {"sha": "new-main-tree"}, "committer": {"date": AT}}
+    report["source"] = base
+    result = publication.publish(client, {"source": base}, report, files, BOT, URL)
+    assert result["status"] == "updated"
+    assert client.commits[client.head]["parents"] == [previous, base]
+    trees = [data for path, data in client.writes if path == "git/trees"]
+    assert trees[-1]["base_tree"] == "new-main-tree"
+
+
+def test_bot_token_is_used_only_for_writes(monkeypatch):
+    observed = []
+    monkeypatch.setenv("GH_TOKEN", "read-identity")
+    monkeypatch.setenv("IMAGE_REMEDIATION_TOKEN", "write-identity")
+
+    def request(self, endpoint, **kwargs):
+        import os
+
+        observed.append(os.environ["GH_TOKEN"])
+        if kwargs.get("method") == "PATCH":
+            raise OSError("uncertain write")
+        return b"{}"
+
+    monkeypatch.setattr(publication.GitHub, "request", request)
+    client = publication.BotGitHub()
+    client.request("read")
+    with pytest.raises(OSError):
+        client.request("write", method="PATCH")
+    client.request("read")
+    assert observed == ["read-identity", "write-identity", "read-identity"]
+
+
+def test_workflow_keeps_writes_after_all_read_only_gates():
+    import yaml
+
+    workflow = yaml.safe_load((ROOT / ".github/workflows/image-remediation.yml").read_text())
+    assert set(workflow["permissions"].values()) == {"read"}
+    jobs = workflow["jobs"]
+    assert jobs["publish"]["needs"] == ["prepare", "scan", "checks"]
+    assert jobs["scan"]["strategy"]["matrix"]["variant"] == ["baseline", "candidate"]
+    assert set(jobs["scan"]["strategy"]["matrix"]["profile"]) == set(remediation.PROVIDER_MANIFESTS)
+    steps = jobs["publish"]["steps"]
+    app = next(item for item in steps if item.get("id") == "app")
+    assert {key: value for key, value in app["with"].items() if key.startswith("permission-")} == {
+        "permission-contents": "write",
+        "permission-pull-requests": "write",
+    }
+    assert "vars.IMAGE_REMEDIATION_ENABLED == 'true'" in app["if"]
+    assert "head_repository.full_name == github.repository" in jobs["prepare"]["if"]
+    assert "github.ref == 'refs/heads/main'" in jobs["prepare"]["if"]
