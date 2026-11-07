@@ -46,6 +46,6 @@ The [experimental Azure pricing sample](../../../samples/experimental/azure_pric
 | Area | State | Reference |
 |---|---|---|
 | Native Linux rendering | Implemented | [#1656](https://github.com/sokolaidev/maf-extensions/issues/1656) (closed) by [#1667](https://github.com/sokolaidev/maf-extensions/pull/1667) (merged); [decision record](../research/drawio-export.md) |
-| Filtered native HTTPS and bounded execution | Implemented; local Linux qualification, publication pending | [#2540](https://github.com/sokolaidev/maf-extensions/issues/2540) (open) |
-| Azure pricing sample | Experimental workspace sample; model path unverified | [#2473](https://github.com/sokolaidev/maf-extensions/issues/2473) (open) |
+| Filtered native HTTPS and bounded execution | Implemented; local Linux qualification, publication pending | [#2540](https://github.com/sokolaidev/maf-extensions/issues/2540) (closed) by [#2546](https://github.com/sokolaidev/maf-extensions/pull/2546) (merged) |
+| Azure pricing sample | Experimental workspace sample; real tool reports and cleanup verified locally, model path unverified | [#2473](https://github.com/sokolaidev/maf-extensions/issues/2473) (closed) by [#2546](https://github.com/sokolaidev/maf-extensions/pull/2546) (merged) |
 | Windows and macOS native rendering | Not implemented | untracked; separate platform qualification required |
