@@ -921,3 +921,20 @@ def test_postflight_binds_registration_clients_before_inventory(tmp_path, monkey
     with pytest.raises(ValueError, match="daemon_registration_client"):
         profile.postflight(tmp_path, name, profile.file_hash(case_path))
     assert profile.read(tmp_path / (name + ".postflight.json"))["passed"] is False
+
+
+def test_recovery_setup_does_not_import_legacy_http_client(monkeypatch):
+    cases = importlib.import_module("openclaw_conformance.owner_loss_cases")
+    original = importlib.import_module
+
+    def installed_import(name, *args, **kwargs):
+        if name == "openclaw_bicep_ownership_check":
+            raise ModuleNotFoundError("legacy ownership fixture requires httpx")
+        return original(name, *args, **kwargs)
+
+    def stop_before_resources(**kwargs):
+        raise RuntimeError("imports_complete")
+
+    monkeypatch.setattr(importlib, "import_module", installed_import)
+    with pytest.raises(RuntimeError, match="imports_complete"):
+        cases.case(SimpleNamespace(mkdir=stop_before_resources), None, {}, "control")

@@ -20,6 +20,21 @@ def docker(*args: str) -> str:
     ).strip()
 
 
+def compiler_running(processes: str) -> bool:
+    for line in processes.splitlines():
+        words = line.split()
+        if words and words[0].isdigit():
+            words = words[1:]
+        if (
+            len(words) > 1
+            and words[0].rsplit("/", 1)[-1] == "bicep"
+            and words[1] in {"build", "lint", "build-params"}
+            and "--no-restore" in words
+        ):
+            return True
+    return False
+
+
 def check(args: argparse.Namespace) -> dict[str, Any]:
     from openclaw_gateway_http_check import read_response, verify_outcome
 
