@@ -88,6 +88,30 @@ def test_quoted_model_records_cannot_supply_host_evidence():
         check("Model: " + json.dumps(log(records())), "bubblewrap", model=False)
 
 
+@pytest.mark.parametrize("missing", [False, True])
+def test_qualification_requires_pricing_tool_failure_cleanup(missing):
+    rows = records()
+    names = [
+        "method",
+        "destination",
+        "direct",
+        "output",
+        "timeout",
+        "cancellation",
+        "tool_timeout",
+        "tool_cancellation",
+    ]
+    results = [{"name": name, "instance": name, "seconds": 1.0, "disposed": True} for name in names]
+    if missing:
+        results.pop()
+    rows.insert(1, {"stage": "probes", "results": results})
+    if missing:
+        with pytest.raises(ValueError, match="failure-cleanup"):
+            check(log(rows), "bubblewrap", model=False, require_probes=True)
+    else:
+        check(log(rows), "bubblewrap", model=False, require_probes=True)
+
+
 @pytest.mark.parametrize(
     "failure",
     [

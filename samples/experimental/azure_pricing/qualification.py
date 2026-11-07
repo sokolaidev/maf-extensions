@@ -6,11 +6,23 @@ import asyncio
 import json
 import time
 from collections.abc import Awaitable, Callable
+from typing import Any
 from uuid import uuid4
 
-from maf_sandbox import SandboxBackend, SandboxKey
+from maf_sandbox import (
+    CallerContext,
+    Isolation,
+    Sandbox,
+    SandboxBackend,
+    SandboxKey,
+    SandboxObserver,
+    SandboxRouter,
+    SandboxSpec,
+    ToolCallEnded,
+)
 from maf_sandbox.bounded_exec import BoundedExec, SandboxExecOutputLimitExceeded
-from maf_sandbox_azure_pricing import azure_pricing_sandbox_spec
+from maf_sandbox.maf import NOT_COMPLETED_TEXT, list_no_files
+from maf_sandbox_azure_pricing import azure_pricing_sandbox_spec, make_azure_pricing_tools
 
 HTTP_PROBE = """import json, ssl, sys, urllib.error, urllib.request
 url = 'https://' + sys.argv[1] + '/api/retail/prices'
@@ -125,4 +137,89 @@ async def probes(
         )
     if len(set(instances)) != len(instances):
         raise ValueError("Probe sandbox identity was reused")
+    results.extend(await tool_failures(backend, image, verify_absent))
+    return results
+
+
+async def tool_failures(
+    backend: SandboxBackend,
+    image: str,
+    verify_absent: Callable[[list[str]], Awaitable[None]],
+) -> list[dict[str, object]]:
+    """Require actual pricing-call cleanup before the fallback scope purge can hide a leak."""
+    results: list[dict[str, object]] = []
+    instances: list[str] = []
+    for case in ("tool_timeout", "tool_cancellation"):
+        scope = "pricing-failure-" + uuid4().hex
+        acquired = asyncio.Event()
+        calls: list[ToolCallEnded] = []
+
+        class Observer(SandboxObserver):
+            def tool_call_ended(self, event: ToolCallEnded) -> None:
+                calls.append(event)
+
+        class Router(SandboxRouter):
+            async def acquire(self, key: SandboxKey, spec: SandboxSpec, **kwargs: Any) -> Sandbox:
+                sandbox = await super().acquire(key, spec, **kwargs)
+                if not key.call_id or sandbox.instance_id in instances:
+                    raise ValueError("Failure call did not acquire a fresh call-scoped sandbox")
+                instances.append(sandbox.instance_id)
+                acquired.set()
+                return sandbox
+
+        router = (
+            Router([backend], min_isolation=Isolation.CONTAINER, observer=Observer())
+            if backend.name == "bubblewrap"
+            else Router([backend], observer=Observer())
+        )
+        [tool] = make_azure_pricing_tools(
+            router,
+            "pricing",
+            CallerContext(lambda: scope, lambda: "failures", list_no_files),
+            image=image,
+            exec_timeout_seconds=0.001 if case == "tool_timeout" else 90,
+        )
+        started = time.monotonic()
+        task = asyncio.create_task(
+            tool.func(sku="Standard_D4s_v5", region="westeurope", currency="USD")
+        )
+        try:
+            if case == "tool_cancellation":
+                ready = asyncio.create_task(acquired.wait())
+                try:
+                    done, _ = await asyncio.wait(
+                        {task, ready}, timeout=180, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    if ready not in done or task.done():
+                        raise ValueError("Cancellation did not reach an active acquired call")
+                finally:
+                    ready.cancel()
+                    await asyncio.gather(ready, return_exceptions=True)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                else:
+                    raise ValueError("Pricing call ignored cancellation")
+            else:
+                answer = await task
+                if NOT_COMPLETED_TEXT not in [item.text for item in answer]:
+                    raise ValueError("The forced pricing deadline did not return incomplete")
+            if not acquired.is_set() or len(calls) != 1 or calls[0].unclean != 0:
+                raise ValueError("Missing acquired-call cleanup evidence")
+            await verify_absent(instances)
+            results.append(
+                {
+                    "name": case,
+                    "instance": instances[-1],
+                    "seconds": time.monotonic() - started,
+                    "disposed": True,
+                }
+            )
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            if (await router.dispose_scope(scope, "failures")).undisposed is not None:
+                raise RuntimeError("Failure-call fallback purge failed")
     return results

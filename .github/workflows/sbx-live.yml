@@ -74,14 +74,6 @@ jobs:
           docker build -q -t graphviz-sandbox:local images/graphviz-sandbox
           docker save -o "$RUNNER_TEMP/graphviz.tar" graphviz-sandbox:local
           sbx template load "$RUNNER_TEMP/graphviz.tar"
-          docker build -t maf-pricing-base:qualification images/azure-pricing-sandbox
-          docker build --build-arg PRICING_IMAGE=maf-pricing-base:qualification \
-            -t maf-pricing-native:qualification -f images/azure-pricing-sandbox/native.Dockerfile \
-            images/azure-pricing-sandbox
-          docker image inspect --format '{{.Id}}' maf-pricing-native:qualification | tee pricing-template.id
-          docker save -o "$RUNNER_TEMP/pricing.tar" maf-pricing-native:qualification
-          sha256sum "$RUNNER_TEMP/pricing.tar" | tee pricing-template.sha256
-          sbx template load "$RUNNER_TEMP/pricing.tar"
 
       - name: Run the host-state refusals and faults
         env:
@@ -107,6 +99,69 @@ jobs:
           uv run pytest -q -rs -s --durations=0 packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e.py tests/test_sbx_codeact_e2e.py tests/test_graphviz_sbx_e2e.py | tee suite.log
           ! grep -q '^SKIPPED' suite.log
 
+      - name: Retain live evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbx-live-evidence
+          path: |
+            suite.log
+            host.log
+            shell-image.json
+          retention-days: 30
+
+      - name: Remove leftover sandboxes
+        if: always()
+        run: sbx rm --all --force || true
+
+  pricing-e2e:
+    name: Docker Sandboxes pricing qualification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SBX_NO_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      - name: Sync workspace
+        run: uv sync --locked
+
+      - name: Install and prepare sbx
+        uses: ./.github/actions/setup-sbx
+        with:
+          docker-username: ${{ secrets.DOCKER_USERNAME }}
+          docker-pat: ${{ secrets.DOCKER_PAT }}
+
+      - name: Load the pricing template
+        run: |
+          set -euo pipefail
+          docker build -t maf-pricing-base:qualification images/azure-pricing-sandbox
+          docker build --build-arg BASE_IMAGE=maf-pricing-base:qualification \
+            -t maf-pricing-native:qualification -f images/azure-pricing-sandbox/native.Dockerfile \
+            images/azure-pricing-sandbox
+          docker image inspect --format '{{.Id}}' maf-pricing-native:qualification | tee pricing-template.id
+          docker save -o "$RUNNER_TEMP/pricing.tar" maf-pricing-native:qualification
+          sha256sum "$RUNNER_TEMP/pricing.tar" | tee pricing-template.sha256
+          sbx template load "$RUNNER_TEMP/pricing.tar"
+
+      - name: Qualify pricing-template host refusals and faults
+        env:
+          MAF_SANDBOX_SBX_E2E: "1"
+          MAF_SANDBOX_SBX_E2E_HOST: "1"
+          MAF_SANDBOX_SBX_E2E_HOST_IMAGE: maf-pricing-native:qualification
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PAT: ${{ secrets.DOCKER_PAT }}
+        run: |
+          set -euo pipefail
+          eval "$(ssh-agent -s)"
+          uv run pytest -q -rs -s packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e_host.py | tee pricing-host.log
+          ! grep -q '^SKIPPED' pricing-host.log
+
       - name: Qualify Azure pricing and per-call disposal
         env:
           SOURCE_SHA: ${{ github.sha }}
@@ -123,11 +178,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: sbx-live-evidence
+          name: sbx-pricing-evidence
           path: |
-            suite.log
-            host.log
-            shell-image.json
+            pricing-host.log
             pricing.log
             pricing-template.id
             pricing-template.sha256
@@ -139,8 +192,8 @@ jobs:
 
   report-failure:
     name: Report Docker Sandboxes live failure
-    needs: sbx-e2e
-    if: always() && needs.sbx-e2e.result == 'failure'
+    needs: [sbx-e2e, pricing-e2e]
+    if: always() && contains(needs.*.result, 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

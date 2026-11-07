@@ -12,7 +12,7 @@ container=
 trap 'if [ -n "$container" ]; then docker rm -f "$container"; fi' EXIT
 docker build -t maf-pricing-base:qualification "$repo/images/azure-pricing-sandbox"
 base=$(docker image inspect --format '{{.Id}}' maf-pricing-base:qualification)
-docker build --build-arg PRICING_IMAGE=maf-pricing-base:qualification -t maf-pricing-native:qualification \
+docker build --build-arg BASE_IMAGE=maf-pricing-base:qualification -t maf-pricing-native:qualification \
     -f "$repo/images/azure-pricing-sandbox/native.Dockerfile" "$repo/images/azure-pricing-sandbox"
 runtime=$(docker image inspect --format '{{.Id}}' maf-pricing-native:qualification)
 container=$(docker create "$runtime")

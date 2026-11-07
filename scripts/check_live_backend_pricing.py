@@ -132,7 +132,7 @@ def check(
         require(len(probes) == 1, "Missing enforcement probes")
         results = probes[0].get("results", [])
         require(
-            len(results) == 6
+            len(results) == 8
             and {row.get("name") for row in results}
             == {
                 "method",
@@ -141,10 +141,12 @@ def check(
                 "output",
                 "timeout",
                 "cancellation",
+                "tool_timeout",
+                "tool_cancellation",
             },
             "Missing enforcement or failure-cleanup case",
         )
-        require(len({row.get("instance") for row in results}) == 6, "Probe identity reused")
+        require(len({row.get("instance") for row in results}) == 8, "Probe identity reused")
         for row in results:
             seconds = row.get("seconds")
             require(
