@@ -12,9 +12,12 @@ container=
 trap 'if [ -n "$container" ]; then docker rm -f "$container"; fi' EXIT
 docker build -t maf-pricing-base:qualification "$repo/images/azure-pricing-sandbox"
 base=$(docker image inspect --format '{{.Id}}' maf-pricing-base:qualification)
-docker build --build-arg BASE_IMAGE=maf-pricing-base:qualification -t maf-pricing-native:qualification \
+docker build --target native --build-arg BASE_IMAGE=maf-pricing-base:qualification -t maf-pricing-native:qualification \
     -f "$repo/images/azure-pricing-sandbox/native.Dockerfile" "$repo/images/azure-pricing-sandbox"
-runtime=$(docker image inspect --format '{{.Id}}' maf-pricing-native:qualification)
+docker build --target bubblewrap --build-arg BASE_IMAGE=maf-pricing-base:qualification -t maf-pricing-bubblewrap:qualification \
+    -f "$repo/images/azure-pricing-sandbox/native.Dockerfile" "$repo/images/azure-pricing-sandbox"
+runtime=$(docker image inspect --format '{{.Id}}' maf-pricing-bubblewrap:qualification)
+template=$(docker image inspect --format '{{.Id}}' maf-pricing-native:qualification)
 container=$(docker create "$runtime")
 docker export "$container" > "$target/runtime.tar"
 tar -xf "$target/runtime.tar" -C "$target/runtime"
@@ -23,6 +26,7 @@ container=
 sha256sum "$target/runtime.tar" > "$target/runtime.sha256"
 rm "$target/runtime.tar"
 docker save -o "$target/template.tar" maf-pricing-native:qualification
+sha256sum "$target/template.tar" > "$target/template.sha256"
 docker build --target build -t maf-native-proxy:qualification \
     "$repo/packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy"
 proxy=$(docker image inspect --format '{{.Id}}' maf-native-proxy:qualification)
@@ -36,6 +40,7 @@ chmod 0555 "$target/native/iron-proxy"
 chmod -R a-w "$target/runtime"
 sha256sum "$target/native/iron-proxy" > "$target/proxy.sha256"
 printf '%s\n' "$runtime" > "$target/runtime.id"
+printf '%s\n' "$template" > "$target/template.id"
 printf '%s\n' "$base" > "$target/base.id"
 printf '%s\n' "$proxy" > "$target/proxy-build.id"
 echo "Pricing runtime and sbx template ready in $target"

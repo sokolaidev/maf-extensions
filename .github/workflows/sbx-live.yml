@@ -141,7 +141,7 @@ jobs:
         run: |
           set -euo pipefail
           docker build -t maf-pricing-base:qualification images/azure-pricing-sandbox
-          docker build --build-arg BASE_IMAGE=maf-pricing-base:qualification \
+          docker build --target native --build-arg BASE_IMAGE=maf-pricing-base:qualification \
             -t maf-pricing-native:qualification -f images/azure-pricing-sandbox/native.Dockerfile \
             images/azure-pricing-sandbox
           docker image inspect --format '{{.Id}}' maf-pricing-native:qualification | tee pricing-template.id

@@ -6,7 +6,7 @@ The backend additions required by this sample have not been published, so run it
 
 ## Prepare the runtime
 
-The [pricing recipe](../../../images/azure-pricing-sandbox/) pins Azure MCP CLI 4.0.0-beta.4 and verifies its archive checksum. The [native template](../../../images/azure-pricing-sandbox/native.Dockerfile) adds Python for enforcement probes, Bash, coreutils and util-linux for Docker Sandboxes, and the mount points Bubblewrap requires. Dependencies and certificate trust are provisioned before calls.
+The [pricing recipe](../../../images/azure-pricing-sandbox/) pins Azure MCP CLI 4.0.0-beta.4 and verifies its archive checksum. The [native template](../../../images/azure-pricing-sandbox/native.Dockerfile) adds Python for enforcement probes, Bash, coreutils and util-linux for Docker Sandboxes. Its `bubblewrap` stage adds the mount point Bubblewrap requires; the `native` stage leaves that location absent for Docker Sandboxes to mount its workspace. Dependencies and certificate trust are provisioned before calls.
 
 On a Linux provisioning machine with Docker, run as root into a new dedicated directory:
 
