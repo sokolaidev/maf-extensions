@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from markdown_it import MarkdownIt
+from markdown_it.renderer import RendererHTML
 from playwright.sync_api import sync_playwright
 from pypdf import PdfReader
 
@@ -74,11 +75,33 @@ RENDER_MERMAID = r"""async ({source, id}) => {
 }"""
 
 
+class BoundedRenderer(RendererHTML):
+    """Limit accumulated output before repeated references can amplify it."""
+
+    def render(self, tokens, options, env):
+        self.markup_bytes = 0
+        return "".join(self._parts(tokens, options, env))
+
+    def _parts(self, tokens, options, env):
+        for index, token in enumerate(tokens):
+            if token.type == "inline":
+                yield from self._parts(token.children or [], options, env)
+                continue
+            rule = self.rules.get(token.type, self.renderToken)
+            part = rule(tokens, index, options, env)
+            self.markup_bytes += len(part.encode("utf-8"))
+            if self.markup_bytes > MAX_MARKUP_BYTES:
+                raise ValueError("expanded markup exceeds byte limit")
+            yield part
+
+
 def document_html(request, assets):
     """Disable raw HTML and resolve every Markdown image to an explicitly supplied SVG."""
     diagrams = []
     image_bytes = 0
-    markdown = MarkdownIt("commonmark", {"html": False}).enable(["table", "strikethrough"])
+    markdown = MarkdownIt("commonmark", {"html": False}, renderer_cls=BoundedRenderer).enable(
+        ["table", "strikethrough"]
+    )
     fence = markdown.renderer.rules["fence"]
 
     def image(tokens, index, options, env):
@@ -107,8 +130,6 @@ def document_html(request, assets):
     markdown.renderer.rules["image"] = image
     markdown.renderer.rules["fence"] = code
     body = markdown.render(request["markdown"])
-    if len(body.encode("utf-8")) > MAX_MARKUP_BYTES:
-        raise ValueError("expanded markup exceeds byte limit")
     nonce = secrets.token_hex(16)
     policy = (
         "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; "

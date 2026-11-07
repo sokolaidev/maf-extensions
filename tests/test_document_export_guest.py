@@ -81,6 +81,40 @@ def test_non_image_markup_is_bounded(monkeypatch):
         markup("&" * 100)
 
 
+@pytest.mark.parametrize("attribute", ["href", "title"])
+@pytest.mark.parametrize("separator", [" ", "\n\n"], ids=["inline", "blocks"])
+def test_reference_links_refused_before_accumulating_copies(monkeypatch, attribute, separator):
+    namespace = RENDERER["document_html"].__globals__
+    monkeypatch.setitem(namespace, "MAX_MARKUP_BYTES", 1000)
+    renderer = namespace["RendererHTML"]
+    original = renderer.renderToken
+    rendered_links = []
+
+    def observe(self, tokens, index, options, env):
+        if tokens[index].type == "link_open":
+            rendered_links.append(tokens[index].attrGet(attribute))
+        return original(self, tokens, index, options, env)
+
+    monkeypatch.setattr(renderer, "renderToken", observe)
+    destination = "https://example.invalid/" + ("x" * 300 if attribute == "href" else "")
+    title = ' "' + "&" * 100 + '"' if attribute == "title" else ""
+    source = separator.join(["[link][ref]"] * 100) + f"\n\n[ref]: {destination}{title}"
+    with pytest.raises(ValueError, match="expanded markup"):
+        markup(source)
+    assert 1 < len(rendered_links) < 5
+
+
+def test_markup_budget_counts_unicode_bytes_across_tokens(monkeypatch):
+    namespace = RENDERER["document_html"].__globals__
+    source = "**é** *é*"
+    body = "<p><strong>é</strong> <em>é</em></p>\n"
+    monkeypatch.setitem(namespace, "MAX_MARKUP_BYTES", len(body.encode("utf-8")))
+    assert body in markup(source)[0]
+    monkeypatch.setitem(namespace, "MAX_MARKUP_BYTES", len(body.encode("utf-8")) - 1)
+    with pytest.raises(ValueError, match="expanded markup"):
+        markup(source)
+
+
 @pytest.mark.parametrize("url", ["https://example.invalid/asset", "file:///private/asset"])
 def test_renderer_aborts_forbidden_requests_and_refuses_pdf(monkeypatch, tmp_path, url):
     namespace = RENDERER["render"].__globals__
