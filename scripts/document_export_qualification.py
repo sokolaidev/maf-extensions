@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import io
 import json
+import math
 import subprocess
 import unicodedata
 from pathlib import Path
@@ -50,15 +51,26 @@ def docker(*args: str) -> str:
     ).strip()
 
 
-def inspect_pdf(data: bytes, *, text_path: Path | None = None) -> dict[str, Any]:
-    """Require real pagination, embedded text/monospace fonts and fixture content."""
+def inspect_pdf(data: bytes, *, page_size: str, text_path: Path | None = None) -> dict[str, Any]:
+    """Require requested page dimensions, pagination, embedded fonts and fixture content."""
     reader = PdfReader(io.BytesIO(data))
     text = "\n".join(page.extract_text() for page in reader.pages)
     if text_path is not None:
         text_path.write_text(text, "utf-8")
     normalized = " ".join(unicodedata.normalize("NFKC", text).split())
+    expected_size = {"A4": (210 / 25.4 * 72, 297 / 25.4 * 72), "Letter": (612, 792)}[page_size]
+    dimensions: list[tuple[float, float]] = []
     fonts: set[str] = set()
     for page in reader.pages:
+        measured = (float(page.mediabox.width), float(page.mediabox.height))
+        require(
+            all(
+                math.isclose(actual, expected, rel_tol=0, abs_tol=1)
+                for actual, expected in zip(measured, expected_size, strict=True)
+            ),
+            f"page dimensions differ from {page_size}: {measured}",
+        )
+        dimensions.append(measured)
         resources: Any = page["/Resources"]
         for reference in resources.get("/Font", {}).values():
             font = reference.get_object()
@@ -90,7 +102,12 @@ def inspect_pdf(data: bytes, *, text_path: Path | None = None) -> dict[str, Any]
         "text font missing",
     )
     require(any("DejaVuSansMono" in name for name in fonts), "monospace font missing")
-    return {"pages": len(reader.pages), "fonts": sorted(fonts), "text": text}
+    return {
+        "pages": len(reader.pages),
+        "page_dimensions": dimensions,
+        "fonts": sorted(fonts),
+        "text": text,
+    }
 
 
 async def check(image_id: str, *, directory: Path | None = None) -> dict[str, Any]:
@@ -164,7 +181,7 @@ async def check(image_id: str, *, directory: Path | None = None) -> dict[str, An
                 directory.mkdir(parents=True, exist_ok=True)
                 (directory / f"fixture-{size}.pdf").write_bytes(data)
                 text_path = directory / f"fixture-{size}.txt"
-            content = inspect_pdf(data, text_path=text_path)
+            content = inspect_pdf(data, page_size=size, text_path=text_path)
             require(metadata[-1]["pages"] == content["pages"], "page evidence differs")
             require(
                 metadata[-1]["mermaid_rendered"] == 1 and metadata[-1]["mermaid_fallbacks"] == 0,
@@ -174,6 +191,7 @@ async def check(image_id: str, *, directory: Path | None = None) -> dict[str, An
             evidence[size] = {
                 "sha256": hashlib.sha256(data).hexdigest(),
                 "pages": content["pages"],
+                "pageDimensions": content["page_dimensions"],
                 "fonts": content["fonts"],
                 "renderer": metadata[-1],
             }

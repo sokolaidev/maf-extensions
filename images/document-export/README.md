@@ -9,7 +9,7 @@ uv run --locked python scripts/build_wolfi_python.py --platform linux/amd64 -t m
 uv run python scripts/document_export_qualification.py --image maf-document-export:local --output out/document-export
 ```
 
-The qualification uses the public host API and checks A4 and Letter pagination, extracted headings/table/code/diagram/SVG text, embedded text and monospace fonts, Mermaid fallback, page-limit and remote-image refusals, closed container networking, fresh instances and disposal. It retains fixture PDFs and renderer request evidence. `MAF_DOCUMENT_EXPORT_IMAGE` enables the same checks in pytest. Local native browser checks alone do not qualify the Linux image or sandbox boundary; ACAS and production qualification are separate.
+The qualification uses the public host API and checks A4 and Letter page dimensions and pagination, extracted headings/table/code/diagram/SVG text, embedded text and monospace fonts, Mermaid fallback, page-limit and remote-image refusals, closed container networking, fresh instances and disposal. It retains fixture PDFs, measured page dimensions and renderer request evidence. `MAF_DOCUMENT_EXPORT_IMAGE` enables the same checks in pytest. Local native browser checks alone do not qualify the Linux image or sandbox boundary; ACAS and production qualification are separate.
 
 The built-in layout has a title/date block, print typography, wrapping code, fixed-width wrapping tables, repeated table headers, rows kept together where they fit on a page, headings kept with following content, and `Page X of Y` footers. Oversized individual table rows cannot fit intact on one page and Chromium may split them. The layout is fixed in v1; standalone SVG/draw.io export and themes are not supported.
 

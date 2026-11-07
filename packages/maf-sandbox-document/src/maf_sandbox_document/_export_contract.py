@@ -16,9 +16,15 @@ MAXIMA = {
     "max_pdf_bytes": 32_000_000,
 }
 SVG = "http://www.w3.org/2000/svg"
+XLINK = "http://www.w3.org/1999/xlink"
+MAX_SVG_DEPTH = 128
+MAX_SVG_ELEMENTS = 100_000
 ELEMENTS = frozenset(
-    "svg g defs path rect circle ellipse line polyline polygon text tspan title desc "
-    "linearGradient radialGradient stop clipPath mask marker use symbol".split()
+    f"{{{SVG}}}{name}"
+    for name in (
+        "svg g defs path rect circle ellipse line polyline polygon text tspan title desc "
+        "linearGradient radialGradient stop clipPath mask marker use symbol"
+    ).split()
 )
 ATTRIBUTES = frozenset(
     "id viewBox width height x y x1 x2 y1 y2 cx cy r rx ry d points transform "
@@ -31,21 +37,28 @@ ATTRIBUTES = frozenset(
 )
 
 
-def validate_svg(data: bytes) -> None:
-    """Refuse active SVG, external references and unsupported styling instead of stripping it."""
-    if not data or re.search(rb"<!\s*(?:DOCTYPE|ENTITY)|<\?(?!xml\s)", data, re.I):
-        raise ValueError("assets must be passive SVG without DTDs or entities")
-    try:
-        root = ET.fromstring(data.decode("utf-8"))  # nosec B314
-    except (ET.ParseError, UnicodeError) as exc:
-        raise ValueError("asset is not UTF-8 SVG") from exc
-    if root.tag != f"{{{SVG}}}svg":
-        raise ValueError("asset is not SVG")
-    for element in root.iter():
-        if element.tag not in {f"{{{SVG}}}{name}" for name in ELEMENTS}:
+class _PassiveSVG:
+    """Validate parser events without retaining an element tree."""
+
+    def __init__(self) -> None:
+        self.depth = 0
+        self.elements = 0
+
+    def start_ns(self, prefix: str, uri: str) -> None:
+        if uri not in {SVG, XLINK}:
+            raise ValueError("unsupported SVG namespace")
+
+    def start(self, tag: str, attributes: dict[str, str]) -> None:
+        if self.depth == 0 and tag != f"{{{SVG}}}svg":
+            raise ValueError("asset is not SVG")
+        self.depth += 1
+        self.elements += 1
+        if self.depth > MAX_SVG_DEPTH or self.elements > MAX_SVG_ELEMENTS:
+            raise ValueError("SVG structural limits exceeded")
+        if tag not in ELEMENTS:
             raise ValueError("unsupported or active SVG element")
-        for key, value in element.attrib.items():
-            if key == "{http://www.w3.org/1999/xlink}href":
+        for key, value in attributes.items():
+            if key == f"{{{XLINK}}}href":
                 key = "href"
             if key not in ATTRIBUTES:
                 raise ValueError("unsupported or active SVG attribute")
@@ -57,6 +70,24 @@ def validate_svg(data: bytes) -> None:
                 raise ValueError("SVG resources must be local fragments")
             if any(character in value for character in "\\\x00"):
                 raise ValueError("unsupported SVG attribute value")
+
+    def end(self, tag: str) -> None:
+        self.depth -= 1
+
+
+def validate_svg(data: bytes) -> None:
+    """Refuse active SVG, external references and unsupported styling instead of stripping it."""
+    # NULs allow UTF-16 autodetection to bypass the UTF-8 byte guards.
+    if b"\x00" in data:
+        raise ValueError("asset is not UTF-8 SVG")
+    if not data or re.search(rb"<!\s*(?:DOCTYPE|ENTITY)|<\?(?!xml\s)", data, re.I):
+        raise ValueError("assets must be passive SVG without DTDs or entities")
+    try:
+        parser = ET.XMLParser(encoding="utf-8", target=_PassiveSVG())  # nosec B314
+        parser.feed(data.decode("utf-8"))
+        parser.close()
+    except (ET.ParseError, UnicodeError) as exc:
+        raise ValueError("asset is not UTF-8 SVG") from exc
 
 
 def validate_request(request: dict[str, Any]) -> dict[str, bytes]:

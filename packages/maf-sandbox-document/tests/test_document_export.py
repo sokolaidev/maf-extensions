@@ -3,6 +3,8 @@
 import asyncio
 import hashlib
 import json
+import subprocess
+import sys
 from dataclasses import replace
 from typing import TypedDict
 
@@ -23,7 +25,12 @@ from maf_sandbox import (
 from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InProcessSandbox, InProcessSandboxBackend
 
 from maf_sandbox_document import ExportOptions, document_export_sandbox_spec, export_pdf
-from maf_sandbox_document._export_contract import MAXIMA, validate_svg
+from maf_sandbox_document._export_contract import (
+    MAX_SVG_DEPTH,
+    MAX_SVG_ELEMENTS,
+    MAXIMA,
+    validate_svg,
+)
 
 SVG = b'<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>'
 PDF = b"%PDF-1.7\nfixture"
@@ -153,6 +160,89 @@ def test_passive_svg_values_containing_url_are_allowed():
 def test_external_svg_url_functions_are_refused(value):
     with pytest.raises(ValueError, match="local fragments"):
         validate_svg(f'<svg xmlns="http://www.w3.org/2000/svg" fill="{value}"/>'.encode())
+
+
+def test_svg_namespace_amplification_is_refused_without_expanding_names():
+    asset = (
+        b'<svg xmlns="http://www.w3.org/2000/svg" xmlns:other="'
+        + b"x" * 131_072
+        + b'">'
+        + b"".join(f"<other:element{i}/>".encode() for i in range(200))
+        + b"</svg>"
+    )
+    program = """
+import sys
+import tracemalloc
+from maf_sandbox_document._export_contract import validate_svg
+asset = sys.stdin.buffer.read()
+tracemalloc.start()
+try:
+    validate_svg(asset)
+except ValueError:
+    pass
+else:
+    raise AssertionError("unsupported namespace accepted")
+assert tracemalloc.get_traced_memory()[1] < 4_000_000, tracemalloc.get_traced_memory()
+"""
+    result = subprocess.run(  # nosec B603
+        [sys.executable, "-c", program], input=asset, capture_output=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+
+
+def test_svg_namespace_aliases_and_local_xlink_references_are_allowed():
+    validate_svg(
+        b'<s:svg xmlns:s="http://www.w3.org/2000/svg" xmlns:l="http://www.w3.org/1999/xlink">'
+        b'<s:use l:href="#shape"/></s:svg>'
+    )
+
+
+def test_unused_unsupported_svg_namespace_is_refused():
+    with pytest.raises(ValueError, match="unsupported SVG namespace"):
+        validate_svg(b'<svg xmlns="http://www.w3.org/2000/svg" xmlns:other="unsupported"/>')
+
+
+@pytest.mark.parametrize("excess", [False, True])
+def test_svg_depth_is_bounded(excess):
+    groups = MAX_SVG_DEPTH - 1 + excess
+    asset = (
+        b'<svg xmlns="http://www.w3.org/2000/svg">' + b"<g>" * groups + b"</g>" * groups + b"</svg>"
+    )
+    if excess:
+        with pytest.raises(ValueError, match="structural limits"):
+            validate_svg(asset)
+    else:
+        validate_svg(asset)
+
+
+@pytest.mark.parametrize("excess", [False, True])
+def test_svg_element_count_is_bounded(excess):
+    asset = (
+        b'<svg xmlns="http://www.w3.org/2000/svg">'
+        + b"<g/>" * (MAX_SVG_ELEMENTS - 1 + excess)
+        + b"</svg>"
+    )
+    if excess:
+        with pytest.raises(ValueError, match="structural limits"):
+            validate_svg(asset)
+    else:
+        validate_svg(asset)
+
+
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        SVG.decode(),
+        (
+            '<!DOCTYPE svg [<!ENTITY label "safe">]>'
+            '<svg xmlns="http://www.w3.org/2000/svg"><text>&label;</text></svg>'
+        ),
+    ],
+)
+def test_svg_must_be_utf8(encoding, text):
+    with pytest.raises(ValueError):
+        validate_svg(text.encode(encoding))
 
 
 @pytest.mark.parametrize(
