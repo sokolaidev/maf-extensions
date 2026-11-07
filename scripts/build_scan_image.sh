@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-provider_args=()
+provider_args=(--build-arg "MAF_GO_BUILD_CONCURRENCY=${MAF_GO_BUILD_CONCURRENCY:-2}")
 if [ -n "${MAF_PROVIDER_BUILDS:-}" ]; then
-  provider_args=(--build-context "provider-build=$MAF_PROVIDER_BUILDS")
+  provider_args+=(--build-context "provider-build=$MAF_PROVIDER_BUILDS")
 fi
 
 case "$1" in

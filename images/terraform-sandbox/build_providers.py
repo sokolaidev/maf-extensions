@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -174,6 +175,11 @@ def build(
     resolve_modules: Callable[[dict[str, str], Path, dict[str, str]], dict[str, str]] | None = None,
 ) -> tuple[bytes, dict[str, str]]:
     """Build verified source; an optional resolver updates pins before exact verification."""
+    concurrency = os.environ.get("MAF_GO_BUILD_CONCURRENCY", "2")
+    if concurrency == "auto":
+        concurrency = str(os.cpu_count() or 1)
+    if not re.fullmatch(r"[1-9][0-9]*", concurrency):
+        raise ValueError("MAF_GO_BUILD_CONCURRENCY must be a positive integer or auto")
     plan = provider["source_build"]
     if subprocess.check_output(["go", "env", "GOVERSION"], text=True).strip() != plan["go_version"]:
         raise ValueError("Provider build toolchain mismatch")
@@ -193,7 +199,7 @@ def build(
         "GOWORK": "off",
         "GOTOOLCHAIN": "local",
         "GOFLAGS": "-mod=mod",
-        "GOMAXPROCS": "2",
+        "GOMAXPROCS": concurrency,
     }
 
     def run(arguments: list[str]) -> None:
@@ -234,7 +240,7 @@ def build(
     run(
         [
             "build",
-            "-p=2",
+            f"-p={concurrency}",
             "-trimpath",
             "-buildvcs=false",
             "-ldflags=" + flags,

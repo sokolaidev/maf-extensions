@@ -20,7 +20,7 @@ from image_security_evidence import PROVIDER_MANIFESTS, record, verify_inventory
 from plan_go_remediation import CONTEXT, RECIPE, digest, inputs, locations, owners, semver
 from plan_go_remediation import plan as make_plan
 from prepare_container_release import assess
-from prepare_go_remediation import prepare
+from prepare_go_remediation import build_shard, prepare, provider_requests
 from terraform_dependencies import load_manifest, verify_built_provider
 
 
@@ -344,11 +344,14 @@ def go_version(root: Path, plan: dict[str, Any]) -> str:
 def main() -> None:
     """Expose the read-only acquisition, preparation, image checks and aggregate gate."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("acquire", "prepare", "apply", "scan", "qualify"))
+    parser.add_argument(
+        "command", choices=("acquire", "provider", "prepare", "apply", "scan", "qualify")
+    )
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--profile", choices=sorted(PROVIDER_MANIFESTS))
     parser.add_argument("--variant", choices=("baseline", "candidate"))
     parser.add_argument("--results", type=Path)
+    parser.add_argument("--shard")
     args = parser.parse_args()
     work = args.work.resolve()
     if args.command == "acquire":
@@ -357,13 +360,28 @@ def main() -> None:
             output.write(f"source={read(work / 'receipt.json')['source']}\n")
             output.write(f"updates={'true' if result['updates'] else 'false'}\n")
             output.write(f"go={go_version(ROOT, result)}\n")
+            output.write(f"providers={json.dumps(sorted(provider_requests(ROOT, result)))}\n")
+    elif args.command == "provider":
+        if args.shard is None or args.results is None:
+            parser.error("provider requires shard and results")
+        receipt = read(work / "receipt.json")
+        build_shard(
+            ROOT,
+            [work / "evidence" / name for name in receipt["directories"]],
+            read(work / "plan.json"),
+            args.shard,
+            args.results,
+        )
     elif args.command == "prepare":
         receipt = read(work / "receipt.json")
+        if args.results is not None:
+            args.results.mkdir(parents=True, exist_ok=True)
         prepare(
             ROOT,
             [work / "evidence" / name for name in receipt["directories"]],
             read(work / "plan.json"),
             work / "proposal",
+            shards=args.results,
         )
         current(GitHub(), receipt)
     elif args.command == "apply":
