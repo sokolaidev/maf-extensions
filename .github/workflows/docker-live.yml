@@ -65,6 +65,8 @@ jobs:
       - name: Build and qualify the document runtime
         run: |
           uv sync --locked
+          export MAF_WOLFI_PYTHON_PACKAGES="$RUNNER_TEMP/document-python-packages"
+          uv run --locked python scripts/build_wolfi_python.py --prepare-bundle "$MAF_WOLFI_PYTHON_PACKAGES"
           uv run --locked python scripts/build_wolfi_python.py --platform linux/amd64 -t maf-document:ci images/document-sandbox
           uv run python scripts/document_qualification.py --image maf-document:ci --output out/document
           uv run --locked python scripts/build_wolfi_python.py --platform linux/amd64 -t maf-document-export:ci images/document-export

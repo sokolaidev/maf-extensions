@@ -18,6 +18,7 @@ from maf_sandbox import (
     OsFamily,
     SandboxKey,
     SandboxRouter,
+    Selection,
 )
 from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InProcessSandbox, InProcessSandboxBackend
 
@@ -141,6 +142,19 @@ def test_passive_svg_local_references_are_allowed():
     )
 
 
+def test_passive_svg_values_containing_url_are_allowed():
+    validate_svg(
+        b'<svg xmlns="http://www.w3.org/2000/svg"><rect id="curl" fill="burlywood"/>'
+        b'<use href="#url"/><path fill="URL(#gradient)"/></svg>'
+    )
+
+
+@pytest.mark.parametrize("value", ["URL(https://example.invalid)", "url (//example.invalid)"])
+def test_external_svg_url_functions_are_refused(value):
+    with pytest.raises(ValueError, match="local fragments"):
+        validate_svg(f'<svg xmlns="http://www.w3.org/2000/svg" fill="{value}"/>'.encode())
+
+
 @pytest.mark.parametrize(
     "markdown,assets,options",
     [
@@ -237,3 +251,36 @@ def test_failed_acquisition_is_swept():
     with pytest.raises(RuntimeError, match="create failed"):
         asyncio.run(export_pdf("report", {}, **routing))
     assert backend.disposed
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_failed_acquisition_preserves_other_backends(cancelled):
+    _, backend, routing = setup()
+    conversation = InProcessSandboxBackend(
+        name="conversation",
+        isolation=Isolation.CONTAINER,
+        declarations=replace(
+            backend.declarations, isolation_scopes=frozenset({IsolationScope.CONVERSATION})
+        ),
+        dispose_failure=DisposalFailure("unknown", "unrelated backend unavailable"),
+        sandbox_per_key=True,
+    )
+    routing["router"] = SandboxRouter(
+        [conversation, backend], min_isolation=Isolation.CONTAINER, selection=Selection.PER_SPEC
+    )
+    error = asyncio.CancelledError if cancelled else RuntimeError
+    backend.acquire_error = error("create interrupted")
+
+    async def run():
+        spec = replace(
+            document_export_sandbox_spec(routing["image"]),
+            isolation_scope=IsolationScope.CONVERSATION,
+        )
+        existing = await conversation.acquire(routing["key"], spec)
+        with pytest.raises(error, match="create interrupted"):
+            await export_pdf("report", {}, **routing)
+        assert conversation.sandboxes[(routing["key"], "document")] is existing
+
+    asyncio.run(run())
+    assert backend.disposed
+    assert not conversation.disposed

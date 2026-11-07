@@ -18,6 +18,7 @@ from playwright.sync_api import sync_playwright
 from pypdf import PdfReader
 
 ROOT = Path(__file__).resolve().parent
+MAX_MARKUP_BYTES = 32_000_000
 CSS = """
 @page { margin: 19mm 16mm 21mm; }
 * { box-sizing: border-box; }
@@ -76,19 +77,24 @@ RENDER_MERMAID = r"""async ({source, id}) => {
 def document_html(request, assets):
     """Disable raw HTML and resolve every Markdown image to an explicitly supplied SVG."""
     diagrams = []
+    image_bytes = 0
     markdown = MarkdownIt("commonmark", {"html": False}).enable(["table", "strikethrough"])
     fence = markdown.renderer.rules["fence"]
 
     def image(tokens, index, options, env):
+        nonlocal image_bytes
         token = tokens[index]
         name = token.attrGet("src")
         if name not in assets:
             raise ValueError("Markdown images must name a supplied SVG asset")
-        encoded = base64.b64encode(assets[name]).decode("ascii")
-        return (
-            f'<img alt="{html.escape(token.content, quote=True)}" '
-            f'src="data:image/svg+xml;base64,{encoded}">'
+        prefix = (
+            f'<img alt="{html.escape(token.content, quote=True)}" src="data:image/svg+xml;base64,'
         )
+        image_bytes += len(prefix.encode("utf-8")) + 4 * ((len(assets[name]) + 2) // 3) + 2
+        if image_bytes > MAX_MARKUP_BYTES:
+            raise ValueError("expanded markup exceeds byte limit")
+        encoded = base64.b64encode(assets[name]).decode("ascii")
+        return f'{prefix}{encoded}">'
 
     def code(tokens, index, options, env):
         token = tokens[index]
@@ -101,6 +107,8 @@ def document_html(request, assets):
     markdown.renderer.rules["image"] = image
     markdown.renderer.rules["fence"] = code
     body = markdown.render(request["markdown"])
+    if len(body.encode("utf-8")) > MAX_MARKUP_BYTES:
+        raise ValueError("expanded markup exceeds byte limit")
     nonce = secrets.token_hex(16)
     policy = (
         "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; "

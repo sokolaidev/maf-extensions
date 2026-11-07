@@ -85,7 +85,10 @@ def inspect_pdf(data: bytes, *, text_path: Path | None = None) -> dict[str, Any]
         require(
             expected in normalized, f"missing extracted text: {expected}; excerpt: {text[:200]!r}"
         )
-    require(any("DejaVuSans" in name for name in fonts), "text font missing")
+    require(
+        any("DejaVuSans" in name and "DejaVuSansMono" not in name for name in fonts),
+        "text font missing",
+    )
     require(any("DejaVuSansMono" in name for name in fonts), "monospace font missing")
     return {"pages": len(reader.pages), "fonts": sorted(fonts), "text": text}
 
@@ -130,6 +133,7 @@ async def check(image_id: str, *, directory: Path | None = None) -> dict[str, An
                     )
                     metadata.append(json.loads(data))
             except FileNotFoundError:
+                # Guard refusals deliberately leave no export metadata.
                 pass
             finally:
                 cleaned = await super().dispose_kind(

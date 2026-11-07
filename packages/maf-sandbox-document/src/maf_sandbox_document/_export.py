@@ -137,12 +137,11 @@ async def export_pdf(
                 raise ValueError("invalid or oversized PDF output")
             return data
     finally:
-        # The fresh call key belongs solely to this export, including a failed acquisition.
-        cleaned = await router.dispose_kind(
-            call_key,
-            DOCUMENT_KIND,
-            instance_id=sandbox.instance_id if sandbox is not None else None,
-            timeout=30,
-        )
+        if sandbox is None:
+            cleaned = await router.dispose_call(call_key, spec=spec, timeout=30)
+        else:
+            cleaned = await router.dispose_kind(
+                call_key, DOCUMENT_KIND, instance_id=sandbox.instance_id, timeout=30
+            )
         if not cleaned:
             raise RuntimeError("document export sandbox cleanup failed")

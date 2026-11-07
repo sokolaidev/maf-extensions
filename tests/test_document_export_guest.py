@@ -1,8 +1,10 @@
-"""Print markup safety and deterministic rendering inputs, without a browser or network."""
+"""Offline renderer guards and opt-in native Chromium resource-denial checks."""
 
+import os
 import runpy
 from dataclasses import asdict
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from maf_sandbox_document import ExportOptions
@@ -61,3 +63,65 @@ def test_mermaid_is_data_and_not_interpolated_as_html_or_javascript():
 def test_disallowed_markdown_schemes_stay_literal(reference):
     page, _, _ = markup(f"![image]({reference})")
     assert "<img" not in page
+
+
+def test_repeated_assets_refused_before_encoding_excess_copies(monkeypatch):
+    namespace = RENDERER["document_html"].__globals__
+    monkeypatch.setitem(namespace, "MAX_MARKUP_BYTES", 1000)
+    encoded = MagicMock(wraps=namespace["base64"].b64encode)
+    monkeypatch.setattr(namespace["base64"], "b64encode", encoded)
+    with pytest.raises(ValueError, match="expanded markup"):
+        markup("![Asset](diagram.svg)\n" * 100, {"diagram.svg": SVG * 3})
+    assert encoded.call_count < 4
+
+
+def test_non_image_markup_is_bounded(monkeypatch):
+    monkeypatch.setitem(RENDERER["document_html"].__globals__, "MAX_MARKUP_BYTES", 100)
+    with pytest.raises(ValueError, match="expanded markup"):
+        markup("&" * 100)
+
+
+@pytest.mark.parametrize("url", ["https://example.invalid/asset", "file:///private/asset"])
+def test_renderer_aborts_forbidden_requests_and_refuses_pdf(monkeypatch, tmp_path, url):
+    namespace = RENDERER["render"].__globals__
+    playwright = MagicMock()
+    browser = playwright.__enter__.return_value.chromium.launch.return_value
+    context = browser.new_context.return_value
+    page = context.new_page.return_value
+    route = MagicMock()
+    route.request.url = url
+    page.goto.side_effect = lambda *args, **kwargs: context.route.call_args.args[1](route)
+    page.evaluate.return_value = []
+    page.pdf.return_value = b"%PDF-fixture"
+    (tmp_path / "mermaid.min.js").write_text("", encoding="utf-8")
+    monkeypatch.setitem(namespace, "ROOT", tmp_path)
+    monkeypatch.setitem(namespace, "sync_playwright", lambda: playwright)
+    with pytest.raises(ValueError, match="forbidden resource"):
+        RENDERER["render"](asdict(ExportOptions()) | {"markdown": "report"}, {})
+    route.abort.assert_called_once()
+    route.continue_.assert_not_called()
+    browser.close.assert_called_once()
+
+
+@pytest.mark.parametrize("csp", [False, True], ids=["interception", "csp"])
+def test_native_browser_resource_denial(monkeypatch, tmp_path, csp):
+    executable = os.environ.get("MAF_DOCUMENT_EXPORT_BROWSER")
+    if not executable:
+        pytest.skip("requires MAF_DOCUMENT_EXPORT_BROWSER opt-in")
+    namespace = RENDERER["render"].__globals__
+    policy = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\';">'
+    document = (policy if csp else "") + '<iframe src="https://example.invalid/asset"></iframe>'
+    monkeypatch.setitem(namespace, "ROOT", tmp_path)
+    monkeypatch.setitem(namespace, "document_html", lambda *args: (document, [], "nonce"))
+    # Initialization stays trusted while the controlled document exercises the browser boundary.
+    (tmp_path / "mermaid.min.js").write_text(
+        "globalThis.mermaid = {initialize() {}};", encoding="utf-8"
+    )
+    if csp:
+        document = document.replace(
+            "default-src 'none';", "default-src 'none'; script-src 'nonce-nonce';"
+        )
+    with pytest.raises(ValueError, match="forbidden resource"):
+        RENDERER["render"](
+            asdict(ExportOptions()) | {"markdown": "report"}, {}, executable=executable
+        )

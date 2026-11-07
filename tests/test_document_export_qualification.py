@@ -31,7 +31,10 @@ def test_container_backend_reaches_export(monkeypatch):
 
 
 @pytest.mark.parametrize("missing", [False, True])
-def test_pdf_content_comparison_preserves_missing_text_failures(monkeypatch, tmp_path, missing):
+@pytest.mark.parametrize("mono_only", [False, True])
+def test_pdf_content_comparison_preserves_missing_text_failures(
+    monkeypatch, tmp_path, missing, mono_only
+):
     text = (
         "Export \ufb01xture\nwide table\ncontent\nline_69\nStart report\n"
         "Finish report\nSupplied SVG\nPage 1 of 2"
@@ -45,16 +48,30 @@ def test_pdf_content_comparison_preserves_missing_text_failures(monkeypatch, tmp
         }
     )
     font = DictionaryObject({NameObject("/FontDescriptor"): descriptor})
+    proportional = DictionaryObject(
+        {
+            NameObject("/FontDescriptor"): DictionaryObject(
+                {
+                    NameObject("/FontName"): NameObject("/ABCDEF+DejaVuSans"),
+                    NameObject("/FontFile2"): DictionaryObject(),
+                }
+            )
+        }
+    )
 
     class Page(dict):
         def extract_text(self):
             return text
 
-    page = Page({"/Resources": {"/Font": {"/F1": font}}})
+    fonts = {"/F1": font} if mono_only else {"/F1": font, "/F2": proportional}
+    page = Page({"/Resources": {"/Font": fonts}})
     monkeypatch.setattr(qualification, "PdfReader", lambda _: SimpleNamespace(pages=[page, page]))
     text_path = tmp_path / "fixture.txt"
     if missing:
         with pytest.raises(ValueError, match="missing extracted text: Supplied SVG"):
+            qualification.inspect_pdf(b"pdf", text_path=text_path)
+    elif mono_only:
+        with pytest.raises(ValueError, match="text font missing"):
             qualification.inspect_pdf(b"pdf", text_path=text_path)
     else:
         result = qualification.inspect_pdf(b"pdf", text_path=text_path)

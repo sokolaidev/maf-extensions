@@ -51,7 +51,9 @@ def validate_svg(data: bytes) -> None:
                 raise ValueError("unsupported or active SVG attribute")
             if key == "href" and not re.fullmatch(r"#[A-Za-z_][\w.-]*", value):
                 raise ValueError("SVG references must be local fragments")
-            if "url" in value.lower() and not re.fullmatch(r"url\(#[A-Za-z_][\w.-]*\)", value):
+            if re.search(r"url\s*\(", value, re.I) and not re.fullmatch(
+                r"url\(#[A-Za-z_][\w.-]*\)", value, re.I
+            ):
                 raise ValueError("SVG resources must be local fragments")
             if any(character in value for character in "\\\x00"):
                 raise ValueError("unsupported SVG attribute value")
