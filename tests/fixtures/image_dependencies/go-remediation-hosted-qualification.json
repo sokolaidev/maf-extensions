@@ -1,0 +1,794 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-11-07",
+  "scope": "hosted-go-image-remediation-qualification",
+  "sourceCommit": "160d7650e4d1f5a47e57e484042af1bc1b2b2c9c",
+  "platform": "linux/amd64",
+  "run": {
+    "id": 42406323663,
+    "qualificationAttempt": 1,
+    "url": "https://github.com/sokolaidev/maf-extensions/actions/runs/42406323663"
+  },
+  "receipt": {
+    "acquiredAt": "2026-11-07T19:28:37.901898+00:00",
+    "catalogue": {
+      "sequence": 858,
+      "sha256": "sha256:0d5470394989055ab379444593a6d0fa0fd3bd72a9892b08dcbd121ce634a587"
+    },
+    "directories": [
+      "opentofu-avm-0.2.5",
+      "opentofu-random-0.2.4",
+      "terraform-avm-0.2.5",
+      "terraform-random-0.2.4"
+    ],
+    "monitor": {
+      "conclusion": "failure",
+      "id": 42338502988,
+      "run_attempt": 1,
+      "stateDeliveryVerified": true,
+      "status": "completed",
+      "updated_at": "2026-11-07T04:54:34Z"
+    },
+    "oldestAssessment": "2026-11-07T04:42:22.358037+00:00",
+    "schemaVersion": 1,
+    "source": "160d7650e4d1f5a47e57e484042af1bc1b2b2c9c"
+  },
+  "planSha256": "0b011f4cc3c3a552255e2a2afc9107a41743337952c34f94d5fa8df8cc447bc1",
+  "proposalSha256": "4ea10a9a2bcf6f957073e8330a698e3d97ec41befa207dcf9e34f542698042f8",
+  "inputFileSha256": {
+    "images/terraform-sandbox/Dockerfile": "7da35850f335b063d49fdff4c6bb329d9f6ca5ec64ab024292d8f36d1f4be2c4",
+    "images/terraform-sandbox/dependencies.opentofu-avm-network.json": "0dc40d59d455683dcca55f93b7110986f014199bd3f3f13468a073d5876931d1",
+    "images/terraform-sandbox/dependencies.opentofu-avm-network.policy.json": "bd0a0461838d0bfd43a7251765c1d6b79983d28aa73c5d45e5dcf28b827db3c6",
+    "images/terraform-sandbox/dependencies.opentofu-avm.policy.json": "3d69ba387c43ff4e2405c4960293dfee2887f062571609d343d13b7784aa6f2a",
+    "images/terraform-sandbox/dependencies.opentofu-multiversion.json": "b85e1ff8caa5edb73f4e2e6564c1a75cfec19a668150c18412d62dd072ca20cf",
+    "images/terraform-sandbox/dependencies.opentofu-multiversion.policy.json": "41a2d5371d6080c3a925bce291e594449113478439542d7767e4b01ab5950cf3",
+    "images/terraform-sandbox/dependencies.opentofu-platform.json": "c39dcb89d89c8f043cccc7e841acce326ab29f9e569e2e7f014e06d48947d393",
+    "images/terraform-sandbox/dependencies.opentofu-platform.policy.json": "e885d6311569bd652cad19b49658c9f7fc432b38b55efe1c93718c84e604e3ea",
+    "images/terraform-sandbox/dependencies.opentofu-providers.json": "a29e5007863b85942066b3c49beb446f01970ad07926553a128c9539e468594d",
+    "images/terraform-sandbox/dependencies.opentofu-providers.policy.json": "ffda6693abf110ea05b4cdf3539915225800c2cb321ba0bb370ae366ae8f1737",
+    "images/terraform-sandbox/dependencies.opentofu.json": "fb34f669c897f006ca8c029a7b555c2c691e123ecdc3074e1a3bc7725f1ff722",
+    "images/terraform-sandbox/dependencies.terraform-avm-network.json": "1796ab82c10bb22e5b61069dd775559c772f28bec966f8f3266ca3d6e76cf7dd",
+    "images/terraform-sandbox/dependencies.terraform-avm-network.policy.json": "7c8f897f025b7bedf0d77644fb9a564c5a52172de5b7b9e8f0fca67316796c61",
+    "images/terraform-sandbox/dependencies.terraform-avm.json": "c08e7cc7ecdddcbabb31978a80079dfb4f1809c893ce04e1d1edb89977c61d3d",
+    "images/terraform-sandbox/dependencies.terraform-avm.policy.json": "b803cc88e68dc08c5b11661cf37215d3839750dff1d5f0d9129d94e463f49c5a",
+    "images/terraform-sandbox/dependencies.terraform.json": "547a1a04bb24daaf1fa93421c4696b62de5130e784805c3447a775aec251ada7",
+    "images/terraform-sandbox/image.json": "1a0f529821a8c6e376535602493528290475ede2e8772367a7fd362ffee41a52",
+    "images/terraform-sandbox/prepared.Dockerfile": "00fc2ed626a7f34de75defbdc2ae2400e5bd8ae3c7c5445aca6c7d0d66b73b52"
+  },
+  "files": {
+    "images/terraform-sandbox/dependencies.opentofu-avm-network.json": "178f4515f504572372b090b0ecd328fc1382c41f192affb423126a52f06294ec",
+    "images/terraform-sandbox/dependencies.opentofu.json": "a7da57193955252b48c72941a7d40c533cfc556dfdf92bc65e60ef69c9efc955",
+    "images/terraform-sandbox/dependencies.terraform-avm.json": "0fa6f6fa35cff235fd82d2787b0ff5e23af7350eec2952db05fccb5d7e5f02f0",
+    "images/terraform-sandbox/dependencies.terraform.json": "a32e24c0c75bdd37915a66f0128ecb2c3407b676b7cce511616105897259317c",
+    "images/terraform-sandbox/image.json": "03b09361c2077cb1a271de25df6526e9c0b82188d3701279b8d59585716a6e11"
+  },
+  "plannedUpdates": 35,
+  "companionUpdates": 40,
+  "targetedModuleVersions": {
+    "golang.org/x/net": "v0.62.0",
+    "github.com/klauspost/compress": "v1.20.2"
+  },
+  "providerHashRecord": "go-remediation-hosted-preparation.json",
+  "providerFilesMatchHashRecord": true,
+  "inputArtifact": {
+    "id": 13588509929,
+    "name": "remediation-inputs",
+    "digest": "sha256:5a5921f3fa1c6a3ab3f9e7530ca51d32b73cf9ed0ba529b8c3c7e9b2568cd397",
+    "size_in_bytes": 563735771,
+    "expires_at": "2026-12-07T20:13:04Z"
+  },
+  "qualificationArtifacts": [
+    {
+      "id": 13592475520,
+      "name": "remediation-qualification-42406323663-1",
+      "digest": "sha256:92064faeda307a71dd468d15f47ebc89edc945c4f7b065f125143bd6af0fdee5",
+      "size_in_bytes": 568432435,
+      "expires_at": "2026-12-07T21:46:54Z"
+    },
+    {
+      "id": 13592122798,
+      "name": "remediation-qualification-42406323663-2",
+      "digest": "sha256:ad2d22f999afa3ff2e1d477a337d7fc2c3d25d88826f66d641a14a81fe074ff1",
+      "size_in_bytes": 568432435,
+      "expires_at": "2026-12-07T21:48:45Z"
+    },
+    {
+      "id": 13592058982,
+      "name": "remediation-qualification-42406323663-3",
+      "digest": "sha256:70c36d6675e5d37af188366626634c8aa9a31683889559c070a1c8ee1ca266ea",
+      "size_in_bytes": 568432435,
+      "expires_at": "2026-12-07T21:53:52Z"
+    }
+  ],
+  "qualification": {
+    "status": "ready",
+    "ordinaryRecipesReplayedLocks": true,
+    "providerPackageCacheSupplied": false,
+    "engineAndProviderInventoriesValidated": true,
+    "candidateModuleVersionsValidated": true,
+    "localRevalidationPassed": true,
+    "baselineTargetedMatches": 39,
+    "candidateTargetedMatches": 0
+  },
+  "sourceChecks": {
+    "jobId": 128515896765,
+    "proposalApplied": true,
+    "conclusion": "success",
+    "testsPassed": 27339,
+    "testsSkipped": 755,
+    "gatePassed": true,
+    "markdownExamplesPassed": true,
+    "trackersChecked": 393
+  },
+  "scans": [
+    {
+      "profile": "opentofu-avm",
+      "variant": "baseline",
+      "imageId": "sha256:eb537f655ca0cdf661480c4ee44711a65f1e7bca310101f3bce7ff40c74a114d",
+      "artifact": {
+        "id": 13590295533,
+        "name": "remediation-baseline-opentofu-avm",
+        "digest": "sha256:8fa5a79c5dff407e1e135c8a974397f177150879da93109e92357fc9e5f6ac94",
+        "size_in_bytes": 550153,
+        "expires_at": "2026-12-07T20:42:30Z"
+      },
+      "runtime": {
+        "checkedAt": "2026-11-07T20:41:05.032176+00:00",
+        "kind": "offline-packaging",
+        "passed": true,
+        "containersRemaining": [],
+        "liveDeploymentVerified": false
+      },
+      "reportSha256": {
+        "build.json": "6719c1d637625941f2c5561bf8988f7b7e2cf0479e4f3c88bd95b2ce245cc3e7",
+        "runtime.json": "f37e56f10463c690ffbe3d19de4cd8a3daa3035c8a60109f1a950ca3ef7cc75c",
+        "qualification.json": "d76b3274b8802dedca937e0a1c128d05828c76883af1eda8c981d3830d3b5be1",
+        "sbom.syft.json": "8a4e9ac7639747366d3c9678a2712c8158cc9016f672e75dd2c12204847fd87d",
+        "grype.json": "428b6bb05a710a215876a6b762bb2be0172292e6aadada660241dd5704fbd7cb",
+        "assessment.json": "a4446932210be2ac5986a24e15f4f9992e883c072ed2a72990f2ba447e0a4e27"
+      },
+      "assessedAt": "2026-11-07T20:42:29.623619+00:00",
+      "database": {
+        "built": "2026-11-07T06:18:48Z",
+        "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.10_2026-11-07T00:20:09Z_1794032328.tar.zst?checksum=sha256%3Af90467f0e784f8f6dd04b9a53588851e4b6fb874a4171d9edc95e91502feda5a",
+        "schemaVersion": "v6.1.10",
+        "valid": true
+      },
+      "targetedFindings": 5,
+      "targetedByAdvisory": {
+        "GO-2026-6860": 4,
+        "GO-2026-6865": 1
+      },
+      "applicableFindings": [
+        {
+          "id": "CVE-2026-84243",
+          "severity": "High",
+          "fixState": "unknown",
+          "matches": 1
+        },
+        {
+          "id": "GO-2026-6860",
+          "severity": "High",
+          "fixState": "fixed",
+          "matches": 4
+        },
+        {
+          "id": "GO-2026-6865",
+          "severity": "High",
+          "fixState": "fixed",
+          "matches": 1
+        }
+      ],
+      "notAffected": [
+        {
+          "artifactId": "87ef05041d9667f8",
+          "component": "pkg:apk/wolfi/sqlite-libs@3.54.1-r0?arch=x86_64&distro=wolfi-20230201&upstream=sqlite",
+          "expiresAt": "2026-12-04T00:00:00Z",
+          "id": "CVE-2026-119586",
+          "imageId": "sha256:eb537f655ca0cdf661480c4ee44711a65f1e7bca310101f3bce7ff40c74a114d",
+          "justification": "vulnerable_code_not_present",
+          "librarySha256": "7c8f466fe08716da0c3ce29ef451e8443313b296717fd8ef98b020030fb282f7",
+          "reason": "The reviewed shared library does not contain the SQLite CLI dot-command interpreter.",
+          "reference": "https://abraxaslabs.tech/research/sqlite-cli-recover",
+          "status": "not_affected"
+        }
+      ]
+    },
+    {
+      "profile": "opentofu-random",
+      "variant": "baseline",
+      "imageId": "sha256:10de9ceff8b378cf40f0a6f4524264d410a2e96bb6d97e3a29c02c216476662e",
+      "artifact": {
+        "id": 13589846922,
+        "name": "remediation-baseline-opentofu-random",
+        "digest": "sha256:a4aba09796ae078efd09f11136ace960d708649960435810278f115e98bb7710",
+        "size_in_bytes": 532741,
+        "expires_at": "2026-12-07T20:32:26Z"
+      },
+      "runtime": {
+        "checkedAt": "2026-11-07T20:31:34.264741+00:00",
+        "kind": "offline-packaging",
+        "passed": true,
+        "containersRemaining": [],
+        "liveDeploymentVerified": false
+      },
+      "reportSha256": {
+        "build.json": "97ae01b75dc97c3375d9c18dd70330d3960879f4b5cdc9edcdfb4b0aa098da78",
+        "runtime.json": "c9f539bd6fc2848e911578d1f5214c3af129888d38e66ee948b140e0e451db9a",
+        "qualification.json": "1fd9d29ae2c8967bb6c252c4cfed75e0e51c4723f3c8969822a50b95c6be3fa6",
+        "sbom.syft.json": "a0f76bd6b206122eb4818c54afae582814875acb3e4a928c3adcf412cb8c88e8",
+        "grype.json": "36e75c996dd7637b050a1d45874c29daab3ac6753e97f52f9739a17852a606b9",
+        "assessment.json": "8f00680d12c4ae3b5b7c2dd8e9165a3bd013d65281c77d0d857c2fa3cb0df6b1"
+      },
+      "assessedAt": "2026-11-07T20:32:25.772149+00:00",
+      "database": {
+        "built": "2026-11-07T06:18:48Z",
+        "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.10_2026-11-07T00:20:09Z_1794032328.tar.zst?checksum=sha256%3Af90467f0e784f8f6dd04b9a53588851e4b6fb874a4171d9edc95e91502feda5a",
+        "schemaVersion": "v6.1.10",
+        "valid": true
+      },
+      "targetedFindings": 3,
+      "targetedByAdvisory": {
+        "GO-2026-6860": 2,
+        "GO-2026-6865": 1
+      },
+      "applicableFindings": [
+        {
+          "id": "CVE-2026-84243",
+          "severity": "High",
+          "fixState": "unknown",
+          "matches": 1
+        },
+        {
+          "id": "GO-2026-6860",
+          "severity": "High",
+          "fixState": "fixed",
+          "matches": 2
+        },
+        {
+          "id": "GO-2026-6865",
+          "severity": "High",
+          "fixState": "fixed",
+          "matches": 1
+        }
+      ],
+      "notAffected": [
+        {
+          "artifactId": "87ef05041d9667f8",
+          "component": "pkg:apk/wolfi/sqlite-libs@3.54.1-r0?arch=x86_64&distro=wolfi-20230201&upstream=sqlite",
+          "expiresAt": "2026-12-04T00:00:00Z",
+          "id": "CVE-2026-119586",
+          "imageId": "sha256:10de9ceff8b378cf40f0a6f4524264d410a2e96bb6d97e3a29c02c216476662e",
+          "justification": "vulnerable_code_not_present",
+          "librarySha256": "7c8f466fe08716da0c3ce29ef451e8443313b296717fd8ef98b020030fb282f7",
+          "reason": "The reviewed shared library does not contain the SQLite CLI dot-command interpreter.",
+          "reference": "https://abraxaslabs.tech/research/sqlite-cli-recover",
+          "status": "not_affected"
+        }
+      ]
+    },
+    {
+      "profile": "terraform-avm",
+      "variant": "baseline",
+      "imageId": "sha256:2393b130475db00cf5b1cca5d7eb4db84e05de0261fe1603fb7793c8284b870b",
+      "artifact": {
+        "id": 13591237525,
+        "name": "remediation-baseline-terraform-avm",
+        "digest": "sha256:5dc437eb763d48c8b7331de956c68f28d816c04022bc4e01a9be489a0372510b",
+        "size_in_bytes": 736518,
+        "expires_at": "2026-12-07T21:24:25Z"
+      },
+      "runtime": {
+        "checkedAt": "2026-11-07T21:22:39.092670+00:00",
+        "kind": "offline-packaging",
+        "passed": true,
+        "containersRemaining": [],
+        "liveDeploymentVerified": false
+      },
+      "reportSha256": {
+        "build.json": "9c64070f0dd080b73a9fcdee9df7ae4609f884200320ae8428f55ddd2dbc0689",
+        "runtime.json": "c8a8def7563024798eeebb7cb2143a8fcb0694e2b92e769ef52ea74f0c90fc43",
+        "qualification.json": "c8a4b3b3d9eba9f76be5af86b24431133217a63ae88286817b68efacd4c9f38d",
+        "sbom.syft.json": "b99775700c818e27d40037bbb1964a96442adfa69ecf8c9b6fa8f53e0d9b3573",
+        "grype.json": "1f2b2b84a856c16dde7d810f62d55abca288e267512f7578e02478712b3a9153",
+        "assessment.json": "3e3149c308c5741696340de4243f1f535f79953d777872d5937dda192c54a2de"
+      },
+      "assessedAt": "2026-11-07T21:24:25.183299+00:00",
+      "database": {
+        "built": "2026-11-07T06:18:48Z",
+        "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.10_2026-11-07T00:20:09Z_1794032328.tar.zst?checksum=sha256%3Af90467f0e784f8f6dd04b9a53588851e4b6fb874a4171d9edc95e91502feda5a",
+        "schemaVersion": "v6.1.10",
+        "valid": true
+      },
+      "targetedFindings": 28,
+      "targetedByAdvisory": {
+        "GO-2026-6860": 26,
+        "GO-2026-6865": 2
+      },
+      "applicableFindings": [
+        {
+          "id": "CVE-2026-84243",
+          "severity": "High",
+          "fixState": "unknown",
+          "matches": 1
+        },
+        {
+          "id": "GO-2026-6860",
+          "severity": "High",
+          "fixState": "fixed",
+          "matches": 26
+        },
+        {
+          "id": "GO-2026-6865",
+          "severity": "High",
+          "fixState": "fixed",
+          "matches": 2
+        }
+      ],
+      "notAffected": [
+        {
+          "artifactId": "87ef05041d9667f8",
+          "component": "pkg:apk/wolfi/sqlite-libs@3.54.1-r0?arch=x86_64&distro=wolfi-20230201&upstream=sqlite",
+          "expiresAt": "2026-12-04T00:00:00Z",
+          "id": "CVE-2026-119586",
+          "imageId": "sha256:2393b130475db00cf5b1cca5d7eb4db84e05de0261fe1603fb7793c8284b870b",
+          "justification": "vulnerable_code_not_present",
+          "librarySha256": "7c8f466fe08716da0c3ce29ef451e8443313b296717fd8ef98b020030fb282f7",
+          "reason": "The reviewed shared library does not contain the SQLite CLI dot-command interpreter.",
+          "reference": "https://abraxaslabs.tech/research/sqlite-cli-recover",
+          "status": "not_affected"
+        }
+      ]
+    },
+    {
+      "profile": "terraform-random",
+      "variant": "baseline",
+      "imageId": "sha256:9145f34b18e2a39d2f7a98fa31011a4b59f22bf10796356011e0117c531e6918",
+      "artifact": {
+        "id": 13589453436,
+        "name": "remediation-baseline-terraform-random",
+        "digest": "sha256:dcb6318dbddfe68f7fe26f5a3897b13457200e0243a1a411bf658d9159d1fcbc",
+        "size_in_bytes": 532535,
+        "expires_at": "2026-12-07T20:32:00Z"
+      },
+      "runtime": {
+        "checkedAt": "2026-11-07T20:31:07.206880+00:00",
+        "kind": "offline-packaging",
+        "passed": true,
+        "containersRemaining": [],
+        "liveDeploymentVerified": false
+      },
+      "reportSha256": {
+        "build.json": "d5c8edf41af408f26d9e8bffdd1786225bd988e9cd10363fa1fe1fc1224ea1f5",
+        "runtime.json": "642585e4252e36c80a0419596a064a880233b525b3840a2e70cf0bbeb702994b",
+        "qualification.json": "91a287d9bbd159d8d8d292c5985642e7fa24648f026e5ee4f163527a07d276f3",
+        "sbom.syft.json": "8ae1ba979bcb6c40bc43a048558668928fda9f73aaac0196410cd35a9c24339f",
+        "grype.json": "edf29e19da4e80f0641695bce28a0e47fba5a57ebd7e4802d4b4f608466de582",
+        "assessment.json": "2c93a482e246ee026beb482dc52e93914637f62332934f735acd7ffbfbd5b031"
+      },
+      "assessedAt": "2026-11-07T20:32:00.201790+00:00",
+      "database": {
+        "built": "2026-11-07T06:18:48Z",
+        "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.10_2026-11-07T00:20:09Z_1794032328.tar.zst?checksum=sha256%3Af90467f0e784f8f6dd04b9a53588851e4b6fb874a4171d9edc95e91502feda5a",
+        "schemaVersion": "v6.1.10",
+        "valid": true
+      },
+      "targetedFindings": 3,
+      "targetedByAdvisory": {
+        "GO-2026-6860": 2,
+        "GO-2026-6865": 1
+      },
+      "applicableFindings": [
+        {
+          "id": "CVE-2026-84243",
+          "severity": "High",
+          "fixState": "unknown",
+          "matches": 1
+        },
+        {
+          "id": "GO-2026-6860",
+          "severity": "High",
+          "fixState": "fixed",
+          "matches": 2
+        },
+        {
+          "id": "GO-2026-6865",
+          "severity": "High",
+          "fixState": "fixed",
+          "matches": 1
+        }
+      ],
+      "notAffected": [
+        {
+          "artifactId": "87ef05041d9667f8",
+          "component": "pkg:apk/wolfi/sqlite-libs@3.54.1-r0?arch=x86_64&distro=wolfi-20230201&upstream=sqlite",
+          "expiresAt": "2026-12-04T00:00:00Z",
+          "id": "CVE-2026-119586",
+          "imageId": "sha256:9145f34b18e2a39d2f7a98fa31011a4b59f22bf10796356011e0117c531e6918",
+          "justification": "vulnerable_code_not_present",
+          "librarySha256": "7c8f466fe08716da0c3ce29ef451e8443313b296717fd8ef98b020030fb282f7",
+          "reason": "The reviewed shared library does not contain the SQLite CLI dot-command interpreter.",
+          "reference": "https://abraxaslabs.tech/research/sqlite-cli-recover",
+          "status": "not_affected"
+        }
+      ]
+    },
+    {
+      "profile": "opentofu-avm",
+      "variant": "candidate",
+      "imageId": "sha256:495e57e37828aebfffc13cef16e2b1aa84d22aebf9adfe2bf4833a0c159f035b",
+      "artifact": {
+        "id": 13590954828,
+        "name": "remediation-candidate-opentofu-avm",
+        "digest": "sha256:685b262c2e770dedaad07596e8e87abf04e84e13b1a9ff8e9e5ad2a6fa1ae360",
+        "size_in_bytes": 548096,
+        "expires_at": "2026-12-07T21:24:25Z"
+      },
+      "runtime": {
+        "checkedAt": "2026-11-07T21:22:45.249083+00:00",
+        "kind": "offline-packaging",
+        "passed": true,
+        "containersRemaining": [],
+        "liveDeploymentVerified": false
+      },
+      "reportSha256": {
+        "build.json": "c00fe5a6546005b459aad7736354c34c8debb28966aa41877e52f2c8235a1f60",
+        "runtime.json": "53af87cb0b351fa5d653bc4b550dd1edae0db896c3789562c91ac2c787b02403",
+        "qualification.json": "df89a1701ad74aedffb2bca3bdd21dd6bef6bc8e014d90f05073507d5c804266",
+        "sbom.syft.json": "ab79b993062b4a2f2c996611994ece50fc6859d13117ab67249d79dad53ad53e",
+        "grype.json": "73d293242f7acd4c1a0318a8136f690ceaee5c6ec373e571214bcf44c46ed895",
+        "assessment.json": "734b739ec26cd8080f12ca5bc100d4c3abad19a838570b66b215c659f16ae2ab"
+      },
+      "assessedAt": "2026-11-07T21:24:25.440896+00:00",
+      "database": {
+        "built": "2026-11-07T06:18:48Z",
+        "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.10_2026-11-07T00:20:09Z_1794032328.tar.zst?checksum=sha256%3Af90467f0e784f8f6dd04b9a53588851e4b6fb874a4171d9edc95e91502feda5a",
+        "schemaVersion": "v6.1.10",
+        "valid": true
+      },
+      "targetedFindings": 0,
+      "targetedByAdvisory": {},
+      "applicableFindings": [
+        {
+          "id": "CVE-2026-84243",
+          "severity": "High",
+          "fixState": "unknown",
+          "matches": 1
+        }
+      ],
+      "notAffected": [
+        {
+          "artifactId": "87ef05041d9667f8",
+          "component": "pkg:apk/wolfi/sqlite-libs@3.54.1-r0?arch=x86_64&distro=wolfi-20230201&upstream=sqlite",
+          "expiresAt": "2026-12-04T00:00:00Z",
+          "id": "CVE-2026-119586",
+          "imageId": "sha256:495e57e37828aebfffc13cef16e2b1aa84d22aebf9adfe2bf4833a0c159f035b",
+          "justification": "vulnerable_code_not_present",
+          "librarySha256": "7c8f466fe08716da0c3ce29ef451e8443313b296717fd8ef98b020030fb282f7",
+          "reason": "The reviewed shared library does not contain the SQLite CLI dot-command interpreter.",
+          "reference": "https://abraxaslabs.tech/research/sqlite-cli-recover",
+          "status": "not_affected"
+        }
+      ]
+    },
+    {
+      "profile": "opentofu-random",
+      "variant": "candidate",
+      "imageId": "sha256:2e3b30b78707fa0a738a4c36526bae9c86a3c81147ebc3c3a327f611d961dc1b",
+      "artifact": {
+        "id": 13589909807,
+        "name": "remediation-candidate-opentofu-random",
+        "digest": "sha256:31534595e563fb0ba2fe9977ad65649f4262a2b7cb24dda864b661278c9933bf",
+        "size_in_bytes": 530466,
+        "expires_at": "2026-12-07T20:55:11Z"
+      },
+      "runtime": {
+        "checkedAt": "2026-11-07T20:53:58.987609+00:00",
+        "kind": "offline-packaging",
+        "passed": true,
+        "containersRemaining": [],
+        "liveDeploymentVerified": false
+      },
+      "reportSha256": {
+        "build.json": "65b1eb20a922d0fadc1435aae0a479723d071021c3c52a28153d9ba65c175a9c",
+        "runtime.json": "34d504e445da5964ab6a6625f32835cb4847836ea23eb7068ca448a5e96e6d5c",
+        "qualification.json": "7945856312f2bc061d05435feb5e6249103831aff2439b29ec6062c81a4ea052",
+        "sbom.syft.json": "2d40b375fab07fb2a2199bcaa330a0e4946927bd6d249dbce8fd7cd548e49fc4",
+        "grype.json": "48356a3d389637ffdcd745f82755646bc0c0e60c87d3bc259f4c61b9e46f3b01",
+        "assessment.json": "99b7d703b0bb78ee3f479726c88b213da4d7ebcd3397b46097becd9d7d5af9c5"
+      },
+      "assessedAt": "2026-11-07T20:55:11.313841+00:00",
+      "database": {
+        "built": "2026-11-07T06:18:48Z",
+        "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.10_2026-11-07T00:20:09Z_1794032328.tar.zst?checksum=sha256%3Af90467f0e784f8f6dd04b9a53588851e4b6fb874a4171d9edc95e91502feda5a",
+        "schemaVersion": "v6.1.10",
+        "valid": true
+      },
+      "targetedFindings": 0,
+      "targetedByAdvisory": {},
+      "applicableFindings": [
+        {
+          "id": "CVE-2026-84243",
+          "severity": "High",
+          "fixState": "unknown",
+          "matches": 1
+        }
+      ],
+      "notAffected": [
+        {
+          "artifactId": "87ef05041d9667f8",
+          "component": "pkg:apk/wolfi/sqlite-libs@3.54.1-r0?arch=x86_64&distro=wolfi-20230201&upstream=sqlite",
+          "expiresAt": "2026-12-04T00:00:00Z",
+          "id": "CVE-2026-119586",
+          "imageId": "sha256:2e3b30b78707fa0a738a4c36526bae9c86a3c81147ebc3c3a327f611d961dc1b",
+          "justification": "vulnerable_code_not_present",
+          "librarySha256": "7c8f466fe08716da0c3ce29ef451e8443313b296717fd8ef98b020030fb282f7",
+          "reason": "The reviewed shared library does not contain the SQLite CLI dot-command interpreter.",
+          "reference": "https://abraxaslabs.tech/research/sqlite-cli-recover",
+          "status": "not_affected"
+        }
+      ]
+    },
+    {
+      "profile": "terraform-avm",
+      "variant": "candidate",
+      "imageId": "sha256:e291b17b16d0e5a74801d36d399e83aa3ab381f6edfe6df4a8e761e42a57e548",
+      "artifact": {
+        "id": 13591682639,
+        "name": "remediation-candidate-terraform-avm",
+        "digest": "sha256:f413ca6971b3848369139a86b79ca2edfeb0fd4e5d9a3c8958ec1dd6f177311e",
+        "size_in_bytes": 730278,
+        "expires_at": "2026-12-07T21:45:19Z"
+      },
+      "runtime": {
+        "checkedAt": "2026-11-07T21:43:38.726366+00:00",
+        "kind": "offline-packaging",
+        "passed": true,
+        "containersRemaining": [],
+        "liveDeploymentVerified": false
+      },
+      "reportSha256": {
+        "build.json": "6db65f2b3156d1d21372fd1066a74587c5a914caa1a0872e7de2870f4021bcae",
+        "runtime.json": "bceee5e3491e15d25fbf138a61ebe76a3abe0e29fc4b686864a49c59f727d133",
+        "qualification.json": "0317ef7cb635d62130ff597ddde12692e51100e9b0473d4ecae4e76a5f2e92e9",
+        "sbom.syft.json": "bd5f8a82d0c95c0903bbb40405c42cab1d7bd2fd473f50deaef8911a0b740351",
+        "grype.json": "14aaeb382eb94096c24dce0749e58a04fe9827e83af59633416da8d7238d9532",
+        "assessment.json": "a7f138d7b8c911c50cc946349ca2a923b35eb025496ac16108cd712f79c138c4"
+      },
+      "assessedAt": "2026-11-07T21:45:19.140131+00:00",
+      "database": {
+        "built": "2026-11-07T06:18:48Z",
+        "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.10_2026-11-07T00:20:09Z_1794032328.tar.zst?checksum=sha256%3Af90467f0e784f8f6dd04b9a53588851e4b6fb874a4171d9edc95e91502feda5a",
+        "schemaVersion": "v6.1.10",
+        "valid": true
+      },
+      "targetedFindings": 0,
+      "targetedByAdvisory": {},
+      "applicableFindings": [
+        {
+          "id": "CVE-2026-84243",
+          "severity": "High",
+          "fixState": "unknown",
+          "matches": 1
+        }
+      ],
+      "notAffected": [
+        {
+          "artifactId": "87ef05041d9667f8",
+          "component": "pkg:apk/wolfi/sqlite-libs@3.54.1-r0?arch=x86_64&distro=wolfi-20230201&upstream=sqlite",
+          "expiresAt": "2026-12-04T00:00:00Z",
+          "id": "CVE-2026-119586",
+          "imageId": "sha256:e291b17b16d0e5a74801d36d399e83aa3ab381f6edfe6df4a8e761e42a57e548",
+          "justification": "vulnerable_code_not_present",
+          "librarySha256": "7c8f466fe08716da0c3ce29ef451e8443313b296717fd8ef98b020030fb282f7",
+          "reason": "The reviewed shared library does not contain the SQLite CLI dot-command interpreter.",
+          "reference": "https://abraxaslabs.tech/research/sqlite-cli-recover",
+          "status": "not_affected"
+        }
+      ]
+    },
+    {
+      "profile": "terraform-random",
+      "variant": "candidate",
+      "imageId": "sha256:b0bb92371321827c719003589afc9e12397bed05a6625f0d266e2b77dab5315f",
+      "artifact": {
+        "id": 13589554823,
+        "name": "remediation-candidate-terraform-random",
+        "digest": "sha256:0fa9a5d35d1b6c434c53fcf7ae8db95d50ecce9c687fedd01f1306f97f751a99",
+        "size_in_bytes": 529934,
+        "expires_at": "2026-12-07T20:57:46Z"
+      },
+      "runtime": {
+        "checkedAt": "2026-11-07T20:56:25.115577+00:00",
+        "kind": "offline-packaging",
+        "passed": true,
+        "containersRemaining": [],
+        "liveDeploymentVerified": false
+      },
+      "reportSha256": {
+        "build.json": "9eb663c54a66d1938bf7288b8e4c4c0ce410d63d13d7470cf21eef85c17ba635",
+        "runtime.json": "896a43c9bf800939a6f4fb74d2a247a0c01475c14c33f1c681b456a58015124a",
+        "qualification.json": "e1a1496182ea5b502c0ba6ff5651515d2971274eaf3fa7bbaaa642cc5f61f6f6",
+        "sbom.syft.json": "92596bc9f38fffe5bd7a19a40d47056bfce6f29c665a75986e226c017293f3fd",
+        "grype.json": "c08b29ed4006712789bccd2ef0b2037b76743c4da2965fe66c5b469f88aa538c",
+        "assessment.json": "99a4a4123958baf8b4df49d5c8ca694e99b57e9a1ad5fe1836c099185f316fff"
+      },
+      "assessedAt": "2026-11-07T20:57:46.515157+00:00",
+      "database": {
+        "built": "2026-11-07T06:18:48Z",
+        "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.10_2026-11-07T00:20:09Z_1794032328.tar.zst?checksum=sha256%3Af90467f0e784f8f6dd04b9a53588851e4b6fb874a4171d9edc95e91502feda5a",
+        "schemaVersion": "v6.1.10",
+        "valid": true
+      },
+      "targetedFindings": 0,
+      "targetedByAdvisory": {},
+      "applicableFindings": [
+        {
+          "id": "CVE-2026-84243",
+          "severity": "High",
+          "fixState": "unknown",
+          "matches": 1
+        }
+      ],
+      "notAffected": [
+        {
+          "artifactId": "87ef05041d9667f8",
+          "component": "pkg:apk/wolfi/sqlite-libs@3.54.1-r0?arch=x86_64&distro=wolfi-20230201&upstream=sqlite",
+          "expiresAt": "2026-12-04T00:00:00Z",
+          "id": "CVE-2026-119586",
+          "imageId": "sha256:b0bb92371321827c719003589afc9e12397bed05a6625f0d266e2b77dab5315f",
+          "justification": "vulnerable_code_not_present",
+          "librarySha256": "7c8f466fe08716da0c3ce29ef451e8443313b296717fd8ef98b020030fb282f7",
+          "reason": "The reviewed shared library does not contain the SQLite CLI dot-command interpreter.",
+          "reference": "https://abraxaslabs.tech/research/sqlite-cli-recover",
+          "status": "not_affected"
+        }
+      ]
+    }
+  ],
+  "boundaries": {
+    "imagesPublished": false,
+    "immutableTagsChanged": false,
+    "liveDeploymentVerified": false,
+    "productionQualified": false,
+    "publishedImageRecoveryClosed": false
+  },
+  "appLifecycle": {
+    "app": "sokolai-image-remediation",
+    "bot": "sokolai-image-remediation[bot]",
+    "permissions": {
+      "contents": "write",
+      "pull_requests": "write",
+      "metadata": "read"
+    },
+    "installationRepositorySelection": "selected",
+    "tokenRequestedRepository": "maf-extensions",
+    "installationTokenVerified": true,
+    "enabled": true,
+    "pullRequest": {
+      "number": 2555,
+      "url": "https://github.com/sokolaidev/maf-extensions/pull/2555",
+      "head": "cb30b5be9a439351c7e9b189bf7a2760f911b5bd",
+      "base": "160d7650e4d1f5a47e57e484042af1bc1b2b2c9c",
+      "authorVerified": true,
+      "exactFileContentsVerified": true
+    },
+    "attempts": [
+      {
+        "attempt": 2,
+        "jobId": 128538756620,
+        "result": "created",
+        "tokenRevoked": true,
+        "artifactId": 13592122798
+      },
+      {
+        "attempt": 3,
+        "jobId": 128539862836,
+        "result": "unchanged",
+        "tokenRevoked": true,
+        "artifactId": 13592058982
+      }
+    ],
+    "unchangedHeadVerified": true,
+    "singlePullRequestVerified": true,
+    "hostedScenarios": [
+      "creation",
+      "unchanged-refresh",
+      "delivery-retry",
+      "stale-main-refusal"
+    ],
+    "injectedOnlyScenarios": [
+      "changed-proposal-refresh",
+      "interrupted-writes",
+      "human-dismissal",
+      "post-merge-next-cycle"
+    ],
+    "ordinaryPrCi": {
+      "triggerVerified": true,
+      "snapshotDate": "2026-11-07",
+      "fullCiCompletionVerified": false,
+      "runs": [
+        {
+          "conclusion": "success",
+          "databaseId": 42418196483,
+          "headSha": "cb30b5be9a439351c7e9b189bf7a2760f911b5bd",
+          "status": "completed",
+          "url": "https://github.com/sokolaidev/maf-extensions/actions/runs/42418196483",
+          "workflowName": "PR title"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 42418196243,
+          "headSha": "cb30b5be9a439351c7e9b189bf7a2760f911b5bd",
+          "status": "completed",
+          "url": "https://github.com/sokolaidev/maf-extensions/actions/runs/42418196243",
+          "workflowName": "Trackers"
+        },
+        {
+          "conclusion": "",
+          "databaseId": 42417832515,
+          "headSha": "cb30b5be9a439351c7e9b189bf7a2760f911b5bd",
+          "status": "in_progress",
+          "url": "https://github.com/sokolaidev/maf-extensions/actions/runs/42417832515",
+          "workflowName": "CodeQL advanced"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 42417832705,
+          "headSha": "cb30b5be9a439351c7e9b189bf7a2760f911b5bd",
+          "status": "completed",
+          "url": "https://github.com/sokolaidev/maf-extensions/actions/runs/42417832705",
+          "workflowName": "PR title"
+        },
+        {
+          "conclusion": "",
+          "databaseId": 42417832408,
+          "headSha": "cb30b5be9a439351c7e9b189bf7a2760f911b5bd",
+          "status": "in_progress",
+          "url": "https://github.com/sokolaidev/maf-extensions/actions/runs/42417832408",
+          "workflowName": "Image security"
+        },
+        {
+          "conclusion": "",
+          "databaseId": 42417832455,
+          "headSha": "cb30b5be9a439351c7e9b189bf7a2760f911b5bd",
+          "status": "in_progress",
+          "url": "https://github.com/sokolaidev/maf-extensions/actions/runs/42417832455",
+          "workflowName": "Portable workflow tests"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 42417832517,
+          "headSha": "cb30b5be9a439351c7e9b189bf7a2760f911b5bd",
+          "status": "completed",
+          "url": "https://github.com/sokolaidev/maf-extensions/actions/runs/42417832517",
+          "workflowName": "Trackers"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 42417832554,
+          "headSha": "cb30b5be9a439351c7e9b189bf7a2760f911b5bd",
+          "status": "completed",
+          "url": "https://github.com/sokolaidev/maf-extensions/actions/runs/42417832554",
+          "workflowName": "Docs"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 42417832557,
+          "headSha": "cb30b5be9a439351c7e9b189bf7a2760f911b5bd",
+          "status": "completed",
+          "url": "https://github.com/sokolaidev/maf-extensions/actions/runs/42417832557",
+          "workflowName": "Provider package cache qualification"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 42417832435,
+          "headSha": "cb30b5be9a439351c7e9b189bf7a2760f911b5bd",
+          "status": "completed",
+          "url": "https://github.com/sokolaidev/maf-extensions/actions/runs/42417832435",
+          "workflowName": "Package and Sandbox Validation"
+        }
+      ]
+    }
+  }
+}
