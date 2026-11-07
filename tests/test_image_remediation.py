@@ -43,6 +43,42 @@ BOT = "image-remediation[bot]"
 URL = f"https://github.com/{REPOSITORY}/actions/runs/123/artifacts/456"
 
 
+@pytest.mark.parametrize("kind", ["provider", "engine", "none"])
+def test_cli_hands_the_acquired_plan_through_workers_and_assembly(
+    checkout, tmp_path, monkeypatch, kind
+):
+    work = tmp_path / "work"
+    match = finding(provider_path(fixture_provider(checkout))) if kind == "provider" else finding()
+    if kind == "none":
+        match["vulnerability"]["fix"]["versions"] = []
+    evidence = retained(work / "evidence", [match])
+    plan = planner.plan(checkout, [evidence])
+    write(work / "plan.json", plan)
+    write(work / "receipt.json", {"source": SOURCE, "directories": [evidence.name]})
+    output = tmp_path / "outputs"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setattr(remediation, "ROOT", checkout)
+    monkeypatch.setattr(remediation, "acquire", lambda *_: plan)
+    monkeypatch.setattr(remediation, "current", lambda *_: None)
+    monkeypatch.setattr(preparation, "rebuild", lambda item, path, tooling: built(item, path))
+
+    def run(command, *extra):
+        monkeypatch.setattr(sys, "argv", ["remediation", command, "--work", str(work), *extra])
+        remediation.main()
+
+    run("acquire")
+    outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    shards = json.loads(outputs["providers"])
+    assert bool(shards) == (kind == "provider")
+    assert outputs["updates"] == ("false" if kind == "none" else "true")
+    results = tmp_path / "results"
+    for shard in shards:
+        run("provider", "--shard", shard, "--results", str(results))
+    if kind != "none":
+        run("prepare", "--results", str(results))
+        assert remediation.proposal_files(checkout, work / "proposal")
+
+
 @pytest.fixture
 def proposal(checkout, tmp_path):
     work = tmp_path / "work"
@@ -1385,5 +1421,26 @@ def test_workflow_keeps_writes_after_all_read_only_gates():
         "permission-pull-requests": "write",
     }
     assert "vars.IMAGE_REMEDIATION_ENABLED == 'true'" in app["if"]
-    assert "head_repository.full_name == github.repository" in jobs["prepare"]["if"]
-    assert "github.ref == 'refs/heads/main'" in jobs["prepare"]["if"]
+    assert "head_repository.full_name == github.repository" in jobs["acquire"]["if"]
+    assert "github.ref == 'refs/heads/main'" in jobs["acquire"]["if"]
+    assert jobs["prepare"]["needs"] == ["acquire", "providers"]
+    assert "!cancelled()" in jobs["prepare"]["if"]
+    assert "needs.providers.result == 'skipped'" in jobs["prepare"]["if"]
+    assert "needs.providers.result == 'success'" in jobs["prepare"]["if"]
+    for job in ("scan", "checks", "publish"):
+        assert "!cancelled()" in jobs[job]["if"]
+        assert "needs.prepare.result == 'success'" in jobs[job]["if"]
+    for dependency in ("scan", "checks"):
+        assert f"needs.{dependency}.result == 'success'" in jobs["publish"]["if"]
+    assert "needs.acquire.outputs.providers != '[]'" in jobs["providers"]["if"]
+    assert jobs["providers"]["strategy"]["matrix"] == {
+        "shard": "${{ fromJSON(needs.acquire.outputs.providers) }}"
+    }
+    for job in ("providers", "scan"):
+        assert jobs[job]["runs-on"] == "ubuntu-latest-m"
+        assert jobs[job]["strategy"]["max-parallel"] == 4
+        assert jobs[job]["env"]["MAF_GO_BUILD_CONCURRENCY"] == (
+            "${{ vars.IMAGE_REMEDIATION_GO_CONCURRENCY || 'auto' }}"
+        )
+    assert {"acquire", "providers"} <= set(jobs["report-failure"]["needs"])
+    assert "needs.providers.result == 'failure'" in jobs["report-failure"]["if"]

@@ -135,15 +135,10 @@ def rebuild(provider: dict[str, Any], work: Path, tooling: Path) -> tuple[bytes,
     return package.read_bytes(), record["moduleFiles"]
 
 
-def prepare(root: Path, directories: list[Path], expected: dict[str, Any], output: Path) -> None:
-    """Recompute the plan and publish complete proposals only after every affected lock verifies."""
-    if plan(root, directories) != expected:
-        raise ValueError("Remediation plan is stale or modified")
-    destination = output.resolve()
-    if output.exists() or output.is_symlink():
-        raise ValueError("Proposal output must not already exist")
-    if destination.is_relative_to(root.resolve()) or root.resolve().is_relative_to(destination):
-        raise ValueError("Proposal output must be outside the source checkout")
+def proposed_inputs(
+    root: Path, expected: dict[str, Any]
+) -> tuple[dict[str, Any], set[tuple[str, int]], set[str]]:
+    """Apply planned pins to a copy, preserving every shared provider declaration."""
     documents, hashes = inputs(root)
     if hashes != expected["inputs"]:
         raise ValueError("Remediation source snapshot differs from the plan")
@@ -160,7 +155,125 @@ def prepare(root: Path, directories: list[Path], expected: dict[str, Any], outpu
             changed_providers.add((path, index))
         source["modules"][update["module"]] = update["after"]
         changed.add(path)
+    return proposed, changed_providers, changed
+
+
+def identity(value: dict[str, Any]) -> str:
+    """Bind a worker result to its complete plan or provider inputs."""
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def provider_requests(root: Path, expected: dict[str, Any]) -> dict[str, Any]:
+    """Deduplicate identical provider builds across all changed manifests."""
+    proposed, changed, _ = proposed_inputs(root, expected)
+    providers = [proposed[path]["providers"][index] for path, index in sorted(changed)]
+    return {identity(provider): provider for provider in providers}
+
+
+def output_directory(root: Path, output: Path) -> Path:
+    """Reserve a new output outside the source tree without replacing an existing result."""
+    destination = output.resolve()
+    if output.exists() or output.is_symlink():
+        raise ValueError("Proposal output must not already exist")
+    if destination.is_relative_to(root.resolve()) or root.resolve().is_relative_to(destination):
+        raise ValueError("Proposal output must be outside the source checkout")
     destination.parent.mkdir(parents=True, exist_ok=True)
+    return destination
+
+
+def build_shard(
+    root: Path, directories: list[Path], expected: dict[str, Any], shard: str, output: Path
+) -> None:
+    """Build one planned provider and atomically retain its package and bound result."""
+    if plan(root, directories) != expected:
+        raise ValueError("Remediation plan is stale or modified")
+    requests = provider_requests(root, expected)
+    if shard not in requests:
+        raise ValueError("Unknown provider shard")
+    destination = output_directory(root, output / shard)
+    provider = requests[shard]
+    with tempfile.TemporaryDirectory(prefix="go-remediation-", dir=destination.parent) as folder:
+        staging = Path(folder)
+        tooling, work, payload = (staging / name for name in ("tooling", "build", "result"))
+        snapshot_tooling(expected["tooling"], tooling)
+        work.mkdir()
+        data, hashes = rebuild(provider, work, tooling)
+        source = provider["source_build"]
+        source.update(sha256=hashlib.sha256(data).hexdigest(), module_files=hashes)
+        verify_built_provider(provider, data)
+        payload.mkdir()
+        (payload / "provider.zip").write_bytes(data)
+        write(
+            payload / "result.json",
+            {
+                "schemaVersion": 1,
+                "plan": identity(expected),
+                "request": shard,
+                "modules": source["modules"],
+                "moduleFiles": hashes,
+                "sha256": source["sha256"],
+            },
+        )
+        if plan(root, directories) != expected:
+            raise ValueError("Remediation inputs changed during preparation")
+        publish(payload, destination)
+
+
+def read_shard(
+    directory: Path, expected: dict[str, Any], provider: dict[str, Any]
+) -> tuple[bytes, dict[str, str], dict[str, str]]:
+    """Verify worker identity, companion pins and package bytes before assembling locks."""
+    shard = identity(provider)
+    folder = directory / shard
+    paths = [folder, folder / "result.json", folder / "provider.zip"]
+    if any(
+        path.is_symlink() or not path.resolve().is_relative_to(directory.resolve())
+        for path in paths
+    ):
+        raise ValueError("Provider shard escapes its artifact")
+    if {path.name for path in folder.iterdir()} != {"result.json", "provider.zip"}:
+        raise ValueError("Unexpected provider shard files")
+    result = read(folder / "result.json")
+    if (result.get("schemaVersion"), result.get("plan"), result.get("request")) != (
+        1,
+        identity(expected),
+        shard,
+    ):
+        raise ValueError("Provider shard identifies another plan or request")
+    requested = provider["source_build"]["modules"]
+    resolved = result["modules"]
+    if resolved.keys() != requested.keys():
+        raise ValueError("Provider shard changed the module set")
+    for name, version in resolved.items():
+        before, after = semver(requested[name]), semver(version)
+        if after[0] != before[0] or after < before:
+            raise ValueError("Unsafe companion module update")
+    data = (folder / "provider.zip").read_bytes()
+    verified = copy.deepcopy(provider)
+    verified["source_build"].update(
+        modules=resolved, module_files=result["moduleFiles"], sha256=result["sha256"]
+    )
+    verify_built_provider(verified, data)
+    return data, result["moduleFiles"], resolved
+
+
+def prepare(
+    root: Path,
+    directories: list[Path],
+    expected: dict[str, Any],
+    output: Path,
+    *,
+    shards: Path | None = None,
+) -> None:
+    """Publish a complete proposal from local builds or an exact set of verified workers."""
+    if plan(root, directories) != expected:
+        raise ValueError("Remediation plan is stale or modified")
+    destination = output_directory(root, output)
+    proposed, changed_providers, changed = proposed_inputs(root, expected)
+    if shards is not None:
+        requests = provider_requests(root, expected)
+        if shards.is_symlink() or {path.name for path in shards.iterdir()} != requests.keys():
+            raise ValueError("Provider shard set differs from planned builds")
     with tempfile.TemporaryDirectory(prefix="go-remediation-", dir=destination.parent) as folder:
         staging = Path(folder)
         tooling = staging / "tooling"
@@ -176,10 +289,13 @@ def prepare(root: Path, directories: list[Path], expected: dict[str, Any], outpu
             requested = source["modules"].copy()
             key = json.dumps(provider, sort_keys=True)
             if key not in built:
-                work = staging / f"build-{len(built)}"
-                work.mkdir()
-                data, module_files = rebuild(provider, work, tooling)
-                built[key] = data, module_files, source["modules"].copy()
+                if shards is None:
+                    work = staging / f"build-{len(built)}"
+                    work.mkdir()
+                    data, module_files = rebuild(provider, work, tooling)
+                    built[key] = data, module_files, source["modules"].copy()
+                else:
+                    built[key] = read_shard(shards, expected, provider)
             data, module_files, resolved = built[key]
             source["modules"] = resolved.copy()
             companion_updates.extend(

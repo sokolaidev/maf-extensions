@@ -517,6 +517,142 @@ def test_shared_provider_locks_are_rebuilt_once_and_keep_upstream_identity(
     assert read(destination / "proposal.json")["qualification"] == "pending-image-build-and-rescan"
 
 
+@pytest.fixture
+def sharded_proposal(checkout, tmp_path, monkeypatch):
+    original = read(checkout / planner.CONTEXT / "dependencies.terraform.json")
+    write(checkout / planner.CONTEXT / "dependencies.shared.json", original)
+    directory = retained(tmp_path, [finding(provider_path(provider(checkout)))])
+    expected = planner.plan(checkout, [directory])
+    calls = []
+
+    def rebuild(item, work, tooling):
+        calls.append(copy.deepcopy(item))
+        return built(item, work)
+
+    monkeypatch.setattr(preparation, "rebuild", rebuild)
+    requests = preparation.provider_requests(checkout, expected)
+    assert len(requests) == 1
+    shards = tmp_path / "shards"
+    for shard in requests:
+        preparation.build_shard(checkout, [directory], expected, shard, shards)
+    return checkout, directory, expected, shards, calls
+
+
+def test_sharded_assembly_matches_local_preparation(sharded_proposal, tmp_path):
+    checkout, directory, expected, shards, calls = sharded_proposal
+    assembled, local = tmp_path / "assembled", tmp_path / "local"
+    preparation.prepare(checkout, [directory], expected, assembled, shards=shards)
+    assert len(calls) == 1
+    preparation.prepare(checkout, [directory], expected, local)
+    assert len(calls) == 2
+    for path in local.rglob("*"):
+        if path.is_file():
+            assert (assembled / path.relative_to(local)).read_bytes() == path.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing",
+        "extra",
+        "duplicate",
+        "plan",
+        "request",
+        "archive",
+        "modules",
+        "downgrade",
+        "major",
+        "hashes",
+        "stale-source",
+    ],
+)
+def test_sharded_assembly_refuses_incomplete_or_changed_results(sharded_proposal, tmp_path, fault):
+    checkout, directory, expected, shards, calls = sharded_proposal
+    shard = next(shards.iterdir())
+    record = read(shard / "result.json")
+    if fault == "missing":
+        shutil.rmtree(shard)
+    elif fault == "extra":
+        (shards / "unexpected").mkdir()
+    elif fault == "duplicate":
+        shutil.copytree(shard, shards / "duplicate")
+    elif fault == "archive":
+        (shard / "provider.zip").write_bytes(b"changed")
+    elif fault == "stale-source":
+        path = checkout / planner.RECIPE
+        path.write_bytes(path.read_bytes() + b"\n")
+    else:
+        if fault in {"plan", "request"}:
+            record[fault] = "0" * 64
+        elif fault == "modules":
+            record["modules"]["example.com/unplanned"] = "v1.0.0"
+        elif fault in {"downgrade", "major"}:
+            record["modules"][MODULE] = "v0.1.0" if fault == "downgrade" else "v1.0.0"
+        else:
+            record["moduleFiles"]["go.mod"] = "0" * 64
+        write(shard / "result.json", record)
+    destination = tmp_path / "proposal"
+    with pytest.raises((ValueError, builder.prep.Refused)):
+        preparation.prepare(checkout, [directory], expected, destination, shards=shards)
+    assert not destination.exists() and len(calls) == 1
+
+
+def test_engine_only_proposal_assembles_without_workers(checkout, tmp_path, monkeypatch):
+    directory = retained(tmp_path)
+    expected = planner.plan(checkout, [directory])
+    assert preparation.provider_requests(checkout, expected) == {}
+    shards = tmp_path / "shards"
+    shards.mkdir()
+    monkeypatch.setattr(preparation, "rebuild", lambda *_: pytest.fail("unexpected compilation"))
+    destination = tmp_path / "proposal"
+    preparation.prepare(checkout, [directory], expected, destination, shards=shards)
+    assert read(destination / "proposal.json")["providers"] == []
+
+
+def test_workers_preserve_distinct_build_inputs_and_companions(checkout, tmp_path, monkeypatch):
+    duplicate = read(checkout / planner.CONTEXT / "dependencies.terraform.json")
+    duplicate["providers"][0]["source_build"]["modules"]["golang.org/x/crypto"] = "v0.57.0"
+    name = f"{planner.CONTEXT}/dependencies.shared.json"
+    write(checkout / name, duplicate)
+    directory = retained(tmp_path, [finding(provider_path(provider(checkout)))])
+    expected = planner.plan(checkout, [directory])
+    requests = preparation.provider_requests(checkout, expected)
+    assert len(requests) == 2
+
+    def rebuild(item, work, tooling):
+        modules = item["source_build"]["modules"]
+        if "golang.org/x/crypto" in modules:
+            modules["golang.org/x/crypto"] = "v0.58.0"
+        return built(item, work)
+
+    monkeypatch.setattr(preparation, "rebuild", rebuild)
+    shards, destination = tmp_path / "shards", tmp_path / "proposal"
+    for shard in reversed(requests):
+        preparation.build_shard(checkout, [directory], expected, shard, shards)
+    preparation.prepare(checkout, [directory], expected, destination, shards=shards)
+    shared = read(destination / "files" / name)["providers"][0]
+    assert shared["source_build"]["modules"]["golang.org/x/crypto"] == "v0.58.0"
+    assert read(destination / "proposal.json")["companionUpdates"] == [
+        {
+            "path": name,
+            "owner": "0",
+            "module": "golang.org/x/crypto",
+            "before": "v0.57.0",
+            "after": "v0.58.0",
+        }
+    ]
+
+
+def test_workers_recompute_plan_and_reject_unknown_requests(checkout, tmp_path):
+    directory = retained(tmp_path, [finding(provider_path(provider(checkout)))])
+    expected = planner.plan(checkout, [directory])
+    with pytest.raises(ValueError, match="Unknown provider shard"):
+        preparation.build_shard(checkout, [directory], expected, "../other", tmp_path / "shards")
+    expected["updates"][0]["after"] = "v0.63.0"
+    with pytest.raises(ValueError, match="stale or modified"):
+        preparation.build_shard(checkout, [directory], expected, "unused", tmp_path / "shards")
+
+
 @pytest.mark.parametrize(
     "changed", ["build_providers.py", "terraform_dependencies.py", "runner.py"]
 )

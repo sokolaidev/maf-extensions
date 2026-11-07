@@ -157,6 +157,52 @@ def test_build_refuses_security_input_drift_before_compilation(tmp_path, monkeyp
         builder.build(item, tmp_path)
 
 
+@pytest.mark.parametrize("configured,expected", [(None, "2"), ("8", "8"), ("auto", "16")])
+def test_provider_build_concurrency_reaches_go_commands(
+    tmp_path, monkeypatch, configured, expected
+):
+    item = provider()
+    if configured is None:
+        monkeypatch.delenv("MAF_GO_BUILD_CONCURRENCY", raising=False)
+    else:
+        monkeypatch.setenv("MAF_GO_BUILD_CONCURRENCY", configured)
+    monkeypatch.setattr(builder.os, "cpu_count", lambda: 16)
+    monkeypatch.setattr(prep, "fetch", lambda *a, **kw: b"source")
+    monkeypatch.setattr(builder, "unpack", lambda *a: None)
+    for name in ("go.mod", "go.sum", "LICENSE"):
+        (tmp_path / name).write_bytes(name.encode())
+    calls = []
+
+    def output(command, **kwargs):
+        if command == ["go", "env", "GOVERSION"]:
+            return item["source_build"]["go_version"]
+        assert kwargs["env"]["GOMAXPROCS"] == expected
+        return json.dumps({"Version": item["source_build"]["modules"][command[-1]]})
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert kwargs["env"]["GOMAXPROCS"] == expected
+        if command[:2] == ["go", "build"]:
+            assert f"-p={expected}" in command
+            Path(command[command.index("-o") + 1]).write_bytes(b"compiled")
+
+    monkeypatch.setattr(builder.subprocess, "check_output", output)
+    monkeypatch.setattr(builder.subprocess, "run", run)
+    data, _ = builder.build(item, tmp_path)
+    assert data and any(command[:2] == ["go", "build"] for command in calls)
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "", "2.5", "4 -exec=other"])
+def test_invalid_concurrency_fails_before_fetch_or_compilation(tmp_path, monkeypatch, value):
+    monkeypatch.setenv("MAF_GO_BUILD_CONCURRENCY", value)
+    monkeypatch.setattr(prep, "fetch", lambda *a, **kw: pytest.fail("unexpected fetch"))
+    monkeypatch.setattr(
+        builder.subprocess, "check_output", lambda *a, **kw: pytest.fail("unexpected Go")
+    )
+    with pytest.raises(ValueError, match="positive integer or auto"):
+        builder.build(provider(), tmp_path)
+
+
 @pytest.mark.parametrize(
     "name", ["../outside", "/absolute", "nested/../outside", "nested\\outside"]
 )

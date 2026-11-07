@@ -10,6 +10,7 @@ RUN apk add --no-cache python3 git
 
 FROM provider-toolchain AS provider-build
 ARG MANIFEST
+ARG MAF_GO_BUILD_CONCURRENCY=2
 COPY --from=scripts terraform_dependencies.py terraform_manifest.py /src/scripts/
 COPY runner.py build_providers.py /src/images/terraform-sandbox/
 COPY ${MANIFEST} /src/manifest.json

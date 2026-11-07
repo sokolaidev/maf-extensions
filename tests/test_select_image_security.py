@@ -430,7 +430,7 @@ def test_unknown_or_shared_shell_changes_keep_full_coverage(shared_inputs, mutat
         "missing": None,
         "heredoc": builder.replace("\nPY\n", "\nMISSING\n"),
         "commented-heredoc": builder.replace(" <<'PY'", " # <<'PY'"),
-        "provider-setup": builder.replace("provider_args=()", "provider_args=(--pull)"),
+        "provider-setup": builder.replace("provider_args=(", "provider_args=(--pull "),
         "unknown-array": builder.replace("${provider_args[@]}", "${unknown_args[@]}"),
     }[mutation]
     head = commit(root, {path: changed})
