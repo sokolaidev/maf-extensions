@@ -274,10 +274,33 @@ def test_release_preparation_rejects_regressed_crypto_before_assessment(
         preparation.assess(tmp_path, "sha256:" + "a" * 64)
 
 
-def test_historical_upstream_monitoring_does_not_apply_candidate_crypto_floor():
-    source.verify_inventory(
-        crypto_inventory("10.0.10"), {"bicep": {"build": {"route": "upstream"}}}
+@pytest.mark.parametrize("route", ["upstream", "source"])
+def test_historical_monitoring_does_not_apply_candidate_crypto_floor(tmp_path, monkeypatch, route):
+    import prepare_container_release as preparation
+
+    report = read(ROOT / "docs/security/evidence/bicep-crypto-2026-11-08/grype.json")
+    image_id = report["source"]["target"]["imageID"]
+    write(tmp_path / "grype.json", report)
+    write(tmp_path / "sbom.syft.json", crypto_inventory("10.0.10"))
+    write(
+        tmp_path / "runtime.json",
+        {
+            "profile": "bicep",
+            "bicep": {
+                "build": {
+                    "route": route,
+                    "packages": dict.fromkeys(source.LEGACY_PACKAGES, "10.0.10"),
+                }
+            },
+        },
     )
+    monkeypatch.setattr(preparation, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(preparation, "verify_inventory", lambda *args: None)
+    monkeypatch.setattr(
+        preparation.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0)
+    )
+    monkeypatch.setattr(preparation, "now", lambda: "2026-11-07T23:25:07Z")
+    assert preparation.assess(tmp_path, image_id, require_clean=False)["outcome"] == "vulnerable"
 
 
 def test_retained_avm_rebuild_proves_crypto_inventory_and_remaining_glibc_finding():

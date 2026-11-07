@@ -132,7 +132,8 @@ def assess(directory: Path, image_id: str, *, require_clean: bool = True) -> dic
         from bicep_source import verify_crypto_inventory
         from bicep_source import verify_inventory as verify_bicep_inventory
 
-        verify_crypto_inventory(sbom)
+        if require_clean:
+            verify_crypto_inventory(sbom)
         verify_bicep_inventory(read(directory / "sbom.syft.json"), read(runtime))
     if runtime.exists() and read(runtime).get("profile") == "drawio-export":
         import drawio_export_qualification
