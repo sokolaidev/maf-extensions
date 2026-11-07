@@ -7,14 +7,14 @@ import contextlib
 import hashlib
 import json
 import os
-import socket
 import sys
 from pathlib import Path
+from typing import cast
 
 from maf_sandbox import SandboxSpec
 
 
-def policy(spec: SandboxSpec, directory: Path, ports: list[int]) -> dict[str, object]:
+def policy(spec: SandboxSpec, directory: Path) -> dict[str, object]:
     """Translate only uncredentialed HTTP allowlists into the pinned proxy's policy."""
     domains: list[str] = []
     rules: list[dict[str, object]] = []
@@ -33,8 +33,8 @@ def policy(spec: SandboxSpec, directory: Path, ports: list[int]) -> dict[str, ob
     return {
         "dns": {"enabled": False},
         "proxy": {
-            "http_listen": f"127.0.0.1:{ports[0]}",
-            "https_listen": f"127.0.0.1:{ports[1]}",
+            "http_listen": "127.0.0.1:0",
+            "https_listen": "127.0.0.1:0",
             "upstream_deny_cidrs": [
                 "0.0.0.0/8",
                 "10.0.0.0/8",
@@ -59,9 +59,32 @@ def policy(spec: SandboxSpec, directory: Path, ports: list[int]) -> dict[str, ob
             "ca_key": str(directory / "ca.key"),
         },
         "transforms": [{"name": "allowlist", "config": {"domains": domains, "rules": rules}}],
-        "metrics": {"listen": f"127.0.0.1:{ports[2]}"},
-        "log": {"level": "error"},
+        "metrics": {"listen": "127.0.0.1:0"},
+        "log": {"level": "info"},
     }
+
+
+def _owns_listener(pid: int, port: int, proc_root: Path = Path("/proc")) -> bool:
+    """Require the listener inode to belong to this process, not just its network namespace."""
+    root = proc_root / str(pid)
+    try:
+        sockets: set[str] = set()
+        for descriptor in (root / "fd").iterdir():
+            with contextlib.suppress(OSError):
+                sockets.add(os.readlink(descriptor))
+        with (root / "net/tcp").open(encoding="ascii") as table:
+            for line in table:
+                fields = line.split()
+                if (
+                    len(fields) > 9
+                    and fields[1] == f"0100007F:{port:04X}"
+                    and fields[3] == "0A"
+                    and f"socket:[{fields[9]}]" in sockets
+                ):
+                    return True
+    except OSError:
+        return False
+    return False
 
 
 class Proxy:
@@ -74,6 +97,7 @@ class Proxy:
         self.tasks: set[asyncio.Task[None]] = set()
         self.diagnostics: asyncio.Task[None] | None = None
         self.error = bytearray()
+        self.tunnel_port: int | None = None
 
     async def start(self, binary: Path, sha256: str, spec: SandboxSpec, group: Path) -> None:
         """Verify the provisioned binary before launching it under owner-death supervision."""
@@ -100,13 +124,8 @@ class Proxy:
                 ca.kill()
                 await ca.wait()
         (public / "ca.crt").write_bytes((self.directory / "ca.crt").read_bytes())
-        with contextlib.ExitStack() as stack:
-            sockets = [stack.enter_context(socket.socket()) for _ in range(4)]
-            for listener in sockets:
-                listener.bind(("127.0.0.1", 0))
-            ports = [int(listener.getsockname()[1]) for listener in sockets]
         config = self.directory / "config.json"
-        config.write_text(json.dumps(policy(spec, self.directory, ports)), encoding="utf-8")
+        config.write_text(json.dumps(policy(spec, self.directory)), encoding="utf-8")
         self.process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-I",
@@ -118,7 +137,7 @@ class Proxy:
             str(config),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env={"PATH": "/usr/bin:/bin", "IRON_PROXY_TUNNEL_LISTEN": f"127.0.0.1:{ports[3]}"},
+            env={"PATH": "/usr/bin:/bin", "IRON_PROXY_TUNNEL_LISTEN": "127.0.0.1:0"},
         )
         self.diagnostics = asyncio.create_task(self._drain())
         async with asyncio.timeout(10):
@@ -127,20 +146,20 @@ class Proxy:
                     raise RuntimeError(
                         "Native egress proxy startup failed: " + self.error.decode(errors="replace")
                     )
-                try:
-                    _, writer = await asyncio.open_connection("127.0.0.1", ports[3])
-                except OSError:
-                    await asyncio.sleep(0.02)
-                else:
-                    writer.close()
-                    await writer.wait_closed()
+                if self.tunnel_port is not None and _owns_listener(
+                    self.process.pid, self.tunnel_port
+                ):
                     break
+                await asyncio.sleep(0.02)
+
+        port = self.tunnel_port
+        assert port is not None
 
         def connect(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
             if len(self.tasks) >= 32 or self.process is None or self.process.returncode is not None:
                 writer.close()
                 return
-            task = asyncio.create_task(self._relay(reader, writer, ports[3]))
+            task = asyncio.create_task(self._relay(reader, writer, port))
             self.tasks.add(task)
             task.add_done_callback(self.tasks.discard)
 
@@ -150,8 +169,40 @@ class Proxy:
 
     async def _drain(self) -> None:
         assert self.process is not None and self.process.stdout is not None
+        pending = bytearray()
+        discard = False
         while chunk := await self.process.stdout.read(4096):
             self.error.extend(chunk[: max(0, 8192 - len(self.error))])
+            parts = chunk.split(b"\n")
+            for index, part in enumerate(parts):
+                if not discard:
+                    pending.extend(part)
+                    if len(pending) > 8192:
+                        pending.clear()
+                        discard = True
+                if index < len(parts) - 1:
+                    if not discard and self.tunnel_port is None:
+                        self._read_ready(pending)
+                    pending.clear()
+                    discard = False
+
+    def _read_ready(self, line: bytearray) -> None:
+        """Read the kernel-selected address from the pinned child's structured startup log."""
+        try:
+            value: object = json.loads(line)
+            if not isinstance(value, dict):
+                return
+            record = cast(dict[str, object], value)
+            if record.get("msg") != "tunnel proxy starting":
+                return
+            address = record.get("addr")
+            if not isinstance(address, str) or not address.startswith("127.0.0.1:"):
+                return
+            port = int(address.removeprefix("127.0.0.1:"))
+            if 0 < port < 65536:
+                self.tunnel_port = port
+        except (ValueError, UnicodeError):
+            return
 
     async def _relay(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, port: int
@@ -166,6 +217,12 @@ class Proxy:
         try:
             async with asyncio.timeout(180):
                 remote, upstream = await asyncio.open_connection("127.0.0.1", port)
+                if (
+                    self.process is None
+                    or self.process.returncode is not None
+                    or not _owns_listener(self.process.pid, port)
+                ):
+                    return
                 tasks = [
                     asyncio.create_task(copy(reader, upstream)),
                     asyncio.create_task(copy(remote, writer)),

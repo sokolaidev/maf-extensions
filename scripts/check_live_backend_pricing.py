@@ -113,12 +113,14 @@ def check(
                 "Wrong retail price identity",
             )
             category = price.get("priceType")
-            require(category in ("Consumption", "Reservation"), "Wrong price type")
+            require(
+                category in ("Consumption", "Reservation", "DevTestConsumption"), "Wrong price type"
+            )
             categories.add(category)
             if category == "Reservation":
                 require(bool(price.get("reservationTerm")), "Missing reservation term")
     require(
-        categories == {"Consumption", "Reservation"}, "Missing consumption/reservation coverage"
+        {"Consumption", "Reservation"} <= categories, "Missing consumption/reservation coverage"
     )
     cleanups = [row for row in records if row.get("stage") == "cleanup"]
     require(len(cleanups) == 1 and records[-1] == cleanups[0], "Missing terminal cleanup")

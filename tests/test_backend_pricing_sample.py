@@ -185,6 +185,36 @@ def test_sample_preserves_empty_and_truncated_tool_reports():
         sample.report([Content.from_text("The model claims there are prices")])
 
 
+def test_unfiltered_report_accepts_mixed_prices_but_explicit_filter_is_enforced():
+    from agent_framework import Content
+    from maf_sandbox.maf import COMPLETED_TEXT
+
+    sample = load_sample()
+    value = copy.deepcopy(records()[3]["report"])
+    value["prices"] = [
+        dict(value["prices"][0], priceType=category)
+        for category in ("Consumption", "Reservation", "DevTestConsumption")
+    ]
+    answer = [Content.from_text(COMPLETED_TEXT), Content.from_text(json.dumps(value))]
+    assert sample.report(answer) == value
+    assert sample.report(answer, None) == value
+    with pytest.raises(ValueError, match="price type"):
+        sample.report(answer, "Consumption")
+
+
+def test_evidence_accepts_dev_test_prices_without_losing_required_coverage():
+    rows = records()
+    prices = rows[3]["report"]["prices"]
+    prices.append(dict(prices[0], priceType="DevTestConsumption"))
+    check(log(rows), "bubblewrap", model=False)
+    prices[0]["priceType"] = "DevTestConsumption"
+    with pytest.raises(ValueError, match="coverage"):
+        check(log(rows), "bubblewrap", model=False)
+    prices[0]["priceType"] = "unknown"
+    with pytest.raises(ValueError, match="price type"):
+        check(log(rows), "bubblewrap", model=False)
+
+
 def test_model_calls_require_explicit_opt_in():
     sample = load_sample()
     args = ["--backend", "docker-sbx", "--image", "template", "--source", "source"]
@@ -202,7 +232,7 @@ def test_model_budget_serializes_calls_through_evidence_checks():
         order = []
 
         async def checked(answer, category, seconds):
-            assert answer == "report" and category == "Consumption" and seconds > 0
+            assert answer == "report" and category is None and seconds > 0
             order.append("check")
             await asyncio.sleep(0)
             order.append("verified")
@@ -219,6 +249,20 @@ def test_model_budget_serializes_calls_through_evidence_checks():
         assert results[:2] == [None, None]
         assert isinstance(results[2], ValueError) and "budget" in str(results[2])
         assert order == ["run", "check", "verified"] * 2
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("arguments", [{}, {"price_type": None}, {"price_type": "Reservation"}])
+def test_model_price_filter_preserves_missing_and_null(arguments):
+    sample = load_sample()
+
+    async def scenario():
+        checked = AsyncMock()
+        context = Mock(arguments=arguments, result="report")
+        await sample.ModelCalls(checked).process(context, AsyncMock())
+        answer, category, seconds = checked.call_args.args
+        assert answer == "report" and category == arguments.get("price_type") and seconds > 0
 
     asyncio.run(scenario())
 

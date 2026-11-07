@@ -53,7 +53,7 @@ def measure(stage: str, **values: object) -> None:
     print(PREFIX + json.dumps({"stage": stage, **values}), flush=True)
 
 
-def report(answer: Any) -> dict[str, Any]:
+def report(answer: Any, category: str | None = None) -> dict[str, Any]:
     """Validate the actual completed tool report, preserving empty and truncated semantics."""
     require(isinstance(answer, list), "Missing tool contents")
     texts = [item.text for item in answer if isinstance(getattr(item, "text", None), str)]
@@ -65,6 +65,8 @@ def report(answer: Any) -> dict[str, Any]:
     require(type(value.get("truncated")) is bool, "Missing truncation status")
     for row in value["prices"]:
         require(isinstance(row, dict), "Invalid price row")
+        if category is not None:
+            require(row.get("priceType") == category, "Wrong price type")
         price = row.get("retailPrice")
         require(
             type(price) in (int, float) and math.isfinite(price) and price >= 0,
@@ -86,7 +88,7 @@ def report(answer: Any) -> dict[str, Any]:
 class ModelCalls(FunctionMiddleware):
     """Bound model-triggered calls and serialize their host evidence."""
 
-    def __init__(self, checked: Callable[[Any, str, float], Awaitable[None]]) -> None:
+    def __init__(self, checked: Callable[[Any, str | None, float], Awaitable[None]]) -> None:
         self.checked = checked
         self.calls = 0
         self._serial = asyncio.Lock()
@@ -101,7 +103,7 @@ class ModelCalls(FunctionMiddleware):
             await call_next()
             await self.checked(
                 context.result,
-                str(dict(context.arguments).get("price_type", "Consumption")),
+                dict(context.arguments).get("price_type"),
                 time.monotonic() - started,
             )
 
@@ -256,14 +258,11 @@ async def run(args: argparse.Namespace) -> None:
         else None,
     )
 
-    async def checked(answer: Any, category: str, seconds: float) -> None:
-        value = report(answer)
+    async def checked(answer: Any, category: str | None, seconds: float) -> None:
+        value = report(answer, category)
         require(
             bool(value["prices"]) and not value["truncated"],
             "Narrow live query is empty or truncated",
-        )
-        require(
-            all(row.get("priceType") == category for row in value["prices"]), "Wrong price type"
         )
         require(bool(evidence.calls) and evidence.calls[-1].unclean == 0, "Incomplete call cleanup")
         await absent(args, evidence)
