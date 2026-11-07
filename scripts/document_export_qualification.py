@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import subprocess
+import unicodedata
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -49,10 +50,13 @@ def docker(*args: str) -> str:
     ).strip()
 
 
-def inspect_pdf(data: bytes) -> dict[str, Any]:
+def inspect_pdf(data: bytes, *, text_path: Path | None = None) -> dict[str, Any]:
     """Require real pagination, embedded text/monospace fonts and fixture content."""
     reader = PdfReader(io.BytesIO(data))
     text = "\n".join(page.extract_text() for page in reader.pages)
+    if text_path is not None:
+        text_path.write_text(text, "utf-8")
+    normalized = " ".join(unicodedata.normalize("NFKC", text).split())
     fonts: set[str] = set()
     for page in reader.pages:
         resources: Any = page["/Resources"]
@@ -78,7 +82,9 @@ def inspect_pdf(data: bytes) -> dict[str, Any]:
         "Supplied SVG",
         "Page 1 of",
     ):
-        require(expected in text, f"missing extracted text: {expected}")
+        require(
+            expected in normalized, f"missing extracted text: {expected}; excerpt: {text[:200]!r}"
+        )
     require(any("DejaVuSans" in name for name in fonts), "text font missing")
     require(any("DejaVuSansMono" in name for name in fonts), "monospace font missing")
     return {"pages": len(reader.pages), "fonts": sorted(fonts), "text": text}
@@ -149,7 +155,12 @@ async def check(image_id: str, *, directory: Path | None = None) -> dict[str, An
                 key=key,
                 image=image_id,
             )
-            content = inspect_pdf(data)
+            text_path = None
+            if directory is not None:
+                directory.mkdir(parents=True, exist_ok=True)
+                (directory / f"fixture-{size}.pdf").write_bytes(data)
+                text_path = directory / f"fixture-{size}.txt"
+            content = inspect_pdf(data, text_path=text_path)
             require(metadata[-1]["pages"] == content["pages"], "page evidence differs")
             require(
                 metadata[-1]["mermaid_rendered"] == 1 and metadata[-1]["mermaid_fallbacks"] == 0,
@@ -162,10 +173,6 @@ async def check(image_id: str, *, directory: Path | None = None) -> dict[str, An
                 "fonts": content["fonts"],
                 "renderer": metadata[-1],
             }
-            if directory is not None:
-                directory.mkdir(parents=True, exist_ok=True)
-                (directory / f"fixture-{size}.pdf").write_bytes(data)
-                (directory / f"fixture-{size}.txt").write_text(content["text"], "utf-8")
         fallback = await export_pdf(
             "```mermaid\nnot a valid diagram\n```", {}, router=router, key=key, image=image_id
         )
