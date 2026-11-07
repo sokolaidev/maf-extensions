@@ -271,14 +271,56 @@ async def run(args: argparse.Namespace) -> None:
 
     try:
         if args.qualify:
-            from qualification import probes
+            from qualification import denial_record, probes
 
             async def probe_absent(instances: list[str]) -> None:
                 probe_evidence = Evidence()
                 probe_evidence.instances = instances
                 await absent(args, probe_evidence)
 
-            measure("probes", results=await probes(backend, args.image, probe_absent))
+            async def probe_denied(sandbox: Sandbox, host: str, method: str) -> dict[str, object]:
+                records: Any = None
+                try:
+                    async with asyncio.timeout(10):
+                        while True:
+                            if args.backend == "bubblewrap":
+                                diagnostics = bytes(getattr(sandbox, "proxy").error)
+                                records = []
+                                for line in diagnostics.splitlines():
+                                    try:
+                                        record = json.loads(line)
+                                    except ValueError:
+                                        continue
+                                    if isinstance(record, dict):
+                                        records.append(record)
+                            else:
+                                records = json.loads(
+                                    await asyncio.to_thread(
+                                        command,
+                                        args.sbx,
+                                        "policy",
+                                        "log",
+                                        getattr(sandbox, "name"),
+                                        "--json",
+                                    )
+                                )
+                            record = denial_record(
+                                args.backend, records, sandbox.instance_id, host, method
+                            )
+                            if record is not None:
+                                return {
+                                    "source": args.backend,
+                                    "host": host,
+                                    "method": method,
+                                    "record": record,
+                                }
+                            await asyncio.sleep(0.1)
+                except TimeoutError as error:
+                    raise ValueError(
+                        f"Missing host proxy denial for {host}: {records!r}"[:8192]
+                    ) from error
+
+            measure("probes", results=await probes(backend, args.image, probe_absent, probe_denied))
         for category in ("Consumption", "Reservation"):
             started = time.monotonic()
             answer = await tool.func(**QUERY, price_type=category)

@@ -172,10 +172,10 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          uv run python samples/experimental/azure_pricing/agent.py \
+          uv run python -u samples/experimental/azure_pricing/agent.py \
             --backend docker-sbx --image maf-pricing-native:qualification \
             --workspace "$RUNNER_TEMP/pricing-workspaces" --source "$SOURCE_SHA" \
-            --no-model --qualify | tee pricing.log
+            --no-model --qualify 2>&1 | tee pricing.log
           uv run python scripts/check_live_backend_pricing.py pricing.log \
             --backend docker-sbx --no-model --require-probes
 

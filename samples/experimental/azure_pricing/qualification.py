@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Awaitable, Callable
-from typing import Any
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Any, cast
 from uuid import uuid4
 
 from maf_sandbox import (
     CallerContext,
+    ExecResult,
     Isolation,
     Sandbox,
     SandboxBackend,
@@ -36,15 +37,20 @@ except urllib.error.URLError as error:
     print(json.dumps({'denied': '403' in str(error.reason), 'reason': str(error.reason)[:512]}))
 """
 DIRECT_PROBE = """import socket, ssl
+established = False
 try:
-    connection = socket.create_connection(('1.1.1.1', 443), timeout=2)
-except OSError:
-    print('blocked')
-else:
-    with connection:
+    with socket.create_connection(('1.1.1.1', 443), timeout=2) as connection:
         with ssl.create_default_context().wrap_socket(connection, server_hostname='one.one.one.one') as tls:
+            established = True
             tls.sendall(b'GET / HTTP/1.1\\r\\nHost: one.one.one.one\\r\\nConnection: close\\r\\n\\r\\n')
             response = tls.recv(4096)
+except ssl.SSLCertVerificationError:
+    raise
+except OSError:
+    if established:
+        raise
+    print('blocked')
+else:
     if b'403' in response.split(b'\\r\\n', 1)[0] and b'Blocked' in response:
         print('blocked')
     else:
@@ -52,10 +58,76 @@ else:
 """
 
 
+def denial_record(
+    backend: str, records: Any, instance: str, host: str, method: str
+) -> dict[str, Any] | None:
+    """Match a denial from the host's proxy, not an origin's HTTP status."""
+    if backend == "bubblewrap":
+        for record in records:
+            audit = record.get("audit", {})
+            if (
+                record.get("rejected_by") == "allowlist"
+                and audit.get("action") == "reject"
+                and audit.get("status_code") == 403
+                and audit.get("host", "").split(":")[0] == host
+                and audit.get("method") in ({method, "CONNECT"} if method == "GET" else {method})
+            ):
+                return record
+    else:
+        for record in records.get("blocked", []):
+            if (
+                record.get("sandbox_id") == instance
+                and record.get("host", "").split(":")[0] == host
+                and type(record.get("count")) is int
+                and record["count"] > 0
+            ):
+                return record
+    return None
+
+
+class DeadlineProbe:
+    """Observe a forced execution deadline while forwarding the sandbox's other surfaces."""
+
+    seconds = 0.001
+
+    def __init__(self, sandbox: Sandbox) -> None:
+        self.sandbox = sandbox
+        self.deadline: asyncio.Timeout | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.sandbox, name)
+
+    async def exec_bounded(
+        self,
+        command: str | Sequence[str],
+        *,
+        working_directory: str,
+        timeout: float,
+        max_output_bytes: int,
+    ) -> ExecResult:
+        if not isinstance(self.sandbox, BoundedExec):
+            raise TypeError("Pricing requires BoundedExec")
+        async with asyncio.timeout(self.seconds) as deadline:
+            self.deadline = deadline
+            return await self.sandbox.exec_bounded(
+                command,
+                working_directory=working_directory,
+                timeout=timeout,
+                max_output_bytes=max_output_bytes,
+            )
+
+    def evidence(self) -> dict[str, object]:
+        """Refuse generic failures or cancellation without this deadline's expiry."""
+        if self.deadline is None or not self.deadline.expired():
+            raise ValueError("Bounded execution did not reach its forced deadline")
+        return {"started": True, "expired": True, "timeout_seconds": self.seconds}
+
+
 async def probes(
     backend: SandboxBackend,
     image: str,
     verify_absent: Callable[[list[str]], Awaitable[None]],
+    verify_denied: Callable[[Sandbox, str, str], Awaitable[dict[str, object]]],
 ) -> list[dict[str, object]]:
     """Verify denied traffic, output overflow, timeout and cancellation with disposal."""
     scope = "pricing-probes-" + uuid4().hex
@@ -67,6 +139,7 @@ async def probes(
         sandbox = await backend.acquire(key, spec)
         instances.append(sandbox.instance_id)
         started = time.monotonic()
+        details: dict[str, object] = {}
         try:
             if not isinstance(sandbox, BoundedExec):
                 raise TypeError("Pricing requires BoundedExec")
@@ -88,6 +161,11 @@ async def probes(
                 value = json.loads(result.stdout)
                 if value.get("status") != 403 and value.get("denied") is not True:
                     raise ValueError(f"Disallowed {name} request was not denied: {value!r}")
+                details["denial"] = await verify_denied(
+                    sandbox,
+                    "prices.azure.com" if name == "method" else "example.com",
+                    "POST" if name == "method" else "GET",
+                )
             elif name == "direct":
                 result = await sandbox.exec_bounded(
                     ["/usr/bin/python3", "-c", DIRECT_PROBE],
@@ -142,6 +220,7 @@ async def probes(
                 "instance": sandbox.instance_id,
                 "seconds": time.monotonic() - started,
                 "disposed": True,
+                **details,
             }
         )
     if len(set(instances)) != len(instances):
@@ -162,6 +241,7 @@ async def tool_failures(
         scope = "pricing-failure-" + uuid4().hex
         acquired = asyncio.Event()
         calls: list[ToolCallEnded] = []
+        deadline_probe: DeadlineProbe | None = None
 
         class Observer(SandboxObserver):
             def tool_call_ended(self, event: ToolCallEnded) -> None:
@@ -169,11 +249,15 @@ async def tool_failures(
 
         class Router(SandboxRouter):
             async def acquire(self, key: SandboxKey, spec: SandboxSpec, **kwargs: Any) -> Sandbox:
+                nonlocal deadline_probe
                 sandbox = await super().acquire(key, spec, **kwargs)
                 if not key.call_id or sandbox.instance_id in instances:
                     raise ValueError("Failure call did not acquire a fresh call-scoped sandbox")
                 instances.append(sandbox.instance_id)
                 acquired.set()
+                if case == "tool_timeout":
+                    deadline_probe = DeadlineProbe(sandbox)
+                    return cast(Sandbox, deadline_probe)
                 return sandbox
 
         router = (
@@ -186,13 +270,14 @@ async def tool_failures(
             "pricing",
             CallerContext(lambda: scope, lambda: "failures", list_no_files),
             image=image,
-            exec_timeout_seconds=0.001 if case == "tool_timeout" else 90,
+            exec_timeout_seconds=90,
         )
         started = time.monotonic()
         task = asyncio.create_task(
             tool.func(sku="Standard_D4s_v5", region="westeurope", currency="USD")
         )
         try:
+            details: dict[str, object] = {}
             if case == "tool_cancellation":
                 ready = asyncio.create_task(acquired.wait())
                 try:
@@ -215,6 +300,9 @@ async def tool_failures(
                 answer = await task
                 if NOT_COMPLETED_TEXT not in [item.text for item in answer]:
                     raise ValueError("The forced pricing deadline did not return incomplete")
+                if deadline_probe is None:
+                    raise ValueError("Pricing did not enter bounded execution")
+                details["execution"] = deadline_probe.evidence()
             if not acquired.is_set() or len(calls) != 1 or calls[0].unclean != 0:
                 raise ValueError("Missing acquired-call cleanup evidence")
             await verify_absent(instances)
@@ -224,6 +312,7 @@ async def tool_failures(
                     "instance": instances[-1],
                     "seconds": time.monotonic() - started,
                     "disposed": True,
+                    **details,
                 }
             )
         finally:

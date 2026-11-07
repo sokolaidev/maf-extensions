@@ -5,6 +5,7 @@ import copy
 import importlib.util
 import json
 import os
+import ssl
 import subprocess
 import sys
 from pathlib import Path
@@ -90,9 +91,7 @@ def test_quoted_model_records_cannot_supply_host_evidence():
         check("Model: " + json.dumps(log(records())), "bubblewrap", model=False)
 
 
-@pytest.mark.parametrize("missing", [False, True])
-def test_qualification_requires_pricing_tool_failure_cleanup(missing):
-    rows = records()
+def probe_records():
     names = [
         "method",
         "destination",
@@ -104,6 +103,26 @@ def test_qualification_requires_pricing_tool_failure_cleanup(missing):
         "tool_cancellation",
     ]
     results = [{"name": name, "instance": name, "seconds": 1.0, "disposed": True} for name in names]
+    for result in results[:2]:
+        host = "prices.azure.com" if result["name"] == "method" else "example.com"
+        method = "POST" if result["name"] == "method" else "GET"
+        result["denial"] = {
+            "source": "bubblewrap",
+            "host": host,
+            "method": method,
+            "record": {
+                "rejected_by": "allowlist",
+                "audit": {"host": host, "method": method, "action": "reject", "status_code": 403},
+            },
+        }
+    results[-2]["execution"] = {"started": True, "expired": True, "timeout_seconds": 0.001}
+    return results
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_qualification_requires_pricing_tool_failure_cleanup(missing):
+    rows = records()
+    results = probe_records()
     if missing:
         results.pop()
     rows.insert(1, {"stage": "probes", "results": results})
@@ -111,6 +130,21 @@ def test_qualification_requires_pricing_tool_failure_cleanup(missing):
         with pytest.raises(ValueError, match="failure-cleanup"):
             check(log(rows), "bubblewrap", model=False, require_probes=True)
     else:
+        check(log(rows), "bubblewrap", model=False, require_probes=True)
+
+
+@pytest.mark.parametrize("failure", ["origin_403", "missing_denial", "no_expiry"])
+def test_checker_requires_host_denial_and_deadline_evidence(failure):
+    rows = records()
+    results = probe_records()
+    if failure == "origin_403":
+        results[0]["denial"]["record"]["audit"]["action"] = "continue"
+    elif failure == "missing_denial":
+        del results[0]["denial"]
+    else:
+        results[-2]["execution"]["expired"] = False
+    rows.insert(1, {"stage": "probes", "results": results})
+    with pytest.raises(ValueError):
         check(log(rows), "bubblewrap", model=False, require_probes=True)
 
 
@@ -171,6 +205,85 @@ def load_sample(name="agent"):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_origin_403_cannot_supply_proxy_denial():
+    qualification = load_sample("qualification")
+    record = probe_records()[0]["denial"]["record"]
+    assert (
+        qualification.denial_record("bubblewrap", [record], "instance", "prices.azure.com", "POST")
+        == record
+    )
+    record["audit"]["action"] = "continue"
+    assert (
+        qualification.denial_record("bubblewrap", [record], "instance", "prices.azure.com", "POST")
+        is None
+    )
+    blocked = {"sandbox_id": "instance", "host": "prices.azure.com", "count": 1}
+    assert (
+        qualification.denial_record(
+            "docker-sbx", {"allowed": [blocked]}, "instance", "prices.azure.com", "POST"
+        )
+        is None
+    )
+    assert (
+        qualification.denial_record(
+            "docker-sbx", {"blocked": [blocked]}, "different", "prices.azure.com", "POST"
+        )
+        is None
+    )
+    assert (
+        qualification.denial_record(
+            "docker-sbx", {"blocked": [blocked]}, "instance", "prices.azure.com", "POST"
+        )
+        == blocked
+    )
+
+
+@pytest.mark.parametrize(
+    "failure", [ValueError("invalid report"), TimeoutError("unrelated timeout")]
+)
+def test_generic_execution_failure_cannot_supply_deadline_evidence(failure):
+    qualification = load_sample("qualification")
+
+    async def scenario():
+        sandbox = Mock(exec_bounded=AsyncMock(side_effect=failure))
+        probe = qualification.DeadlineProbe(sandbox)
+        with pytest.raises(type(failure)):
+            await probe.exec_bounded(
+                ["azmcp"], working_directory=".", timeout=90, max_output_bytes=4096
+            )
+        sandbox.exec_bounded.assert_awaited_once()
+        with pytest.raises(ValueError, match="forced deadline"):
+            probe.evidence()
+
+    asyncio.run(scenario())
+
+
+def test_execution_deadline_evidence_requires_expiry_and_awaits_cleanup(monkeypatch):
+    qualification = load_sample("qualification")
+    monkeypatch.setattr(qualification.DeadlineProbe, "seconds", 0)
+
+    async def scenario():
+        cleaned = False
+
+        async def execute(*_args, **_kwargs):
+            nonlocal cleaned
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(0)
+                cleaned = True
+
+        sandbox = Mock(exec_bounded=AsyncMock(side_effect=execute))
+        probe = qualification.DeadlineProbe(sandbox)
+        with pytest.raises(TimeoutError):
+            await probe.exec_bounded(
+                ["azmcp"], working_directory=".", timeout=90, max_output_bytes=4096
+            )
+        assert cleaned and probe.evidence()["expired"] is True
+
+    asyncio.run(scenario())
 
 
 def test_sample_preserves_empty_and_truncated_tool_reports():
@@ -325,8 +438,34 @@ def test_direct_probe_does_not_accept_ambiguous_responses(monkeypatch, response)
     monkeypatch.setattr("socket.create_connection", Mock(return_value=connection))
     monkeypatch.setattr("ssl.create_default_context", Mock(return_value=context))
     with pytest.raises((RuntimeError, OSError)):
-        exec(load_sample("qualification").DIRECT_PROBE, {})
+        run_direct_probe()
     tls.sendall.assert_called_once()
+
+
+def run_direct_probe():
+    """Execute the checked-in probe with test-installed network fakes."""
+    exec(load_sample("qualification").DIRECT_PROBE, {})  # nosec B102
+
+
+@pytest.mark.parametrize("stage", ["connect", "handshake", "certificate"])
+def test_direct_probe_distinguishes_setup_refusal_from_bad_trust(monkeypatch, capsys, stage):
+    connection = MagicMock()
+    connect = Mock(return_value=connection)
+    context = MagicMock()
+    if stage == "connect":
+        connect.side_effect = ConnectionRefusedError("denied")
+    elif stage == "handshake":
+        context.wrap_socket.side_effect = ssl.SSLEOFError("denied before TLS is established")
+    else:
+        context.wrap_socket.side_effect = ssl.SSLCertVerificationError("untrusted peer")
+    monkeypatch.setattr("socket.create_connection", connect)
+    monkeypatch.setattr("ssl.create_default_context", Mock(return_value=context))
+    if stage == "certificate":
+        with pytest.raises(ssl.SSLCertVerificationError):
+            run_direct_probe()
+    else:
+        run_direct_probe()
+        assert capsys.readouterr().out == "blocked\n"
 
 
 def test_live_deadline_retains_partial_evidence(tmp_path, monkeypatch):

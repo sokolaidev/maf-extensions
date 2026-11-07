@@ -158,6 +158,44 @@ def check(
                 and seconds > 0,
                 "Invalid probe cleanup or timing",
             )
+            if row["name"] in ("method", "destination"):
+                denial = row.get("denial", {})
+                host = "prices.azure.com" if row["name"] == "method" else "example.com"
+                method = "POST" if row["name"] == "method" else "GET"
+                require(
+                    denial.get("source") == backend
+                    and denial.get("host") == host
+                    and denial.get("method") == method,
+                    "Missing host proxy denial identity",
+                )
+                record = denial.get("record", {})
+                if backend == "bubblewrap":
+                    audit = record.get("audit", {})
+                    require(
+                        record.get("rejected_by") == "allowlist"
+                        and audit.get("action") == "reject"
+                        and audit.get("status_code") == 403
+                        and audit.get("host", "").split(":")[0] == host
+                        and audit.get("method")
+                        in ({method, "CONNECT"} if method == "GET" else {method}),
+                        "Missing native proxy rejection",
+                    )
+                else:
+                    require(
+                        record.get("sandbox_id") == row["instance"]
+                        and record.get("host", "").split(":")[0] == host
+                        and type(record.get("count")) is int
+                        and record["count"] > 0,
+                        "Missing sandbox proxy rejection",
+                    )
+            elif row["name"] == "tool_timeout":
+                execution = row.get("execution", {})
+                require(
+                    execution.get("started") is True
+                    and execution.get("expired") is True
+                    and execution.get("timeout_seconds") == 0.001,
+                    "Missing observed execution deadline",
+                )
     return {"backend": backend, "calls": len(calls), "model": model}
 
 
