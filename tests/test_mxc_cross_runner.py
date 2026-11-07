@@ -644,7 +644,11 @@ def test_crash_supervisor_never_accepts_unproven_native_boundary(
             monkeypatch.setattr(cross.cross_crash, "WAIT_SECONDS", 0)
             script += "import time; time.sleep(60)"
         if failure == "bad-marker":
-            script += "import time; (Path(c['root'])/'worker-crash-ready.json').write_text('{}'); time.sleep(60)"
+            script += (
+                "import time; ready=Path(c['root'])/'worker-crash-ready.json'; "
+                "temporary=ready.with_suffix('.tmp'); temporary.write_text('{}'); "
+                "temporary.replace(ready); time.sleep(60)"
+            )
         monkeypatch.setattr(cross.cross_crash, "command", lambda: [sys.executable, "-c", script])
     with pytest.raises(cross.api.Refused, match="crash worker"):
         cross.cross_crash.interrupt(
