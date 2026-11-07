@@ -189,3 +189,39 @@ def test_lapsed_login_uses_supported_confirmation_and_restores_login(monkeypatch
         ("logout", flag),
         ("login", "--username", "test-user", "--password-stdin"),
     ]
+
+
+@pytest.mark.parametrize("refused", [True, False])
+def test_forwarded_agent_probe_requests_a_kit_and_cleans_up(monkeypatch, tmp_path, refused):
+    commands = []
+    disposed = []
+
+    class AgentBackend:
+        async def _sbx(self, *args, **kwargs):
+            commands.append(args)
+
+        async def acquire(self, key, spec):
+            await self.check_host()
+            await self._sbx("create", "shell", "--template", spec.image, "/workspace")
+            await self._sbx("exec", "probe", "true")
+            if refused:
+                raise host.SbxHostNotConfined("ssh-agent.sock")
+
+        async def dispose(self, key):
+            disposed.append(key)
+
+    monkeypatch.setattr(host, "_setting_set", lambda *args: contextlib.nullcontext())
+    monkeypatch.setattr(host, "_backend", lambda path: AgentBackend())
+    monkeypatch.setattr(host, "_listed", lambda name: False)
+    if refused:
+        host.test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path, monkeypatch)
+    else:
+        with pytest.raises(pytest.fail.Exception, match="DID NOT RAISE"):
+            host.test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path, monkeypatch)
+    kit = host.Path(host.__file__).parent / "images" / "ssh-agent"
+    assert (kit / "kit.yaml").is_file()
+    assert commands == [
+        ("create", "shell", "--template", host._IMAGE, "--kit", str(kit), "/workspace"),
+        ("exec", "probe", "true"),
+    ]
+    assert len(disposed) == 1

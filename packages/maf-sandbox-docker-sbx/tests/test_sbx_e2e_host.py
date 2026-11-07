@@ -106,7 +106,7 @@ def test_a_host_forwarding_its_ssh_agent_is_refused(tmp_path):
         assert not _listed(sandbox_name("maf", key, "e2e"))
 
 
-def test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path):
+def test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path, monkeypatch):
     with _setting_set(_FORWARDING, "true"):
         backend = _backend(tmp_path)
 
@@ -114,10 +114,23 @@ def test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path):
             return None
 
         backend.check_host = accepted  # type: ignore[method-assign]
+        sbx = backend._sbx
+
+        async def with_agent(*args, **kwargs):
+            # V3 kits receive no agent unless they request the runtime capability.
+            if args[0] == "create":
+                kit = Path(__file__).parent / "images" / "ssh-agent"
+                args = (*args[:-1], "--kit", str(kit), args[-1])
+            return await sbx(*args, **kwargs)
+
+        monkeypatch.setattr(backend, "_sbx", with_agent)
         key = _key("agent")
-        with pytest.raises(SbxHostNotConfined, match="ssh-agent.sock"):
-            asyncio.run(backend.acquire(key, _spec()))
-        assert not _listed(sandbox_name("maf", key, "e2e"))
+        try:
+            with pytest.raises(SbxHostNotConfined, match="ssh-agent.sock"):
+                asyncio.run(backend.acquire(key, _spec()))
+            assert not _listed(sandbox_name("maf", key, "e2e"))
+        finally:
+            assert asyncio.run(backend.dispose(key)) is None
 
 
 def test_a_registered_mcp_server_is_refused(tmp_path):

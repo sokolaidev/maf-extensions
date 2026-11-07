@@ -18,4 +18,6 @@ MAF_SANDBOX_SBX_E2E=1 uv run pytest -q -rs -s packages/maf-sandbox-docker-sbx/te
 
 Host-state tests also require `MAF_SANDBOX_SBX_E2E_HOST=1`, Docker login credentials in `DOCKER_USERNAME` and `DOCKER_PAT`, and a running SSH agent. They temporarily change global sbx settings, login, secrets and network rules: run them only on a dedicated host. The [live workflow](../../../../.github/workflows/sbx-live.yml) prepares that host and retains `host.log`, `suite.log` and `shell-image.json` with the built image identity.
 
+The forwarded-agent refusal test alone adds `ssh-agent/kit.yaml` through `sbx create --kit`. V3 kits require that explicit runtime capability before the daemon forwards a socket. The test bypasses the host preflight to exercise the guest socket refusal and verifies that the backend discards the sandbox.
+
 The independent `agent.Dockerfile` and `root.Dockerfile` fixtures cover Debian templates with non-root and root users. Build and load them as `maf-sbx-e2e-agent:local` and `maf-sbx-e2e-root:local`, then set `MAF_SANDBOX_SBX_E2E_IMAGES=maf-sbx-e2e-agent:local,maf-sbx-e2e-root:local` to add them to the file, exec, egress and host-tool cases. The live workflow runs all three templates.
