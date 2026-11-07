@@ -59,7 +59,7 @@ else:
 
 
 def denial_record(
-    backend: str, records: Any, instance: str, host: str, method: str
+    backend: str, records: Any, sandbox_name: str, host: str, method: str
 ) -> dict[str, Any] | None:
     """Match a denial from the host's proxy, not an origin's HTTP status."""
     if backend == "bubblewrap":
@@ -76,7 +76,7 @@ def denial_record(
     else:
         for record in records.get("blocked", []):
             if (
-                record.get("sandbox_id") == instance
+                record.get("sandbox_id") == sandbox_name
                 and record.get("host", "").split(":")[0] == host
                 and type(record.get("count")) is int
                 and record["count"] > 0

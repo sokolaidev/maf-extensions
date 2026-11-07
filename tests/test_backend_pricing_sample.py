@@ -148,6 +148,35 @@ def test_checker_requires_host_denial_and_deadline_evidence(failure):
         check(log(rows), "bubblewrap", model=False, require_probes=True)
 
 
+@pytest.mark.parametrize("failure", [None, "replacement", "different_name", "missing_mapping"])
+def test_docker_policy_denial_is_bound_to_listed_instance(failure):
+    rows = records()
+    identity = rows[0]
+    identity["backend"] = "docker-sbx"
+    identity["cli"] = "sbx version v0.51.0"
+    identity["versions"]["maf-sandbox-docker-sbx"] = "0.8.2"
+    identity["source_sha256"]["maf_sandbox_docker_sbx"] = "e" * 64
+    results = probe_records()
+    for result in results[:2]:
+        denial = result["denial"]
+        name = "sandbox-" + result["name"]
+        denial["source"] = "docker-sbx"
+        denial["sandbox"] = {"id": result["instance"], "name": name}
+        denial["record"] = {"sandbox_id": name, "host": denial["host"] + ":443", "count": 1}
+    if failure == "replacement":
+        results[0]["denial"]["sandbox"]["id"] = "different-instance"
+    elif failure == "different_name":
+        results[0]["denial"]["record"]["sandbox_id"] = "different-name"
+    elif failure == "missing_mapping":
+        del results[0]["denial"]["sandbox"]
+    rows.insert(1, {"stage": "probes", "results": results})
+    if failure is None:
+        check(log(rows), "docker-sbx", model=False, require_probes=True)
+    else:
+        with pytest.raises(ValueError, match="sandbox proxy"):
+            check(log(rows), "docker-sbx", model=False, require_probes=True)
+
+
 @pytest.mark.parametrize(
     "failure",
     [
@@ -205,6 +234,16 @@ def load_sample(name="agent"):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_policy_log_name_requires_current_control_plane_identity():
+    sample = load_sample()
+    row = {"name": "sandbox", "id": "instance"}
+    assert sample.control_identity([row], "sandbox", "instance") == row
+    assert sample.control_identity({"sandboxes": [row]}, "sandbox", "instance") == row
+    for rows in ([], [dict(row, id="replacement")], [row, row]):
+        with pytest.raises(ValueError, match="acquired sandbox"):
+            sample.control_identity(rows, "sandbox", "instance")
 
 
 def test_origin_403_cannot_supply_proxy_denial():

@@ -181,8 +181,11 @@ def check(
                         "Missing native proxy rejection",
                     )
                 else:
+                    sandbox = denial.get("sandbox", {})
                     require(
-                        record.get("sandbox_id") == row["instance"]
+                        sandbox.get("id") == row["instance"]
+                        and bool(sandbox.get("name"))
+                        and record.get("sandbox_id") == sandbox["name"]
                         and record.get("host", "").split(":")[0] == host
                         and type(record.get("count")) is int
                         and record["count"] > 0,

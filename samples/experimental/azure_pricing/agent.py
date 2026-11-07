@@ -202,6 +202,19 @@ async def absent(args: argparse.Namespace, evidence: Evidence) -> None:
         )
 
 
+def control_identity(rows: Any, name: str, instance: str) -> dict[str, str]:
+    """Bind Docker policy-log names to the independently listed current instance."""
+    if isinstance(rows, dict):
+        rows = rows.get("sandboxes")
+    require(isinstance(rows, list), "Invalid sbx inventory")
+    matches = [row for row in rows if row.get("name") == name]
+    require(
+        len(matches) == 1 and matches[0].get("id") == instance,
+        "Policy-log name does not identify the acquired sandbox",
+    )
+    return {"name": name, "id": instance}
+
+
 async def run(args: argparse.Namespace) -> None:
     """Run two real pricing calls, then optionally let an agent use the same tool."""
     if not args.no_model:
@@ -280,6 +293,14 @@ async def run(args: argparse.Namespace) -> None:
 
             async def probe_denied(sandbox: Sandbox, host: str, method: str) -> dict[str, object]:
                 records: Any = None
+                name = getattr(sandbox, "name", sandbox.instance_id)
+                identity = {"id": sandbox.instance_id}
+                if args.backend == "docker-sbx":
+                    identity = control_identity(
+                        json.loads(await asyncio.to_thread(command, args.sbx, "ls", "--json")),
+                        name,
+                        sandbox.instance_id,
+                    )
                 try:
                     async with asyncio.timeout(10):
                         while True:
@@ -300,18 +321,17 @@ async def run(args: argparse.Namespace) -> None:
                                         args.sbx,
                                         "policy",
                                         "log",
-                                        getattr(sandbox, "name"),
+                                        name,
                                         "--json",
                                     )
                                 )
-                            record = denial_record(
-                                args.backend, records, sandbox.instance_id, host, method
-                            )
+                            record = denial_record(args.backend, records, name, host, method)
                             if record is not None:
                                 return {
                                     "source": args.backend,
                                     "host": host,
                                     "method": method,
+                                    "sandbox": identity,
                                     "record": record,
                                 }
                             await asyncio.sleep(0.1)
