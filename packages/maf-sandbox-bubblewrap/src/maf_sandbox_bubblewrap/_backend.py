@@ -499,7 +499,7 @@ class BubblewrapSandboxBackend:
             or spec.image_id is not None
         ):
             raise ValueError("Unsupported Bubblewrap specification")
-            policy(spec, self.config.state_root)
+        policy(spec, self.config.state_root)
         identity = _identity(key, spec.kind)
         if len(json.dumps(identity).encode()) > 8192:
             raise ValueError("Sandbox identity exceeds record limit")

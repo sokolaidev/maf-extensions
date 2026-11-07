@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from maf_sandbox import Capability, Egress, EgressRule, HttpMethod, SandboxSpec
+from maf_sandbox import Capability, Egress, EgressRule, HttpMethod, SandboxKey, SandboxSpec
 
 from maf_sandbox_bubblewrap import BubblewrapSandboxBackend, BubblewrapSandboxConfig
 from maf_sandbox_bubblewrap._backend import _arguments
@@ -27,6 +27,33 @@ def test_allowlist_requires_explicit_proxy_configuration(tmp_path, monkeypatch):
     assert Egress.ALLOWLIST in enabled.declarations.egress_modes
     assert Capability.EGRESS_METHODS in enabled.declarations.capabilities
     assert Capability.EGRESS_PATHS in enabled.declarations.capabilities
+
+
+def test_policy_rejection_precedes_ownership_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    backend = BubblewrapSandboxBackend(
+        BubblewrapSandboxConfig(
+            tmp_path,
+            tmp_path,
+            tmp_path,
+            egress_proxy=tmp_path / "proxy",
+            egress_proxy_sha256="a" * 64,
+        )
+    )
+    monkeypatch.setattr(
+        "maf_sandbox_bubblewrap._backend.policy",
+        Mock(side_effect=ValueError("unsupported policy")),
+    )
+    with pytest.raises(ValueError, match="unsupported policy"):
+        asyncio.run(
+            backend.acquire(
+                SandboxKey("scope", "thread", "agent"),
+                SandboxSpec(
+                    kind="pricing", egress=Egress.ALLOWLIST, egress_allow=("prices.azure.com",)
+                ),
+            )
+        )
+    assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.parametrize(
