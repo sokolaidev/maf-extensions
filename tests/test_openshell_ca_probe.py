@@ -146,7 +146,7 @@ def test_recycle_orders_gateway_and_single_stop_start_without_replay(probe, monk
     calls = []
     phase = "ready"
     owner = {"name": "owned", "sandbox_id": "immutable"}
-    monkeypatch.setattr(probe, "retain_runtime", lambda *args: None)
+    monkeypatch.setattr(probe, "retain_runtime", lambda *args, **kwargs: None)
     monkeypatch.setattr(probe, "wait_gateway", lambda *args: calls.append("health"))
 
     def rpc(method, request):
@@ -192,3 +192,24 @@ def test_recycle_orders_gateway_and_single_stop_start_without_replay(probe, monk
         asyncio.run(probe.recycle(fixture, owner, gateway, row))
         assert calls == ["gateway_stop", "gateway_start", "health", "StopSandbox", "StartSandbox"]
         assert all(r["state"] == "observed" for r in row["mutations"])
+
+
+def test_stopped_runtime_retains_container_without_running_process_query(probe, monkeypatch):
+    owner = {
+        "name": "owned",
+        "sandbox_id": "immutable",
+        "containers": ["old"],
+        "processes": {"1": "start"},
+    }
+    fixture = SimpleNamespace(
+        client=SimpleNamespace(current_id=lambda name: "immutable"), save=lambda: None
+    )
+    monkeypatch.setattr(
+        probe, "snapshot", lambda identity: pytest.fail("stopped container has no Docker top")
+    )
+    monkeypatch.setattr(
+        probe, "inventory", lambda identity: {"containers": [{"Id": "stopped"}], "volumes": []}
+    )
+    probe.retain_runtime(fixture, owner, processes=False)
+    assert owner["containers"] == ["old", "stopped"]
+    assert owner["processes"] == {"1": "start"}

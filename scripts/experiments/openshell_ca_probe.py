@@ -17,7 +17,7 @@ from openshell_https_probe import (
     native_https_policy,
     origin_get,
 )
-from openshell_owned_probe import snapshot
+from openshell_owned_probe import inventory, snapshot
 from openshell_replay_probe import wait_gateway
 from openshell_transition_probe import runtime_continuity
 
@@ -37,11 +37,15 @@ def ca_source(config, ca_file):
     return source
 
 
-def retain_runtime(fixture, owner):
+def retain_runtime(fixture, owner, *, processes=True):
     """Preserve every observed runtime identity for final independent absence checks."""
     if fixture.client.current_id(owner["name"]) != owner["sandbox_id"]:
         raise RuntimeError("CA fixture identity changed")
-    observed = snapshot(owner["sandbox_id"])
+    observed = (
+        snapshot(owner["sandbox_id"])
+        if processes
+        else {**inventory(owner["sandbox_id"]), "processes": {}}
+    )
     owner["containers"] = sorted(
         set(owner["containers"]) | {c["Id"] for c in observed["containers"]}
     )
@@ -61,7 +65,7 @@ async def recycle(fixture, owner, gateway, row):
         raise RuntimeError("CA reload requires an orderly gateway exit")
     gateway.start()
     await asyncio.to_thread(wait_gateway, client)
-    retain_runtime(fixture, owner)
+    retain_runtime(fixture, owner, processes=False)
     for method, phase in (
         ("StopSandbox", client.pb.SANDBOX_PHASE_STOPPED),
         ("StartSandbox", client.pb.SANDBOX_PHASE_READY),
@@ -91,8 +95,10 @@ async def recycle(fixture, owner, gateway, row):
             )
             if current.sandbox.metadata.id != owner["sandbox_id"]:
                 raise RuntimeError("CA fixture identity changed during stop/start")
-            retain_runtime(fixture, owner)
+            retain_runtime(fixture, owner, processes=False)
             if current.sandbox.status.phase == phase:
+                if phase == client.pb.SANDBOX_PHASE_READY:
+                    retain_runtime(fixture, owner)
                 receipt["state"] = "observed"
                 receipt["observed_hex"] = current.SerializeToString().hex()
                 fixture.save()
