@@ -1,5 +1,6 @@
 """Actual-result and cleanup evidence cannot be replaced with model-authored prose."""
 
+import asyncio
 import copy
 import importlib.util
 import json
@@ -7,6 +8,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -181,6 +183,86 @@ def test_sample_preserves_empty_and_truncated_tool_reports():
     assert sample.report(answer) == value
     with pytest.raises(ValueError, match="did not complete"):
         sample.report([Content.from_text("The model claims there are prices")])
+
+
+def test_model_calls_require_explicit_opt_in():
+    sample = load_sample()
+    args = ["--backend", "docker-sbx", "--image", "template", "--source", "source"]
+    assert sample.parser().parse_args(args).no_model is True
+    assert sample.parser().parse_args([*args, "--no-model"]).no_model is True
+    assert sample.parser().parse_args([*args, "--model"]).no_model is False
+    with pytest.raises(SystemExit):
+        sample.parser().parse_args([*args, "--model", "--no-model"])
+
+
+def test_model_budget_serializes_calls_through_evidence_checks():
+    sample = load_sample()
+
+    async def scenario():
+        order = []
+
+        async def checked(answer, category, seconds):
+            assert answer == "report" and category == "Consumption" and seconds > 0
+            order.append("check")
+            await asyncio.sleep(0)
+            order.append("verified")
+
+        async def dispatch():
+            order.append("run")
+            await asyncio.sleep(0)
+
+        guard = sample.ModelCalls(checked)
+        context = Mock(arguments={}, result="report")
+        results = await asyncio.gather(
+            *(guard.process(context, dispatch) for _ in range(3)), return_exceptions=True
+        )
+        assert results[:2] == [None, None]
+        assert isinstance(results[2], ValueError) and "budget" in str(results[2])
+        assert order == ["run", "check", "verified"] * 2
+
+    asyncio.run(scenario())
+
+
+def test_failed_model_calls_consume_the_budget():
+    sample = load_sample()
+
+    async def scenario():
+        checked = AsyncMock()
+        dispatch = AsyncMock(side_effect=RuntimeError("tool failed"))
+        guard = sample.ModelCalls(checked)
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match="tool failed"):
+                await guard.process(Mock(arguments={}), dispatch)
+        with pytest.raises(ValueError, match="budget"):
+            await guard.process(Mock(arguments={}), dispatch)
+        assert dispatch.await_count == 2
+        checked.assert_not_awaited()
+
+    asyncio.run(scenario())
+
+
+def test_model_deadline_cancels_work_and_awaits_cleanup(monkeypatch):
+    sample = load_sample()
+    monkeypatch.setattr(sample, "MODEL_TIMEOUT_SECONDS", 0)
+
+    async def scenario():
+        cleaned = False
+
+        async def blocked_run(_message):
+            nonlocal cleaned
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(0)
+                cleaned = True
+
+        agent = Mock(run=AsyncMock(side_effect=blocked_run))
+        with pytest.raises(TimeoutError):
+            await sample.model_response(agent)
+        agent.run.assert_awaited_once()
+        assert cleaned
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.skipif(os.environ.get("MAF_PRICING_E2E") != "1", reason="opt-in real pricing host")

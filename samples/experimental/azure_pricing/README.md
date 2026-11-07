@@ -57,7 +57,7 @@ Choose a new, private workspace root used only by this run. The router retains i
 
 ## Agent mode and evidence
 
-For agent mode, configure `AZURE_OPENAI_ENDPOINT` and `AZURE_OPENAI_CHAT_MODEL`, authenticate the host with `DefaultAzureCredential`, and omit `--no-model`. The Linux service needs its own host identity and environment; credentials are never mounted into the runtime. Agent mode incurs model inference costs. `--no-model` still performs real public price lookups and uses no model credentials.
+The default is deterministic tool-only execution. For agent mode, configure `AZURE_OPENAI_ENDPOINT` and `AZURE_OPENAI_CHAT_MODEL`, authenticate the host with `DefaultAzureCredential`, and pass `--model`. The Linux service needs its own host identity and environment; credentials are never mounted into the runtime. Agent mode incurs model inference costs and allows at most two additional tool calls, serialized for evidence attribution, within a 180-second model-run deadline. Failed calls consume the budget; cancellation cleanup can extend elapsed time beyond that deadline. Tool strings remain external data when model mode is enabled, and model prose is not qualification evidence. `--no-model` explicitly selects the default, which still performs real public price lookups and uses no model credentials.
 
 Keep logs and validate them separately:
 
@@ -65,7 +65,7 @@ Keep logs and validate them separately:
 uv run python scripts/check_live_backend_pricing.py pricing.log --backend bubblewrap --no-model --require-probes
 ```
 
-Use `set -euo pipefail` when piping the sample through `tee`. For model evidence omit `--no-model` from both commands. Host records include imported-source hashes, installed versions, runtime identity, per-call timing and sandbox identities. The checker requires actual price fields, distinct calls, independent host inventory checks and completed cleanup; model prose cannot satisfy it. Empty results mean no matching rows; truncated results are not exhaustive. Both are represented by the tool, but fail this deliberately narrow qualification query. Reservation prices are whole-term amounts even when the returned unit says `1 Hour`; never multiply them by monthly hours. Retail prices are not negotiated account quotes.
+Use `set -euo pipefail` when piping the sample through `tee`. For model evidence pass `--model` to the sample and omit `--no-model` from the checker. Host records include imported-source hashes, installed versions, runtime identity, per-call timing and sandbox identities. The checker requires actual price fields, distinct calls, independent host inventory checks and completed cleanup; model prose cannot satisfy it. Empty results mean no matching rows; truncated results are not exhaustive. Both are represented by the tool, but fail this deliberately narrow qualification query. Reservation prices are whole-term amounts even when the returned unit says `1 Hour`; never multiply them by monthly hours. Retail prices are not negotiated account quotes.
 
 `--qualify` adds disallowed host/method and direct-network probes, output overflow, timeout and cancellation, checking disposal after every case. It also forces a deadline and cancellation through the actual pricing tool and verifies disposal before fallback scope cleanup. The root test `test_live_backend_pricing` skips unless `MAF_PRICING_E2E=1`; provide the CLI argument list as JSON in `MAF_PRICING_LIVE_ARGS` and an explicit log destination in `MAF_PRICING_EVIDENCE_LOG`. Offline tests need neither Azure credentials nor real model calls.
 

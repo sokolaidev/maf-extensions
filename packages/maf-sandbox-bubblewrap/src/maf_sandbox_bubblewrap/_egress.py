@@ -177,6 +177,7 @@ class Proxy:
                         task.cancel()
                     await asyncio.gather(*tasks, return_exceptions=True)
         except (OSError, TimeoutError):
+            # Failed connections need only the cleanup below, not a relay retry.
             pass
         finally:
             writer.close()

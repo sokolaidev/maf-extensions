@@ -235,6 +235,7 @@ def start_proxy_relay() -> None:
                                 return
                             key.data.sendall(data)
         except OSError:
+            # A disconnected client must release its sockets and connection slot.
             pass
         finally:
             slots.release()
