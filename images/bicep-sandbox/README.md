@@ -60,6 +60,8 @@ The weekly compiler updater proposes the upstream binary pin, source version and
 
 Every new release candidate builds its selected route once. Retries recover the retained OCI bytes and reject a different route. Changing routes requires a new dispatch and an unused image version. Both routes retain the existing runtime, inventory, vulnerability, approval and signature gates; a successful source compilation alone does not establish remediation or publication.
 
+Candidate scans and release preparation require `System.Security.Cryptography.Pkcs` and `System.Security.Cryptography.Xml` at version 10.0.13 or newer in the actual `/usr/local/bin/bicep` bundle, on either route. Missing or contradictory inventory fails. The [local AVM rebuild evidence](../../docs/security/bicep-crypto-2026-11-08.md) verifies the upstream 0.49.2 bundle and offline behavior while retaining the unresolved glibc High finding; it is not publication evidence.
+
 ## Prepared AVM profile
 
 The public release profile is **`bicep-avm`**. Its [consumer guide](AVM.md) covers the selected module versions, signed release verification, cache configuration, qualification and support. [Release 0.1.0](https://github.com/sokolaidev/maf-extensions/releases/tag/image-bicep-avm-v0.1.0) is publicly available; use the consumer guide's verified digest and [release evidence](AVM.md#release-010-evidence). Local preparation remains separate from the published identity.

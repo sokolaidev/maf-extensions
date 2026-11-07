@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import gzip
+import hashlib
 import json
 import sys
 import xml.etree.ElementTree as ET
@@ -187,6 +189,131 @@ def test_inventory_must_include_patched_application_packages(mode, kind, legacy)
     else:
         with pytest.raises(ValueError, match="inventory"):
             source.verify_inventory({"artifacts": artifacts}, runtime)
+
+
+def crypto_inventory(version="10.0.13"):
+    return {
+        "artifacts": [
+            {
+                "name": name,
+                "version": version,
+                "type": "dotnet",
+                "locations": [{"path": "/usr/local/bin/bicep"}],
+            }
+            for name in sorted(source.LEGACY_PACKAGES)
+        ]
+    }
+
+
+@pytest.mark.parametrize("version", ["10.0.13", "10.0.14", "10.0.100", "11.0.0"])
+def test_candidate_crypto_inventory_accepts_fixed_compiler_packages(version):
+    source.verify_crypto_inventory(crypto_inventory(version))
+
+
+@pytest.mark.parametrize("name", sorted(source.LEGACY_PACKAGES))
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "10.0.10",
+        "10.0.9",
+        "9.0.99",
+        "10.0.13-preview.1",
+        "unknown",
+        None,
+        "missing",
+        "conflicting",
+        "os-only",
+        "other-binary",
+        "no-location",
+    ],
+)
+def test_candidate_crypto_inventory_refuses_regression_or_unproven_bundle(name, mutation):
+    sbom = crypto_inventory()
+    artifact = next(item for item in sbom["artifacts"] if item["name"] == name)
+    if mutation == "missing":
+        sbom["artifacts"].remove(artifact)
+    elif mutation == "conflicting":
+        sbom["artifacts"].append(artifact | {"version": "10.0.10"})
+    elif mutation == "os-only":
+        artifact["type"] = "apk"
+    elif mutation in {"other-binary", "no-location"}:
+        artifact["locations"] = [{"path": "/unrelated/bicep"}] if mutation == "other-binary" else []
+    else:
+        artifact["version"] = mutation
+    with pytest.raises(ValueError, match="Bicep.*inventory"):
+        source.verify_crypto_inventory(sbom)
+
+
+@pytest.mark.parametrize("profile", ["bicep", "bicep-avm", "bicep-docker-sbx"])
+def test_candidate_scan_checks_crypto_for_every_bicep_profile(profile):
+    from image_security_evidence import verify_profile_inventory
+
+    verify_profile_inventory(crypto_inventory(), profile)
+    with pytest.raises(ValueError, match="10.0.13"):
+        verify_profile_inventory(crypto_inventory("10.0.10"), profile)
+
+
+@pytest.mark.parametrize("profile", ["bicep", "bicep-avm", "bicep-docker-sbx"])
+@pytest.mark.parametrize("route", ["upstream", "source"])
+def test_release_preparation_rejects_regressed_crypto_before_assessment(
+    tmp_path, monkeypatch, profile, route
+):
+    import prepare_container_release as preparation
+
+    write(tmp_path / "sbom.syft.json", crypto_inventory("10.0.10"))
+    write(
+        tmp_path / "runtime.json",
+        {
+            "profile": profile,
+            "bicepAvm" if profile == "bicep-avm" else "bicep": {"build": {"route": route}},
+        },
+    )
+    monkeypatch.setattr(preparation, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(preparation, "verify_inventory", lambda *args: None)
+    with pytest.raises(ValueError, match="10.0.13"):
+        preparation.assess(tmp_path, "sha256:" + "a" * 64)
+
+
+def test_historical_upstream_monitoring_does_not_apply_candidate_crypto_floor():
+    source.verify_inventory(
+        crypto_inventory("10.0.10"), {"bicep": {"build": {"route": "upstream"}}}
+    )
+
+
+def test_retained_avm_rebuild_proves_crypto_inventory_and_remaining_glibc_finding():
+    from container_release import scan_result
+
+    directory = ROOT / "docs/security/evidence/bicep-crypto-2026-11-08"
+    retained = read(directory / "evidence.json")
+    for name, expected in retained["files"].items():
+        assert digest(directory / name) == "sha256:" + expected
+    sbom_bytes = gzip.decompress((directory / "sbom.syft.json.gz").read_bytes())
+    assert hashlib.sha256(sbom_bytes).hexdigest() == retained["rawSyftSha256"]
+    sbom = json.loads(sbom_bytes)
+    report = read(directory / "grype.json")
+    runtime = read(directory / "runtime.json")
+    assessment = read(directory / "assessment.json")
+    assert digest(directory / "image-index.json") == runtime["imageId"] == retained["localStoreId"]
+    assert digest(directory / "manifest.json") == retained["manifestDigest"]
+    assert retained["manifestDigest"] in {
+        item["digest"] for item in read(directory / "image-index.json")["manifests"]
+    }
+    image_id = read(directory / "manifest.json")["config"]["digest"]
+    assert image_id == retained["configurationDigest"] == sbom["source"]["metadata"]["imageID"]
+    assert report["source"]["target"]["imageID"] == image_id
+    source.verify_crypto_inventory(sbom)
+    assert not any(
+        match["artifact"]["name"] in source.LEGACY_PACKAGES
+        for match in report["matches"] + report.get("ignoredMatches", [])
+    )
+    assert scan_result(report, image_id, assessment["assessedAt"], sbom=sbom) == assessment
+    assert [(item["id"], item["severity"]) for item in assessment["findings"]] == [
+        ("CVE-2026-84243", "High")
+    ]
+    assert runtime["passed"] and runtime["containersRemaining"] == []
+    assert len(runtime["bicepAvm"]["checks"]) == 5
+    assert all(item["passed"] for item in runtime["bicepAvm"]["checks"])
+    assert retained["published"] is False and retained["signed"] is False
 
 
 def test_reservation_preserves_route_and_refuses_switching_it():

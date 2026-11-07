@@ -78,6 +78,35 @@ def verify_inventory(sbom: dict[str, Any], runtime: dict[str, Any]) -> None:
             raise ValueError(f"Bicep inventory omits or contradicts the patched package: {name}")
 
 
+def verify_crypto_inventory(sbom: dict[str, Any]) -> None:
+    """Require fixed cryptography packages in a new candidate's actual compiler bundle."""
+    for name in sorted(LEGACY_PACKAGES):
+        artifacts = [
+            item
+            for item in sbom["artifacts"]
+            if item.get("name") == name and item.get("type") == "dotnet"
+        ]
+        versions = {item.get("version") for item in artifacts}
+        if len(versions) != 1:
+            raise ValueError(f"Bicep cryptography inventory is missing or ambiguous: {name}")
+        version = next(iter(versions))
+        if (
+            not isinstance(version, str)
+            or not re.fullmatch(r"\d+\.\d+\.\d+", version)
+            or tuple(map(int, version.split("."))) < (10, 0, 13)
+            or any(
+                not any(
+                    location.get("path") == "/usr/local/bin/bicep"
+                    for location in item.get("locations", [])
+                )
+                for item in artifacts
+            )
+        ):
+            raise ValueError(
+                f"Bicep compiler inventory requires {name} >= 10.0.13; found {version!r}"
+            )
+
+
 def policy(path: Path) -> dict[str, Any]:
     """Reject floating source, SDK and dependency inputs before executing build tools."""
     data = json.loads(path.read_bytes())

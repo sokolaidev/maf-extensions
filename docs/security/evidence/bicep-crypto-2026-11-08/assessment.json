@@ -1,0 +1,35 @@
+{
+  "assessedAt": "2026-11-07T23:25:07.651740+00:00",
+  "outcome": "vulnerable",
+  "database": {
+    "schemaVersion": "v6.1.10",
+    "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.10_2026-11-07T00:20:09Z_1794032328.tar.zst?checksum=sha256%3Af90467f0e784f8f6dd04b9a53588851e4b6fb874a4171d9edc95e91502feda5a",
+    "built": "2026-11-07T06:18:48Z",
+    "path": "<local-cache>/vulnerability.db",
+    "valid": true
+  },
+  "findings": [
+    {
+      "id": "CVE-2026-84243",
+      "severity": "High",
+      "fix": {
+        "state": "unknown",
+        "versions": []
+      }
+    }
+  ],
+  "notAffected": [
+    {
+      "id": "CVE-2026-119586",
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "component": "pkg:apk/wolfi/sqlite-libs@3.54.1-r0?arch=x86_64&distro=wolfi-20230201&upstream=sqlite",
+      "artifactId": "87ef05041d9667f8",
+      "imageId": "sha256:e83d2c411b3b3d594f76ad2044bf4821fc15759ce2660cbccae44566f28698d8",
+      "librarySha256": "7c8f466fe08716da0c3ce29ef451e8443313b296717fd8ef98b020030fb282f7",
+      "expiresAt": "2026-12-04T00:00:00Z",
+      "reason": "The reviewed shared library does not contain the SQLite CLI dot-command interpreter.",
+      "reference": "https://abraxaslabs.tech/research/sqlite-cli-recover"
+    }
+  ]
+}

@@ -161,5 +161,5 @@ def test_cli_requires_every_provider_from_the_selected_manifest(tmp_path, monkey
         evidence.main()
 
 
-def test_profiles_without_providers_keep_their_existing_inventory_contract():
-    evidence.verify_profile_inventory(sbom([{"name": "libc"}]), "bicep")
+def test_profiles_without_compiler_packages_keep_their_existing_inventory_contract():
+    evidence.verify_profile_inventory(sbom([{"name": "libc"}]), "graphviz")

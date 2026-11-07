@@ -74,7 +74,11 @@ def verify_providers(sbom: dict[str, Any], manifest: dict[str, Any]) -> None:
 
 
 def verify_profile_inventory(sbom: dict[str, Any], profile: str) -> None:
-    """Use the scanned checkout's provider manifest rather than inferring coverage from the SBOM."""
+    """Require the profile's compiler packages or reviewed provider inventory."""
+    if profile in {"bicep", "bicep-avm", "bicep-docker-sbx"}:
+        from bicep_source import verify_crypto_inventory
+
+        verify_crypto_inventory(sbom)
     if profile in PROVIDER_MANIFESTS:
         context = Path(__file__).resolve().parents[1] / "images/terraform-sandbox"
         manifest = json.loads((context / PROVIDER_MANIFESTS[profile]).read_text(encoding="utf-8"))
