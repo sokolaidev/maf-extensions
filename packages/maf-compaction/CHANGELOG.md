@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.11.0...maf-compaction-v0.11.1) (2026-11-07)
+
+
+### Fixes
+
+* **compaction:** bound overflow loss and replay shedding across rebuilt runs ([#2525](https://github.com/sokolaidev/maf-extensions/issues/2525)) ([57b4f70](https://github.com/sokolaidev/maf-extensions/commit/57b4f703fccd5d24178330ca7b9a2d81b4fbeb96))
+
 ## [0.11.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.10.1...maf-compaction-v0.11.0) (2026-11-04)
 
 
