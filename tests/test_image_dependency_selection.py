@@ -58,7 +58,7 @@ def test_unrelated_dependency_update_does_not_rebuild_images(graph, name):
 )
 def test_transitive_runtime_changes_select_the_consuming_image(graph, field, value):
     next(p for p in graph[1]["package"] if p["name"] == "renderer")[field] = value
-    assert selected() == {"document"}
+    assert selected() == {"document", "document-export"}
 
 
 def test_shared_qualification_dependency_selects_all_profiles(graph):
@@ -95,7 +95,7 @@ def test_all_optional_dependencies_and_marker_variants_are_traversed(graph):
         ] = {"extra": [{"name": "renderer", "marker": "sys_platform == 'linux'"}]}
         lock["package"].append({"name": "renderer", "version": "2.0", "dependencies": []})
     graph[1]["package"][-1]["version"] = "3.0"
-    assert selected() == {"document", "shell"}
+    assert selected() == {"document", "document-export", "shell"}
 
 
 def test_missing_dependency_is_not_treated_as_unchanged(graph):
@@ -105,7 +105,8 @@ def test_missing_dependency_is_not_treated_as_unchanged(graph):
 
 
 @pytest.mark.parametrize(
-    "name,expected", [("maf-sandbox-document", {"document"}), ("maf-sandbox-tui", set())]
+    "name,expected",
+    [("maf-sandbox-document", {"document", "document-export"}), ("maf-sandbox-tui", set())],
 )
 def test_package_metadata_changes_select_its_consumers(graph, monkeypatch, name, expected):
     read = dependencies.document

@@ -41,6 +41,10 @@ PROFILE_GUIDES = {
         "Guarded PDF, DOCX, PPTX and RTF extraction in disposable sandboxes.",
         "images/document-sandbox/README.md",
     ),
+    "document-export": (
+        "Offline Markdown to PDF with Mermaid, passive SVG assets and embedded fonts.",
+        "images/document-export/README.md",
+    ),
     "shell": (
         "Offline Bash, sh, dash and PowerShell parsing, linting and suppression auditing.",
         "images/shell-sandbox/README.md",

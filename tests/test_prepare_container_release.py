@@ -171,6 +171,7 @@ def test_release_build_budget_includes_python_compilation(monkeypatch, tmp_path,
     monkeypatch.setattr(preparation, "preflight", lambda *args: None)
     python_profiles = {
         "document",
+        "document-export",
         "drawio",
         "drawio-export",
         "shell",

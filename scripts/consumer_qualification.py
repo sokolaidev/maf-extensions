@@ -19,7 +19,7 @@ PREDICATE = f"https://github.com/{REPOSITORY}/consumer-qualification/v1"
 SUBJECT = "consumer-inputs.json"
 KIND_IMAGES = {
     "maf-sandbox-azure-pricing": ("azure-pricing",),
-    "maf-sandbox-document": ("document",),
+    "maf-sandbox-document": ("document", "document-export"),
     "maf-sandbox-antivirus": ("antivirus",),
     "maf-sandbox-bicep": ("bicep", "bicep-avm"),
     "maf-sandbox-drawio": ("drawio", "drawio-export"),

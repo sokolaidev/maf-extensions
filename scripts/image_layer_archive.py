@@ -13,6 +13,7 @@ ACAS_PROFILES = frozenset(
         "bicep",
         "bicep-avm",
         "document",
+        "document-export",
         "drawio",
         "drawio-export",
         "graphviz",

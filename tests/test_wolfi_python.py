@@ -23,7 +23,7 @@ def test_shared_python_inputs_are_retained_and_select_every_consumer(name):
     path = "images/wolfi-python/" + name
     assert ROOT / path in build_inputs(ROOT)
     assert set(affected(path)) == set(PYTHON_PROFILES)
-    assert len(PYTHON_PROFILES) == 9
+    assert len(PYTHON_PROFILES) == 10
     assert "bicep-docker-sbx" not in affected(path)
     assert "graphviz" not in affected(path)
 
@@ -164,6 +164,7 @@ def test_recipe_transform_preserves_abi_patches_and_tests(tmp_path, old_version)
     "context",
     [
         "document-sandbox",
+        "document-export",
         "drawio-sandbox",
         "drawio-export",
         "hyperlight-sandbox",

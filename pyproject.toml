@@ -14,6 +14,9 @@ dev = [
     "mammoth==1.13.0",
     "python-pptx==1.0.2",
     "striprtf==0.0.35",
+    "markdown-it-py==4.2.0",
+    "playwright==1.64.1",
+    "pypdf==7.0.0",
     "pytest>=9.0.3,<10",
     # Distributes the suite across processes; tests.yml runs it with `-n auto`.
     "pytest-xdist>=3.8,<4",

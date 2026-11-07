@@ -81,6 +81,20 @@ updates:
       prefix: "build"
       include: "scope"
 
+  - package-ecosystem: "pip"
+    directory: "/images/document-export"
+    schedule:
+      interval: "weekly"
+    groups:
+      document-export-libraries:
+        patterns: ["*"]
+      document-export-libraries-security:
+        applies-to: security-updates
+        patterns: ["*"]
+    commit-message:
+      prefix: "build"
+      include: "scope"
+
   - package-ecosystem: "docker"
     directories:
       - "/images/*"
