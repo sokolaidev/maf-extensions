@@ -146,8 +146,8 @@ def test_real_model_requires_explicit_dispatch_and_isolates_credentials():
     assert job["runs-on"] == "ubuntu-24.04" and job["timeout-minutes"] == 25
     steps = {step.get("name"): step for step in job["steps"]}
     download = steps["Download verified published worker and prepared compiler"]["run"]
-    assert "maf_sandbox_mcp-0.2.0-py3-none-any.whl" in download
-    assert "ebb54bc8b51d4d0ec3e63f1f850c5aa53b55d80ec5567c679ead169a3ed0d545" in download
+    assert "maf_sandbox_mcp-0.3.1-py3-none-any.whl" in download
+    assert "36d1af36ef6ed6fc174eeedc34a2c5f9a5e6a670134e0f6682d9c35955b079b1" in download
     assert "sha256sum --check --status" in download
     run = steps["Run the installed sample with Azure OpenAI"]
     assert run["timeout-minutes"] == 18
