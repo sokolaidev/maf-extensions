@@ -34,8 +34,9 @@ def wait_gateway(client):
     deadline = time.monotonic() + 20
     while True:
         try:
-            if client.rpc("Health", client.pb.HealthRequest()).version != "0.1.2":
-                raise RuntimeError("requires gateway 0.1.2")
+            expected = getattr(client, "expected_version", "0.1.2")
+            if client.rpc("Health", client.pb.HealthRequest()).version != expected:
+                raise RuntimeError("requires gateway " + expected)
             return
         except client.grpc.RpcError:
             if time.monotonic() >= deadline:

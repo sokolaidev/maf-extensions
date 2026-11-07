@@ -33,7 +33,7 @@ from openshell_owned_exec import OutputLimitError
 from openshell_owned_probe import docker_get, snapshot
 from openshell_replay_probe import wait_gateway
 
-PIN = "6648bd0c290efbc41ba131ee9831ee45cd431f94"
+PIN = "5d25211b25a8fc887e8d5c606d57d6ab22f1d76c"
 MEASURED = frozenset(
     {
         Capability.EXEC,
@@ -535,8 +535,8 @@ def main() -> int:
     if not isinstance(engine, dict):
         raise RuntimeError("Docker observer did not return engine metadata")
     native_host(platform.system(), platform.release(), engine)
-    if importlib.metadata.version("openshell") != "0.1.2":
-        raise RuntimeError("requires official SDK 0.1.2")
+    if importlib.metadata.version("openshell") != "0.1.7":
+        raise RuntimeError("requires official SDK 0.1.7")
     image = docker_get("/images/" + args.image + "/json")
     if image is None or image["Id"] != args.image:
         raise ValueError("workload must be an existing immutable local image ID")
@@ -546,7 +546,7 @@ def main() -> int:
         "format": 1,
         "issue": 1834 if args.egress_origin_ip else 1833,
         "upstream_commit": PIN,
-        "gateway_version": "0.1.2",
+        "gateway_version": "0.1.7",
         "python": sys.version,
         "kernel": platform.release(),
         "docker": {
@@ -593,12 +593,17 @@ def main() -> int:
             "EGRESS_PATHS": "measurement only; normalization and origin interpretation differ",
         }
     args.report.parent.mkdir(parents=True, exist_ok=True)
+    if args.https_ca:
+        from openshell_ca_probe import ca_source
+
+        source = ca_source(args.config, args.https_ca)
     control = {}
     with signed_gateway(args.config, control=control) as issuer:
         workspace = "q1833-" + uuid.uuid4().hex[:12]
         client = Client(
             workspace, issuer.token("admin", role="spike-admin", scopes="openshell:all"), args.image
         )
+        client.expected_version = "0.1.7"
         fixture = Fixture(client, report, args.report)
         created = False
         try:
@@ -628,9 +633,19 @@ def main() -> int:
 
                 asyncio.run(measure_routes(fixture, args.egress_origin_ip))
             elif args.https_ca:
+                from openshell_ca_probe import measure_ca_lifecycle
                 from openshell_https_probe import measure_native_https
 
-                asyncio.run(measure_native_https(fixture, args.egress_origin_ip, args.https_ca))
+                asyncio.run(
+                    measure_native_https(
+                        fixture, args.egress_origin_ip, args.https_ca, operator_trust=True
+                    )
+                )
+                asyncio.run(
+                    measure_ca_lifecycle(
+                        fixture, args.egress_origin_ip, args.https_ca, source, control["gateway"]
+                    )
+                )
             elif args.egress_origin_ip:
                 from openshell_egress_probe import measure_native
 

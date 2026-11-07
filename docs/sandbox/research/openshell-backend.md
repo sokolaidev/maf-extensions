@@ -4,6 +4,29 @@
 
 ## Spike conclusion - 2026-10-11
 
+### Official v0.1.7 destination trust follow-up — 2026-11-07
+
+The native qualification fixture now targets the official [v0.1.7 release](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.7), source `5d25211b25a8fc887e8d5c606d57d6ab22f1d76c`. It includes [destination CA delivery #3292](https://github.com/NVIDIA/OpenShell/pull/3292); the associated upstream request [#3295](https://github.com/NVIDIA/OpenShell/issues/3295) is closed. This removes the missing configuration mechanism behind the historical v0.1.2 HTTPS blocker, but does not itself qualify this repository's egress contract. Historical observations below retain their original version and scope.
+
+| Harness impact | Treatment |
+|---|---|
+| Gateway, SDK and runtime/supervisor release | All native workflow consumers move together to 0.1.7; SDK/protobuf construction checked against the released package. Gateway health must match the selected version. Historical standalone 0.1.2 experiments retain their own pins. |
+| Destination roots | Use global `openshell.supervisor.network.additional_ca_bundle`, an explicit public fixture bundle on the gateway host. The workload image stays unchanged; no private origin key or verification bypass enters it. |
+| Trust changes | Source edits are not hot reload. Measure old/new roots before application, after gateway restart plus sandbox stop/start, after old-root removal, and after restoration. Require the same sandbox identity; record all observed physical runtimes for cleanup. |
+| Policy, direct routing and provider/restart behavior | Rerun existing native profiles; new driver/preflight and policy behavior must not inherit a 0.1.2 verdict. Keep exact origin, installed-state and runtime oracles. |
+| Logging and other drivers | OCSF schema changes do not affect these JSON observations. Docker evidence does not qualify Kubernetes, Podman, VM, remote drivers or production deployments. |
+| General lifecycle | Official read-only original-create recovery and conditional physical-ID deletion remain prerequisites under #1817/#1818. No backend capability is declared. |
+
+Immutable release inputs:
+
+- Gateway archive SHA-256: `e1714dcfd85c949e2f53260bcfbf04b203f6f5cbd3a61e61c11c38cbc91cb102`.
+- Runtime image: `ghcr.io/nvidia/openshell/sandbox@sha256:89819c03f291d9b909c3fc2962360e24af4516627422d18f3e681829f003f347`.
+- Supervisor image: `ghcr.io/nvidia/openshell/supervisor@sha256:a07864bd0c546716039c2000a919f50ce8f7f1f67ba37dda350cf64d3a7cfb06`.
+
+The [CA lifecycle probe](../../../scripts/experiments/openshell_ca_probe.py) supplements the eight HTTPS policy/certificate cases with ten fresh-connection observations. Independent direct TLS controls establish that each destination is healthy under its own root. A refusal requires both an exact guest disconnect and a correlated origin certificate alert with no HTTP request. Timeouts, stale journals, identity replacement and uncertain lifecycle mutations fail the experiment; mutations are not automatically replayed. Source-only overlap must leave the new root untrusted; applied overlap must trust both; removing the original root must reject its leaf while the new leaf remains usable. Each traffic bracket requires stable observed runtime processes. This does not promise continuity across operator stop/start, instant revocation of existing connections, or gateway-mTLS separation (the fixture gateway listener is plaintext).
+
+Hosted results are pending. The workflow retains JSON reports and gateway logs even on failure for 14 days, and runs HTTPS independently after artifact preparation so an earlier baseline failure cannot hide its evidence. #1834 remains open; #1835 credential lifecycle remains separate.
+
 **Defer general OpenShell backend adoption.** The bounded spike has enough source, offline and live evidence to make that decision. It does not approve an adapter package or any suite capability. OpenShell v0.1.2 can execute owned workloads through the raw transport under the measured conditions, but a stale first name-addressed deletion can remove a replacement, and bounded create replay cannot establish the original admission after retained history expires. Official upstream recovery and conditional deletion remain dependencies under [#1817](https://github.com/sokolaidev/maf-extensions/issues/1817) and [#1818](https://github.com/sokolaidev/maf-extensions/issues/1818).
 
 ### Exit-criteria reconciliation

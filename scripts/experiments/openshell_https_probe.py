@@ -249,6 +249,7 @@ def prepare_native_tls(directory, ip):
     trusted = authority("OpenShell ephemeral fixture CA")
     unknown = authority("OpenShell untrusted fixture CA")
     (directory / "ca.pem").write_bytes(trusted[1].public_bytes(serialization.Encoding.PEM))
+    (directory / "rotation-ca.pem").write_bytes(unknown[1].public_bytes(serialization.Encoding.PEM))
     host = "allowed." + ip + ".nip.io"
     for label, dns, issuer, expired in (
         ("valid", host, trusted, False),
@@ -395,7 +396,7 @@ def owned_trust_blocked(observed, events, request):
     ]
 
 
-async def measure_native_https(fixture, ip, ca_file):
+async def measure_native_https(fixture, ip, ca_file, *, operator_trust=False):
     """Measure owned HTTPS with normal verification and independent origin evidence."""
     from openshell_egress_probe import native_origin_ip
 
@@ -403,7 +404,9 @@ async def measure_native_https(fixture, ip, ca_file):
     host = "allowed." + ip + ".nip.io"
     context = ssl.create_default_context(cafile=str(ca_file))
     evidence = {
-        "scope": "provider-free IPv4 HTTPS with an ephemeral workload-image trust anchor",
+        "scope": "provider-free IPv4 HTTPS with an ephemeral "
+        + ("operator-delivered" if operator_trust else "workload-image")
+        + " trust anchor",
         "ca_sha256": hashlib.sha256(ca_file.read_bytes()).hexdigest(),
         "leaf_sha256": {
             name: hashlib.sha256(ca_file.with_name(name + ".pem").read_bytes()).hexdigest()
@@ -470,6 +473,11 @@ async def measure_native_https(fixture, ip, ca_file):
                     "print(json.dumps({'installed_ca_sha256':hashlib.sha256(ca).hexdigest(),"
                     "'system_bundle_contains_ca':ca in bundle,'effective_bundle_contains_ca':ca in effective}))"
                 )
+                if operator_trust:
+                    code = code.replace(
+                        "pathlib.Path('/usr/local/share/ca-certificates/openshell-fixture.crt').read_bytes()",
+                        repr(ca_file.read_bytes().strip()),
+                    ).replace("installed_ca_sha256", "expected_ca_sha256")
                 receipt = await sandbox.exec(
                     ["python", "-c", code], working_directory="/sandbox", timeout=30
                 )
@@ -478,10 +486,17 @@ async def measure_native_https(fixture, ip, ca_file):
                 evidence["workload_trust"] = json.loads(receipt.stdout)
                 fixture.save()
                 if (
-                    evidence["workload_trust"]["installed_ca_sha256"] != evidence["ca_sha256"]
-                    or not evidence["workload_trust"]["system_bundle_contains_ca"]
+                    evidence["workload_trust"][
+                        "expected_ca_sha256" if operator_trust else "installed_ca_sha256"
+                    ]
+                    != hashlib.sha256(
+                        ca_file.read_bytes().strip() if operator_trust else ca_file.read_bytes()
+                    ).hexdigest()
+                    or evidence["workload_trust"]["system_bundle_contains_ca"] == operator_trust
                 ):
-                    raise RuntimeError("fixture CA not installed in workload system bundle")
+                    raise RuntimeError(
+                        "fixture CA not delivered through the expected trust boundary"
+                    )
             cases = (
                 [("closed_https", 8443, "GET", "/anything", "EACCES")]
                 if closed
@@ -521,8 +536,10 @@ async def measure_native_https(fixture, ip, ca_file):
                 evidence["cases"].append(row)
                 fixture.save()
                 if not row["passed"]:
-                    if label == "trusted_owned_get" and owned_trust_blocked(
-                        observed, events, request
+                    if (
+                        not operator_trust
+                        and label == "trusted_owned_get"
+                        and owned_trust_blocked(observed, events, request)
                     ):
                         row["finding"] = (
                             "workload CA is not trusted by the separate official supervisor"

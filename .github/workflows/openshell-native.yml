@@ -18,7 +18,7 @@ concurrency:
 jobs:
   native:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -27,28 +27,30 @@ jobs:
         with:
           python-version: '3.13'
       - name: Prepare official pinned gateway and immutable images
+        id: prepare
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/openshell-evidence"
-          curl --fail --location --retry 3 --output "$RUNNER_TEMP/gateway.tar.gz" https://github.com/NVIDIA/OpenShell/releases/download/v0.1.2/openshell-gateway-x86_64-unknown-linux-gnu.tar.gz
-          printf '%s  %s\n' 218d887845b3a020ab7535c9985eb9c666d6938f144044957f8b82b42892aadb "$RUNNER_TEMP/gateway.tar.gz" | sha256sum --check
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/gateway.tar.gz" https://github.com/NVIDIA/OpenShell/releases/download/v0.1.7/openshell-gateway-x86_64-unknown-linux-gnu.tar.gz
+          printf '%s  %s\n' e1714dcfd85c949e2f53260bcfbf04b203f6f5cbd3a61e61c11c38cbc91cb102 "$RUNNER_TEMP/gateway.tar.gz" | sha256sum --check
           mkdir "$RUNNER_TEMP/gateway"
           tar -xzf "$RUNNER_TEMP/gateway.tar.gz" -C "$RUNNER_TEMP/gateway"
           sudo install -m 0755 "$RUNNER_TEMP/gateway/openshell-gateway" /opt/openshell-gateway
           /opt/openshell-gateway --version
-          docker pull ghcr.io/nvidia/openshell/sandbox@sha256:b0f0f6217b11b22954b10a033a9fd798cf0a4e35cf4af63c1ba0d9c03e74338a
-          docker pull ghcr.io/nvidia/openshell/supervisor@sha256:90a6f1a7257a8d3c76f89cc7cc1a1050567cf065a59ce76888f23dfd4f4c757d
+          docker pull ghcr.io/nvidia/openshell/sandbox@sha256:89819c03f291d9b909c3fc2962360e24af4516627422d18f3e681829f003f347
+          docker pull ghcr.io/nvidia/openshell/supervisor@sha256:a07864bd0c546716039c2000a919f50ce8f7f1f67ba37dda350cf64d3a7cfb06
           docker build --iidfile "$RUNNER_TEMP/workload-id" -f scripts/experiments/openshell-native.Dockerfile .
-          docker image inspect "$(cat "$RUNNER_TEMP/workload-id")" ghcr.io/nvidia/openshell/sandbox@sha256:b0f0f6217b11b22954b10a033a9fd798cf0a4e35cf4af63c1ba0d9c03e74338a ghcr.io/nvidia/openshell/supervisor@sha256:90a6f1a7257a8d3c76f89cc7cc1a1050567cf065a59ce76888f23dfd4f4c757d > "$RUNNER_TEMP/openshell-evidence/images.json"
+          docker image inspect "$(cat "$RUNNER_TEMP/workload-id")" ghcr.io/nvidia/openshell/sandbox@sha256:89819c03f291d9b909c3fc2962360e24af4516627422d18f3e681829f003f347 ghcr.io/nvidia/openshell/supervisor@sha256:a07864bd0c546716039c2000a919f50ce8f7f1f67ba37dda350cf64d3a7cfb06 > "$RUNNER_TEMP/openshell-evidence/images.json"
       - name: Measure shared probes, replacement barriers and cleanup
         shell: bash
         env:
           OTEL_SDK_DISABLED: 'true'
         run: |
           set -euo pipefail
-          uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --report "$RUNNER_TEMP/openshell-evidence/report.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/probe.log"
+          uv run --no-project --python 3.13 --with 'openshell==0.1.7' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --report "$RUNNER_TEMP/openshell-evidence/report.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/probe.log"
       - name: Measure native HTTP policy, routes, provider authority and transitions
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
         shell: bash
         env:
           OTEL_SDK_DISABLED: 'true'
@@ -69,12 +71,13 @@ jobs:
           origin_container=$(docker create --network "$origin_network" --mount "type=bind,src=$GITHUB_WORKSPACE/scripts/experiments,dst=/probe,readonly" "$(cat "$RUNNER_TEMP/workload-id")" python /probe/openshell_egress_probe.py --serve-origin --revocation-controls)
           docker start "$origin_container"
           origin_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$origin_container")
-          uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --egress-origin-ip "$origin_ip" --report "$RUNNER_TEMP/openshell-evidence/egress.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/egress.log"
-          uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --egress-routes --egress-origin-ip "$origin_ip" --report "$RUNNER_TEMP/openshell-evidence/routes.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/routes.log"
-          uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --egress-composition --egress-origin-ip "$origin_ip" --report "$RUNNER_TEMP/openshell-evidence/composition.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/composition.log"
-          uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --egress-transitions --egress-origin-ip "$origin_ip" --report "$RUNNER_TEMP/openshell-evidence/transitions.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/transitions.log"
-          uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --egress-restart --egress-origin-ip "$origin_ip" --report "$RUNNER_TEMP/openshell-evidence/restart.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/restart.log"
+          uv run --no-project --python 3.13 --with 'openshell==0.1.7' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --egress-origin-ip "$origin_ip" --report "$RUNNER_TEMP/openshell-evidence/egress.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/egress.log"
+          uv run --no-project --python 3.13 --with 'openshell==0.1.7' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --egress-routes --egress-origin-ip "$origin_ip" --report "$RUNNER_TEMP/openshell-evidence/routes.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/routes.log"
+          uv run --no-project --python 3.13 --with 'openshell==0.1.7' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --egress-composition --egress-origin-ip "$origin_ip" --report "$RUNNER_TEMP/openshell-evidence/composition.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/composition.log"
+          uv run --no-project --python 3.13 --with 'openshell==0.1.7' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --egress-transitions --egress-origin-ip "$origin_ip" --report "$RUNNER_TEMP/openshell-evidence/transitions.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/transitions.log"
+          uv run --no-project --python 3.13 --with 'openshell==0.1.7' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --egress-restart --egress-origin-ip "$origin_ip" --report "$RUNNER_TEMP/openshell-evidence/restart.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/restart.log"
       - name: Characterize owned HTTPS trust and certificate validation
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
         shell: bash
         env:
           OTEL_SDK_DISABLED: 'true'
@@ -82,12 +85,10 @@ jobs:
           set -euo pipefail
           origin_container=''
           origin_network=''
-          trust_image=''
           tls_dir="$RUNNER_TEMP/openshell-native-tls"
           cleanup_tls() {
             if [ -n "$origin_container" ]; then docker rm -f "$origin_container"; fi
             if [ -n "$origin_network" ]; then docker network rm "$origin_network"; fi
-            if [ -n "$trust_image" ]; then docker image rm "$trust_image"; fi
             rm -rf -- "$tls_dir"
           }
           trap cleanup_tls EXIT
@@ -95,21 +96,13 @@ jobs:
           origin_container=$(docker create --user root --network "$origin_network" --mount "type=bind,src=$GITHUB_WORKSPACE/scripts/experiments,dst=/probe,readonly" "$(cat "$RUNNER_TEMP/workload-id")" sleep 3600)
           docker start "$origin_container"
           origin_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$origin_container")
-          uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'cryptography==50.0.2' python scripts/experiments/openshell_https_probe.py --prepare-native-tls "$tls_dir" --origin-ip "$origin_ip"
+          uv run --no-project --python 3.13 --with 'openshell==0.1.7' --with 'grpcio==1.84.0' --with 'cryptography==50.0.2' python scripts/experiments/openshell_https_probe.py --prepare-native-tls "$tls_dir" --origin-ip "$origin_ip"
           docker cp "$tls_dir/." "$origin_container:/tls"
           docker exec --detach "$origin_container" python /probe/openshell_https_probe.py --serve-native-tls /tls
-          cat scripts/experiments/openshell-native.Dockerfile > "$tls_dir/Dockerfile"
-          cat >> "$tls_dir/Dockerfile" <<'DOCKERFILE'
-          USER root
-          COPY ca.pem /usr/local/share/ca-certificates/openshell-fixture.crt
-          RUN update-ca-certificates
-          USER sandbox
-          DOCKERFILE
-          printf '*\n!Dockerfile\n!ca.pem\n' > "$tls_dir/.dockerignore"
-          docker build --iidfile "$tls_dir/image-id" "$tls_dir"
-          trust_image=$(cat "$tls_dir/image-id")
-          docker image inspect "$trust_image" > "$RUNNER_TEMP/openshell-evidence/https-image.json"
-          uv run --no-project --python 3.13 --with 'openshell==0.1.2' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$trust_image" --config scripts/experiments/openshell-native.toml --egress-origin-ip "$origin_ip" --https-ca "$tls_dir/ca.pem" --report "$RUNNER_TEMP/openshell-evidence/https.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/https.log"
+          cp "$tls_dir/ca.pem" "$tls_dir/active-ca.pem"
+          cp scripts/experiments/openshell-native.toml "$tls_dir/gateway.toml"
+          printf '\n[openshell.supervisor.network]\nadditional_ca_bundle = "%s"\n' "$tls_dir/active-ca.pem" >> "$tls_dir/gateway.toml"
+          uv run --no-project --python 3.13 --with 'openshell==0.1.7' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config "$tls_dir/gateway.toml" --egress-origin-ip "$origin_ip" --https-ca "$tls_dir/ca.pem" --report "$RUNNER_TEMP/openshell-evidence/https.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/https.log"
       - name: Record final engine inventory
         if: always()
         shell: bash
