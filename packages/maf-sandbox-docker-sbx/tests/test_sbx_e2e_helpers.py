@@ -197,6 +197,9 @@ def test_forwarded_agent_probe_requests_a_kit_and_cleans_up(monkeypatch, tmp_pat
     disposed = []
 
     class AgentBackend:
+        async def check_host(self):
+            raise AssertionError("the probe must bypass the host preflight")
+
         async def _sbx(self, *args, **kwargs):
             commands.append(args)
 
