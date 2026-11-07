@@ -19,8 +19,12 @@ class FixtureMediaEstimate:
 
 
 async def describe_fixture(part: Content, turn: Message) -> str | None:
-    """Describe fixture media without contacting a model or fetching its payload."""
-    return f"Fixture {part.media_type}: CODE-2466."
+    """Use fixed descriptions for PNG/PDF fixtures and a generic marker otherwise."""
+    if part.media_type == "image/png":
+        return "Fixture image/png: CODE-2466."
+    if part.media_type == "application/pdf":
+        return "Fixture application/pdf: CODE-2466."
+    return "Fixture unknown/unknown: CODE-2466."
 
 
 async def decline_fixture(part: Content, turn: Message) -> None:
