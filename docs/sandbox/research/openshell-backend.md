@@ -823,7 +823,7 @@ Evaluation of OpenShell v0.1.2 at `6648bd0c290efbc41ba131ee9831ee45cd431f94` exe
 | Non-mutating original-create receipts | Blocked on official upstream recovery contract; local FR draft and offline model prepared | [#1817](https://github.com/sokolaidev/maf-extensions/issues/1817) (open) |
 | Conditional physical-instance deletion | Blocked on official upstream conditional deletion; offline barrier harness prepared | [#1818](https://github.com/sokolaidev/maf-extensions/issues/1818) (open) |
 | Native Linux runtime and file conformance | Native baseline measured; lifecycle and concurrent file confinement blocked | [#1833](https://github.com/sokolaidev/maf-extensions/issues/1833) (open); baseline by [#2115](https://github.com/sokolaidev/maf-extensions/pull/2115) (merged) |
-| Effective egress translation and revocation | Open; v0.1.7 owned HTTPS, CA rotation and descriptor-bound recovery measured; broader contracts unqualified | [#1834](https://github.com/sokolaidev/maf-extensions/issues/1834) (open), [#2544](https://github.com/sokolaidev/maf-extensions/pull/2544) (open) |
+| Effective egress translation and revocation | Open; v0.1.7 owned HTTPS, CA rotation and descriptor-bound recovery measured; broader contracts unqualified | [#1834](https://github.com/sokolaidev/maf-extensions/issues/1834) (open), [#2544](https://github.com/sokolaidev/maf-extensions/pull/2544) (merged) |
 | Provider credential lifecycle | Open; deferred from the spike | [#1835](https://github.com/sokolaidev/maf-extensions/issues/1835) (open) |
 
 ## Adoption follow-up
