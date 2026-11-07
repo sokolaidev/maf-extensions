@@ -21,7 +21,7 @@ classifiers = [
 ]
 dependencies = [
     "maf-sandbox>=0.53.0,<0.54",
-    "maf-sandbox-bicep>=0.25.0,<0.26",
+    "maf-sandbox-bicep>=0.25.0,<0.27",
     "maf-sandbox-docker>=0.28.1,<0.31",
     "agent-framework-core>=1.24.0,<1.25",
     "mcp==2.2.0",
