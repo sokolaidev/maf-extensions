@@ -130,16 +130,43 @@ def with_marker(text: str, state: dict[str, Any]) -> str:
     )
 
 
+def latest_pull(client: GitHub) -> dict[str, Any] | None:
+    """Include retargeted requests so changing base cannot hide an ownership record."""
+    pulls = client.pages(f"repos/{REPOSITORY}/pulls?state=all&head=sokolaidev:{BRANCH}")
+    return max(pulls, key=lambda item: positive_id(item["number"])) if pulls else None
+
+
+def require_pull(client: GitHub, pull: dict[str, Any] | None) -> None:
+    """Refuse changed ownership, disposition or text before branch and PR writes."""
+    latest = latest_pull(client)
+    if (latest or {}).get("number") != (pull or {}).get("number"):
+        raise ValueError("Remediation pull-request ownership changed during refresh")
+    if pull is None:
+        return
+    latest = request(client, f"pulls/{pull['number']}")
+    if latest.get("body") != pull.get("body"):
+        raise ValueError("Pull-request body changed during refresh")
+    for value in ("state", "merged_at"):
+        if latest.get(value) != pull.get(value):
+            raise ValueError("Pull-request state changed during refresh")
+    if (
+        latest["user"]["login"] != pull["user"]["login"]
+        or latest["head"]["repo"]["full_name"] != pull["head"]["repo"]["full_name"]
+        or latest["head"]["ref"] != pull["head"]["ref"]
+        or latest["base"]["ref"] != pull["base"]["ref"]
+    ):
+        raise ValueError("Pull-request ownership changed during refresh")
+
+
 def update_body(
     client: GitHub, pull: dict[str, Any], text: str, head: str | None
 ) -> dict[str, Any]:
     """Refuse observed edits between ownership discovery and each body replacement."""
-    path = f"pulls/{pull['number']}"
-    latest = request(client, path)
-    if latest.get("body") != pull.get("body"):
-        raise ValueError("Pull-request body changed during refresh")
+    require_pull(client, pull)
     require_head(client, head)
-    result = request(client, path, method="PATCH", payload=encode({"body": text}))
+    result = request(
+        client, f"pulls/{pull['number']}", method="PATCH", payload=encode({"body": text})
+    )
     pull["body"] = text
     return result
 
@@ -215,9 +242,7 @@ def publish(
     if hashes != report["files"] or not hashes or len(hashes) > 20:
         raise ValueError("Qualified files differ from the proposed commit")
     current(client, receipt)
-    pulls = client.pages(f"repos/{REPOSITORY}/pulls?state=all&head=sokolaidev:{BRANCH}&base=main")
-    pulls.sort(key=lambda item: positive_id(item["number"]), reverse=True)
-    pull = pulls[0] if pulls else None
+    pull = latest_pull(client)
     ownership_pull = pull
     ownership_state = None
     head = branch_head(client)
@@ -320,12 +345,14 @@ def publish(
             client, ownership_pull, with_marker(ownership_pull["body"], ownership_state), head
         )
     if head != proposed["head"]:
+        require_pull(client, ownership_pull)
         update_branch(client, head, proposed["head"])
     state = {"schemaVersion": 1, "current": proposed, "pending": None}
     current(client, receipt)
     if pull:
         result = update_body(client, pull, body(state, report, evidence_url), proposed["head"])
     else:
+        require_pull(client, ownership_pull)
         require_head(client, proposed["head"])
         result = request(
             client,

@@ -692,7 +692,13 @@ class FakeGitHub(publication.GitHub):
 
     def pages(self, endpoint):
         if "/pulls?" in endpoint:
-            return copy.deepcopy(self.pulls)
+            return copy.deepcopy(
+                [
+                    pull
+                    for pull in self.pulls
+                    if "&base=main" not in endpoint or pull["base"]["ref"] == "main"
+                ]
+            )
         return (
             []
             if self.head is None
@@ -1005,6 +1011,113 @@ def test_new_candidate_retry_preserves_last_completed_qualification(publisher):
     assert publish()["status"] == "updated"
     assert "## Refresh incomplete" not in client.pulls[0]["body"]
     assert publication.marker(client.pulls[0]["body"])["current"]["head"] == client.head
+
+
+@pytest.mark.parametrize("closed", [False, True])
+def test_retargeted_pr_cannot_be_hidden_from_ownership_discovery(publisher, closed):
+    client, _, _, publish = publisher
+    publish()
+    client.pulls[0]["base"]["ref"] = "other"
+    if closed:
+        client.pulls[0]["state"] = "closed"
+    client.writes.clear()
+    with pytest.raises(ValueError, match="owned"):
+        publish()
+    assert client.writes == [] and len(client.pulls) == 1
+
+
+@pytest.mark.parametrize("change", ["closed", "merged", "base", "author", "head"])
+@pytest.mark.parametrize("after", ["git/trees", "pulls/1", "graphql"])
+def test_pr_disposition_changes_stop_later_writes(publisher, monkeypatch, change, after):
+    client, files, report, publish = publisher
+    publish()
+    files[planner.RECIPE] = b"later proposal"
+    report["files"][planner.RECIPE] = hashlib.sha256(files[planner.RECIPE]).hexdigest()
+    original = client.request
+    changed = False
+
+    def changing(endpoint, *, method="GET", **kwargs):
+        nonlocal changed
+        path = endpoint.removeprefix(f"repos/{REPOSITORY}/")
+        if changed and method != "GET" and (path.startswith("pulls") or path == "graphql"):
+            pytest.fail(f"Wrote {path} after an observed PR change")
+        result = original(endpoint, method=method, **kwargs)
+        if path == after and method != "GET":
+            changed = True
+            if change in {"closed", "merged"}:
+                client.pulls[0].update(state="closed", merged_at=AT if change == "merged" else None)
+            elif change == "base":
+                client.pulls[0]["base"]["ref"] = "other"
+            elif change == "author":
+                client.pulls[0]["user"]["login"] = "human"
+            else:
+                client.pulls[0]["head"]["ref"] = "other"
+        return result
+
+    monkeypatch.setattr(client, "request", changing)
+    with pytest.raises(ValueError, match="state changed|ownership changed"):
+        publish()
+    assert changed
+
+
+@pytest.mark.parametrize("merged", [False, True])
+@pytest.mark.parametrize("after", ["git/trees", "graphql"])
+def test_new_pr_during_publication_stops_duplicate_creation(publisher, monkeypatch, merged, after):
+    client, files, report, publish = publisher
+    if merged:
+        publish()
+        client.pulls[0].update(state="closed", merged_at=AT)
+        files[planner.RECIPE] = b"later proposal"
+        report["files"][planner.RECIPE] = hashlib.sha256(files[planner.RECIPE]).hexdigest()
+    original = client.request
+    changed = False
+
+    def competing(endpoint, *, method="GET", **kwargs):
+        nonlocal changed
+        path = endpoint.removeprefix(f"repos/{REPOSITORY}/")
+        if changed and method != "GET" and (path.startswith("pulls") or path == "graphql"):
+            pytest.fail(f"Wrote {path} after a competing PR appeared")
+        result = original(endpoint, method=method, **kwargs)
+        if path == after and method != "GET":
+            changed = True
+            client.pulls.append({"number": len(client.pulls) + 1, "base": {"ref": "other"}})
+        return result
+
+    monkeypatch.setattr(client, "request", competing)
+    with pytest.raises(ValueError, match="ownership changed"):
+        publish()
+    assert changed and len(client.pulls) == 1 + int(merged)
+
+
+@pytest.mark.parametrize("change", ["reopened", "base"])
+@pytest.mark.parametrize("after", ["git/trees", "pulls/1", "graphql"])
+def test_merged_pr_changes_stop_next_cycle(publisher, monkeypatch, change, after):
+    client, files, report, publish = publisher
+    publish()
+    client.pulls[0].update(state="closed", merged_at=AT)
+    files[planner.RECIPE] = b"later proposal"
+    report["files"][planner.RECIPE] = hashlib.sha256(files[planner.RECIPE]).hexdigest()
+    original = client.request
+    changed = False
+
+    def changing(endpoint, *, method="GET", **kwargs):
+        nonlocal changed
+        path = endpoint.removeprefix(f"repos/{REPOSITORY}/")
+        if changed and method != "GET" and (path.startswith("pulls") or path == "graphql"):
+            pytest.fail(f"Wrote {path} after a merged PR changed")
+        result = original(endpoint, method=method, **kwargs)
+        if path == after and method != "GET":
+            changed = True
+            if change == "reopened":
+                client.pulls[0].update(state="open", merged_at=None)
+            else:
+                client.pulls[0]["base"]["ref"] = "other"
+        return result
+
+    monkeypatch.setattr(client, "request", changing)
+    with pytest.raises(ValueError, match="state changed|ownership changed"):
+        publish()
+    assert changed and len(client.pulls) == 1
 
 
 @pytest.mark.parametrize("change", ["head", "author", "marker", "closed", "race", "race-base"])
