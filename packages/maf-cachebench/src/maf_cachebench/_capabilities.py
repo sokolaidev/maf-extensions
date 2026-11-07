@@ -203,7 +203,8 @@ async def _persistence(
                 (message.role, message.text) for message in replay
             ] == expected_history
         checks["compaction_state_committed"] = (
-            stack.get("version") == 5 and stack.get("middleware", {}).get("value_free_streak") == 2
+            stack.get("version") == experiment.binding.stack().to_dict()["version"]
+            and stack.get("middleware", {}).get("value_free_streak") == 2
         )
         checks["host_state_retained"] = stored["state"].get("fixture_value") == "CODE-2466"
         if returned is not None:

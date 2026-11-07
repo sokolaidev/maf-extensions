@@ -150,6 +150,23 @@ async def test_stale_scenario_fails_if_store_ignores_fencing(monkeypatch):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("version", [None, -1])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_scenario_rejects_corrupted_compaction_version(monkeypatch, version, stream):
+    save = ScenarioStore.save
+
+    async def corrupt_version(self, session_id, data, *, lease):
+        data = deepcopy(data)
+        data["state"]["maf_compaction"]["version"] = version
+        await save(self, session_id, data, lease=lease)
+
+    monkeypatch.setattr(ScenarioStore, "save", corrupt_version)
+    record = await capabilities.run_capability_scenario("fenced", stream=stream)
+    assert not record.passed
+    assert not record.checks["compaction_state_committed"]
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("scenario", ["fenced", "branch"])
 async def test_scenario_fails_if_restart_loses_recall_state(monkeypatch, scenario):
     restore = CompactionStack.restore
