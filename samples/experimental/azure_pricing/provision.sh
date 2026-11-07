@@ -20,7 +20,7 @@ runtime=$(docker image inspect --format '{{.Id}}' maf-pricing-bubblewrap:qualifi
 template=$(docker image inspect --format '{{.Id}}' maf-pricing-native:qualification)
 container=$(docker create "$runtime")
 docker export "$container" > "$target/runtime.tar"
-tar -xf "$target/runtime.tar" -C "$target/runtime"
+tar --no-same-owner -xf "$target/runtime.tar" -C "$target/runtime"
 docker rm "$container"
 container=
 sha256sum "$target/runtime.tar" > "$target/runtime.sha256"

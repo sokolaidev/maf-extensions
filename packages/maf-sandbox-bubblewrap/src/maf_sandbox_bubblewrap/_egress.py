@@ -107,13 +107,22 @@ class Proxy:
         self.directory.mkdir(mode=0o700)
         public = self.directory / "public"
         public.mkdir(mode=0o700)
+        launch = (
+            sys.executable,
+            "-I",
+            str(Path(__file__).with_name("_launch.py")),
+            str(os.getpid()),
+            str(group),
+        )
         ca = await asyncio.create_subprocess_exec(
+            *launch,
             str(binary),
             "generate-ca",
             "--outdir",
             str(self.directory),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            env={"PATH": "/usr/bin:/bin"},
         )
         try:
             async with asyncio.timeout(10):
@@ -127,11 +136,7 @@ class Proxy:
         config = self.directory / "config.json"
         config.write_text(json.dumps(policy(spec, self.directory)), encoding="utf-8")
         self.process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-I",
-            str(Path(__file__).with_name("_launch.py")),
-            str(os.getpid()),
-            str(group),
+            *launch,
             str(binary),
             "-config",
             str(config),

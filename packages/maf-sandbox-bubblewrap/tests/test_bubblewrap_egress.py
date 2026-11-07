@@ -1,11 +1,13 @@
 """Native egress admission and host/guest trust separation."""
 
 import asyncio
+import hashlib
 import json
+import os
 import sys
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from maf_sandbox import Capability, Egress, EgressRule, HttpMethod, SandboxKey, SandboxSpec
@@ -204,3 +206,37 @@ def test_proxy_digest_mismatch_precedes_any_process_or_state(tmp_path):
         asyncio.run(proxy.start(binary, "0" * 64, SandboxSpec(kind="pricing"), tmp_path))
     assert not proxy.directory.exists()
     assert proxy.process is None
+
+
+def test_certificate_generation_uses_owner_and_cgroup_supervisor(tmp_path, monkeypatch):
+    async def scenario():
+        binary = tmp_path / "proxy"
+        binary.write_bytes(b"verified binary")
+        proxy = Proxy(tmp_path / "state")
+        generate = Mock(wait=AsyncMock(return_value=1), returncode=1)
+        spawn = AsyncMock(return_value=generate)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+        group = tmp_path / "cgroup"
+        with pytest.raises(RuntimeError, match="certificate generation failed"):
+            await proxy.start(
+                binary,
+                hashlib.sha256(binary.read_bytes()).hexdigest(),
+                SandboxSpec(kind="pricing"),
+                group,
+            )
+        command = spawn.call_args.args
+        assert command[:2] == (sys.executable, "-I")
+        assert Path(command[2]).name == "_launch.py"
+        assert command[3:] == (
+            str(os.getpid()),
+            str(group),
+            str(binary),
+            "generate-ca",
+            "--outdir",
+            str(proxy.directory),
+        )
+        assert spawn.call_args.kwargs["env"] == {"PATH": "/usr/bin:/bin"}
+        generate.wait.assert_awaited_once()
+        assert proxy.process is None
+
+    asyncio.run(scenario())

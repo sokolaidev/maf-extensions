@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
@@ -163,9 +163,9 @@ def test_evidence_refuses_incomplete_or_misattributed_results(failure):
         check(text, "bubblewrap", model=False)
 
 
-def load_sample():
+def load_sample(name="agent"):
     spec = importlib.util.spec_from_file_location(
-        "backend_pricing_sample", ROOT / "samples/experimental/azure_pricing/agent.py"
+        "backend_pricing_" + name, ROOT / "samples/experimental/azure_pricing" / (name + ".py")
     )
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -309,26 +309,62 @@ def test_model_deadline_cancels_work_and_awaits_cleanup(monkeypatch):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    "response",
+    [b"", b"HTTP/1.1 200 OK\r\n\r\n", OSError("peer reset after request")],
+)
+def test_direct_probe_does_not_accept_ambiguous_responses(monkeypatch, response):
+    connection = MagicMock()
+    tls = MagicMock()
+    if isinstance(response, OSError):
+        tls.recv.side_effect = response
+    else:
+        tls.recv.return_value = response
+    context = MagicMock()
+    context.wrap_socket.return_value.__enter__.return_value = tls
+    monkeypatch.setattr("socket.create_connection", Mock(return_value=connection))
+    monkeypatch.setattr("ssl.create_default_context", Mock(return_value=context))
+    with pytest.raises((RuntimeError, OSError)):
+        exec(load_sample("qualification").DIRECT_PROBE, {})
+    tls.sendall.assert_called_once()
+
+
+def test_live_deadline_retains_partial_evidence(tmp_path, monkeypatch):
+    evidence = tmp_path / "evidence.log"
+    monkeypatch.setenv("MAF_PRICING_LIVE_ARGS", '["--backend", "bubblewrap"]')
+    monkeypatch.setenv("MAF_PRICING_EVIDENCE_LOG", str(evidence))
+
+    def timeout(command, *, stdout, stderr, timeout):
+        assert "-u" in command and stderr == subprocess.STDOUT
+        stdout.write(b"partial host report\ncleanup diagnostic\n")
+        raise subprocess.TimeoutExpired(command, timeout)
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    with pytest.raises(subprocess.TimeoutExpired):
+        test_live_backend_pricing()
+    assert evidence.read_bytes() == b"partial host report\ncleanup diagnostic\n"
+
+
 @pytest.mark.skipif(os.environ.get("MAF_PRICING_E2E") != "1", reason="opt-in real pricing host")
 def test_live_backend_pricing():
     args = json.loads(os.environ["MAF_PRICING_LIVE_ARGS"])
     assert isinstance(args, list) and all(isinstance(item, str) for item in args)
     backend = args[args.index("--backend") + 1]
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "samples/experimental/azure_pricing/agent.py"),
-            *args,
-            "--no-model",
-            "--qualify",
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=900,
-    )
-    Path(os.environ["MAF_PRICING_EVIDENCE_LOG"]).write_text(
-        result.stdout + "\n" + result.stderr, encoding="utf-8"
-    )
-    assert result.returncode == 0, result.stderr
-    check(result.stdout, backend, model=False, require_probes=True)
+    evidence = Path(os.environ["MAF_PRICING_EVIDENCE_LOG"])
+    with evidence.open("wb") as output:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-u",
+                str(ROOT / "samples/experimental/azure_pricing/agent.py"),
+                *args,
+                "--no-model",
+                "--qualify",
+            ],
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            timeout=900,
+        )
+    text = evidence.read_text("utf-8", errors="replace")
+    assert result.returncode == 0, text[-8192:]
+    check(text, backend, model=False, require_probes=True)

@@ -37,16 +37,15 @@ except urllib.error.URLError as error:
 """
 DIRECT_PROBE = """import socket, ssl
 try:
-    with socket.create_connection(('1.1.1.1', 443), timeout=2) as connection:
-        with ssl.create_default_context().wrap_socket(connection, server_hostname='one.one.one.one') as tls:
-            tls.sendall(b'GET / HTTP/1.1\\r\\nHost: one.one.one.one\\r\\nConnection: close\\r\\n\\r\\n')
-            response = tls.recv(4096)
-except ssl.SSLCertVerificationError:
-    raise
+    connection = socket.create_connection(('1.1.1.1', 443), timeout=2)
 except OSError:
     print('blocked')
 else:
-    if not response or (b'403' in response.split(b'\\r\\n', 1)[0] and b'Blocked' in response):
+    with connection:
+        with ssl.create_default_context().wrap_socket(connection, server_hostname='one.one.one.one') as tls:
+            tls.sendall(b'GET / HTTP/1.1\\r\\nHost: one.one.one.one\\r\\nConnection: close\\r\\n\\r\\n')
+            response = tls.recv(4096)
+    if b'403' in response.split(b'\\r\\n', 1)[0] and b'Blocked' in response:
         print('blocked')
     else:
         raise RuntimeError('Direct HTTPS traffic was not blocked: ' + repr(response[:256]))
