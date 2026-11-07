@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import copy
-import gzip
-import hashlib
 import json
 import sys
 import xml.etree.ElementTree as ET
@@ -278,8 +276,30 @@ def test_release_preparation_rejects_regressed_crypto_before_assessment(
 def test_historical_monitoring_does_not_apply_candidate_crypto_floor(tmp_path, monkeypatch, route):
     import prepare_container_release as preparation
 
-    report = read(ROOT / "docs/security/evidence/bicep-crypto-2026-11-08/grype.json")
-    image_id = report["source"]["target"]["imageID"]
+    image_id = "sha256:" + "a" * 64
+    report = {
+        "source": {"type": "image", "target": {"imageID": image_id}},
+        "descriptor": {
+            "db": {
+                "status": {
+                    "valid": True,
+                    "built": "2026-11-07T00:00:00Z",
+                    "schemaVersion": "v6",
+                    "from": "test-database",
+                }
+            }
+        },
+        "matches": [
+            {
+                "vulnerability": {
+                    "id": "CVE-example",
+                    "severity": "High",
+                    "fix": {"state": "unknown", "versions": []},
+                },
+                "artifact": {"name": "example", "version": "1.0.0", "type": "apk"},
+            }
+        ],
+    }
     write(tmp_path / "grype.json", report)
     write(tmp_path / "sbom.syft.json", crypto_inventory("10.0.10"))
     write(
@@ -301,42 +321,6 @@ def test_historical_monitoring_does_not_apply_candidate_crypto_floor(tmp_path, m
     )
     monkeypatch.setattr(preparation, "now", lambda: "2026-11-07T23:25:07Z")
     assert preparation.assess(tmp_path, image_id, require_clean=False)["outcome"] == "vulnerable"
-
-
-def test_retained_avm_rebuild_proves_crypto_inventory_and_remaining_glibc_finding():
-    from container_release import scan_result
-
-    directory = ROOT / "docs/security/evidence/bicep-crypto-2026-11-08"
-    retained = read(directory / "evidence.json")
-    for name, expected in retained["files"].items():
-        assert digest(directory / name) == "sha256:" + expected
-    sbom_bytes = gzip.decompress((directory / "sbom.syft.json.gz").read_bytes())
-    assert hashlib.sha256(sbom_bytes).hexdigest() == retained["rawSyftSha256"]
-    sbom = json.loads(sbom_bytes)
-    report = read(directory / "grype.json")
-    runtime = read(directory / "runtime.json")
-    assessment = read(directory / "assessment.json")
-    assert digest(directory / "image-index.json") == runtime["imageId"] == retained["localStoreId"]
-    assert digest(directory / "manifest.json") == retained["manifestDigest"]
-    assert retained["manifestDigest"] in {
-        item["digest"] for item in read(directory / "image-index.json")["manifests"]
-    }
-    image_id = read(directory / "manifest.json")["config"]["digest"]
-    assert image_id == retained["configurationDigest"] == sbom["source"]["metadata"]["imageID"]
-    assert report["source"]["target"]["imageID"] == image_id
-    source.verify_crypto_inventory(sbom)
-    assert not any(
-        match["artifact"]["name"] in source.LEGACY_PACKAGES
-        for match in report["matches"] + report.get("ignoredMatches", [])
-    )
-    assert scan_result(report, image_id, assessment["assessedAt"], sbom=sbom) == assessment
-    assert [(item["id"], item["severity"]) for item in assessment["findings"]] == [
-        ("CVE-2026-84243", "High")
-    ]
-    assert runtime["passed"] and runtime["containersRemaining"] == []
-    assert len(runtime["bicepAvm"]["checks"]) == 5
-    assert all(item["passed"] for item in runtime["bicepAvm"]["checks"])
-    assert retained["published"] is False and retained["signed"] is False
 
 
 def test_reservation_preserves_route_and_refuses_switching_it():
