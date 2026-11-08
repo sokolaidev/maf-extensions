@@ -168,6 +168,7 @@ jobs:
         run: uv run --locked python scripts/platform_remediation.py qualify --work "$RUNNER_TEMP/remediation" --results "$RUNNER_TEMP/results"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: retain
+        if: always()
         with:
           name: platform-remediation-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -187,13 +188,25 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
       - name: Deliver the qualified platform proposal
+        id: deliver
         if: steps.app.outcome == 'success' && steps.app.outputs.token != ''
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGE_REMEDIATION_TOKEN: ${{ steps.app.outputs.token }}
+          IMAGE_REMEDIATION_APP_PRIVATE_KEY: ${{ secrets.IMAGE_REMEDIATION_APP_PRIVATE_KEY }}
           BOT: ${{ steps.app.outputs.app-slug }}[bot]
           ARTIFACT_ID: ${{ steps.retain.outputs.artifact-id }}
         run: uv run --locked python scripts/platform_remediation.py publish --work "$RUNNER_TEMP/remediation" --results "$RUNNER_TEMP/results" --bot "$BOT" --artifact-id "$ARTIFACT_ID"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && steps.deliver.outcome != 'skipped'
+        with:
+          name: platform-remediation-delivery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/remediation/publication.json
+            ${{ runner.temp }}/remediation/deferral.json
+          if-no-files-found: warn
+          retention-days: 30
 
   report-failure:
     needs: [acquire, scan, checks, publish]

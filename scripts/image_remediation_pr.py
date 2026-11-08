@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import hashlib
 import json
 import os
@@ -12,12 +13,16 @@ from pathlib import Path
 from typing import Any
 
 from container_release import REPOSITORY, ROOT, read, write
-from container_release_history import GitHub, decode, encode, positive_id
+from container_release_history import GitHub, HistoryAdvanced, decode, encode, positive_id
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from image_remediation import proposal_files, qualify
-from image_remediation_evidence import current
+from image_remediation_evidence import EvidenceChanging, current, deferred
 
 BRANCH = "bot/go-image-remediation"
 MARKER = "maf-image-remediation-v1"
+COMMIT_MARKER = "maf-image-remediation-commit-v1"
 MARKER_PATTERN = r"<!-- " + MARKER + r" (.+?) -->"
 TITLE = "build: rebuild Go image dependencies with verified security fixes"
 PENDING_NOTICE = (
@@ -239,6 +244,96 @@ def owned(client: GitHub, head: str, state: dict[str, Any], bot: str) -> None:
             raise ValueError("Remediation branch content differs from its ownership marker")
 
 
+def signing_key() -> rsa.RSAPrivateKey:
+    """Use the configured App key as the trust root for orphan ownership."""
+    pem = os.environ.get("IMAGE_REMEDIATION_APP_PRIVATE_KEY")
+    if not pem:
+        raise ValueError("Remediation ownership requires the configured App private key")
+    key = serialization.load_pem_private_key(pem.encode(), password=None)
+    if not isinstance(key, rsa.RSAPrivateKey) or key.key_size < 2048:
+        raise ValueError("Remediation ownership requires an RSA App key of at least 2048 bits")
+    return key
+
+
+def ownership_payload(client: GitHub, state: dict[str, Any]) -> bytes:
+    """Bind signatures to this repository, publisher and ownership protocol."""
+    return encode(
+        {
+            "purpose": COMMIT_MARKER,
+            "repository": REPOSITORY,
+            "title": getattr(client, "title", TITLE),
+            "state": state,
+        }
+    )
+
+
+def ownership_message(client: GitHub, envelope: dict[str, Any]) -> str:
+    """Render the signed ownership envelope without altering its bytes."""
+    return (
+        f"{getattr(client, 'title', TITLE)}\n\n<!-- {COMMIT_MARKER} "
+        f"{json.dumps(envelope, sort_keys=True, separators=(',', ':'))} -->"
+    )
+
+
+def commit_message(client: GitHub, state: dict[str, Any]) -> str:
+    """Persist App-signed branch ownership before a pull request exists."""
+    signature = signing_key().sign(
+        ownership_payload(client, state),
+        padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
+        hashes.SHA256(),
+    )
+    return ownership_message(
+        client, {"state": state, "signature": base64.b64encode(signature).decode()}
+    )
+
+
+def orphan(client: GitHub, head: str, bot: str) -> dict[str, Any]:
+    """Admit only a marked bot commit with unchanged parents and bounded file contents."""
+    commit = request(client, f"git/commits/{head}")
+    matches = re.findall(r"<!-- " + COMMIT_MARKER + r" (.+?) -->", commit["message"])
+    if len(matches) != 1:
+        raise ValueError("Unclaimed remediation branch has no unique commit ownership marker")
+    identity = request(client, f"commits/{head}")
+    if any((identity.get(role) or {}).get("login") != bot for role in ("author", "committer")):
+        raise ValueError("Unclaimed remediation branch is not authored and committed by the App")
+    envelope = json.loads(matches[0])
+    if not isinstance(envelope, dict) or set(envelope) != {"state", "signature"}:
+        raise ValueError("Unclaimed remediation branch has no signed ownership record")
+    state = envelope["state"]
+    try:
+        signing_key().public_key().verify(
+            base64.b64decode(envelope["signature"], validate=True),
+            ownership_payload(client, state),
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
+            hashes.SHA256(),
+        )
+    except (InvalidSignature, binascii.Error, TypeError, ValueError):
+        raise ValueError("Unclaimed remediation branch lacks a valid App signature") from None
+    if (
+        not isinstance(state, dict)
+        or set(state) != {"schemaVersion", "branch", "base", "files", "parents", "tree"}
+        or state["schemaVersion"] != 1
+        or state["branch"] != getattr(client, "branch", BRANCH)
+        or not isinstance(state["base"], str)
+        or not re.fullmatch(r"[0-9a-f]{40}", state["base"])
+        or state["tree"] != commit["tree"]["sha"]
+        or not isinstance(state["files"], dict)
+        or not 1 <= len(state["files"]) <= 20
+        or not all(
+            isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+            for value in state["files"].values()
+        )
+        or state["parents"] != [item["sha"] for item in commit["parents"]]
+        or len(state["parents"]) not in {1, 2}
+        or state["parents"][-1] != state["base"]
+        or commit["message"] != ownership_message(client, envelope)
+    ):
+        raise ValueError("Unclaimed remediation branch has invalid commit ownership")
+    previous = {"head": head, "base": state["base"], "files": state["files"]}
+    owned(client, head, previous, bot)
+    return previous
+
+
 def publish(
     client: GitHub,
     receipt: dict[str, Any],
@@ -294,6 +389,8 @@ def publish(
             raise ValueError("Open remediation pull request lost its branch")
         if pull["state"] == "closed":
             pull = None
+    elif head is not None:
+        previous = orphan(client, head, bot)
     base = receipt["source"]
     base_commit = request(client, f"git/commits/{base}")
     entries = []
@@ -332,15 +429,22 @@ def publish(
         "email": f"{positive_id(user['id'])}+{bot}@users.noreply.github.com",
         "date": base_commit["committer"]["date"],
     }
-    # A deterministic initial commit lets a retry recognize a branch created before a lost response.
     parents = [base] if previous is None else list(dict.fromkeys([head, base]))
+    commit_state = {
+        "schemaVersion": 1,
+        "branch": getattr(client, "branch", BRANCH),
+        "base": base,
+        "files": hashes,
+        "parents": parents,
+        "tree": tree["sha"],
+    }
     commit = request(
         client,
         "git/commits",
         method="POST",
         payload=encode(
             {
-                "message": getattr(client, "title", TITLE),
+                "message": commit_message(client, commit_state),
                 "tree": tree["sha"],
                 "parents": parents,
                 "author": identity,
@@ -351,8 +455,6 @@ def publish(
     proposed = {"head": commit["sha"], "base": base, "files": hashes}
     if previous is not None and previous["base"] == base and previous["files"] == hashes:
         proposed = previous
-    if head is not None and previous is None and head != proposed["head"]:
-        raise ValueError("Unclaimed remediation branch differs from the deterministic proposal")
     state = {"schemaVersion": 1, "current": previous, "pending": proposed}
     current(client, receipt)
     if pull:
@@ -401,15 +503,18 @@ def main() -> None:
     report = qualify(ROOT, args.work, args.results)
     if report != read(args.work / "qualified.json"):
         raise ValueError("Qualified report changed")
-    result = publish(
-        BotGitHub(),
-        read(args.work / "receipt.json"),
-        report,
-        proposal_files(ROOT, args.work / "proposal"),
-        args.bot,
-        f"https://github.com/{REPOSITORY}/actions/runs/"
-        f"{positive_id(int(os.environ['GITHUB_RUN_ID']))}/artifacts/{positive_id(args.artifact_id)}",
-    )
+    try:
+        result = publish(
+            BotGitHub(),
+            read(args.work / "receipt.json"),
+            report,
+            proposal_files(ROOT, args.work / "proposal"),
+            args.bot,
+            f"https://github.com/{REPOSITORY}/actions/runs/"
+            f"{positive_id(int(os.environ['GITHUB_RUN_ID']))}/artifacts/{positive_id(args.artifact_id)}",
+        )
+    except (EvidenceChanging, HistoryAdvanced) as error:
+        result = deferred(args.work, error, "publish")
     write(args.work / "publication.json", result)
     print(json.dumps(result))
 

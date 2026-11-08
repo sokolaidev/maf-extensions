@@ -14,6 +14,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -869,14 +871,15 @@ def test_acquisition_binds_release_catalogue_and_monitor(
             acquisition.GitHub(), checkout, tmp_path / "acquired"
         )
         assert result is not None and result["updates"]
-        assert verified == [name] * (2 if mutation in {"race", "history-current"} else 1)
+        assert verified == [name] * (2 if mutation == "history-current" else 1)
         if mutation.startswith("history-"):
             assert sleeps == [1, 2, 30]
             assert len(snapshots) == (5 if mutation == "history-acquire" else 6)
         assert read(tmp_path / "acquired/receipt.json")["oldestAssessment"] == AT
-        assert read(tmp_path / "acquired/receipt.json")["catalogue"]["sequence"] == (
-            2 if mutation == "race" else 1
-        )
+        assert read(tmp_path / "acquired/receipt.json")["catalogue"]["sequence"] == 1
+        images = read(tmp_path / "acquired/receipt.json")["images"]
+        assert images["terraform-random"]["record"] == record
+        assert set(images) == set(result["affectedProfiles"])
     else:
         with pytest.raises(ValueError) as error:
             acquisition.acquire(acquisition.GitHub(), checkout, tmp_path / "acquired")
@@ -943,13 +946,26 @@ def test_retained_monitor_assets_are_authenticated(tmp_path, monkeypatch, mutati
         assert not (tmp_path / "escaped").exists()
 
 
+@pytest.fixture(scope="module", autouse=True)
+def app_key():
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    ).decode()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("IMAGE_REMEDIATION_APP_PRIVATE_KEY", pem)
+        yield key
+
+
 class FakeGitHub(publication.GitHub):
     def __init__(self):
         self.head = None
         self.pulls = []
         self.blobs = {}
         self.trees = {}
-        self.commits = {SOURCE: {"tree": {"sha": "base-tree"}, "committer": {"date": AT}}}
+        self.commits: dict[str, Any] = {
+            SOURCE: {"tree": {"sha": "base-tree"}, "committer": {"date": AT}}
+        }
         self.fail_after = None
         self.fail_before = None
         self.body_edit_after = None
@@ -969,7 +985,12 @@ class FakeGitHub(publication.GitHub):
         return (
             []
             if self.head is None
-            else [{"ref": f"refs/heads/{publication.BRANCH}", "object": {"sha": self.head}}]
+            else [
+                {
+                    "ref": f"refs/heads/{getattr(self, 'branch', publication.BRANCH)}",
+                    "object": {"sha": self.head},
+                }
+            ]
         )
 
     def request(self, endpoint, *, method="GET", payload=None, **kwargs):
@@ -986,9 +1007,11 @@ class FakeGitHub(publication.GitHub):
         elif path == f"users/{BOT}":
             result = {"id": 42}
         elif path.startswith("git/commits/"):
-            result = self.commits[path.split("/")[-1]]
+            result = copy.deepcopy(self.commits[path.split("/")[-1]])
+            if "parents" in result:
+                result["parents"] = [{"sha": sha} for sha in result["parents"]]
         elif path.startswith("commits/"):
-            result = {"author": {"login": BOT}}
+            result = {"author": {"login": BOT}, "committer": {"login": BOT}}
         elif path.startswith("compare/"):
             sha = path.rsplit("...", 1)[1]
             entries = self.trees[self.commits[sha]["tree"]["sha"]]
@@ -1045,7 +1068,10 @@ class FakeGitHub(publication.GitHub):
                 "user": {"login": BOT},
                 "html_url": f"https://github.com/{REPOSITORY}/pull/1",
                 "merged_at": None,
-                "head": {"ref": publication.BRANCH, "repo": {"full_name": REPOSITORY}},
+                "head": {
+                    "ref": getattr(self, "branch", publication.BRANCH),
+                    "repo": {"full_name": REPOSITORY},
+                },
                 "base": {"ref": "main"},
             }
             self.pulls.append(result)
@@ -1093,6 +1119,198 @@ def test_pr_create_retry_and_refresh_are_idempotent(publisher):
     assert publish()["status"] == "updated"
     assert first in client.commits[client.head]["parents"]
     assert len(client.pulls) == 1
+
+
+@pytest.mark.parametrize("lane", ["go", "platform"])
+@pytest.mark.parametrize("failure", ["deferred", "lost-response"])
+def test_orphan_retry_uses_fresh_source_and_proposal(publisher, monkeypatch, lane, failure):
+    client, files, report, publish = publisher
+    if lane == "platform":
+        from platform_remediation import PlatformGitHub
+
+        client.branch = PlatformGitHub.branch
+        client.title = PlatformGitHub.title
+        report["kind"] = "platform"
+    calls = []
+
+    def changing(*_):
+        calls.append(None)
+        if len(calls) == 3:
+            raise acquisition.EvidenceChanging("Main changed during remediation")
+
+    if failure == "deferred":
+        monkeypatch.setattr(publication, "current", changing)
+        error = acquisition.EvidenceChanging
+    else:
+        client.fail_after = "graphql"
+        error = OSError
+    with pytest.raises(error):
+        publish()
+    assert client.head is not None and not client.pulls
+    monkeypatch.setattr(publication, "current", lambda *_: None)
+    for base in ("d" * 40, "e" * 40):
+        before = client.head
+        client.commits[base] = {"tree": {"sha": f"tree-{base}"}, "committer": {"date": AT}}
+        report["source"] = base
+        files[planner.RECIPE] = base.encode()
+        report["files"] = {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()}
+        if base.startswith("d"):
+            client.fail_before = "pulls"
+            with pytest.raises(OSError):
+                publish()
+            assert not client.pulls
+        else:
+            assert publish()["status"] == "created"
+        assert client.commits[client.head]["parents"] == [before, base]
+        tree = next(data for path, data in reversed(client.writes) if path == "git/trees")
+        assert tree["base_tree"] == f"tree-{base}"
+    state = publication.marker(client.pulls[0]["body"])
+    assert state["current"] == {
+        "head": client.head,
+        "base": report["source"],
+        "files": report["files"],
+    }
+    assert state["pending"] is None
+    assert publish()["status"] == "unchanged"
+    assert len(client.pulls) == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["unmarked", "duplicate", "branch", "parents", "tree", "content", "author", "committer"],
+)
+def test_orphan_recovery_refuses_modified_ownership(publisher, monkeypatch, change):
+    client, _, _, publish = publisher
+    client.fail_before = "pulls"
+    with pytest.raises(OSError):
+        publish()
+    head = client.head
+    commit = client.commits[head]
+    if change == "unmarked":
+        commit["message"] = publication.TITLE
+    elif change == "duplicate":
+        commit["message"] *= 2
+    elif change == "branch":
+        commit["message"] = commit["message"].replace(publication.BRANCH, "bot/other")
+    elif change == "parents":
+        commit["parents"] = ["f" * 40]
+    elif change == "tree":
+        commit["tree"] = {"sha": "f" * 40}
+    elif change == "content":
+        entry = client.trees[commit["tree"]["sha"]][0]
+        client.blobs[entry["sha"]] = b"human edit"
+    else:
+        original = client.request
+
+        def edited(endpoint, **kwargs):
+            result = original(endpoint, **kwargs)
+            if endpoint.endswith(f"/commits/{head}") and "/git/" not in endpoint:
+                value = json.loads(result)
+                value[change] = {"login": "human"}
+                return encode(value)
+            return result
+
+        monkeypatch.setattr(client, "request", edited)
+    client.writes.clear()
+    with pytest.raises(ValueError):
+        publish()
+    assert client.head == head and not client.pulls and not client.writes
+
+
+@pytest.mark.parametrize("race", [True, "base"])
+def test_orphan_recovery_keeps_atomic_head_guard(publisher, race):
+    client, files, report, publish = publisher
+    client.fail_before = "pulls"
+    with pytest.raises(OSError):
+        publish()
+    files[planner.RECIPE] = b"fresh proposal"
+    report["files"][planner.RECIPE] = hashlib.sha256(files[planner.RECIPE]).hexdigest()
+    client.race = race
+    with pytest.raises(ValueError, match="Head changed"):
+        publish()
+    assert client.head == (SOURCE if race == "base" else "human")
+    assert not client.pulls
+
+
+@pytest.mark.parametrize("forgery", ["unsigned", "attacker-key", "copied-signature"])
+def test_orphan_refuses_forged_bot_attribution(publisher, forgery):
+    client, files, _, publish = publisher
+    client.fail_before = "pulls"
+    with pytest.raises(OSError):
+        publish()
+    commit = copy.deepcopy(client.commits[client.head])
+    envelope = json.loads(commit["message"].split(f"<!-- {publication.COMMIT_MARKER} ")[1][:-4])
+    state = envelope["state"]
+    entry = copy.deepcopy(client.trees[commit["tree"]["sha"]][0])
+    blob = publication.request(
+        client,
+        "git/blobs",
+        method="POST",
+        payload=encode(
+            {
+                "encoding": "base64",
+                "content": base64.b64encode(b"human-owned content").decode(),
+            }
+        ),
+    )
+    entry["sha"] = blob["sha"]
+    tree = publication.request(
+        client,
+        "git/trees",
+        method="POST",
+        payload=encode(
+            {
+                "base_tree": "base-tree",
+                "tree": [entry],
+            }
+        ),
+    )
+    state["tree"] = tree["sha"]
+    state["files"][entry["path"]] = hashlib.sha256(b"human-owned content").hexdigest()
+    if forgery == "unsigned":
+        envelope = state
+    elif forgery == "attacker-key":
+        attacker = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        signature = attacker.sign(
+            publication.ownership_payload(client, state),
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
+            hashes.SHA256(),
+        )
+        envelope["signature"] = base64.b64encode(signature).decode()
+    commit["message"] = publication.ownership_message(client, envelope)
+    commit["tree"] = tree["sha"]
+    forged = publication.request(client, "git/commits", method="POST", payload=encode(commit))
+    head = client.head = forged["sha"]
+    client.writes.clear()
+    with pytest.raises(ValueError, match="signed ownership|valid App signature"):
+        publish()
+    assert client.head == head and not client.pulls and not client.writes
+    assert client.blobs[entry["sha"]] != files[entry["path"]]
+
+
+def test_orphan_signature_is_bound_to_repository(publisher, monkeypatch):
+    client, _, _, publish = publisher
+    client.fail_before = "pulls"
+    with pytest.raises(OSError):
+        publish()
+    commit = client.commits[client.head]
+    envelope = json.loads(commit["message"].split(f"<!-- {publication.COMMIT_MARKER} ")[1][:-4])
+    with monkeypatch.context() as patch:
+        patch.setattr(publication, "REPOSITORY", "other/repository")
+        commit["message"] = publication.commit_message(client, envelope["state"])
+    client.writes.clear()
+    with pytest.raises(ValueError, match="valid App signature"):
+        publish()
+    assert not client.writes and not client.pulls
+
+
+def test_missing_signing_key_cannot_create_a_branch(publisher, monkeypatch):
+    client, _, _, publish = publisher
+    monkeypatch.delenv("IMAGE_REMEDIATION_APP_PRIVATE_KEY")
+    with pytest.raises(ValueError, match="configured App private key"):
+        publish()
+    assert client.head is None and not client.pulls
+    assert not any(path in {"graphql", "pulls"} for path, _ in client.writes)
 
 
 @pytest.mark.parametrize("change", ["human", "deleted", "base"])
@@ -1644,7 +1862,7 @@ def test_workflow_keeps_writes_after_all_read_only_gates():
         "${{ runner.temp }}/remediation",
         "${{ runner.temp }}/results",
     ]
-    publish = steps[-1]
+    publish = next(item for item in steps if item.get("id") == "deliver")
     assert publish["env"]["ARTIFACT_ID"] == "${{ steps.retain.outputs.artifact-id }}"
     assert '--artifact-id "$ARTIFACT_ID"' in publish["run"]
     assert {key: value for key, value in app["with"].items() if key.startswith("permission-")} == {
@@ -1675,3 +1893,222 @@ def test_workflow_keeps_writes_after_all_read_only_gates():
         )
     assert {"acquire", "providers"} <= set(jobs["report-failure"]["needs"])
     assert "needs.providers.result == 'failure'" in jobs["report-failure"]["if"]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "unrelated",
+        "reservation",
+        "release",
+        "assessment",
+        "discovery",
+        "removed",
+        "inherited",
+        "main",
+        "monitor",
+    ],
+)
+def test_freshness_scopes_catalogue_changes_to_qualified_images(current_state, monkeypatch, change):
+    catalogue = {
+        "current": {"bicep": "bicep-1", "graphviz": "graphviz-1"},
+        "releases": {
+            "bicep-1": {"registryDigest": IMAGE, "latestAttempt": {"outcome": "vulnerable"}},
+            "graphviz-1": {"registryDigest": IMAGE},
+        },
+    }
+    receipt = copy.deepcopy(current_state)
+    receipt["images"] = acquisition.catalogue_images(catalogue, ["bicep", "bicep-avm"])
+    if change == "unrelated":
+        catalogue["releases"]["graphviz-2"] = {"registryDigest": "new"}
+        catalogue["current"]["graphviz"] = "graphviz-2"
+    elif change == "reservation":
+        catalogue["releases"]["bicep-2"] = {"state": "incomplete"}
+    elif change == "release":
+        catalogue["releases"]["bicep-2"] = {"registryDigest": "new"}
+        catalogue["current"]["bicep"] = "bicep-2"
+    elif change == "assessment":
+        catalogue["releases"]["bicep-1"]["latestAttempt"] = {"outcome": "unavailable"}
+    elif change == "discovery":
+        catalogue["releases"]["bicep-1"]["registryDiscovery"] = {"outcome": "unavailable"}
+    elif change == "removed":
+        del catalogue["current"]["bicep"]
+    elif change == "inherited":
+        catalogue["releases"]["bicep-avm-1"] = {"registryDigest": IMAGE}
+        catalogue["current"]["bicep-avm"] = "bicep-avm-1"
+    elif change == "main":
+        monkeypatch.setattr(acquisition, "main_head", lambda _: "d" * 40)
+    else:
+        monkeypatch.setattr(acquisition, "latest_monitor", lambda _: {})
+    monkeypatch.setattr(
+        acquisition,
+        "History",
+        lambda _: SimpleNamespace(
+            head=lambda: SimpleNamespace(reference={"sequence": 99}, catalogue=catalogue)
+        ),
+    )
+    if change in {"unrelated", "reservation"}:
+        acquisition.current(acquisition.GitHub(), receipt)
+    else:
+        with pytest.raises(acquisition.EvidenceChanging):
+            acquisition.current(acquisition.GitHub(), receipt)
+
+
+@pytest.mark.parametrize("images", [None, {}, {"unknown": None}])
+def test_freshness_rejects_invalid_image_scope(current_state, monkeypatch, images):
+    receipt = {**current_state, "images": images}
+    monkeypatch.setattr(
+        acquisition,
+        "History",
+        lambda _: SimpleNamespace(
+            head=lambda: SimpleNamespace(catalogue={"current": {}, "releases": {}})
+        ),
+    )
+    with pytest.raises(ValueError, match="Invalid remediation image scope"):
+        acquisition.current(acquisition.GitHub(), receipt)
+
+
+@pytest.mark.parametrize("error_type", [acquisition.EvidenceChanging, HistoryAdvanced, ValueError])
+def test_qualification_retains_completed_results_when_freshness_changes(
+    qualified, tmp_path, monkeypatch, error_type
+):
+    root, work, results = qualified
+    expected = remediation.qualify(root, work, results)
+    output, summary = tmp_path / "outputs", tmp_path / "summary"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr(remediation, "ROOT", root)
+
+    def changed(*_):
+        raise error_type("snapshot changed")
+
+    monkeypatch.setattr(remediation, "current", changed)
+    monkeypatch.setattr(
+        sys, "argv", ["remediation", "qualify", "--work", str(work), "--results", str(results)]
+    )
+    if error_type is ValueError:
+        with pytest.raises(ValueError, match="snapshot changed"):
+            remediation.main()
+        assert not output.exists()
+        assert not (work / "deferral.json").exists()
+    else:
+        remediation.main()
+        assert dict(line.split("=", 1) for line in output.read_text().splitlines()) == {
+            "ready": "false",
+            "status": "deferred",
+        }
+        assert read(work / "qualified.json")["status"] == "deferred"
+        assert read(work / "deferral.json")["phase"] == "qualify"
+        assert "snapshot changed" in summary.read_text()
+    assert read(work / "qualification.json") == expected
+    assert len(list(results.glob("*/runtime.json"))) == 8
+
+
+@pytest.mark.parametrize("error_type", [acquisition.EvidenceChanging, HistoryAdvanced])
+def test_preparation_deferral_disables_downstream_builds(
+    proposal, tmp_path, monkeypatch, error_type
+):
+    root, work = proposal
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setattr(remediation, "ROOT", root)
+    monkeypatch.setattr(remediation, "prepare", lambda *_args, **_kwargs: None)
+
+    def changed(*_):
+        raise error_type("snapshot changed")
+
+    monkeypatch.setattr(remediation, "current", changed)
+    monkeypatch.setattr(sys, "argv", ["remediation", "prepare", "--work", str(work)])
+    remediation.main()
+    assert dict(line.split("=", 1) for line in output.read_text().splitlines()) == {
+        "updates": "false",
+        "status": "deferred",
+    }
+    assert read(work / "deferral.json")["phase"] == "prepare"
+    assert (work / "proposal/proposal.json").is_file()
+
+
+@pytest.mark.parametrize(
+    "workflow_name", ["image-remediation.yml", "platform-image-remediation.yml"]
+)
+def test_workflows_retain_evidence_on_failed_or_deferred_admission(workflow_name):
+    import yaml
+
+    workflow = yaml.safe_load((ROOT / ".github/workflows" / workflow_name).read_text())
+    steps = workflow["jobs"]["publish"]["steps"]
+    retain = next(step for step in steps if step.get("id") == "retain")
+    app = next(step for step in steps if step.get("id") == "app")
+    assert retain["if"] == "always()"
+    assert "steps.qualify.outputs.ready == 'true'" in app["if"]
+    deliver = next(step for step in steps if step.get("id") == "deliver")
+    assert (
+        deliver["env"]["IMAGE_REMEDIATION_APP_PRIVATE_KEY"]
+        == "${{ secrets.IMAGE_REMEDIATION_APP_PRIVATE_KEY }}"
+    )
+    for job in workflow["jobs"].values():
+        for step in job.get("steps", []):
+            if "secrets.IMAGE_REMEDIATION_APP_PRIVATE_KEY" in json.dumps(step):
+                assert step in (app, deliver)
+    delivery = steps[-1]
+    assert delivery["if"] == "always() && steps.deliver.outcome != 'skipped'"
+    assert "github.run_attempt" in delivery["with"]["name"]
+    assert "deferral.json" in delivery["with"]["path"]
+    if workflow_name == "image-remediation.yml":
+        prepare = workflow["jobs"]["prepare"]
+        assert prepare["outputs"]["updates"] == "${{ steps.prepare.outputs.updates }}"
+        assert any(step.get("id") == "prepare" for step in prepare["steps"])
+
+
+def test_retained_scope_cannot_drop_a_qualified_profile(qualified):
+    root, work, results = qualified
+    receipt = read(work / "receipt.json")
+    receipt["images"] = {"terraform-random": None}
+    write(work / "receipt.json", receipt)
+    with pytest.raises(ValueError, match="scope differs from the plan"):
+        remediation.qualify(root, work, results)
+
+
+@pytest.mark.parametrize("error_type", [acquisition.EvidenceChanging, HistoryAdvanced])
+@pytest.mark.parametrize("fail_at", [1, 3])
+def test_delivery_cli_records_early_and_late_freshness_deferrals(
+    qualified, monkeypatch, error_type, fail_at
+):
+    root, work, results = qualified
+    report = remediation.qualify(root, work, results)
+    write(work / "qualified.json", report)
+    client = FakeGitHub()
+    calls = []
+
+    def changed(*_):
+        calls.append(None)
+        if len(calls) == fail_at:
+            raise error_type("snapshot changed")
+
+    monkeypatch.setattr(publication, "ROOT", root)
+    monkeypatch.setattr(publication, "BotGitHub", lambda: client)
+    monkeypatch.setattr(publication, "current", changed)
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "publication",
+            "--work",
+            str(work),
+            "--results",
+            str(results),
+            "--bot",
+            BOT,
+            "--artifact-id",
+            "456",
+        ],
+    )
+    publication.main()
+    assert read(work / "publication.json") == {
+        "status": "deferred",
+        "phase": "publish",
+        "reason": "snapshot changed",
+    }
+    assert read(work / "qualified.json") == report
+    assert not client.pulls
+    assert bool(client.writes) == (fail_at == 3)
