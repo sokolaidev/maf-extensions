@@ -44,8 +44,9 @@ URL = f"https://github.com/{REPOSITORY}/actions/runs/123/artifacts/456"
 
 
 @pytest.mark.parametrize("kind", ["provider", "engine", "none"])
+@pytest.mark.parametrize("actions", [False, True])
 def test_cli_hands_the_acquired_plan_through_workers_and_assembly(
-    checkout, tmp_path, monkeypatch, kind
+    checkout, tmp_path, monkeypatch, capsys, kind, actions
 ):
     work = tmp_path / "work"
     match = finding(provider_path(fixture_provider(checkout))) if kind == "provider" else finding()
@@ -56,7 +57,11 @@ def test_cli_hands_the_acquired_plan_through_workers_and_assembly(
     write(work / "plan.json", plan)
     write(work / "receipt.json", {"source": SOURCE, "directories": [evidence.name]})
     output = tmp_path / "outputs"
-    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    if actions:
+        output.write_text("existing=kept\n")
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    else:
+        monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
     monkeypatch.setattr(remediation, "ROOT", checkout)
     monkeypatch.setattr(remediation, "acquire", lambda *_: plan)
     monkeypatch.setattr(remediation, "current", lambda *_: None)
@@ -67,7 +72,14 @@ def test_cli_hands_the_acquired_plan_through_workers_and_assembly(
         remediation.main()
 
     run("acquire")
-    outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    stdout = capsys.readouterr().out
+    summary = read(work / "acquisition.json")
+    assert stdout.splitlines()[0] == summary["message"]
+    output_lines = output.read_text().splitlines() if actions else stdout.splitlines()[1:]
+    outputs = dict(line.split("=", 1) for line in output_lines)
+    assert outputs["status"] == summary["status"]
+    if actions:
+        assert outputs["existing"] == "kept"
     shards = json.loads(outputs["providers"])
     assert bool(shards) == (kind == "provider")
     assert outputs["updates"] == ("false" if kind == "none" else "true")
@@ -595,6 +607,24 @@ def test_monitor_requires_trusted_exact_attempt(current_state, field, value):
         acquisition.monitor_source(client, monitor)
 
 
+@pytest.mark.parametrize("require_all", [False, True])
+@pytest.mark.parametrize("profiles", [["bicep-typo"], ["bicep", "bicep-typo"]])
+def test_acquisition_rejects_unknown_profiles_before_retrieving_evidence(
+    tmp_path, monkeypatch, require_all, profiles
+):
+    monkeypatch.setattr(acquisition, "git", lambda *_: pytest.fail("source lookup reached"))
+    destination = tmp_path / "acquired"
+    with pytest.raises(ValueError, match="Unknown image profiles: bicep-typo"):
+        acquisition.acquire(
+            acquisition.GitHub(),
+            tmp_path,
+            destination,
+            selected_profiles=iter(profiles),
+            require_all_profiles=require_all,
+        )
+    assert not destination.exists()
+
+
 def test_failed_monitor_requires_verified_delivery(current_state):
     monitor = {**current_state["monitor"], "conclusion": "failure"}
     with pytest.raises(ValueError, match="verified delivery"):
@@ -672,14 +702,20 @@ def test_acquisition_does_not_retry_invalid_or_unavailable_evidence(tmp_path, mo
     assert len(calls) == 1
 
 
-def test_deferred_cli_emits_no_build_or_source_outputs(tmp_path, monkeypatch):
+@pytest.mark.parametrize("actions", [False, True])
+def test_deferred_cli_emits_no_build_or_source_outputs(tmp_path, monkeypatch, capsys, actions):
     work, output, summary = (tmp_path / name for name in ("work", "output", "summary"))
     monkeypatch.setattr(remediation, "acquire", lambda *_: None)
-    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    if actions:
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    else:
+        monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     monkeypatch.setattr(sys, "argv", ["remediation", "acquire", "--work", str(work)])
     remediation.main()
-    assert output.read_text().splitlines() == ["status=deferred", "updates=false", "providers=[]"]
+    stdout = capsys.readouterr().out.splitlines()
+    values = output.read_text().splitlines() if actions else stdout[1:]
+    assert values == ["status=deferred", "updates=false", "providers=[]"]
     assert read(work / "acquisition.json")["status"] == "deferred"
     assert "retries automatically" in summary.read_text()
 

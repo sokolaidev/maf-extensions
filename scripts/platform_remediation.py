@@ -16,7 +16,7 @@ from check_container_release_image import check
 from container_release import REPOSITORY, ROOT, read, scan_result, write
 from container_release_history import GitHub, positive_id
 from image_release_needed import git
-from image_remediation import remaining, verify_engine
+from image_remediation import outputs, remaining, verify_engine
 from image_remediation_evidence import acquire, current
 from image_remediation_pr import BotGitHub, publish
 from image_scan_policy import BICEP_ROUTES, evidence_route, scan_route
@@ -381,11 +381,12 @@ def main() -> None:
                 stream.write(
                     "Build and scan qualification is still required; no published image recovery is claimed.\n"
                 )
-        with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
-            stream.write(f"source={read(work / 'receipt.json')['source']}\n")
-            stream.write(
-                f"profiles={json.dumps(result['affectedProfiles'] if not conflicts else [])}\n"
-            )
+        outputs(
+            {
+                "source": read(work / "receipt.json")["source"],
+                "profiles": json.dumps(result["affectedProfiles"] if not conflicts else []),
+            }
+        )
     elif args.command == "apply":
         apply(ROOT, validate(ROOT, work)[1])
     elif args.command == "scan":
@@ -409,8 +410,7 @@ def main() -> None:
                     stream.write(
                         "Unrelated findings remain in the retained assessments; image publication remains maintainer-controlled.\n"
                     )
-            with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
-                stream.write(f"ready={'true' if report['status'] == 'ready' else 'false'}\n")
+            outputs({"ready": "true" if report["status"] == "ready" else "false"})
         else:
             if args.bot is None or args.artifact_id is None:
                 parser.error("publish requires bot and artifact-id")

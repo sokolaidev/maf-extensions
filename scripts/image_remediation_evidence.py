@@ -19,6 +19,7 @@ from container_release_status import MONITOR, latest_monitor
 from image_release_needed import git, release_evidence
 from image_security_evidence import PROVIDER_MANIFESTS
 from plan_go_remediation import evidence, plan
+from select_image_security import PROFILES
 
 FILES = {"observation.json", "assessment.json", "sbom.syft.json", "grype.json"}
 MAX_MEMBER = 512 * 1024**2
@@ -187,6 +188,10 @@ def acquire(
     require_all_profiles: bool = True,
 ) -> dict[str, Any]:
     """Authenticate current released images and fresh monitoring before planning source edits."""
+    selected = set(PROVIDER_MANIFESTS if selected_profiles is None else selected_profiles)
+    unknown = selected - set(PROFILES)
+    if unknown:
+        raise ValueError(f"Unknown image profiles: {', '.join(sorted(unknown))}")
     source = git(root, "rev-parse", "HEAD").strip()
     if main_head(client) != source:
         raise ValueError("Evidence acquisition requires current main")
@@ -200,7 +205,7 @@ def acquire(
     records = {}
     unpublished = []
     at = now()
-    for profile in sorted(PROVIDER_MANIFESTS if selected_profiles is None else selected_profiles):
+    for profile in sorted(selected):
         name = snapshot.catalogue["current"].get(profile)
         if name is None:
             if not require_all_profiles:

@@ -342,6 +342,17 @@ def go_version(root: Path, plan: dict[str, Any]) -> str:
     return next(iter(versions)).removeprefix("go")
 
 
+def outputs(values: dict[str, str]) -> None:
+    """Append Actions outputs when configured, or expose them on stdout locally."""
+    text = "".join(f"{key}={value}\n" for key, value in values.items())
+    destination = os.environ.get("GITHUB_OUTPUT")
+    if destination:
+        with Path(destination).open("a", encoding="utf-8") as output:
+            output.write(text)
+    else:
+        print(text, end="")
+
+
 def acquisition_summary(work: Path, result: dict[str, Any] | None) -> str:
     """Explain skipped builds without implying that published images are repaired."""
     if result is None:
@@ -391,15 +402,18 @@ def main() -> None:
     if args.command == "acquire":
         result = acquire(GitHub(), ROOT, work)
         status = acquisition_summary(work, result)
-        with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
-            output.write(f"status={status}\n")
-            if result is None:
-                output.write("updates=false\nproviders=[]\n")
-                return
-            output.write(f"source={read(work / 'receipt.json')['source']}\n")
-            output.write(f"updates={'true' if result['updates'] else 'false'}\n")
-            output.write(f"go={go_version(ROOT, result)}\n")
-            output.write(f"providers={json.dumps(sorted(provider_requests(ROOT, result)))}\n")
+        if result is None:
+            outputs({"status": status, "updates": "false", "providers": "[]"})
+            return
+        outputs(
+            {
+                "status": status,
+                "source": read(work / "receipt.json")["source"],
+                "updates": "true" if result["updates"] else "false",
+                "go": go_version(ROOT, result),
+                "providers": json.dumps(sorted(provider_requests(ROOT, result))),
+            }
+        )
     elif args.command == "provider":
         if args.shard is None or args.results is None:
             parser.error("provider requires shard and results")
@@ -436,8 +450,7 @@ def main() -> None:
         result = qualify(ROOT, work, args.results)
         current(GitHub(), read(work / "receipt.json"))
         write(work / "qualified.json", result)
-        with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
-            output.write(f"ready={'true' if result['status'] == 'ready' else 'false'}\n")
+        outputs({"ready": "true" if result["status"] == "ready" else "false"})
 
 
 if __name__ == "__main__":

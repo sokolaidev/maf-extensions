@@ -391,6 +391,46 @@ def qualified(checkout, tmp_path, monkeypatch):
     return checkout, work, results
 
 
+@pytest.mark.parametrize("command", ["acquire", "qualify"])
+@pytest.mark.parametrize("actions", [False, True])
+def test_cli_exposes_results_locally_and_appends_actions_outputs(
+    qualified, tmp_path, monkeypatch, capsys, command, actions
+):
+    root, work, results = qualified
+    output = tmp_path / "outputs"
+    if actions:
+        output.write_text("existing=kept\n")
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    else:
+        monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.setattr(remediation, "ROOT", root)
+    monkeypatch.setattr(remediation, "acquire", lambda *args, **kwargs: read(work / "plan.json"))
+    monkeypatch.setattr(remediation, "current", lambda *_: None)
+    monkeypatch.setattr(remediation, "competing_pulls", lambda *_: [])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["platform-remediation", command, "--work", str(work), "--results", str(results)],
+    )
+    remediation.main()
+    stdout = capsys.readouterr().out
+    if actions:
+        assert not stdout
+    values = dict(
+        line.split("=", 1) for line in (output.read_text() if actions else stdout).splitlines()
+    )
+    if actions:
+        assert values.pop("existing") == "kept"
+    if command == "acquire":
+        assert values["source"] == SOURCE
+        assert json.loads(values["profiles"]) == sorted(planner.BICEP_ROUTES)
+        assert read(work / "competing-pulls.json") == []
+    else:
+        assert values == {"ready": "true"}
+        assert read(work / "qualified.json")["status"] == "ready"
+
+
 def test_complete_qualification_requires_all_inherited_profiles(qualified):
     report = remediation.qualify(*qualified)
     assert report["status"] == "ready"
