@@ -189,6 +189,140 @@ def test_inventory_must_include_patched_application_packages(mode, kind, legacy)
             source.verify_inventory({"artifacts": artifacts}, runtime)
 
 
+def crypto_inventory(version="10.0.13"):
+    return {
+        "artifacts": [
+            {
+                "name": name,
+                "version": version,
+                "type": "dotnet",
+                "locations": [{"path": "/usr/local/bin/bicep"}],
+            }
+            for name in sorted(source.LEGACY_PACKAGES)
+        ]
+    }
+
+
+@pytest.mark.parametrize("version", ["10.0.13", "10.0.14", "10.0.100", "11.0.0"])
+def test_candidate_crypto_inventory_accepts_fixed_compiler_packages(version):
+    source.verify_crypto_inventory(crypto_inventory(version))
+
+
+@pytest.mark.parametrize("name", sorted(source.LEGACY_PACKAGES))
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "10.0.10",
+        "10.0.9",
+        "9.0.99",
+        "10.0.13-preview.1",
+        "unknown",
+        None,
+        "missing",
+        "conflicting",
+        "os-only",
+        "other-binary",
+        "no-location",
+    ],
+)
+def test_candidate_crypto_inventory_refuses_regression_or_unproven_bundle(name, mutation):
+    sbom = crypto_inventory()
+    artifact = next(item for item in sbom["artifacts"] if item["name"] == name)
+    if mutation == "missing":
+        sbom["artifacts"].remove(artifact)
+    elif mutation == "conflicting":
+        sbom["artifacts"].append(artifact | {"version": "10.0.10"})
+    elif mutation == "os-only":
+        artifact["type"] = "apk"
+    elif mutation in {"other-binary", "no-location"}:
+        artifact["locations"] = [{"path": "/unrelated/bicep"}] if mutation == "other-binary" else []
+    else:
+        artifact["version"] = mutation
+    with pytest.raises(ValueError, match="Bicep.*inventory"):
+        source.verify_crypto_inventory(sbom)
+
+
+@pytest.mark.parametrize("profile", ["bicep", "bicep-avm", "bicep-docker-sbx"])
+def test_candidate_scan_checks_crypto_for_every_bicep_profile(profile):
+    from image_security_evidence import verify_profile_inventory
+
+    verify_profile_inventory(crypto_inventory(), profile)
+    with pytest.raises(ValueError, match="10.0.13"):
+        verify_profile_inventory(crypto_inventory("10.0.10"), profile)
+
+
+@pytest.mark.parametrize("profile", ["bicep", "bicep-avm", "bicep-docker-sbx"])
+@pytest.mark.parametrize("route", ["upstream", "source"])
+def test_release_preparation_rejects_regressed_crypto_before_assessment(
+    tmp_path, monkeypatch, profile, route
+):
+    import prepare_container_release as preparation
+
+    write(tmp_path / "sbom.syft.json", crypto_inventory("10.0.10"))
+    write(
+        tmp_path / "runtime.json",
+        {
+            "profile": profile,
+            "bicepAvm" if profile == "bicep-avm" else "bicep": {"build": {"route": route}},
+        },
+    )
+    monkeypatch.setattr(preparation, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(preparation, "verify_inventory", lambda *args: None)
+    with pytest.raises(ValueError, match="10.0.13"):
+        preparation.assess(tmp_path, "sha256:" + "a" * 64)
+
+
+@pytest.mark.parametrize("route", ["upstream", "source"])
+def test_historical_monitoring_does_not_apply_candidate_crypto_floor(tmp_path, monkeypatch, route):
+    import prepare_container_release as preparation
+
+    image_id = "sha256:" + "a" * 64
+    report = {
+        "source": {"type": "image", "target": {"imageID": image_id}},
+        "descriptor": {
+            "db": {
+                "status": {
+                    "valid": True,
+                    "built": "2026-11-07T00:00:00Z",
+                    "schemaVersion": "v6",
+                    "from": "test-database",
+                }
+            }
+        },
+        "matches": [
+            {
+                "vulnerability": {
+                    "id": "CVE-example",
+                    "severity": "High",
+                    "fix": {"state": "unknown", "versions": []},
+                },
+                "artifact": {"name": "example", "version": "1.0.0", "type": "apk"},
+            }
+        ],
+    }
+    write(tmp_path / "grype.json", report)
+    write(tmp_path / "sbom.syft.json", crypto_inventory("10.0.10"))
+    write(
+        tmp_path / "runtime.json",
+        {
+            "profile": "bicep",
+            "bicep": {
+                "build": {
+                    "route": route,
+                    "packages": dict.fromkeys(source.LEGACY_PACKAGES, "10.0.10"),
+                }
+            },
+        },
+    )
+    monkeypatch.setattr(preparation, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(preparation, "verify_inventory", lambda *args: None)
+    monkeypatch.setattr(
+        preparation.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0)
+    )
+    monkeypatch.setattr(preparation, "now", lambda: "2026-11-07T23:25:07Z")
+    assert preparation.assess(tmp_path, image_id, require_clean=False)["outcome"] == "vulnerable"
+
+
 def test_reservation_preserves_route_and_refuses_switching_it():
     selected = candidate()
     catalogue = reserve(empty_catalogue(), selected, "2026-10-16T00:00:00Z")

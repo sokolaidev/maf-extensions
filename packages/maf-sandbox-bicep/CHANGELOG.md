@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.26.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.25.1...maf-sandbox-bicep-v0.26.0) (2026-11-07)
+
+
+### Features
+
+* **bicep:** recognize Bicep 0.49.2 diagnostics and update PowerShell guidance ([#2524](https://github.com/sokolaidev/maf-extensions/issues/2524)) ([1c767f2](https://github.com/sokolaidev/maf-extensions/commit/1c767f283c9980f8f3b7b726172bc6f212571bf2))
+
 ## [0.25.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.25.0...maf-sandbox-bicep-v0.25.1) (2026-11-05)
 
 

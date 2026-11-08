@@ -17,7 +17,8 @@
         "revision": "7b8f1669b95119ac6021e05c9d10eae7cf75f60b",
         "modules": {
           "github.com/go-jose/go-jose/v4": "v4.1.6",
-          "golang.org/x/net": "v0.60.0"
+          "golang.org/x/net": "v0.62.0",
+          "github.com/klauspost/compress": "v1.20.2"
         }
       }
     },
@@ -34,7 +35,8 @@
           "github.com/go-jose/go-jose/v4": "v4.1.6",
           "google.golang.org/grpc": "v1.83.2",
           "golang.org/x/mod": "v0.41.0",
-          "golang.org/x/net": "v0.60.0"
+          "golang.org/x/net": "v0.62.0",
+          "github.com/klauspost/compress": "v1.20.2"
         }
       },
       "profiles": {

@@ -22,18 +22,18 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "github.com/klauspost/compress": "v1.18.7",
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "github.com/klauspost/compress": "v1.20.2",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
           "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "f135dd26ffe46c611884647b9194ba75643d547e20484a368252adddc40a14e5",
-          "go.sum": "ef7d8dd2e5ed5a51dff35f47cb99e215ea9229b0f3a69f7361ecfa6a0053a048"
+          "go.mod": "bda2880975d6afc857c45c7500bc4641c8103361f9cec33437b9c61911fe31c8",
+          "go.sum": "f88882603cd8cacef42a0259f3c1dcefa6ef08d7c9171c57718955a5761ba9a8"
         },
-        "sha256": "783607bcad5774fc93bd02a75afe3978c14e3f0aadd5ade19a3da3580ce6b52a"
+        "sha256": "438f9bf558a9b075671f5adbd2a698105a0d1087902f2638a4e8cd8829f3db83"
       }
     },
     {
@@ -56,18 +56,18 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "github.com/golang-jwt/jwt/v5": "v5.2.2",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
-          "google.golang.org/grpc": "v1.83.2",
-          "github.com/golang-jwt/jwt/v5": "v5.2.2"
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "6b449ea3c811ef2506061c9fc14ee8f6ba59b61f8443555c800376a393f64e9f",
-          "go.sum": "a4417a2f51f1b7cd9d25a241932ff1f7d826c928b16891a12e20f099359f674b"
+          "go.mod": "ad16c35f7b5fa28bd23d2c50e4ffd37d62fd48238e581339abacb5aca541b188",
+          "go.sum": "a692cfab7183ae1ec2c78794495ad3f199ed12a4a1f42c2be694073e0bb5dc36"
         },
-        "sha256": "e1def1250f4f491e49064238408f1d531b85049e351b2910030d3100737b7f71"
+        "sha256": "4d779d27967dc81675fd74c7a6f50aead6ec7de9e7a528ddb04c927fd437073c"
       }
     },
     {
@@ -90,18 +90,18 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "github.com/golang-jwt/jwt/v5": "v5.2.2",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
-          "google.golang.org/grpc": "v1.83.2",
-          "github.com/golang-jwt/jwt/v5": "v5.2.2"
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "6b449ea3c811ef2506061c9fc14ee8f6ba59b61f8443555c800376a393f64e9f",
-          "go.sum": "a4417a2f51f1b7cd9d25a241932ff1f7d826c928b16891a12e20f099359f674b"
+          "go.mod": "ad16c35f7b5fa28bd23d2c50e4ffd37d62fd48238e581339abacb5aca541b188",
+          "go.sum": "a692cfab7183ae1ec2c78794495ad3f199ed12a4a1f42c2be694073e0bb5dc36"
         },
-        "sha256": "89fdd74131beaa28823a597f5e5f380b7b21a9c452817e84dc37f8d08dcabd21"
+        "sha256": "c0c8b07672f60e3df5bb9b2e516da3c8a80b3b4e3525c09d9e8c0424c7f1368e"
       }
     },
     {
@@ -124,16 +124,16 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
           "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "624e001f058da34ab6f282c255045dcdf95176e6a65eb38cb46d08cb03b57fed",
-          "go.sum": "3c6422ce7b2a83c8de39257a2ef1b5b840eee2b133ae4c29df2e28cc30cf3927"
+          "go.mod": "b0eb513f81a7a6d4802215e5f4e90b244990f3b8cdf2ef16bf691dbc64c4efe2",
+          "go.sum": "2780c8440ef37eaa060ab36c82574fd8af4ed2ae10bb3f5c2b44ecc036a8a24c"
         },
-        "sha256": "5b69ec2d4abc937f2e7b947bec86d6fcac12bad871d5f6f56d85058c108bf7d9"
+        "sha256": "dfb40e1e6a5026f1de22b92f6779fdb431db347c8cbbfbc50ee732eb466540a2"
       }
     },
     {
@@ -156,17 +156,17 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
           "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "a9caf693784aec00a7e10e4f5b2c7bc27df611da9fa4126e1c7b244d4af1fce3",
-          "go.sum": "3d39fa70a0e14129280e5429dab657b7349e13e010f3bed1b0eb1036279729e8"
+          "go.mod": "a65450a3815920e9348a786790af779952f9494d8d9027525b189452e1f15de4",
+          "go.sum": "dbb0dbf1c29af3df8094ca486d42f667340227c7a65234afb89a8ee3afa63e51"
         },
-        "sha256": "0c751b5d73a4c6d0891b31d2864e3d05e7d00c15dc3b717eb5139cc6282d1b53"
+        "sha256": "ac34be9cf093ebc90fcbd3ded46e68bb5aca64882efec6833291d59b2939e4d7"
       }
     },
     {
@@ -189,18 +189,18 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "github.com/go-git/go-git/v5": "v5.19.2",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
-          "google.golang.org/grpc": "v1.83.2",
-          "github.com/go-git/go-git/v5": "v5.19.2"
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "db689e0f0728b91960339f62fb4450d7225f33cd5708129f1102c7c0da771e7a",
-          "go.sum": "0ad2221ef99addc305fa1af2c6162a6691de63af99b1d5851a3752c1a13c68e1"
+          "go.mod": "32f675cfe99e274f8e5b4dd3875c7ed2378cbebb3072d8b0a12489d913dd905a",
+          "go.sum": "724ba46f9c71fbf40b47165c25eedd684747af17a7fda30373fc514087875e2f"
         },
-        "sha256": "97c3c17f1ad8effa9238cd9dc67795cb2a0127efdf887ed975fdf230e34a9280"
+        "sha256": "4b492111c88bcdb6ac30bb7fab0f9757ce156b4f83e45f6ef422203792d93691"
       }
     },
     {
@@ -223,17 +223,17 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
           "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "6ad2f00a218d30369af088ef8e452fbb8ddc6ed477b48fc28380461e15e116e8",
-          "go.sum": "b4d9f50ff06b3e79ecf8e60024ac0556e70ea7bb1f86911461658b657e8d8a09"
+          "go.mod": "9d7ac8d3509887e40bdaaf7360de1dee4709e7bd50ed8f92bdac045ceebb7aac",
+          "go.sum": "0b1228cfb95b7bdd6e92b1825eeca184de69a9c05b75fcf4ec47e144ff9f2e7d"
         },
-        "sha256": "1c8e8159d705fb05cf84bb9e3b66439f65558c90b9b404863f510774f5543a80"
+        "sha256": "dc6875e5aaf2538da6d341cb8b5443bcf1398d2edca6cab0514c44c7a25fc25f"
       }
     },
     {
@@ -255,17 +255,17 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
           "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "4ed93f63153c3d73e2b3eb9a592877165c0b687e6e33c218d8d711939c599bf9",
-          "go.sum": "ed964bc802692b78c2c41eac22822bce9787523d612aeff8ceda924bc4ac3027"
+          "go.mod": "a0cb3538a881fcd8fe132ca0a87431219b35ed731ba5d037730686b3f817ae05",
+          "go.sum": "f70d1257f22f33f5a5fbdb78d5662ad6dd626bd11ce295791f4c259b976c22fe"
         },
-        "sha256": "c88c4f59c288e0ec5f9e23a80169a75fd760c8df4b4c13d0fbff7e40f4de95f9"
+        "sha256": "46e7c1e7d7046f3a4646e749d8ffbd933f7f96c21de0d13f3b35fa4fbb79671c"
       }
     },
     {
@@ -287,17 +287,17 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
           "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "ab8a8d1f201a10166cf8c3baf60be1b4bf541435499431210cf770d9508d0c01",
-          "go.sum": "dc8a585e9ace8470e0587f001c19c79f689c709acc7c3206c0cda597519420ae"
+          "go.mod": "4e8024b0692a1c83f077f74d7dc0e51e602c3f1f3d97fce469c0454c073004ac",
+          "go.sum": "765a326c7a634b3ab01ef08829044cd186b9e5eb14c8ef066337a999ee682ee5"
         },
-        "sha256": "e811c5e2ffbfeb83bf02093823c3648eddd3b3ecd3fa74352b83e25280cf9fbe"
+        "sha256": "44f08fe4dba1420ea4aa55ebe05caa278f50830049c4f3b1653b3a06eac841bb"
       }
     },
     {
@@ -319,18 +319,18 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
-          "google.golang.org/grpc": "v1.83.2",
-          "golang.org/x/oauth2": "v0.36.0"
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/oauth2": "v0.36.0",
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "dcd5f289077a3eba36f0fdd5ad258cb88c656b04ea6093b4fead2c96f2b9764c",
-          "go.sum": "15e2a22f1e83349dd34b7c65d405c68c23a0f0beb3ef2795f9b9f19c77a1b534"
+          "go.mod": "a95f81250cd46ec4618f256849acbbc4be83eed4393733f9f132b7e0f9a887b9",
+          "go.sum": "e293b8d254c713223457d66c90ce6cc0279485778f6b4f9bdfa48e983481d0b8"
         },
-        "sha256": "e6d094764a333e2abd6e56b4453f35cfdb76df9ddf19a41eb8a8f938af95d1e0"
+        "sha256": "975c00954894eae99c3d38f8c90471ba7581b0352448ff80dbb1766f19351e2f"
       }
     },
     {
@@ -352,17 +352,17 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
           "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "de93a611b7ab432db4ccffeb679d35360819a387256725d8445a2a91d3275335",
-          "go.sum": "c3fd29bc9543d6a3dba0c6e7f316c0c8ae24648c368273cb57cd338ee870b4aa"
+          "go.mod": "13b0cea2ea82bf9315112adaf8bb4ebb2b6316caa8ce0bc60d59082e8ca4c08c",
+          "go.sum": "3cab17cdd36a10a8baa6383a57d538c723f2cc2312606bea9e44df9a770c5b6e"
         },
-        "sha256": "aedea26c23d60558e8036a41ec1baa0f04d680b8bfb6f5489b9ab975f4c6ff76"
+        "sha256": "01cba15b365333ac48f2aa2fda75fda6a9704e15cc0af22beaa7b4e0e1086771"
       }
     },
     {
@@ -384,13 +384,13 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0"
+          "golang.org/x/net": "v0.62.0"
         },
         "module_files": {
-          "go.mod": "5105344451c6aac926a771f616bb32ee30fe99c0035f242aedea79a6ffd6caef",
-          "go.sum": "ab9cf40a0dbd804c2fd790e67fa27e3d63e65effd35c725537f5de0291b248cc"
+          "go.mod": "46a545a12090c8da8e38122b2c201927bd1aa96a5b0379ee82c95b1a871a3a24",
+          "go.sum": "c5d2787f63e5bd636693140b03b3b9a4dc30bc675666768317638eaca14e9d3d"
         },
-        "sha256": "8424b950de3c6a642868ba9e3b0f2d14965bcb93d8052c7244c1e1c379033cd7"
+        "sha256": "8b908b7583baf0c6a16d523321086c73fcc30bffd80b72a38e92bf409eb6c56e"
       }
     },
     {
@@ -412,19 +412,19 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "github.com/golang-jwt/jwt/v4": "v4.5.2",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
-          "google.golang.org/grpc": "v1.83.2",
+          "golang.org/x/net": "v0.62.0",
           "golang.org/x/oauth2": "v0.36.0",
-          "github.com/golang-jwt/jwt/v4": "v4.5.2"
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "cb8e5998d32838de31e9b39773774dac04ff25d2dcc08183128a00b717be8427",
-          "go.sum": "564201119773f35079515f0cfb5644cf17c7bc00a1b2b85b599377ee473cc8bb"
+          "go.mod": "e7e05fe0d8a3402393e517fc757dae16f4a4797181665cb6073a2e34c7a90cc1",
+          "go.sum": "596e1083cb102085f1b09a17f8d914a7c5602be022a180ff9aa7662b5ebc9dcc"
         },
-        "sha256": "9ec3ef4587bbdf0ac895adf88630c4b378143440558b26b6e25ece7f26f78782"
+        "sha256": "258d940d04d14a769d57566190e868aa10f4da587d711672528848107a739acb"
       }
     },
     {
@@ -446,19 +446,19 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "github.com/golang-jwt/jwt/v4": "v4.5.2",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
-          "google.golang.org/grpc": "v1.83.2",
+          "golang.org/x/net": "v0.62.0",
           "golang.org/x/oauth2": "v0.36.0",
-          "github.com/golang-jwt/jwt/v4": "v4.5.2"
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "1b916b2f2439758082dfeed5416f2d952528603dd3cb8dc639ebdbcb576b4a6c",
-          "go.sum": "46313deee044baa8ae96e6b2f5d73957352caff4af90c9300c6b2558787c23bd"
+          "go.mod": "bd805472c4db2bba32d798b812c97bc2a6d691ed1e8b63c878c6d6b28563a0cc",
+          "go.sum": "e4013aa53791bf2aed102ea119c09fa808a1db573c902f375fe13255d5e68af4"
         },
-        "sha256": "e3ac6b5fd279f2568e76036d8d75a4acdd58d9173e636bbb4eb29e15af044672"
+        "sha256": "9ac3f6446fdbf86c2ed5228ef0e98f4b61795ec8c331ec245a735754423f3b03"
       }
     },
     {
@@ -480,17 +480,17 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
           "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "f7a4f8cb5bc8f32dead121e79dd6914b41532ebd3220b7176302ca5fc5dc6464",
-          "go.sum": "46186985f4905fcae59df906fb720fe81c5562307050153c114f608444201a3f"
+          "go.mod": "8e1ad4ea6a346e9f257910e7c7147fbf4c4ac4f109d704309ae9cc70a7c362e3",
+          "go.sum": "e80a233ea5553f68ac30258bf469a28cc922eb8e1b4678da96dbf2ecc45d123f"
         },
-        "sha256": "30a695f304c1d171733d54447631345f4b347bb1d6bd324e04afa137a3b5101d"
+        "sha256": "3d0cd68d6b19008c2df8c65be3bb6e68e95a44c0b91fd1860bb3e6e8ee90925a"
       }
     },
     {
@@ -512,17 +512,17 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
           "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "f7a4f8cb5bc8f32dead121e79dd6914b41532ebd3220b7176302ca5fc5dc6464",
-          "go.sum": "c5be14fa877adc2b15122a408d0b49f3b25eff477d5f9679aef044017ddf9041"
+          "go.mod": "8e1ad4ea6a346e9f257910e7c7147fbf4c4ac4f109d704309ae9cc70a7c362e3",
+          "go.sum": "b8d7592cce6fb171781e5ae254049a9ebe1b0acca2a21df12f815d5171ecc00b"
         },
-        "sha256": "8d97f1f94c8769cdd2d1999bb707d32abec05b0cd91b1f2a76580f68f7a02d5d"
+        "sha256": "679ef7e0dd8b784dc65d3d3e8bd45c8a2e4ed6a7ebd21ec0261dfc537cb167a3"
       }
     },
     {
@@ -544,13 +544,13 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0"
+          "golang.org/x/net": "v0.62.0"
         },
         "module_files": {
-          "go.mod": "d6b268b3315f9511dd57a20310adf3aedf2deffa62797974ec58e7e860ce4fcd",
-          "go.sum": "07b4084f628e7676f3828acf2ebd7defb45402a14b0e7341e995b17402331ade"
+          "go.mod": "e3ca7bf2676fe22d46a566da2f3e2a59bd7edd53a0ee6c823cd765f233d49fac",
+          "go.sum": "6cf9940e5b416bd722a3a135e47002e97ac461d506c496c406236d59a03494d4"
         },
-        "sha256": "9ce088236387cdc41d39e35ee5f83753eae19fe1226264ef4a2a5d3f93fefb0a"
+        "sha256": "de67b836148a39c2de6a6c6a74438b2dca9a46203291d867ae94346ebeb63b36"
       }
     },
     {
@@ -572,13 +572,13 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0"
+          "golang.org/x/net": "v0.62.0"
         },
         "module_files": {
-          "go.mod": "675819efbe03fc599468ab8eb500482a18be0906a0fb38f6dc0a5d56068d853a",
-          "go.sum": "c8db4ddc2b6597b78b59418f5310465b1edd3326e04bdcf3dafc930be7b85372"
+          "go.mod": "2277c61f5bbd091ea1628c159640183b281fdddc2fdb23bdc03a612e576c2868",
+          "go.sum": "0c733b077da9ead21958111c147e52efdfd8fd6fcae25f7513ca9fdce047844b"
         },
-        "sha256": "a7d63a3dc448b2687d798093223e983485e8c91d537de5d062966d5a92793f49"
+        "sha256": "e427277097b729e77320ede3dc188ee76cf4a5a77f1a7d708c1a774a7cde1f3b"
       }
     },
     {
@@ -600,13 +600,13 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0"
+          "golang.org/x/net": "v0.62.0"
         },
         "module_files": {
-          "go.mod": "9df353a0990333e8f0fd123b4d8fd893b8c04a31fe917d76347c3654603d3d2b",
-          "go.sum": "d11f5b04f23474ffa92fee7a64245fd7e29ba63ee645b4832ec89e1762f1325e"
+          "go.mod": "3fed711bd2f2e555494757cc1a1c857c8085dfc7dd900f978ab29cdc5dc4e9d7",
+          "go.sum": "64b0e94726ae5037a7268f017f4691c7d37d27c35e854011aae40f7916dd31dd"
         },
-        "sha256": "35f9324f6a3c9a630abc2575a3659eabf15827d74401319c1613df88e8c3bf91"
+        "sha256": "fc4d628fc98d0ee16a5592e7c998998188fb1365c97277dff8349bc3e15ee94c"
       }
     },
     {
@@ -628,13 +628,13 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0"
+          "golang.org/x/net": "v0.62.0"
         },
         "module_files": {
-          "go.mod": "7d301455b35ec877fad536605cc70736ce870e08022b2248cbf4f9666c3ae3f5",
-          "go.sum": "b43a372a0504fcb3a49fad3cf4f428510dc7c9959c2638fcfc627afba3899935"
+          "go.mod": "d5b17ee492485530f1ed5a28a80684b14cfbc440039e14f7341dffb93525a2df",
+          "go.sum": "fff4643afad6f6891acd37961065c9d039f493866749757259aae05bde7a130f"
         },
-        "sha256": "50dfd0933a5ef517d35de6fcb240caf43d3df536a4230edabfd714448c7a6dd2"
+        "sha256": "dad8655d28548fbd3db765611a6d017bb4f14e4118986020c1cfe45653786290"
       }
     },
     {
@@ -656,17 +656,17 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
           "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "03f089fd9908161959e1951706872c96d253bd39ebcbe0eaa76452d439420148",
-          "go.sum": "3603c72b541d3a11087d8f38e7edaa8c571395647656eb3a0140322497c55877"
+          "go.mod": "ca9d7fb8d3b32dd82d344a44ad4721ec7e9d3f9e9449ea4c69ed5e61d2d383b3",
+          "go.sum": "e9d4dd76c8d2be467813ee1d8c9003ffe8641365743297c31a389b68fd036d8b"
         },
-        "sha256": "1df9ed7816bfb9ac8c4701dfdd30bfcb4077db2745c758142d3cca44423230a0"
+        "sha256": "1d9a2cd127375e39ad78a845c7d639412770e30c4f8251eedb7209628135bea3"
       }
     },
     {
@@ -688,13 +688,13 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0"
+          "golang.org/x/net": "v0.62.0"
         },
         "module_files": {
-          "go.mod": "c8c188dfee0c0c876012627d69061be3a99c99b3601112a70f01cc34ba1dbaae",
-          "go.sum": "b370c577ca92913db914f5f2dba79ade3fc9c4702fb45d0df27c3d1fc0a7ba61"
+          "go.mod": "22a99896821aadaeb64d75b2a92a5ec035146b6241a36726c546f25ba46d6101",
+          "go.sum": "60fb37c9a3dfa2aaebc122936f82262a830ef997b93d00af7a89be8c5c3f25d6"
         },
-        "sha256": "8ec5711be1b14443cc588f45a58795ca7b7a74c2fdcf9999d54a6e6534bc9735"
+        "sha256": "1e96be82641330204c11e2842913b46f9115caaa0857e1d38f4afe9b34c30c2f"
       }
     },
     {
@@ -716,13 +716,13 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0"
+          "golang.org/x/net": "v0.62.0"
         },
         "module_files": {
-          "go.mod": "f0edf348379f7cdaa5588d1c8f6e79ca860219bccacff9aa6a2189c3d0dd138d",
-          "go.sum": "70ef921582883d5606105ea7a2584fde8b2e72bb8900f6e639120ac0ac81d1a9"
+          "go.mod": "83ec43b0a56fcff6cb2244d8036702e70f655b0507f722162c03a6383619ce58",
+          "go.sum": "1d97cbcb55a3f065b98ba35e16907279b6972c5875603a39d0758c7808786366"
         },
-        "sha256": "21eecdcf4d37b3fc50e7d58dd538276c10d9f1aae80fa07edf141713b128b8e8"
+        "sha256": "5d7d3bf516f49a695d9bd465a15d5521beed3895d6f2d8466905e7e3251335f7"
       }
     },
     {
@@ -745,18 +745,18 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "github.com/go-jose/go-jose/v4": "v4.1.6",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
-          "google.golang.org/grpc": "v1.83.2",
-          "github.com/go-jose/go-jose/v4": "v4.1.6"
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "e7039dd31f9ee3a4067c197f5cc6010e3ceb0f0aa709f87d6b7ab73e0ca9cfd7",
-          "go.sum": "78ff136d631b1310d26c1a84215270752cba26020fd1e3d05a560df548429cd2"
+          "go.mod": "852fec728c98dfd0a2348ab0d412dc14a151b8f609b4f095acb22764dd8d2004",
+          "go.sum": "a788c614cdd9858a1273cd480ff554c3897e18860cf3d6b9b9d03571d350f5cf"
         },
-        "sha256": "16be4497c697bad376a938c26e5e792e3be2dec17aa552fd9143e4e1b9f6843d"
+        "sha256": "d69c49a47b821a730713688978e69de33df1545ffffa1eb4801471cbc804ded5"
       }
     },
     {
@@ -779,17 +779,17 @@
         },
         "go_version": "go1.27.2",
         "modules": {
-          "golang.org/x/net": "v0.60.0",
-          "golang.org/x/crypto": "v0.57.0",
-          "golang.org/x/text": "v0.42.0",
+          "golang.org/x/crypto": "v0.58.0",
           "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
           "google.golang.org/grpc": "v1.83.2"
         },
         "module_files": {
-          "go.mod": "49d0f455a794a014054a5f2603a7c7ab836ad7dc0e698379980e738704122929",
-          "go.sum": "879eda199aceee43045a78934899c5871629dcca34345a82c9719a1116b7c7fe"
+          "go.mod": "a38456a8bc53f3a89db722930e57d35788a653f74bee2604855a69fb4d019f15",
+          "go.sum": "c104e93540be96e012ec9841b7b2b7ae0814fd7ef3fb5a54293c5d96127d4319"
         },
-        "sha256": "e09e39cad1e3e52ab381f68ae54a151276a62f57542325a4d1814312fe73ddf5"
+        "sha256": "8e3cef853b3ea3a3e0006a0301b47c072b1ec44eea789d06368377dd624a1035"
       }
     }
   ],

@@ -187,14 +187,27 @@ def test_pipeline_orders_stages_caches_public_queries_and_keeps_unknowns(sample)
     assert result["estimated_subtotal"] == "146.00"
     assert result["inventory_total"] is None and result["unresolved_resources"] == 1
     assert result["rows"][2]["monthly_cost"] is None
+    assert result["pricing_failures"] == {}
 
 
-@pytest.mark.parametrize("failure", ["lookup", "invalid-json", "incomplete", "wrong-meter"])
-def test_failed_product_lookup_is_not_retried_for_each_resource(sample, failure):
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "lookup",
+        "invalid-json",
+        "tool-incomplete",
+        "incomplete",
+        "wrong-meter",
+        "empty",
+        "duplicate",
+    ],
+)
+def test_failed_product_lookup_is_not_retried_for_each_resource(sample, failure, tmp_path, capsys):
     keys = list(sample.estimate.CATALOG)
     entries = [resource(sample, product_key=keys[index % 3]) for index in range(49)]
     entries.append(resource(sample, product_key=keys[3]))
     calls = []
+    responses = {}
 
     async def pricing(key):
         calls.append(key)
@@ -202,13 +215,24 @@ def test_failed_product_lookup_is_not_retried_for_each_resource(sample, failure)
             return price_report(sample, key)
         if failure == "lookup":
             raise ValueError("Pricing lookup incomplete")
-        if failure == "invalid-json":
-            return json.loads("invalid")
+        if failure in {"invalid-json", "tool-incomplete"}:
+            texts = (
+                [sample.agent.COMPLETED_TEXT, '{"prices":invalid']
+                if failure == "invalid-json"
+                else ["The workload did not complete.", "Pricing lookup incomplete: CLI failed."]
+            )
+            responses[key] = texts
+            return sample.agent.pricing_report([SimpleNamespace(text=text) for text in texts])
         report = price_report(sample, key)
         if failure == "incomplete":
             report["truncated"] = True
-        else:
+        elif failure == "wrong-meter":
             report["prices"][0]["meterName"] = "wrong meter"
+        elif failure == "empty":
+            report.update(prices=[], returned_rows=0, received_rows=0)
+        elif failure == "duplicate":
+            report.update(prices=report["prices"] * 2, returned_rows=2, received_rows=2)
+        responses[key] = report
         return report
 
     report = asyncio.run(
@@ -229,6 +253,70 @@ def test_failed_product_lookup_is_not_retried_for_each_resource(sample, failure)
     assert all(row["price"] is None for row in report["rows"][:-1])
     assert report["rows"][-1]["monthly_cost"] == "0.10"
     assert report["estimated_subtotal"] == "0.10"
+    failures = report["pricing_failures"]
+    assert set(failures) == set(keys[:3])
+    for key, diagnostic in failures.items():
+        assert diagnostic["query"] == sample.estimate.CATALOG[key].query()
+        assert diagnostic["region"] == "westeurope"
+        assert diagnostic["currency"] == "USD"
+        assert diagnostic["price_type"] == "Consumption"
+        assert diagnostic["error"]["truncated"] is False
+        assert diagnostic["response"]["truncated"] is False
+        assert json.loads(diagnostic["response"]["text"]) == responses.get(key)
+        expected_stage, expected_error = {
+            "lookup": ("lookup", "Pricing lookup incomplete"),
+            "invalid-json": ("tool_result", "Expecting value"),
+            "tool-incomplete": ("tool_result", "Tool did not complete"),
+            "incomplete": ("selection", "Incomplete pricing response"),
+            "wrong-meter": ("selection", "0 matches in 1 rows"),
+            "empty": ("selection", "0 matches in 0 rows"),
+            "duplicate": ("selection", "2 matches in 2 rows"),
+        }[failure]
+        assert diagnostic["stage"] == expected_stage
+        assert expected_error in json.loads(diagnostic["error"]["text"])
+        assert diagnostic["error_type"] == (
+            "JSONDecodeError" if failure == "invalid-json" else "ValueError"
+        )
+    output = tmp_path / "report"
+    sample.agent.save_report(output, report)
+    saved = json.loads((output / "estimate.json").read_text(encoding="utf-8"))
+    assert saved["pricing_failures"] == failures
+    captured = capsys.readouterr()
+    assert "Pricing lookup" not in captured.out + captured.err
+    assert "wrong meter" not in captured.out + captured.err
+
+
+@pytest.mark.parametrize("case", ["success", "missing", "duplicate", "unlabelled", "non-text"])
+def test_pricing_report_retains_rejected_tool_text(sample, case):
+    report = price_report(sample)
+    texts = [sample.agent.COMPLETED_TEXT, json.dumps(report)]
+    if case == "missing":
+        texts.pop()
+    elif case == "duplicate":
+        texts.append(texts[-1])
+    answer = [SimpleNamespace(text=text) for text in texts] if case != "unlabelled" else None
+    if case == "non-text":
+        answer = [SimpleNamespace(text=object())]
+    if case == "success":
+        assert sample.agent.pricing_report(answer) == report
+    else:
+        with pytest.raises(sample.agent.PricingResponseError) as error:
+            sample.agent.pricing_report(answer)
+        expected = {"unlabelled": {"type": "NoneType"}, "non-text": [None]}.get(case, texts)
+        assert error.value.response == expected
+
+
+def test_pricing_diagnostic_snapshots_are_bounded_and_mark_truncation(sample):
+    limit = sample.agent.MAX_DIAGNOSTIC_CHARS
+    exact = "x" * (limit - 2)
+    assert sample.agent.diagnostic_snapshot(exact) == {
+        "text": json.dumps(exact),
+        "truncated": False,
+    }
+    oversized = {"message": "\u2603\n" * limit}
+    snapshot = sample.agent.diagnostic_snapshot(oversized)
+    assert snapshot == {"text": json.dumps(oversized)[:limit], "truncated": True}
+    assert len(snapshot["text"]) == limit
 
 
 @pytest.mark.parametrize("error", [RuntimeError("cleanup failed"), asyncio.CancelledError()])
@@ -611,6 +699,19 @@ def test_live_checker_accepts_host_artifacts_and_rejects_model_text(sample):
     scaffold = importlib.import_module("_scaffold")
     assert sample.checker.assess(scaffold.quoted(output), artifacts)
     assert sample.checker.assess(output, {**artifacts, "estimate.md": b"tampered"})
+
+
+def test_pricing_diagnostics_do_not_qualify_an_unresolved_fixture_price(sample):
+    measured, artifacts = live_evidence(sample)
+    report = json.loads(artifacts["estimate.json"])
+    disk = next(row for row in report["rows"] if row["product_key"] == "premium-ssd-p10")
+    disk.update(price=None, monthly_cost=None, status="Pricing lookup failed")
+    report.update(unresolved_resources=2, pricing_failures={"premium-ssd-p10": {"stage": "lookup"}})
+    measured[-1]["unresolved"] = 2
+    retain_live_report(sample, measured, artifacts, report)
+    assert sample.checker.assess(evidence_log(measured), artifacts) == [
+        "Expected three priced rows and one unresolved row"
+    ]
 
 
 @pytest.mark.parametrize("product_key", ["linux-b2s", "linux-d2s-v5", "premium-ssd-p10"])

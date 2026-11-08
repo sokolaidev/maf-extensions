@@ -1,5 +1,5 @@
 {
-  "bicep_version": "0.48.1",
+  "bicep_version": "0.49.2",
   "excluded": [
     {
       "reason": "This initial profile covers virtual networks and storage accounts only; add reviewed pins to the policy before using other resources offline.",
@@ -20,6 +20,6 @@
       "reference": "br/public:avm/res/storage/storage-account:0.31.0"
     }
   ],
-  "policy_sha256": "c0d2336096427deecfd4f44e58fbf2a50068a3510bc083b3c846773d5e65efa8",
+  "policy_sha256": "95b19dfe7997dbe7007ab044d57ae365378f3ceb6075af8263e46658f2708bfe",
   "schema": 1
 }

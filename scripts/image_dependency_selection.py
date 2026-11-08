@@ -22,6 +22,13 @@ ROOTS = {
     "azure-pricing": ("maf-sandbox-azure-pricing", "maf-sandbox-docker"),
     "bicep-docker-sbx": ("maf-sandbox-docker-sbx",),
     "document": ("maf-sandbox-document", "maf-sandbox-docker", "python-pptx"),
+    "document-export": (
+        "maf-sandbox-document",
+        "maf-sandbox-docker",
+        "playwright",
+        "markdown-it-py",
+        "pypdf",
+    ),
     "drawio": ("maf-sandbox-drawio", "maf-sandbox-docker", "pillow"),
     "drawio-export": ("maf-sandbox-drawio", "maf-sandbox-docker", "pillow"),
     "shell": ("maf-sandbox-shell", "maf-sandbox-docker"),

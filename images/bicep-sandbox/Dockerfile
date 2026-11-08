@@ -1,8 +1,8 @@
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:8acb3a7694eda954b3ad4256aec3291bdd92715d7a8c030abd1a21546337b4e4 AS assembled
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:24f549a7fcace88e69b9557941168c74645688ecc4acf7fb6d734a6b74e9019d AS assembled
 
-ARG BICEP_VERSION=v0.48.1
+ARG BICEP_VERSION=v0.49.2
 # SHA-256 of that version's bicep-linux-x64; bump it with BICEP_VERSION.
-ARG BICEP_SHA256=b09ec25a9d376c1f8e33ede6ed22b587f915ad68488d5db77a6f9541748c7f6e
+ARG BICEP_SHA256=0ab9de90c2493f206f8281bae74f9ee2d5ed3605548dab1adf41fef185e1f7c5
 
 # Without `icu` the Bicep CLI aborts at startup: "Couldn't find a valid ICU package".
 RUN apk upgrade --no-cache && apk add --no-cache ca-certificates-bundle curl icu libstdc++ \

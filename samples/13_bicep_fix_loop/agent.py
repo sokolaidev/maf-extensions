@@ -30,7 +30,7 @@ default. See this directory's README.
 #     "azure-identity",
 #     "maf-sandbox-bicep",
 #     "maf-sandbox-docker",
-#     "maf-sandbox>=0.52",
+#     "maf-sandbox>=0.53",
 # ]
 # ///
 
@@ -402,7 +402,10 @@ async def run() -> int:
             print("== Turn 2: fix, then validate again ==\n")
             second = await agent.run(
                 "Fix the faults those diagnostics point at, then validate again and say what "
-                "changed. Leave the file reporting nothing it did not report before — a repair "
+                "changed. Repair the declarations; do not suppress diagnostics with "
+                "#disable-next-line or change the linter configuration. Remove unused parameters "
+                "or use them, and add missing required properties. "
+                "Leave the file reporting nothing it did not report before — a repair "
                 "that trades one diagnostic for another has not finished.",
                 session=session,
             )

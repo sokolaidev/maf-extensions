@@ -1,0 +1,391 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-11-07",
+  "scope": "hosted-provider-preparation-and-stale-main-refusal",
+  "sourceCommit": "e5d9bb21f5e4b8f7b0a6e57a7de793de70c3c785",
+  "hostPlatform": "linux/amd64",
+  "targetPlatform": "linux/amd64",
+  "run": {
+    "id": "42396438303",
+    "attempt": 1,
+    "url": "https://github.com/sokolaidev/maf-extensions/actions/runs/42396438303/attempts/1",
+    "conclusion": "failure",
+    "refusal": "Main changed during remediation"
+  },
+  "artifact": {
+    "id": "13585445518",
+    "name": "remediation-inputs",
+    "sha256": "552207833ae285f809c23e313f2667c2c790bd0d993284eab7e8a2bf7ccda7f8",
+    "retentionDays": 30
+  },
+  "catalogue": {
+    "sequence": 858,
+    "sha256": "sha256:0d5470394989055ab379444593a6d0fa0fd3bd72a9892b08dcbd121ce634a587"
+  },
+  "monitor": {
+    "conclusion": "failure",
+    "id": 42338502988,
+    "run_attempt": 1,
+    "stateDeliveryVerified": true,
+    "status": "completed",
+    "updated_at": "2026-11-07T04:54:34Z"
+  },
+  "planSha256": "7cc2fb1143e9e81a6901a23c557f149c6b4d190c2021892aa0a9625a9ea4bc96",
+  "proposalSha256": "4ea10a9a2bcf6f957073e8330a698e3d97ec41befa207dcf9e34f542698042f8",
+  "proposalValidated": true,
+  "plannedUpdates": 35,
+  "files": {
+    "images/terraform-sandbox/dependencies.opentofu-avm-network.json": "178f4515f504572372b090b0ecd328fc1382c41f192affb423126a52f06294ec",
+    "images/terraform-sandbox/dependencies.opentofu.json": "a7da57193955252b48c72941a7d40c533cfc556dfdf92bc65e60ef69c9efc955",
+    "images/terraform-sandbox/dependencies.terraform-avm.json": "0fa6f6fa35cff235fd82d2787b0ff5e23af7350eec2952db05fccb5d7e5f02f0",
+    "images/terraform-sandbox/dependencies.terraform.json": "a32e24c0c75bdd37915a66f0128ecb2c3407b676b7cce511616105897259317c",
+    "images/terraform-sandbox/image.json": "03b09361c2077cb1a271de25df6526e9c0b82188d3701279b8d59585716a6e11"
+  },
+  "providerDeclarations": 30,
+  "uniqueArchives": 29,
+  "companionUpdates": 40,
+  "providers": [
+    {
+      "manifest": "images/terraform-sandbox/dependencies.opentofu-avm-network.json",
+      "source": "registry.opentofu.org/azure/azapi",
+      "version": "2.12.0",
+      "goVersion": "go1.27.2",
+      "sha256": "b18a0cf42f8ddcf4f520a870e9592071ea4e6851573bef58b5a23bb3d4c27b2e",
+      "moduleFiles": {
+        "go.mod": "b010e32130ce57a99897d37c42a17b8e5e0a69af7a9f3381842ed9791d15a5f9",
+        "go.sum": "9f7e410a1794856b7acb9b5d7d950815d39efd4c5c05fa4ee9b9c9575db9ba05"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.opentofu-avm-network.json",
+      "source": "registry.opentofu.org/azure/modtm",
+      "version": "0.4.0",
+      "goVersion": "go1.27.2",
+      "sha256": "01199fe9e6afbe3bf3a566a64bbee49429cd33fab4d214b8702dc76600ffdb14",
+      "moduleFiles": {
+        "go.mod": "9d7ac8d3509887e40bdaaf7360de1dee4709e7bd50ed8f92bdac045ceebb7aac",
+        "go.sum": "0b1228cfb95b7bdd6e92b1825eeca184de69a9c05b75fcf4ec47e144ff9f2e7d"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.opentofu-avm-network.json",
+      "source": "registry.opentofu.org/hashicorp/random",
+      "version": "3.7.2",
+      "goVersion": "go1.27.2",
+      "sha256": "70589f793c82f302da33b9e766624ea168d5cfa39230fa4b47fc01824afd8fed",
+      "moduleFiles": {
+        "go.mod": "85bfaa7364c695c9e760d507a1aa036f1815d395b8de347d751a8ba0f8e2da49",
+        "go.sum": "24cc70bcb0a0a040bee69388111ac5e174e115619e51dade6b56691ce9abf6cf"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.opentofu.json",
+      "source": "registry.opentofu.org/hashicorp/random",
+      "version": "3.9.1",
+      "goVersion": "go1.27.2",
+      "sha256": "a1ae6629858a417307e93a930ad83cea8d350a26ee298d8e5317cbca01a486cc",
+      "moduleFiles": {
+        "go.mod": "d5b17ee492485530f1ed5a28a80684b14cfbc440039e14f7341dffb93525a2df",
+        "go.sum": "fff4643afad6f6891acd37961065c9d039f493866749757259aae05bde7a130f"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/azure/alz",
+      "version": "0.22.0",
+      "goVersion": "go1.27.2",
+      "sha256": "438f9bf558a9b075671f5adbd2a698105a0d1087902f2638a4e8cd8829f3db83",
+      "moduleFiles": {
+        "go.mod": "bda2880975d6afc857c45c7500bc4641c8103361f9cec33437b9c61911fe31c8",
+        "go.sum": "f88882603cd8cacef42a0259f3c1dcefa6ef08d7c9171c57718955a5761ba9a8"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/azure/azapi",
+      "version": "1.14.0",
+      "goVersion": "go1.27.2",
+      "sha256": "4d779d27967dc81675fd74c7a6f50aead6ec7de9e7a528ddb04c927fd437073c",
+      "moduleFiles": {
+        "go.mod": "ad16c35f7b5fa28bd23d2c50e4ffd37d62fd48238e581339abacb5aca541b188",
+        "go.sum": "a692cfab7183ae1ec2c78794495ad3f199ed12a4a1f42c2be694073e0bb5dc36"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/azure/azapi",
+      "version": "1.15.0",
+      "goVersion": "go1.27.2",
+      "sha256": "c0c8b07672f60e3df5bb9b2e516da3c8a80b3b4e3525c09d9e8c0424c7f1368e",
+      "moduleFiles": {
+        "go.mod": "ad16c35f7b5fa28bd23d2c50e4ffd37d62fd48238e581339abacb5aca541b188",
+        "go.sum": "a692cfab7183ae1ec2c78794495ad3f199ed12a4a1f42c2be694073e0bb5dc36"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/azure/azapi",
+      "version": "2.13.0",
+      "goVersion": "go1.27.2",
+      "sha256": "dfb40e1e6a5026f1de22b92f6779fdb431db347c8cbbfbc50ee732eb466540a2",
+      "moduleFiles": {
+        "go.mod": "b0eb513f81a7a6d4802215e5f4e90b244990f3b8cdf2ef16bf691dbc64c4efe2",
+        "go.sum": "2780c8440ef37eaa060ab36c82574fd8af4ed2ae10bb3f5c2b44ecc036a8a24c"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/azure/modtm",
+      "version": "0.3.2",
+      "goVersion": "go1.27.2",
+      "sha256": "ac34be9cf093ebc90fcbd3ded46e68bb5aca64882efec6833291d59b2939e4d7",
+      "moduleFiles": {
+        "go.mod": "a65450a3815920e9348a786790af779952f9494d8d9027525b189452e1f15de4",
+        "go.sum": "dbb0dbf1c29af3df8094ca486d42f667340227c7a65234afb89a8ee3afa63e51"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/azure/modtm",
+      "version": "0.3.5",
+      "goVersion": "go1.27.2",
+      "sha256": "4b492111c88bcdb6ac30bb7fab0f9757ce156b4f83e45f6ef422203792d93691",
+      "moduleFiles": {
+        "go.mod": "32f675cfe99e274f8e5b4dd3875c7ed2378cbebb3072d8b0a12489d913dd905a",
+        "go.sum": "724ba46f9c71fbf40b47165c25eedd684747af17a7fda30373fc514087875e2f"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/azure/modtm",
+      "version": "0.4.0",
+      "goVersion": "go1.27.2",
+      "sha256": "dc6875e5aaf2538da6d341cb8b5443bcf1398d2edca6cab0514c44c7a25fc25f",
+      "moduleFiles": {
+        "go.mod": "9d7ac8d3509887e40bdaaf7360de1dee4709e7bd50ed8f92bdac045ceebb7aac",
+        "go.sum": "0b1228cfb95b7bdd6e92b1825eeca184de69a9c05b75fcf4ec47e144ff9f2e7d"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/hashicorp/assert",
+      "version": "0.15.0",
+      "goVersion": "go1.27.2",
+      "sha256": "46e7c1e7d7046f3a4646e749d8ffbd933f7f96c21de0d13f3b35fa4fbb79671c",
+      "moduleFiles": {
+        "go.mod": "a0cb3538a881fcd8fe132ca0a87431219b35ed731ba5d037730686b3f817ae05",
+        "go.sum": "f70d1257f22f33f5a5fbdb78d5662ad6dd626bd11ce295791f4c259b976c22fe"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/hashicorp/assert",
+      "version": "0.16.0",
+      "goVersion": "go1.27.2",
+      "sha256": "44f08fe4dba1420ea4aa55ebe05caa278f50830049c4f3b1653b3a06eac841bb",
+      "moduleFiles": {
+        "go.mod": "4e8024b0692a1c83f077f74d7dc0e51e602c3f1f3d97fce469c0454c073004ac",
+        "go.sum": "765a326c7a634b3ab01ef08829044cd186b9e5eb14c8ef066337a999ee682ee5"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/hashicorp/azuread",
+      "version": "2.50.0",
+      "goVersion": "go1.27.2",
+      "sha256": "975c00954894eae99c3d38f8c90471ba7581b0352448ff80dbb1766f19351e2f",
+      "moduleFiles": {
+        "go.mod": "a95f81250cd46ec4618f256849acbbc4be83eed4393733f9f132b7e0f9a887b9",
+        "go.sum": "e293b8d254c713223457d66c90ce6cc0279485778f6b4f9bdfa48e983481d0b8"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/hashicorp/azuread",
+      "version": "3.4.0",
+      "goVersion": "go1.27.2",
+      "sha256": "01cba15b365333ac48f2aa2fda75fda6a9704e15cc0af22beaa7b4e0e1086771",
+      "moduleFiles": {
+        "go.mod": "13b0cea2ea82bf9315112adaf8bb4ebb2b6316caa8ce0bc60d59082e8ca4c08c",
+        "go.sum": "3cab17cdd36a10a8baa6383a57d538c723f2cc2312606bea9e44df9a770c5b6e"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/hashicorp/azuread",
+      "version": "3.10.0",
+      "goVersion": "go1.27.2",
+      "sha256": "8b908b7583baf0c6a16d523321086c73fcc30bffd80b72a38e92bf409eb6c56e",
+      "moduleFiles": {
+        "go.mod": "46a545a12090c8da8e38122b2c201927bd1aa96a5b0379ee82c95b1a871a3a24",
+        "go.sum": "c5d2787f63e5bd636693140b03b3b9a4dc30bc675666768317638eaca14e9d3d"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/hashicorp/azurerm",
+      "version": "3.116.0",
+      "goVersion": "go1.27.2",
+      "sha256": "258d940d04d14a769d57566190e868aa10f4da587d711672528848107a739acb",
+      "moduleFiles": {
+        "go.mod": "e7e05fe0d8a3402393e517fc757dae16f4a4797181665cb6073a2e34c7a90cc1",
+        "go.sum": "596e1083cb102085f1b09a17f8d914a7c5602be022a180ff9aa7662b5ebc9dcc"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/hashicorp/azurerm",
+      "version": "3.117.1",
+      "goVersion": "go1.27.2",
+      "sha256": "9ac3f6446fdbf86c2ed5228ef0e98f4b61795ec8c331ec245a735754423f3b03",
+      "moduleFiles": {
+        "go.mod": "bd805472c4db2bba32d798b812c97bc2a6d691ed1e8b63c878c6d6b28563a0cc",
+        "go.sum": "e4013aa53791bf2aed102ea119c09fa808a1db573c902f375fe13255d5e68af4"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/hashicorp/azurerm",
+      "version": "4.81.0",
+      "goVersion": "go1.27.2",
+      "sha256": "3d0cd68d6b19008c2df8c65be3bb6e68e95a44c0b91fd1860bb3e6e8ee90925a",
+      "moduleFiles": {
+        "go.mod": "8e1ad4ea6a346e9f257910e7c7147fbf4c4ac4f109d704309ae9cc70a7c362e3",
+        "go.sum": "e80a233ea5553f68ac30258bf469a28cc922eb8e1b4678da96dbf2ecc45d123f"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/hashicorp/azurerm",
+      "version": "5.0.1",
+      "goVersion": "go1.27.2",
+      "sha256": "679ef7e0dd8b784dc65d3d3e8bd45c8a2e4ed6a7ebd21ec0261dfc537cb167a3",
+      "moduleFiles": {
+        "go.mod": "8e1ad4ea6a346e9f257910e7c7147fbf4c4ac4f109d704309ae9cc70a7c362e3",
+        "go.sum": "b8d7592cce6fb171781e5ae254049a9ebe1b0acca2a21df12f815d5171ecc00b"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/hashicorp/azurerm",
+      "version": "5.9.0",
+      "goVersion": "go1.27.2",
+      "sha256": "de67b836148a39c2de6a6c6a74438b2dca9a46203291d867ae94346ebeb63b36",
+      "moduleFiles": {
+        "go.mod": "e3ca7bf2676fe22d46a566da2f3e2a59bd7edd53a0ee6c823cd765f233d49fac",
+        "go.sum": "6cf9940e5b416bd722a3a135e47002e97ac461d506c496c406236d59a03494d4"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/hashicorp/local",
+      "version": "2.9.1",
+      "goVersion": "go1.27.2",
+      "sha256": "e427277097b729e77320ede3dc188ee76cf4a5a77f1a7d708c1a774a7cde1f3b",
+      "moduleFiles": {
+        "go.mod": "2277c61f5bbd091ea1628c159640183b281fdddc2fdb23bdc03a612e576c2868",
+        "go.sum": "0c733b077da9ead21958111c147e52efdfd8fd6fcae25f7513ca9fdce047844b"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/hashicorp/null",
+      "version": "3.3.2",
+      "goVersion": "go1.27.2",
+      "sha256": "fc4d628fc98d0ee16a5592e7c998998188fb1365c97277dff8349bc3e15ee94c",
+      "moduleFiles": {
+        "go.mod": "3fed711bd2f2e555494757cc1a1c857c8085dfc7dd900f978ab29cdc5dc4e9d7",
+        "go.sum": "64b0e94726ae5037a7268f017f4691c7d37d27c35e854011aae40f7916dd31dd"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/hashicorp/random",
+      "version": "3.9.1",
+      "goVersion": "go1.27.2",
+      "sha256": "dad8655d28548fbd3db765611a6d017bb4f14e4118986020c1cfe45653786290",
+      "moduleFiles": {
+        "go.mod": "d5b17ee492485530f1ed5a28a80684b14cfbc440039e14f7341dffb93525a2df",
+        "go.sum": "fff4643afad6f6891acd37961065c9d039f493866749757259aae05bde7a130f"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/hashicorp/time",
+      "version": "0.13.1",
+      "goVersion": "go1.27.2",
+      "sha256": "1d9a2cd127375e39ad78a845c7d639412770e30c4f8251eedb7209628135bea3",
+      "moduleFiles": {
+        "go.mod": "ca9d7fb8d3b32dd82d344a44ad4721ec7e9d3f9e9449ea4c69ed5e61d2d383b3",
+        "go.sum": "e9d4dd76c8d2be467813ee1d8c9003ffe8641365743297c31a389b68fd036d8b"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/hashicorp/time",
+      "version": "0.14.2",
+      "goVersion": "go1.27.2",
+      "sha256": "1e96be82641330204c11e2842913b46f9115caaa0857e1d38f4afe9b34c30c2f",
+      "moduleFiles": {
+        "go.mod": "22a99896821aadaeb64d75b2a92a5ec035146b6241a36726c546f25ba46d6101",
+        "go.sum": "60fb37c9a3dfa2aaebc122936f82262a830ef997b93d00af7a89be8c5c3f25d6"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/hashicorp/tls",
+      "version": "4.4.1",
+      "goVersion": "go1.27.2",
+      "sha256": "5d7d3bf516f49a695d9bd465a15d5521beed3895d6f2d8466905e7e3251335f7",
+      "moduleFiles": {
+        "go.mod": "83ec43b0a56fcff6cb2244d8036702e70f655b0507f722162c03a6383619ce58",
+        "go.sum": "1d97cbcb55a3f065b98ba35e16907279b6972c5875603a39d0758c7808786366"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/integrations/github",
+      "version": "6.13.0",
+      "goVersion": "go1.27.2",
+      "sha256": "d69c49a47b821a730713688978e69de33df1545ffffa1eb4801471cbc804ded5",
+      "moduleFiles": {
+        "go.mod": "852fec728c98dfd0a2348ab0d412dc14a151b8f609b4f095acb22764dd8d2004",
+        "go.sum": "a788c614cdd9858a1273cd480ff554c3897e18860cf3d6b9b9d03571d350f5cf"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform-avm.json",
+      "source": "registry.terraform.io/microsoft/azuredevops",
+      "version": "1.16.0",
+      "goVersion": "go1.27.2",
+      "sha256": "8e3cef853b3ea3a3e0006a0301b47c072b1ec44eea789d06368377dd624a1035",
+      "moduleFiles": {
+        "go.mod": "a38456a8bc53f3a89db722930e57d35788a653f74bee2604855a69fb4d019f15",
+        "go.sum": "c104e93540be96e012ec9841b7b2b7ae0814fd7ef3fb5a54293c5d96127d4319"
+      }
+    },
+    {
+      "manifest": "images/terraform-sandbox/dependencies.terraform.json",
+      "source": "registry.terraform.io/hashicorp/random",
+      "version": "3.9.1",
+      "goVersion": "go1.27.2",
+      "sha256": "dad8655d28548fbd3db765611a6d017bb4f14e4118986020c1cfe45653786290",
+      "moduleFiles": {
+        "go.mod": "d5b17ee492485530f1ed5a28a80684b14cfbc440039e14f7341dffb93525a2df",
+        "go.sum": "fff4643afad6f6891acd37961065c9d039f493866749757259aae05bde7a130f"
+      }
+    }
+  ],
+  "ordinaryBuilderReplayVerified": false,
+  "engineBuildsVerified": false,
+  "imageBuildsAndRescansVerified": false,
+  "hostedPrLifecycleVerified": false,
+  "localValidation": {
+    "platform": "windows/amd64",
+    "sourceCommit": "e5d9bb21f5e4b8f7b0a6e57a7de793de70c3c785",
+    "checks": [
+      "validate_plan",
+      "proposal_files"
+    ]
+  }
+}

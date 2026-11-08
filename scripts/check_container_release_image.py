@@ -75,6 +75,22 @@ def check(
             "containersRemaining": result["containersRemaining"],
             "liveDeploymentVerified": False,
         }
+    if profile == "document-export":
+        import document_export_qualification
+
+        result = asyncio.run(
+            document_export_qualification.check(image_id, directory=directory / "document-export")
+        )
+        return {
+            "imageId": image_id,
+            "profile": profile,
+            "checkedAt": now(),
+            "kind": "offline-sdk-consumer",
+            "passed": True,
+            "documentExport": result,
+            "containersRemaining": result["containersRemaining"],
+            "liveDeploymentVerified": False,
+        }
     if profile == "document":
         import document_qualification
 

@@ -1,7 +1,8 @@
-"""Guarded document extraction in disposable sandboxes."""
+"""Guarded document extraction and Markdown export in disposable sandboxes."""
 
 import warnings as _warnings
 
+from ._export import ExportOptions, document_export_sandbox_spec, export_pdf
 from ._tool import (
     DOCUMENT_KIND,
     DOCUMENT_READ_TOOL_NAME,
@@ -12,8 +13,11 @@ from ._tool import (
 __all__ = [
     "DOCUMENT_KIND",
     "DOCUMENT_READ_TOOL_NAME",
+    "ExportOptions",
     "MafSandboxDocumentExperimentalWarning",
     "document_sandbox_spec",
+    "document_export_sandbox_spec",
+    "export_pdf",
     "make_document_tools",
 ]
 

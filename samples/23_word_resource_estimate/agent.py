@@ -6,7 +6,7 @@
 #     "agent-framework-openai",
 #     "azure-core[aio]",
 #     "azure-identity",
-#     "maf-sandbox>=0.52",
+#     "maf-sandbox>=0.53",
 #     "maf-sandbox-antivirus>=0.1.0",
 #     "maf-sandbox-azure-pricing>=0.1.0",
 #     "maf-sandbox-document>=0.2.1",
@@ -65,6 +65,7 @@ from make_document import document_bytes, inventory_data
 
 MAX_INPUT = 16 * 1024 * 1024
 MAX_TEXT = 30000
+MAX_DIAGNOSTIC_CHARS = 65536
 UPLOAD = "incoming.docx"
 ENVIRONMENT = (
     "ANTIVIRUS_SANDBOX_IMAGE",
@@ -117,6 +118,40 @@ def result_items(answer: object, verdict: str | None = None) -> list[str]:
     if verdict is not None and (len(texts) < 2 or texts[1] != "Result: " + verdict):
         raise ValueError("Tool did not return the required verdict")
     return [str(text) for text in texts]
+
+
+class PricingResponseError(ValueError):
+    """Retain tool text when completion or report decoding fails."""
+
+    def __init__(self, message: str, response: object) -> None:
+        super().__init__(message)
+        self.response = response
+
+
+def pricing_report(answer: object) -> dict[str, Any]:
+    """Decode one completed pricing report, retaining rejected tool output as evidence."""
+    try:
+        texts = result_items(answer)
+        reports = [json.loads(text) for text in texts if text.startswith('{"prices":')]
+        if len(reports) != 1:
+            raise ValueError("Pricing tool did not return one report")
+        return reports[0]
+    except ValueError as exc:
+        response = (
+            [
+                text if isinstance(text := getattr(item, "text", None), str) else None
+                for item in answer
+            ]
+            if isinstance(answer, list)
+            else {"type": type(answer).__name__}
+        )
+        raise PricingResponseError(str(exc), response) from exc
+
+
+def diagnostic_snapshot(value: object) -> dict[str, Any]:
+    """Bound retained JSON text and explicitly mark a partial snapshot."""
+    text = json.dumps(value, ensure_ascii=True)
+    return {"text": text[:MAX_DIAGNOSTIC_CHARS], "truncated": len(text) > MAX_DIAGNOSTIC_CHARS}
 
 
 class Cleanup(SandboxObserver):
@@ -198,25 +233,44 @@ async def pipeline(
     measure("inventory", resources=len(inventory.resources))
     rows = []
     cache: dict[str, dict[str, Any] | None] = {}
+    failures: dict[str, dict[str, Any]] = {}
     for resource in inventory.resources:
         reason = unresolved(resource, region)
         price = None
         if reason is None:
             if resource.product_key not in cache:
+                response = None
+                stage = "lookup"
                 try:
+                    response = await pricing(resource.product_key)
+                    stage = "selection"
                     cache[resource.product_key] = select_price(
-                        await pricing(resource.product_key),
+                        response,
                         CATALOG[resource.product_key],
                         region,
                         currency,
                     )
-                except ValueError:
+                except ValueError as exc:
                     cache[resource.product_key] = None
+                    if isinstance(exc, PricingResponseError):
+                        stage, response = "tool_result", exc.response
+                    failures[resource.product_key] = {
+                        "stage": stage,
+                        "query": CATALOG[resource.product_key].query(),
+                        "region": region,
+                        "currency": currency,
+                        "price_type": "Consumption",
+                        "error_type": type(exc.__cause__ or exc).__name__,
+                        "error": diagnostic_snapshot(str(exc)),
+                        "response": diagnostic_snapshot(response),
+                    }
             price = cache[resource.product_key]
             if price is None:
-                reason = "Lookup failed, was incomplete, or had no unique exact meter"
+                reason = "Pricing lookup failed; see estimate.json pricing_failures"
         rows.append(estimate_row(resource, price, reason))
-    return report_document(rows, region, currency)
+    report = report_document(rows, region, currency)
+    report["pricing_failures"] = failures
+    return report
 
 
 def save_report(output: Path, report: dict[str, Any]) -> None:
@@ -343,7 +397,7 @@ async def run(
                     return Inventory.model_validate_json(reply.text)
 
         async def pricing(key: str) -> dict[str, Any]:
-            texts = result_items(
+            return pricing_report(
                 await invoke(
                     pricer,
                     filter=CATALOG[key].query(),
@@ -352,10 +406,6 @@ async def run(
                     price_type=PriceType.CONSUMPTION,
                 )
             )
-            reports = [json.loads(text) for text in texts if text.startswith('{"prices":')]
-            if len(reports) != 1:
-                raise ValueError("Pricing tool did not return one report")
-            return reports[0]
 
         report = await pipeline(
             upload, scan, read, extract, pricing, region=region, currency=currency

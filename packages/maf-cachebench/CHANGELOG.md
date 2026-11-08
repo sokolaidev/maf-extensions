@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.5.1...maf-cachebench-v0.6.0) (2026-11-08)
+
+
+### Features
+
+* **cachebench:** benchmark persistence extensions and host hooks ([#2521](https://github.com/sokolaidev/maf-extensions/issues/2521)) ([60e54f8](https://github.com/sokolaidev/maf-extensions/commit/60e54f8b928fcb17a5a6130d3f1dd8a2b196c710))
+
 ## [0.5.1](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.5.0...maf-cachebench-v0.5.1) (2026-11-04)
 
 

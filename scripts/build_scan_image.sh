@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-provider_args=()
+provider_args=(--build-arg "MAF_GO_BUILD_CONCURRENCY=${MAF_GO_BUILD_CONCURRENCY:-2}")
 if [ -n "${MAF_PROVIDER_BUILDS:-}" ]; then
-  provider_args=(--build-context "provider-build=$MAF_PROVIDER_BUILDS")
+  provider_args+=(--build-context "provider-build=$MAF_PROVIDER_BUILDS")
 fi
 
 case "$1" in
@@ -28,6 +28,9 @@ case "$1" in
     ;;
   antivirus)
     docker build --pull --platform linux/amd64 --label org.opencontainers.image.documentation=https://github.com/sokolaidev/maf-extensions/blob/main/images/antivirus-sandbox/README.md -t maf-image-scan:target images/antivirus-sandbox
+    ;;
+  document-export)
+    uv run --locked python scripts/build_wolfi_python.py --pull --platform linux/amd64 -t maf-image-scan:target images/document-export
     ;;
   document)
     uv run --locked python scripts/build_wolfi_python.py --pull --platform linux/amd64 -t maf-image-scan:target images/document-sandbox

@@ -235,6 +235,8 @@ def test_release_with_image_change_selects_that_image(repository):
         ("images/graphviz-sandbox/Dockerfile", ["graphviz"]),
         ("images/drawio-sandbox/render.py", ["drawio"]),
         ("images/drawio-export/export.py", ["drawio-export"]),
+        ("images/document-export/render.py", ["document-export"]),
+        ("images/document-export/mermaid.json", ["document-export"]),
         (
             "images/terraform-sandbox/install.py",
             ["terraform-random", "opentofu-random", "terraform-avm", "opentofu-avm"],
@@ -261,6 +263,7 @@ def test_release_with_image_change_selects_that_image(repository):
         ("scripts/bicep_qualification.py", ["bicep", "bicep-docker-sbx"]),
         ("scripts/drawio_qualification.py", ["drawio", "drawio-export"]),
         ("scripts/drawio_export_qualification.py", ["drawio-export"]),
+        ("scripts/document_export_qualification.py", ["document-export"]),
         ("scripts/drawio_export_runtime.py", ["drawio-export"]),
         ("scripts/check_drawio_exports.py", ["drawio-export"]),
         ("scripts/check_drawio_renderer.py", ["drawio-export"]),
@@ -427,7 +430,7 @@ def test_unknown_or_shared_shell_changes_keep_full_coverage(shared_inputs, mutat
         "missing": None,
         "heredoc": builder.replace("\nPY\n", "\nMISSING\n"),
         "commented-heredoc": builder.replace(" <<'PY'", " # <<'PY'"),
-        "provider-setup": builder.replace("provider_args=()", "provider_args=(--pull)"),
+        "provider-setup": builder.replace("provider_args=(", "provider_args=(--pull "),
         "unknown-array": builder.replace("${provider_args[@]}", "${unknown_args[@]}"),
     }[mutation]
     head = commit(root, {path: changed})

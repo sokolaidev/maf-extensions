@@ -4,7 +4,7 @@
 
 > **Experimental.** Releases before 1.0 may change or remove APIs. Importing this package emits `MafSandboxDocumentExperimentalWarning`.
 
-Read PDF, DOCX, PPTX and RTF files through a fixed converter in a disposable sandbox. The model chooses a listed file, output format and optional page range; it supplies no converter code. Parsers and archive/XML guards run in the guest.
+Read PDF, DOCX, PPTX and RTF files or export Markdown reports to PDF through fixed converters in disposable sandboxes. The model chooses a listed file, output format and optional page range; it supplies no converter code. Parsers and archive/XML guards run in the guest.
 
 Install the published package from PyPI:
 
@@ -12,9 +12,42 @@ Install the published package from PyPI:
 pip install maf-sandbox-document
 ```
 
-The package requires `maf-sandbox>=0.52.0,<0.53` and `agent-framework-core>=1.23.0,<1.24`. The host must supply a verified image from a completed, currently eligible `document` image release.
+The package requires `maf-sandbox>=0.53.0,<0.54` and `agent-framework-core>=1.24.0,<1.25`. The host supplies a verified image from a completed, currently eligible `document` release for reading, or a `document-export` release for export.
 
-## Attach the tool
+## Markdown to PDF export
+
+`export_pdf` is a host API that returns PDF bytes without reading or writing a store. Supply a router, host-owned identity and an explicit image built from the separate `document-export` profile; the reader image cannot export. Every export receives a fresh call identity and disposes its sandbox before returning bytes.
+
+```python
+from maf_sandbox import SandboxKey
+from maf_sandbox_document import ExportOptions, export_pdf
+
+pdf = await export_pdf(
+    "# Results\n\n```mermaid\nflowchart LR\n A --> B\n```",
+    assets={},
+    options=ExportOptions(title="Report", date="2026-11-07", page_size="A4"),
+    router=router,
+    key=SandboxKey(scope="host-scope", thread_id="host-thread", agent_id="reporter"),
+    image="your-registry/document-export@sha256:<verified-digest>",
+)
+```
+
+The fixed print layout includes wrapping code, GFM tables, Mermaid diagrams, passive SVG assets and page-number footers. `page_size` accepts `A4` or `Letter`; `title` and `date` are literal text, each limited to 1024 UTF-8 bytes. Raw HTML is escaped. Assets are a mapping of relative names such as `chart.svg` or `figures/chart.svg` to UTF-8 SVG bytes. Names allow ASCII letters, digits, underscores and hyphens in each component (maximum 256 characters); traversal, remote images and non-SVG content are refused. The passive SVG subset supports shapes, text, gradients and local fragment references; CSS, scripts, event attributes, external references and embedded HTML are refused. Only SVG and XLink namespace declarations are supported. Each SVG is limited to 128 nested element levels and 100,000 elements, including its root, and is validated incrementally without building a tree. Invalid Mermaid renders as source with a visible note. Mermaid configuration directives are disabled.
+
+| Export option | Default | Kind maximum |
+|---|---:|---:|
+| `max_markdown_bytes` (UTF-8) | 1,000,000 | 2,000,000 |
+| `max_asset_bytes` (total) | 5,000,000 | 10,000,000 |
+| `max_assets` | 50 | 100 |
+| `max_pages` | 100 | 500 |
+| `max_pdf_bytes` | 16,000,000 | 32,000,000 |
+| `deadline_seconds` | 60 | 300 |
+
+Bounds are refusals, never truncation. Invalid inputs, guest guard refusals and invalid output metadata raise `ValueError`; operational or cleanup failures raise `RuntimeError` (backend exceptions may also propagate). The host deadline raises `TimeoutError` and covers acquisition, staging, rendering and output reads; disposal has a separate 30-second bound. Cancellation also attempts disposal. Returned bytes remain untrusted document content; a host controls any subsequent storage or streaming. There is no model-facing export tool or sink implicit in this API.
+
+See the [export image instructions](https://github.com/sokolaidev/maf-extensions/blob/main/images/document-export/README.md) for build, layout limits and live qualification. Image publication, signed consumer qualification and production acceptance are separate from source implementation.
+
+## Attach the reader tool
 
 ```python
 from maf_sandbox_document import make_document_tools

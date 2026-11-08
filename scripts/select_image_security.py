@@ -23,6 +23,7 @@ PROFILES = (
     "bicep-docker-sbx",
     "graphviz",
     "document",
+    "document-export",
     "antivirus",
     "drawio",
     "drawio-export",
@@ -41,6 +42,7 @@ IMAGE_INPUTS = {
     "packages/maf-sandbox-azure-pricing/src/": ("azure-pricing",),
     "images/azure-pricing-sandbox/": ("azure-pricing",),
     "images/document-sandbox/": ("document",),
+    "images/document-export/": ("document-export",),
     "images/shell-sandbox/": ("shell",),
     "images/egress-proxy/": ("egress-proxy",),
     "images/bicep-sandbox/": ("bicep", "bicep-avm", "bicep-docker-sbx"),
@@ -65,6 +67,7 @@ CONSUMER_GUIDES = {
     "images/antivirus-sandbox/README.md",
     "images/azure-pricing-sandbox/README.md",
     "images/document-sandbox/README.md",
+    "images/document-export/README.md",
     "images/DEPENDENCIES.md",
     "images/README.md",
     "images/shell-sandbox/README.md",
@@ -116,6 +119,7 @@ SCRIPT_INPUTS = {
         "opentofu-avm",
     ),
     "scripts/document_qualification.py": ("document",),
+    "scripts/document_export_qualification.py": ("document-export",),
     "scripts/document_fixtures.py": ("document",),
     "scripts/check_shell_image.py": ("shell",),
     "scripts/shell_qualification.py": ("shell",),
@@ -249,7 +253,13 @@ def _build_branches(source: str) -> tuple[str, dict[str, str]]:
         '  provider_args=(--build-context "provider-build=$MAF_PROVIDER_BUILDS")\n'
         "fi\n\n"
     )
-    if not separator or prefix not in {header, header + provider_setup}:
+    configured_setup = (
+        'provider_args=(--build-arg "MAF_GO_BUILD_CONCURRENCY=${MAF_GO_BUILD_CONCURRENCY:-2}")\n'
+        'if [ -n "${MAF_PROVIDER_BUILDS:-}" ]; then\n'
+        '  provider_args+=(--build-context "provider-build=$MAF_PROVIDER_BUILDS")\n'
+        "fi\n\n"
+    )
+    if not separator or prefix not in {header, header + provider_setup, header + configured_setup}:
         raise ValueError("Unknown build dispatcher")
     lines = rest.splitlines(keepends=True)
     branches: dict[str, str] = {}
@@ -277,7 +287,7 @@ def _build_branches(source: str) -> tuple[str, dict[str, str]]:
             command = lines[index].removesuffix("\n")
             heredoc = re.fullmatch(r"(    docker .*) <<'([A-Z]+)'", command)
             parsed = heredoc[1] if heredoc else command
-            if prefix == header + provider_setup:
+            if prefix in {header + provider_setup, header + configured_setup}:
                 parsed = parsed.replace('"${provider_args[@]}"', "")
             if not parsed.startswith(("    docker ", "    uv ")) or any(
                 token in parsed for token in ("`", "$(", "${", "\\", "#")

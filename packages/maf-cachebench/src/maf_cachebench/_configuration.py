@@ -36,6 +36,10 @@ class CompactionOptions:
     session_mode: str = "memory"
     history_mode: str = "incremental"
     stream: bool = False
+    persistence_scenario: str = "none"
+    media_profile: str = "none"
+    media_tokens: int = 1024
+    result_rewrite_profile: str = "none"
 
     def __post_init__(self) -> None:
         """Reject invalid controls before a provider is contacted."""
@@ -63,9 +67,29 @@ class CompactionOptions:
             ("overflow_policy", ("shed", "raise")),
             ("session_mode", ("memory", "roundtrip", "restart")),
             ("history_mode", ("incremental", "replay")),
+            (
+                "persistence_scenario",
+                (
+                    "none",
+                    "fenced",
+                    "stale",
+                    "branch",
+                    "migrate",
+                    "invalid_migration",
+                    "after_save",
+                    "save_failure",
+                    "after_save_failure",
+                ),
+            ),
+            ("media_profile", ("none", "preserve", "describe", "decline", "select_pdf")),
+            ("result_rewrite_profile", ("none", "preserve", "invalid")),
         ):
             if getattr(self, name) not in choices:
                 raise ValueError(f"{name} must be one of {choices}.")
+        if type(self.media_tokens) is not int or self.media_tokens <= 0:
+            raise ValueError("media_tokens must be a positive integer.")
+        if self.persistence_scenario != "none" and self.session_mode == "memory":
+            raise ValueError("Persistence scenarios require roundtrip or restart session mode.")
         if not isfinite(self.estimate_margin) or not 0 <= self.estimate_margin < 1:
             raise ValueError("estimate_margin must be finite and in [0, 1).")
         options = json.loads(self.summary_options_json)
@@ -120,12 +144,29 @@ def add_compaction_arguments(parser: argparse.ArgumentParser) -> None:
         "session_mode": "Keep objects, round-trip JSON, or also rebuild objects each request.",
         "history_mode": "Send each new input or replay the original conversation.",
         "stream": "Consume complete streaming responses, including persistence cleanup.",
+        "persistence_scenario": "Simulated storage scenario; requires roundtrip or restart.",
+        "media_profile": "Synthetic media hooks: preserve, describe, decline, or select_pdf.",
+        "media_tokens": "Estimated tokens per media part for synthetic media profiles.",
+        "result_rewrite_profile": "Synthetic labelled/mixed result hook: preserve or invalid.",
     }
     choices = {
         "summary_input_policy": ("skip", "chunk"),
         "overflow_policy": ("shed", "raise"),
         "session_mode": ("memory", "roundtrip", "restart"),
         "history_mode": ("incremental", "replay"),
+        "persistence_scenario": (
+            "none",
+            "fenced",
+            "stale",
+            "branch",
+            "migrate",
+            "invalid_migration",
+            "after_save",
+            "save_failure",
+            "after_save_failure",
+        ),
+        "media_profile": ("none", "preserve", "describe", "decline", "select_pdf"),
+        "result_rewrite_profile": ("none", "preserve", "invalid"),
     }
     defaults = CompactionOptions()
     for field in fields(defaults):
@@ -143,6 +184,7 @@ def add_compaction_arguments(parser: argparse.ArgumentParser) -> None:
             "max_summary_input_tokens",
             "chunk_cache_size",
             "max_consecutive_summary_failures",
+            "media_tokens",
         }:
             kwargs["type"] = int
         else:

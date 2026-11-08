@@ -181,7 +181,9 @@ def select_price(
             raise ValueError("Invalid retail price")
         matches.append(row)
     if len(matches) != 1:
-        raise ValueError("No unique exact current consumption meter")
+        raise ValueError(
+            f"No unique exact current consumption meter ({len(matches)} matches in {len(rows)} rows)"
+        )
     return matches[0]
 
 

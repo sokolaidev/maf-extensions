@@ -57,8 +57,30 @@ def test_packaged_catalog_covers_compiler_and_linter_with_explicit_policy():
     assert rules["use-recent-api-versions"]["level"] == "warning"
     assert rules["use-recent-api-versions"]["maxAgeInDays"] == 730
     assert rules["use-description-params"]["level"] == "off"
+    assert rules["use-recent-az-powershell-version"]["minimumVersion"] == "15.0"
     with pytest.raises(TypeError):
         catalog.rules["invented"] = "invented"  # pyright: ignore[reportIndexIssue]
+
+
+@pytest.mark.parametrize(
+    "rule,level",
+    [
+        ("no-conflicting-version-constraints", "error"),
+        ("no-incompatible-entrypoint-version", "warning"),
+    ],
+)
+def test_version_constraint_rules_accept_host_policy_and_supply_trusted_summaries(rule, level):
+    packaged = json.loads(load_catalog().config)["analyzers"]["core"]["rules"]
+    assert packaged[rule]["level"] == level
+    config = json.dumps({"analyzers": {"core": {"rules": {rule: {"level": "off"}}}}})
+    catalog = load_catalog(config)
+    assert json.loads(catalog.config) == json.loads(config)
+    (text,) = diagnostic_summary(
+        [diagnostic(rule, severity=level)], catalog, {"main.bicep": "files[0]"}
+    )
+    result = json.loads(text)
+    assert result["diagnostics"] == [{"file": "files[0]", "rule": rule, "severity": level}]
+    assert result["unrecognized_diagnostics"] is False
 
 
 def test_host_config_replaces_packaged_levels_but_not_trusted_rule_ids():

@@ -75,6 +75,7 @@ from maf_compaction import (
     DEFAULT_USER_TRIGGER_FRACTION,
     SUMMARY_MODE_BOUNDARY,
     AnchoredCompactionStrategy,
+    MediaTokenEstimator,
     MinimumGainAnchoredCompactionStrategy,
     ToolResultAnchoredSummarizationCompactionStrategy,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
@@ -82,6 +83,7 @@ from maf_compaction import (
 )
 
 from ._configuration import CompactionOptions
+from ._host_hooks import FixtureMediaEstimate, invalid_rewrite, media_kwargs, rewrite_fixture
 
 if TYPE_CHECKING:
     from agent_framework._clients import SupportsChatGetResponse
@@ -206,6 +208,32 @@ class StrategyOptions:
     summarizer: SupportsChatGetResponse[Any] | None = None
     compaction: CompactionOptions = field(default_factory=CompactionOptions)
 
+    def __post_init__(self) -> None:
+        base = self.tokenizer
+        if isinstance(base, MediaTokenEstimator) and isinstance(
+            base.estimate_media, FixtureMediaEstimate
+        ):
+            if (
+                self.compaction.media_profile != "none"
+                and base.estimate_media.tokens == self.compaction.media_tokens
+            ):
+                return
+            base = base.tokenizer
+        if self.compaction.media_profile != "none":
+            base = MediaTokenEstimator(
+                base, estimate_media=FixtureMediaEstimate(self.compaction.media_tokens)
+            )
+        object.__setattr__(self, "tokenizer", base)
+
+    def rewrite_kwargs(self) -> dict[str, Any]:
+        """Resolve the fixture rewrite policy for every result-compaction path."""
+        profile = self.compaction.result_rewrite_profile
+        if profile == "none":
+            return {}
+        return {
+            "rewrite_result_text": (rewrite_fixture if profile == "preserve" else invalid_rewrite)
+        }
+
     @property
     def input_budget_tokens(self) -> int:
         """Tokens available for input once the output reservation is deducted."""
@@ -303,6 +331,7 @@ def _build_anchored(options: StrategyOptions) -> AnchoredCompactionStrategy:
         keep_tail_groups=options.keep_tail_groups,
         keep_tokens=options.keep_tokens,
         band_share=options.band_share,
+        **options.rewrite_kwargs(),
     )
 
 
@@ -322,6 +351,7 @@ def _build_anchored_no_assistant(options: StrategyOptions) -> CompactionStrategy
         keep_tokens=options.keep_tokens,
         band_share=options.band_share,
         collapse_assistant_text=False,
+        **options.rewrite_kwargs(),
     )
 
 
@@ -339,6 +369,7 @@ def _build_anchored_min_gain(options: StrategyOptions) -> CompactionStrategy:
         keep_tokens=options.keep_tokens,
         band_share=options.band_share,
         min_gain_fraction=options.min_gain_fraction,
+        **options.rewrite_kwargs(),
     )
 
 
@@ -367,6 +398,7 @@ def _build_tool_summary_anchored(
         coverage_share=options.coverage_share,
         record_target_tokens=options.record_target_tokens,
         fallback=_build_anchored(options),
+        **options.rewrite_kwargs(),
     )
 
 
@@ -408,6 +440,7 @@ def _build_user_summary_anchored(
         summary_mode=options.user_summary_mode,
         remembered_requests=remembered_requests,
         **options.compaction.summary_kwargs(),
+        **media_kwargs(options.compaction.media_profile),
     )
 
 

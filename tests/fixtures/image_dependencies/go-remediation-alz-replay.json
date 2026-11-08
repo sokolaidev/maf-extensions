@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-11-07",
+  "scope": "local-provider-preparation-and-ordinary-builder-replay",
+  "sourceCommit": "c12d8bce8011c58981dd72390e2df1a0ac5bcd2a",
+  "hostPlatform": "windows/amd64",
+  "targetPlatform": "linux/amd64",
+  "goToolchain": "go1.27.2",
+  "catalogue": {
+    "sequence": 856,
+    "sha256": "sha256:784f3ea965e38a8cf946a5564036666ad1d6694869784e273fcaf4744f418359"
+  },
+  "monitor": {
+    "runId": "42282309092",
+    "runAttempt": 1,
+    "stateDeliveryVerified": true
+  },
+  "provider": "registry.terraform.io/azure/alz",
+  "version": "0.22.0",
+  "sourceRevision": "28701c72f66fa4779a25e70120df75877b0ffa3d",
+  "modules": {
+    "github.com/klauspost/compress": "v1.20.2",
+    "golang.org/x/crypto": "v0.58.0",
+    "golang.org/x/mod": "v0.41.0",
+    "golang.org/x/net": "v0.62.0",
+    "golang.org/x/text": "v0.43.0",
+    "google.golang.org/grpc": "v1.83.2"
+  },
+  "moduleFiles": {
+    "go.mod": "bda2880975d6afc857c45c7500bc4641c8103361f9cec33437b9c61911fe31c8",
+    "go.sum": "f88882603cd8cacef42a0259f3c1dcefa6ef08d7c9171c57718955a5761ba9a8"
+  },
+  "archiveSha256": "438f9bf558a9b075671f5adbd2a698105a0d1087902f2638a4e8cd8829f3db83",
+  "archiveSize": 8489477,
+  "ordinaryBuilderReplayIdentical": true,
+  "providerPackageCacheUsed": false,
+  "engineBuildsVerified": false,
+  "imageBuildsAndRescansVerified": false,
+  "hostedPrLifecycleVerified": false
+}

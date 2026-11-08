@@ -53,6 +53,7 @@ The reviewed evidence is [failed preparation 41906526189](https://github.com/sok
 | `graphviz` | Graphviz DOT rendering sandbox |
 | `drawio` | [Editable Draw.io authoring with Python and Graphviz](../../images/drawio-sandbox/README.md) |
 | `antivirus` | [Offline ClamAV upload scanning with host-supplied updates](../../images/antivirus-sandbox/README.md) |
+| `document-export` | [Markdown to PDF, Mermaid and passive SVG](../../images/document-export/README.md) |
 | `document` | [Guarded PDF, DOCX, PPTX and RTF extraction](../../images/document-sandbox/README.md) |
 | `drawio-export` | Draw.io Desktop export runtime |
 | `shell` | [Bash, sh, dash and PowerShell validation with suppression auditing](../../images/shell-sandbox/README.md) |

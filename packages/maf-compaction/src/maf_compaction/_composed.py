@@ -49,6 +49,7 @@ from ._anchored import (
 from ._media import annotate_token_counts
 from ._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
 from ._request import RequestOverhead
+from ._shed import durable_message_id, unique_shed_groups
 from ._summary_input import bounded_prefix, fits_summary_input
 from ._toolsummary import (
     PRESERVE_REASON_UNCOVERED,
@@ -434,7 +435,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         chain_gain_fraction: Share of the tokens behind the chain's earliest edit on a pass that
             the chain, once started, goes on removing until it has removed -- past the budget
             if need be. Overflow shedding reserves the same share behind its own earliest
-            edit below the budget, when removable groups permit. See
+            edit below the budget, capped at that share of the budget, when groups permit. See
             :data:`DEFAULT_CHAIN_GAIN_FRACTION`; zero stops both at the budget.
 
     Raises:
@@ -548,6 +549,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # its fallback shed. See ``_keep_decisions``. The user half keeps its fold decisions.
         self._kept_records: dict[tuple[str, int | None], str] = {}
         self._shed_ids: set[str] = set()
+        self._shed_groups: set[str] = set()
         # Shrink acceptance depends on the source count as well as the request's transcript.
         self._refused_merges: set[tuple[str, int]] = set()
         self._refused_rewrites: dict[tuple[str, int], int] = {}
@@ -709,6 +711,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 for (transcript, count), text in self._kept_records.items()
             ],
             "shed_ids": sorted(self._shed_ids),
+            "shed_groups": sorted(self._shed_groups),
             "refused_merges": [
                 {"transcript": transcript, "source_count": count}
                 for transcript, count in sorted(self._refused_merges)
@@ -735,7 +738,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 (entry["transcript"], entry["source_count"]): entry["text"]
                 for entry in kept_records
             }
-        self._shed_ids = set(data["shed_ids"])
+        self._shed_ids = {value for value in data["shed_ids"] if durable_message_id(value)}
+        self._shed_groups = set(data.get("shed_groups", []))
         # A legacy refusal without a count cannot safely suppress another request.
         merges: list[dict[str, Any] | str] = data["refused_merges"]
         self._refused_merges = {
@@ -965,6 +969,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return False
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
+        replayed_shed = self._keep_shedding(messages)
+        decisions_kept = self._decisions_kept
+        shed_sources = (
+            [
+                (key, members)
+                for key, members in unique_shed_groups(messages)
+                if any(not durable_message_id(message.message_id) for message in members)
+                and not any(_is_excluded(message) for message in members)
+            ]
+            if any(not durable_message_id(message.message_id) for message in messages)
+            else []
+        )
         entry_tokens = included_token_count(messages)
 
         changed = await self.tool_results.compact_against(
@@ -993,8 +1009,21 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 trigger_tokens=int(self._budget * self.user_trigger_fraction),
             )
         chained = await self._last_resort(messages, replayed_user_fold=replay.chain_fold)
-        fitted = self._enforce_budget(messages)
-        return replay.changed or changed or compacted or chained or fitted
+        if replayed_shed and self._decisions_kept == decisions_kept:
+            self._decisions_kept += 1
+        try:
+            fitted = self._enforce_budget(messages)
+        finally:
+            self._shed_groups.update(
+                key
+                for key, members in shed_sources
+                if all(
+                    _is_excluded(message)
+                    and message.additional_properties.get(EXCLUDE_REASON_KEY) == EXCLUDE_REASON
+                    for message in members
+                )
+            )
+        return replayed_shed or replay.changed or changed or compacted or chained or fitted
 
     def _enforce_budget(self, messages: list[Message]) -> bool:
         """Shed unrecorded groups as a last resort, or refuse an oversized prompt."""
@@ -1008,12 +1037,17 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     shed = self.tool_results.fallback.shed_to(messages, ceiling=ceiling)
                     changed = shed or changed
                     behind = start.tokens_behind_first_edit(messages)
-                    target = self._budget - ceil(self.chain_gain_fraction * (behind or 0))
+                    reserve = ceil(self.chain_gain_fraction * min(behind or 0, self._budget))
+                    target = self._budget - reserve
                     if not shed or target >= ceiling:
                         break
                     ceiling = target
             lost = [message for message in included if _is_excluded(message)]
-            self._shed_ids.update(message.message_id for message in lost if message.message_id)
+            self._shed_ids.update(
+                message.message_id
+                for message in lost
+                if message.message_id and durable_message_id(message.message_id)
+            )
             if lost:
                 logger.warning(
                     "Compaction shed unrecorded history to fit max_input_tokens=%s; "
@@ -1205,13 +1239,24 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             annotate_message_groups(messages)
             annotate_token_counts(messages, tokenizer=self.tokenizer)
         changed = self.user_turns.refold(messages) or changed
-        with _release_record_holds(
-            [message for message in messages if message.message_id in self._shed_ids]
-        ):
-            changed = self.tool_results.shed_again_after_record(messages, self._shed_ids) or changed
+        changed = self._keep_shedding(messages) or changed
         if changed:
             self._decisions_kept += 1
         return changed
+
+    def _keep_shedding(self, messages: list[Message]) -> bool:
+        """Replay prior removals before their contents can trigger new compaction work."""
+        message_ids = set(self._shed_ids)
+        if self._shed_groups:
+            for key, members in unique_shed_groups(messages):
+                if key in self._shed_groups:
+                    message_ids.update(
+                        message.message_id for message in members if message.message_id
+                    )
+        with _release_record_holds(
+            [message for message in messages if message.message_id in message_ids]
+        ):
+            return self.tool_results.shed_again_after_record(messages, message_ids)
 
     def _keep_records(self, messages: list[Message]) -> bool:
         """Replace every leading run of records the chain has already replaced, as it did."""
@@ -1289,6 +1334,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 message.message_id
                 for message in included
                 if message.message_id
+                and durable_message_id(message.message_id)
                 and _is_excluded(message)
                 and message.additional_properties.get(EXCLUDE_REASON_KEY) == EXCLUDE_REASON
             )
