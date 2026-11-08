@@ -94,11 +94,7 @@ def applies(row: dict[str, Any], profile: str) -> bool:
     return (
         row["profile"] == profile
         or (row["type"] == "dotnet" and row["profile"] in BICEP_ROUTES and profile in BICEP_ROUTES)
-        or (
-            row["type"] == "apk"
-            and profile in RUNTIME_RECIPES
-            and RUNTIME_RECIPES.get(row["profile"]) == RUNTIME_RECIPES[profile]
-        )
+        or (row["type"] == "apk" and profile in row.get("profiles", []))
     )
 
 

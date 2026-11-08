@@ -167,14 +167,19 @@ def plan(root: Path, directories: list[Path]) -> dict[str, Any]:
                     row["status"] = "ambiguous-package-pin"
                     continue
                 previous = next(iter(pins)) if pins else None
+                # The Sandboxes layer can install APKs absent from its parent recipe.
+                row["profiles"] = sorted(
+                    item
+                    for item, recipe in RUNTIME_RECIPES.items()
+                    if recipe == path
+                    and (profile != "bicep-docker-sbx" or previous is not None or item == profile)
+                )
                 if previous is None:
                     if "apk upgrade --no-cache" not in text:
                         row["status"] = "unsupported-rebuild-recipe"
                         continue
                     row["status"] = "rebuild-required"
-                    affected.update(
-                        item for item, recipe in RUNTIME_RECIPES.items() if recipe == path
-                    )
+                    affected.update(row["profiles"])
                     continue
                 try:
                     compatible = version(previous, kind)[:2] == version(fixed, kind)[:2]
@@ -183,9 +188,10 @@ def plan(root: Path, directories: list[Path]) -> dict[str, Any]:
                 if not compatible:
                     row["status"] = "incompatible-package-pin"
                     continue
-                affected.update(item for item, recipe in RUNTIME_RECIPES.items() if recipe == path)
+                affected.update(row["profiles"])
             if version(previous, kind) >= version(fixed, kind):
                 row["status"] = "source-pin-sufficient"
+                row["target"] = previous
                 continue
             row["status"] = "update"
             row["path"] = path

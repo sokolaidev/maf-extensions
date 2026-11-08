@@ -145,6 +145,56 @@ def test_apk_rebuild_uses_exact_vendor_base_without_fabricating_edit(checkout, t
     assert not planner.proposal(checkout, plan)
 
 
+@pytest.mark.parametrize("origin", ["bicep", "bicep-avm", "bicep-docker-sbx"])
+def test_unpinned_apks_follow_the_observed_recipe_layer(checkout, tmp_path, origin):
+    expected = planner.plan(checkout, [retained(tmp_path, [apk()], profile=origin)])
+    profiles = [origin] if origin == "bicep-docker-sbx" else sorted(planner.BICEP_ROUTES)
+    assert expected["affectedProfiles"] == profiles
+    for profile in planner.BICEP_ROUTES:
+        assert remediation.applies(expected["findings"][0], profile) == (profile in profiles)
+        assert bool(remediation.vendor_requests(expected, profile)) == (profile in profiles)
+
+
+def test_child_only_apk_does_not_block_a_shared_bicep_proposal(checkout, tmp_path):
+    expected = planner.plan(
+        checkout,
+        [
+            retained(tmp_path, [dotnet()], profile="bicep", name="parent"),
+            retained(
+                tmp_path,
+                [apk("shadow", "4.19.0-r0", "4.19.0-r1")],
+                profile="bicep-docker-sbx",
+                name="child",
+            ),
+        ],
+    )
+    assert expected["affectedProfiles"] == sorted(planner.BICEP_ROUTES)
+    assert set(planner.proposal(checkout, expected)) == {planner.NUGET}
+    compiler = dotnet()["artifact"] | {"version": "3.1.13"}
+    inventory = {"artifacts": [compiler]}
+    for profile in ("bicep", "bicep-avm"):
+        remediation.verify_packages(expected, inventory, profile)
+        assert remediation.vendor_requests(expected, profile) == []
+    with pytest.raises(ValueError, match="absent from the rebuilt inventory"):
+        remediation.verify_packages(expected, inventory, "bicep-docker-sbx")
+    inventory["artifacts"].append(apk("shadow", "4.19.0-r1", "4.19.0-r1")["artifact"])
+    remediation.verify_packages(expected, inventory, "bicep-docker-sbx")
+
+
+def test_parent_apk_pin_observed_in_child_still_qualifies_all_inherited_profiles(
+    checkout, tmp_path
+):
+    path = checkout / planner.RUNTIME_RECIPES["bicep"]
+    path.write_text(path.read_text().replace("libssl3", "libssl3=3.5.0-r0"))
+    expected = planner.plan(
+        checkout,
+        [retained(tmp_path, [apk("libssl3", "3.5.0-r0", "3.5.0-r1")], profile="bicep-docker-sbx")],
+    )
+    assert expected["affectedProfiles"] == sorted(planner.BICEP_ROUTES)
+    assert len(planner.proposal(checkout, expected)) == 1
+    assert all(remediation.vendor_requests(expected, profile) for profile in planner.BICEP_ROUTES)
+
+
 def test_apk_pin_updates_every_build_consumed_occurrence(checkout, tmp_path):
     match = apk("clamav-scanner", "1.4.6-r0", "1.4.6-r1", "alpine")
     plan = planner.plan(checkout, [retained(tmp_path, [match], profile="antivirus")])
@@ -154,6 +204,37 @@ def test_apk_pin_updates_every_build_consumed_occurrence(checkout, tmp_path):
     raw = files["images/antivirus-sandbox/Dockerfile"]
     assert raw.count(b"clamav-scanner=1.4.6-r1") == 2
     assert b"clamav-scanner=1.4.6-r0" not in raw
+
+
+def test_sufficient_apk_pin_qualifies_the_current_recipe_version(checkout, tmp_path, monkeypatch):
+    path = checkout / "images/antivirus-sandbox/Dockerfile"
+    path.write_text(path.read_text().replace("clamav-scanner=1.4.6-r0", "clamav-scanner=1.4.6-r2"))
+    expected = planner.plan(
+        checkout,
+        [
+            retained(
+                tmp_path,
+                [apk("clamav-scanner", "1.4.6-r0", "1.4.6-r1", "alpine")],
+                profile="antivirus",
+            )
+        ],
+    )
+    row = expected["findings"][0]
+    assert row["status"] == "source-pin-sufficient"
+    assert row["target"] == "1.4.6-r2"
+    assert not planner.proposal(checkout, expected)
+
+    def run(command, **kwargs):
+        assert command[-2:] == ["clamav-scanner", "1.4.6-r2"]
+        return subprocess.CompletedProcess(command, 0, "verified:clamav-scanner=1.4.6-r2\n", "")
+
+    monkeypatch.setattr(remediation.subprocess, "run", run)
+    assert remediation.vendor_checks(expected, "antivirus")[0]["version"] == "1.4.6-r2"
+    artifact = apk("clamav-scanner", "1.4.6-r2", "1.4.6-r2", "alpine")["artifact"]
+    remediation.verify_packages(expected, {"artifacts": [artifact]}, "antivirus")
+    artifact["version"] = "1.4.6-r1"
+    with pytest.raises(ValueError, match="absent from the rebuilt inventory"):
+        remediation.verify_packages(expected, {"artifacts": [artifact]}, "antivirus")
 
 
 def test_candidate_pin_changes_do_not_change_fixture_baselines(checkout, tmp_path):
