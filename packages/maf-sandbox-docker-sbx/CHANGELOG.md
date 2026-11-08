@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-sbx-v0.8.2...maf-sandbox-docker-sbx-v0.9.0) (2026-11-08)
+
+
+### Features
+
+* run per-call Azure pricing on Bubblewrap and Docker Sandboxes ([#2546](https://github.com/sokolaidev/maf-extensions/issues/2546)) ([041c782](https://github.com/sokolaidev/maf-extensions/commit/041c782fad322769c4e487f8f01bb05e44cec6e6))
+
 ## [0.8.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-sbx-v0.8.1...maf-sandbox-docker-sbx-v0.8.2) (2026-11-04)
 
 

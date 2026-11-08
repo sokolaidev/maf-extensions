@@ -11,7 +11,7 @@
   "packages/maf-sandbox-wslc": "0.31.6",
   "packages/maf-sandbox-drawio": "0.7.1",
   "packages/maf-sandbox-tui": "0.6.2",
-  "packages/maf-sandbox-docker-sbx": "0.8.2",
+  "packages/maf-sandbox-docker-sbx": "0.9.0",
   "packages/maf-sandbox-bubblewrap": "0.4.2",
   "packages/maf-compaction": "0.11.1",
   "packages/maf-cachebench": "0.6.0",
