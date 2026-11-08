@@ -31,6 +31,7 @@ def delays(monkeypatch):
         b"gh: Bad Gateway (HTTP 502)",
         b"gh: Service Unavailable (HTTP 503)",
         b"unexpected EOF",
+        b"unexpected end of JSON input",
         b"read: connection reset by peer",
         b"net/http: TLS handshake timeout",
         b"error connecting to api.github.com",
@@ -70,9 +71,11 @@ def test_transient_download_restarts_from_empty_file(
     assert "Release asset 123 download attempt 1/3" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("timeout", [False, True])
+@pytest.mark.parametrize(
+    "diagnostic", [b"gh: Bad Gateway (HTTP 502)", b"unexpected end of JSON input", None]
+)
 def test_exhausted_download_cleans_partial_file_and_retains_diagnostic(
-    monkeypatch, tmp_path, delays, timeout
+    monkeypatch, tmp_path, delays, diagnostic
 ):
     failures = []
 
@@ -80,8 +83,8 @@ def test_exhausted_download_cleans_partial_file_and_retains_diagnostic(
         kwargs["stdout"].write(b"partial")
         error = (
             subprocess.TimeoutExpired(command, 600, stderr=b"timed out")
-            if timeout
-            else subprocess.CalledProcessError(1, command, stderr=b"gh: Bad Gateway (HTTP 502)")
+            if diagnostic is None
+            else subprocess.CalledProcessError(1, command, stderr=diagnostic)
         )
         failures.append(error)
         raise error
@@ -95,7 +98,7 @@ def test_exhausted_download_cleans_partial_file_and_retains_diagnostic(
     assert delays == [1, 2]
     assert not destination.exists()
     assert "Release asset 123 download attempt 3/3" in caught.value.__notes__[0]
-    assert ("timed out" if timeout else "HTTP 502") in caught.value.__notes__[0]
+    assert ("timed out" if diagnostic is None else diagnostic.decode()) in caught.value.__notes__[0]
 
 
 @pytest.mark.parametrize(
@@ -108,6 +111,8 @@ def test_exhausted_download_cleans_partial_file_and_retains_diagnostic(
         (b"unknown failure", 1),
         (b"authentication required", 4),
         (b"gh: Forbidden (HTTP 403) connection reset", 1),
+        (b"gh: Forbidden (HTTP 403) unexpected end of JSON input", 1),
+        (b"unexpected end of JSON input", 4),
         (b"invalid \xff" + b"x" * 5000, 1),
     ],
 )

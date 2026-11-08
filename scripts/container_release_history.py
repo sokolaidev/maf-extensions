@@ -293,6 +293,7 @@ def retryable_download(error: subprocess.CalledProcessError | subprocess.Timeout
         message in detail
         for message in (
             "unexpected eof",
+            "unexpected end of json input",
             ": eof",
             "connection reset",
             "connection refused",
