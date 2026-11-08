@@ -193,6 +193,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGE_REMEDIATION_TOKEN: ${{ steps.app.outputs.token }}
+          IMAGE_REMEDIATION_APP_PRIVATE_KEY: ${{ secrets.IMAGE_REMEDIATION_APP_PRIVATE_KEY }}
           BOT: ${{ steps.app.outputs.app-slug }}[bot]
           ARTIFACT_ID: ${{ steps.retain.outputs.artifact-id }}
         run: uv run --locked python scripts/platform_remediation.py publish --work "$RUNNER_TEMP/remediation" --results "$RUNNER_TEMP/results" --bot "$BOT" --artifact-id "$ARTIFACT_ID"

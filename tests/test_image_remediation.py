@@ -14,6 +14,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -944,6 +946,17 @@ def test_retained_monitor_assets_are_authenticated(tmp_path, monkeypatch, mutati
         assert not (tmp_path / "escaped").exists()
 
 
+@pytest.fixture(scope="module", autouse=True)
+def app_key():
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    ).decode()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("IMAGE_REMEDIATION_APP_PRIVATE_KEY", pem)
+        yield key
+
+
 class FakeGitHub(publication.GitHub):
     def __init__(self):
         self.head = None
@@ -1217,6 +1230,87 @@ def test_orphan_recovery_keeps_atomic_head_guard(publisher, race):
         publish()
     assert client.head == (SOURCE if race == "base" else "human")
     assert not client.pulls
+
+
+@pytest.mark.parametrize("forgery", ["unsigned", "attacker-key", "copied-signature"])
+def test_orphan_refuses_forged_bot_attribution(publisher, forgery):
+    client, files, _, publish = publisher
+    client.fail_before = "pulls"
+    with pytest.raises(OSError):
+        publish()
+    commit = copy.deepcopy(client.commits[client.head])
+    envelope = json.loads(commit["message"].split(f"<!-- {publication.COMMIT_MARKER} ")[1][:-4])
+    state = envelope["state"]
+    entry = copy.deepcopy(client.trees[commit["tree"]["sha"]][0])
+    blob = publication.request(
+        client,
+        "git/blobs",
+        method="POST",
+        payload=encode(
+            {
+                "encoding": "base64",
+                "content": base64.b64encode(b"human-owned content").decode(),
+            }
+        ),
+    )
+    entry["sha"] = blob["sha"]
+    tree = publication.request(
+        client,
+        "git/trees",
+        method="POST",
+        payload=encode(
+            {
+                "base_tree": "base-tree",
+                "tree": [entry],
+            }
+        ),
+    )
+    state["tree"] = tree["sha"]
+    state["files"][entry["path"]] = hashlib.sha256(b"human-owned content").hexdigest()
+    if forgery == "unsigned":
+        envelope = state
+    elif forgery == "attacker-key":
+        attacker = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        signature = attacker.sign(
+            publication.ownership_payload(client, state),
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
+            hashes.SHA256(),
+        )
+        envelope["signature"] = base64.b64encode(signature).decode()
+    commit["message"] = publication.ownership_message(client, envelope)
+    commit["tree"] = tree["sha"]
+    forged = publication.request(client, "git/commits", method="POST", payload=encode(commit))
+    head = client.head = forged["sha"]
+    client.writes.clear()
+    with pytest.raises(ValueError, match="signed ownership|valid App signature"):
+        publish()
+    assert client.head == head and not client.pulls and not client.writes
+    assert client.blobs[entry["sha"]] != files[entry["path"]]
+
+
+def test_orphan_signature_is_bound_to_repository(publisher, monkeypatch):
+    client, _, _, publish = publisher
+    client.fail_before = "pulls"
+    with pytest.raises(OSError):
+        publish()
+    commit = client.commits[client.head]
+    envelope = json.loads(commit["message"].split(f"<!-- {publication.COMMIT_MARKER} ")[1][:-4])
+    with monkeypatch.context() as patch:
+        patch.setattr(publication, "REPOSITORY", "other/repository")
+        commit["message"] = publication.commit_message(client, envelope["state"])
+    client.writes.clear()
+    with pytest.raises(ValueError, match="valid App signature"):
+        publish()
+    assert not client.writes and not client.pulls
+
+
+def test_missing_signing_key_cannot_create_a_branch(publisher, monkeypatch):
+    client, _, _, publish = publisher
+    monkeypatch.delenv("IMAGE_REMEDIATION_APP_PRIVATE_KEY")
+    with pytest.raises(ValueError, match="configured App private key"):
+        publish()
+    assert client.head is None and not client.pulls
+    assert not any(path in {"graphql", "pulls"} for path, _ in client.writes)
 
 
 @pytest.mark.parametrize("change", ["human", "deleted", "base"])
@@ -1946,6 +2040,15 @@ def test_workflows_retain_evidence_on_failed_or_deferred_admission(workflow_name
     app = next(step for step in steps if step.get("id") == "app")
     assert retain["if"] == "always()"
     assert "steps.qualify.outputs.ready == 'true'" in app["if"]
+    deliver = next(step for step in steps if step.get("id") == "deliver")
+    assert (
+        deliver["env"]["IMAGE_REMEDIATION_APP_PRIVATE_KEY"]
+        == "${{ secrets.IMAGE_REMEDIATION_APP_PRIVATE_KEY }}"
+    )
+    for job in workflow["jobs"].values():
+        for step in job.get("steps", []):
+            if "secrets.IMAGE_REMEDIATION_APP_PRIVATE_KEY" in json.dumps(step):
+                assert step in (app, deliver)
     delivery = steps[-1]
     assert delivery["if"] == "always() && steps.deliver.outcome != 'skipped'"
     assert "github.run_attempt" in delivery["with"]["name"]

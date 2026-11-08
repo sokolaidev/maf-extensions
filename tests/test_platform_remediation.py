@@ -24,6 +24,7 @@ from bicep_source import policy  # noqa: E402
 from container_release import read, scan_result, write  # noqa: E402
 from test_go_remediation import AT, IMAGE, finding, retained  # noqa: E402
 from test_image_remediation import BOT, SOURCE, URL, FakeGitHub  # noqa: E402
+from test_image_remediation import app_key as app_key  # noqa: E402
 
 pytestmark = pytest.mark.workflow
 

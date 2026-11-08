@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import hashlib
 import json
 import os
@@ -13,6 +14,9 @@ from typing import Any
 
 from container_release import REPOSITORY, ROOT, read, write
 from container_release_history import GitHub, HistoryAdvanced, decode, encode, positive_id
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from image_remediation import proposal_files, qualify
 from image_remediation_evidence import EvidenceChanging, current, deferred
 
@@ -240,11 +244,46 @@ def owned(client: GitHub, head: str, state: dict[str, Any], bot: str) -> None:
             raise ValueError("Remediation branch content differs from its ownership marker")
 
 
-def commit_message(client: GitHub, state: dict[str, Any]) -> str:
-    """Persist branch ownership before a pull request exists."""
+def signing_key() -> rsa.RSAPrivateKey:
+    """Use the configured App key as the trust root for orphan ownership."""
+    pem = os.environ.get("IMAGE_REMEDIATION_APP_PRIVATE_KEY")
+    if not pem:
+        raise ValueError("Remediation ownership requires the configured App private key")
+    key = serialization.load_pem_private_key(pem.encode(), password=None)
+    if not isinstance(key, rsa.RSAPrivateKey) or key.key_size < 2048:
+        raise ValueError("Remediation ownership requires an RSA App key of at least 2048 bits")
+    return key
+
+
+def ownership_payload(client: GitHub, state: dict[str, Any]) -> bytes:
+    """Bind signatures to this repository, publisher and ownership protocol."""
+    return encode(
+        {
+            "purpose": COMMIT_MARKER,
+            "repository": REPOSITORY,
+            "title": getattr(client, "title", TITLE),
+            "state": state,
+        }
+    )
+
+
+def ownership_message(client: GitHub, envelope: dict[str, Any]) -> str:
+    """Render the signed ownership envelope without altering its bytes."""
     return (
         f"{getattr(client, 'title', TITLE)}\n\n<!-- {COMMIT_MARKER} "
-        f"{json.dumps(state, sort_keys=True, separators=(',', ':'))} -->"
+        f"{json.dumps(envelope, sort_keys=True, separators=(',', ':'))} -->"
+    )
+
+
+def commit_message(client: GitHub, state: dict[str, Any]) -> str:
+    """Persist App-signed branch ownership before a pull request exists."""
+    signature = signing_key().sign(
+        ownership_payload(client, state),
+        padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
+        hashes.SHA256(),
+    )
+    return ownership_message(
+        client, {"state": state, "signature": base64.b64encode(signature).decode()}
     )
 
 
@@ -257,7 +296,19 @@ def orphan(client: GitHub, head: str, bot: str) -> dict[str, Any]:
     identity = request(client, f"commits/{head}")
     if any((identity.get(role) or {}).get("login") != bot for role in ("author", "committer")):
         raise ValueError("Unclaimed remediation branch is not authored and committed by the App")
-    state = json.loads(matches[0])
+    envelope = json.loads(matches[0])
+    if not isinstance(envelope, dict) or set(envelope) != {"state", "signature"}:
+        raise ValueError("Unclaimed remediation branch has no signed ownership record")
+    state = envelope["state"]
+    try:
+        signing_key().public_key().verify(
+            base64.b64decode(envelope["signature"], validate=True),
+            ownership_payload(client, state),
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
+            hashes.SHA256(),
+        )
+    except (InvalidSignature, binascii.Error, TypeError, ValueError):
+        raise ValueError("Unclaimed remediation branch lacks a valid App signature") from None
     if (
         not isinstance(state, dict)
         or set(state) != {"schemaVersion", "branch", "base", "files", "parents", "tree"}
@@ -275,7 +326,7 @@ def orphan(client: GitHub, head: str, bot: str) -> dict[str, Any]:
         or state["parents"] != [item["sha"] for item in commit["parents"]]
         or len(state["parents"]) not in {1, 2}
         or state["parents"][-1] != state["base"]
-        or commit["message"] != commit_message(client, state)
+        or commit["message"] != ownership_message(client, envelope)
     ):
         raise ValueError("Unclaimed remediation branch has invalid commit ownership")
     previous = {"head": head, "base": state["base"], "files": state["files"]}
