@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shutil
 import stat
+import time
 import zipfile
 from datetime import timedelta
 from pathlib import Path
@@ -22,6 +23,10 @@ FILES = {"observation.json", "assessment.json", "sbom.syft.json", "grype.json"}
 MAX_MEMBER = 512 * 1024**2
 
 
+class EvidenceChanging(ValueError):
+    """Acquisition must restart against a newer or unfinished monitoring snapshot."""
+
+
 def main_head(client: GitHub) -> str:
     """Read the mutable base once, then bind all work to its immutable commit."""
     value = decode(client.request(f"repos/{REPOSITORY}/git/ref/heads/main"))["object"]
@@ -32,6 +37,8 @@ def main_head(client: GitHub) -> str:
 
 def monitor_source(client: GitHub, monitor: dict[str, Any]) -> str:
     """Require a completed trusted-main attempt with durable monitor results."""
+    if monitor.get("status") in {"queued", "in_progress", "pending", "requested", "waiting"}:
+        raise EvidenceChanging("Latest monitoring attempt is still running or queued")
     if monitor.get("status") != "completed" or not (
         monitor.get("conclusion") == "success"
         or monitor.get("conclusion") == "failure"
@@ -161,10 +168,12 @@ def current(client: GitHub, receipt: dict[str, Any]) -> None:
     if main_head(client) != receipt["source"]:
         raise ValueError("Main changed during remediation")
     snapshot = History(client).head()
-    if snapshot is None or snapshot.reference != receipt["catalogue"]:
-        raise ValueError("Release history changed during remediation")
+    if snapshot is None:
+        raise ValueError("No completed image release catalogue")
+    if snapshot.reference != receipt["catalogue"]:
+        raise EvidenceChanging("Release history changed during remediation")
     if latest_monitor(client) != receipt["monitor"]:
-        raise ValueError("Monitoring changed during remediation")
+        raise EvidenceChanging("Monitoring changed during remediation")
 
 
 def acquire(client: GitHub, root: Path, directory: Path) -> dict[str, Any]:
@@ -177,6 +186,8 @@ def acquire(client: GitHub, root: Path, directory: Path) -> dict[str, Any]:
     snapshot = History(client).head()
     if snapshot is None:
         raise ValueError("No completed image release catalogue")
+    if latest_monitor(client) != monitor:
+        raise EvidenceChanging("Monitoring changed during acquisition")
     records = {}
     at = now()
     for profile in sorted(PROVIDER_MANIFESTS):
@@ -232,3 +243,22 @@ def acquire(client: GitHub, root: Path, directory: Path) -> dict[str, Any]:
     write(directory / "receipt.json", receipt)
     write(directory / "plan.json", result)
     return result
+
+
+def acquire_with_retry(client: GitHub, root: Path, directory: Path) -> dict[str, Any] | None:
+    """Retry changing snapshots in isolated directories; defer to the next trigger if still busy."""
+    directory.mkdir(parents=True, exist_ok=False)
+    for attempt in range(1, 4):
+        staging = directory / "attempts" / str(attempt)
+        try:
+            result = acquire(client, root, staging)
+        except EvidenceChanging as error:
+            write(staging / "deferred.json", {"attempt": attempt, "reason": str(error)})
+            print(f"Acquisition attempt {attempt}/3 deferred: {error}", flush=True)
+            if attempt < 3:
+                time.sleep(30)
+        else:
+            for child in staging.iterdir():
+                child.rename(directory / child.name)
+            return result
+    return None

@@ -15,7 +15,8 @@ from check_container_release_image import check
 from container_release import ROOT, read, scan_result, write
 from container_release_history import GitHub
 from image_release_needed import git
-from image_remediation_evidence import acquire, current
+from image_remediation_evidence import acquire_with_retry as acquire
+from image_remediation_evidence import current
 from image_security_evidence import PROVIDER_MANIFESTS, record, verify_inventory, verify_providers
 from plan_go_remediation import CONTEXT, RECIPE, digest, inputs, locations, owners, semver
 from plan_go_remediation import plan as make_plan
@@ -341,6 +342,39 @@ def go_version(root: Path, plan: dict[str, Any]) -> str:
     return next(iter(versions)).removeprefix("go")
 
 
+def acquisition_summary(work: Path, result: dict[str, Any] | None) -> str:
+    """Explain skipped builds without implying that published images are repaired."""
+    if result is None:
+        status = "deferred"
+        message = (
+            "Acquisition deferred while monitoring or the release catalogue is changing. "
+            "The next monitor completion or scheduled run retries automatically."
+        )
+    elif result["updates"]:
+        status = "updates-planned"
+        message = f"Planned {len(result['updates'])} source updates; qualification is pending."
+    else:
+        sufficient = sum(
+            decision["status"] == "override-already-sufficient"
+            for finding in result["findings"]
+            for decision in finding["decisions"]
+        )
+        status = "source-already-fixed" if sufficient else "no-supported-updates"
+        message = (
+            f"Source overrides already cover {sufficient} finding decisions; "
+            "replacement image publication and fresh monitoring remain pending."
+            if sufficient
+            else "No supported source updates were found; this does not establish image health."
+        )
+        message += " See plan.json for remaining findings and unsupported components."
+    write(work / "acquisition.json", {"status": status, "message": message})
+    print(message, flush=True)
+    if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
+        with Path(summary).open("a", encoding="utf-8") as output:
+            output.write(f"## Image remediation: {status}\n\n{message}\n")
+    return status
+
+
 def main() -> None:
     """Expose the read-only acquisition, preparation, image checks and aggregate gate."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -356,7 +390,12 @@ def main() -> None:
     work = args.work.resolve()
     if args.command == "acquire":
         result = acquire(GitHub(), ROOT, work)
+        status = acquisition_summary(work, result)
         with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+            output.write(f"status={status}\n")
+            if result is None:
+                output.write("updates=false\nproviders=[]\n")
+                return
             output.write(f"source={read(work / 'receipt.json')['source']}\n")
             output.write(f"updates={'true' if result['updates'] else 'false'}\n")
             output.write(f"go={go_version(ROOT, result)}\n")

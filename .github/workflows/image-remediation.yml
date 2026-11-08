@@ -295,5 +295,5 @@ jobs:
           --title 'Automatic image remediation needs attention'
           --reproduce 'Inspect the retained remediation inputs and baseline/candidate reports. Dispatch image-remediation.yml from current main for fresh evidence; retry interrupted PR delivery only while its recorded source and monitoring remain current.'
           --expected 'Every affected profile has complete build, runtime, inventory and rescan evidence, targeted findings are removed, and an owned PR can be delivered without changing human commits or published-image release requests.'
-          --context 'Automation is opt-in. Configure the dedicated remediation App separately. A generated source fix does not establish image publication or production qualification.'
+          --context 'Inspect the failed job and retained acquisition or qualification evidence. Changing monitoring snapshots are retried and reported as deferred; invalid evidence and failed qualification require investigation. Source remediation does not publish replacement images.'
           --packages maf-sandbox maf-sandbox-docker maf-sandbox-terraform
