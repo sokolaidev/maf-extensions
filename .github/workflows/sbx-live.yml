@@ -10,6 +10,7 @@ on:
       - "packages/maf-sandbox-docker-sbx/**"
       - ".github/workflows/sbx-live.yml"
       - "tests/test_sbx_codeact_e2e.py"
+      - "tests/test_sbx_live_workflow.py"
       - "tests/test_graphviz_sbx_e2e.py"
       - "images/graphviz-sandbox/**"
       - "samples/07_docker_diagram/diagram_kind.py"
@@ -36,6 +37,7 @@ jobs:
     timeout-minutes: 30
     env:
       MAF_SANDBOX_SBX_E2E: "1"
+      MAF_SANDBOX_SBX_E2E_IMAGE: maf-sbx-e2e-shell:local
       SBX_NO_TELEMETRY: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,13 +59,14 @@ jobs:
       - name: Load the test templates
         run: |
           set -euo pipefail
-          for image in agent root; do
+          for image in shell agent root; do
             docker build -q -t "maf-sbx-e2e-$image:local" \
               -f "packages/maf-sandbox-docker-sbx/tests/images/$image.Dockerfile" \
               packages/maf-sandbox-docker-sbx/tests/images
             docker save -o "$RUNNER_TEMP/$image.tar" "maf-sbx-e2e-$image:local"
             sbx template load "$RUNNER_TEMP/$image.tar"
           done
+          docker image inspect "$MAF_SANDBOX_SBX_E2E_IMAGE" > shell-image.json
           docker build -q -t graphviz-sandbox:local images/graphviz-sandbox
           docker save -o "$RUNNER_TEMP/graphviz.tar" graphviz-sandbox:local
           sbx template load "$RUNNER_TEMP/graphviz.tar"
@@ -100,6 +103,7 @@ jobs:
           path: |
             suite.log
             host.log
+            shell-image.json
           retention-days: 30
 
       - name: Remove leftover sandboxes

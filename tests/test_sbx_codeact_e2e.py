@@ -57,7 +57,13 @@ def test_codeact_receives_a_real_host_effect(tmp_path):
             max_bytes_per_file=1024 * 1024, max_total_bytes=4 * 1024 * 1024, max_files=8
         )
         tool = make_codeact_tools(
-            router, "agent", context, host_tools=registry, files_in=limits, files_out=limits
+            router,
+            "agent",
+            context,
+            image=os.environ.get("MAF_SANDBOX_SBX_E2E_IMAGE", "maf-sbx-e2e-shell:local"),
+            host_tools=registry,
+            files_in=limits,
+            files_out=limits,
         )[0]
         body = getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
         try:

@@ -11,6 +11,32 @@ import test_sbx_e2e as live
 import test_sbx_e2e_host as host
 
 
+def test_prepared_image_reaches_every_live_spec(monkeypatch):
+    image = "prepared-shell:test"
+    monkeypatch.setattr(live, "_IMAGE", image)
+    monkeypatch.setattr(host, "_IMAGE", image)
+    assert live._spec().image == image
+    assert live._spec(kind="second").image == image
+    assert host._spec().image == image
+    assert host._allowlist("example.com").image == image
+    assert live._spec(image="other:test").image == "other:test"
+
+
+@pytest.mark.parametrize(
+    "mode", ["idle", "async", "sync", "timeout", "cancel", "sibling", "stop", "dispose"]
+)
+def test_host_tool_lifecycle_uses_the_prepared_image(monkeypatch, tmp_path, mode):
+    observed = []
+
+    async def scenario(path, image, selected_mode):
+        observed.append((path, image, selected_mode))
+
+    monkeypatch.setattr(live, "_IMAGE", "prepared-shell:test")
+    monkeypatch.setattr(live, "_host_tools_case", scenario)
+    live.test_host_tools_lifecycle(tmp_path, mode)
+    assert observed == [(tmp_path, "prepared-shell:test", mode)]
+
+
 @pytest.mark.parametrize("failure", [None, "body", "restart"])
 def test_host_setting_is_restored_after_success_or_failure(monkeypatch, failure):
     setting, before = host._FORWARDING, "true"
@@ -163,3 +189,42 @@ def test_lapsed_login_uses_supported_confirmation_and_restores_login(monkeypatch
         ("logout", flag),
         ("login", "--username", "test-user", "--password-stdin"),
     ]
+
+
+@pytest.mark.parametrize("refused", [True, False])
+def test_forwarded_agent_probe_requests_a_kit_and_cleans_up(monkeypatch, tmp_path, refused):
+    commands = []
+    disposed = []
+
+    class AgentBackend:
+        async def check_host(self):
+            raise AssertionError("the probe must bypass the host preflight")
+
+        async def _sbx(self, *args, **kwargs):
+            commands.append(args)
+
+        async def acquire(self, key, spec):
+            await self.check_host()
+            await self._sbx("create", "shell", "--template", spec.image, "/workspace")
+            await self._sbx("exec", "probe", "true")
+            if refused:
+                raise host.SbxHostNotConfined("ssh-agent.sock")
+
+        async def dispose(self, key):
+            disposed.append(key)
+
+    monkeypatch.setattr(host, "_setting_set", lambda *args: contextlib.nullcontext())
+    monkeypatch.setattr(host, "_backend", lambda path: AgentBackend())
+    monkeypatch.setattr(host, "_listed", lambda name: False)
+    if refused:
+        host.test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path, monkeypatch)
+    else:
+        with pytest.raises(pytest.fail.Exception, match="DID NOT RAISE"):
+            host.test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path, monkeypatch)
+    kit = host.Path(host.__file__).parent / "images" / "ssh-agent"
+    assert (kit / "kit.yaml").is_file()
+    assert commands == [
+        ("create", "shell", "--template", host._IMAGE, "--kit", str(kit), "/workspace"),
+        ("exec", "probe", "true"),
+    ]
+    assert len(disposed) == 1

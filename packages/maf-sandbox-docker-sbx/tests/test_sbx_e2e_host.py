@@ -4,7 +4,8 @@ Skipped unless ``MAF_SANDBOX_SBX_E2E=1``.  A test that has to change that state 
 forwarding, an MCP registration, the login, or the daemon API socket — also needs
 ``MAF_SANDBOX_SBX_E2E_HOST=1``, and restores what it changed.  Set it only on a host no one
 else is using: while a test runs, every other sandbox on the host sees the changed state.
-Logging back in reads ``DOCKER_USERNAME`` and ``DOCKER_PAT``.
+Logging back in reads ``DOCKER_USERNAME`` and ``DOCKER_PAT``. Build and load the shell fixture
+in ``tests/images`` first, or name a prepared template with ``MAF_SANDBOX_SBX_E2E_IMAGE``.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from maf_sandbox_docker_sbx import (
 from maf_sandbox_docker_sbx._backend import sandbox_name
 
 _SBX = os.environ.get("MAF_SANDBOX_SBX_PATH", "sbx")
+_IMAGE = os.environ.get("MAF_SANDBOX_SBX_E2E_IMAGE", "maf-sbx-e2e-shell:local")
 _MAY_CHANGE_HOST = os.environ.get("MAF_SANDBOX_SBX_E2E_HOST") == "1"
 _FORWARDING = "ssh.agentForwardingEnabled"
 
@@ -68,7 +70,9 @@ def _key(label: str) -> SandboxKey:
 
 
 def _spec() -> SandboxSpec:
-    return SandboxSpec(kind="e2e", requires=frozenset({Capability.EXEC, Capability.FILES_IN}))
+    return SandboxSpec(
+        kind="e2e", image=_IMAGE, requires=frozenset({Capability.EXEC, Capability.FILES_IN})
+    )
 
 
 def _listed(name: str) -> bool:
@@ -102,7 +106,7 @@ def test_a_host_forwarding_its_ssh_agent_is_refused(tmp_path):
         assert not _listed(sandbox_name("maf", key, "e2e"))
 
 
-def test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path):
+def test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path, monkeypatch):
     with _setting_set(_FORWARDING, "true"):
         backend = _backend(tmp_path)
 
@@ -110,10 +114,23 @@ def test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path):
             return None
 
         backend.check_host = accepted  # type: ignore[method-assign]
+        sbx = backend._sbx
+
+        async def with_agent(*args, **kwargs):
+            # V3 kits receive no agent unless they request the runtime capability.
+            if args[0] == "create":
+                kit = Path(__file__).parent / "images" / "ssh-agent"
+                args = (*args[:-1], "--kit", str(kit), args[-1])
+            return await sbx(*args, **kwargs)
+
+        monkeypatch.setattr(backend, "_sbx", with_agent)
         key = _key("agent")
-        with pytest.raises(SbxHostNotConfined, match="ssh-agent.sock"):
-            asyncio.run(backend.acquire(key, _spec()))
-        assert not _listed(sandbox_name("maf", key, "e2e"))
+        try:
+            with pytest.raises(SbxHostNotConfined, match="ssh-agent.sock"):
+                asyncio.run(backend.acquire(key, _spec()))
+            assert not _listed(sandbox_name("maf", key, "e2e"))
+        finally:
+            assert asyncio.run(backend.dispose(key)) is None
 
 
 def test_a_registered_mcp_server_is_refused(tmp_path):
@@ -194,6 +211,7 @@ def test_engine_fault_responses_do_not_mean_an_absent_sandbox(tmp_path):
 def _allowlist(*hosts: str) -> SandboxSpec:
     return SandboxSpec(
         kind="e2e",
+        image=_IMAGE,
         requires=frozenset({Capability.EXEC}),
         egress=Egress.ALLOWLIST,
         egress_allow=hosts,
