@@ -105,8 +105,10 @@ def test_runtime_defaults_to_c_locale_without_download_tools():
             "/bin/sh",
             IMAGE,
             "-c",
-            'test "$LC_ALL" = C && ! command -v curl '
-            "&& test ! -e /usr/lib/libcurl.so.4 && ! command -v gdbmtool",
+            (
+                'test "$LC_ALL" = C && ! command -v curl '
+                "&& test ! -e /usr/lib/libcurl.so.4 && ! command -v gdbmtool"
+            ),
         ],
         capture_output=True,
         timeout=30,
