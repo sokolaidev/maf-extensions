@@ -425,6 +425,42 @@ def test_incomplete_or_ambiguous_prices_are_not_summed_or_chosen(sample, case):
         )
 
 
+def test_region_selected_disk_price_remains_complete(sample):
+    report = price_report(sample, "premium-ssd-p10", retailPrice=21.68)
+    report.update(received_rows=2, selected_rows=1, requested_region="westeurope")
+    price = sample.estimate.select_price(
+        report, sample.estimate.CATALOG["premium-ssd-p10"], "westeurope", "USD"
+    )
+    row = sample.estimate.estimate_row(resource(sample, product_key="premium-ssd-p10"), price, None)
+    assert row["monthly_cost"] == "43.36"
+    assert row["status"] == "Estimated"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"received_rows": 0},
+        {"received_rows": True},
+        {"received_rows": "2"},
+        {"returned_rows": 0},
+        {"returned_rows": True},
+        {"selected_rows": 2},
+        {"selected_rows": None},
+        {"selected_rows": True},
+        {"truncated": True},
+        {"upstream_limit_reached": True},
+    ],
+)
+def test_region_selection_does_not_hide_incomplete_prices(sample, overrides):
+    report = price_report(sample)
+    report.update(received_rows=2, selected_rows=1, requested_region="westeurope")
+    report.update(overrides)
+    with pytest.raises(ValueError, match="Incomplete pricing response"):
+        sample.estimate.select_price(
+            report, sample.estimate.CATALOG["linux-b2s"], "westeurope", "USD"
+        )
+
+
 def test_hourly_and_monthly_units_and_zero_usage(sample):
     hourly = price_report(sample)["prices"][0]
     assert sample.estimate.estimate_row(resource(sample), hourly, None)["monthly_cost"] == "73.00"
