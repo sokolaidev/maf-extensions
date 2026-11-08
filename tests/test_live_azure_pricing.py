@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 import yaml
 from agent_framework import Content
-from maf_sandbox import Isolation, ToolCallEnded
+from maf_sandbox import ExecResult, Isolation, SandboxKey, ToolCallEnded
 from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,11 +25,28 @@ PROXY = "sha256:" + "b" * 64
 
 
 @pytest.fixture
-def pricing_host(monkeypatch, tmp_path):
+def pricing_host(monkeypatch):
     backend = InProcessSandboxBackend(InProcessSandbox(), isolation=Isolation.CONTAINER)
     monkeypatch.setattr(pricing.DockerSandboxBackend, "create", AsyncMock(return_value=backend))
-    monkeypatch.setattr(pricing, "docker", lambda *args: args[2])
+
+    def docker(*args):
+        if args[0] == "inspect":
+            return json.dumps([{"Image": IMAGE, "Id": args[1]}])
+        return args[2]
+
+    monkeypatch.setattr(pricing, "docker", docker)
     monkeypatch.setattr(pricing, "remaining", lambda scope: ([], []))
+    monkeypatch.setattr(
+        pricing.SandboxRouter,
+        "acquire",
+        AsyncMock(side_effect=lambda key, spec: SimpleNamespace(instance_id=key.call_id)),
+    )
+    probe = SimpleNamespace(
+        instance_id="probe",
+        exec=AsyncMock(return_value=ExecResult(stdout='{"denied": true}', exit_code=0)),
+    )
+    monkeypatch.setattr(backend, "acquire", AsyncMock(return_value=probe))
+    monkeypatch.setattr(backend, "dispose", AsyncMock(return_value=None))
     cleanup = AsyncMock(return_value=SimpleNamespace(undisposed=()))
     monkeypatch.setattr(pricing.SandboxRouter, "dispose_scope", cleanup)
 
@@ -39,7 +56,7 @@ def pricing_host(monkeypatch, tmp_path):
     for middleware in ("LabelTrackingFunctionMiddleware", "PolicyEnforcementFunctionMiddleware"):
         monkeypatch.setattr(pricing, middleware, lambda **kwargs: SimpleNamespace(process=process))
 
-    def install(result, *, successful_prefix=False):
+    def install(result, *, successful_queries=0):
         def tools(router, *args, **kwargs):
             count = 0
 
@@ -57,7 +74,11 @@ def pricing_host(monkeypatch, tmp_path):
                         call=str(count),
                     )
                 )
-                if successful_prefix and count <= 3:
+                if count <= successful_queries:
+                    await router.acquire(
+                        SandboxKey("scope", "user", "agent", str(count)),
+                        pricing.azure_pricing_sandbox_spec(IMAGE),
+                    )
                     row = {
                         "priceType": context.arguments["price_type"],
                         "currencyCode": "USD",
@@ -68,13 +89,32 @@ def pricing_host(monkeypatch, tmp_path):
                         "reservationTerm": "1 Year",
                         "savingsPlan": [{"retailPrice": 0.5}],
                     }
-                    if count == 3:
+                    if count >= 3:
+                        service, product, location, family = [
+                            ("Virtual Network", "Virtual Network Private Link", "Global", None),
+                            ("Virtual Network", "Virtual Network Manager", "Zone 1", "network"),
+                            (
+                                "Azure Front Door Service",
+                                "Azure Front Door",
+                                "Zone 6",
+                                "front_door",
+                            ),
+                            (
+                                "Azure Front Door Service",
+                                "Azure Front Door Service",
+                                "Zone 1",
+                                "cdn_classic",
+                            ),
+                            ("Azure DNS", "Azure DNS", "Zone 1", "dns"),
+                        ][count - 3]
                         row.update(
-                            serviceName="Virtual Network",
-                            productName="Virtual Network Private Link",
-                            region="Global",
-                            matched_by="global",
+                            serviceName=service,
+                            productName=product,
+                            region=location,
+                            matched_by="global" if family is None else "zone",
                         )
+                        if family is not None:
+                            row.update(zone_family=family, zone=location)
                     report = Content.from_text(json.dumps({"prices": [row], "truncated": False}))
                     report.additional_properties["security_label"] = {
                         "integrity": "trusted",
@@ -97,7 +137,7 @@ def test_network_zone_failure_retains_tool_result_and_completed_checks(
 ):
     install, cleanup = pricing_host
     message = "Pricing lookup incomplete: the CLI did not return a clean result."
-    install([Content.from_text("Incomplete"), Content.from_text(message)], successful_prefix=True)
+    install([Content.from_text("Incomplete"), Content.from_text(message)], successful_queries=3)
     directory = tmp_path / "azure-pricing"
 
     async def dispose(*args):
@@ -145,6 +185,68 @@ def test_tool_diagnostics_bound_text_and_exclude_metadata():
     item = Content.from_text("x" * 5000)
     item.additional_properties["private_metadata"] = "not diagnostic text"
     assert pricing.result_text([item] * 20) == ["x" * 4096] * 16
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_scope_cleanup_failure_retains_all_passed_checks(pricing_host, tmp_path, raises):
+    install, cleanup = pricing_host
+    install(None, successful_queries=7)
+    if raises:
+        cleanup.side_effect = RuntimeError("cleanup transport failed")
+    else:
+        cleanup.return_value = SimpleNamespace(undisposed=("remaining",))
+    message = "cleanup transport failed" if raises else "Pricing scope cleanup failed"
+    with pytest.raises((RuntimeError, ValueError), match=message):
+        asyncio.run(pricing.check(IMAGE, PROXY, directory=tmp_path))
+
+    failure = json.loads((tmp_path / "failure.json").read_text("utf-8"))
+    assert failure["case"] == "scope-cleanup"
+    assert failure["passed"] is False
+    assert failure["imageId"] == IMAGE
+    assert failure["proxyImageId"] == PROXY
+    assert failure["error"]["message"] == message
+    assert len(failure["checks"]) == 9
+    assert failure["arguments"] == {}
+    assert failure["toolResult"] == []
+    assert failure["events"] == []
+    cleanup.assert_awaited_once()
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_scope_cleanup_failure_preserves_prior_tool_failure(pricing_host, tmp_path, raises):
+    install, cleanup = pricing_host
+    install([Content.from_text("Pricing execution timed out")], successful_queries=3)
+
+    async def dispose(*args):
+        failure = json.loads((tmp_path / "failure.json").read_text("utf-8"))
+        assert failure["case"] == "network-zone"
+        assert "cleanupError" not in failure
+        if raises:
+            raise RuntimeError("cleanup transport failed")
+        return SimpleNamespace(undisposed=("remaining",))
+
+    cleanup.side_effect = dispose
+    message = "cleanup transport failed" if raises else "Pricing scope cleanup failed"
+    with pytest.raises((RuntimeError, ValueError), match=message):
+        asyncio.run(pricing.check(IMAGE, PROXY, directory=tmp_path))
+
+    failure = json.loads((tmp_path / "failure.json").read_text("utf-8"))
+    assert failure["case"] == "network-zone"
+    assert failure["error"]["message"] == "Pricing tool did not complete: network-zone"
+    assert failure["toolResult"] == ["Pricing execution timed out"]
+    assert len(failure["checks"]) == 3
+    assert failure["cleanupError"]["message"] == message
+    cleanup.assert_awaited_once()
+
+
+def test_success_does_not_write_failure_evidence(pricing_host, tmp_path):
+    install, cleanup = pricing_host
+    install(None, successful_queries=7)
+    result = asyncio.run(pricing.check(IMAGE, PROXY, directory=tmp_path))
+    assert len(result["checks"]) == 9
+    assert result["livePricingVerified"] is True
+    assert not (tmp_path / "failure.json").exists()
+    cleanup.assert_awaited_once()
 
 
 def test_release_retains_failed_pricing_without_qualification(monkeypatch, tmp_path, pricing_host):

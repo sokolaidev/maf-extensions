@@ -194,6 +194,40 @@ async def check(
     arguments: dict[str, Any] = {}
     current_context: FunctionInvocationContext | None = None
     event_start = 0
+    diagnostics: dict[str, Any] | None = None
+
+    def record_failure(error: Exception, *, cleanup: bool = False) -> None:
+        nonlocal diagnostics
+        details = {"type": type(error).__name__, "message": str(error)[:4096]}
+        if diagnostics is None:
+            diagnostics = {
+                "passed": False,
+                "case": "scope-cleanup" if cleanup else active_case,
+                "arguments": {} if cleanup else arguments,
+                "imageId": image_id,
+                "proxyImageId": proxy_id,
+                "checkedAt": datetime.now(UTC).isoformat(),
+                "error": details,
+                "toolResult": result_text(current_context.result)
+                if current_context is not None and not cleanup
+                else [],
+                "checks": cases,
+                "events": [
+                    {"seconds": event.seconds, "failure": event.failure, "unclean": event.unclean}
+                    for event in events[event_start:]
+                ]
+                if not cleanup
+                else [],
+            }
+        elif cleanup:
+            diagnostics["cleanupError"] = details
+        print("Azure pricing qualification failed: " + json.dumps(diagnostics), flush=True)
+        if directory is not None:
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "failure.json").write_text(
+                json.dumps(diagnostics, indent=2) + "\n", "utf-8"
+            )
+
     try:
         for name, arguments, expected in queries:
             active_case = name
@@ -290,33 +324,15 @@ async def check(
         )
         require(await asyncio.to_thread(remaining, scope) == ([], []), "Probe resources remain")
     except Exception as error:
-        diagnostics = {
-            "passed": False,
-            "case": active_case,
-            "arguments": arguments,
-            "imageId": image_id,
-            "proxyImageId": proxy_id,
-            "checkedAt": datetime.now(UTC).isoformat(),
-            "error": {"type": type(error).__name__, "message": str(error)[:4096]},
-            "toolResult": result_text(current_context.result)
-            if current_context is not None
-            else [],
-            "checks": cases,
-            "events": [
-                {"seconds": event.seconds, "failure": event.failure, "unclean": event.unclean}
-                for event in events[event_start:]
-            ],
-        }
-        print("Azure pricing qualification failed: " + json.dumps(diagnostics), flush=True)
-        if directory is not None:
-            directory.mkdir(parents=True, exist_ok=True)
-            (directory / "failure.json").write_text(
-                json.dumps(diagnostics, indent=2) + "\n", "utf-8"
-            )
+        record_failure(error)
         raise
     finally:
-        purge = await router.dispose_scope(scope, "pricing")
-        require(not purge.undisposed, "Pricing scope cleanup failed")
+        try:
+            purge = await router.dispose_scope(scope, "pricing")
+            require(not purge.undisposed, "Pricing scope cleanup failed")
+        except Exception as error:
+            record_failure(error, cleanup=True)
+            raise
     return {
         "backend": "docker",
         "imageId": image_id,
