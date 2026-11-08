@@ -164,6 +164,8 @@ jobs:
           path: ${{ runner.temp }}/remediation
       - uses: ./.github/actions/setup-classic-docker
       - name: Install pinned scanners
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 scripts/install_container_scanners.py --directory "$RUNNER_TEMP/scan-tools"
       - name: Build ordinary recipes, qualify runtime and rescan
         env:

@@ -266,33 +266,30 @@ jobs:
               shutil.copyfile(directory.parent / "hyperlight-image/build-inputs.json", directory / "hyperlight-build-inputs.json")
           write(directory / "runtime.json", check(profile, os.environ["IMAGE_ID"], directory))
           PY
+      - name: Install pinned scanners
+        if: steps.build.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/install_container_scanners.py --directory "$RUNNER_TEMP/scan-tools"
       - name: Inventory the exact built image
         if: steps.build.outcome == 'success'
-        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
-        with:
-          image: docker:${{ steps.identity.outputs.image_id }}
-          syft-version: v1.54.0
-          format: syft-json
-          output-file: ${{ runner.temp }}/image-security/sbom.syft.json
-          upload-artifact: false
-          upload-release-assets: false
-          dependency-snapshot: false
+        env:
+          IMAGE_ID: ${{ steps.identity.outputs.image_id }}
+        run: syft scan "docker:$IMAGE_ID" -o "syft-json=$RUNNER_TEMP/image-security/sbom.syft.json"
       - name: Verify inventory identity and component presence
         if: steps.build.outcome == 'success'
         run: python3 scripts/image_security_evidence.py "$RUNNER_TEMP/image-security" --verify-inventory
       - name: Scan the retained inventory
         if: steps.build.outcome == 'success'
-        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
-        with:
-          sbom: ${{ runner.temp }}/image-security/sbom.syft.json
-          grype-version: v0.120.0
-          output-format: json
-          output-file: ${{ runner.temp }}/image-security/grype.json
-          severity-cutoff: high
-          fail-build: false
-          only-fixed: false
-          config: ${{ runner.temp }}/image-security/grype.yaml
-          cache-db: false
+        env:
+          GRYPE_DB_AUTO_UPDATE: "true"
+          GRYPE_DB_VALIDATE_AGE: "true"
+          GRYPE_DB_VALIDATE_BY_HASH_ON_START: "true"
+        run: |
+          grype db update --config "$RUNNER_TEMP/image-security/grype.yaml"
+          grype "sbom:$RUNNER_TEMP/image-security/sbom.syft.json" \
+            --config "$RUNNER_TEMP/image-security/grype.yaml" \
+            --output json --file "$RUNNER_TEMP/image-security/grype.json"
       - name: Enforce image vulnerability applicability
         if: steps.build.outcome == 'success'
         run: python3 scripts/assess_image_scan.py "$RUNNER_TEMP/image-security" --event "$GITHUB_EVENT_NAME"
