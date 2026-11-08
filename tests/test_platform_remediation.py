@@ -1033,3 +1033,100 @@ def test_platform_scanners_use_authenticated_release_assets():
     assert step["env"]["GH_TOKEN"] == "${{ github.token }}"
     for job in ("scan", "checks"):
         assert workflow["jobs"][job]["if"] == "needs.acquire.outputs.profiles != '[]'"
+
+
+@pytest.mark.parametrize(
+    "error_type", [acquisition.EvidenceChanging, acquisition.HistoryAdvanced, ValueError]
+)
+def test_platform_retains_qualification_but_defers_changed_evidence(
+    qualified, tmp_path, monkeypatch, error_type
+):
+    root, work, results = qualified
+    expected = remediation.qualify(root, work, results)
+    output = tmp_path / "outputs"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setattr(remediation, "ROOT", root)
+
+    def changed(*_):
+        raise error_type("snapshot changed")
+
+    monkeypatch.setattr(remediation, "current", changed)
+    monkeypatch.setattr(
+        remediation, "competing_pulls", lambda *_: pytest.fail("delivery admission reached")
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["platform-remediation", "qualify", "--work", str(work), "--results", str(results)],
+    )
+    if error_type is ValueError:
+        with pytest.raises(ValueError, match="snapshot changed"):
+            remediation.main()
+        assert not output.exists()
+        assert not (work / "deferral.json").exists()
+    else:
+        remediation.main()
+        assert dict(line.split("=", 1) for line in output.read_text().splitlines()) == {
+            "ready": "false",
+            "status": "deferred",
+        }
+        assert read(work / "qualified.json")["status"] == "deferred"
+        assert read(work / "deferral.json")["phase"] == "qualify"
+    assert read(work / "qualification.json") == expected
+    assert len(list(results.glob("*/runtime.json"))) == 6
+
+
+def test_platform_scope_cannot_drop_an_inherited_profile(qualified):
+    root, work, results = qualified
+    receipt = read(work / "receipt.json")
+    receipt["images"] = {"bicep": None}
+    write(work / "receipt.json", receipt)
+    with pytest.raises(ValueError, match="scope differs from the plan"):
+        remediation.qualify(root, work, results)
+
+
+@pytest.mark.parametrize("error_type", [acquisition.EvidenceChanging, acquisition.HistoryAdvanced])
+@pytest.mark.parametrize("fail_at", [1, 3])
+def test_platform_delivery_records_freshness_deferrals(qualified, monkeypatch, error_type, fail_at):
+    root, work, results = qualified
+    report = remediation.qualify(root, work, results)
+    write(work / "qualified.json", report)
+    client = FakeGitHub()
+    calls = []
+
+    def changed(*_):
+        calls.append(None)
+        if len(calls) == fail_at:
+            raise error_type("snapshot changed")
+
+    monkeypatch.setattr(remediation, "ROOT", root)
+    monkeypatch.setattr(remediation, "PlatformGitHub", lambda _: client)
+    monkeypatch.setattr(remediation, "current", lambda *_: None)
+    monkeypatch.setattr(remediation, "competing_pulls", lambda *_: [])
+    monkeypatch.setattr(publication, "current", changed)
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "platform-remediation",
+            "publish",
+            "--work",
+            str(work),
+            "--results",
+            str(results),
+            "--bot",
+            BOT,
+            "--artifact-id",
+            "456",
+        ],
+    )
+    remediation.main()
+    assert read(work / "publication.json") == {
+        "status": "deferred",
+        "phase": "publish",
+        "reason": "snapshot changed",
+    }
+    assert read(work / "qualified.json") == report
+    assert not client.pulls
+    assert bool(client.writes) == (fail_at == 3)

@@ -14,11 +14,11 @@ from bicep_source import policy
 from bicep_source import verify_inventory as verify_bicep_inventory
 from check_container_release_image import check
 from container_release import REPOSITORY, ROOT, read, scan_result, write
-from container_release_history import GitHub, positive_id
+from container_release_history import GitHub, HistoryAdvanced, positive_id
 from image_release_needed import git
 from image_remediation import acquisition_summary, outputs, remaining, verify_engine
+from image_remediation_evidence import EvidenceChanging, current, deferred, require_image_scope
 from image_remediation_evidence import acquire_with_retry as acquire
-from image_remediation_evidence import current
 from image_remediation_pr import BotGitHub, publish
 from image_scan_policy import BICEP_ROUTES, evidence_route, scan_route
 from image_security_evidence import PROVIDER_MANIFESTS, record, verify_inventory, verify_providers
@@ -78,6 +78,7 @@ def validate(root: Path, work: Path) -> tuple[dict[str, Any], dict[str, bytes]]:
     if git(root, "rev-parse", "HEAD").strip() != receipt["source"]:
         raise ValueError("Platform qualification source changed")
     expected = read(work / "plan.json")
+    require_image_scope(receipt, expected["affectedProfiles"])
     directories = [work / "evidence" / name for name in receipt["directories"]]
     if plan(root, directories) != expected:
         raise ValueError("Platform plan differs from retained monitoring and source")
@@ -411,7 +412,18 @@ def main() -> None:
         if args.results is None:
             parser.error("qualification requires results")
         report = qualify(ROOT, work, args.results)
-        current(GitHub(), read(work / "receipt.json"))
+        if args.command == "qualify":
+            write(work / "qualification.json", report)
+        try:
+            current(GitHub(), read(work / "receipt.json"))
+        except (EvidenceChanging, HistoryAdvanced) as error:
+            result = deferred(work, error, args.command)
+            if args.command == "qualify":
+                write(work / "qualified.json", report | result)
+                outputs({"ready": "false", "status": "deferred"})
+            else:
+                write(work / "publication.json", result)
+            return
         conflicts = competing_pulls(GitHub(), set(report["files"]))
         if conflicts:
             raise ValueError(f"Existing source PRs own the proposed inputs: {conflicts}")
@@ -430,16 +442,19 @@ def main() -> None:
                 parser.error("publish requires bot and artifact-id")
             if report != read(work / "qualified.json"):
                 raise ValueError("Platform qualification changed before publication")
-            result = publish(
-                PlatformGitHub(set(report["files"])),
-                read(work / "receipt.json"),
-                report,
-                validate(ROOT, work)[1],
-                args.bot,
-                f"https://github.com/{REPOSITORY}/actions/runs/"
-                f"{run_id}/artifacts/"
-                f"{positive_id(args.artifact_id)}",
-            )
+            try:
+                result = publish(
+                    PlatformGitHub(set(report["files"])),
+                    read(work / "receipt.json"),
+                    report,
+                    validate(ROOT, work)[1],
+                    args.bot,
+                    f"https://github.com/{REPOSITORY}/actions/runs/"
+                    f"{run_id}/artifacts/"
+                    f"{positive_id(args.artifact_id)}",
+                )
+            except (EvidenceChanging, HistoryAdvanced) as error:
+                result = deferred(work, error, "publish")
             write(work / "publication.json", result)
             print(json.dumps(result))
 

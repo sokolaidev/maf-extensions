@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from container_release import REPOSITORY, ROOT, read, write
-from container_release_history import GitHub, decode, encode, positive_id
+from container_release_history import GitHub, HistoryAdvanced, decode, encode, positive_id
 from image_remediation import proposal_files, qualify
-from image_remediation_evidence import current
+from image_remediation_evidence import EvidenceChanging, current, deferred
 
 BRANCH = "bot/go-image-remediation"
 MARKER = "maf-image-remediation-v1"
@@ -401,15 +401,18 @@ def main() -> None:
     report = qualify(ROOT, args.work, args.results)
     if report != read(args.work / "qualified.json"):
         raise ValueError("Qualified report changed")
-    result = publish(
-        BotGitHub(),
-        read(args.work / "receipt.json"),
-        report,
-        proposal_files(ROOT, args.work / "proposal"),
-        args.bot,
-        f"https://github.com/{REPOSITORY}/actions/runs/"
-        f"{positive_id(int(os.environ['GITHUB_RUN_ID']))}/artifacts/{positive_id(args.artifact_id)}",
-    )
+    try:
+        result = publish(
+            BotGitHub(),
+            read(args.work / "receipt.json"),
+            report,
+            proposal_files(ROOT, args.work / "proposal"),
+            args.bot,
+            f"https://github.com/{REPOSITORY}/actions/runs/"
+            f"{positive_id(int(os.environ['GITHUB_RUN_ID']))}/artifacts/{positive_id(args.artifact_id)}",
+        )
+    except (EvidenceChanging, HistoryAdvanced) as error:
+        result = deferred(args.work, error, "publish")
     write(args.work / "publication.json", result)
     print(json.dumps(result))
 

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import stat
 import time
 import zipfile
 from collections.abc import Callable, Iterable
+from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -26,7 +28,47 @@ MAX_MEMBER = 512 * 1024**2
 
 
 class EvidenceChanging(ValueError):
-    """Acquisition must restart against a newer or unfinished monitoring snapshot."""
+    """Remediation must restart against a newer source or evidence snapshot."""
+
+
+def catalogue_images(catalogue: dict[str, Any], profiles: Iterable[str]) -> dict[str, Any]:
+    """Bind current releases and their assessments, including unpublished inherited profiles."""
+    selected = set(profiles)
+    if not selected or not selected <= set(PROFILES):
+        raise ValueError("Invalid remediation image scope")
+    result = {}
+    for profile in sorted(selected):
+        name = catalogue["current"].get(profile)
+        result[profile] = (
+            {"release": name, "record": deepcopy(catalogue["releases"][name])}
+            if name is not None
+            else None
+        )
+    return result
+
+
+def require_image_scope(receipt: dict[str, Any], profiles: list[str]) -> None:
+    """A retained scope cannot omit any profile required by the recomputed plan."""
+    if (
+        "images" in receipt
+        and profiles
+        and (not isinstance(receipt["images"], dict) or set(receipt["images"]) != set(profiles))
+    ):
+        raise ValueError("Remediation image scope differs from the plan")
+
+
+def deferred(
+    directory: Path, error: EvidenceChanging | HistoryAdvanced, phase: str
+) -> dict[str, Any]:
+    """Retain a retryable refusal without claiming publication or discarding completed checks."""
+    result = {"status": "deferred", "phase": phase, "reason": str(error)}
+    write(directory / "deferral.json", result)
+    message = f"Remediation {phase} deferred: {error}. Retry with fresh source and evidence."
+    print(message, flush=True)
+    if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
+        with Path(summary).open("a", encoding="utf-8") as output:
+            output.write(f"\n## Image remediation: deferred\n\n{message}\n")
+    return result
 
 
 def main_head(client: GitHub) -> str:
@@ -168,11 +210,19 @@ def current(client: GitHub, receipt: dict[str, Any]) -> None:
     ):
         raise ValueError("Retained monitoring assessment expired")
     if main_head(client) != receipt["source"]:
-        raise ValueError("Main changed during remediation")
+        raise EvidenceChanging("Main changed during remediation")
     snapshot = History(client).head()
     if snapshot is None:
         raise ValueError("No completed image release catalogue")
-    if snapshot.reference != receipt["catalogue"]:
+    if "images" in receipt:
+        images = receipt["images"]
+        if not isinstance(images, dict):
+            raise ValueError("Invalid remediation image scope")
+        if catalogue_images(snapshot.catalogue, images) != images:
+            raise EvidenceChanging(
+                "Qualified image releases or assessments changed during remediation"
+            )
+    elif snapshot.reference != receipt["catalogue"]:
         raise EvidenceChanging("Release history changed during remediation")
     if latest_monitor(client) != receipt["monitor"]:
         raise EvidenceChanging("Monitoring changed during remediation")
@@ -194,7 +244,7 @@ def acquire(
         raise ValueError(f"Unknown image profiles: {', '.join(sorted(unknown))}")
     source = git(root, "rev-parse", "HEAD").strip()
     if main_head(client) != source:
-        raise ValueError("Evidence acquisition requires current main")
+        raise EvidenceChanging("Evidence acquisition requires current main")
     monitor = latest_monitor(client)
     producer = monitor_source(client, monitor)
     snapshot = History(client).head()
@@ -261,6 +311,7 @@ def acquire(
     if not require_all_profiles:
         receipt["unpublishedProfiles"] = unpublished
     result = (plan if planner is None else planner)(root, paths)
+    receipt["images"] = catalogue_images(snapshot.catalogue, result["affectedProfiles"] or selected)
     current(client, receipt)
     write(directory / "receipt.json", receipt)
     write(directory / "plan.json", result)

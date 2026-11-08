@@ -109,7 +109,7 @@ jobs:
       attestations: read
     outputs:
       source: ${{ needs.acquire.outputs.source }}
-      updates: ${{ needs.acquire.outputs.updates }}
+      updates: ${{ steps.prepare.outputs.updates }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -127,6 +127,7 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/provider-results
       - name: Assemble verified provider results
+        id: prepare
         env:
           GH_TOKEN: ${{ github.token }}
         run: uv run --locked python scripts/image_remediation.py prepare --work "$RUNNER_TEMP/remediation" --results "$RUNNER_TEMP/provider-results"
@@ -248,6 +249,7 @@ jobs:
         run: uv run --locked python scripts/image_remediation.py qualify --work "$RUNNER_TEMP/remediation" --results "$RUNNER_TEMP/results"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: retain
+        if: always()
         with:
           name: remediation-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -267,6 +269,7 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
       - name: Open or refresh the owned remediation PR
+        id: deliver
         if: steps.app.outcome == 'success' && steps.app.outputs.token != ''
         env:
           GH_TOKEN: ${{ github.token }}
@@ -274,6 +277,16 @@ jobs:
           BOT: ${{ steps.app.outputs.app-slug }}[bot]
           ARTIFACT_ID: ${{ steps.retain.outputs.artifact-id }}
         run: uv run --locked python scripts/image_remediation_pr.py --work "$RUNNER_TEMP/remediation" --results "$RUNNER_TEMP/results" --bot "$BOT" --artifact-id "$ARTIFACT_ID"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && steps.deliver.outcome != 'skipped'
+        with:
+          name: remediation-delivery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/remediation/publication.json
+            ${{ runner.temp }}/remediation/deferral.json
+          if-no-files-found: warn
+          retention-days: 30
 
   report-failure:
     needs: [acquire, providers, prepare, scan, checks, publish]

@@ -869,14 +869,15 @@ def test_acquisition_binds_release_catalogue_and_monitor(
             acquisition.GitHub(), checkout, tmp_path / "acquired"
         )
         assert result is not None and result["updates"]
-        assert verified == [name] * (2 if mutation in {"race", "history-current"} else 1)
+        assert verified == [name] * (2 if mutation == "history-current" else 1)
         if mutation.startswith("history-"):
             assert sleeps == [1, 2, 30]
             assert len(snapshots) == (5 if mutation == "history-acquire" else 6)
         assert read(tmp_path / "acquired/receipt.json")["oldestAssessment"] == AT
-        assert read(tmp_path / "acquired/receipt.json")["catalogue"]["sequence"] == (
-            2 if mutation == "race" else 1
-        )
+        assert read(tmp_path / "acquired/receipt.json")["catalogue"]["sequence"] == 1
+        images = read(tmp_path / "acquired/receipt.json")["images"]
+        assert images["terraform-random"]["record"] == record
+        assert set(images) == set(result["affectedProfiles"])
     else:
         with pytest.raises(ValueError) as error:
             acquisition.acquire(acquisition.GitHub(), checkout, tmp_path / "acquired")
@@ -1644,7 +1645,7 @@ def test_workflow_keeps_writes_after_all_read_only_gates():
         "${{ runner.temp }}/remediation",
         "${{ runner.temp }}/results",
     ]
-    publish = steps[-1]
+    publish = next(item for item in steps if item.get("id") == "deliver")
     assert publish["env"]["ARTIFACT_ID"] == "${{ steps.retain.outputs.artifact-id }}"
     assert '--artifact-id "$ARTIFACT_ID"' in publish["run"]
     assert {key: value for key, value in app["with"].items() if key.startswith("permission-")} == {
@@ -1675,3 +1676,213 @@ def test_workflow_keeps_writes_after_all_read_only_gates():
         )
     assert {"acquire", "providers"} <= set(jobs["report-failure"]["needs"])
     assert "needs.providers.result == 'failure'" in jobs["report-failure"]["if"]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "unrelated",
+        "reservation",
+        "release",
+        "assessment",
+        "discovery",
+        "removed",
+        "inherited",
+        "main",
+        "monitor",
+    ],
+)
+def test_freshness_scopes_catalogue_changes_to_qualified_images(current_state, monkeypatch, change):
+    catalogue = {
+        "current": {"bicep": "bicep-1", "graphviz": "graphviz-1"},
+        "releases": {
+            "bicep-1": {"registryDigest": IMAGE, "latestAttempt": {"outcome": "vulnerable"}},
+            "graphviz-1": {"registryDigest": IMAGE},
+        },
+    }
+    receipt = copy.deepcopy(current_state)
+    receipt["images"] = acquisition.catalogue_images(catalogue, ["bicep", "bicep-avm"])
+    if change == "unrelated":
+        catalogue["releases"]["graphviz-2"] = {"registryDigest": "new"}
+        catalogue["current"]["graphviz"] = "graphviz-2"
+    elif change == "reservation":
+        catalogue["releases"]["bicep-2"] = {"state": "incomplete"}
+    elif change == "release":
+        catalogue["releases"]["bicep-2"] = {"registryDigest": "new"}
+        catalogue["current"]["bicep"] = "bicep-2"
+    elif change == "assessment":
+        catalogue["releases"]["bicep-1"]["latestAttempt"] = {"outcome": "unavailable"}
+    elif change == "discovery":
+        catalogue["releases"]["bicep-1"]["registryDiscovery"] = {"outcome": "unavailable"}
+    elif change == "removed":
+        del catalogue["current"]["bicep"]
+    elif change == "inherited":
+        catalogue["releases"]["bicep-avm-1"] = {"registryDigest": IMAGE}
+        catalogue["current"]["bicep-avm"] = "bicep-avm-1"
+    elif change == "main":
+        monkeypatch.setattr(acquisition, "main_head", lambda _: "d" * 40)
+    else:
+        monkeypatch.setattr(acquisition, "latest_monitor", lambda _: {})
+    monkeypatch.setattr(
+        acquisition,
+        "History",
+        lambda _: SimpleNamespace(
+            head=lambda: SimpleNamespace(reference={"sequence": 99}, catalogue=catalogue)
+        ),
+    )
+    if change in {"unrelated", "reservation"}:
+        acquisition.current(acquisition.GitHub(), receipt)
+    else:
+        with pytest.raises(acquisition.EvidenceChanging):
+            acquisition.current(acquisition.GitHub(), receipt)
+
+
+@pytest.mark.parametrize("images", [None, {}, {"unknown": None}])
+def test_freshness_rejects_invalid_image_scope(current_state, monkeypatch, images):
+    receipt = {**current_state, "images": images}
+    monkeypatch.setattr(
+        acquisition,
+        "History",
+        lambda _: SimpleNamespace(
+            head=lambda: SimpleNamespace(catalogue={"current": {}, "releases": {}})
+        ),
+    )
+    with pytest.raises(ValueError, match="Invalid remediation image scope"):
+        acquisition.current(acquisition.GitHub(), receipt)
+
+
+@pytest.mark.parametrize("error_type", [acquisition.EvidenceChanging, HistoryAdvanced, ValueError])
+def test_qualification_retains_completed_results_when_freshness_changes(
+    qualified, tmp_path, monkeypatch, error_type
+):
+    root, work, results = qualified
+    expected = remediation.qualify(root, work, results)
+    output, summary = tmp_path / "outputs", tmp_path / "summary"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr(remediation, "ROOT", root)
+
+    def changed(*_):
+        raise error_type("snapshot changed")
+
+    monkeypatch.setattr(remediation, "current", changed)
+    monkeypatch.setattr(
+        sys, "argv", ["remediation", "qualify", "--work", str(work), "--results", str(results)]
+    )
+    if error_type is ValueError:
+        with pytest.raises(ValueError, match="snapshot changed"):
+            remediation.main()
+        assert not output.exists()
+        assert not (work / "deferral.json").exists()
+    else:
+        remediation.main()
+        assert dict(line.split("=", 1) for line in output.read_text().splitlines()) == {
+            "ready": "false",
+            "status": "deferred",
+        }
+        assert read(work / "qualified.json")["status"] == "deferred"
+        assert read(work / "deferral.json")["phase"] == "qualify"
+        assert "snapshot changed" in summary.read_text()
+    assert read(work / "qualification.json") == expected
+    assert len(list(results.glob("*/runtime.json"))) == 8
+
+
+@pytest.mark.parametrize("error_type", [acquisition.EvidenceChanging, HistoryAdvanced])
+def test_preparation_deferral_disables_downstream_builds(
+    proposal, tmp_path, monkeypatch, error_type
+):
+    root, work = proposal
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setattr(remediation, "ROOT", root)
+    monkeypatch.setattr(remediation, "prepare", lambda *_args, **_kwargs: None)
+
+    def changed(*_):
+        raise error_type("snapshot changed")
+
+    monkeypatch.setattr(remediation, "current", changed)
+    monkeypatch.setattr(sys, "argv", ["remediation", "prepare", "--work", str(work)])
+    remediation.main()
+    assert dict(line.split("=", 1) for line in output.read_text().splitlines()) == {
+        "updates": "false",
+        "status": "deferred",
+    }
+    assert read(work / "deferral.json")["phase"] == "prepare"
+    assert (work / "proposal/proposal.json").is_file()
+
+
+@pytest.mark.parametrize(
+    "workflow_name", ["image-remediation.yml", "platform-image-remediation.yml"]
+)
+def test_workflows_retain_evidence_on_failed_or_deferred_admission(workflow_name):
+    import yaml
+
+    workflow = yaml.safe_load((ROOT / ".github/workflows" / workflow_name).read_text())
+    steps = workflow["jobs"]["publish"]["steps"]
+    retain = next(step for step in steps if step.get("id") == "retain")
+    app = next(step for step in steps if step.get("id") == "app")
+    assert retain["if"] == "always()"
+    assert "steps.qualify.outputs.ready == 'true'" in app["if"]
+    delivery = steps[-1]
+    assert delivery["if"] == "always() && steps.deliver.outcome != 'skipped'"
+    assert "github.run_attempt" in delivery["with"]["name"]
+    assert "deferral.json" in delivery["with"]["path"]
+    if workflow_name == "image-remediation.yml":
+        prepare = workflow["jobs"]["prepare"]
+        assert prepare["outputs"]["updates"] == "${{ steps.prepare.outputs.updates }}"
+        assert any(step.get("id") == "prepare" for step in prepare["steps"])
+
+
+def test_retained_scope_cannot_drop_a_qualified_profile(qualified):
+    root, work, results = qualified
+    receipt = read(work / "receipt.json")
+    receipt["images"] = {"terraform-random": None}
+    write(work / "receipt.json", receipt)
+    with pytest.raises(ValueError, match="scope differs from the plan"):
+        remediation.qualify(root, work, results)
+
+
+@pytest.mark.parametrize("error_type", [acquisition.EvidenceChanging, HistoryAdvanced])
+@pytest.mark.parametrize("fail_at", [1, 3])
+def test_delivery_cli_records_early_and_late_freshness_deferrals(
+    qualified, monkeypatch, error_type, fail_at
+):
+    root, work, results = qualified
+    report = remediation.qualify(root, work, results)
+    write(work / "qualified.json", report)
+    client = FakeGitHub()
+    calls = []
+
+    def changed(*_):
+        calls.append(None)
+        if len(calls) == fail_at:
+            raise error_type("snapshot changed")
+
+    monkeypatch.setattr(publication, "ROOT", root)
+    monkeypatch.setattr(publication, "BotGitHub", lambda: client)
+    monkeypatch.setattr(publication, "current", changed)
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "publication",
+            "--work",
+            str(work),
+            "--results",
+            str(results),
+            "--bot",
+            BOT,
+            "--artifact-id",
+            "456",
+        ],
+    )
+    publication.main()
+    assert read(work / "publication.json") == {
+        "status": "deferred",
+        "phase": "publish",
+        "reason": "snapshot changed",
+    }
+    assert read(work / "qualified.json") == report
+    assert not client.pulls
+    assert bool(client.writes) == (fail_at == 3)

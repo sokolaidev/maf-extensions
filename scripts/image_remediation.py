@@ -13,10 +13,10 @@ from typing import Any
 
 from check_container_release_image import check
 from container_release import ROOT, read, scan_result, write
-from container_release_history import GitHub
+from container_release_history import GitHub, HistoryAdvanced
 from image_release_needed import git
+from image_remediation_evidence import EvidenceChanging, current, deferred, require_image_scope
 from image_remediation_evidence import acquire_with_retry as acquire
-from image_remediation_evidence import current
 from image_security_evidence import PROVIDER_MANIFESTS, record, verify_inventory, verify_providers
 from plan_go_remediation import CONTEXT, RECIPE, digest, inputs, locations, owners, semver
 from plan_go_remediation import plan as make_plan
@@ -113,6 +113,7 @@ def validate_plan(root: Path, work: Path) -> None:
     """Recompute artifact instructions from the acquired monitor bytes and current source."""
     receipt = read(work / "receipt.json")
     expected = read(work / "plan.json")
+    require_image_scope(receipt, expected["affectedProfiles"])
     if (
         make_plan(root, [work / "evidence" / name for name in receipt["directories"]]) != expected
         or read(work / "proposal/plan.json") != expected
@@ -436,7 +437,13 @@ def main() -> None:
             work / "proposal",
             shards=args.results,
         )
-        current(GitHub(), receipt)
+        try:
+            current(GitHub(), receipt)
+        except (EvidenceChanging, HistoryAdvanced) as error:
+            deferred(work, error, "prepare")
+            outputs({"updates": "false", "status": "deferred"})
+            return
+        outputs({"updates": "true"})
     elif args.command == "apply":
         validate_plan(ROOT, work)
         apply(ROOT, work / "proposal")
@@ -448,9 +455,18 @@ def main() -> None:
         if args.results is None:
             parser.error("qualify requires results")
         result = qualify(ROOT, work, args.results)
-        current(GitHub(), read(work / "receipt.json"))
+        write(work / "qualification.json", result)
+        try:
+            current(GitHub(), read(work / "receipt.json"))
+        except (EvidenceChanging, HistoryAdvanced) as error:
+            result = result | deferred(work, error, "qualify")
         write(work / "qualified.json", result)
-        outputs({"ready": "true" if result["status"] == "ready" else "false"})
+        outputs(
+            {
+                "ready": "true" if result["status"] == "ready" else "false",
+                "status": result["status"],
+            }
+        )
 
 
 if __name__ == "__main__":
