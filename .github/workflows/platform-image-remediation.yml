@@ -1,0 +1,221 @@
+name: Platform image remediation
+
+on:
+  workflow_run:
+    workflows: [Container image monitor]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: "15 10 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-image-remediation
+  cancel-in-progress: false
+
+jobs:
+  acquire:
+    if: >-
+      github.repository == 'sokolaidev/maf-extensions' && github.ref == 'refs/heads/main' &&
+      (vars.PLATFORM_IMAGE_REMEDIATION_ENABLED == 'true' || github.event_name == 'workflow_dispatch') &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+      pull-requests: read
+    outputs:
+      source: ${{ steps.acquire.outputs.source }}
+      profiles: ${{ steps.acquire.outputs.profiles }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Acquire exact-image evidence and defer competing source PRs
+        id: acquire
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run --locked python scripts/platform_remediation.py acquire --work "$RUNNER_TEMP/remediation"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: platform-remediation-plan
+          path: ${{ runner.temp }}/remediation/
+          overwrite: true
+          if-no-files-found: warn
+          retention-days: 30
+
+  scan:
+    needs: acquire
+    if: needs.acquire.outputs.profiles != '[]'
+    runs-on: ${{ matrix.profile == 'bicep-docker-sbx' && 'ubuntu-24.04' || 'ubuntu-latest-m' }}
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        variant: [baseline, candidate]
+        profile: ${{ fromJSON(needs.acquire.outputs.profiles) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.acquire.outputs.source }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: platform-remediation-plan
+          path: ${{ runner.temp }}/remediation
+      - name: Prepare Docker Sandboxes consumer host
+        if: matrix.profile == 'bicep-docker-sbx'
+        uses: ./.github/actions/setup-sbx
+        with:
+          docker-username: ${{ secrets.DOCKER_USERNAME }}
+          docker-pat: ${{ secrets.DOCKER_PAT }}
+      - uses: ./.github/actions/setup-classic-docker
+      - name: Install pinned scanners
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/install_container_scanners.py --directory "$RUNNER_TEMP/scan-tools"
+      - name: Verify vendor availability, ordinary builds and exact-image scans
+        env:
+          PROFILE: ${{ matrix.profile }}
+          VARIANT: ${{ matrix.variant }}
+        run: uv run --locked python scripts/platform_remediation.py scan --work "$RUNNER_TEMP/remediation" --profile "$PROFILE" --variant "$VARIANT" --results "$RUNNER_TEMP/results/$VARIANT-$PROFILE"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: platform-remediation-${{ matrix.variant }}-${{ matrix.profile }}
+          path: ${{ runner.temp }}/results/
+          overwrite: true
+          if-no-files-found: warn
+          retention-days: 30
+
+  checks:
+    needs: acquire
+    if: needs.acquire.outputs.profiles != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.acquire.outputs.source }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: platform-remediation-plan
+          path: ${{ runner.temp }}/remediation
+      - name: Validate and apply bounded package updates
+        run: uv run --locked python scripts/platform_remediation.py apply --work "$RUNNER_TEMP/remediation"
+      - name: Run the source gate
+        run: uv run --locked poe gate
+      - name: Check Markdown and trackers
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          uv run --locked poe md-blocks
+          uv run --locked poe doc-trackers
+
+  publish:
+    needs: [acquire, scan, checks]
+    if: >-
+      !cancelled() && needs.acquire.result == 'success' && needs.scan.result == 'success' &&
+      needs.checks.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.acquire.outputs.source }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: platform-remediation-plan
+          path: ${{ runner.temp }}/remediation
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: platform-remediation-baseline-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/results
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: platform-remediation-candidate-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/results
+      - name: Revalidate every result and current evidence
+        id: qualify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run --locked python scripts/platform_remediation.py qualify --work "$RUNNER_TEMP/remediation" --results "$RUNNER_TEMP/results"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: retain
+        with:
+          name: platform-remediation-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/remediation
+            ${{ runner.temp }}/results
+          if-no-files-found: error
+          retention-days: 30
+      - name: Mint the dedicated remediation identity
+        id: app
+        if: steps.qualify.outputs.ready == 'true' && vars.PLATFORM_IMAGE_REMEDIATION_ENABLED == 'true' && vars.IMAGE_REMEDIATION_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.IMAGE_REMEDIATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.IMAGE_REMEDIATION_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: maf-extensions
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Deliver the qualified platform proposal
+        if: steps.app.outcome == 'success' && steps.app.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_REMEDIATION_TOKEN: ${{ steps.app.outputs.token }}
+          BOT: ${{ steps.app.outputs.app-slug }}[bot]
+          ARTIFACT_ID: ${{ steps.retain.outputs.artifact-id }}
+        run: uv run --locked python scripts/platform_remediation.py publish --work "$RUNNER_TEMP/remediation" --results "$RUNNER_TEMP/results" --bot "$BOT" --artifact-id "$ARTIFACT_ID"
+
+  report-failure:
+    needs: [acquire, scan, checks, publish]
+    if: always() && (needs.acquire.result == 'failure' || needs.scan.result == 'failure' || needs.checks.result == 'failure' || needs.publish.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Report incomplete platform qualification
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/report_workflow_failure.py
+          --marker '<!-- platform-image-remediation-failure-tracker -->'
+          --title 'Platform image remediation needs attention'
+          --reproduce 'Inspect retained platform-remediation evidence and dispatch from current main.'
+          --expected 'Vendor availability, runtime, inventory and targeted-finding checks must complete before proposing a source fix.'
+          --context 'Missing evidence does not establish recovery. Source changes do not publish images or close release requests.'
+          --packages maf-sandbox maf-sandbox-bicep

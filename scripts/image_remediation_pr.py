@@ -29,6 +29,9 @@ PENDING_NOTICE = (
 class BotGitHub(GitHub):
     """Use the installation token only for writes; evidence reads retain the workflow identity."""
 
+    branch = BRANCH
+    title = TITLE
+
     def request(self, endpoint: str, **kwargs: Any) -> bytes:
         if kwargs.get("method", "GET") == "GET":
             return super().request(endpoint, **kwargs)
@@ -69,7 +72,7 @@ def update_branch(client: GitHub, before: str | None, after: str) -> None:
                             "clientMutationId": after,
                             "refUpdates": [
                                 {
-                                    "name": f"refs/heads/{BRANCH}",
+                                    "name": f"refs/heads/{getattr(client, 'branch', BRANCH)}",
                                     "beforeOid": before or "0" * 40,
                                     "afterOid": after,
                                     "force": False,
@@ -90,8 +93,9 @@ def update_branch(client: GitHub, before: str | None, after: str) -> None:
 
 def branch_head(client: GitHub) -> str | None:
     """Read the exact owned ref without admitting similarly prefixed branch names."""
-    references = client.pages(f"repos/{REPOSITORY}/git/matching-refs/heads/{BRANCH}")
-    exact = [item for item in references if item["ref"] == f"refs/heads/{BRANCH}"]
+    branch = getattr(client, "branch", BRANCH)
+    references = client.pages(f"repos/{REPOSITORY}/git/matching-refs/heads/{branch}")
+    exact = [item for item in references if item["ref"] == f"refs/heads/{branch}"]
     if len(exact) > 1:
         raise ValueError("Ambiguous remediation branch")
     return exact[0]["object"]["sha"] if exact else None
@@ -132,7 +136,8 @@ def with_marker(text: str, state: dict[str, Any]) -> str:
 
 def latest_pull(client: GitHub) -> dict[str, Any] | None:
     """Include every base and refuse older open requests sharing the managed branch."""
-    pulls = client.pages(f"repos/{REPOSITORY}/pulls?state=all&head=sokolaidev:{BRANCH}")
+    branch = getattr(client, "branch", BRANCH)
+    pulls = client.pages(f"repos/{REPOSITORY}/pulls?state=all&head=sokolaidev:{branch}")
     latest = max(pulls, key=lambda item: positive_id(item["number"])) if pulls else None
     if any(item.get("state") == "open" and item is not latest for item in pulls):
         raise ValueError("Older open pull request competes for the remediation branch")
@@ -186,11 +191,22 @@ def body(state: dict[str, Any], report: dict[str, Any], evidence_url: str) -> st
         f"- {row['profile']}: `{row['imageId']}`; assessment `{row['assessment']['outcome']}`."
         for row in scans
     )
+    platform = report.get("kind") == "platform"
+    description = (
+        "Update build-consumed Bicep or OS package pins to remove targeted image findings."
+        if platform
+        else "Rebuild Go module overlays and provider locks to remove the targeted image findings."
+    )
+    changes = (
+        "Only planned package version pins change; compiler, runtime and base-image policies remain reviewed inputs."
+        if platform
+        else "Only planned module overrides and regenerated provider locks change."
+    )
+    issue = 2517 if platform else 2516
     text = (
-        "## Summary\n\nRebuild Go module overlays and provider locks to remove the targeted "
-        "image findings. All four affected profiles passed ordinary builds, runtime checks, "
-        "inventory checks and rescans.\n\n## Related issue\n\nRefs #2514, #2516.\n\n"
-        "## Changes\n\nOnly planned module overrides and regenerated provider locks change.\n\n"
+        f"## Summary\n\n{description} All affected profiles passed ordinary builds, runtime checks, "
+        f"inventory checks and rescans.\n\n## Related issue\n\nRefs #2514, #{issue}.\n\n"
+        f"## Changes\n\n{changes}\n\n"
         f"## Verification\n\nQualified commit: `{state['current']['head']}`. "
         f"Base: `{report['source']}`. [Retained qualification]({evidence_url}).\n\n"
         f"{summary}\n\n## Notes\n\nUnrelated findings remain in the retained assessments. "
@@ -254,7 +270,7 @@ def publish(
         if (
             pull.get("user", {}).get("login") != bot
             or pull["head"]["repo"]["full_name"] != REPOSITORY
-            or pull["head"]["ref"] != BRANCH
+            or pull["head"]["ref"] != getattr(client, "branch", BRANCH)
             or pull["base"]["ref"] != "main"
         ):
             raise ValueError("Remediation pull request is not owned by the configured App")
@@ -324,7 +340,7 @@ def publish(
         method="POST",
         payload=encode(
             {
-                "message": TITLE,
+                "message": getattr(client, "title", TITLE),
                 "tree": tree["sha"],
                 "parents": parents,
                 "author": identity,
@@ -363,9 +379,9 @@ def publish(
             method="POST",
             payload=encode(
                 {
-                    "title": TITLE,
+                    "title": getattr(client, "title", TITLE),
                     "body": body(state, report, evidence_url),
-                    "head": BRANCH,
+                    "head": getattr(client, "branch", BRANCH),
                     "base": "main",
                     "draft": False,
                 }

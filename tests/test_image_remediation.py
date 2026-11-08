@@ -44,8 +44,9 @@ URL = f"https://github.com/{REPOSITORY}/actions/runs/123/artifacts/456"
 
 
 @pytest.mark.parametrize("kind", ["provider", "engine", "none"])
+@pytest.mark.parametrize("actions", [False, True])
 def test_cli_hands_the_acquired_plan_through_workers_and_assembly(
-    checkout, tmp_path, monkeypatch, kind
+    checkout, tmp_path, monkeypatch, capsys, kind, actions
 ):
     work = tmp_path / "work"
     match = finding(provider_path(fixture_provider(checkout))) if kind == "provider" else finding()
@@ -56,7 +57,11 @@ def test_cli_hands_the_acquired_plan_through_workers_and_assembly(
     write(work / "plan.json", plan)
     write(work / "receipt.json", {"source": SOURCE, "directories": [evidence.name]})
     output = tmp_path / "outputs"
-    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    if actions:
+        output.write_text("existing=kept\n")
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    else:
+        monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
     monkeypatch.setattr(remediation, "ROOT", checkout)
     monkeypatch.setattr(remediation, "acquire", lambda *_: plan)
     monkeypatch.setattr(remediation, "current", lambda *_: None)
@@ -67,7 +72,14 @@ def test_cli_hands_the_acquired_plan_through_workers_and_assembly(
         remediation.main()
 
     run("acquire")
-    outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    stdout = capsys.readouterr().out
+    summary = read(work / "acquisition.json")
+    assert stdout.splitlines()[0] == summary["message"]
+    output_lines = output.read_text().splitlines() if actions else stdout.splitlines()[1:]
+    outputs = dict(line.split("=", 1) for line in output_lines)
+    assert outputs["status"] == summary["status"]
+    if actions:
+        assert outputs["existing"] == "kept"
     shards = json.loads(outputs["providers"])
     assert bool(shards) == (kind == "provider")
     assert outputs["updates"] == ("false" if kind == "none" else "true")
@@ -595,6 +607,24 @@ def test_monitor_requires_trusted_exact_attempt(current_state, field, value):
         acquisition.monitor_source(client, monitor)
 
 
+@pytest.mark.parametrize("require_all", [False, True])
+@pytest.mark.parametrize("profiles", [["bicep-typo"], ["bicep", "bicep-typo"]])
+def test_acquisition_rejects_unknown_profiles_before_retrieving_evidence(
+    tmp_path, monkeypatch, require_all, profiles
+):
+    monkeypatch.setattr(acquisition, "git", lambda *_: pytest.fail("source lookup reached"))
+    destination = tmp_path / "acquired"
+    with pytest.raises(ValueError, match="Unknown image profiles: bicep-typo"):
+        acquisition.acquire(
+            acquisition.GitHub(),
+            tmp_path,
+            destination,
+            selected_profiles=iter(profiles),
+            require_all_profiles=require_all,
+        )
+    assert not destination.exists()
+
+
 def test_failed_monitor_requires_verified_delivery(current_state):
     monitor = {**current_state["monitor"], "conclusion": "failure"}
     with pytest.raises(ValueError, match="verified delivery"):
@@ -617,12 +647,17 @@ def test_changed_snapshot_is_retryable_but_cannot_pass_freshness(current_state, 
 
 
 @pytest.mark.parametrize("recover", [True, False])
-def test_acquisition_retry_discards_partial_inputs(tmp_path, monkeypatch, recover):
+@pytest.mark.parametrize("custom", [True, False])
+def test_acquisition_retry_discards_partial_inputs(tmp_path, monkeypatch, recover, custom):
     work = tmp_path / "work"
     attempts = []
     sleeps = []
 
-    def acquire(client, root, directory):
+    def acquire(client, root, directory, **options):
+        selected = options["selected_profiles"]
+        assert (None if selected is None else tuple(selected)) == (("bicep",) if custom else None)
+        assert options["planner"] is (planner.plan if custom else None)
+        assert options["require_all_profiles"] is not custom
         attempts.append(directory)
         assert not directory.exists()
         if len(attempts) < 3 or not recover:
@@ -635,7 +670,16 @@ def test_acquisition_retry_discards_partial_inputs(tmp_path, monkeypatch, recove
 
     monkeypatch.setattr(acquisition, "acquire", acquire)
     monkeypatch.setattr(acquisition.time, "sleep", sleeps.append)
-    result = acquisition.acquire_with_retry(acquisition.GitHub(), tmp_path, work)
+    options = (
+        {
+            "selected_profiles": iter(["bicep"]),
+            "planner": planner.plan,
+            "require_all_profiles": False,
+        }
+        if custom
+        else {}
+    )
+    result = acquisition.acquire_with_retry(acquisition.GitHub(), tmp_path, work, **options)
     assert sleeps == [30, 30] and len(set(attempts)) == 3
     assert not (work / "evidence/partial.json").exists()
     if recover:
@@ -661,7 +705,7 @@ def test_acquisition_retry_discards_partial_inputs(tmp_path, monkeypatch, recove
 def test_acquisition_does_not_retry_invalid_or_unavailable_evidence(tmp_path, monkeypatch, error):
     calls = []
 
-    def fail(*args):
+    def fail(*args, **kwargs):
         calls.append(args)
         raise error
 
@@ -672,14 +716,20 @@ def test_acquisition_does_not_retry_invalid_or_unavailable_evidence(tmp_path, mo
     assert len(calls) == 1
 
 
-def test_deferred_cli_emits_no_build_or_source_outputs(tmp_path, monkeypatch):
+@pytest.mark.parametrize("actions", [False, True])
+def test_deferred_cli_emits_no_build_or_source_outputs(tmp_path, monkeypatch, capsys, actions):
     work, output, summary = (tmp_path / name for name in ("work", "output", "summary"))
     monkeypatch.setattr(remediation, "acquire", lambda *_: None)
-    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    if actions:
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    else:
+        monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     monkeypatch.setattr(sys, "argv", ["remediation", "acquire", "--work", str(work)])
     remediation.main()
-    assert output.read_text().splitlines() == ["status=deferred", "updates=false", "providers=[]"]
+    stdout = capsys.readouterr().out.splitlines()
+    values = output.read_text().splitlines() if actions else stdout[1:]
+    assert values == ["status=deferred", "updates=false", "providers=[]"]
     assert read(work / "acquisition.json")["status"] == "deferred"
     assert "retries automatically" in summary.read_text()
 
@@ -709,6 +759,8 @@ def test_no_update_summary_preserves_publication_and_residual_findings(
     "mutation",
     [
         "none",
+        "unpublished",
+        "missing",
         "race",
         "stale",
         "digest",
@@ -743,6 +795,8 @@ def test_acquisition_binds_release_catalogue_and_monitor(
         record["candidate"] = {**candidate, "sourceCommit": SOURCE}
     name = "terraform-random-0.2.3"
     catalogue = {"current": {"terraform-random": name}, "releases": {name: record}}
+    if mutation == "missing":
+        catalogue["current"] = {}
     snapshot = SimpleNamespace(reference=current_state["catalogue"], catalogue=catalogue)
     snapshots = []
     sleeps = []
@@ -785,7 +839,19 @@ def test_acquisition_binds_release_catalogue_and_monitor(
         "restore_monitor",
         lambda client, monitor, source, targets, directory: shutil.copytree(seed, directory / name),
     )
-    if mutation.endswith("-busy"):
+    if mutation == "unpublished":
+        result = acquisition.acquire(
+            acquisition.GitHub(),
+            checkout,
+            tmp_path / "acquired",
+            selected_profiles=["terraform-random", "bicep"] if mutation == "unpublished" else None,
+            require_all_profiles=mutation != "unpublished",
+        )
+        assert result["updates"] and verified == [name]
+        assert read(tmp_path / "acquired/receipt.json")["oldestAssessment"] == AT
+        if mutation == "unpublished":
+            assert read(tmp_path / "acquired/receipt.json")["unpublishedProfiles"] == ["bicep"]
+    elif mutation.endswith("-busy"):
         work = tmp_path / "acquired"
         assert acquisition.acquire_with_retry(acquisition.GitHub(), checkout, work) is None
         assert sleeps == [1, 2, 30, 1, 2, 30, 1, 2]
@@ -812,8 +878,10 @@ def test_acquisition_binds_release_catalogue_and_monitor(
             2 if mutation == "race" else 1
         )
     else:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError) as error:
             acquisition.acquire(acquisition.GitHub(), checkout, tmp_path / "acquired")
+        if mutation == "missing":
+            assert "current image release is missing: terraform-random" in str(error.value)
         assert not (tmp_path / "acquired/plan.json").exists()
 
 

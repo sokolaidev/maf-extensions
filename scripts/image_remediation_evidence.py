@@ -7,6 +7,7 @@ import shutil
 import stat
 import time
 import zipfile
+from collections.abc import Callable, Iterable
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from container_release_status import MONITOR, latest_monitor
 from image_release_needed import git, release_evidence
 from image_security_evidence import PROVIDER_MANIFESTS
 from plan_go_remediation import evidence, plan
+from select_image_security import PROFILES
 
 FILES = {"observation.json", "assessment.json", "sbom.syft.json", "grype.json"}
 MAX_MEMBER = 512 * 1024**2
@@ -176,8 +178,20 @@ def current(client: GitHub, receipt: dict[str, Any]) -> None:
         raise EvidenceChanging("Monitoring changed during remediation")
 
 
-def acquire(client: GitHub, root: Path, directory: Path) -> dict[str, Any]:
+def acquire(
+    client: GitHub,
+    root: Path,
+    directory: Path,
+    *,
+    selected_profiles: Iterable[str] | None = None,
+    planner: Callable[[Path, list[Path]], dict[str, Any]] | None = None,
+    require_all_profiles: bool = True,
+) -> dict[str, Any]:
     """Authenticate current released images and fresh monitoring before planning source edits."""
+    selected = set(PROVIDER_MANIFESTS if selected_profiles is None else selected_profiles)
+    unknown = selected - set(PROFILES)
+    if unknown:
+        raise ValueError(f"Unknown image profiles: {', '.join(sorted(unknown))}")
     source = git(root, "rev-parse", "HEAD").strip()
     if main_head(client) != source:
         raise ValueError("Evidence acquisition requires current main")
@@ -189,11 +203,15 @@ def acquire(client: GitHub, root: Path, directory: Path) -> dict[str, Any]:
     if latest_monitor(client) != monitor:
         raise EvidenceChanging("Monitoring changed during acquisition")
     records = {}
+    unpublished = []
     at = now()
-    for profile in sorted(PROVIDER_MANIFESTS):
+    for profile in sorted(selected):
         name = snapshot.catalogue["current"].get(profile)
         if name is None:
-            raise ValueError("A supported current image release is missing")
+            if not require_all_profiles:
+                unpublished.append(profile)
+                continue
+            raise ValueError(f"A supported current image release is missing: {profile}")
         record = snapshot.catalogue["releases"][name]
         if record["profile"] != profile:
             raise ValueError("Current image catalogue profile is inconsistent")
@@ -213,6 +231,8 @@ def acquire(client: GitHub, root: Path, directory: Path) -> dict[str, Any]:
             raise ValueError("Current monitoring is stale, unavailable or contradictory")
         release_evidence(client, record, directory / "releases" / profile)
         records[f"{profile}-{record['version']}"] = record
+    if not records:
+        raise ValueError("No supported current image releases are available")
     restored = directory / "evidence"
     restore_monitor(client, monitor, producer, set(records), restored)
     paths = []
@@ -238,20 +258,38 @@ def acquire(client: GitHub, root: Path, directory: Path) -> dict[str, Any]:
             record["latestAttempt"]["assessedAt"] for record in records.values()
         ),
     }
-    result = plan(root, paths)
+    if not require_all_profiles:
+        receipt["unpublishedProfiles"] = unpublished
+    result = (plan if planner is None else planner)(root, paths)
     current(client, receipt)
     write(directory / "receipt.json", receipt)
     write(directory / "plan.json", result)
     return result
 
 
-def acquire_with_retry(client: GitHub, root: Path, directory: Path) -> dict[str, Any] | None:
+def acquire_with_retry(
+    client: GitHub,
+    root: Path,
+    directory: Path,
+    *,
+    selected_profiles: Iterable[str] | None = None,
+    planner: Callable[[Path, list[Path]], dict[str, Any]] | None = None,
+    require_all_profiles: bool = True,
+) -> dict[str, Any] | None:
     """Retry changing snapshots in isolated directories; defer to the next trigger if still busy."""
+    selected = None if selected_profiles is None else tuple(selected_profiles)
     directory.mkdir(parents=True, exist_ok=False)
     for attempt in range(1, 4):
         staging = directory / "attempts" / str(attempt)
         try:
-            result = acquire(client, root, staging)
+            result = acquire(
+                client,
+                root,
+                staging,
+                selected_profiles=selected,
+                planner=planner,
+                require_all_profiles=require_all_profiles,
+            )
         except (EvidenceChanging, HistoryAdvanced) as error:
             write(staging / "deferred.json", {"attempt": attempt, "reason": str(error)})
             print(f"Acquisition attempt {attempt}/3 deferred: {error}", flush=True)
