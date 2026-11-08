@@ -39,7 +39,7 @@ from container_release_oci import MANIFEST
 from container_release_publish import context, outputs
 from container_release_registry import anonymous_pull, manifest
 from container_release_status import MONITOR
-from image_security_evidence import verify_inventory
+from image_security_evidence import verify_inventory, verify_profile_inventory
 from prepare_container_release import assess
 
 BATCH_SIZE = 6
@@ -375,7 +375,11 @@ def scan(directory: Path, batch: int) -> None:
                 stage = "application inventory restore"
                 application_inventory(root, candidate, image_id, restore=True)
                 stage = "vulnerability assessment"
-                result.update(assess(root, image_id, require_clean=False))
+                assessment = assess(root, image_id, require_clean=False)
+                if candidate["profile"] == "document-export":
+                    stage = "application inventory validation"
+                    verify_profile_inventory(read(root / "sbom.syft.json"), "document-export")
+                result.update(assessment)
         except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
             diagnostic = failure_details(stage, error)
             result.update(
@@ -447,6 +451,8 @@ def finish(directory: Path) -> None:
                 if document.get("mediaType") != MANIFEST or assessment.get("imageId") != image_id:
                     raise ValueError("Unexpected image configuration differs from its assessment")
             verify_inventory(read(root / "sbom.syft.json"), image_id)
+            if candidate["profile"] == "document-export":
+                verify_profile_inventory(read(root / "sbom.syft.json"), "document-export")
             runtime = application_inventory(root, candidate, image_id)
             if runtime is not None:
                 if candidate.get("bicepRoute") == "source":
@@ -481,6 +487,7 @@ def finish(directory: Path) -> None:
                         "observation.json",
                         "assessment.json",
                         "sbom.syft.json",
+                        "sbom.raw.syft.json",
                         "sbom.spdx.json",
                         "grype.json",
                         "grype.yaml",

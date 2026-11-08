@@ -1,24 +1,22 @@
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:24f549a7fcace88e69b9557941168c74645688ecc4acf7fb6d734a6b74e9019d AS assembled
-RUN --mount=type=bind,from=python-packages,target=/python-packages \
-    cp /python-packages/maf-python.rsa.pub /etc/apk/keys/ \
-    && apk add --no-cache /python-packages/x86_64/python-3.13-3.13.18_git20261030-r0.apk /python-packages/x86_64/python-3.13-base-3.13.18_git20261030-r0.apk \
-    && rm /etc/apk/keys/maf-python.rsa.pub \
-    && python3 -c "import sys, ssl; assert sys.version_info[:3] == (3, 13, 18); assert ssl.HAS_PSK"
+FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c AS assembled
 
+ADD --checksum=sha256:a62b277dc03da2cff50cc04589deb66f6875be339c066d46adb49b49eedb629d https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_157.0.8103.38-1_amd64.deb /tmp/chrome.deb
 COPY requirements.txt mermaid.json install.py /opt/maf-document-export/
-RUN apk upgrade --no-cache \
-    && apk add --no-cache python-3.13 chromium ttf-dejavu font-noto-emoji fontconfig \
-    && apk add --no-cache --virtual .install py3.13-pip \
-    && python3 -m pip install --no-cache-dir --only-binary=:all: --require-hashes \
-       --target /usr/lib/python3.13/site-packages -r /opt/maf-document-export/requirements.txt \
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends python3 python3-pip /tmp/chrome.deb fonts-dejavu-core fonts-noto-color-emoji fontconfig \
+    && python3 -m pip install --break-system-packages --no-cache-dir --only-binary=:all: --require-hashes \
+       -r /opt/maf-document-export/requirements.txt \
     && python3 /opt/maf-document-export/install.py \
-    && apk del --no-cache .install \
+    && ln -s /usr/bin/google-chrome-stable /usr/bin/chromium \
+    && rm -rf /var/lib/apt/lists/* /tmp/chrome.deb \
     && fc-cache -f \
     && mkdir -p /maf-sandbox/work
 COPY render.py /opt/maf-document-export/render.py
 COPY DEJAVU-LICENSE NOTO-EMOJI-LICENSE /usr/share/licenses/maf-document-export/
 
 FROM assembled AS flattened
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Read the image snapshot rather than the build container's runtime device mounts.
 RUN --mount=type=bind,from=assembled,target=/source \
     set -o pipefail && mkdir /rootfs \

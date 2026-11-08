@@ -139,6 +139,7 @@ def test_native_minor_updates_do_not_widen_image_compatibility_lines():
         "drawio-export/Dockerfile",
         "graphviz-sandbox/Dockerfile",
         "document-sandbox/Dockerfile",
+        "document-export/Dockerfile",
         "shell-sandbox/Dockerfile",
         "terraform-sandbox/Dockerfile",
     ],

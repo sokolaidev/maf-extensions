@@ -208,6 +208,58 @@ def test_unexpected_image_is_scanned_and_retained_until_its_own_confirmed_absenc
     )
 
 
+def test_missing_browser_inventory_is_isolated_without_runtime_evidence(
+    monkeypatch, tmp_path, monitor_context
+):
+    document = CANDIDATE | {"profile": "document-export"}
+    shell = CANDIDATE | {"profile": "shell"}
+    monitor_context.catalogue = reserve(reserve(empty_catalogue(), document, AT), shell, AT)
+    published = []
+    monkeypatch.setattr(
+        monitor,
+        "Evidence",
+        lambda: SimpleNamespace(
+            ensure=lambda *a: {}, retain=lambda *a: None, publish=lambda *a: published.append(a)
+        ),
+    )
+    monkeypatch.setattr(monitor, "anonymous_pull", lambda candidate: candidate["imageId"])
+    monkeypatch.setattr(monitor.subprocess, "run", lambda *a, **k: None)
+    scanned = []
+
+    def assess(directory, image_id, **kwargs):
+        assert not (directory / "runtime.json").exists()
+        scanned.append(directory.name)
+        report = scan_report()
+        result = scan_result(report, image_id, DONE)
+        write(directory / "grype.json", report)
+        write(directory / "assessment.json", result)
+        write(
+            directory / "sbom.syft.json",
+            {
+                "artifacts": [{"name": "python"}],
+                "source": {"type": "image", "metadata": {"imageID": image_id}},
+            },
+        )
+        return result
+
+    monkeypatch.setattr(monitor, "assess", assess)
+    monitor.begin(tmp_path)
+    monkeypatch.setattr(monitor, "now", lambda: DONE)
+    monitor.scan(tmp_path, 0)
+    assert scanned == ["document-export-0.1.0", "shell-0.1.0"]
+    observation = read(tmp_path / "reports/document-export-0.1.0/observation.json")
+    assert observation["assessment"]["outcome"] == "unavailable"
+    assert observation["assessment"]["diagnostic"]["stage"] == "application inventory validation"
+    monitor.finish(tmp_path)
+    assert published
+    releases = monitor_context.catalogue["releases"]
+    assert releases["document-export/0.1.0"]["latestAttempt"]["outcome"] == "unavailable"
+    assert releases["shell/0.1.0"]["latestAttempt"]["outcome"] == "clean"
+    with zipfile.ZipFile(tmp_path / "retained/reports-0000.zip") as archive:
+        assert "document-export-0.1.0/observation.json" in archive.namelist()
+        assert "shell-0.1.0/observation.json" in archive.namelist()
+
+
 def test_failed_registry_discovery_cannot_report_clean(monkeypatch, tmp_path, monitor_context):
     def unavailable(*args):
         raise TimeoutError("registry unavailable")
@@ -438,6 +490,7 @@ def test_monitor_keeps_historical_scans_and_warns_without_failing_current_health
         assessment = scan_result(raw, selected["imageId"], DONE)
         write(root / "grype.json", raw)
         write(root / "assessment.json", assessment)
+        write(root / "sbom.raw.syft.json", {"raw": "original inventory"})
         write(
             root / "sbom.syft.json",
             {
@@ -460,6 +513,10 @@ def test_monitor_keeps_historical_scans_and_warns_without_failing_current_health
     monkeypatch.setattr(monitor, "now", lambda: DONE)
     monitor.finish(tmp_path)
     assert emitted[-1]["attention"] == str(missing_history).lower()
+    with zipfile.ZipFile(tmp_path / "retained/reports-0000.zip") as archive:
+        assert json.loads(archive.read("bicep-0.1.1/sbom.raw.syft.json")) == {
+            "raw": "original inventory"
+        }
     assert emitted[-1]["historical_warnings"] == "1"
     notification = json.loads(emitted[-1]["notification"])
     assert notification["attention"] is missing_history
@@ -953,20 +1010,32 @@ def test_registry_negotiation_retains_existing_manifest_bytes(
     assert registry.manifest(profile, reference, authenticated=authenticated) == raw
 
 
-def test_freshness_refresh_preserves_approval_reports_and_uses_same_image(monkeypatch, tmp_path):
+@pytest.mark.parametrize("browser_inventory", [False, True])
+def test_freshness_refresh_preserves_approval_reports_and_uses_same_image(
+    monkeypatch, tmp_path, browser_inventory
+):
     raw = scan_report()
     write(tmp_path / "grype.json", raw)
     write(tmp_path / "assessment.json", scan_result(raw, CANDIDATE["imageId"], AT))
     for name in ("grype.yaml", "sbom.syft.json", "sbom.spdx.json"):
         write(tmp_path / name, {})
+    if browser_inventory:
+        write(tmp_path / "sbom.raw.syft.json", {"original": "browser package inventory"})
     before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
     calls = []
     monkeypatch.setattr(registry, "now", lambda: LATER)
-    monkeypatch.setattr(registry, "assess", lambda directory, image: calls.append(image))
+
+    def refresh(directory, image):
+        calls.append(image)
+        for name in before:
+            write(directory / name, {"refreshed": name})
+
+    monkeypatch.setattr(registry, "assess", refresh)
     registry.fresh_assessment(tmp_path, CANDIDATE)
     assert calls == [CANDIDATE["imageId"]]
     for name, raw_bytes in before.items():
         assert (tmp_path / f"approval-{name}").read_bytes() == raw_bytes
+        assert read(tmp_path / name) == {"refreshed": name}
 
 
 @pytest.mark.parametrize("severity", ["High", "Critical"])

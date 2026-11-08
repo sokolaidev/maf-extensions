@@ -131,6 +131,10 @@ def fresh_assessment(directory: Path, candidate: dict[str, Any]) -> None:
             preserved = directory / f"approval-{name}"
             if not preserved.exists():
                 shutil.copyfile(directory / name, preserved)
+        raw_inventory = directory / "sbom.raw.syft.json"
+        approved_raw = directory / "approval-sbom.raw.syft.json"
+        if raw_inventory.exists() and not approved_raw.exists():
+            shutil.copyfile(raw_inventory, approved_raw)
         assess(directory, candidate["imageId"])
 
 

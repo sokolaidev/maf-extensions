@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import chrome_inventory
+
 PROVIDER_MANIFESTS = {
     "terraform-random": "dependencies.terraform.json",
     "opentofu-random": "dependencies.opentofu.json",
@@ -74,7 +76,9 @@ def verify_providers(sbom: dict[str, Any], manifest: dict[str, Any]) -> None:
 
 
 def verify_profile_inventory(sbom: dict[str, Any], profile: str) -> None:
-    """Require the profile's compiler packages or reviewed provider inventory."""
+    """Require the selected profile's application inventory in addition to OS packages."""
+    if profile == "document-export" and chrome_inventory.component(sbom) is None:
+        raise ValueError("Document export inventory omits Google Chrome")
     if profile in {"bicep", "bicep-avm", "bicep-docker-sbx"}:
         from bicep_source import verify_crypto_inventory
 
@@ -113,6 +117,7 @@ def verify_inventory(sbom: dict[str, Any], image_id: str) -> None:
     source = sbom["source"]
     if source["type"] != "image" or source["metadata"]["imageID"] != image_id:
         raise ValueError("Inventory does not identify the built image")
+    chrome_inventory.verify(sbom)
 
 
 def main() -> None:
@@ -124,6 +129,7 @@ def main() -> None:
     directory = args.directory
     if args.verify_inventory:
         evidence = json.loads((directory / "build.json").read_text())
+        chrome_inventory.retain(directory)
         sbom = json.loads((directory / "sbom.syft.json").read_text())
         verify_inventory(sbom, evidence["local_image_id"])
         verify_profile_inventory(sbom, evidence["profile"])
