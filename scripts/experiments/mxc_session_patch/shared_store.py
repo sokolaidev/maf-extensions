@@ -213,7 +213,12 @@ class SharedStore:
             if (self.root / "state.sqlite").exists() and not existed:
                 raise Refused("legacy store requires explicit migration")
             _check_rollback_format(path)
-            self.db = sqlite3.connect(path, timeout=0, isolation_level=None)
+            self.db = sqlite3.connect(
+                path.as_uri() + "?mode=rw" if existing_only else path,
+                uri=existing_only,
+                timeout=0,
+                isolation_level=None,
+            )
             self.db.row_factory = sqlite3.Row
             try:
                 self.db.execute("PRAGMA journal_mode=DELETE")
@@ -305,7 +310,7 @@ class SharedStore:
                         raise Refused("session profile or quota configuration differs")
             except BaseException as error:
                 self.db.close()
-                if not existed and path.stat().st_size == 0:
+                if not existing_only and not existed and path.stat().st_size == 0:
                     path.unlink()
                 if isinstance(error, sqlite3.DatabaseError):
                     raise Refused("unsupported or corrupt store format") from error

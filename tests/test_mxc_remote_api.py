@@ -52,6 +52,7 @@ def direct(db, operation, **arguments):
 
 @contextmanager
 def coordinator(root, **kwargs):
+    kwargs.setdefault("initialize", not root.exists())
     db = api.Coordinator(root, {FINGERPRINT: GRANT}, {"session": SESSION}, enabled=True, **kwargs)
     try:
         yield db
@@ -75,6 +76,102 @@ def start(db):
         "result": None
     }
     return owner
+
+
+@pytest.mark.parametrize("journal", ["ownership/authority.sqlite", "publication/shared.sqlite"])
+@pytest.mark.parametrize("damage", ["missing", "empty", "corrupt"])
+def test_restart_refuses_lost_coordinator_journal(tmp_path, journal, damage):
+    root = tmp_path / "db"
+    with coordinator(root, scratch_policy=SCRATCH) as db:
+        owner, receipt = scratch_begin(db)
+        direct(db, "publish", **publication(owner))
+        with db.authority() as authority:
+            authority.request_fence(authority._decode_owner(owner), "stop")
+    path = root / journal
+    saved = path.read_bytes()
+    if damage == "missing":
+        path.unlink()
+    else:
+        path.write_bytes(b"" if damage == "empty" else b"corrupt")
+    damaged = path.read_bytes() if path.exists() else None
+    with pytest.raises(api.Refused):
+        with coordinator(root, scratch_policy=SCRATCH):
+            pytest.fail("lost coordinator journal was accepted")
+    assert (path.read_bytes() if path.exists() else None) == damaged
+    path.write_bytes(saved)
+    with coordinator(root, scratch_policy=SCRATCH) as db:
+        assert db.pending_scratch() == [receipt]
+        with pytest.raises(api.Refused, match="not confirmed"):
+            direct(db, "acquire", guest="replacement")
+        with db.authority() as authority:
+            authority.confirm_fence("stop", lambda _: True)
+        replacement = direct(db, "acquire", guest="replacement")["owner"]
+        assert direct(db, "retry", owner=replacement, call="call", request=encoded(b"code")) == {
+            "result": encoded(b"result")
+        }
+        assert direct(db, "restore", owner=replacement)["files"] == {
+            "index.json": encoded(b"checkpoint")
+        }
+
+
+def test_startup_requires_provisioning_and_never_reinitializes_existing_root(tmp_path):
+    root = tmp_path / "db"
+    with pytest.raises(api.Refused, match="existing coordinator root"):
+        with coordinator(root, initialize=False):
+            pass
+    assert not root.exists()
+    with coordinator(root, initialize=True) as db:
+        owner = start(db)
+        direct(db, "publish", **publication(owner))
+    with pytest.raises(api.Refused, match="empty root"):
+        with coordinator(root, initialize=True):
+            pass
+    with coordinator(root, initialize=False) as db:
+        assert direct(db, "acquire", guest="guest-a")["owner"] == owner
+        assert direct(db, "retry", owner=owner, call="call", request=encoded(b"code")) == {
+            "result": encoded(b"result")
+        }
+    displaced = tmp_path / "unavailable"
+    root.rename(displaced)
+    with pytest.raises(api.Refused, match="existing coordinator root"):
+        with coordinator(root, initialize=False):
+            pass
+    assert not root.exists()
+    displaced.rename(root)
+
+
+@pytest.mark.parametrize("initialize", [None, 0, 1, "true"])
+def test_initialization_requires_boolean_configuration(tmp_path, initialize):
+    with pytest.raises(api.Refused, match="explicit boolean"):
+        with coordinator(tmp_path / "db", initialize=initialize):
+            pass
+    assert not (tmp_path / "db").exists()
+
+
+def test_live_authority_loss_refuses_replacement_without_creating_journal(tmp_path):
+    with coordinator(tmp_path / "db", scratch_policy=SCRATCH) as db:
+        owner, receipt = scratch_begin(db)
+        path = db.root / "ownership/authority.sqlite"
+        saved = path.read_bytes()
+        path.unlink()
+        for _ in range(2):
+            with pytest.raises(api.Refused, match="existing coordinator journal"):
+                direct(db, "acquire", guest="replacement")
+            assert not path.exists()
+        path.write_bytes(saved)
+        assert db.pending_scratch() == [receipt]
+        assert direct(db, "acquire", guest="guest-a")["owner"] == owner
+
+
+def test_restart_refuses_missing_configured_session_and_releases_all_handles(tmp_path):
+    root = tmp_path / "db"
+    with coordinator(root):
+        pass
+    sessions = {"session": SESSION, "other": SESSION}
+    with pytest.raises(api.Refused, match="lacks this session"):
+        api.Coordinator(root, {FINGERPRINT: GRANT}, sessions, enabled=True)
+    with coordinator(root) as db:
+        start(db)
 
 
 @pytest.mark.parametrize("boundary", ["checkpoint_stored", "before_commit"])
@@ -304,7 +401,7 @@ grants = {k: Grant(v['host'], v['boot'], frozenset(v['sessions']), frozenset(v['
 sessions = {'session': Session(config['profile'], Limits(**config['limits']))}
 from scripts.experiments.mxc_session_patch.remote_scratch import Policy
 scratch = Policy(**config['scratch']) if config.get('scratch') else None
-coordinator = Coordinator(Path(config['root']), grants, sessions, enabled=True, boundary=boundary, scratch_policy=scratch)
+coordinator = Coordinator(Path(config['root']), grants, sessions, enabled=True, initialize=config['initialize'], boundary=boundary, scratch_policy=scratch)
 try:
     with Server(('127.0.0.1', 0), server_context(certs/'server.pem', certs/'server.key', certs/'ca.pem'), coordinator) as server:
         Path(config['ready'] + '.tmp').write_text(str(server.server_address[1]))
@@ -354,6 +451,7 @@ def running(
         json.dumps(
             {
                 "root": str(root / "service"),
+                "initialize": not (root / "service").exists(),
                 "certificates": str(certs),
                 "ready": str(ready),
                 "crash": crash,
@@ -639,7 +737,10 @@ def test_acquisition_does_not_accept_worker_identity_claims(tmp_path, field):
     with coordinator(tmp_path / "db") as db:
         with pytest.raises(api.Refused, match="fields"):
             direct(db, "acquire", **{"guest": "guest", field: "worker-supplied"})
-        assert not db.stores
+        with db.authority() as authority:
+            assert authority.db.execute("SELECT count(*) FROM sessions").fetchone()[0] == 0
+        store = db.stores["session"][1]
+        assert store.db.execute("SELECT count(*) FROM calls").fetchone()[0] == 0
 
 
 def test_request_limit_refuses_before_admission(tmp_path):
@@ -1231,6 +1332,7 @@ def test_remote_scratch_budget_is_shared_across_sessions(tmp_path):
         {FINGERPRINT: grant},
         {"session": SESSION, "other": SESSION},
         enabled=True,
+        initialize=True,
         scratch_policy=SCRATCH,
     )
     try:
@@ -1541,6 +1643,7 @@ def native_coordinator(root, host):
         {FINGERPRINT: GRANT},
         {"session": host.config},
         enabled=True,
+        initialize=not root.exists(),
         scratch_policy=host.scratch,
     )
 

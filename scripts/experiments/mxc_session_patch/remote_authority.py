@@ -90,6 +90,7 @@ class Authority:
         policy: Policy = Policy(),
         capacity: int = 4096,
         scratch_policy: remote_scratch.Policy | None = None,
+        existing_only: bool = False,
     ):
         if enabled is not True:
             raise Refused("remote coordinator requires explicit opt-in")
@@ -99,11 +100,13 @@ class Authority:
         self.policy = policy
         self.capacity = capacity
         try:
-            self._initialize(root)
+            self._initialize(root, existing_only=existing_only)
         except (OSError, sqlite3.Error) as error:
             raise Refused("coordinator storage unavailable or corrupt") from error
 
-    def _initialize(self, root: Path) -> None:
+    def _initialize(self, root: Path, *, existing_only: bool) -> None:
+        if existing_only and not (root / "authority.sqlite").is_file():
+            raise Refused("existing coordinator journal is unavailable")
         prepare(root)
         self.root = root.resolve()
         if any((self.root / name).exists() for name in ("shared.sqlite", "state.sqlite")):
@@ -118,7 +121,12 @@ class Authority:
             for suffix in ("", "-journal", "-wal", "-shm"):
                 check_file(Path(str(path) + suffix))
             _check_rollback_format(path)
-            self.db = sqlite3.connect(path, timeout=0, isolation_level=None)
+            self.db = sqlite3.connect(
+                path.as_uri() + "?mode=rw" if existing_only else path,
+                uri=existing_only,
+                timeout=0,
+                isolation_level=None,
+            )
             self.db.row_factory = sqlite3.Row
             try:
                 self.db.execute("PRAGMA journal_mode=DELETE")
@@ -132,6 +140,8 @@ class Authority:
                     raise Refused("coordinator database ceiling unavailable")
                 with self._transaction():
                     if self.db.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchone() is None:
+                        if existing_only:
+                            raise Refused("existing coordinator journal is empty")
                         for statement in {
                             **_SCHEMA,
                             **(remote_scratch.SCHEMA if self.scratch_policy else {}),
