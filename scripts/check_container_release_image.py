@@ -264,24 +264,15 @@ def check(
         subprocess.run(
             ["docker", "rm", "--force", name], check=True, capture_output=True, timeout=30
         )
-    if profile in {
-        "bicep",
-        "bicep-avm",
-        "terraform-avm",
-        "opentofu-avm",
-        "opentofu-random",
-        "terraform-random",
-        "shell",
-    }:
-        remaining = subprocess.run(
-            ["docker", "ps", "--all", "--quiet", "--filter", f"name=^/{name}$"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        ).stdout.strip()
-        if remaining:
-            raise ValueError(f"{profile} qualification left its container behind")
+    remaining = subprocess.run(
+        ["docker", "ps", "--all", "--quiet", "--filter", f"name=^/{name}$"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    ).stdout.strip()
+    if remaining:
+        raise ValueError(f"{profile} qualification left its container behind")
     if profile == "shell":
         import shell_qualification
 
@@ -301,7 +292,8 @@ def check(
         "imageId": image_id,
         "profile": profile,
         "checkedAt": now(),
-        **({evidence_key: result, "containersRemaining": []} if result is not None else {}),
+        **({evidence_key: result} if result is not None else {}),
+        "containersRemaining": [],
         "kind": "offline-packaging",
         "passed": True,
         "liveDeploymentVerified": False,

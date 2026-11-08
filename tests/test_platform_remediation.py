@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -14,6 +15,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+import check_container_release_image as runtime  # noqa: E402
 import image_remediation_pr as publication  # noqa: E402
 import plan_platform_remediation as planner  # noqa: E402
 import platform_remediation as remediation  # noqa: E402
@@ -28,16 +30,20 @@ pytestmark = pytest.mark.workflow
 @pytest.fixture
 def checkout(tmp_path):
     root = tmp_path / "source"
-    for name in planner.inputs(ROOT):
+    copy_checkout(ROOT, root)
+    return root
+
+
+def copy_checkout(source, root):
+    for name in planner.inputs(source):
         target = root / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(ROOT / name, target)
+        shutil.copyfile(source / name, target)
     path = root / planner.NUGET
     text = path.read_text()
-    import re
-
     path.write_text(re.sub(r'(Include="MessagePack" Version=")[^"]+', r"\g<1>3.1.12", text))
-    return root
+    path = root / "images/antivirus-sandbox/Dockerfile"
+    path.write_text(re.sub(r"clamav-scanner=[^\s]+", "clamav-scanner=1.4.6-r0", path.read_text()))
 
 
 def dotnet():
@@ -148,6 +154,61 @@ def test_apk_pin_updates_every_build_consumed_occurrence(checkout, tmp_path):
     raw = files["images/antivirus-sandbox/Dockerfile"]
     assert raw.count(b"clamav-scanner=1.4.6-r1") == 2
     assert b"clamav-scanner=1.4.6-r0" not in raw
+
+
+def test_candidate_pin_changes_do_not_change_fixture_baselines(checkout, tmp_path):
+    paths = [
+        retained(tmp_path, [dotnet()], profile="bicep", name="bicep"),
+        retained(
+            tmp_path,
+            [apk("clamav-scanner", "1.4.6-r0", "1.4.6-r1", "alpine")],
+            profile="antivirus",
+            name="antivirus",
+        ),
+    ]
+    plan = planner.plan(checkout, paths)
+    for name, content in planner.proposal(checkout, plan).items():
+        (checkout / name).write_bytes(content)
+    copied = tmp_path / "candidate-fixture"
+    copy_checkout(checkout, copied)
+    replay = planner.plan(copied, paths)
+    assert {row["status"] for row in replay["findings"]} == {"update"}
+    assert replay["updates"] == plan["updates"]
+
+
+@pytest.mark.parametrize("failure", [None, "render", "remove", "survivor", "inspect"])
+def test_graphviz_runtime_requires_verified_cleanup(monkeypatch, tmp_path, failure):
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if (command[1] == "rm" and failure == "remove") or (
+            command[1] == "ps" and failure == "inspect"
+        ):
+            raise subprocess.CalledProcessError(1, command)
+        return subprocess.CompletedProcess(
+            command, 0, "container" if command[1] == "ps" and failure == "survivor" else ""
+        )
+
+    async def output(command):
+        if failure == "render":
+            raise ValueError("render failed")
+        return b""
+
+    monkeypatch.setattr(runtime.subprocess, "run", run)
+    monkeypatch.setattr(runtime, "_smoke_output", output)
+    if failure:
+        with pytest.raises((ValueError, subprocess.CalledProcessError)):
+            runtime.check("graphviz", IMAGE, tmp_path)
+    else:
+        result = runtime.check("graphviz", IMAGE, tmp_path)
+        assert result["passed"] is True
+        assert result["containersRemaining"] == []
+    create = commands[0]
+    name = create[create.index("--name") + 1]
+    assert ["docker", "rm", "--force", name] in commands
+    if failure not in {"render", "remove"}:
+        assert commands[-1] == ["docker", "ps", "--all", "--quiet", "--filter", f"name=^/{name}$"]
 
 
 @pytest.mark.parametrize(
