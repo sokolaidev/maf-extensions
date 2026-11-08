@@ -4,6 +4,8 @@ For the public `bicep` image, start with the [consumer guide](BICEP.md): content
 
 The base image uses digest-pinned Wolfi with a pinned Bicep CLI and a [`bicepconfig.json`](bicepconfig.json) at `/maf-sandbox/work`. The optional [prepared profile](#prepared-avm-profile) adds a verified module cache for closed-network validation. Neither runtime image carries agent code or Python; files to compile arrive at run time.
 
+Curl is a temporary download dependency and is removed with its unused dependencies before the upstream runtime image is assembled. Both build routes default to `LC_ALL=C`. The Bicep tool also pins that locale and unsets `LANGUAGE` and `LOCPATH` for every compiler phase so inherited settings cannot redirect native message-catalog loading. These controls do not replace glibc updates or vulnerability scanning.
+
 Both samples run this one image. [`samples/01_acas_bicep`](../../samples/01_acas_bicep/) boots it as a disk image in an Azure Container Apps sandbox group; [`samples/02_wslc_bicep`](../../samples/02_wslc_bicep/) runs it as a local container under `wslc`. Sharing it is deliberate: the two samples exist to show that only the backend changes, and they would not be comparable if each validated against a compiler of its own.
 
 ## What is in it

@@ -145,9 +145,10 @@ _WORK_DIR = "/maf-sandbox/work"
 # `.stdout` uniformly.  `bicep lint` emits SARIF on stdout natively.
 # Bicep writes its module cache under HOME and its profile under the temporary directory.
 # Compiled JSON must not overwrite the staged policy when a source is named bicepconfig.bicep.
+# Native diagnostics must not load message catalogs through inherited locale settings.
+_BICEP_ENV = 'unset LANGUAGE LOCPATH; LC_ALL=C HOME="$PWD" TMPDIR="$PWD" '
 _BUILD_CMD = (
-    'HOME="$PWD" TMPDIR="$PWD" bicep build {path} --diagnostics-format sarif '
-    "--outfile /dev/null 2>&1 || true"
+    _BICEP_ENV + "bicep build {path} --diagnostics-format sarif --outfile /dev/null 2>&1 || true"
 )
 
 # `.bicepparam` is a parameter file, not a template, and `bicep build` refuses it outright:
@@ -160,11 +161,11 @@ _BUILD_CMD = (
 # because only the diagnostics are wanted. `bicep lint` accepts both kinds, so only the
 # build half varies. All three behaviours were checked against the pinned CLI in the image.
 _BUILD_PARAMS_CMD = (
-    'HOME="$PWD" TMPDIR="$PWD" bicep build-params {path} --diagnostics-format sarif '
+    _BICEP_ENV + "bicep build-params {path} --diagnostics-format sarif "
     "--outfile /dev/null 2>&1 || true"
 )
 
-_LINT_CMD = 'HOME="$PWD" TMPDIR="$PWD" bicep lint {path} --diagnostics-format sarif || true'
+_LINT_CMD = _BICEP_ENV + "bicep lint {path} --diagnostics-format sarif || true"
 
 _PARAM_SUFFIX = ".bicepparam"
 _ACCEPTED_SUFFIXES = (".bicep", _PARAM_SUFFIX)
