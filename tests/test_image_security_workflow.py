@@ -120,29 +120,41 @@ def test_pr_findings_warn_while_operational_errors_and_non_pr_findings_still_fai
     assert "continue-on-error" not in job
     steps = job["steps"]
     assert not any("continue-on-error" in step for step in steps)
-    inventory = next(s for s in steps if s.get("uses", "").startswith("anchore/sbom-action@"))
-    scan = next(s for s in steps if s.get("uses", "").startswith("anchore/scan-action@"))
+    install = next(s for s in steps if s.get("name") == "Install pinned scanners")
+    inventory = next(s for s in steps if s.get("name") == "Inventory the exact built image")
+    scan = next(s for s in steps if s.get("name") == "Scan the retained inventory")
     upload = next(
         s
         for s in steps
         if s.get("uses", "").startswith("actions/upload-artifact@")
         and s.get("name") != "Retain provider preparation timings"
     )
-    assert inventory["with"]["image"] == "docker:${{ steps.identity.outputs.image_id }}"
-    assert scan["with"]["sbom"] == inventory["with"]["output-file"]
-    assert scan["with"]["severity-cutoff"] == "high"
-    assert scan["with"]["fail-build"] is False
+    assert install["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert "scripts/install_container_scanners.py" in install["run"]
+    assert steps.index(install) < steps.index(inventory) < steps.index(scan)
+    assert inventory["env"]["IMAGE_ID"] == "${{ steps.identity.outputs.image_id }}"
+    assert inventory["run"] == (
+        'syft scan "docker:$IMAGE_ID" -o "syft-json=$RUNNER_TEMP/image-security/sbom.syft.json"'
+    )
+    assert 'grype "sbom:$RUNNER_TEMP/image-security/sbom.syft.json"' in scan["run"]
+    assert '--output json --file "$RUNNER_TEMP/image-security/grype.json"' in scan["run"]
+    assert "--fail-on" not in scan["run"]
     gate = next(s for s in steps if s.get("name") == "Enforce image vulnerability applicability")
     assert gate["run"] == (
         'python3 scripts/assess_image_scan.py "$RUNNER_TEMP/image-security" '
         '--event "$GITHUB_EVENT_NAME"'
     )
     assert steps.index(scan) < steps.index(gate) < steps.index(upload)
-    assert scan["with"]["only-fixed"] is False
-    assert scan["with"]["config"]
+    assert "--only-fixed" not in scan["run"]
+    assert scan["run"].count('--config "$RUNNER_TEMP/image-security/grype.yaml"') == 2
+    assert scan["run"].startswith("grype db update ")
+    assert scan["env"] == {
+        "GRYPE_DB_AUTO_UPDATE": "true",
+        "GRYPE_DB_VALIDATE_AGE": "true",
+        "GRYPE_DB_VALIDATE_BY_HASH_ON_START": "true",
+    }
     assert upload["if"] == "always() && steps.identity.outcome == 'success'"
     assert upload["with"]["if-no-files-found"] == "error"
-    assert inventory["with"]["upload-release-assets"] is False
 
 
 def test_every_scan_profile_is_named_in_the_documented_scope():
@@ -241,6 +253,7 @@ def test_hyperlight_release_transition_defers_the_entire_scan_evidence_chain():
     evidence_steps.remove(remaining)
     assert {step["name"] for step in evidence_steps} == {
         "Record the immutable local image identity",
+        "Install pinned scanners",
         "Inventory the exact built image",
         "Verify inventory identity and component presence",
         "Scan the retained inventory",

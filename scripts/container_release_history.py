@@ -325,7 +325,7 @@ def catalogue_asset(assets: Any) -> dict[str, Any]:
     return assets[0]
 
 
-class _HistoryAdvanced(ValueError):
+class HistoryAdvanced(ValueError):
     """New committed records require a fresh, fully validated read."""
 
 
@@ -429,12 +429,12 @@ class History:
         return Snapshot(number, hashed, value, release["id"])
 
     def head(self) -> Snapshot | None:
-        """Read a validated head, retrying concurrent publication at most twice."""
+        """Retry concurrent publication twice, then raise HistoryAdvanced if it remains busy."""
         observed: dict[int, dict[str, Any]] = {}
         for delay in (1, 2):
             try:
                 return self._head_once(observed)
-            except _HistoryAdvanced:
+            except HistoryAdvanced:
                 time.sleep(delay)
         return self._head_once(observed)
 
@@ -488,7 +488,7 @@ class History:
             raise ValueError("Committed history tag identifies another source")
         checked = self._committed(observed)
         if checked.keys() != committed.keys():
-            raise _HistoryAdvanced("Security history advanced during retrieval")
+            raise HistoryAdvanced("Security history advanced during retrieval")
         return current
 
     def append(

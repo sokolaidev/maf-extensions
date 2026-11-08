@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import container_release_monitor as monitor  # noqa: E402
 import container_release_publish as publisher  # noqa: E402
 import container_release_registry as registry  # noqa: E402
+import install_container_scanners as scanners  # noqa: E402
 import prepare_container_release_dispatch as dispatcher  # noqa: E402
 from container_release import (  # noqa: E402
     abandon,
@@ -1231,6 +1232,89 @@ def test_scanner_install_authenticates_bytes_before_extracting_executable(kind):
     else:
         with pytest.raises(ValueError):
             executable(raw, "syft", expected)
+
+
+@pytest.mark.parametrize("token", ["GH_TOKEN", "GITHUB_TOKEN"])
+def test_scanner_api_download_uses_fixed_repository_and_bounded_asset(monkeypatch, token):
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv(token, "test-token")
+    release = {
+        "tag_name": "v1.54.0",
+        "assets": [{"id": 123, "name": "syft_1.54.0_linux_amd64.tar.gz", "size": 7}],
+    }
+
+    def metadata(command, *, timeout):
+        assert command == [
+            "gh",
+            "api",
+            "--hostname",
+            "github.com",
+            "repos/anchore/syft/releases/tags/v1.54.0",
+        ]
+        assert timeout == 120
+        return json.dumps(release).encode()
+
+    def asset(command, *, stdout, check, timeout):
+        assert command == [
+            "gh",
+            "api",
+            "--hostname",
+            "github.com",
+            "repos/anchore/syft/releases/assets/123",
+            "-H",
+            "Accept: application/octet-stream",
+        ]
+        assert check and timeout == 120
+        stdout.write(b"archive")
+
+    monkeypatch.setattr(scanners.subprocess, "check_output", metadata)
+    monkeypatch.setattr(scanners.subprocess, "run", asset)
+    assert scanners.download("syft", "1.54.0") == b"archive"
+
+
+@pytest.mark.parametrize("kind", ["tag", "missing", "duplicate", "id", "size", "truncated", "http"])
+def test_scanner_api_download_rejects_invalid_assets(monkeypatch, kind):
+    monkeypatch.setenv("GH_TOKEN", "test-token")
+    asset = {"id": 123, "name": "syft_1.54.0_linux_amd64.tar.gz", "size": 7}
+    release = {"tag_name": "v1.54.0", "assets": [asset]}
+    if kind == "tag":
+        release["tag_name"] = "v0.0.0"
+    elif kind == "missing":
+        release["assets"] = []
+    elif kind == "duplicate":
+        release["assets"] = [asset, asset]
+    elif kind == "id":
+        asset["id"] = "https://example.com"
+    elif kind == "size":
+        asset["size"] = scanners.LIMIT + 1
+
+    def download_asset(command, *, stdout, check, timeout):
+        assert kind in {"truncated", "http"}
+        if kind == "http":
+            raise subprocess.CalledProcessError(1, command)
+        stdout.write(b"short")
+
+    monkeypatch.setattr(scanners.subprocess, "check_output", lambda *a, **kw: json.dumps(release))
+    monkeypatch.setattr(scanners.subprocess, "run", download_asset)
+    with pytest.raises(subprocess.CalledProcessError if kind == "http" else ValueError):
+        scanners.download("syft", "1.54.0")
+
+
+def test_scanner_public_download_remains_bounded_without_credentials(monkeypatch):
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    def public(url, *, timeout):
+        assert url == (
+            "https://github.com/anchore/syft/releases/download/v1.54.0/"
+            "syft_1.54.0_linux_amd64.tar.gz"
+        )
+        assert timeout == 120
+        return io.BytesIO(b"archive")
+
+    monkeypatch.setattr(scanners.urllib.request, "urlopen", public)
+    assert scanners.download("syft", "1.54.0") == b"archive"
 
 
 def test_empty_pages_export_has_no_security_success_claim(tmp_path):

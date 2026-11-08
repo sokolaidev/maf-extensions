@@ -23,7 +23,7 @@ import image_remediation_pr as publication  # noqa: E402
 import plan_go_remediation as planner  # noqa: E402
 import prepare_go_remediation as preparation  # noqa: E402
 from container_release import REPOSITORY, read, scan_result, write  # noqa: E402
-from container_release_history import encode  # noqa: E402
+from container_release_history import History, HistoryAdvanced, encode  # noqa: E402
 from test_go_remediation import (  # noqa: E402
     AT,
     IMAGE,
@@ -601,8 +601,125 @@ def test_failed_monitor_requires_verified_delivery(current_state):
         acquisition.monitor_source(acquisition.GitHub(), monitor)
 
 
+@pytest.mark.parametrize("status", ["queued", "in_progress", "pending", "requested", "waiting"])
+def test_unfinished_monitor_defers_acquisition(current_state, status):
+    monitor = {**current_state["monitor"], "status": status, "conclusion": None}
+    with pytest.raises(acquisition.EvidenceChanging, match="running or queued"):
+        acquisition.monitor_source(acquisition.GitHub(), monitor)
+
+
+@pytest.mark.parametrize("change", ["catalogue", "monitor"])
+def test_changed_snapshot_is_retryable_but_cannot_pass_freshness(current_state, change):
+    receipt = copy.deepcopy(current_state)
+    receipt[change] = {}
+    with pytest.raises(acquisition.EvidenceChanging):
+        acquisition.current(acquisition.GitHub(), receipt)
+
+
+@pytest.mark.parametrize("recover", [True, False])
+def test_acquisition_retry_discards_partial_inputs(tmp_path, monkeypatch, recover):
+    work = tmp_path / "work"
+    attempts = []
+    sleeps = []
+
+    def acquire(client, root, directory):
+        attempts.append(directory)
+        assert not directory.exists()
+        if len(attempts) < 3 or not recover:
+            write(directory / "evidence/partial.json", {"stale": True})
+            raise acquisition.EvidenceChanging("Release history changed during remediation")
+        write(directory / "receipt.json", {"source": SOURCE})
+        write(directory / "plan.json", {"updates": []})
+        write(directory / "evidence/current.json", {"stale": False})
+        return {"updates": []}
+
+    monkeypatch.setattr(acquisition, "acquire", acquire)
+    monkeypatch.setattr(acquisition.time, "sleep", sleeps.append)
+    result = acquisition.acquire_with_retry(acquisition.GitHub(), tmp_path, work)
+    assert sleeps == [30, 30] and len(set(attempts)) == 3
+    assert not (work / "evidence/partial.json").exists()
+    if recover:
+        assert result == {"updates": []}
+        assert read(work / "receipt.json")["source"] == SOURCE
+        assert read(work / "evidence/current.json") == {"stale": False}
+    else:
+        assert result is None
+        assert not (work / "receipt.json").exists()
+        assert not (work / "plan.json").exists()
+    assert read(work / "attempts/1/deferred.json")["attempt"] == 1
+
+
 @pytest.mark.parametrize(
-    "mutation", ["none", "stale", "digest", "unavailable", "observation", "signature"]
+    "error",
+    [
+        ValueError("Invalid provenance"),
+        ValueError("No verified delivery"),
+        ValueError("Security history changed during retrieval"),
+        OSError("API failed"),
+    ],
+)
+def test_acquisition_does_not_retry_invalid_or_unavailable_evidence(tmp_path, monkeypatch, error):
+    calls = []
+
+    def fail(*args):
+        calls.append(args)
+        raise error
+
+    monkeypatch.setattr(acquisition, "acquire", fail)
+    monkeypatch.setattr(acquisition.time, "sleep", lambda _: pytest.fail("Unexpected retry"))
+    with pytest.raises(type(error), match=str(error)):
+        acquisition.acquire_with_retry(acquisition.GitHub(), tmp_path, tmp_path / "work")
+    assert len(calls) == 1
+
+
+def test_deferred_cli_emits_no_build_or_source_outputs(tmp_path, monkeypatch):
+    work, output, summary = (tmp_path / name for name in ("work", "output", "summary"))
+    monkeypatch.setattr(remediation, "acquire", lambda *_: None)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr(sys, "argv", ["remediation", "acquire", "--work", str(work)])
+    remediation.main()
+    assert output.read_text().splitlines() == ["status=deferred", "updates=false", "providers=[]"]
+    assert read(work / "acquisition.json")["status"] == "deferred"
+    assert "retries automatically" in summary.read_text()
+
+
+@pytest.mark.parametrize("sufficient", [True, False])
+def test_no_update_summary_preserves_publication_and_residual_findings(
+    tmp_path, monkeypatch, sufficient
+):
+    summary = tmp_path / "summary"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    result = {
+        "updates": [],
+        "findings": [{"decisions": [{"status": "unsupported-component"}]}],
+    }
+    if sufficient:
+        result["findings"].append({"decisions": [{"status": "override-already-sufficient"}]})
+    before = copy.deepcopy(result)
+    status = remediation.acquisition_summary(tmp_path, result)
+    assert status == ("source-already-fixed" if sufficient else "no-supported-updates")
+    assert "unsupported components" in summary.read_text()
+    if sufficient:
+        assert "publication and fresh monitoring remain pending" in summary.read_text()
+    assert result == before
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "none",
+        "race",
+        "stale",
+        "digest",
+        "unavailable",
+        "observation",
+        "signature",
+        "history-acquire",
+        "history-current",
+        "history-acquire-busy",
+        "history-current-busy",
+    ],
 )
 def test_acquisition_binds_release_catalogue_and_monitor(
     checkout, tmp_path, current_state, monkeypatch, mutation
@@ -627,7 +744,31 @@ def test_acquisition_binds_release_catalogue_and_monitor(
     name = "terraform-random-0.2.3"
     catalogue = {"current": {"terraform-random": name}, "releases": {name: record}}
     snapshot = SimpleNamespace(reference=current_state["catalogue"], catalogue=catalogue)
-    monkeypatch.setattr(acquisition, "History", lambda _: SimpleNamespace(head=lambda: snapshot))
+    snapshots = []
+    sleeps = []
+
+    def head():
+        snapshots.append(None)
+        call = len(snapshots)
+        if (
+            mutation == "history-acquire"
+            and call <= 3
+            or mutation == "history-current"
+            and 2 <= call <= 4
+            or mutation == "history-acquire-busy"
+            or mutation == "history-current-busy"
+            and call % 4 != 1
+        ):
+            raise HistoryAdvanced("Security history advanced during retrieval")
+        if mutation == "race" and len(snapshots) > 1:
+            return SimpleNamespace(reference={"sequence": 2}, catalogue=catalogue)
+        return snapshot
+
+    monkeypatch.setattr(acquisition, "History", lambda _: SimpleNamespace(head=head))
+    if mutation.startswith("history-"):
+        monkeypatch.setattr(acquisition, "History", History)
+        monkeypatch.setattr(History, "_head_once", lambda *_: head())
+    monkeypatch.setattr(acquisition.time, "sleep", sleeps.append)
     monkeypatch.setattr(acquisition, "PROVIDER_MANIFESTS", {"terraform-random": "unused"})
     monkeypatch.setattr(acquisition, "git", lambda *_: SOURCE)
     monkeypatch.setattr(acquisition, "monitor_source", lambda *_: SOURCE)
@@ -644,10 +785,32 @@ def test_acquisition_binds_release_catalogue_and_monitor(
         "restore_monitor",
         lambda client, monitor, source, targets, directory: shutil.copytree(seed, directory / name),
     )
-    if mutation == "none":
-        result = acquisition.acquire(acquisition.GitHub(), checkout, tmp_path / "acquired")
-        assert result["updates"] and verified == [name]
+    if mutation.endswith("-busy"):
+        work = tmp_path / "acquired"
+        assert acquisition.acquire_with_retry(acquisition.GitHub(), checkout, work) is None
+        assert sleeps == [1, 2, 30, 1, 2, 30, 1, 2]
+        assert len(snapshots) == (9 if mutation == "history-acquire-busy" else 12)
+        assert verified == ([] if mutation == "history-acquire-busy" else [name] * 3)
+        assert not (work / "plan.json").exists()
+        assert not (work / "receipt.json").exists()
+        for attempt_number in range(1, 4):
+            assert (
+                "history advanced"
+                in read(work / "attempts" / str(attempt_number) / "deferred.json")["reason"]
+            )
+    elif mutation in {"none", "race", "history-acquire", "history-current"}:
+        result = acquisition.acquire_with_retry(
+            acquisition.GitHub(), checkout, tmp_path / "acquired"
+        )
+        assert result is not None and result["updates"]
+        assert verified == [name] * (2 if mutation in {"race", "history-current"} else 1)
+        if mutation.startswith("history-"):
+            assert sleeps == [1, 2, 30]
+            assert len(snapshots) == (5 if mutation == "history-acquire" else 6)
         assert read(tmp_path / "acquired/receipt.json")["oldestAssessment"] == AT
+        assert read(tmp_path / "acquired/receipt.json")["catalogue"]["sequence"] == (
+            2 if mutation == "race" else 1
+        )
     else:
         with pytest.raises(ValueError):
             acquisition.acquire(acquisition.GitHub(), checkout, tmp_path / "acquired")
