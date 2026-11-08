@@ -822,7 +822,6 @@ def _network_present(name: str) -> bool:
 
 @pytest.mark.skipif(
     not _PROXY_IMAGE,
-    # `curl` has to be in the *image*, which we cannot check from here; the Bicep sandbox has it.
     reason="needs MAF_SANDBOX_WSLC_E2E_PROXY_IMAGE naming a built proxy image (and curl in the image)",
 )
 class TestAllowlistEgress:
@@ -830,7 +829,7 @@ class TestAllowlistEgress:
 
     This exercises the topology the offline tests only assert the command lines for — an
     internal network with no route out except through a filtering proxy — so it needs a real
-    ``wslc`` and an image with ``curl`` (the Bicep sandbox image has one).
+    ``wslc`` and an image with ``curl``.
     """
 
     def _config(self) -> WslcSandboxConfig:
