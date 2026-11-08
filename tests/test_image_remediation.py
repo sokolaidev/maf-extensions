@@ -23,7 +23,7 @@ import image_remediation_pr as publication  # noqa: E402
 import plan_go_remediation as planner  # noqa: E402
 import prepare_go_remediation as preparation  # noqa: E402
 from container_release import REPOSITORY, read, scan_result, write  # noqa: E402
-from container_release_history import encode  # noqa: E402
+from container_release_history import History, HistoryAdvanced, encode  # noqa: E402
 from test_go_remediation import (  # noqa: E402
     AT,
     IMAGE,
@@ -651,7 +651,12 @@ def test_acquisition_retry_discards_partial_inputs(tmp_path, monkeypatch, recove
 
 @pytest.mark.parametrize(
     "error",
-    [ValueError("Invalid provenance"), ValueError("No verified delivery"), OSError("API failed")],
+    [
+        ValueError("Invalid provenance"),
+        ValueError("No verified delivery"),
+        ValueError("Security history changed during retrieval"),
+        OSError("API failed"),
+    ],
 )
 def test_acquisition_does_not_retry_invalid_or_unavailable_evidence(tmp_path, monkeypatch, error):
     calls = []
@@ -701,7 +706,20 @@ def test_no_update_summary_preserves_publication_and_residual_findings(
 
 
 @pytest.mark.parametrize(
-    "mutation", ["none", "race", "stale", "digest", "unavailable", "observation", "signature"]
+    "mutation",
+    [
+        "none",
+        "race",
+        "stale",
+        "digest",
+        "unavailable",
+        "observation",
+        "signature",
+        "history-acquire",
+        "history-current",
+        "history-acquire-busy",
+        "history-current-busy",
+    ],
 )
 def test_acquisition_binds_release_catalogue_and_monitor(
     checkout, tmp_path, current_state, monkeypatch, mutation
@@ -727,15 +745,30 @@ def test_acquisition_binds_release_catalogue_and_monitor(
     catalogue = {"current": {"terraform-random": name}, "releases": {name: record}}
     snapshot = SimpleNamespace(reference=current_state["catalogue"], catalogue=catalogue)
     snapshots = []
+    sleeps = []
 
     def head():
         snapshots.append(None)
+        call = len(snapshots)
+        if (
+            mutation == "history-acquire"
+            and call <= 3
+            or mutation == "history-current"
+            and 2 <= call <= 4
+            or mutation == "history-acquire-busy"
+            or mutation == "history-current-busy"
+            and call % 4 != 1
+        ):
+            raise HistoryAdvanced("Security history advanced during retrieval")
         if mutation == "race" and len(snapshots) > 1:
             return SimpleNamespace(reference={"sequence": 2}, catalogue=catalogue)
         return snapshot
 
     monkeypatch.setattr(acquisition, "History", lambda _: SimpleNamespace(head=head))
-    monkeypatch.setattr(acquisition.time, "sleep", lambda _: None)
+    if mutation.startswith("history-"):
+        monkeypatch.setattr(acquisition, "History", History)
+        monkeypatch.setattr(History, "_head_once", lambda *_: head())
+    monkeypatch.setattr(acquisition.time, "sleep", sleeps.append)
     monkeypatch.setattr(acquisition, "PROVIDER_MANIFESTS", {"terraform-random": "unused"})
     monkeypatch.setattr(acquisition, "git", lambda *_: SOURCE)
     monkeypatch.setattr(acquisition, "monitor_source", lambda *_: SOURCE)
@@ -752,12 +785,28 @@ def test_acquisition_binds_release_catalogue_and_monitor(
         "restore_monitor",
         lambda client, monitor, source, targets, directory: shutil.copytree(seed, directory / name),
     )
-    if mutation in {"none", "race"}:
+    if mutation.endswith("-busy"):
+        work = tmp_path / "acquired"
+        assert acquisition.acquire_with_retry(acquisition.GitHub(), checkout, work) is None
+        assert sleeps == [1, 2, 30, 1, 2, 30, 1, 2]
+        assert len(snapshots) == (9 if mutation == "history-acquire-busy" else 12)
+        assert verified == ([] if mutation == "history-acquire-busy" else [name] * 3)
+        assert not (work / "plan.json").exists()
+        assert not (work / "receipt.json").exists()
+        for attempt_number in range(1, 4):
+            assert (
+                "history advanced"
+                in read(work / "attempts" / str(attempt_number) / "deferred.json")["reason"]
+            )
+    elif mutation in {"none", "race", "history-acquire", "history-current"}:
         result = acquisition.acquire_with_retry(
             acquisition.GitHub(), checkout, tmp_path / "acquired"
         )
         assert result is not None and result["updates"]
-        assert verified == [name] * (2 if mutation == "race" else 1)
+        assert verified == [name] * (2 if mutation in {"race", "history-current"} else 1)
+        if mutation.startswith("history-"):
+            assert sleeps == [1, 2, 30]
+            assert len(snapshots) == (5 if mutation == "history-acquire" else 6)
         assert read(tmp_path / "acquired/receipt.json")["oldestAssessment"] == AT
         assert read(tmp_path / "acquired/receipt.json")["catalogue"]["sequence"] == (
             2 if mutation == "race" else 1

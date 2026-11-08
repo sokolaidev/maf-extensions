@@ -28,6 +28,7 @@ from container_release_history import (  # noqa: E402
     TAG,
     GitHub,
     History,
+    HistoryAdvanced,
     decode,
     encode,
     sha256,
@@ -231,7 +232,7 @@ def test_head_retries_concurrent_publication_with_a_bound(monkeypatch, initial, 
     monkeypatch.setattr(gh, "releases", releases)
     monkeypatch.setattr("container_release_history.time.sleep", delays.append)
     if advances == 3:
-        with pytest.raises(ValueError, match="advanced during retrieval"):
+        with pytest.raises(HistoryAdvanced, match="advanced during retrieval"):
             history.head()
     else:
         head = history.head()

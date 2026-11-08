@@ -13,7 +13,7 @@ from typing import Any
 
 from container_release import REPOSITORY, digest, now, read, require_digest, timestamp, write
 from container_release_assets import Evidence
-from container_release_history import GitHub, History, decode, positive_id
+from container_release_history import GitHub, History, HistoryAdvanced, decode, positive_id
 from container_release_status import MONITOR, latest_monitor
 from image_release_needed import git, release_evidence
 from image_security_evidence import PROVIDER_MANIFESTS
@@ -252,7 +252,7 @@ def acquire_with_retry(client: GitHub, root: Path, directory: Path) -> dict[str,
         staging = directory / "attempts" / str(attempt)
         try:
             result = acquire(client, root, staging)
-        except EvidenceChanging as error:
+        except (EvidenceChanging, HistoryAdvanced) as error:
             write(staging / "deferred.json", {"attempt": attempt, "reason": str(error)})
             print(f"Acquisition attempt {attempt}/3 deferred: {error}", flush=True)
             if attempt < 3:
