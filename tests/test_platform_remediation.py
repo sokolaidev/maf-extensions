@@ -523,6 +523,169 @@ def test_publish_requires_an_actions_run_before_qualification(
     )
 
 
+@pytest.mark.parametrize("kind", ["bicep", "apk-pin", "apk-rebuild"])
+def test_scan_worker_artifacts_feed_complete_qualification(checkout, tmp_path, monkeypatch, kind):
+    profile, match = {
+        "bicep": ("bicep", dotnet()),
+        "apk-pin": ("antivirus", apk("clamav-scanner", "1.4.6-r0", "1.4.6-r1", "alpine")),
+        "apk-rebuild": ("graphviz", apk()),
+    }[kind]
+    work = tmp_path / "work"
+    evidence = retained(work / "evidence", [match], profile=profile)
+    expected = planner.plan(checkout, [evidence])
+    write(work / "receipt.json", {"source": SOURCE, "directories": [evidence.name]})
+    write(work / "plan.json", expected)
+    monkeypatch.setattr(remediation, "git", lambda *_: SOURCE)
+    monkeypatch.setenv("MAF_PROVIDER_BUILDS", "must-not-reach-platform-builds")
+    monkeypatch.setenv("BICEP_ROUTE", "upstream")
+    results = tmp_path / "results"
+    images = []
+    for variant in ("baseline", "candidate"):
+        for profile in expected["affectedProfiles"]:
+            worker = tmp_path / f"{variant}-{profile}"
+            copy_checkout(checkout, worker)
+            image = f"sha256:{len(images) + 1:064x}"
+            images.append(image)
+            calls = []
+
+            def run(command, **kwargs):
+                calls.append(command)
+                if command[:2] == ["docker", "run"]:
+                    assert variant == "candidate"
+                    return subprocess.CompletedProcess(
+                        command, 0, f"verified:{command[-2]}={command[-1]}\n", ""
+                    )
+                assert command == ["bash", "scripts/build_scan_image.sh", profile]
+                assert kwargs["cwd"] == worker
+                assert kwargs["env"]["BICEP_ROUTE"] == ("source" if kind == "bicep" else "upstream")
+                assert "MAF_PROVIDER_BUILDS" not in kwargs["env"]
+                return subprocess.CompletedProcess(command, 0)
+
+            def inspect(command, **kwargs):
+                assert command == ["docker", "image", "inspect", "maf-image-scan:target"]
+                return json.dumps([{"Id": image, "Os": "linux", "Architecture": "amd64"}])
+
+            def runtime_check(selected, image_id, directory):
+                assert (selected, image_id) == (profile, image)
+                result = {"profile": selected, "imageId": image_id, "passed": True}
+                result[
+                    "sandboxesRemaining"
+                    if selected == "bicep-docker-sbx"
+                    else "containersRemaining"
+                ] = []
+                if kind == "bicep":
+                    result["bicepAvm" if selected == "bicep-avm" else "bicep"] = {
+                        "build": {
+                            "route": "source",
+                            **policy(worker / planner.BICEP / "source.json"),
+                        }
+                    }
+                return result
+
+            def assess(directory, image_id, *, require_clean):
+                assert image_id == image and require_clean is False
+                if kind == "bicep":
+                    packages = [
+                        {
+                            "id": name,
+                            "name": name,
+                            "type": "dotnet",
+                            "version": value,
+                            "locations": [{"path": "/usr/local/bin/bicep"}],
+                        }
+                        for name, value in policy(worker / planner.BICEP / "source.json")[
+                            "packages"
+                        ].items()
+                    ]
+                else:
+                    if kind == "apk-pin":
+                        pin = re.search(
+                            r"clamav-scanner=([^\s]+)",
+                            (worker / "images/antivirus-sandbox/Dockerfile").read_text(),
+                        )
+                        assert pin is not None
+                        installed = pin[1]
+                    else:
+                        installed = "2.43-r2" if variant == "candidate" else "2.43-r0"
+                    packages = [
+                        apk(
+                            match["artifact"]["name"],
+                            installed,
+                            vendor="alpine" if kind == "apk-pin" else "wolfi",
+                        )["artifact"]
+                    ]
+                sbom = {
+                    "source": {"type": "image", "metadata": {"imageID": image_id}},
+                    "artifacts": packages,
+                }
+                report = read(evidence / "grype.json")
+                report["source"]["target"]["imageID"] = image_id
+                report["matches"] = [] if variant == "candidate" else [match]
+                if report["matches"]:
+                    report["matches"][0]["artifact"] = next(
+                        item for item in packages if item["name"] == match["artifact"]["name"]
+                    )
+                write(directory / "sbom.syft.json", sbom)
+                write(directory / "grype.json", report)
+                write(directory / "assessment.json", scan_result(report, image_id, AT, sbom=sbom))
+
+            monkeypatch.setattr(remediation.subprocess, "run", run)
+            monkeypatch.setattr(remediation.subprocess, "check_output", inspect)
+            monkeypatch.setattr(remediation, "check", runtime_check)
+            monkeypatch.setattr(remediation, "assess", assess)
+            remediation.scan(worker, work, profile, variant, results / f"{variant}-{profile}")
+            assert calls[-1] == ["bash", "scripts/build_scan_image.sh", profile]
+            assert len(calls) == (2 if kind != "bicep" and variant == "candidate" else 1)
+    report = remediation.qualify(checkout, work, results)
+    assert report["status"] == ("release-needed" if kind == "apk-rebuild" else "ready")
+    assert [row["imageId"] for row in report["scans"]] == images
+    assert planner.inputs(checkout) == expected["inputs"]
+
+
+@pytest.mark.parametrize("failure", ["process", "verification"])
+def test_scan_worker_stops_before_edits_or_build_on_vendor_failure(
+    checkout, tmp_path, monkeypatch, failure
+):
+    work = tmp_path / "work"
+    evidence = retained(
+        work / "evidence",
+        [apk("clamav-scanner", "1.4.6-r0", "1.4.6-r1", "alpine")],
+        profile="antivirus",
+    )
+    expected = planner.plan(checkout, [evidence])
+    write(work / "receipt.json", {"source": SOURCE, "directories": [evidence.name]})
+    write(work / "plan.json", expected)
+    monkeypatch.setattr(remediation, "git", lambda *_: SOURCE)
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert command[:2] == ["docker", "run"]
+        if failure == "process":
+            raise subprocess.CalledProcessError(
+                1, command, output="vendor stdout", stderr="offline"
+            )
+        return subprocess.CompletedProcess(command, 0, "missing package", "vendor diagnostic")
+
+    monkeypatch.setattr(remediation.subprocess, "run", run)
+    output = tmp_path / "candidate-antivirus"
+    error = subprocess.CalledProcessError if failure == "process" else ValueError
+    with pytest.raises(error):
+        remediation.scan(checkout, work, "antivirus", "candidate", output)
+    assert len(calls) == 1
+    assert planner.inputs(checkout) == expected["inputs"]
+    if failure == "process":
+        assert read(output / "vendor-error.json") == {
+            "outcome": "unavailable",
+            "command": calls[0],
+            "stdout": "vendor stdout",
+            "stderr": "offline",
+        }
+    assert {path.name for path in output.iterdir()} == (
+        {"vendor-error.json"} if failure == "process" else set()
+    )
+
+
 def test_complete_qualification_requires_all_inherited_profiles(qualified):
     report = remediation.qualify(*qualified)
     assert report["status"] == "ready"
