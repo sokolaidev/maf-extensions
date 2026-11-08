@@ -60,7 +60,7 @@ The weekly compiler updater proposes the upstream binary pin, source version and
 
 Every new release candidate builds its selected route once. Retries recover the retained OCI bytes and reject a different route. Changing routes requires a new dispatch and an unused image version. Both routes retain the existing runtime, inventory, vulnerability, approval and signature gates; a successful source compilation alone does not establish remediation or publication.
 
-Candidate scans and release preparation require `System.Security.Cryptography.Pkcs` and `System.Security.Cryptography.Xml` at version 10.0.13 or newer in the actual `/usr/local/bin/bicep` bundle, on either route. Missing or contradictory inventory fails. The [local AVM rebuild evidence](../../docs/security/bicep-crypto-2026-11-08.md) verifies the upstream 0.49.2 bundle and offline behavior while retaining the unresolved glibc High finding; it is not publication evidence.
+Candidate scans and release preparation require `System.Security.Cryptography.Pkcs` and `System.Security.Cryptography.Xml` at a stable numeric version of 10.0.13 or newer in the actual `/usr/local/bin/bicep` bundle, on either route. Missing packages, contradictory versions and inventory found only in another executable fail the check. Historical monitoring and baseline assessments do not apply this candidate floor; source builds still require their original exact-package receipts. The version floor does not replace vulnerability scanning or the publication gates.
 
 ## Prepared AVM profile
 
