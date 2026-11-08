@@ -1024,11 +1024,18 @@ def test_freshness_refresh_preserves_approval_reports_and_uses_same_image(
     before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
     calls = []
     monkeypatch.setattr(registry, "now", lambda: LATER)
-    monkeypatch.setattr(registry, "assess", lambda directory, image: calls.append(image))
+
+    def refresh(directory, image):
+        calls.append(image)
+        for name in before:
+            write(directory / name, {"refreshed": name})
+
+    monkeypatch.setattr(registry, "assess", refresh)
     registry.fresh_assessment(tmp_path, CANDIDATE)
     assert calls == [CANDIDATE["imageId"]]
     for name, raw_bytes in before.items():
         assert (tmp_path / f"approval-{name}").read_bytes() == raw_bytes
+        assert read(tmp_path / name) == {"refreshed": name}
 
 
 @pytest.mark.parametrize("severity", ["High", "Critical"])

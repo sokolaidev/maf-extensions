@@ -108,6 +108,29 @@ def test_incomplete_browser_evidence_is_refused(inventory, fault):
         chrome.component(inventory)
 
 
+@pytest.mark.parametrize(
+    "fault",
+    ["location", "no-vendor-location", "location-shape", "version", "metadata", "files", "digest"],
+)
+def test_malformed_browser_inventory_has_a_validation_error(inventory, fault):
+    if fault in {"location", "no-vendor-location"}:
+        inventory["files"][0].pop("location")
+        if fault == "no-vendor-location":
+            inventory["artifacts"].pop(0)
+    elif fault == "location-shape":
+        inventory["files"][0]["location"] = None
+    elif fault == "version":
+        inventory["artifacts"][0]["version"] = None
+    elif fault == "metadata":
+        inventory["artifacts"][0]["metadata"] = None
+    elif fault == "files":
+        inventory["files"] = [None]
+    else:
+        inventory["files"][0]["digests"] = [{}]
+    with pytest.raises(ValueError, match="Malformed Chrome"):
+        chrome.component(inventory)
+
+
 def test_stale_browser_mapping_is_not_reused(tmp_path, inventory):
     browser = chrome.component(inventory)
     inventory["artifacts"].append(browser)

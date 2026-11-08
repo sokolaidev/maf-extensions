@@ -13,7 +13,14 @@ CATALOGER = "maf-google-chrome-package"
 
 
 def component(sbom: dict[str, Any]) -> dict[str, Any] | None:
-    """Derive Chrome's upstream identity from its installed package and inventoried ELF."""
+    """Derive Chrome's identity, raising ValueError for malformed package or ELF inventory."""
+    try:
+        return _component(sbom)
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ValueError("Malformed Chrome package or executable inventory") from error
+
+
+def _component(sbom: dict[str, Any]) -> dict[str, Any] | None:
     packages = [a for a in sbom.get("artifacts", []) if a.get("name") == "google-chrome-stable"]
     if not packages:
         if any(f["location"]["path"] == GUEST_BINARY for f in sbom.get("files", [])):
