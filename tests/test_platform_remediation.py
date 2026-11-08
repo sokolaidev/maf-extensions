@@ -523,8 +523,20 @@ def test_publish_requires_an_actions_run_before_qualification(
     )
 
 
-@pytest.mark.parametrize("kind", ["bicep", "apk-pin", "apk-rebuild"])
-def test_scan_worker_artifacts_feed_complete_qualification(checkout, tmp_path, monkeypatch, kind):
+@pytest.mark.parametrize(
+    "kind,cleanup",
+    [
+        ("bicep", "verified"),
+        ("apk-pin", "verified"),
+        ("apk-rebuild", "verified"),
+        ("apk-rebuild", "missing"),
+        ("apk-rebuild", "null"),
+        ("apk-rebuild", "survivor"),
+    ],
+)
+def test_scan_worker_artifacts_require_complete_qualification(
+    checkout, tmp_path, monkeypatch, kind, cleanup
+):
     profile, match = {
         "bicep": ("bicep", dotnet()),
         "apk-pin": ("antivirus", apk("clamav-scanner", "1.4.6-r0", "1.4.6-r1", "alpine")),
@@ -555,6 +567,12 @@ def test_scan_worker_artifacts_feed_complete_qualification(checkout, tmp_path, m
                     return subprocess.CompletedProcess(
                         command, 0, f"verified:{command[-2]}={command[-1]}\n", ""
                     )
+                if command[:2] == ["docker", "create"]:
+                    assert profile == "graphviz"
+                    assert command[command.index("--entrypoint") + 2] == image
+                    return subprocess.CompletedProcess(command, 0, "container", "")
+                if command[:2] in (["docker", "rm"], ["docker", "ps"]):
+                    return subprocess.CompletedProcess(command, 0, "", "")
                 assert command == ["bash", "scripts/build_scan_image.sh", profile]
                 assert kwargs["cwd"] == worker
                 assert kwargs["env"]["BICEP_ROUTE"] == ("source" if kind == "bicep" else "upstream")
@@ -564,6 +582,11 @@ def test_scan_worker_artifacts_feed_complete_qualification(checkout, tmp_path, m
             def inspect(command, **kwargs):
                 assert command == ["docker", "image", "inspect", "maf-image-scan:target"]
                 return json.dumps([{"Id": image, "Os": "linux", "Architecture": "amd64"}])
+
+            async def smoke_output(command):
+                calls.append(command)
+                assert command[:3] == ["docker", "start", "--attach"]
+                return b""
 
             def runtime_check(selected, image_id, directory):
                 assert (selected, image_id) == (profile, image)
@@ -631,11 +654,44 @@ def test_scan_worker_artifacts_feed_complete_qualification(checkout, tmp_path, m
 
             monkeypatch.setattr(remediation.subprocess, "run", run)
             monkeypatch.setattr(remediation.subprocess, "check_output", inspect)
-            monkeypatch.setattr(remediation, "check", runtime_check)
+            if profile != "graphviz":
+                monkeypatch.setattr(remediation, "check", runtime_check)
+            monkeypatch.setattr(runtime, "_smoke_output", smoke_output)
             monkeypatch.setattr(remediation, "assess", assess)
-            remediation.scan(worker, work, profile, variant, results / f"{variant}-{profile}")
-            assert calls[-1] == ["bash", "scripts/build_scan_image.sh", profile]
-            assert len(calls) == (2 if kind != "bicep" and variant == "candidate" else 1)
+            directory = results / f"{variant}-{profile}"
+            remediation.scan(worker, work, profile, variant, directory)
+            if profile == "graphviz":
+                create, start, remove, remaining = calls[-4:]
+                assert create[:2] == ["docker", "create"]
+                name = create[create.index("--name") + 1]
+                assert start == ["docker", "start", "--attach", name]
+                assert remove == ["docker", "rm", "--force", name]
+                assert remaining == [
+                    "docker",
+                    "ps",
+                    "--all",
+                    "--quiet",
+                    "--filter",
+                    f"name=^/{name}$",
+                ]
+                receipt = read(directory / "runtime.json")
+                assert receipt["imageId"] == image
+            else:
+                assert calls[-1] == ["bash", "scripts/build_scan_image.sh", profile]
+            assert len(calls) == (
+                1 + (kind != "bicep" and variant == "candidate") + 4 * (profile == "graphviz")
+            )
+    if cleanup != "verified":
+        path = results / "candidate-graphviz/runtime.json"
+        receipt = read(path)
+        if cleanup == "missing":
+            del receipt["containersRemaining"]
+        else:
+            receipt["containersRemaining"] = None if cleanup == "null" else ["survivor"]
+        write(path, receipt)
+        with pytest.raises(ValueError, match="Platform runtime qualification is incomplete"):
+            remediation.qualify(checkout, work, results)
+        return
     report = remediation.qualify(checkout, work, results)
     assert report["status"] == ("release-needed" if kind == "apk-rebuild" else "ready")
     assert [row["imageId"] for row in report["scans"]] == images
