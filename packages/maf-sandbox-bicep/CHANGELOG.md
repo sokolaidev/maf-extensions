@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.26.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.26.0...maf-sandbox-bicep-v0.26.1) (2026-11-08)
+
+
+### Fixes
+
+* **bicep:** isolate compiler locale settings and remove runtime curl ([#2570](https://github.com/sokolaidev/maf-extensions/issues/2570)) ([b194477](https://github.com/sokolaidev/maf-extensions/commit/b19447782ece2270d79a9db4862693b80c1db8a0))
+
 ## [0.26.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.25.1...maf-sandbox-bicep-v0.26.0) (2026-11-07)
 
 
