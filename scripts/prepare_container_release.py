@@ -32,7 +32,7 @@ from container_release import (
 from container_release_oci import blob, validate_layout
 from container_release_preflight import preflight
 from image_layer_archive import ACAS_PROFILES, check_layer_archive
-from image_security_evidence import record, verify_inventory
+from image_security_evidence import record, verify_inventory, verify_profile_inventory
 from sqlite_vulnerability import not_affected
 
 
@@ -125,9 +125,23 @@ def assess(directory: Path, image_id: str, *, require_clean: bool = True) -> dic
             f"spdx-json={directory / 'sbom.spdx.json'}",
         ]
     )
+    import chrome_inventory
+
+    if chrome_inventory.retain(directory):
+        run(
+            [
+                "syft",
+                "convert",
+                str(directory / "sbom.syft.json"),
+                "-o",
+                f"spdx-json={directory / 'sbom.spdx.json'}",
+            ]
+        )
     sbom = read(directory / "sbom.syft.json")
     verify_inventory(sbom, image_id)
     runtime = directory / "runtime.json"
+    if runtime.exists() and read(runtime).get("profile") == "document-export":
+        verify_profile_inventory(sbom, "document-export")
     if runtime.exists() and read(runtime).get("profile") in BICEP_PROFILES:
         from bicep_source import verify_crypto_inventory
         from bicep_source import verify_inventory as verify_bicep_inventory

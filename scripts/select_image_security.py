@@ -120,6 +120,7 @@ SCRIPT_INPUTS = {
     ),
     "scripts/document_qualification.py": ("document",),
     "scripts/document_export_qualification.py": ("document-export",),
+    "scripts/chrome_inventory.py": ("document-export",),
     "scripts/document_fixtures.py": ("document",),
     "scripts/check_shell_image.py": ("shell",),
     "scripts/shell_qualification.py": ("shell",),

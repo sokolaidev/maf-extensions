@@ -438,6 +438,7 @@ def test_monitor_keeps_historical_scans_and_warns_without_failing_current_health
         assessment = scan_result(raw, selected["imageId"], DONE)
         write(root / "grype.json", raw)
         write(root / "assessment.json", assessment)
+        write(root / "sbom.raw.syft.json", {"raw": "original inventory"})
         write(
             root / "sbom.syft.json",
             {
@@ -460,6 +461,10 @@ def test_monitor_keeps_historical_scans_and_warns_without_failing_current_health
     monkeypatch.setattr(monitor, "now", lambda: DONE)
     monitor.finish(tmp_path)
     assert emitted[-1]["attention"] == str(missing_history).lower()
+    with zipfile.ZipFile(tmp_path / "retained/reports-0000.zip") as archive:
+        assert json.loads(archive.read("bicep-0.1.1/sbom.raw.syft.json")) == {
+            "raw": "original inventory"
+        }
     assert emitted[-1]["historical_warnings"] == "1"
     notification = json.loads(emitted[-1]["notification"])
     assert notification["attention"] is missing_history
@@ -953,12 +958,17 @@ def test_registry_negotiation_retains_existing_manifest_bytes(
     assert registry.manifest(profile, reference, authenticated=authenticated) == raw
 
 
-def test_freshness_refresh_preserves_approval_reports_and_uses_same_image(monkeypatch, tmp_path):
+@pytest.mark.parametrize("browser_inventory", [False, True])
+def test_freshness_refresh_preserves_approval_reports_and_uses_same_image(
+    monkeypatch, tmp_path, browser_inventory
+):
     raw = scan_report()
     write(tmp_path / "grype.json", raw)
     write(tmp_path / "assessment.json", scan_result(raw, CANDIDATE["imageId"], AT))
     for name in ("grype.yaml", "sbom.syft.json", "sbom.spdx.json"):
         write(tmp_path / name, {})
+    if browser_inventory:
+        write(tmp_path / "sbom.raw.syft.json", {"original": "browser package inventory"})
     before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
     calls = []
     monkeypatch.setattr(registry, "now", lambda: LATER)

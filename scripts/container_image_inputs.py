@@ -139,6 +139,7 @@ def validate_version_line(reference: str, path: Path) -> None:
         "mcr.microsoft.com/azurelinux/base/core": r"3\.0",
         "debian": r"bookworm-slim",
         "docker.io/sbx/shell": r"1\.1\.\d+",
+        "ubuntu": r"26\.04",
     }
     if pin["name"] not in lines or not re.fullmatch(lines[pin["name"]], pin["tag"]):
         raise ValueError(f"Review the image compatibility line: {reference} in {path}")

@@ -1,11 +1,11 @@
 # Document export runtime
 
-This separate `document-export` profile converts Markdown to PDF through `maf_sandbox_document.export_pdf`. It contains headless Chromium, CommonMark with GFM tables and strikethrough, a SHA-512-pinned Mermaid bundle, DejaVu Sans/Mono and Noto emoji fonts. The existing `document` reader image does not contain this renderer.
+This separate `document-export` profile converts Markdown to PDF through `maf_sandbox_document.export_pdf`. It contains headless Google Chrome, CommonMark with GFM tables and strikethrough, a SHA-512-pinned Mermaid bundle, DejaVu Sans/Mono and Noto emoji fonts. The existing `document` reader image does not contain this renderer.
 
 Build and qualify Linux/amd64 from the repository root:
 
 ```sh
-uv run --locked python scripts/build_wolfi_python.py --platform linux/amd64 -t maf-document-export:local images/document-export
+docker build --pull --platform linux/amd64 -t maf-document-export:local images/document-export
 uv run python scripts/document_export_qualification.py --image maf-document-export:local --output out/document-export
 ```
 
@@ -17,4 +17,6 @@ Raw HTML is escaped. Markdown images must name a supplied passive SVG; they beco
 
 Expanded Markdown markup is capped at 32,000,000 UTF-8 bytes as token fragments are rendered, before repeated link URLs or titles can accumulate beyond the budget. Repeated SVG references count separately; an image that would exceed that budget is refused before its base64 copy is created. `MAF_DOCUMENT_EXPORT_BROWSER` enables native Chromium request-interception and CSP-denial tests using the supplied executable path; those checks do not qualify a container image.
 
-The image uses the suite's digest-pinned Wolfi base and shared Python APK preparation. Python dependencies require hashes; `mermaid.json` pins the upstream archive's integrity. OS packages are resolved from Wolfi's signed repository at build time, as in the other profiles, so the retained image digest and SBOM identify the actual browser/fonts. Mermaid's package metadata and license are retained for inventory. Maintainers update the Mermaid version and integrity together and rerun qualification. The existing release pipeline supplies candidate identity, scans, SBOM, signatures, provenance and the release-completion record; adding this profile does not publish it. Publish and qualify its exact digest before releasing the document package that requires it.
+The image uses a digest-pinned Ubuntu 26.04 LTS base with distribution Python and fonts. Google Chrome comes from its versioned vendor Debian package, authenticated by the Dockerfile's SHA-256 checksum; maintainers update its URL and checksum together and rerun qualification. Python dependencies require hashes; `mermaid.json` pins the upstream archive's integrity. The retained image digest and SBOM identify the actual browser/fonts. Mermaid's package metadata and license are retained for inventory. Maintainers update the Mermaid version and integrity together and rerun qualification. The existing release pipeline supplies candidate identity, scans, SBOM, signatures, provenance and the release-completion record; adding this profile does not publish it. Publish and qualify its exact digest before releasing the document package that requires it.
+
+The pinned scanner does not derive Chrome's upstream CVE identity from `google-chrome-stable`. `scripts/chrome_inventory.py` retains the raw Syft report and adds a `chrome` binary component with Google's NVD CPE, derived from the installed package version and its hashed ELF executable. It preserves every OS and application component; missing or contradictory browser evidence fails inventory validation. Release SPDX output includes the same additional component. This mapping is used for preparation, PR scans and published-image monitoring; it does not suppress any findings or change the Critical publication threshold.
