@@ -151,6 +151,7 @@ def test_changed_image_source_requires_matching_consumer_evidence(
             {
                 "backend": "docker",
                 "sourceCommit": head,
+                "consumerCommit": head,
                 "evidence": f"https://github.com/{consumer.REPOSITORY}/actions/runs/456",
             }
         ]

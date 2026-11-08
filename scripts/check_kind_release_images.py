@@ -146,6 +146,7 @@ def compatibility(
             {
                 "backend": backend,
                 "sourceCommit": claim["sourceCommit"],
+                "consumerCommit": claim.get("consumerCommit", claim["sourceCommit"]),
                 "evidence": f"https://github.com/{consumer.REPOSITORY}/actions/runs/{claim['runId']}",
             }
         )
@@ -155,9 +156,9 @@ def compatibility(
             f"for the existing image {PREFIX}/{profile}@{record['registryDigest']}. "
             "Image source differences alone do not require replacement. "
             "Check the qualification run and attestation availability. "
-            "The main inputs must match the release being checked. To refresh, run:\n"
+            "Qualify the exact consumer revision from the trusted main workflow. To refresh, run:\n"
             f"gh workflow run {Path(consumer.WORKFLOW).name} --repo {consumer.REPOSITORY} "
-            f"--ref main -f profile={profile}"
+            f"--ref main -f profile={profile} -f source={head}"
         )
         raise ValueError(
             "Legacy qualification cannot be reused: " + legacy_reason + "\n" + "\n".join(problems)

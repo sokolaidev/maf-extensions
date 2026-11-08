@@ -193,9 +193,9 @@ def test_consumer_only_failure_prescribes_same_digest_qualification(repo, monkey
     assert "Image source differences alone do not require replacement" in message
     assert message.splitlines()[-1] == (
         "gh workflow run kind-consumer-qualification.yml "
-        f"--repo {consumer.REPOSITORY} --ref main -f profile=shell"
+        f"--repo {consumer.REPOSITORY} --ref main -f profile=shell -f source={head}"
     )
-    assert "main inputs must match the release" in message
+    assert "exact consumer revision" in message
     assert "publish replacement image" not in message
 
 
@@ -420,8 +420,9 @@ def test_selection_ignores_metadata_but_selects_backend_changes(repo, monkeypatc
 
 @pytest.mark.parametrize("changed_image", [False, True])
 @pytest.mark.parametrize("failure", [None, "release-identity", "runtime"])
+@pytest.mark.parametrize("historical", [False, True])
 def test_execution_authenticates_before_pull_and_only_emits_complete_evidence(
-    repo, tmp_path, monkeypatch, failure, changed_image
+    repo, tmp_path, monkeypatch, failure, changed_image, historical
 ):
     import check_container_release_image
     import container_release_registry
@@ -434,6 +435,18 @@ def test_execution_authenticates_before_pull_and_only_emits_complete_evidence(
         source = legacy.commit(root)
     else:
         source = published_source
+    tested = source
+    checkout = root
+    if historical:
+        (root / "pyproject.toml").write_text("# New main inputs\n")
+        source = legacy.commit(root)
+        checkout = tmp_path / "consumer"
+        subprocess.run(
+            ["git", "clone", "--quiet", str(root), str(checkout)], check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "checkout", "--detach", tested], cwd=checkout, check=True, capture_output=True
+        )
     trusted(monkeypatch, root, source)
     candidate = CANDIDATE | {"profile": "shell"}
     record = candidate | {"sourceCommit": published_source, "candidate": candidate}
@@ -483,19 +496,53 @@ def test_execution_authenticates_before_pull_and_only_emits_complete_evidence(
     monkeypatch.setattr(guard, "qualified", initial)
     monkeypatch.setattr(container_release_registry, "anonymous_pull", pull)
     monkeypatch.setattr(check_container_release_image, "check", runtime)
+
+    def historical_check(selected, profile, image_id, directory, published_runtime):
+        assert selected == checkout
+        return {
+            "runtime": runtime(profile, image_id, directory, published_runtime=published_runtime),
+            "python": "3.14.4",
+            "distributions": [["historical-environment", "1.0"]],
+        }
+
+    monkeypatch.setattr(workflow, "historical_runtime", historical_check)
     monkeypatch.setattr(subprocess, "check_output", command)
     output = tmp_path / "evidence"
     if failure:
         with pytest.raises(ValueError):
-            workflow.qualify(root, legacy.PACKAGE, "shell", "docker", output)
+            workflow.qualify(
+                root,
+                legacy.PACKAGE,
+                "shell",
+                "docker",
+                output,
+                checkout=checkout,
+                requested=tested,
+            )
         assert not (output / "consumer-qualification.json").exists()
         if failure == "release-identity":
             assert calls == ["authenticate"]
     else:
-        workflow.qualify(root, legacy.PACKAGE, "shell", "docker", output)
+        workflow.qualify(
+            root,
+            legacy.PACKAGE,
+            "shell",
+            "docker",
+            output,
+            checkout=checkout,
+            requested=tested,
+        )
         assert calls == ["authenticate", "initial-qualification", "anonymous-pull", "runtime"]
-        workflow.validate_for_signing(root, output, legacy.PACKAGE, "shell", "docker")
-        assert json.loads((output / consumer.SUBJECT).read_text()) == expected(root, source)
+        workflow.validate_for_signing(
+            root, output, legacy.PACKAGE, "shell", "docker", requested=tested
+        )
+        assert json.loads((output / consumer.SUBJECT).read_text()) == expected(root, tested)
+        result = json.loads((output / "consumer-qualification.json").read_text())
+        assert result["sourceCommit"] == source
+        assert result["consumerCommit"] == tested
+        if historical:
+            assert result["environment"]["python"] == "3.14.4"
+            assert result["environment"]["distributions"] == [["historical-environment", "1.0"]]
 
 
 def test_legacy_docker_evidence_cannot_cover_an_additional_backend(repo, monkeypatch):

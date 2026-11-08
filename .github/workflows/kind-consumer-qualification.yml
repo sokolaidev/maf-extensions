@@ -14,6 +14,10 @@ on:
         type: choice
         options: [all, azure-pricing, antivirus, document, document-export, drawio, drawio-export, shell, bicep, bicep-avm, terraform-random, opentofu-random, terraform-avm]
         default: all
+      source:
+        description: Full merged consumer commit SHA (empty uses this main revision)
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -29,6 +33,7 @@ jobs:
     timeout-minutes: 15
     outputs:
       matrix: ${{ steps.select.outputs.matrix }}
+      source: ${{ steps.select.outputs.source }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -41,7 +46,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BEFORE: ${{ github.event_name == 'push' && github.event.before || '' }}
           PROFILE: ${{ inputs.profile || 'all' }}
-        run: python3 scripts/qualify_kind_consumers.py select --before "$BEFORE" --profile "$PROFILE"
+          SOURCE: ${{ inputs.source || '' }}
+        run: python3 scripts/qualify_kind_consumers.py select --before "$BEFORE" --profile "$PROFILE" --source "$SOURCE"
 
   qualify:
     needs: select
@@ -61,6 +67,12 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - name: Sync locked consumer environment
         run: uv sync --locked
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.select.outputs.source != github.sha
+        with:
+          ref: ${{ needs.select.outputs.source }}
+          path: .consumer
+          persist-credentials: false
       - uses: ./.github/actions/setup-classic-docker
       - name: Verify published image and qualify consumers
         env:
@@ -68,10 +80,12 @@ jobs:
           PACKAGE: ${{ matrix.package }}
           PROFILE: ${{ matrix.profile }}
           BACKEND: ${{ matrix.backend }}
+          SOURCE: ${{ needs.select.outputs.source }}
+          CONSUMER_ROOT: ${{ needs.select.outputs.source == github.sha && '.' || '.consumer' }}
         run: |
           uv run --locked python scripts/qualify_kind_consumers.py qualify \
             --package "$PACKAGE" --profile "$PROFILE" --backend "$BACKEND" \
-            --directory "$RUNNER_TEMP/consumer"
+            --directory "$RUNNER_TEMP/consumer" --source "$SOURCE" --consumer-root "$CONSUMER_ROOT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: consumer-${{ matrix.profile }}-${{ matrix.backend }}
@@ -113,10 +127,11 @@ jobs:
           PACKAGE: ${{ matrix.package }}
           PROFILE: ${{ matrix.profile }}
           BACKEND: ${{ matrix.backend }}
+          SOURCE: ${{ needs.select.outputs.source }}
         run: |
           python3 scripts/qualify_kind_consumers.py validate \
             --package "$PACKAGE" --profile "$PROFILE" --backend "$BACKEND" \
-            --directory "$RUNNER_TEMP/consumer"
+            --directory "$RUNNER_TEMP/consumer" --source "$SOURCE"
       - name: Attest consumer compatibility independently of image publication
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
