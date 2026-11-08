@@ -84,6 +84,8 @@ jobs:
           docker-pat: ${{ secrets.DOCKER_PAT }}
       - uses: ./.github/actions/setup-classic-docker
       - name: Install pinned scanners
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 scripts/install_container_scanners.py --directory "$RUNNER_TEMP/scan-tools"
       - name: Verify vendor availability, ordinary builds and exact-image scans
         env:

@@ -16,6 +16,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import check_container_release_image as runtime  # noqa: E402
+import image_remediation_evidence as acquisition  # noqa: E402
 import image_remediation_pr as publication  # noqa: E402
 import plan_platform_remediation as planner  # noqa: E402
 import platform_remediation as remediation  # noqa: E402
@@ -432,6 +433,63 @@ def test_cli_exposes_results_locally_and_appends_actions_outputs(
         assert read(work / "qualified.json")["status"] == "ready"
 
 
+@pytest.mark.parametrize("recover", [False, True])
+@pytest.mark.parametrize("actions", [False, True])
+@pytest.mark.parametrize("changing", [acquisition.EvidenceChanging, acquisition.HistoryAdvanced])
+def test_platform_acquisition_retries_and_defers_without_downstream_work(
+    tmp_path, monkeypatch, capsys, recover, actions, changing
+):
+    work, output, summary = (tmp_path / name for name in ("work", "output", "summary"))
+    attempts = []
+    sleeps = []
+    conflicts = []
+
+    def acquire(client, root, directory, **options):
+        assert tuple(options["selected_profiles"]) == tuple(planner.RUNTIME_RECIPES)
+        assert options["planner"] is planner.plan
+        assert options["require_all_profiles"] is False
+        attempts.append(directory)
+        if len(attempts) < 3 or not recover:
+            raise changing("Monitoring snapshot changed")
+        write(directory / "receipt.json", {"source": SOURCE})
+        result = {"updates": [], "findings": [], "affectedProfiles": ["bicep"]}
+        write(directory / "plan.json", result)
+        return result
+
+    def competing(*args):
+        conflicts.append(args)
+        return []
+
+    monkeypatch.setattr(acquisition, "acquire", acquire)
+    monkeypatch.setattr(acquisition.time, "sleep", sleeps.append)
+    monkeypatch.setattr(remediation, "competing_pulls", competing)
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    if actions:
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    else:
+        monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setattr(sys, "argv", ["platform-remediation", "acquire", "--work", str(work)])
+    remediation.main()
+    stdout = capsys.readouterr().out
+    values = dict(
+        line.split("=", 1)
+        for line in (output.read_text() if actions else stdout).splitlines()
+        if "=" in line
+    )
+    assert sleeps == [30, 30] and len(set(attempts)) == 3
+    assert len(conflicts) == int(recover)
+    if recover:
+        assert values == {"source": SOURCE, "profiles": '["bicep"]'}
+        assert read(work / "receipt.json")["source"] == SOURCE
+    else:
+        assert values == {"status": "deferred", "profiles": "[]"}
+        assert read(work / "acquisition.json")["status"] == "deferred"
+        assert "retries automatically" in summary.read_text()
+        assert not (work / "receipt.json").exists()
+        assert not (work / "plan.json").exists()
+    assert read(work / "attempts/1/deferred.json")["attempt"] == 1
+
+
 @pytest.mark.parametrize("run_id", [None, "", "invalid", "0", "-1"])
 def test_publish_requires_an_actions_run_before_qualification(
     tmp_path, monkeypatch, capsys, run_id
@@ -745,3 +803,14 @@ def test_workflow_requires_qualification_before_token_and_retains_retry_evidence
     assert "github.run_attempt" in retain["name"] and "overwrite" not in retain
     assert "PLATFORM_IMAGE_REMEDIATION_ENABLED" in steps[order["app"]]["if"]
     assert jobs["scan"]["strategy"]["matrix"]["variant"] == ["baseline", "candidate"]
+
+
+def test_platform_scanners_use_authenticated_release_assets():
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/platform-image-remediation.yml").read_text()
+    )
+    scan = workflow["jobs"]["scan"]
+    step = next(step for step in scan["steps"] if step.get("name") == "Install pinned scanners")
+    assert step["env"]["GH_TOKEN"] == "${{ github.token }}"
+    for job in ("scan", "checks"):
+        assert workflow["jobs"][job]["if"] == "needs.acquire.outputs.profiles != '[]'"

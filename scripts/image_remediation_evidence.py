@@ -267,13 +267,29 @@ def acquire(
     return result
 
 
-def acquire_with_retry(client: GitHub, root: Path, directory: Path) -> dict[str, Any] | None:
+def acquire_with_retry(
+    client: GitHub,
+    root: Path,
+    directory: Path,
+    *,
+    selected_profiles: Iterable[str] | None = None,
+    planner: Callable[[Path, list[Path]], dict[str, Any]] | None = None,
+    require_all_profiles: bool = True,
+) -> dict[str, Any] | None:
     """Retry changing snapshots in isolated directories; defer to the next trigger if still busy."""
+    selected = None if selected_profiles is None else tuple(selected_profiles)
     directory.mkdir(parents=True, exist_ok=False)
     for attempt in range(1, 4):
         staging = directory / "attempts" / str(attempt)
         try:
-            result = acquire(client, root, staging)
+            result = acquire(
+                client,
+                root,
+                staging,
+                selected_profiles=selected,
+                planner=planner,
+                require_all_profiles=require_all_profiles,
+            )
         except (EvidenceChanging, HistoryAdvanced) as error:
             write(staging / "deferred.json", {"attempt": attempt, "reason": str(error)})
             print(f"Acquisition attempt {attempt}/3 deferred: {error}", flush=True)

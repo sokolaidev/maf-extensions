@@ -647,12 +647,17 @@ def test_changed_snapshot_is_retryable_but_cannot_pass_freshness(current_state, 
 
 
 @pytest.mark.parametrize("recover", [True, False])
-def test_acquisition_retry_discards_partial_inputs(tmp_path, monkeypatch, recover):
+@pytest.mark.parametrize("custom", [True, False])
+def test_acquisition_retry_discards_partial_inputs(tmp_path, monkeypatch, recover, custom):
     work = tmp_path / "work"
     attempts = []
     sleeps = []
 
-    def acquire(client, root, directory):
+    def acquire(client, root, directory, **options):
+        selected = options["selected_profiles"]
+        assert (None if selected is None else tuple(selected)) == (("bicep",) if custom else None)
+        assert options["planner"] is (planner.plan if custom else None)
+        assert options["require_all_profiles"] is not custom
         attempts.append(directory)
         assert not directory.exists()
         if len(attempts) < 3 or not recover:
@@ -665,7 +670,16 @@ def test_acquisition_retry_discards_partial_inputs(tmp_path, monkeypatch, recove
 
     monkeypatch.setattr(acquisition, "acquire", acquire)
     monkeypatch.setattr(acquisition.time, "sleep", sleeps.append)
-    result = acquisition.acquire_with_retry(acquisition.GitHub(), tmp_path, work)
+    options = (
+        {
+            "selected_profiles": iter(["bicep"]),
+            "planner": planner.plan,
+            "require_all_profiles": False,
+        }
+        if custom
+        else {}
+    )
+    result = acquisition.acquire_with_retry(acquisition.GitHub(), tmp_path, work, **options)
     assert sleeps == [30, 30] and len(set(attempts)) == 3
     assert not (work / "evidence/partial.json").exists()
     if recover:
@@ -691,7 +705,7 @@ def test_acquisition_retry_discards_partial_inputs(tmp_path, monkeypatch, recove
 def test_acquisition_does_not_retry_invalid_or_unavailable_evidence(tmp_path, monkeypatch, error):
     calls = []
 
-    def fail(*args):
+    def fail(*args, **kwargs):
         calls.append(args)
         raise error
 

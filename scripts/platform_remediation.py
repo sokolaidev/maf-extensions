@@ -16,8 +16,9 @@ from check_container_release_image import check
 from container_release import REPOSITORY, ROOT, read, scan_result, write
 from container_release_history import GitHub, positive_id
 from image_release_needed import git
-from image_remediation import outputs, remaining, verify_engine
-from image_remediation_evidence import acquire, current
+from image_remediation import acquisition_summary, outputs, remaining, verify_engine
+from image_remediation_evidence import acquire_with_retry as acquire
+from image_remediation_evidence import current
 from image_remediation_pr import BotGitHub, publish
 from image_scan_policy import BICEP_ROUTES, evidence_route, scan_route
 from image_security_evidence import PROVIDER_MANIFESTS, record, verify_inventory, verify_providers
@@ -376,6 +377,10 @@ def main() -> None:
             planner=plan,
             require_all_profiles=False,
         )
+        if result is None:
+            acquisition_summary(work, None)
+            outputs({"status": "deferred", "profiles": "[]"})
+            return
         conflicts = competing_pulls(GitHub(), {item["path"] for item in result["updates"]})
         write(work / "competing-pulls.json", conflicts)
         summary = os.environ.get("GITHUB_STEP_SUMMARY")
