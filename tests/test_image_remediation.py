@@ -746,6 +746,7 @@ def test_no_update_summary_preserves_publication_and_residual_findings(
     [
         "none",
         "unpublished",
+        "missing",
         "race",
         "stale",
         "digest",
@@ -780,6 +781,8 @@ def test_acquisition_binds_release_catalogue_and_monitor(
         record["candidate"] = {**candidate, "sourceCommit": SOURCE}
     name = "terraform-random-0.2.3"
     catalogue = {"current": {"terraform-random": name}, "releases": {name: record}}
+    if mutation == "missing":
+        catalogue["current"] = {}
     snapshot = SimpleNamespace(reference=current_state["catalogue"], catalogue=catalogue)
     snapshots = []
     sleeps = []
@@ -861,8 +864,10 @@ def test_acquisition_binds_release_catalogue_and_monitor(
             2 if mutation == "race" else 1
         )
     else:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError) as error:
             acquisition.acquire(acquisition.GitHub(), checkout, tmp_path / "acquired")
+        if mutation == "missing":
+            assert "current image release is missing: terraform-random" in str(error.value)
         assert not (tmp_path / "acquired/plan.json").exists()
 
 

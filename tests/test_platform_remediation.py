@@ -421,7 +421,8 @@ def test_cli_exposes_results_locally_and_appends_actions_outputs(
         line.split("=", 1) for line in (output.read_text() if actions else stdout).splitlines()
     )
     if actions:
-        assert values.pop("existing") == "kept"
+        existing = values.pop("existing")
+        assert existing == "kept"
     if command == "acquire":
         assert values["source"] == SOURCE
         assert json.loads(values["profiles"]) == sorted(planner.BICEP_ROUTES)
@@ -429,6 +430,39 @@ def test_cli_exposes_results_locally_and_appends_actions_outputs(
     else:
         assert values == {"ready": "true"}
         assert read(work / "qualified.json")["status"] == "ready"
+
+
+@pytest.mark.parametrize("run_id", [None, "", "invalid", "0", "-1"])
+def test_publish_requires_an_actions_run_before_qualification(
+    tmp_path, monkeypatch, capsys, run_id
+):
+    if run_id is None:
+        monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
+    else:
+        monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+    monkeypatch.setattr(remediation, "qualify", lambda *_: pytest.fail("qualification reached"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "platform-remediation",
+            "publish",
+            "--work",
+            str(tmp_path),
+            "--results",
+            str(tmp_path / "results"),
+            "--bot",
+            BOT,
+            "--artifact-id",
+            "456",
+        ],
+    )
+    with pytest.raises(SystemExit) as error:
+        remediation.main()
+    assert error.value.code == 2
+    assert (
+        "publish requires a positive GITHUB_RUN_ID from GitHub Actions" in capsys.readouterr().err
+    )
 
 
 def test_complete_qualification_requires_all_inherited_profiles(qualified):
@@ -556,10 +590,16 @@ def test_human_readable_apk_output_cannot_replace_exact_version_proof(
     monkeypatch.setattr(
         remediation.subprocess,
         "run",
-        lambda *_, **__: SimpleNamespace(stdout="glibc: GNU C Library\n", stderr=""),
+        lambda *_, **__: SimpleNamespace(
+            stdout="glibc: GNU C Library\n", stderr="probe diagnostic"
+        ),
     )
-    with pytest.raises(ValueError, match="requested version"):
+    with pytest.raises(ValueError, match="requested version") as error:
         remediation.vendor_checks(expected, "graphviz")
+    assert "glibc=2.43-r2" in str(error.value)
+    assert expected["findings"][0]["base"] in str(error.value)
+    assert "glibc: GNU C Library" in str(error.value)
+    assert "probe diagnostic" in str(error.value)
 
 
 @pytest.mark.parametrize(

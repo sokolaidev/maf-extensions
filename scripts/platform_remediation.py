@@ -141,7 +141,10 @@ def vendor_checks(expected: dict[str, Any], profile: str) -> list[dict[str, str]
             timeout=600,
         )
         if f"verified:{name}={target}" not in result.stdout.splitlines():
-            raise ValueError("Vendor package probe did not install the requested version")
+            raise ValueError(
+                f"Vendor package probe did not install the requested version {name}={target} "
+                f"from {base}; stdout={result.stdout[-4000:]!r}; stderr={result.stderr[-4000:]!r}"
+            )
         reports.append(
             {
                 "base": base,
@@ -357,6 +360,12 @@ def main() -> None:
     parser.add_argument("--bot")
     parser.add_argument("--artifact-id", type=int)
     args = parser.parse_args()
+    run_id = None
+    if args.command == "publish":
+        try:
+            run_id = positive_id(int(os.environ.get("GITHUB_RUN_ID", "")))
+        except ValueError:
+            parser.error("publish requires a positive GITHUB_RUN_ID from GitHub Actions")
     work = args.work.resolve()
     if args.command == "acquire":
         result = acquire(
@@ -423,7 +432,7 @@ def main() -> None:
                 validate(ROOT, work)[1],
                 args.bot,
                 f"https://github.com/{REPOSITORY}/actions/runs/"
-                f"{positive_id(int(os.environ['GITHUB_RUN_ID']))}/artifacts/"
+                f"{run_id}/artifacts/"
                 f"{positive_id(args.artifact_id)}",
             )
             write(work / "publication.json", result)

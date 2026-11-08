@@ -211,7 +211,7 @@ def acquire(
             if not require_all_profiles:
                 unpublished.append(profile)
                 continue
-            raise ValueError("A supported current image release is missing")
+            raise ValueError(f"A supported current image release is missing: {profile}")
         record = snapshot.catalogue["releases"][name]
         if record["profile"] != profile:
             raise ValueError("Current image catalogue profile is inconsistent")
