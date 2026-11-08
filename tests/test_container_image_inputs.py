@@ -230,6 +230,8 @@ def test_stages_supplied_parents_and_python_heredocs_are_not_external_images(tmp
         "python:3.13-slim-bookworm",
         "golang:1.28.0-alpine",
         "mcr.microsoft.com/dotnet/sdk:11.0.100",
+        "docker.io/sbx/shell:1.2.0",
+        "docker.io/sbx/shell:latest",
     ],
 )
 def test_compatibility_family_changes_require_policy_review(reference):
