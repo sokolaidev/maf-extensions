@@ -28,6 +28,7 @@ TOOLING = (
     "scripts/go_remediation_worker.py",
     "scripts/container_release.py",
     "scripts/image_security_evidence.py",
+    "scripts/chrome_inventory.py",
     "scripts/sqlite_vulnerability.py",
     "scripts/terraform_dependencies.py",
     "scripts/terraform_manifest.py",
