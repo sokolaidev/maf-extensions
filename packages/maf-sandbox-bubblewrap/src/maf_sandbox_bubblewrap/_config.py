@@ -24,8 +24,18 @@ class BubblewrapSandboxConfig:
     workspace_bytes: int = 128 * 1024 * 1024
     output_bytes: int = 1024 * 1024
     max_timeout: float = 180
+    egress_proxy: Path | None = None
+    egress_proxy_sha256: str | None = None
 
     def __post_init__(self) -> None:
+        if (self.egress_proxy is None) != (self.egress_proxy_sha256 is None):
+            raise ValueError("egress_proxy and egress_proxy_sha256 must be configured together")
+        if self.egress_proxy is not None:
+            if not self.egress_proxy.is_absolute():
+                raise ValueError("egress_proxy must be an absolute Path")
+            digest = self.egress_proxy_sha256 or ""
+            if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+                raise ValueError("egress_proxy_sha256 must be a lowercase SHA-256 digest")
         for name in ("runtime_root", "state_root", "cgroup_root", "bwrap"):
             path = getattr(self, name)
             if not isinstance(path, Path) or not (

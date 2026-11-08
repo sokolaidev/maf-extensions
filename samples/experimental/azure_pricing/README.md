@@ -1,0 +1,76 @@
+# Azure pricing on Bubblewrap and Docker Sandboxes
+
+This workspace sample runs the existing `azure_pricing_get` tool against public retail prices, with a fresh sandbox for each call. It validates actual consumption and reservation reports for `Standard_D4s_v5` in `westeurope`, USD, before optionally letting an Azure OpenAI agent use the same tool. Model credentials stay on the host. The pricing guest needs no Azure credentials.
+
+The backend additions required by this sample have not been published, so run it from this checkout with `uv sync --locked`. Once both backend releases are available, move this example to the next numbered slot with published PEP 723 floors, branch/published `verify-live.yml` jobs and the three release-dispatch filters described in [CONTRIBUTING.md](../../../CONTRIBUTING.md#adding-a-sample). Do not claim published-package qualification from workspace imports.
+
+## Prepare the runtime
+
+The [pricing recipe](../../../images/azure-pricing-sandbox/) pins Azure MCP CLI 4.0.0-beta.4 and verifies its archive checksum. The [native template](../../../images/azure-pricing-sandbox/native.Dockerfile) adds Python for enforcement probes, Bash, namespace utilities, certificate-update support and Docker Sandboxes' `agent` account. Its `bubblewrap` stage adds the mount point Bubblewrap requires; the `native` stage leaves that location absent for Docker Sandboxes to mount its workspace. Dependencies and certificate trust are provisioned before calls.
+
+On a Linux provisioning machine with Docker, run as root into a new dedicated directory:
+
+```bash
+sudo bash samples/experimental/azure_pricing/provision.sh /opt/maf-pricing-runtime
+```
+
+This exports an immutable runtime directory, a Docker Sandboxes template archive, image identities and a SHA-256 for the exported runtime. It builds the repository's pinned and patched iron-proxy, exports its native binary, license and build metadata, and records its SHA-256. Docker is used for provisioning; Bubblewrap execution uses the exported directory and native binary without a container engine. Keep the runtime, proxy binary and their ancestors under trusted administrator control and read-only while calls run. Provisioning output includes the exact installed package/image identities; an APK repository update can change the runtime digest while preserving the pinned Azure MCP CLI.
+
+## Bubblewrap
+
+Use a Linux host with Bubblewrap 0.11.1 or compatible support for disabled nested user namespaces, bounded tmpfs mounts, and delegated cgroup v2 `cpu`, `memory`, `pids`, swap limits and `cgroup.kill`. The [backend prerequisites](../../../packages/maf-sandbox-bubblewrap/README.md#prerequisites) also apply. The runtime must include `/usr/bin/python3`, `/bin/sh` and `/usr/local/bin/azmcp`. A runtime id is an exact label matching `SandboxSpec.image`; it is not an OCI image passed to Bubblewrap.
+
+Run as an unprivileged user in a dedicated systemd service. Substitute an operator-selected service user and the absolute paths to this checkout and its Linux virtual environment. The wrapper moves its host process into a leaf before enabling controllers; its state directory is private and dedicated to this sample.
+
+```bash
+source_sha=$(git rev-parse HEAD)
+sudo systemd-run --wait --pipe --collect --unit=maf-pricing-check \
+  -p User=my-service-user -p Delegate='cpu memory pids' \
+  /bin/bash "$PWD/samples/experimental/azure_pricing/run-bubblewrap.sh" \
+  /opt/maf-pricing-runtime "$PWD/.venv/bin/python" "$source_sha" --no-model --qualify
+```
+
+The router explicitly selects `Isolation.CONTAINER`. The guest retains its private network namespace. Its only egress channel is a mounted Unix socket reaching a per-sandbox native proxy; only the proxy's public certificate enters the guest. Signing keys remain on the host. The proxy checks upstream TLS and enforces the host/method/path rules after TLS termination. Private and link-local upstream destinations are refused. Both proxy and guest belong to the sandbox's cgroup and die with their owner. The default backend configuration remains closed-only; allowlisting requires both `egress_proxy` and its verified `egress_proxy_sha256`.
+
+## Docker Sandboxes
+
+Use a supported host with working virtualization, a logged-in `sbx`, and the [backend prerequisites](../../../packages/maf-sandbox-docker-sbx/README.md#requirements). Host policy changes are explicit operator setup. On a dedicated host, the operator prepares it with:
+
+```bash
+sbx login
+sbx policy init deny-all
+sbx settings set ssh.agentForwardingEnabled false
+sbx daemon restart
+sbx template load /opt/maf-pricing-runtime/template.tar
+```
+
+No MCP servers may be registered. Stored secrets, organization governance and global network grants must not widen the pricing allowlist; the backend checks them and refuses incompatible posture. Do not bypass those checks. Docker Sandboxes supplies proxy certificate trust to the template; certificate verification stays enabled. Template loading and host-wide policy setup are not sample side effects.
+
+```bash
+uv run python samples/experimental/azure_pricing/agent.py \
+  --backend docker-sbx --image maf-pricing-native:qualification \
+  --workspace /var/lib/my-service/pricing-workspaces \
+  --source "$(git rev-parse HEAD)" --no-model --qualify
+```
+
+Choose a new, private workspace root used only by this run. The router retains its default `MICROVM` floor. Every tool call gets a distinct microVM and workspace, followed by disposal. The local template tag must continue to name the archive just loaded; retain the archive hash and image id alongside the log. The [Docker Sandboxes live workflow](../../../.github/workflows/sbx-live.yml) builds and loads the template on a disposable Ubuntu runner and retains those identities.
+
+## Agent mode and evidence
+
+The default is deterministic tool-only execution. For agent mode, configure `AZURE_OPENAI_ENDPOINT` and `AZURE_OPENAI_CHAT_MODEL`, authenticate the host with `DefaultAzureCredential`, and pass `--model`. The Linux service needs its own host identity and environment; credentials are never mounted into the runtime. Agent mode incurs model inference costs and allows at most two additional tool calls, serialized for evidence attribution, within a 180-second model-run deadline. Failed calls consume the budget; cancellation cleanup can extend elapsed time beyond that deadline. Tool strings remain external data when model mode is enabled, and model prose is not qualification evidence. `--no-model` explicitly selects the default, which still performs real public price lookups and uses no model credentials.
+
+Keep logs and validate them separately:
+
+```bash
+uv run python scripts/check_live_backend_pricing.py pricing.log --backend bubblewrap --no-model --require-probes
+```
+
+Use `set -euo pipefail` when piping the sample through `tee`. For model evidence pass `--model` to the sample and omit `--no-model` from the checker. Host records include imported-source hashes, installed versions, runtime identity, per-call timing and sandbox identities. The checker requires actual price fields, distinct calls, independent host inventory checks and completed cleanup; model prose cannot satisfy it. Empty results mean no matching rows; truncated results are not exhaustive. Both are represented by the tool, but fail this deliberately narrow qualification query. Reservation prices are whole-term amounts even when the returned unit says `1 Hour`; never multiply them by monthly hours. Retail prices are not negotiated account quotes.
+
+`--qualify` adds disallowed host/method and direct-network probes, output overflow, timeout and cancellation, checking disposal after every case. HTTP denials require a matching native proxy audit record or [Docker policy log](https://docs.docker.com/ai/governance/local/test-monitor/) entry from the fresh sandbox. An origin HTTP 403 alone cannot qualify enforcement. It also forces an observed host deadline around bounded execution through the actual pricing tool and verifies disposal before fallback scope cleanup; an incomplete tool report alone cannot qualify timeout. The root test `test_live_backend_pricing` skips unless `MAF_PRICING_E2E=1`; provide the CLI argument list as JSON in `MAF_PRICING_LIVE_ARGS` and an explicit log destination in `MAF_PRICING_EVIDENCE_LOG`. Partial stdout/stderr is retained if its outer deadline expires. Offline tests need neither Azure credentials nor real model calls.
+
+The historical runs below use the checks at their cited source. Current qualification additionally requires retained host denial and deadline-expiry records.
+
+At source `6af60cca13185dce2f6a5177705835d4141be4d7`, local Bubblewrap tool-only pricing and all eight probes passed on Ubuntu 24.04 under WSL 2 with Bubblewrap 0.11.1, runtime `sha256:f88fad10866fc04b528828efc9d8c0366c19413f37f247260bd44e79b19554f1`, and proxy SHA-256 `091bb31fea98a8a63301a6ab7b4d7f2ae8d276911af8b9a3e92e41e28832d902`. [Hosted Docker Sandboxes pricing and concurrent call isolation](https://github.com/sokolaidev/maf-extensions/actions/runs/42394211890/job/128467995687) passed on Ubuntu 24.04 with sbx 0.51.0 and template `sha256:08bb35204230d1676bf3e8bf3e6123aeae7c711c47b0df0d5ec161339cf518db`. The `sbx-pricing-evidence` artifact retains the CLI/source/template identities, real reports and all eight probes until 2026-12-07.
+
+The hosted job is not green: six host-posture/fault checks passed, but the fixture that bypasses the normal host check to test a forwarded SSH socket remains unresolved in [#2547](https://github.com/sokolaidev/maf-extensions/issues/2547). Normal refusal of a host with forwarding enabled passed; application code never bypasses it. The separate vendor-template suite also fails because its default image lacks `mount`. These results do not establish live model execution, published-package, macOS or production qualification. Delivery is tracked in [#2473](https://github.com/sokolaidev/maf-extensions/issues/2473), [#2474](https://github.com/sokolaidev/maf-extensions/issues/2474), and prerequisites [#2540](https://github.com/sokolaidev/maf-extensions/issues/2540) and [#2541](https://github.com/sokolaidev/maf-extensions/issues/2541).

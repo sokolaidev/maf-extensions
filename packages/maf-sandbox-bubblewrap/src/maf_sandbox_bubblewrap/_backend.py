@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import stat
 import sys
 from collections.abc import Sequence
@@ -34,8 +35,10 @@ from maf_sandbox import (
     ScopePurge,
     fold_disposal_failures,
 )
+from maf_sandbox.bounded_exec import SandboxExecOutputLimitExceeded
 
 from ._config import BubblewrapSandboxConfig
+from ._egress import Proxy, policy
 
 FILE_LIMIT = 8 * 1024 * 1024
 FRAME_LIMIT = 12 * 1024 * 1024
@@ -96,7 +99,7 @@ async def _diagnostics(stream: asyncio.StreamReader) -> str:
     return retained.decode("utf-8", errors="replace")
 
 
-def _arguments(config: BubblewrapSandboxConfig) -> list[str]:
+def _arguments(config: BubblewrapSandboxConfig, proxy: Proxy | None = None) -> list[str]:
     args = [str(config.bwrap)]
     args.extend("--unshare-" + name for name in ("user", "pid", "net", "ipc", "uts", "cgroup"))
     args.extend(
@@ -122,6 +125,16 @@ def _arguments(config: BubblewrapSandboxConfig) -> list[str]:
     )
     for directory in ("/tmp", "/run", "/maf-sandbox"):
         args.extend(["--size", str(config.workspace_bytes), "--tmpfs", directory])
+    if proxy is not None:
+        args.extend(["--ro-bind", str(proxy.directory / "public"), "/run/maf-egress"])
+        for name, value in (
+            ("HTTPS_PROXY", "http://127.0.0.1:3128"),
+            ("HTTP_PROXY", "http://127.0.0.1:3128"),
+            ("SSL_CERT_FILE", "/run/maf-egress/ca.crt"),
+            ("DOTNET_CLI_TELEMETRY_OPTOUT", "1"),
+            ("AZURE_MCP_COLLECT_TELEMETRY", "false"),
+        ):
+            args.extend(["--setenv", name, value])
     args.extend(
         [
             "--ro-bind",
@@ -176,6 +189,8 @@ class _Sandbox:
         self.dead = False
         self._serial = asyncio.Lock()
         self._sequence = 0
+        self._pending = b""
+        self.proxy: Proxy | None = None
 
     async def _request(
         self,
@@ -183,6 +198,7 @@ class _Sandbox:
         *,
         transport_timeout: float = 10,
         deadline: float | None = None,
+        response_limit: int = FRAME_LIMIT,
         **fields: Any,
     ) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
@@ -209,7 +225,22 @@ class _Sandbox:
                 async with asyncio.timeout_at(deadline):
                     self.process.stdin.write(payload)
                     await self.process.stdin.drain()
-                    frame = await self.process.stdout.readline()
+                    frame = bytearray()
+                    while not frame.endswith(b"\n"):
+                        chunk = self._pending or await self.process.stdout.read(
+                            min(4096, response_limit - len(frame) + 1)
+                        )
+                        self._pending = b""
+                        if not chunk:
+                            break
+                        if b"\n" in chunk:
+                            line, self._pending = chunk.split(b"\n", 1)
+                            chunk = line + b"\n"
+                        frame.extend(chunk)
+                        if len(frame) > response_limit:
+                            raise SandboxExecOutputLimitExceeded(
+                                "Guest response exceeded output budget"
+                            )
                     if not frame.endswith(b"\n") or len(frame) > FRAME_LIMIT:
                         raise RuntimeError("Invalid guest response frame")
                     response: dict[str, Any] = json.loads(frame)
@@ -223,6 +254,8 @@ class _Sandbox:
                 detail = str(response.get("detail", "Guest operation refused"))[:1024]
                 if error == "TransferCapExceeded":
                     raise SandboxTransferCapExceeded(detail)
+                if error == "OutputLimitExceeded":
+                    raise SandboxExecOutputLimitExceeded(detail)
                 if error == "FileNotFoundError":
                     raise FileNotFoundError(detail)
                 if error == "TimeoutError":
@@ -254,6 +287,8 @@ class _Sandbox:
         """Terminate the whole resource group before releasing ownership."""
         self.dead = True
         await self.backend.kill_group(self.instance_id)
+        if self.proxy is not None:
+            await self.proxy.close()
         await asyncio.wait_for(self.process.wait(), 10)
         await self.diagnostics
         if self.process.stdin is not None:
@@ -276,6 +311,25 @@ class _Sandbox:
         timeout: float,
     ) -> ExecResult:
         """Execute within the configured deadline and cap combined stdout/stderr bytes."""
+        return await self.exec_bounded(
+            command,
+            working_directory=working_directory,
+            timeout=timeout,
+            max_output_bytes=self.backend.config.output_bytes,
+        )
+
+    async def exec_bounded(
+        self,
+        command: str | Sequence[str],
+        *,
+        working_directory: str,
+        timeout: float,
+        max_output_bytes: int,
+    ) -> ExecResult:
+        """Bound combined output in the broker and the host response reader."""
+        if type(max_output_bytes) is not int or max_output_bytes <= 0:
+            raise ValueError("max_output_bytes must be a positive integer")
+        limit = min(max_output_bytes, self.backend.config.output_bytes)
         if type(timeout) not in (int, float) or not 0 < timeout < math.inf:
             raise ValueError("timeout must be finite and positive")
         if timeout > self.backend.config.max_timeout:
@@ -288,14 +342,15 @@ class _Sandbox:
             timeout=timeout,
             transport_timeout=timeout,
             deadline=deadline,
-            output_limit=self.backend.config.output_bytes,
+            output_limit=limit,
+            response_limit=min(FRAME_LIMIT, 4 * ((limit + 2) // 3) + 2048),
         )
         stdout = base64.b64decode(result["stdout"], validate=True)
         stderr = base64.b64decode(result["stderr"], validate=True)
-        if (
-            len(stdout) + len(stderr) > self.backend.config.output_bytes
-            or type(result["exit_code"]) is not int
-        ):
+        if len(stdout) + len(stderr) > limit:
+            await _finish(asyncio.create_task(self.stop()))
+            raise SandboxExecOutputLimitExceeded("Guest execution exceeded output budget")
+        if type(result["exit_code"]) is not int:
             raise RuntimeError("Invalid guest execution result")
         return ExecResult(stdout_bytes=stdout, stderr_bytes=stderr, exit_code=result["exit_code"])
 
@@ -368,6 +423,15 @@ class BubblewrapSandboxBackend:
         if sys.platform != "linux":
             raise RuntimeError("Bubblewrap requires Linux; no subprocess fallback is available")
         self.config = config
+        if config.egress_proxy is not None:
+            self.declarations = BackendDeclarations(
+                capabilities=_CAPABILITIES | {Capability.EGRESS_METHODS, Capability.EGRESS_PATHS},
+                egress_modes=frozenset({Egress.CLOSED, Egress.ALLOWLIST}),
+                os_families=frozenset({OsFamily.POSIX}),
+                isolation_scopes=frozenset({IsolationScope.CALL, IsolationScope.CONVERSATION}),
+                requires_exclusive_admission=True,
+                egress_method_tokens=None,
+            )
         self._sandboxes: dict[str, _Sandbox] = {}
         self._serial = asyncio.Lock()
 
@@ -428,13 +492,14 @@ class BubblewrapSandboxBackend:
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> _Sandbox:
         """Get or create an exact key/kind; refuse conflicting specifications or owners."""
         if (
-            spec.egress != Egress.CLOSED
-            or not spec.required_capabilities <= _CAPABILITIES
+            spec.egress not in self.declarations.egress_modes
+            or not spec.required_capabilities <= self.declarations.capabilities
             or spec.work_dir not in (None, "/maf-sandbox/work")
             or spec.image not in (None, self.config.runtime_id)
             or spec.image_id is not None
         ):
             raise ValueError("Unsupported Bubblewrap specification")
+        policy(spec, self.config.state_root)
         identity = _identity(key, spec.kind)
         if len(json.dumps(identity).encode()) > 8192:
             raise ValueError("Sandbox identity exceeds record limit")
@@ -451,12 +516,14 @@ class BubblewrapSandboxBackend:
             group = self._group(instance)
             process: asyncio.subprocess.Process | None = None
             diagnostics: asyncio.Task[str] | None = None
+            proxy: Proxy | None = None
             try:
                 if record.exists():
                     previous = self._read_record(record)
                     if previous["identity"] != identity:
                         raise ValueError("Sandbox record identity mismatch")
                     await self.kill_group(previous["instance"])
+                    self._remove_proxy_files(previous["instance"])
                     record.unlink()
                 _write_record(
                     record,
@@ -478,17 +545,24 @@ class BubblewrapSandboxBackend:
                         limit_file.write(value)
                 if not (group / "cgroup.kill").exists():
                     raise RuntimeError("cgroup v2 kill support is required")
+                if spec.egress == Egress.ALLOWLIST:
+                    assert self.config.egress_proxy is not None
+                    assert self.config.egress_proxy_sha256 is not None
+                    proxy = Proxy(self.config.state_root / ("egress-" + instance))
+                    await proxy.start(
+                        self.config.egress_proxy, self.config.egress_proxy_sha256, spec, group
+                    )
                 process = await asyncio.create_subprocess_exec(
                     sys.executable,
                     "-I",
                     str(Path(__file__).with_name("_launch.py")),
                     str(os.getpid()),
                     str(group),
-                    *_arguments(self.config),
+                    *_arguments(self.config, proxy),
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    limit=FRAME_LIMIT,
+                    limit=65536,
                     env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
                 )
                 assert process.stdout is not None
@@ -499,12 +573,16 @@ class BubblewrapSandboxBackend:
                         detail = await diagnostics
                         raise RuntimeError("Bubblewrap startup failed: " + detail)
                 sandbox = _Sandbox(self, instance, process, lock_fd, record, spec, diagnostics)
+                sandbox.proxy = proxy
                 self._sandboxes[digest] = sandbox
                 return sandbox
             except BaseException:
 
                 async def cleanup() -> None:
                     await self.kill_group(instance)
+                    if proxy is not None:
+                        await proxy.close()
+                    self._remove_proxy_files(instance)
                     if process is not None:
                         await asyncio.wait_for(process.wait(), 10)
                     if diagnostics is not None:
@@ -519,6 +597,12 @@ class BubblewrapSandboxBackend:
                 finally:
                     os.close(lock_fd)
                 raise
+
+    def _remove_proxy_files(self, instance: str) -> None:
+        self._group(instance)
+        directory = self.config.state_root / ("egress-" + instance)
+        if directory.exists():
+            shutil.rmtree(directory)
 
     def _read_record(self, path: Path) -> dict[str, Any]:
         if path.is_symlink() or path.stat().st_size > 16384:
@@ -553,6 +637,7 @@ class BubblewrapSandboxBackend:
                 release = True
             else:
                 await self.kill_group(value["instance"])
+            self._remove_proxy_files(value["instance"])
             record.unlink()
             return True
         finally:

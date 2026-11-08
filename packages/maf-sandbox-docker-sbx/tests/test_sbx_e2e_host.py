@@ -71,7 +71,9 @@ def _key(label: str) -> SandboxKey:
 
 def _spec() -> SandboxSpec:
     return SandboxSpec(
-        kind="e2e", image=_IMAGE, requires=frozenset({Capability.EXEC, Capability.FILES_IN})
+        kind="e2e",
+        image=os.environ.get("MAF_SANDBOX_SBX_E2E_HOST_IMAGE", _IMAGE),
+        requires=frozenset({Capability.EXEC, Capability.FILES_IN}),
     )
 
 
@@ -211,7 +213,7 @@ def test_engine_fault_responses_do_not_mean_an_absent_sandbox(tmp_path):
 def _allowlist(*hosts: str) -> SandboxSpec:
     return SandboxSpec(
         kind="e2e",
-        image=_IMAGE,
+        image=os.environ.get("MAF_SANDBOX_SBX_E2E_HOST_IMAGE", _IMAGE),
         requires=frozenset({Capability.EXEC}),
         egress=Egress.ALLOWLIST,
         egress_allow=hosts,

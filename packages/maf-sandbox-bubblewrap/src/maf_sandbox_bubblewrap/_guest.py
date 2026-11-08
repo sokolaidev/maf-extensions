@@ -10,12 +10,14 @@ import os
 import posixpath
 import selectors
 import signal
+import socket
 import stat
 import subprocess
 import sys
+import threading
 import time
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 FILE_LIMIT = 8 * 1024 * 1024
 FRAME_LIMIT = 12 * 1024 * 1024
@@ -24,6 +26,10 @@ BASE = "/maf-sandbox/work"
 
 class TransferCapExceeded(ValueError):
     """Identify file transfer overflow separately from path confinement refusals."""
+
+
+class OutputLimitExceeded(ValueError):
+    """Identify combined command output overflow."""
 
 
 def parts(path: str, directory: str) -> tuple[str, ...]:
@@ -118,7 +124,7 @@ def execute(request: dict[str, Any]) -> dict[str, Any]:
                             else:
                                 streams[int(key.data)].extend(data)
                                 if sum(map(len, streams)) > request["output_limit"]:
-                                    raise ValueError("Guest command exceeded output limit")
+                                    raise OutputLimitExceeded("Guest command exceeded output limit")
                     while process.poll() is None:
                         if time.monotonic() >= deadline:
                             raise TimeoutError("Guest command exceeded deadline")
@@ -202,6 +208,49 @@ def dispatch(request: dict[str, Any]) -> dict[str, Any]:
         os.close(fd)
 
 
+def start_proxy_relay() -> None:
+    """Bridge loopback to the only host socket mounted into the private network namespace."""
+    endpoint = "/run/maf-egress/proxy.sock"
+    if not os.path.exists(endpoint):
+        return
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 3128))
+    listener.listen(16)
+    slots = threading.BoundedSemaphore(32)
+
+    def relay(client: socket.socket) -> None:
+        try:
+            with client, socket.socket(socket.AF_UNIX) as remote:
+                client.settimeout(10)
+                remote.settimeout(10)
+                remote.connect(endpoint)
+                with selectors.DefaultSelector() as selector:
+                    selector.register(client, selectors.EVENT_READ, remote)
+                    selector.register(remote, selectors.EVENT_READ, client)
+                    deadline = time.monotonic() + 180
+                    while time.monotonic() < deadline:
+                        for key, _ in selector.select(1):
+                            data = cast(socket.socket, key.fileobj).recv(65536)
+                            if not data:
+                                return
+                            key.data.sendall(data)
+        except OSError:
+            # A disconnected client must release its sockets and connection slot.
+            pass
+        finally:
+            slots.release()
+
+    def accept() -> None:
+        while True:
+            client, _ = listener.accept()
+            if slots.acquire(blocking=False):
+                threading.Thread(target=relay, args=(client,), daemon=True).start()
+            else:
+                client.close()
+
+    threading.Thread(target=accept, daemon=True).start()
+
+
 def main() -> None:
     """Keep control pipes private from guest commands and serve framed requests."""
     if os.getpid() != 1:
@@ -209,6 +258,7 @@ def main() -> None:
     if ctypes.CDLL(None).prctl(4, 0, 0, 0, 0) != 0:
         raise RuntimeError("Could not protect broker process descriptors")
     os.makedirs(BASE, mode=0o700, exist_ok=True)
+    start_proxy_relay()
     print('{"ready":1}', flush=True)
     while True:
         frame = sys.stdin.buffer.readline(FRAME_LIMIT + 1)

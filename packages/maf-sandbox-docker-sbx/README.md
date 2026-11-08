@@ -60,7 +60,7 @@ A lapsed login fails every `sbx` command until a person signs in again; the back
 | Capabilities | `EXEC`, `HOST_TOOLS`, `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `RECLAIM`, `EGRESS_METHODS`, `EGRESS_PATHS` |
 | Guest OS | POSIX |
 | Network | `CLOSED`, `ALLOWLIST` with method and path rules |
-| Isolation scope | `CONVERSATION` |
+| Isolation scope | `CALL`, `CONVERSATION` |
 | Egress observation | No |
 | Command output | 8 MiB of stdout and stderr together, or the budget a caller passes to `exec_bounded`; more kills the command and refuses the call |
 
@@ -81,6 +81,8 @@ sbx template load my-image.tar
 Then pass `image="my-image:local"`.
 
 ## Files: a workspace answered by the host
+
+`CALL` isolation names each sandbox with the full call key and creates a fresh workspace. A disposable kind removes that exact call's microVM and workspace before returning. The [experimental Azure pricing sample](https://github.com/sokolaidev/maf-extensions/tree/main/samples/experimental/azure_pricing) exercises consecutive calls and failure/cancellation disposal with the default microVM floor.
 
 Each sandbox mounts one fresh, private host directory, `<workspace_root>/<sandbox name>/ws-<random>`, and nothing else. Every create gets a new one, so a new sandbox never mounts an earlier one's files, and `sbx ls` tells which create made a sandbox. Every command binds that mount again at the storage base's parent, inside a user and mount namespace of its own, and then runs as the image's user. With the default storage base `/maf-sandbox/work`, that parent is `/maf-sandbox`. `sbx` lets only its own templates mount as root, and the namespace needs no such capability, so any template works. At create, root only makes the empty directory the mount goes over.
 

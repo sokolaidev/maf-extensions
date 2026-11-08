@@ -594,7 +594,7 @@ class SbxSandboxBackend:
             capabilities=_CAPABILITIES,
             egress_modes=frozenset({Egress.CLOSED, Egress.ALLOWLIST}),
             os_families=frozenset({OsFamily.POSIX}),
-            isolation_scopes=frozenset({IsolationScope.CONVERSATION}),
+            isolation_scopes=frozenset({IsolationScope.CALL, IsolationScope.CONVERSATION}),
             observes_egress=False,
             egress_method_tokens=_METHOD_TOKENS,
         )

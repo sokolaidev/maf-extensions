@@ -36,6 +36,8 @@ The [experimental Hyperlight AKS CodeAct sample](experimental/hyperlight_aks_cod
 
 ## How these are meant to be read
 
+The [experimental Azure pricing sample](experimental/azure_pricing/) uses the existing pricing kind on Bubblewrap or Docker Sandboxes, checks actual returned prices and per-call disposal, and supplies opt-in live enforcement probes. It remains a workspace example until the required backend additions are published.
+
 Docker CodeAct samples 06, 08, 16 and 19 permit only GET requests to `pypi.org` and `files.pythonhosted.org`, covering the PyPI index and package downloads. They require a method-enforcing iron-proxy image through `MAF_EGRESS_PROXY_IMAGE`; [sample 06](06_docker_codeact/README.md#build-the-egress-proxy) has the build instructions. The rules derive `EGRESS_METHODS`, so an older backend refuses instead of serving a host-wide allowlist. Their computation and file tasks do not depend on fetching data; other methods and hosts remain denied.
 
 The [experimental Hyperlight/ACAS CodeAct sample](experimental/hyperlight_acas_codeact/) selects Hyperlight for `APP_ENV=DEV`, `APP_ENV=CI`, or `CI=true`, and ACAS for other configured environments. DEV uses the native Windows WHP or Linux KVM implementation; its model-free CI smoke runs on Linux KVM. Because Hyperlight is unreleased, this source-only example runs from the locked workspace; the numbered samples retain their PyPI installation contract. The rest of this page describes that numbered set.

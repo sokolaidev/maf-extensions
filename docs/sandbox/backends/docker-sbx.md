@@ -66,7 +66,6 @@ The [initial measurements](https://github.com/sokolaidev/maf-extensions/actions/
 |---|---|
 | `run_code` | Any image is accepted, so the runtime is the image's. |
 | `reset` | A delete and recreate from a saved template would meet the contract, at the cost of a fresh create. Not built. |
-| `CALL` scope | Not declared; a create costs about 4 seconds on a warm host. |
 
 ## Status
 
@@ -80,3 +79,6 @@ The [initial measurements](https://github.com/sokolaidev/maf-extensions/actions/
 | `ALLOWLIST` with method and path rules | Implemented; the live suite runs the `EGRESS` and `EGRESS_METHODS` conformance suites, and the host-state suite a global allow added after acquire | [#1582](https://github.com/sokolaidev/maf-extensions/issues/1582) (closed) by [#1583](https://github.com/sokolaidev/maf-extensions/pull/1583) (merged), [#1502](https://github.com/sokolaidev/maf-extensions/issues/1502) (closed) by [#1583](https://github.com/sokolaidev/maf-extensions/pull/1583) (merged) |
 | `HOST_TOOLS` | Implemented with an independent held session per transport run; [Linux live validation](https://github.com/sokolaidev/maf-extensions/actions/runs/37039181463) at `1dc6d107` on `sbx` v0.46.0 passed 30 backend/CodeAct and 7 host-state tests | [#1614](https://github.com/sokolaidev/maf-extensions/issues/1614) (closed) by [#1635](https://github.com/sokolaidev/maf-extensions/pull/1635) (merged) |
 | `SNAPSHOT` | Not implemented | untracked |
+| `CALL` scope and pricing lifecycle | Implemented; [hosted pricing and concurrent call isolation passed](https://github.com/sokolaidev/maf-extensions/actions/runs/42394211890/job/128467995687) on Ubuntu 24.04 with sbx 0.51.0; the overall live job remains failed on the socket fixture below | [#2541](https://github.com/sokolaidev/maf-extensions/issues/2541) (closed) by [#2546](https://github.com/sokolaidev/maf-extensions/pull/2546) (merged) |
+| Azure pricing sample | Experimental workspace sample; real tool reports, eight enforcement/failure-cleanup probes and per-call disposal verified; model execution unverified | [#2474](https://github.com/sokolaidev/maf-extensions/issues/2474) (closed) by [#2546](https://github.com/sokolaidev/maf-extensions/pull/2546) (merged) |
+| Forwarded-agent socket fixture | Unresolved on the pricing template; normal host-level forwarding refusal passed | [#2547](https://github.com/sokolaidev/maf-extensions/issues/2547) (open) |
