@@ -72,7 +72,19 @@ def remaining(scope: str) -> tuple[list[str], list[str]]:
     )
 
 
-async def check(image: str, proxy_image: str | None = None) -> dict[str, Any]:
+def result_text(result: Any) -> list[str]:
+    """Keep bounded tool messages without serializing framework metadata."""
+    items = result if isinstance(result, list) else [result]
+    messages = []
+    for item in items[:16]:
+        value = item if isinstance(item, str) else getattr(item, "text", None)
+        messages.append(value[:4096] if isinstance(value, str) else f"<{type(item).__name__}>")
+    return messages
+
+
+async def check(
+    image: str, proxy_image: str | None = None, *, directory: Path | None = None
+) -> dict[str, Any]:
     """Measure actual public pricing, trust labels, egress denials and per-call cleanup."""
     if proxy_image is None:
         proxy_image = "maf-azure-pricing-proxy:" + uuid4().hex
@@ -178,12 +190,19 @@ async def check(image: str, proxy_image: str | None = None) -> dict[str, Any]:
                 expected,
             )
         )
+    active_case = "pricing"
+    arguments: dict[str, Any] = {}
+    current_context: FunctionInvocationContext | None = None
+    event_start = 0
     try:
         for name, arguments, expected in queries:
+            active_case = name
+            event_start = len(events)
             context = FunctionInvocationContext(
                 function=tool,
                 arguments=arguments,
             )
+            current_context = context
 
             async def invoke() -> None:
                 context.result = await tool.invoke(context=context)
@@ -194,7 +213,7 @@ async def check(image: str, proxy_image: str | None = None) -> dict[str, Any]:
             await tracker.process(context, enforce)
             items = context.result
             require(
-                isinstance(items, list) and items[0].text == COMPLETED_TEXT,
+                isinstance(items, list) and bool(items) and items[0].text == COMPLETED_TEXT,
                 f"Pricing tool did not complete: {name}",
             )
             reports = [item for item in items if item.text and item.text.startswith('{"prices":')]
@@ -238,6 +257,10 @@ async def check(image: str, proxy_image: str | None = None) -> dict[str, Any]:
                 }
             )
 
+        active_case = "denial-probes"
+        arguments = {}
+        current_context = None
+        event_start = len(events)
         key = SandboxKey(scope, "pricing", "pricing-check", "denial-probes")
         spec = replace(azure_pricing_sandbox_spec(PROBE_IMAGE), kind="azure-pricing-probe")
         sandbox = await backend.acquire(key, spec)
@@ -246,6 +269,8 @@ async def check(image: str, proxy_image: str | None = None) -> dict[str, Any]:
                 ("unlisted-host", "example.com", "GET"),
                 ("post-method", "prices.azure.com", "POST"),
             ):
+                active_case = name
+                arguments = {"host": host, "method": method}
                 result = await sandbox.exec(
                     ["python3", "-I", "-c", _PROBE, host, method],
                     working_directory=".",
@@ -264,6 +289,31 @@ async def check(image: str, proxy_image: str | None = None) -> dict[str, Any]:
             "Calls reused an instance",
         )
         require(await asyncio.to_thread(remaining, scope) == ([], []), "Probe resources remain")
+    except Exception as error:
+        diagnostics = {
+            "passed": False,
+            "case": active_case,
+            "arguments": arguments,
+            "imageId": image_id,
+            "proxyImageId": proxy_id,
+            "checkedAt": datetime.now(UTC).isoformat(),
+            "error": {"type": type(error).__name__, "message": str(error)[:4096]},
+            "toolResult": result_text(current_context.result)
+            if current_context is not None
+            else [],
+            "checks": cases,
+            "events": [
+                {"seconds": event.seconds, "failure": event.failure, "unclean": event.unclean}
+                for event in events[event_start:]
+            ],
+        }
+        print("Azure pricing qualification failed: " + json.dumps(diagnostics), flush=True)
+        if directory is not None:
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "failure.json").write_text(
+                json.dumps(diagnostics, indent=2) + "\n", "utf-8"
+            )
+        raise
     finally:
         purge = await router.dispose_scope(scope, "pricing")
         require(not purge.undisposed, "Pricing scope cleanup failed")
@@ -291,8 +341,9 @@ def main() -> None:
     parser.add_argument("--image", required=True)
     parser.add_argument("--proxy-image")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--diagnostics-directory", type=Path)
     args = parser.parse_args()
-    result = asyncio.run(check(args.image, args.proxy_image))
+    result = asyncio.run(check(args.image, args.proxy_image, directory=args.diagnostics_directory))
     text = json.dumps(result, indent=2) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -64,7 +64,9 @@ def check(
     if profile == "azure-pricing":
         import check_live_azure_pricing
 
-        result = asyncio.run(check_live_azure_pricing.check(image_id))
+        result = asyncio.run(
+            check_live_azure_pricing.check(image_id, directory=directory / "azure-pricing")
+        )
         return {
             "imageId": image_id,
             "profile": profile,
