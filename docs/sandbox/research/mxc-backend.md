@@ -803,3 +803,17 @@ The coordinator report records `boundary: during_guest_execution`, `native_count
 Both checkpoint payloads exceed the small-frame API limit and crossed the mutual-TLS streaming API. All three downloaded report archives matched GitHub's advertised SHA-256 digests; their contents were the three reports and an empty coordinator service log. Successful cleanup left no helper streams to retain. The evidence file preserves parsed reports, original report hashes, archive digests and artifact identifiers; report hashes refer to the original downloaded bytes, not their nested JSON representation.
 
 This qualifies the fixed active-guest worker-loss case on this compatible AMD/Linux allocation. A's machine and trusted driver/controller remained available. It does not qualify an unreachable or terminated machine, coordinator-storage loss, physical reboot, power-loss durability, arbitrary CPU models/features, cross-vendor or cross-OS restoration, network-enabled guests, network-authority revocation or production integration. Whole-machine loss still requires independent infrastructure termination evidence. Automatic shutdown remains disabled, and #1671 stays open for those separate failure boundaries.
+
+## Coordinator and storage failure follow-up
+
+Cloud VMs and VM-level isolation qualification are deferred. Continue #1671 with the existing GitHub-runner and process/TLS experiments; worker-process loss remains the native qualification boundary. The coordinator/storage audit found the following coverage and gap:
+
+| Failure boundary | Existing evidence or next control |
+| --- | --- |
+| Coordinator dies around ownership or fence commit | Ordinary subprocess controls in [test_mxc_remote_authority.py](../../../tests/test_mxc_remote_authority.py) preserve the committed transition and block replacement while proof is pending. |
+| Publication acknowledgment is lost | Ordinary TLS/process controls in [test_mxc_remote_api.py](../../../tests/test_mxc_remote_api.py) resolve the original call after restart without reexecuting it. |
+| SQLite is full, transfer fails, or cleanup verification is unavailable | Ordinary authority/API controls preserve the prior checkpoint, outstanding reservations and scratch charges. |
+| Ownership or publication journal is missing, empty or corrupt at startup | The previous coordinator could recreate missing databases or defer opening publication storage. [Explicit provisioning and existing-only startup](../../../scripts/experiments/mxc_session_patch/HOST_PUBLICATION.md#coordinator-journal-loss) now refuse these cases before serving requests; regression controls retain a pending fence, committed result and scratch charge through temporary loss. |
+| Permanent coordinator storage loss or rollback to a valid old database | Unqualified. Refusal does not reconstruct ownership, call identities or checkpoint state; restoring backups needs a separate consistency and fencing design. |
+
+The new startup contract requires `initialize=True` once for an empty root, then existing-only startup with all configured sessions present. The cross-runner driver initializes only its first coordinator process. These are ordinary storage-refusal controls; no new native recovery run or whole-machine-loss evidence is implied. #1671 remains open, automatic shutdown remains opt-in, and production integration is outside this experiment.

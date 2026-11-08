@@ -368,7 +368,7 @@ class Worker:
 class Service:
     """Serialize test orchestration and real coordinator requests on the SQLite owner thread."""
 
-    def __init__(self, root: Path, peers: dict):
+    def __init__(self, root: Path, peers: dict, *, initialize: bool = False):
         self.root, self.peers = root, peers
         self.admin = _fingerprint(peers["coordinator"]["certificate"])
         grants = {
@@ -381,6 +381,7 @@ class Service:
             grants,
             {s: config for s in SESSIONS},
             enabled=True,
+            initialize=initialize,
             scratch_policy=scratch,
         )
         self.grants = {**grants, self.admin: None}
@@ -449,9 +450,13 @@ class Service:
         }
 
 
-def serve(root: Path, bundle: Path, role: str, peers: dict) -> bool:
+def serve(root: Path, bundle: Path, role: str, peers: dict, *, initialize: bool = False) -> bool:
     """Serve one role until explicit completion or its bounded deadline."""
-    endpoint = Service(root, peers) if role == "coordinator" else Worker(root, bundle, role, peers)
+    endpoint = (
+        Service(root, peers, initialize=initialize)
+        if role == "coordinator"
+        else Worker(root, bundle, role, peers)
+    )
     context = api.server_context(root / "certificate.pem", root / "key.pem", root / "trust.pem")
     until = time.monotonic() + DEADLINE
     try:
@@ -619,7 +624,7 @@ def orchestrate(
     log = (root / "service.log").open("wb")
     passed = False
 
-    def start() -> subprocess.Popen:
+    def start(*, initialize: bool = False) -> subprocess.Popen:
         child = subprocess.Popen(
             [
                 sys.executable,
@@ -632,6 +637,7 @@ def orchestrate(
                 str(bundle),
                 "--role",
                 "coordinator",
+                *(["--initialize"] if initialize else []),
             ],
             stdout=log,
             stderr=subprocess.STDOUT,
@@ -653,7 +659,7 @@ def orchestrate(
         process = start()
 
     try:
-        process = start()
+        process = start(initialize=True)
         for role in ("a", "b"):
             _ready(transports[role])
         report = scenario(
@@ -693,10 +699,13 @@ def main() -> int:
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--role", choices=ROLES, required=True)
     parser.add_argument("--address")
+    parser.add_argument("--initialize", action="store_true")
     crashes = parser.add_mutually_exclusive_group()
     crashes.add_argument("--worker-crash", action="store_true")
     crashes.add_argument("--active-guest-crash", action="store_true")
     args = parser.parse_args()
+    if args.initialize and (args.mode != "service" or args.role != "coordinator"):
+        parser.error("--initialize requires the coordinator service")
     report: dict = {
         "status": "failed",
         "phase": args.mode,
@@ -725,7 +734,11 @@ def main() -> int:
         validate_peers(peers, _binding())
         validate_local(args.bundle, args.role, peers[args.role])
         if args.mode == "service":
-            return 0 if serve(args.root, args.bundle, args.role, peers) else 1
+            return (
+                0
+                if serve(args.root, args.bundle, args.role, peers, initialize=args.initialize)
+                else 1
+            )
         report["phase"] = "native"
         if args.role == "coordinator":
             report.update(
