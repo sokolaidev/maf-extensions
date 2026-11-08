@@ -24,5 +24,6 @@ FROM scratch
 # ACAS supplies runtime devices and rejects device nodes embedded in image layers.
 COPY --from=flattened /rootfs/ /
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin \
-    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    LC_ALL=C
 LABEL dev.sokolai.maf.bicep.route="source"
