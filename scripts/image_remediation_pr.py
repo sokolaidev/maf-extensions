@@ -18,6 +18,7 @@ from image_remediation_evidence import EvidenceChanging, current, deferred
 
 BRANCH = "bot/go-image-remediation"
 MARKER = "maf-image-remediation-v1"
+COMMIT_MARKER = "maf-image-remediation-commit-v1"
 MARKER_PATTERN = r"<!-- " + MARKER + r" (.+?) -->"
 TITLE = "build: rebuild Go image dependencies with verified security fixes"
 PENDING_NOTICE = (
@@ -239,6 +240,49 @@ def owned(client: GitHub, head: str, state: dict[str, Any], bot: str) -> None:
             raise ValueError("Remediation branch content differs from its ownership marker")
 
 
+def commit_message(client: GitHub, state: dict[str, Any]) -> str:
+    """Persist branch ownership before a pull request exists."""
+    return (
+        f"{getattr(client, 'title', TITLE)}\n\n<!-- {COMMIT_MARKER} "
+        f"{json.dumps(state, sort_keys=True, separators=(',', ':'))} -->"
+    )
+
+
+def orphan(client: GitHub, head: str, bot: str) -> dict[str, Any]:
+    """Admit only a marked bot commit with unchanged parents and bounded file contents."""
+    commit = request(client, f"git/commits/{head}")
+    matches = re.findall(r"<!-- " + COMMIT_MARKER + r" (.+?) -->", commit["message"])
+    if len(matches) != 1:
+        raise ValueError("Unclaimed remediation branch has no unique commit ownership marker")
+    identity = request(client, f"commits/{head}")
+    if any((identity.get(role) or {}).get("login") != bot for role in ("author", "committer")):
+        raise ValueError("Unclaimed remediation branch is not authored and committed by the App")
+    state = json.loads(matches[0])
+    if (
+        not isinstance(state, dict)
+        or set(state) != {"schemaVersion", "branch", "base", "files", "parents", "tree"}
+        or state["schemaVersion"] != 1
+        or state["branch"] != getattr(client, "branch", BRANCH)
+        or not isinstance(state["base"], str)
+        or not re.fullmatch(r"[0-9a-f]{40}", state["base"])
+        or state["tree"] != commit["tree"]["sha"]
+        or not isinstance(state["files"], dict)
+        or not 1 <= len(state["files"]) <= 20
+        or not all(
+            isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+            for value in state["files"].values()
+        )
+        or state["parents"] != [item["sha"] for item in commit["parents"]]
+        or len(state["parents"]) not in {1, 2}
+        or state["parents"][-1] != state["base"]
+        or commit["message"] != commit_message(client, state)
+    ):
+        raise ValueError("Unclaimed remediation branch has invalid commit ownership")
+    previous = {"head": head, "base": state["base"], "files": state["files"]}
+    owned(client, head, previous, bot)
+    return previous
+
+
 def publish(
     client: GitHub,
     receipt: dict[str, Any],
@@ -294,6 +338,8 @@ def publish(
             raise ValueError("Open remediation pull request lost its branch")
         if pull["state"] == "closed":
             pull = None
+    elif head is not None:
+        previous = orphan(client, head, bot)
     base = receipt["source"]
     base_commit = request(client, f"git/commits/{base}")
     entries = []
@@ -332,15 +378,22 @@ def publish(
         "email": f"{positive_id(user['id'])}+{bot}@users.noreply.github.com",
         "date": base_commit["committer"]["date"],
     }
-    # A deterministic initial commit lets a retry recognize a branch created before a lost response.
     parents = [base] if previous is None else list(dict.fromkeys([head, base]))
+    commit_state = {
+        "schemaVersion": 1,
+        "branch": getattr(client, "branch", BRANCH),
+        "base": base,
+        "files": hashes,
+        "parents": parents,
+        "tree": tree["sha"],
+    }
     commit = request(
         client,
         "git/commits",
         method="POST",
         payload=encode(
             {
-                "message": getattr(client, "title", TITLE),
+                "message": commit_message(client, commit_state),
                 "tree": tree["sha"],
                 "parents": parents,
                 "author": identity,
@@ -351,8 +404,6 @@ def publish(
     proposed = {"head": commit["sha"], "base": base, "files": hashes}
     if previous is not None and previous["base"] == base and previous["files"] == hashes:
         proposed = previous
-    if head is not None and previous is None and head != proposed["head"]:
-        raise ValueError("Unclaimed remediation branch differs from the deterministic proposal")
     state = {"schemaVersion": 1, "current": previous, "pending": proposed}
     current(client, receipt)
     if pull:

@@ -950,7 +950,9 @@ class FakeGitHub(publication.GitHub):
         self.pulls = []
         self.blobs = {}
         self.trees = {}
-        self.commits = {SOURCE: {"tree": {"sha": "base-tree"}, "committer": {"date": AT}}}
+        self.commits: dict[str, Any] = {
+            SOURCE: {"tree": {"sha": "base-tree"}, "committer": {"date": AT}}
+        }
         self.fail_after = None
         self.fail_before = None
         self.body_edit_after = None
@@ -970,7 +972,12 @@ class FakeGitHub(publication.GitHub):
         return (
             []
             if self.head is None
-            else [{"ref": f"refs/heads/{publication.BRANCH}", "object": {"sha": self.head}}]
+            else [
+                {
+                    "ref": f"refs/heads/{getattr(self, 'branch', publication.BRANCH)}",
+                    "object": {"sha": self.head},
+                }
+            ]
         )
 
     def request(self, endpoint, *, method="GET", payload=None, **kwargs):
@@ -987,9 +994,11 @@ class FakeGitHub(publication.GitHub):
         elif path == f"users/{BOT}":
             result = {"id": 42}
         elif path.startswith("git/commits/"):
-            result = self.commits[path.split("/")[-1]]
+            result = copy.deepcopy(self.commits[path.split("/")[-1]])
+            if "parents" in result:
+                result["parents"] = [{"sha": sha} for sha in result["parents"]]
         elif path.startswith("commits/"):
-            result = {"author": {"login": BOT}}
+            result = {"author": {"login": BOT}, "committer": {"login": BOT}}
         elif path.startswith("compare/"):
             sha = path.rsplit("...", 1)[1]
             entries = self.trees[self.commits[sha]["tree"]["sha"]]
@@ -1046,7 +1055,10 @@ class FakeGitHub(publication.GitHub):
                 "user": {"login": BOT},
                 "html_url": f"https://github.com/{REPOSITORY}/pull/1",
                 "merged_at": None,
-                "head": {"ref": publication.BRANCH, "repo": {"full_name": REPOSITORY}},
+                "head": {
+                    "ref": getattr(self, "branch", publication.BRANCH),
+                    "repo": {"full_name": REPOSITORY},
+                },
                 "base": {"ref": "main"},
             }
             self.pulls.append(result)
@@ -1094,6 +1106,117 @@ def test_pr_create_retry_and_refresh_are_idempotent(publisher):
     assert publish()["status"] == "updated"
     assert first in client.commits[client.head]["parents"]
     assert len(client.pulls) == 1
+
+
+@pytest.mark.parametrize("lane", ["go", "platform"])
+@pytest.mark.parametrize("failure", ["deferred", "lost-response"])
+def test_orphan_retry_uses_fresh_source_and_proposal(publisher, monkeypatch, lane, failure):
+    client, files, report, publish = publisher
+    if lane == "platform":
+        from platform_remediation import PlatformGitHub
+
+        client.branch = PlatformGitHub.branch
+        client.title = PlatformGitHub.title
+        report["kind"] = "platform"
+    calls = []
+
+    def changing(*_):
+        calls.append(None)
+        if len(calls) == 3:
+            raise acquisition.EvidenceChanging("Main changed during remediation")
+
+    if failure == "deferred":
+        monkeypatch.setattr(publication, "current", changing)
+        error = acquisition.EvidenceChanging
+    else:
+        client.fail_after = "graphql"
+        error = OSError
+    with pytest.raises(error):
+        publish()
+    assert client.head is not None and not client.pulls
+    monkeypatch.setattr(publication, "current", lambda *_: None)
+    for base in ("d" * 40, "e" * 40):
+        before = client.head
+        client.commits[base] = {"tree": {"sha": f"tree-{base}"}, "committer": {"date": AT}}
+        report["source"] = base
+        files[planner.RECIPE] = base.encode()
+        report["files"] = {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()}
+        if base.startswith("d"):
+            client.fail_before = "pulls"
+            with pytest.raises(OSError):
+                publish()
+            assert not client.pulls
+        else:
+            assert publish()["status"] == "created"
+        assert client.commits[client.head]["parents"] == [before, base]
+        tree = next(data for path, data in reversed(client.writes) if path == "git/trees")
+        assert tree["base_tree"] == f"tree-{base}"
+    state = publication.marker(client.pulls[0]["body"])
+    assert state["current"] == {
+        "head": client.head,
+        "base": report["source"],
+        "files": report["files"],
+    }
+    assert state["pending"] is None
+    assert publish()["status"] == "unchanged"
+    assert len(client.pulls) == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["unmarked", "duplicate", "branch", "parents", "tree", "content", "author", "committer"],
+)
+def test_orphan_recovery_refuses_modified_ownership(publisher, monkeypatch, change):
+    client, _, _, publish = publisher
+    client.fail_before = "pulls"
+    with pytest.raises(OSError):
+        publish()
+    head = client.head
+    commit = client.commits[head]
+    if change == "unmarked":
+        commit["message"] = publication.TITLE
+    elif change == "duplicate":
+        commit["message"] *= 2
+    elif change == "branch":
+        commit["message"] = commit["message"].replace(publication.BRANCH, "bot/other")
+    elif change == "parents":
+        commit["parents"] = ["f" * 40]
+    elif change == "tree":
+        commit["tree"] = {"sha": "f" * 40}
+    elif change == "content":
+        entry = client.trees[commit["tree"]["sha"]][0]
+        client.blobs[entry["sha"]] = b"human edit"
+    else:
+        original = client.request
+
+        def edited(endpoint, **kwargs):
+            result = original(endpoint, **kwargs)
+            if endpoint.endswith(f"/commits/{head}") and "/git/" not in endpoint:
+                value = json.loads(result)
+                value[change] = {"login": "human"}
+                return encode(value)
+            return result
+
+        monkeypatch.setattr(client, "request", edited)
+    client.writes.clear()
+    with pytest.raises(ValueError):
+        publish()
+    assert client.head == head and not client.pulls and not client.writes
+
+
+@pytest.mark.parametrize("race", [True, "base"])
+def test_orphan_recovery_keeps_atomic_head_guard(publisher, race):
+    client, files, report, publish = publisher
+    client.fail_before = "pulls"
+    with pytest.raises(OSError):
+        publish()
+    files[planner.RECIPE] = b"fresh proposal"
+    report["files"][planner.RECIPE] = hashlib.sha256(files[planner.RECIPE]).hexdigest()
+    client.race = race
+    with pytest.raises(ValueError, match="Head changed"):
+        publish()
+    assert client.head == (SOURCE if race == "base" else "human")
+    assert not client.pulls
 
 
 @pytest.mark.parametrize("change", ["human", "deleted", "base"])
