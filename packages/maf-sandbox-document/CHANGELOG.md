@@ -2,6 +2,8 @@
 
 ## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-document-v0.2.2...maf-sandbox-document-v0.3.0) (2026-11-07)
 
+> **Publication correction.** This version has an immutable GitHub Release and tag but did not reach PyPI. [Publication attempt 3](https://github.com/sokolaidev/maf-extensions/actions/runs/42427269701/job/128860073339) stopped before building because the published `document-export` image lacked consumer qualification matching this release's frozen inputs. [Qualification on newer `main`](https://github.com/sokolaidev/maf-extensions/actions/runs/42522222327) passed, but its inputs differ from this tag. The replacement is planned as 0.3.1 through release-please; this note does not establish that the replacement has published.
+
 
 ### Features
 
