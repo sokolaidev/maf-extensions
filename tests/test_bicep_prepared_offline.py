@@ -14,6 +14,7 @@ from maf_sandbox import CallerContext, Cleanup, Egress, SandboxRouter
 from maf_sandbox.maf import COMPLETED_TEXT, NOT_COMPLETED_TEXT
 from maf_sandbox.testing import InMemoryStore
 from maf_sandbox_bicep import make_bicep_tools
+from maf_sandbox_bicep._tool import _BUILD_CMD, _BUILD_PARAMS_CMD, _LINT_CMD
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
 IMAGE = os.environ.get("MAF_BICEP_PREPARED_IMAGE", "")
@@ -34,6 +35,83 @@ STORAGE = """module storage 'br/public:avm/res/storage/storage-account:0.31.0' =
   }
 }
 """
+
+
+@pytest.mark.parametrize(
+    ("template", "path"),
+    [(_BUILD_CMD, "main.bicep"), (_BUILD_PARAMS_CMD, "main.bicepparam"), (_LINT_CMD, "main.bicep")],
+    ids=["build", "build-params", "lint"],
+)
+def test_compiler_commands_clear_inherited_locale(template, path):
+    script = """set -eu
+mkdir -p /tmp/locale-check/bin
+cd /tmp/locale-check
+printf "output value string = 'hello'\\n" > main.bicep
+printf "using './main.bicep'\\n" > main.bicepparam
+cat > bin/bicep <<'SH'
+#!/bin/sh
+test "$LC_ALL" = C || exit 90
+test "${LANGUAGE+x}" != x || exit 91
+test "${LOCPATH+x}" != x || exit 92
+test "$HOME" = "$PWD" && test "$TMPDIR" = "$PWD" || exit 93
+echo LOCALE_GUARD_PASSED
+exec /usr/local/bin/bicep "$@"
+SH
+chmod +x bin/bicep
+export PATH="$PWD/bin:$PATH"
+""" + template.format(path=path).replace(
+        " --diagnostics-format", " --no-restore --diagnostics-format"
+    )
+    result = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-i",
+            "--network",
+            "none",
+            "--entrypoint",
+            "/bin/sh",
+            "--env",
+            "LC_ALL=fr_FR.UTF-8",
+            "--env",
+            "LANG=fr_FR.UTF-8",
+            "--env",
+            "LANGUAGE=../../../../tmp/catalog",
+            "--env",
+            "LOCPATH=/tmp/locales",
+            IMAGE,
+            "-s",
+        ],
+        input=script.encode(),
+        capture_output=True,
+        timeout=60,
+        check=True,
+    )
+    marker, diagnostics = result.stdout.decode().split("\n", 1)
+    assert marker == "LOCALE_GUARD_PASSED"
+    assert all(not run["results"] for run in json.loads(diagnostics)["runs"])
+
+
+def test_runtime_defaults_to_c_locale_without_download_tools():
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--entrypoint",
+            "/bin/sh",
+            IMAGE,
+            "-c",
+            'test "$LC_ALL" = C && ! command -v curl '
+            "&& test ! -e /usr/lib/libcurl.so.4 && ! command -v gdbmtool",
+        ],
+        capture_output=True,
+        timeout=30,
+        check=True,
+    )
 
 
 @pytest.mark.parametrize(
