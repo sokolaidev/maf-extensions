@@ -709,6 +709,7 @@ def test_no_update_summary_preserves_publication_and_residual_findings(
     "mutation",
     [
         "none",
+        "unpublished",
         "race",
         "stale",
         "digest",
@@ -785,7 +786,19 @@ def test_acquisition_binds_release_catalogue_and_monitor(
         "restore_monitor",
         lambda client, monitor, source, targets, directory: shutil.copytree(seed, directory / name),
     )
-    if mutation.endswith("-busy"):
+    if mutation == "unpublished":
+        result = acquisition.acquire(
+            acquisition.GitHub(),
+            checkout,
+            tmp_path / "acquired",
+            selected_profiles=["terraform-random", "bicep"] if mutation == "unpublished" else None,
+            require_all_profiles=mutation != "unpublished",
+        )
+        assert result["updates"] and verified == [name]
+        assert read(tmp_path / "acquired/receipt.json")["oldestAssessment"] == AT
+        if mutation == "unpublished":
+            assert read(tmp_path / "acquired/receipt.json")["unpublishedProfiles"] == ["bicep"]
+    elif mutation.endswith("-busy"):
         work = tmp_path / "acquired"
         assert acquisition.acquire_with_retry(acquisition.GitHub(), checkout, work) is None
         assert sleeps == [1, 2, 30, 1, 2, 30, 1, 2]

@@ -7,6 +7,7 @@ import shutil
 import stat
 import time
 import zipfile
+from collections.abc import Callable, Iterable
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -176,7 +177,15 @@ def current(client: GitHub, receipt: dict[str, Any]) -> None:
         raise EvidenceChanging("Monitoring changed during remediation")
 
 
-def acquire(client: GitHub, root: Path, directory: Path) -> dict[str, Any]:
+def acquire(
+    client: GitHub,
+    root: Path,
+    directory: Path,
+    *,
+    selected_profiles: Iterable[str] | None = None,
+    planner: Callable[[Path, list[Path]], dict[str, Any]] | None = None,
+    require_all_profiles: bool = True,
+) -> dict[str, Any]:
     """Authenticate current released images and fresh monitoring before planning source edits."""
     source = git(root, "rev-parse", "HEAD").strip()
     if main_head(client) != source:
@@ -189,10 +198,14 @@ def acquire(client: GitHub, root: Path, directory: Path) -> dict[str, Any]:
     if latest_monitor(client) != monitor:
         raise EvidenceChanging("Monitoring changed during acquisition")
     records = {}
+    unpublished = []
     at = now()
-    for profile in sorted(PROVIDER_MANIFESTS):
+    for profile in sorted(PROVIDER_MANIFESTS if selected_profiles is None else selected_profiles):
         name = snapshot.catalogue["current"].get(profile)
         if name is None:
+            if not require_all_profiles:
+                unpublished.append(profile)
+                continue
             raise ValueError("A supported current image release is missing")
         record = snapshot.catalogue["releases"][name]
         if record["profile"] != profile:
@@ -213,6 +226,8 @@ def acquire(client: GitHub, root: Path, directory: Path) -> dict[str, Any]:
             raise ValueError("Current monitoring is stale, unavailable or contradictory")
         release_evidence(client, record, directory / "releases" / profile)
         records[f"{profile}-{record['version']}"] = record
+    if not records:
+        raise ValueError("No supported current image releases are available")
     restored = directory / "evidence"
     restore_monitor(client, monitor, producer, set(records), restored)
     paths = []
@@ -238,7 +253,9 @@ def acquire(client: GitHub, root: Path, directory: Path) -> dict[str, Any]:
             record["latestAttempt"]["assessedAt"] for record in records.values()
         ),
     }
-    result = plan(root, paths)
+    if not require_all_profiles:
+        receipt["unpublishedProfiles"] = unpublished
+    result = (plan if planner is None else planner)(root, paths)
     current(client, receipt)
     write(directory / "receipt.json", receipt)
     write(directory / "plan.json", result)
