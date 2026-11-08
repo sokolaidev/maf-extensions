@@ -12,7 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import chrome_inventory as chrome  # noqa: E402
 import image_security_evidence as evidence  # noqa: E402
 import prepare_container_release as preparation  # noqa: E402
-from image_security_evidence import verify_inventory  # noqa: E402
 
 pytestmark = pytest.mark.workflow
 IMAGE = "sha256:" + "a" * 64
@@ -50,7 +49,7 @@ def inventory():
 
 def test_vendor_metadata_alone_cannot_pass_inventory_verification(inventory):
     with pytest.raises(ValueError, match="upstream CVE inventory"):
-        verify_inventory(inventory, IMAGE)
+        evidence.verify_inventory(inventory, IMAGE)
 
 
 def test_browser_executable_without_vendor_metadata_is_refused(inventory):
@@ -78,7 +77,7 @@ def test_enrichment_preserves_raw_packages_and_is_idempotent(tmp_path, inventory
     assert browser["type"] == "binary"
     assert browser["purl"] == "pkg:generic/chrome@157.0.8103.38"
     assert browser["cpes"][0]["cpe"] == "cpe:2.3:a:google:chrome:157.0.8103.38:*:*:*:*:*:*:*"
-    verify_inventory(result, IMAGE)
+    evidence.verify_inventory(result, IMAGE)
     assert not chrome.retain(tmp_path)
     assert (tmp_path / "sbom.raw.syft.json").read_text(encoding="utf-8") == original
 

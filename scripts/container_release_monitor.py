@@ -375,7 +375,11 @@ def scan(directory: Path, batch: int) -> None:
                 stage = "application inventory restore"
                 application_inventory(root, candidate, image_id, restore=True)
                 stage = "vulnerability assessment"
-                result.update(assess(root, image_id, require_clean=False))
+                assessment = assess(root, image_id, require_clean=False)
+                if candidate["profile"] == "document-export":
+                    stage = "application inventory validation"
+                    verify_profile_inventory(read(root / "sbom.syft.json"), "document-export")
+                result.update(assessment)
         except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
             diagnostic = failure_details(stage, error)
             result.update(

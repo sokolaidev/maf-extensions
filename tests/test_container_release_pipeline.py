@@ -208,6 +208,58 @@ def test_unexpected_image_is_scanned_and_retained_until_its_own_confirmed_absenc
     )
 
 
+def test_missing_browser_inventory_is_isolated_without_runtime_evidence(
+    monkeypatch, tmp_path, monitor_context
+):
+    document = CANDIDATE | {"profile": "document-export"}
+    shell = CANDIDATE | {"profile": "shell"}
+    monitor_context.catalogue = reserve(reserve(empty_catalogue(), document, AT), shell, AT)
+    published = []
+    monkeypatch.setattr(
+        monitor,
+        "Evidence",
+        lambda: SimpleNamespace(
+            ensure=lambda *a: {}, retain=lambda *a: None, publish=lambda *a: published.append(a)
+        ),
+    )
+    monkeypatch.setattr(monitor, "anonymous_pull", lambda candidate: candidate["imageId"])
+    monkeypatch.setattr(monitor.subprocess, "run", lambda *a, **k: None)
+    scanned = []
+
+    def assess(directory, image_id, **kwargs):
+        assert not (directory / "runtime.json").exists()
+        scanned.append(directory.name)
+        report = scan_report()
+        result = scan_result(report, image_id, DONE)
+        write(directory / "grype.json", report)
+        write(directory / "assessment.json", result)
+        write(
+            directory / "sbom.syft.json",
+            {
+                "artifacts": [{"name": "python"}],
+                "source": {"type": "image", "metadata": {"imageID": image_id}},
+            },
+        )
+        return result
+
+    monkeypatch.setattr(monitor, "assess", assess)
+    monitor.begin(tmp_path)
+    monkeypatch.setattr(monitor, "now", lambda: DONE)
+    monitor.scan(tmp_path, 0)
+    assert scanned == ["document-export-0.1.0", "shell-0.1.0"]
+    observation = read(tmp_path / "reports/document-export-0.1.0/observation.json")
+    assert observation["assessment"]["outcome"] == "unavailable"
+    assert observation["assessment"]["diagnostic"]["stage"] == "application inventory validation"
+    monitor.finish(tmp_path)
+    assert published
+    releases = monitor_context.catalogue["releases"]
+    assert releases["document-export/0.1.0"]["latestAttempt"]["outcome"] == "unavailable"
+    assert releases["shell/0.1.0"]["latestAttempt"]["outcome"] == "clean"
+    with zipfile.ZipFile(tmp_path / "retained/reports-0000.zip") as archive:
+        assert "document-export-0.1.0/observation.json" in archive.namelist()
+        assert "shell-0.1.0/observation.json" in archive.namelist()
+
+
 def test_failed_registry_discovery_cannot_report_clean(monkeypatch, tmp_path, monitor_context):
     def unavailable(*args):
         raise TimeoutError("registry unavailable")
