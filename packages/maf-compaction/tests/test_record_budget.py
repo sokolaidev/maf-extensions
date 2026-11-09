@@ -708,10 +708,12 @@ class _CountingTokenizer(CharacterEstimatorTokenizer):
     def __init__(self) -> None:
         super().__init__()
         self.transcripts = 0
+        self.batches = 0
 
     def count_tokens(self, text: str) -> int:
         if '"role": "user"' in text and '"text": "1. ' in text:
             self.transcripts += 1
+            self.batches += "\\n2. " in text
         return super().count_tokens(text)
 
 
@@ -867,3 +869,35 @@ async def test_a_changed_record_reopens_the_search_of_the_records_it_covered() -
     restored.restore_session_state(json.loads(json.dumps(first.session_state())))
 
     assert await restored._merge_batches(messages, None, 0.001), "the changed pair now fits"
+
+
+@pytest.mark.parametrize("records", [12, 24])
+async def test_a_sweep_over_starts_it_already_searched_hashes_each_record_once(
+    records: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Checking what a start searched against the records standing costs no hashing of them again."""
+    tokenizer = _CountingTokenizer()
+    messages = _padded_history(records, 2_400)
+    strategy = _strategy(
+        _Summarizer(),
+        budget=_record_size(copy.deepcopy(messages)) - 200,
+        share=0.25,
+        tokenizer=tokenizer,
+    )
+    for _ in range(10):
+        await strategy._merge_batches(messages, None, 0.25)
+    hashed = 0
+    original = composed_module._digest
+
+    def counted(text: str) -> str:
+        nonlocal hashed
+        hashed += 1
+        return original(text)
+
+    monkeypatch.setattr(composed_module, "_digest", counted)
+    tokenizer.batches = 0
+
+    await strategy._merge_batches(messages, None, 0.25)
+
+    assert tokenizer.batches == 0, "the premise: every start had searched every run from it"
+    assert hashed <= 2 * records + 4, f"{hashed} digests for {records} records"

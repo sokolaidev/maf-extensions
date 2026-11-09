@@ -346,6 +346,13 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+#: A Mersenne prime and a fixed base for the polynomial hash a batch sweep combines record
+#: digests with: shared prefix sums give the digest of any run of records in constant time, so
+#: a start checks what it searched against the records standing without hashing them again.
+_RUN_MODULUS: Final[int] = (1 << 521) - 1
+_RUN_BASE: Final[int] = int(hashlib.sha256(b"maf-compaction record runs").hexdigest(), 16)
+
+
 def _is_excluded(message: Message) -> bool:
     """Return whether ``message`` carries the exclusion flag."""
     return bool(message.additional_properties.get(EXCLUDED_KEY, False))
@@ -1534,6 +1541,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         limit = self._record_request_limit()
         handled: set[int] = set()
         bodies: dict[int, str] = {}
+        digests: dict[int, str] = {}
+        runs: list[int] = [0]
+        powers: list[int] = [1]
         alone: dict[int, bool] = {}
         probes = 0
         changed = False
@@ -1554,6 +1564,13 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if missing:
                 for group, body in zip(missing, record_bodies(messages, missing), strict=True):
                     bodies[last(group)] = body
+                    digests[last(group)] = _digest(body)
+            runs[:] = [0]
+            for group in groups:
+                value = int(digests[last(group)], 16)
+                runs.append((runs[-1] * _RUN_BASE + value) % _RUN_MODULUS)
+            while len(powers) <= len(groups):
+                powers.append(powers[-1] * _RUN_BASE % _RUN_MODULUS)
             held = self._record_tokens(messages)
             over = held > bound or (start is not None and self._short_of_target(messages, start))
             return groups, held, over
@@ -1564,13 +1581,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             )
 
         def chain(first: int, count: int) -> str:
-            return _digest(
-                "\n".join(_digest(bodies[last(group)]) for group in groups[first : first + count])
-            )
+            run = (runs[first + count] - runs[first] * powers[count]) % _RUN_MODULUS
+            return format(run, "x")
 
         def search(first: int) -> list[dict[str, Any]]:
             """Return the batch from ``first``, resuming a search of the same records."""
-            key = (_digest(bodies[last(groups[first])]), limit)
+            key = (digests[last(groups[first])], limit)
             checked = 1
             known = self._unpaired.get(key)
             if known is not None and known[0] <= len(groups) - first:
@@ -1665,7 +1681,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     bound,
                 )
         # Kept only while its start record stands, so it stays one entry a record.
-        starts = {(_digest(bodies[last(group)]), limit) for group in groups}
+        starts = {(digests[last(group)], limit) for group in groups}
         self._unpaired = {
             key: progress for key, progress in self._unpaired.items() if key in starts
         }
