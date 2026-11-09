@@ -47,6 +47,8 @@ Terraform accepts `.tf` and `.tf.json`. OpenTofu also accepts `.tofu` and `.tofu
 
 State, plans, CLI credentials, plugin binaries and reserved directories are refused. Variable-value files (`.tfvars`, `.tfvars.json`) are staged when the manifest names them, and are never required beside the configuration. Inputs are text only, with limits of 64 files, 8 MiB per file and 32 MiB total.
 
+The model chooses the manifest from the host's visible file listing. Expose variable files there only when their contents may enter tool results: engine diagnostics can quote values, and the optional formatter can return whole changed files. Closed egress and integrity labels do not redact secrets; the host controls file visibility and result confidentiality.
+
 ## Validation
 
 The fixed launcher runs these commands without interaction or terminal color:

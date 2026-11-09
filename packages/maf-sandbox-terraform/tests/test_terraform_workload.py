@@ -259,6 +259,7 @@ def test_timeout_validation(timeout):
         (["main.tf", "terraform.tfstate.backup"], ".", ["main.tf", "terraform.tfstate.backup"]),
         (["main.tf", "credentials.tfrc.json"], ".", ["main.tf", "credentials.tfrc.json"]),
         (["missing.tf"], ".", ["main.tf"]),
+        (["main.tf", "private.tfvars"], ".", ["main.tf"]),
     ],
 )
 def test_partial_or_reserved_manifests_never_run(files, root, listing):
@@ -276,26 +277,43 @@ def test_nested_modules_json_and_ancillary_assets_preserve_layout():
     assert store.files == data
 
 
-def test_variable_files_given_in_the_manifest_are_staged():
-    # A host that hands over variable files gets them validated and formatted, not refused.
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+@pytest.mark.parametrize("formatting", [False, True])
+def test_variable_files_given_in_the_manifest_are_staged(engine, formatting):
     data = {
         "main.tf": "",
         "terraform.tfvars": 'name = "x"\n',
         "env/dev.tfvars.json": "{}",
         "prod.auto.tfvars": "",
+        "prod.auto.tfvars.json": "{}",
     }
-    tool, backend, store = attach(data)
+    changed = {"terraform.tfvars": 'name = "formatted"\n'}
+    response = format_envelope(engine, changed) if formatting else envelope(engine)
+    sandbox = RecordingSandbox(default_stdout=json.dumps(response))
+    tool, backend, store = attach(data, sandbox=sandbox, engine=engine, formatting=formatting)
     result = asyncio.run(tool.func(files=list(data)))
-    assert "validation PASS" in _body(result)
+    assert _verdict(result) == ("changed" if formatting else "valid")
+    if formatting:
+        assert json.loads(_body(result).split("mapping):\n")[1]) == changed
     assert isinstance(backend.sandbox, RecordingSandbox)
     assert [x[0] for x in backend.sandbox.uploads] == ["project/" + x for x in data]
+    assert store.files == data
+    assert len(backend.disposed) == 1
 
 
-def test_variable_files_are_never_required_siblings():
-    root, selected = resolve_manifest(
-        ["main.tf"], ".", [ListedFile(name=x) for x in ["main.tf", "terraform.tfvars"]], "terraform"
-    )
-    assert [path for path, _ in selected] == ["main.tf"]
+@pytest.mark.parametrize("engine", ["terraform", "opentofu"])
+@pytest.mark.parametrize("formatting", [False, True])
+def test_variable_files_are_never_required_siblings(engine, formatting):
+    data = {"main.tf": "", "terraform.tfvars": 'secret = "not selected"\n'}
+    response = format_envelope(engine, {}) if formatting else envelope(engine)
+    sandbox = RecordingSandbox(default_stdout=json.dumps(response))
+    tool, backend, store = attach(data, sandbox=sandbox, engine=engine, formatting=formatting)
+    result = asyncio.run(tool.func(files=["main.tf"]))
+    assert _verdict(result) == ("unchanged" if formatting else "valid")
+    assert [path for path, _, _ in sandbox.uploads] == ["project/main.tf"]
+    assert "not selected" not in _body(result)
+    assert store.files == data
+    assert len(backend.disposed) == 1
 
 
 @pytest.mark.parametrize("failure", ["missing", "read", "write", "oversize"])
@@ -447,7 +465,11 @@ def test_manifest_keeps_the_original_provenance_entry():
     "state,expected",
     [("trusted", "trusted"), ("untrusted", "untrusted"), ("unknown", "untrusted")],
 )
-def test_report_integrity_follows_host_file_provenance(state, expected, request):
+@pytest.mark.parametrize("formatting", [False, True])
+@pytest.mark.parametrize("input_path", ["main.tf", "terraform.tfvars", "env/dev.tfvars.json"])
+def test_report_integrity_follows_host_file_provenance(
+    state, expected, formatting, input_path, request
+):
     from importlib.metadata import distribution
 
     from maf_sandbox import FileStoreProvenance
@@ -456,15 +478,23 @@ def test_report_integrity_follows_host_file_provenance(state, expected, request)
     record = FileStoreProvenance(floor=None if state == "unknown" else SourceIntegrity.TRUSTED)
     file_store_provenance_middleware(record)
     if state == "untrusted":
-        record.record("main.tf")
-    sandbox = RecordingSandbox(default_stdout=json.dumps(envelope(valid=False)))
-    tool, _, store = attach(sandbox=sandbox, file_store_provenance=record)
-    store.labels["main.tf"] = record.integrity_of("main.tf")
+        record.record(input_path)
+    response = (
+        format_envelope(files={input_path: "formatted detail"})
+        if formatting
+        else envelope(valid=False)
+    )
+    sandbox = RecordingSandbox(default_stdout=json.dumps(response))
+    data = {"main.tf": "", input_path: "original"}
+    tool, _, store = attach(
+        data, sandbox=sandbox, formatting=formatting, file_store_provenance=record
+    )
+    store.labels.update({path: record.integrity_of(path) for path in data})
 
-    items = asyncio.run(tool.invoke(arguments={"files": ["main.tf"]}))
+    items = asyncio.run(tool.invoke(arguments={"files": list(data)}))
 
     assert items[0].text == COMPLETED_TEXT
-    assert any(path.endswith("/main.tf") for path, _, _ in sandbox.uploads)
+    assert any(path == "project/" + input_path for path, _, _ in sandbox.uploads)
     report = next(item for item in items if "detail" in (item.text or ""))
     assert items[-1].additional_properties["security_label"]["integrity"] == "trusted"
     assert tool.additional_properties[DERIVED_INTEGRITY_PROPERTY] == "untrusted"
