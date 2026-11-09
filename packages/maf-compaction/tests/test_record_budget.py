@@ -801,7 +801,7 @@ async def test_sweeps_past_records_that_never_pair_go_on_where_the_last_one_stop
     summarizer = _Summarizer()
     strategy = _strategy(summarizer, budget=budget, share=0.25)
 
-    for _ in range(40):
+    for _ in range(120):
         if await strategy._merge_batches(messages, None, 0.25):
             break
         restored = _strategy(summarizer, budget=budget, share=0.25)
@@ -810,3 +810,60 @@ async def test_sweeps_past_records_that_never_pair_go_on_where_the_last_one_stop
 
     (merged,) = summarizer.merges
     assert "lookup_30 " in merged, "the feasible batch past the run that never pairs"
+
+
+class _PairsDoNotFitTokenizer(CharacterEstimatorTokenizer):
+    """Count a two-record request far over the cap and a three-record one under it.
+
+    Token counts need not grow steadily with text, and the batch search has to allow for it.
+    """
+
+    def count_tokens(self, text: str) -> int:
+        payload = json.loads(text) if text.startswith("{") else None
+        contents = (payload or {}).get("contents") or [{}]
+        body = contents[0].get("text") or ""
+        if (payload or {}).get("role") == "user" and body.startswith("1. "):
+            records = len(re.findall(r"^\d+\. ", body, flags=re.MULTILINE))
+            if records == 2:
+                return 10 if "now pairs" in body else 100_000
+            if records == 3:
+                return 10
+        return super().count_tokens(text)
+
+
+async def test_an_appended_record_reopens_a_start_whose_pair_did_not_fit() -> None:
+    """A start searched before a record was appended is searched again past what it covered."""
+    tokenizer = _PairsDoNotFitTokenizer()
+    summarizer = _Summarizer()
+    messages = _history(2)
+    first = _strategy(summarizer, budget=100_000, share=0.001, tokenizer=tokenizer)
+
+    assert not await first._merge_batches(messages, None, 0.001), "two records never fit"
+
+    messages[-1:-1] = _record_pair(2)
+    restored = _strategy(summarizer, budget=100_000, share=0.001, tokenizer=tokenizer)
+    restored.restore_session_state(json.loads(json.dumps(first.session_state())))
+
+    assert await restored._merge_batches(messages, None, 0.001)
+    (merged,) = summarizer.merges
+    assert all(f"lookup_{index} " in merged for index in range(3)), "all three, as one batch"
+
+
+async def test_a_changed_record_reopens_the_search_of_the_records_it_covered() -> None:
+    """A search is resumed only past records that stand unchanged; a changed one restarts it."""
+    tokenizer = _PairsDoNotFitTokenizer()
+    summarizer = _Summarizer()
+    messages = _history(2)
+    first = _strategy(summarizer, budget=100_000, share=0.001, tokenizer=tokenizer)
+    assert not await first._merge_batches(messages, None, 0.001), "two records never fit"
+
+    (result,) = (m for m in messages if m.message_id == "rec1_res")
+    result.contents = [
+        Content.from_function_result(
+            call_id="rec1", result=make_recall_tool()(_body(1) + " and now pairs")
+        )
+    ]
+    restored = _strategy(summarizer, budget=100_000, share=0.001, tokenizer=tokenizer)
+    restored.restore_session_state(json.loads(json.dumps(first.session_state())))
+
+    assert await restored._merge_batches(messages, None, 0.001), "the changed pair now fits"

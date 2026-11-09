@@ -34,7 +34,6 @@ from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from itertools import pairwise
 from math import ceil
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
@@ -211,9 +210,9 @@ _MAX_FALLBACK_ROUNDS: Final[int] = 3
 #: batches of eight, more than a sweep that stops at the record share needs. What it bounds is
 #: a run of records that each fit the cap alone and never two together: token counts need not
 #: grow with text, so one failed prefix proves nothing, and every start would otherwise render
-#: every longer prefix. A sweep that spends them stops, and the next one passes the starts this
-#: one found unpaired without a probe, so it goes on from where the last left off. A record that
-#: does not fit alone is passed over without a search and costs none of them.
+#: every longer prefix. A sweep that spends them stops, and the next one resumes each start
+#: where this one left it, so it goes on from where the last left off. A record that does not
+#: fit alone is passed over without a search and costs none of them.
 _MAX_BATCH_PROBES: Final[int] = 128
 
 #: Share of the sending budget the active records may hold once the chain has started.
@@ -619,8 +618,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._shed_groups: set[str] = set()
         # Shrink acceptance depends on the source count as well as the request's transcript.
         self._refused_merges: set[tuple[str, int]] = set()
-        # Record pairs whose two-record request did not fit the cap: body digests and the cap.
-        self._unpaired: set[tuple[str, str, int]] = set()
+        # Per start record (body digest, cap): how many records from it were searched with no
+        # run fitting the cap, and a digest of those records, so the search resumes past them
+        # only while they stand unchanged.
+        self._unpaired: dict[tuple[str, int], tuple[int, str]] = {}
         self._refused_rewrites: dict[tuple[str, int], int] = {}
 
     @property
@@ -780,7 +781,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 for (transcript, count), text in self._kept_records.items()
             ],
             "reshaped_records": sorted(self._reshaped),
-            "unpaired_records": [list(entry) for entry in sorted(self._unpaired)],
+            "unpaired_records": [
+                [start, limit, checked, records]
+                for (start, limit), (checked, records) in sorted(self._unpaired.items())
+            ],
             "shed_ids": sorted(self._shed_ids),
             "shed_groups": sorted(self._shed_groups),
             "refused_merges": [
@@ -811,7 +815,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             }
         self._reshaped = set(data.get("reshaped_records", []))
         self._unpaired = {
-            (first, second, limit) for first, second, limit in data.get("unpaired_records", [])
+            (entry[0], entry[1]): (entry[2], entry[3])
+            for entry in data.get("unpaired_records", [])
+            if len(entry) == 4
         }
         self._shed_ids = {value for value in data["shed_ids"] if durable_message_id(value)}
         self._shed_groups = set(data.get("shed_groups", []))
@@ -1508,10 +1514,13 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         whole replaces a few records rather than all of them. The history is read once, and
         again only after a merge changes it; passing a record over moves on to the next.
 
-        A record whose own request exceeds the cap is passed over without a search from it, and
-        so is one whose two-record request with the next record was found not to fit, which is
-        remembered by the two bodies and the cap for the rest of the run, so a later sweep goes
-        on past it without a probe. The search spends at most :data:`_MAX_BATCH_PROBES` prefixes
+        A record whose own request exceeds the cap is passed over without a search from it. One
+        whose two-record request does not fit is searched over longer runs, since token counts
+        need not grow with text, and how far that search got with nothing fitting is remembered
+        with a digest of the records it covered: a later sweep resumes it past them while they
+        stand unchanged, so an appended record is tried without searching again what was
+        searched, and searches it afresh otherwise. The search spends at most
+        :data:`_MAX_BATCH_PROBES` prefixes
         a sweep. A batch already refused on the same records is passed over too, and stays as it
         is until it changes; a refusal is remembered, logged at WARNING with counts and never
         values while the records exceed their share, and the sweep goes on to the next batch. A
@@ -1549,8 +1558,47 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             over = held > bound or (start is not None and self._short_of_target(messages, start))
             return groups, held, over
 
-        def pair(first: dict[str, Any], second: dict[str, Any]) -> tuple[str, str, int]:
-            return (_digest(bodies[last(first)]), _digest(bodies[last(second)]), limit)
+        def fits(run: list[dict[str, Any]]) -> bool:
+            return fits_summary_input(
+                self.merge_prompt, render(run), tokenizer=self.tokenizer, limit=limit
+            )
+
+        def chain(first: int, count: int) -> str:
+            return _digest(
+                "\n".join(_digest(bodies[last(group)]) for group in groups[first : first + count])
+            )
+
+        def search(first: int) -> list[dict[str, Any]]:
+            """Return the batch from ``first``, resuming a search of the same records."""
+            key = (_digest(bodies[last(groups[first])]), limit)
+            checked = 1
+            known = self._unpaired.get(key)
+            if known is not None and known[0] <= len(groups) - first:
+                if chain(first, known[0]) == known[1]:
+                    checked = known[0]
+            if checked < 2:
+                if fits(groups[first : first + 2]):
+                    return bounded_prefix(
+                        groups[first:],
+                        render=render,
+                        prompt=self.merge_prompt,
+                        tokenizer=self.tokenizer,
+                        limit=limit,
+                        min_items=2,
+                    )
+                checked = 2
+            # Token counts need not grow with text, so a longer run may fit where two do not.
+            for count in range(checked + 1, len(groups) - first + 1):
+                try:
+                    fit = fits(groups[first : first + count])
+                except _BatchProbesSpent:
+                    self._unpaired[key] = (checked, chain(first, checked))
+                    raise
+                if fit:
+                    return groups[first : first + count]
+                checked = count
+            self._unpaired[key] = (checked, chain(first, checked))
+            return []
 
         groups, held, over = survey()
         cursor = 0
@@ -1567,32 +1615,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     tokenizer=self.tokenizer,
                     limit=limit,
                 )
-            opening = pair(groups[cursor], groups[cursor + 1])
-            if not alone[oldest] or opening in self._unpaired:
+            if not alone[oldest]:
                 handled.add(oldest)
                 continue
             try:
-                paired = fits_summary_input(
-                    self.merge_prompt,
-                    render(groups[cursor : cursor + 2]),
-                    tokenizer=self.tokenizer,
-                    limit=limit,
-                )
-                try:
-                    # Token counts need not grow with text, so a longer run may fit where two do
-                    # not; it is searched once, and the start is remembered either way.
-                    batch = bounded_prefix(
-                        groups[cursor:],
-                        render=render,
-                        prompt=self.merge_prompt,
-                        tokenizer=self.tokenizer,
-                        limit=limit,
-                        min_items=2,
-                    )
-                except _BatchProbesSpent:
-                    if not paired:
-                        self._unpaired.add(opening)
-                    raise
+                batch = search(cursor)
             except _BatchProbesSpent:
                 logger.info(
                     "Compaction stopped looking for record batches after %d prefixes; "
@@ -1602,8 +1629,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 )
                 break
             if len(batch) < 2:
-                if not paired:
-                    self._unpaired.add(opening)
                 handled.add(oldest)
                 continue
             handled.update(last(group) for group in batch)
@@ -1639,8 +1664,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     held,
                     bound,
                 )
-        # Kept only while both records still stand side by side, so it stays one entry a pair.
-        self._unpaired &= {pair(first, second) for first, second in pairwise(groups)}
+        # Kept only while its start record stands, so it stays one entry a record.
+        starts = {(_digest(bodies[last(group)]), limit) for group in groups}
+        self._unpaired = {
+            key: progress for key, progress in self._unpaired.items() if key in starts
+        }
         return changed
 
     def _record_tokens(self, messages: list[Message]) -> int:
