@@ -18,3 +18,4 @@ def test_document_export_docker(tmp_path):
     result = asyncio.run(check(image, directory=tmp_path))
     assert result["containersRemaining"] == []
     assert result["mermaidFallbackVerified"] is True
+    assert result["imagePlaceholdersVerified"] is True

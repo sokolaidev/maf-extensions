@@ -95,20 +95,38 @@ class BoundedRenderer(RendererHTML):
             yield part
 
 
+def image_alt(tokens):
+    """Flatten image descriptions without losing code spans or decoded entities."""
+    parts = []
+    for token in tokens:
+        if token.type in {"text", "text_special", "code_inline"}:
+            parts.append(token.content)
+        elif token.type in {"softbreak", "hardbreak"}:
+            parts.append("\n")
+        elif token.type == "image":
+            parts.append(image_alt(token.children or []))
+    return "".join(parts)
+
+
 def document_html(request, assets):
-    """Disable raw HTML and resolve every Markdown image to an explicitly supplied SVG."""
+    """Render supplied SVG images, refusing or replacing unsupplied image tokens."""
     diagrams = []
     image_bytes = 0
+    images_replaced = 0
     markdown = MarkdownIt("commonmark", {"html": False}, renderer_cls=BoundedRenderer).enable(
         ["table", "strikethrough"]
     )
     fence = markdown.renderer.rules["fence"]
 
     def image(tokens, index, options, env):
-        nonlocal image_bytes
+        nonlocal image_bytes, images_replaced
         token = tokens[index]
         name = token.attrGet("src")
         if name not in assets:
+            if request.get("unsupplied_images", "refuse") == "placeholder":
+                alt = image_alt(token.children or [])
+                images_replaced += 1
+                return html.escape(f"[Image: {alt}]")
             raise ValueError("Markdown images must name a supplied SVG asset")
         prefix = (
             f'<img alt="{html.escape(token.content, quote=True)}" src="data:image/svg+xml;base64,'
@@ -146,12 +164,13 @@ def document_html(request, assets):
         ),
         diagrams,
         nonce,
+        images_replaced,
     )
 
 
 def render(request, assets, *, executable="/usr/bin/chromium"):
     """Return the complete PDF and evidence, refusing bounds before exposing any output."""
-    markup, diagrams, nonce = document_html(request, assets)
+    markup, diagrams, nonce, images_replaced = document_html(request, assets)
     requests = []
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
@@ -228,6 +247,7 @@ def render(request, assets, *, executable="/usr/bin/chromium"):
         "mermaid_rendered": rendered,
         "mermaid_fallbacks": len(diagrams) - rendered,
         "assets": len(assets),
+        "images_replaced": images_replaced,
     }
 
 

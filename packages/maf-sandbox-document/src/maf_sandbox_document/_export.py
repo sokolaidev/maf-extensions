@@ -9,7 +9,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from importlib.resources import files
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from maf_sandbox import SandboxKey, SandboxRouter, SandboxSpec, TransferLimits
@@ -31,9 +31,18 @@ class ExportOptions:
     max_pages: int = 100
     max_pdf_bytes: int = 16_000_000
     deadline_seconds: float = 60
+    unsupplied_images: Literal["refuse", "placeholder"] = "refuse"
 
     def __post_init__(self) -> None:
         validate_request(asdict(self) | {"markdown": "", "assets": {}})
+
+
+@dataclass(frozen=True)
+class ExportResult:
+    """PDF bytes and the guest-reported image replacement count, returned after disposal."""
+
+    pdf: bytes
+    images_replaced: int
 
 
 def document_export_sandbox_spec(image: str) -> SandboxSpec:
@@ -67,6 +76,24 @@ async def export_pdf(
     The host supplies routing identity and a document-export image. Each export gets a fresh
     call identity; no store is read or written. Output bytes remain untrusted document content.
     TimeoutError covers staging, rendering and output reads; cleanup has its own 30-second bound.
+    """
+    result = await export_pdf_result(markdown, assets, options, router=router, key=key, image=image)
+    return result.pdf
+
+
+async def export_pdf_result(
+    markdown: str,
+    assets: Mapping[str, bytes],
+    options: ExportOptions = ExportOptions(),
+    *,
+    router: SandboxRouter,
+    key: SandboxKey,
+    image: str,
+) -> ExportResult:
+    """Export with the same guards as export_pdf, also returning the replacement count.
+
+    Placeholder mode requires an image whose renderer reports images_replaced. Both the PDF
+    and count are guest-derived; no result is delivered before successful disposal.
     """
     if not isinstance(cast(object, options), ExportOptions):
         raise TypeError("options must be ExportOptions")
@@ -115,12 +142,18 @@ async def export_pdf(
             if not isinstance(metadata, dict):
                 raise ValueError("invalid export metadata")
             metadata = cast(dict[str, Any], metadata)
+            images_replaced = metadata.get(
+                "images_replaced", 0 if options.unsupplied_images == "refuse" else None
+            )
             if (
                 type(metadata.get("schema_version")) is not int
                 or metadata.get("schema_version") != 1
                 or type(metadata.get("pages")) is not int
                 or not 1 <= metadata["pages"] <= options.max_pages
                 or metadata.get("network_requests") != []
+                or type(images_replaced) is not int
+                or not 0 <= images_replaced <= len(markdown)
+                or (options.unsupplied_images == "refuse" and images_replaced != 0)
             ):
                 raise ValueError("invalid export metadata")
             data = await sandbox.read_file(
@@ -135,7 +168,7 @@ async def export_pdf(
                 or metadata.get("sha256") != hashlib.sha256(data).hexdigest()
             ):
                 raise ValueError("invalid or oversized PDF output")
-            return data
+            return ExportResult(data, images_replaced)
     finally:
         if sandbox is None:
             cleaned = await router.dispose_call(call_key, spec=spec, timeout=30)

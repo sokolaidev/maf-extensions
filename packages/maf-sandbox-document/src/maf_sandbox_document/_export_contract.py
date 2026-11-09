@@ -113,6 +113,8 @@ def validate_request(request: dict[str, Any]) -> dict[str, bytes]:
         raise ValueError("deadline_seconds must be finite and in (0, 300]")
     if request.get("page_size") not in ("A4", "Letter"):
         raise ValueError("page_size must be A4 or Letter")
+    if request.get("unsupplied_images", "refuse") not in ("refuse", "placeholder"):
+        raise ValueError("unsupplied_images must be refuse or placeholder")
     for name in ("title", "date"):
         if not isinstance(request.get(name), str) or len(request[name].encode("utf-8")) > 1024:
             raise ValueError(f"{name} must be text of at most 1024 UTF-8 bytes")
