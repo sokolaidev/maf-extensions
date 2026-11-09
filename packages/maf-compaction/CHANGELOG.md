@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.11.1...maf-compaction-v0.12.0) (2026-11-09)
+
+
+### Features
+
+* **compaction:** pay each model-written record once and keep records within a share of the sending budget ([#2590](https://github.com/sokolaidev/maf-extensions/issues/2590)) ([280f732](https://github.com/sokolaidev/maf-extensions/commit/280f73217c2c19a869f17335885ba718bbcac870))
+
 ## [0.11.1](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.11.0...maf-compaction-v0.11.1) (2026-11-07)
 
 
