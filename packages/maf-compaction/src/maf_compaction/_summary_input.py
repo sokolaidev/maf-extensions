@@ -36,8 +36,28 @@ def bounded_prefix[T](
     min_items: int = 1,
 ) -> list[T]:
     """Find a fitting prefix, checking unprobed sizes if fast probes cannot make progress."""
+    return bounded_prefix_extent(
+        items, render=render, prompt=prompt, tokenizer=tokenizer, limit=limit, min_items=min_items
+    )[0]
+
+
+def bounded_prefix_extent[T](
+    items: list[T],
+    *,
+    render: Callable[[list[T]], str],
+    prompt: str,
+    tokenizer: TokenizerProtocol,
+    limit: int,
+    min_items: int = 1,
+) -> tuple[list[T], int | None]:
+    """Return :func:`bounded_prefix`'s prefix and how many leading items decided it.
+
+    The count is None when where ``items`` ends decided it as well, so that items appended to the
+    list could change the prefix; otherwise any list starting with that many of the same items
+    has the same prefix.
+    """
     if len(items) < min_items:
-        return []
+        return [], None
     checked: dict[int, bool] = {}
 
     def fits(count: int) -> bool:
@@ -47,9 +67,15 @@ def bounded_prefix[T](
             )
         return checked[count]
 
+    def found(count: int) -> tuple[list[T], int | None]:
+        return items[:count], None if ended else max(checked)
+
     lower, upper = min_items - 1, min_items
     while upper < len(items) and fits(upper):
         lower, upper = upper, min(upper * 2, len(items))
+    # Stopped by a probe that failed short of the end, every size probed is one a longer list
+    # would probe the same way; stopped by the end, a longer list would probe further.
+    ended = upper >= len(items)
     while lower < upper:
         middle = (lower + upper + 1) // 2
         if fits(middle):
@@ -57,9 +83,9 @@ def bounded_prefix[T](
         else:
             upper = middle - 1
     if lower >= min_items:
-        return items[:lower]
+        return found(lower)
     # Token counts need not grow with text, so failed probes cannot rule out other sizes.
     for count in range(min_items, len(items) + 1):
         if fits(count):
-            return items[:count]
-    return []
+            return found(count)
+    return [], None

@@ -253,7 +253,7 @@ def test_stack_writes_v7_snapshots_and_restores_older_versions(composed, version
     if composed:
         legacy = deepcopy(legacy)
         legacy["strategy"].pop("reshaped_records")
-        legacy["strategy"].pop("unpaired_records")
+        legacy["strategy"].pop("searched_records")
         if version < 6:
             legacy["strategy"].pop("shed_groups")
     restored = build_stack(composed=composed)

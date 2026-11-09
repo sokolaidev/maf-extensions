@@ -901,3 +901,155 @@ async def test_a_sweep_over_starts_it_already_searched_hashes_each_record_once(
 
     assert tokenizer.batches == 0, "the premise: every start had searched every run from it"
     assert hashed <= 2 * records + 4, f"{hashed} digests for {records} records"
+
+
+class _OnlyPairsFitTokenizer(CharacterEstimatorTokenizer):
+    """Count a two-record request under the cap and any longer one far over it.
+
+    Each such request is counted, and by the record it starts from.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.batches = 0
+        self.starts: Counter[str] = Counter()
+
+    def count_tokens(self, text: str) -> int:
+        payload = json.loads(text) if text.startswith("{") else None
+        contents = (payload or {}).get("contents") or [{}]
+        body = contents[0].get("text") or ""
+        if (payload or {}).get("role") == "user" and body.startswith("1. "):
+            records = len(re.findall(r"^\d+\. ", body, flags=re.MULTILINE))
+            if records >= 2:
+                self.batches += 1
+                self.starts[body.split()[1]] += 1
+                return 10 if records == 2 else 100_000
+        return super().count_tokens(text)
+
+
+@pytest.mark.parametrize("probe_limit", [None, 8])
+async def test_sweeps_past_refused_batches_go_on_where_the_last_one_stopped(
+    probe_limit: int | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A batch refused before is passed over without searching for it again, even after a restore.
+
+    Finding a refused pair again costs a sweep four prefixes, so a run of more of them than one
+    sweep's limit covers would hold every later sweep short of the batch past it.
+    """
+    if probe_limit is not None:
+        monkeypatch.setattr(composed_module, "_MAX_BATCH_PROBES", probe_limit)
+    refused = composed_module._MAX_BATCH_PROBES // 4 + 8
+    feasible = f"lookup_{2 * refused} "
+
+    def merge(body: str) -> str:
+        values = _VALUE.findall(body)
+        return " ".join(sorted(set(values))) if feasible in body else values[0]
+
+    tokenizer = _OnlyPairsFitTokenizer()
+    summarizer = _Summarizer(merge=merge)
+    messages = _history(2 * refused + 2)
+    strategy = _strategy(summarizer, budget=100_000, share=0.001, tokenizer=tokenizer)
+
+    sweeps = 0
+    while sweeps < 40 and not any(feasible in body for body in summarizer.merges):
+        sweeps += 1
+        await strategy._merge_batches(messages, None, 0.001)
+        restored = _strategy(summarizer, budget=100_000, share=0.001, tokenizer=tokenizer)
+        restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+        strategy = restored
+
+    assert summarizer.merges[-1].count(feasible) == 1, "the feasible batch past the refused run"
+    assert len(summarizer.merges) == refused + 1, "each refused pair asked for once"
+    # Four prefixes find a pair and one more measures its request; a sweep cut short spends at
+    # most four on the pair it stops in. Finding a refused pair again would cost four each time.
+    found_once = 5 * (refused + 1) + 4 * sweeps
+    assert tokenizer.batches <= found_once, f"{tokenizer.batches} counted in {sweeps} sweeps"
+
+
+class _UpToThreeFitTokenizer(CharacterEstimatorTokenizer):
+    """Count a request of two or three records under the cap and any longer one far over it."""
+
+    def count_tokens(self, text: str) -> int:
+        payload = json.loads(text) if text.startswith("{") else None
+        contents = (payload or {}).get("contents") or [{}]
+        body = contents[0].get("text") or ""
+        if (payload or {}).get("role") == "user" and body.startswith("1. "):
+            records = len(re.findall(r"^\d+\. ", body, flags=re.MULTILINE))
+            if records >= 2:
+                return 10 if records <= 3 else 100_000
+        return super().count_tokens(text)
+
+
+async def test_a_record_appended_reopens_a_refused_batch_that_ran_to_the_last_record() -> None:
+    """A batch the end of the records cut short is searched again once a record follows it."""
+    summarizer = _Summarizer(
+        merge=lambda body: (
+            " ".join(sorted(set(_VALUE.findall(body))))
+            if "lookup_2 " in body
+            else _VALUE.findall(body)[0]
+        )
+    )
+    tokenizer = _UpToThreeFitTokenizer()
+    messages = _history(2)
+    first = _strategy(summarizer, budget=100_000, share=0.001, tokenizer=tokenizer)
+    assert not await first._merge_batches(messages, None, 0.001), "the pair is refused"
+
+    messages[-1:-1] = _record_pair(2)
+    restored = _strategy(summarizer, budget=100_000, share=0.001, tokenizer=tokenizer)
+    restored.restore_session_state(json.loads(json.dumps(first.session_state())))
+
+    assert await restored._merge_batches(messages, None, 0.001)
+    refused, merged = summarizer.merges
+    assert all(f"lookup_{index} " in merged for index in range(3)), "all three, as one batch"
+    assert "lookup_2 " not in refused
+
+
+async def test_a_changed_record_reopens_a_refused_batch_and_an_appended_one_does_not() -> None:
+    """A refused batch is searched for again after a change to a record its search read, only.
+
+    Each pair's search also read the two records after it, finding four too many. Appended
+    records reopen only the searches the end of the records decided: here the last two pairs',
+    which ran to the last record, and never the first two.
+    """
+    tokenizer = _OnlyPairsFitTokenizer()
+    summarizer = _Summarizer(merge=lambda body: _VALUE.findall(body)[0])
+    messages = _history(8)
+    strategy = _strategy(summarizer, budget=100_000, share=0.001, tokenizer=tokenizer)
+    assert not await strategy._merge_batches(messages, None, 0.001)
+    assert len(summarizer.merges) == 4, "the premise: four pairs, each refused"
+
+    async def resweep() -> None:
+        nonlocal strategy
+        restored = _strategy(summarizer, budget=100_000, share=0.001, tokenizer=tokenizer)
+        restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+        strategy = restored
+        tokenizer.starts.clear()
+        assert not await strategy._merge_batches(messages, None, 0.001)
+
+    messages[-1:-1] = _record_pair(8) + _record_pair(9)
+    await resweep()
+    assert len(summarizer.merges) == 5, "only the appended pair is asked for"
+    assert set(tokenizer.starts) == {"lookup_4", "lookup_6", "lookup_8"}
+
+    (result,) = (m for m in messages if m.message_id == "rec2_res")
+    result.contents = [
+        Content.from_function_result(
+            call_id="rec2", result=make_recall_tool()(_body(2).replace("VAL-002-3", "VAL-002-9"))
+        )
+    ]
+    await resweep()
+    assert len(summarizer.merges) == 6, "the changed pair, asked for again"
+    assert "VAL-002-9" in summarizer.merges[-1]
+    assert set(tokenizer.starts) == {"lookup_0", "lookup_2"}, "the searches that read record 2"
+
+
+def test_a_search_memory_from_an_earlier_snapshot_shape_restores() -> None:
+    """Searches that found nothing restore from the earlier key; an unknown entry shape is dropped."""
+    strategy = _strategy(_Summarizer(), budget=100_000)
+    state = strategy.session_state()
+    state.pop("searched_records")
+    state["unpaired_records"] = [["start", 900, 3, "run"], ["first", "second", 900]]
+
+    strategy.restore_session_state(json.loads(json.dumps(state)))
+
+    assert strategy.session_state()["searched_records"] == [["start", 900, 3, "run", 0, False]]

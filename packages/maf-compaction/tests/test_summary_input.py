@@ -1,6 +1,7 @@
 """Whole-unit request budgets, partial replacement, and replay."""
 
 import asyncio
+import itertools
 import json
 from copy import deepcopy
 
@@ -21,7 +22,7 @@ from maf_compaction import (
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     UserTurnAnchoredSummarizationCompactionStrategy,
 )
-from maf_compaction._summary_input import bounded_prefix
+from maf_compaction._summary_input import bounded_prefix, bounded_prefix_extent
 from maf_compaction._toolsummary import active_record_groups, build_record_message
 
 pytestmark = pytest.mark.anyio
@@ -856,3 +857,37 @@ async def test_consolidation_shares_summary_options_and_retirement(operation, fa
         assert client.options == [configured, {}, {}]
     else:
         assert client.options == [configured, configured]
+
+
+@pytest.mark.parametrize("min_items", [1, 2])
+def test_a_prefix_is_the_same_on_any_list_that_keeps_the_items_its_extent_names(min_items):
+    """However a list goes on past the items an extent names, it gets the same prefix."""
+
+    def select(fitting):
+        class PatternTokenizer:
+            def count_tokens(self, text):
+                body = json.loads(text)["contents"][0]["text"]
+                return 1 if body == "instructions" or fitting[int(body) - 1] else 100
+
+        return bounded_prefix_extent(
+            list(range(len(fitting))),
+            render=lambda prefix: str(len(prefix)),
+            prompt="instructions",
+            tokenizer=PatternTokenizer(),
+            limit=10,
+            min_items=min_items,
+        )
+
+    decided = ended = 0
+    for length in range(1, 9):
+        for fitting in itertools.product((False, True), repeat=length):
+            prefix, extent = select(fitting)
+            if extent is None:
+                ended += 1
+                continue
+            decided += 1
+            assert len(prefix) <= extent <= length
+            for longer in range(extent, extent + 4):
+                for rest in itertools.product((False, True), repeat=longer - extent):
+                    assert len(select(fitting[:extent] + rest)[0]) == len(prefix), (fitting, rest)
+    assert decided > ended > 0, "the premise: most prefixes are decided short of the end"

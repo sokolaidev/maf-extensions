@@ -54,7 +54,7 @@ from ._media import annotate_token_counts
 from ._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
 from ._request import RequestOverhead
 from ._shed import durable_message_id, unique_shed_groups
-from ._summary_input import bounded_prefix, fits_summary_input
+from ._summary_input import bounded_prefix, bounded_prefix_extent, fits_summary_input
 from ._toolsummary import (
     PRESERVE_REASON_UNCOVERED,
     PRESERVE_REASON_UNRECORDED,
@@ -359,6 +359,20 @@ def _is_excluded(message: Message) -> bool:
 
 
 @dataclass(frozen=True, slots=True)
+class _Searched:
+    """How far a batch search from one start record got, and what it found there."""
+
+    #: Records from the start the search's answer was decided on.
+    covered: int
+    #: The digest of those records' run, so the answer holds only while they stand unchanged.
+    records: str
+    #: The batch found, in records, or 0 for no run within ``covered`` that fits.
+    batch: int = 0
+    #: Whether where the records ended decided the answer too, so a record appended reopens it.
+    ended: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class _ChainStart:
     """The prompt the chain started from on one pass, which its target is measured against.
 
@@ -625,10 +639,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._shed_groups: set[str] = set()
         # Shrink acceptance depends on the source count as well as the request's transcript.
         self._refused_merges: set[tuple[str, int]] = set()
-        # Per start record (body digest, cap): how many records from it were searched with no
-        # run fitting the cap, and a digest of those records, so the search resumes past them
-        # only while they stand unchanged.
-        self._unpaired: dict[tuple[str, int], tuple[int, str]] = {}
+        # Per start record (body digest, cap): how far the batch search from it got, so a later
+        # sweep resumes it, or takes the batch it found, only while those records stand.
+        self._searched: dict[tuple[str, int], _Searched] = {}
         self._refused_rewrites: dict[tuple[str, int], int] = {}
 
     @property
@@ -788,9 +801,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 for (transcript, count), text in self._kept_records.items()
             ],
             "reshaped_records": sorted(self._reshaped),
-            "unpaired_records": [
-                [start, limit, checked, records]
-                for (start, limit), (checked, records) in sorted(self._unpaired.items())
+            "searched_records": [
+                [start, limit, found.covered, found.records, found.batch, found.ended]
+                for (start, limit), found in sorted(self._searched.items())
             ],
             "shed_ids": sorted(self._shed_ids),
             "shed_groups": sorted(self._shed_groups),
@@ -821,10 +834,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 for entry in kept_records
             }
         self._reshaped = set(data.get("reshaped_records", []))
-        self._unpaired = {
-            (entry[0], entry[1]): (entry[2], entry[3])
-            for entry in data.get("unpaired_records", [])
-            if len(entry) == 4
+        # Earlier snapshots of this schema kept only searches that found nothing.
+        searched = data.get("searched_records", data.get("unpaired_records", []))
+        self._searched = {
+            (entry[0], entry[1]): _Searched(*entry[2:])
+            for entry in searched
+            if len(entry) in (4, 6)
         }
         self._shed_ids = {value for value in data["shed_ids"] if durable_message_id(value)}
         self._shed_groups = set(data.get("shed_groups", []))
@@ -1523,16 +1538,19 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
         A record whose own request exceeds the cap is passed over without a search from it. One
         whose two-record request does not fit is searched over longer runs, since token counts
-        need not grow with text, and how far that search got with nothing fitting is remembered
-        with a digest of the records it covered: a later sweep resumes it past them while they
-        stand unchanged, so an appended record is tried without searching again what was
-        searched, and searches it afresh otherwise. The search spends at most
-        :data:`_MAX_BATCH_PROBES` prefixes
-        a sweep. A batch already refused on the same records is passed over too, and stays as it
-        is until it changes; a refusal is remembered, logged at WARNING with counts and never
-        values while the records exceed their share, and the sweep goes on to the next batch. A
-        summarizer that fails ends the sweep, since the next batch would be asked of it too, and
-        a record a batch writes is not merged again on the same pass.
+        need not grow with text. What a search from a record found -- its batch, or how far it
+        got with nothing fitting -- is remembered with a digest of the records that decided it,
+        and a later sweep takes that batch, or resumes the search past those records, while
+        they stand unchanged: an appended record is tried without searching again what was
+        searched, and a changed one, or one appended where the end of the records decided the
+        answer, has the search start afresh. The search spends at most
+        :data:`_MAX_BATCH_PROBES` prefixes a sweep and a remembered batch costs none, so a run of
+        refused batches longer than one sweep can search does not hold every later sweep short
+        of the batches after it. A batch already refused on the same records is passed over
+        too, and stays as it is until it changes; a refusal is remembered, logged at WARNING with
+        counts and never values while the records exceed their share, and the sweep goes on to
+        the next batch. A summarizer that fails ends the sweep, since the next batch would be
+        asked of it too, and a record a batch writes is not merged again on the same pass.
 
         Returns:
             True if any batch was merged.
@@ -1584,17 +1602,27 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             run = (runs[first + count] - runs[first] * powers[count]) % _RUN_MODULUS
             return format(run, "x")
 
+        def remember(first: int, covered: int, batch: int = 0, *, ended: bool = False) -> None:
+            key = (digests[last(groups[first])], limit)
+            self._searched[key] = _Searched(covered, chain(first, covered), batch, ended)
+
         def search(first: int) -> list[dict[str, Any]]:
             """Return the batch from ``first``, resuming a search of the same records."""
-            key = (digests[last(groups[first])], limit)
+            remaining = len(groups) - first
             checked = 1
-            known = self._unpaired.get(key)
-            if known is not None and known[0] <= len(groups) - first:
-                if chain(first, known[0]) == known[1]:
-                    checked = known[0]
+            known = self._searched.get((digests[last(groups[first])], limit))
+            if (
+                known is not None
+                and known.covered <= remaining
+                and (not known.ended or known.covered == remaining)
+                and chain(first, known.covered) == known.records
+            ):
+                if known.batch:
+                    return groups[first : first + known.batch]
+                checked = known.covered
             if checked < 2:
                 if fits(groups[first : first + 2]):
-                    return bounded_prefix(
+                    batch, extent = bounded_prefix_extent(
                         groups[first:],
                         render=render,
                         prompt=self.merge_prompt,
@@ -1602,18 +1630,24 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                         limit=limit,
                         min_items=2,
                     )
+                    if extent is None:
+                        remember(first, remaining, len(batch), ended=True)
+                    else:
+                        remember(first, extent, len(batch))
+                    return batch
                 checked = 2
             # Token counts need not grow with text, so a longer run may fit where two do not.
-            for count in range(checked + 1, len(groups) - first + 1):
+            for count in range(checked + 1, remaining + 1):
                 try:
                     fit = fits(groups[first : first + count])
                 except _BatchProbesSpent:
-                    self._unpaired[key] = (checked, chain(first, checked))
+                    remember(first, checked)
                     raise
                 if fit:
+                    remember(first, count, count)
                     return groups[first : first + count]
                 checked = count
-            self._unpaired[key] = (checked, chain(first, checked))
+            remember(first, checked)
             return []
 
         groups, held, over = survey()
@@ -1682,9 +1716,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 )
         # Kept only while its start record stands, so it stays one entry a record.
         starts = {(digests[last(group)], limit) for group in groups}
-        self._unpaired = {
-            key: progress for key, progress in self._unpaired.items() if key in starts
-        }
+        self._searched = {key: found for key, found in self._searched.items() if key in starts}
         return changed
 
     def _record_tokens(self, messages: list[Message]) -> int:
