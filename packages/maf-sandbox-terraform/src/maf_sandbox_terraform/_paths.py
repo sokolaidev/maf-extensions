@@ -52,7 +52,7 @@ def _allowed(path: str, engine: TerraformEngine) -> bool:
         set(parts) & _RESERVED_PARTS
         or name in _RESERVED_NAMES
         or ".tfstate" in name
-        or name.endswith((".tfplan", ".tfvars", ".tfvars.json", ".exe", ".so", ".dll"))
+        or name.endswith((".tfplan", ".exe", ".so", ".dll"))
         or name.startswith(("terraform-provider-", ".env."))
         or (name.startswith(".") and path.endswith(_CONFIG))
         or (engine == "terraform" and path.endswith((".tofu", ".tofu.json")))
