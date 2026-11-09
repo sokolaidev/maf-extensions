@@ -17,7 +17,7 @@ from collections import Counter
 from typing import Any, Literal
 
 import pytest
-from agent_framework import CharacterEstimatorTokenizer, ChatResponse, Content, Message
+from agent_framework import Annotation, CharacterEstimatorTokenizer, ChatResponse, Content, Message
 from agent_framework._compaction import (
     EXCLUDED_KEY,
     annotate_message_groups,
@@ -544,7 +544,7 @@ def _label(result: Content, shape: str) -> None:
             Content.from_uri("https://example.org/chart.png", media_type="image/png"),
         ]
     elif shape == "annotated result":
-        result.annotations = [{"type": "citation", "url": "https://example.org/"}]
+        result.annotations = [Annotation(type="citation", url="https://example.org/")]
     elif shape == "provider result":
         result.raw_representation = {"provider": "state"}
     elif shape == "provider item":
