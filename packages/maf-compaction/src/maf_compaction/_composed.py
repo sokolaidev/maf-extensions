@@ -34,6 +34,7 @@ from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from itertools import pairwise
 from math import ceil
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
@@ -210,9 +211,9 @@ _MAX_FALLBACK_ROUNDS: Final[int] = 3
 #: batches of eight, more than a sweep that stops at the record share needs. What it bounds is
 #: a run of records that each fit the cap alone and never two together: token counts need not
 #: grow with text, so one failed prefix proves nothing, and every start would otherwise render
-#: every longer prefix. A sweep that spends them stops, and the next firing goes on from where
-#: it left the records. A record that does not fit alone is passed over without a search and
-#: costs none of them.
+#: every longer prefix. A sweep that spends them stops, and the next one passes the starts this
+#: one found unpaired without a probe, so it goes on from where the last left off. A record that
+#: does not fit alone is passed over without a search and costs none of them.
 _MAX_BATCH_PROBES: Final[int] = 128
 
 #: Share of the sending budget the active records may hold once the chain has started.
@@ -341,9 +342,9 @@ def _has_prefix(ordered: list[str], prefix: str) -> bool:
     return index < len(ordered) and ordered[index].startswith(prefix)
 
 
-def _payload_digest(payload: str) -> str:
-    """Key a reshape by its record's payload without storing the payload in session state."""
-    return hashlib.sha256(payload.encode()).hexdigest()
+def _digest(text: str) -> str:
+    """Key a decision by a record's text without storing the text in session state."""
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def _is_excluded(message: Message) -> bool:
@@ -618,6 +619,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._shed_groups: set[str] = set()
         # Shrink acceptance depends on the source count as well as the request's transcript.
         self._refused_merges: set[tuple[str, int]] = set()
+        # Record pairs whose two-record request did not fit the cap: body digests and the cap.
+        self._unpaired: set[tuple[str, str, int]] = set()
         self._refused_rewrites: dict[tuple[str, int], int] = {}
 
     @property
@@ -777,6 +780,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 for (transcript, count), text in self._kept_records.items()
             ],
             "reshaped_records": sorted(self._reshaped),
+            "unpaired_records": [list(entry) for entry in sorted(self._unpaired)],
             "shed_ids": sorted(self._shed_ids),
             "shed_groups": sorted(self._shed_groups),
             "refused_merges": [
@@ -806,6 +810,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 for entry in kept_records
             }
         self._reshaped = set(data.get("reshaped_records", []))
+        self._unpaired = {
+            (first, second, limit) for first, second, limit in data.get("unpaired_records", [])
+        }
         self._shed_ids = {value for value in data["shed_ids"] if durable_message_id(value)}
         self._shed_groups = set(data.get("shed_groups", []))
         # A legacy refusal without a count cannot safely suppress another request.
@@ -1477,7 +1484,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             True if any record was reshaped.
         """
         groups = reshapeable_record_groups(messages)
-        digests = [_payload_digest(payload) for payload in reshape_payloads(messages, groups)]
+        digests = [_digest(payload) for payload in reshape_payloads(messages, groups)]
         chosen = [
             (group, digest)
             for group, digest in zip(groups, digests, strict=True)
@@ -1498,14 +1505,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
         Batches are taken oldest first and do not overlap, each the longest run of whole records
         whose request fits :meth:`_record_request_limit`, so a batch the summarizer can answer
-        whole replaces a few records rather than all of them. A record whose own request
-        exceeds the cap is passed over without searching batches from it, the search spends at
-        most :data:`_MAX_BATCH_PROBES` prefixes a sweep, and each record's body is rendered
-        once. A batch already refused on the same records is passed over too; it
-        stays as it is until it changes; a refusal is remembered, logged at WARNING with counts
-        and never values while the records exceed their share, and the sweep goes on to the next
-        batch. A summarizer that fails ends the sweep, since the next batch would be asked of it
-        too, and a record a batch writes is not merged again on the same pass.
+        whole replaces a few records rather than all of them. The history is read once, and
+        again only after a merge changes it; passing a record over moves on to the next.
+
+        A record whose own request exceeds the cap is passed over without a search from it, and
+        so is one whose two-record request with the next record was found not to fit, which is
+        remembered by the two bodies and the cap for the rest of the run, so a later sweep goes
+        on past it without a probe. The search spends at most :data:`_MAX_BATCH_PROBES` prefixes
+        a sweep. A batch already refused on the same records is passed over too, and stays as it
+        is until it changes; a refusal is remembered, logged at WARNING with counts and never
+        values while the records exceed their share, and the sweep goes on to the next batch. A
+        summarizer that fails ends the sweep, since the next batch would be asked of it too, and
+        a record a batch writes is not merged again on the same pass.
 
         Returns:
             True if any batch was merged.
@@ -1528,20 +1539,27 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 raise _BatchProbesSpent
             return _numbered_records([bodies[last(group)] for group in prefix])
 
-        while self._record_tokens(messages) > bound or (
-            start is not None and self._short_of_target(messages, start)
-        ):
-            groups = [
-                group
-                for group in consolidatable_record_groups(messages)
-                if last(group) not in handled
-            ]
-            if len(groups) < 2:
-                break
+        def survey() -> tuple[list[dict[str, Any]], int, bool]:
+            groups = consolidatable_record_groups(messages)
             missing = [group for group in groups if last(group) not in bodies]
-            for group, body in zip(missing, record_bodies(messages, missing), strict=True):
-                bodies[last(group)] = body
-            oldest = last(groups[0])
+            if missing:
+                for group, body in zip(missing, record_bodies(messages, missing), strict=True):
+                    bodies[last(group)] = body
+            held = self._record_tokens(messages)
+            over = held > bound or (start is not None and self._short_of_target(messages, start))
+            return groups, held, over
+
+        def pair(first: dict[str, Any], second: dict[str, Any]) -> tuple[str, str, int]:
+            return (_digest(bodies[last(first)]), _digest(bodies[last(second)]), limit)
+
+        groups, held, over = survey()
+        cursor = 0
+        while over:
+            while cursor < len(groups) and last(groups[cursor]) in handled:
+                cursor += 1
+            if len(groups) - cursor < 2:
+                break
+            oldest = last(groups[cursor])
             if oldest not in alone:
                 alone[oldest] = fits_summary_input(
                     self.merge_prompt,
@@ -1549,28 +1567,43 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     tokenizer=self.tokenizer,
                     limit=limit,
                 )
+            opening = pair(groups[cursor], groups[cursor + 1])
+            if not alone[oldest] or opening in self._unpaired:
+                handled.add(oldest)
+                continue
             try:
-                batch = (
-                    bounded_prefix(
-                        groups,
+                paired = fits_summary_input(
+                    self.merge_prompt,
+                    render(groups[cursor : cursor + 2]),
+                    tokenizer=self.tokenizer,
+                    limit=limit,
+                )
+                try:
+                    # Token counts need not grow with text, so a longer run may fit where two do
+                    # not; it is searched once, and the start is remembered either way.
+                    batch = bounded_prefix(
+                        groups[cursor:],
                         render=render,
                         prompt=self.merge_prompt,
                         tokenizer=self.tokenizer,
                         limit=limit,
                         min_items=2,
                     )
-                    if alone[oldest]
-                    else []
-                )
+                except _BatchProbesSpent:
+                    if not paired:
+                        self._unpaired.add(opening)
+                    raise
             except _BatchProbesSpent:
                 logger.info(
                     "Compaction stopped looking for record batches after %d prefixes; "
                     "%d records were left unsearched.",
                     _MAX_BATCH_PROBES,
-                    len(groups),
+                    len(groups) - cursor,
                 )
                 break
             if len(batch) < 2:
+                if not paired:
+                    self._unpaired.add(opening)
                 handled.add(oldest)
                 continue
             handled.update(last(group) for group in batch)
@@ -1590,10 +1623,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 self._records_merged += 1
                 handled.update(id(message) for message in messages if id(message) not in standing)
                 changed = True
+                groups, held, over = survey()
+                cursor = 0
                 continue
             self._record_merges_rejected += 1
             self._refused_merges.add(key)
-            held = self._record_tokens(messages)
             if held > bound:
                 logger.warning(
                     "Compaction kept a batch of %d records unmerged: the merge was refused as "
@@ -1605,6 +1639,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     held,
                     bound,
                 )
+        # Kept only while both records still stand side by side, so it stays one entry a pair.
+        self._unpaired &= {pair(first, second) for first, second in pairwise(groups)}
         return changed
 
     def _record_tokens(self, messages: list[Message]) -> int:

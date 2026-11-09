@@ -13,6 +13,7 @@ import copy
 import json
 import logging
 import re
+from collections import Counter
 from typing import Any, Literal
 
 import pytest
@@ -25,6 +26,7 @@ from agent_framework._compaction import (
     project_included_messages,
 )
 
+import maf_compaction._composed as composed_module
 from maf_compaction._composed import (
     _MAX_BATCH_PROBES,
     DEFAULT_RECORD_BUDGET_SHARE,
@@ -755,3 +757,56 @@ async def test_a_sweep_spends_at_most_its_probe_limit_when_no_two_records_share_
     assert tokenizer.transcripts <= 30 + _MAX_BATCH_PROBES, f"{tokenizer.transcripts} rendered"
     unbounded = sum(range(1, 30))
     assert _MAX_BATCH_PROBES < unbounded, "the limit is below every start scanning every prefix"
+
+
+async def test_a_sweep_reads_the_history_once_and_again_only_after_an_accepted_merge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Passing over records costs no further walk of the history; only a merge changes it."""
+    messages = _padded_history(30, 5_500, plain_tail=2)
+    strategy = _strategy(
+        _Summarizer(), budget=_record_size(copy.deepcopy(messages)) - 200, share=0.25
+    )
+    walks: Counter[str] = Counter()
+    for name in ("consolidatable_record_groups", "record_bodies", "active_record_groups"):
+        original = getattr(composed_module, name)
+
+        def spy(*args: Any, _name: str = name, _original: Any = original, **kwargs: Any) -> Any:
+            walks[_name] += 1
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(composed_module, name, spy)
+
+    assert await strategy._merge_batches(messages, None, 0.25)
+
+    assert strategy.records_merged == 1, "the premise: one accepted merge, after 30 records passed"
+    # One survey, then for the accepted merge its own body check, its check for a kept
+    # replacement and one survey of the history it changed: none for the records passed over.
+    assert max(walks.values()) <= 1 + 3 * strategy.records_merged, dict(walks)
+
+
+@pytest.mark.parametrize("probe_limit", [None, 8])
+async def test_sweeps_past_records_that_never_pair_go_on_where_the_last_one_stopped(
+    probe_limit: int | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A start found not to pair is not searched again, even by a stack restored from state.
+
+    With a limit of eight, the search from every start is cut off before it ends, so the start it
+    was cut on has to be remembered too, or every sweep would stop on the same one.
+    """
+    if probe_limit is not None:
+        monkeypatch.setattr(composed_module, "_MAX_BATCH_PROBES", probe_limit)
+    messages = _padded_history(30, 2_400, plain_tail=2)
+    budget = _record_size(copy.deepcopy(messages)) - 200
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=budget, share=0.25)
+
+    for _ in range(40):
+        if await strategy._merge_batches(messages, None, 0.25):
+            break
+        restored = _strategy(summarizer, budget=budget, share=0.25)
+        restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+        strategy = restored
+
+    (merged,) = summarizer.merges
+    assert "lookup_30 " in merged, "the feasible batch past the run that never pairs"
