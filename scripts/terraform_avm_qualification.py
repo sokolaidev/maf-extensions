@@ -12,11 +12,23 @@ from terraform_dependencies import policy_contract, provider_digest
 
 CONTEXT = ROOT / "images/terraform-sandbox"
 CASES = ("pinned", "constraint", "correct-lock", "uncached-version", "wrong-lock", "upstream-lock")
+AZURE_CASES = ("azure-root", "azure-root-invalid", "azure-root-uncached")
 FIELDS = {
     "providers": ("source", "version", "platform"),
     "modules": ("name", "revision", "graph"),
     "registry_modules": ("name", "source", "version", "revision", "graph"),
 }
+
+
+def cases(engine: str, published: dict[str, Any] | None = None) -> tuple[str, ...]:
+    """Replay the authenticated probe set for older published images."""
+    selected = CASES + AZURE_CASES if engine == "opentofu" else CASES
+    if published is not None:
+        retained = tuple(item["name"] for item in published["checks"])
+        if retained not in (CASES, selected):
+            raise ValueError("Unrecognized published AVM qualification cases")
+        return retained
+    return selected
 
 
 def fingerprint(value: Any) -> str:
@@ -91,6 +103,36 @@ source = """module "network" {
 }
 """
 constraints = {"azapi": "~> 2.4, ~> 2.12", "modtm": "~> 0.3", "random": "~> 3.5, ~> 3.6"}
+azure_source = """terraform {
+  required_providers {
+    azurerm = { source = "hashicorp/azurerm", version = "AZURERM_VERSION" }
+    azuread = { source = "hashicorp/azuread", version = "~> 3.0" }
+    local = { source = "hashicorp/local", version = "~> 2.0" }
+    null = { source = "hashicorp/null", version = "~> 3.0" }
+    time = { source = "hashicorp/time", version = "~> 0.14" }
+    tls = { source = "hashicorp/tls", version = "~> 4.0" }
+  }
+}
+provider "azurerm" {
+  features {}
+}
+resource "azurerm_resource_group" "example" {
+  name = "example"
+  location = "westeurope"
+}
+resource "azuread_application" "example" {
+  display_name = "example"
+}
+resource "local_file" "example" {
+  filename = "example.txt"
+  content = "example"
+}
+resource "null_resource" "example" {}
+resource "time_static" "example" {}
+resource "tls_private_key" "example" {
+  algorithm = "RSA"
+}
+"""
 checks = []
 for case in CASES:
     with tempfile.TemporaryDirectory(prefix="avm-release-") as temporary:
@@ -98,7 +140,14 @@ for case in CASES:
         project = call / "project"
         project.mkdir()
         version = "~> 0.22" if case == "constraint" else "0.0.0" if case == "uncached-version" else "0.22.2"
-        (project / "main.tf").write_text(source.replace("VERSION", version))
+        azure = case.startswith("azure-root")
+        if azure:
+            text = azure_source.replace("AZURERM_VERSION", "= 99.0.0" if case == "azure-root-uncached" else "~> 4.0")
+            if case == "azure-root-invalid":
+                text = text.replace('  name = "example"\n', '')
+            (project / "main.tofu").write_text(text)
+        else:
+            (project / "main.tf").write_text(source.replace("VERSION", version))
         if case in ("correct-lock", "wrong-lock", "upstream-lock"):
             blocks = []
             for name, constraint in constraints.items():
@@ -122,6 +171,7 @@ for case in CASES:
             phases = result["phases"]
             init = phases.get("init", {})
             validate = phases.get("validate", {})
+            validation = json.loads(validate.get("stdout", "{}"))
             diagnostics = init.get("stdout", "") + init.get("stderr", "")
             providers = call / ".runner/data/providers"
             links = [path for path in providers.rglob("*") if path.is_symlink()]
@@ -134,7 +184,13 @@ for case in CASES:
                 "version": result["version"],
                 "initExitCode": init.get("exit_code"),
                 "validateExitCode": validate.get("exit_code"),
-                "validationValid": json.loads(validate.get("stdout", "{}")).get("valid"),
+                "validationValid": validation.get("valid"),
+                "missingNameDiagnostic": any(
+                    item.get("severity") == "error"
+                    and item.get("summary") == "Missing required argument"
+                    and '"name"' in item.get("detail", "")
+                    for item in validation.get("diagnostics", [])
+                ),
                 "sourceUnchanged": all((project / name).read_bytes() == content for name, content in before.items()),
                 "providerLinks": len(links),
                 "providerCopies": len(files),
@@ -153,6 +209,8 @@ def expected_refusal(name: str, diagnostics: str) -> bool:
     text = " ".join(diagnostics.split())
     if name == "uncached-version":
         return "does not provide a modules service" in text
+    if name == "azure-root-uncached":
+        return "hashicorp/azurerm" in text and "no available releases match" in text
     if name == "upstream-lock":
         return "SOKOLAI provider lock verification failed: expected baked h1 checksum." in text
     if name == "wrong-lock":
@@ -160,13 +218,13 @@ def expected_refusal(name: str, diagnostics: str) -> bool:
     return False
 
 
-def command(engine: str = "terraform") -> list[str]:
+def command(engine: str = "terraform", *, published: dict[str, Any] | None = None) -> list[str]:
     """Run representative validation and refusal probes without registry access."""
-    cases = CASES
+    selected = cases(engine, published)
     return [
         "/usr/local/bin/python3",
         "-c",
-        f"FIELDS = {FIELDS!r}\nCASES = {cases!r}\nENGINE = {engine!r}\n"
+        f"FIELDS = {FIELDS!r}\nCASES = {selected!r}\nENGINE = {engine!r}\n"
         + inspect.getsource(expected_refusal)
         + _GUEST,
     ]
@@ -177,7 +235,7 @@ def evidence(
 ) -> dict[str, Any]:
     """Refuse receipt drift, incomplete checks and false-positive validation."""
     result = json.loads(output)
-    cases = CASES
+    selected = cases(engine, published)
     manifest = (
         "dependencies.terraform-avm.json"
         if engine == "terraform"
@@ -192,10 +250,17 @@ def evidence(
         if published is None
         else published[f"{engine}Version"]
     )
-    if not isinstance(checks, list) or len(checks) != len(cases):
+    if not isinstance(checks, list) or len(checks) != len(selected):
         raise ValueError("Terraform AVM qualification cases are incomplete")
-    for actual, name in zip(checks, cases, strict=True):
-        success = name not in {"uncached-version", "wrong-lock", "upstream-lock"}
+    for actual, name in zip(checks, selected, strict=True):
+        success = name not in {
+            "uncached-version",
+            "wrong-lock",
+            "upstream-lock",
+            "azure-root-uncached",
+        }
+        invalid = name == "azure-root-invalid"
+        azure = name.startswith("azure-root")
         if (
             actual["name"] != name
             or actual["version"] != version
@@ -205,12 +270,13 @@ def evidence(
                 success
                 and (
                     actual["initExitCode"] != 0
-                    or actual["validateExitCode"] != 0
-                    or actual["validationValid"] is not True
-                    or actual["providerLinks"] < 3
+                    or actual["validateExitCode"] != (1 if invalid else 0)
+                    or actual["validationValid"] is not (not invalid)
+                    or (invalid and actual.get("missingNameDiagnostic") is not True)
+                    or actual["providerLinks"] < (6 if azure else 3)
                     or actual["providerCopies"] != 0
                     or actual["providersInMirror"] is not True
-                    or actual["nestedModuleLoaded"] is not True
+                    or (not azure and actual["nestedModuleLoaded"] is not True)
                 )
             )
             or (

@@ -208,6 +208,28 @@ def project(case: str, receipt: dict[str, Any]) -> tuple[dict[str, str], str]:
         files["root/main.tf"] = network_module().replace(
             "  location", "  unsupported_argument = true\n  location"
         )
+    elif case.startswith("azure-root"):
+        source = """terraform {
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 4.0"
+    }
+  }
+}
+provider "azurerm" {
+  features {}
+}
+resource "azurerm_resource_group" "example" {
+  name     = "example"
+  location = "westeurope"
+}
+"""
+        if case == "azure-root-invalid":
+            source = source.replace('  name     = "example"\n', "")
+        elif case == "azure-root-uncached":
+            source = source.replace("~> 4.0", "= 99.0.0")
+        files = {"root/main.tofu": source}
     elif case in ("correct-lock", "wrong-lock"):
         files["root/.terraform.lock.hcl"] = lock_file(receipt, broken=case == "wrong-lock")
     return files, root
@@ -244,6 +266,21 @@ async def create_backend(name: str) -> Any:
             "tofu-precedence",
             (PASSED,),
             marks=pytest.mark.skipif(ENGINE != "opentofu", reason="OpenTofu extension precedence"),
+        ),
+        pytest.param(
+            "azure-root",
+            (PASSED,),
+            marks=pytest.mark.skipif(ENGINE != "opentofu", reason="OpenTofu Azure root"),
+        ),
+        pytest.param(
+            "azure-root-invalid",
+            ("Missing required argument",),
+            marks=pytest.mark.skipif(ENGINE != "opentofu", reason="OpenTofu Azure root"),
+        ),
+        pytest.param(
+            "azure-root-uncached",
+            (UNLOADED, "no available releases match"),
+            marks=pytest.mark.skipif(ENGINE != "opentofu", reason="OpenTofu Azure root"),
         ),
         ("incompatible-version", (UNLOADED, NO_REGISTRY, 'module "network"')),
         ("unbaked-module", (UNLOADED, NO_REGISTRY, 'module "network"')),
