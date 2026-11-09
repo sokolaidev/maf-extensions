@@ -16,8 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import image_remediation_evidence as acquisition  # noqa: E402
 import image_remediation_pr as publication  # noqa: E402
+import platform_rehearsal_history as history  # noqa: E402
 import platform_remediation_rehearsal as rehearsal  # noqa: E402
-from container_release import REPOSITORY, read, scan_result, write  # noqa: E402
+from container_release import REPOSITORY, digest, read, scan_result, write  # noqa: E402
 from test_go_remediation import AT, IMAGE, retained  # noqa: E402
 from test_image_remediation import BOT, SOURCE, URL, FakeGitHub  # noqa: E402
 from test_image_remediation import app_key as app_key  # noqa: E402
@@ -70,7 +71,7 @@ def test_request_refuses_untrusted_context(context, monkeypatch, name, value):
 @pytest.mark.parametrize("case", rehearsal.CASES)
 def test_case_selection_requires_real_matching_planner_rows(context, tmp_path, case):
     match, profile = dotnet(), "bicep"
-    if case == "current-rebuild":
+    if case in {"current-rebuild", history.CASE}:
         match["vulnerability"]["fix"]["versions"] = ["3.1.12"]
     elif case == "apk-pinned":
         match, profile = apk("clamav-scanner", "1.4.6-r0", "1.4.6-r1", "alpine"), "antivirus"
@@ -80,7 +81,7 @@ def test_case_selection_requires_real_matching_planner_rows(context, tmp_path, c
     rows = rehearsal.case_rows(context, expected, case)
     assert len(rows) == 1 and rows[0]["component"] == match["artifact"]["name"]
     expected["findings"] = []
-    with pytest.raises(ValueError, match="unavailable in current evidence"):
+    with pytest.raises(ValueError, match="unavailable in selected evidence"):
         rehearsal.case_rows(context, expected, case)
 
 
@@ -372,3 +373,233 @@ def test_workflow_is_manual_main_only_and_mints_after_retaining_qualification():
             assert "IMAGE_REMEDIATION_APP_PRIVATE_KEY" not in json.dumps(job)
     assert steps[-1]["if"].startswith("always()")
     assert "rehearsal-failure.json" in steps[-1]["with"]["path"]
+
+
+@pytest.fixture
+def historical(qualified, context, monkeypatch):
+    root, work, results = qualified
+    source = root / planner.NUGET
+    source.write_text(source.read_text().replace('Version="3.1.12"', 'Version="3.1.13"'))
+    old = read(work / "receipt.json")["directories"][0]
+    (work / "evidence" / old).rename(work / "evidence/bicep-docker-sbx-0.2.2")
+    write(
+        work / "evidence/bicep-docker-sbx-0.2.2/assessment.json",
+        read(work / "evidence/bicep-docker-sbx-0.2.2/observation.json")["assessment"],
+    )
+    write(work / "evidence/monitor-index.json", {"historical": True})
+    manifest = read(root / rehearsal.MANIFEST)
+    pinned = manifest["cases"][history.CASE]["fixture"]
+    pinned["files"] = {name: digest(work / "evidence" / name) for name in pinned["files"]}
+    write(root / rehearsal.MANIFEST, manifest)
+    expected = planner.plan(root, [work / "evidence/bicep-docker-sbx-0.2.2"])
+    assert not expected["updates"]
+    write(work / "plan.json", expected)
+    write(work / "receipt.json", history.receipt(root, SOURCE))
+    write(
+        work / "current/receipt.json",
+        {"source": SOURCE, "images": dict.fromkeys(expected["affectedProfiles"])},
+    )
+    for profile in expected["affectedProfiles"]:
+        candidate = results / f"candidate-{profile}"
+        identity = read(candidate / "qualification.json")
+        identity.update(inputs=expected["inputs"], plan=planner.digest(work / "plan.json"))
+        write(candidate / "qualification.json", identity)
+        baseline = results / f"baseline-{profile}"
+        for path in candidate.iterdir():
+            shutil.copyfile(path, baseline / path.name)
+        write(baseline / "qualification.json", {**identity, "variant": "baseline"})
+    monkeypatch.setattr(history, "git", lambda *_: SOURCE)
+    monkeypatch.setenv("REHEARSAL_CASE", history.CASE)
+    write(work / "rehearsal-request.json", rehearsal.request_record(root))
+    return root, work, results
+
+
+def test_historical_replay_uses_fresh_builds_and_separate_current_authority(
+    historical, monkeypatch
+):
+    root, work, results = historical
+    seen = []
+    monkeypatch.setattr(rehearsal, "current", lambda _, value: seen.append(value))
+    report = rehearsal.qualify(root, work, results)
+    assert report["qualification"]["status"] == "release-needed"
+    assert len(report["qualification"]["scans"]) == 6
+    assert report["evidenceMode"] == "historical-replay"
+    assert report["productionRecovery"] is False
+    assert report["fixture"] == history.fixture(root)
+    assert seen == [read(work / "current/receipt.json")]
+    assert "rehearsalFixture" not in seen[0]
+
+
+def test_historical_delivery_does_not_depend_on_unrelated_current_proposals(
+    historical, monkeypatch
+):
+    root, work, results = historical
+    acquired = read(work / "current/receipt.json")
+    acquired["images"]["graphviz"] = {"release": "unrelated"}
+    write(work / "current/receipt.json", acquired)
+    seen = []
+    monkeypatch.setattr(rehearsal, "current", lambda _, value: seen.append(value))
+    rehearsal.qualify(root, work, results)
+    assert set(seen[0]["images"]) == set(history.BICEP_ROUTES)
+    assert read(work / "current/receipt.json") == acquired
+
+
+@pytest.mark.parametrize(
+    "mutation", ["evidence", "index", "plan", "source", "scope", "fixture", "request"]
+)
+def test_historical_replay_refuses_changed_inputs(historical, mutation):
+    root, work, results = historical
+    if mutation in {"evidence", "index"}:
+        name = (
+            "bicep-docker-sbx-0.2.2/grype.json" if mutation == "evidence" else "monitor-index.json"
+        )
+        path = work / "evidence" / name
+        path.write_bytes(path.read_bytes() + b" ")
+    elif mutation == "plan":
+        expected = read(work / "plan.json")
+        expected["findings"] = []
+        write(work / "plan.json", expected)
+    elif mutation in {"source", "scope"}:
+        receipt = read(work / "current/receipt.json")
+        if mutation == "source":
+            receipt["source"] = "foreign"
+        else:
+            del receipt["images"]["bicep-avm"]
+        write(work / "current/receipt.json", receipt)
+    elif mutation == "fixture":
+        receipt = read(work / "receipt.json")
+        receipt["rehearsalFixture"]["producer"] = "foreign"
+        write(work / "receipt.json", receipt)
+    else:
+        request = read(work / "rehearsal-request.json")
+        request["runAttempt"] += 1
+        write(work / "rehearsal-request.json", request)
+    with pytest.raises(ValueError):
+        rehearsal.qualify(root, work, results)
+
+
+@pytest.mark.parametrize("phase", ["runtime", "scan", "stale"])
+def test_historical_inputs_do_not_waive_new_qualification(historical, monkeypatch, phase):
+    root, work, results = historical
+    monkeypatch.setattr(rehearsal, "current", lambda *_: None)
+    if phase == "runtime":
+        path = results / "candidate-bicep/runtime.json"
+        value = read(path)
+        value["passed"] = False
+        write(path, value)
+    elif phase == "scan":
+        path = results / "candidate-bicep/qualification.json"
+        value = read(path)
+        value["source"] = "historical-producer"
+        write(path, value)
+    else:
+
+        def stale(*_):
+            raise acquisition.EvidenceChanging("Monitoring changed")
+
+        monkeypatch.setattr(rehearsal, "current", stale)
+    with pytest.raises(ValueError):
+        rehearsal.qualify(root, work, results)
+
+
+def test_production_entry_points_refuse_historical_receipts(historical):
+    root, work, _ = historical
+    with pytest.raises(ValueError, match="isolated rehearsal"):
+        rehearsal.platform.validate(root, work)
+    with pytest.raises(ValueError, match="not a current-evidence receipt"):
+        acquisition.current(FakeGitHub(), read(work / "receipt.json"))
+
+
+@pytest.mark.parametrize("outcome", ["ready", "deferred", "producer", "tampered"])
+def test_historical_acquisition_authenticates_pins_and_current_scope(
+    historical, tmp_path, monkeypatch, outcome
+):
+    root, old_work, _ = historical
+    pinned = history.fixture(root)
+    work = tmp_path / "acquired"
+    observed = []
+    monkeypatch.setattr(
+        history,
+        "monitor_source",
+        lambda *_: "wrong" if outcome == "producer" else pinned["producer"],
+    )
+
+    def restore(client, monitor, source, targets, destination):
+        assert monitor == pinned["monitor"] and source == pinned["producer"]
+        assert targets == {"bicep-docker-sbx-0.2.2"}
+        shutil.copytree(old_work / "evidence", destination)
+        if outcome == "tampered":
+            (destination / "monitor-index.json").write_text("{}")
+
+    def acquire(client, source, destination, **kwargs):
+        observed.append(kwargs)
+        if outcome == "deferred":
+            return None
+        write(destination / "receipt.json", read(old_work / "current/receipt.json"))
+        return {"affectedProfiles": [], "updates": []}
+
+    monkeypatch.setattr(history, "restore_monitor", restore)
+    monkeypatch.setattr(history, "acquire_with_retry", acquire)
+    monkeypatch.setattr(history, "current", lambda *_: None)
+    if outcome == "ready":
+        expected = rehearsal.acquire(root, work)
+        assert expected == read(old_work / "plan.json")
+        assert read(work / "rehearsal-request.json") == rehearsal.request_record(root)
+        assert observed == [
+            {
+                "selected_profiles": history.BICEP_ROUTES,
+                "planner": history.plan,
+                "require_all_profiles": False,
+            }
+        ]
+        with pytest.raises(FileExistsError):
+            rehearsal.acquire(root, work)
+    else:
+        with pytest.raises(ValueError):
+            rehearsal.acquire(root, work)
+        if outcome in {"producer", "tampered"}:
+            assert not observed
+
+
+def test_historical_delivery_receipt_labels_its_evidence(historical, monkeypatch):
+    root, work, results = historical
+    monkeypatch.setattr(rehearsal, "current", lambda *_: None)
+    qualified = rehearsal.qualify(root, work, results)
+    _, files = rehearsal.delivery_payload(root, qualified, URL)
+    receipt = json.loads(files[publication.REHEARSAL_PATH])
+    assert receipt["evidenceMode"] == "historical-replay"
+    assert receipt["fixture"] == history.fixture(root)
+    assert receipt["productionRecovery"] is False
+
+
+def test_historical_delivery_cli_passes_only_current_authority_to_publisher(
+    historical, monkeypatch
+):
+    root, work, results = historical
+    monkeypatch.setattr(rehearsal, "ROOT", root)
+    monkeypatch.setattr(rehearsal, "current", lambda *_: None)
+    monkeypatch.setenv("REHEARSAL_DELIVERY", "true")
+    write(work / "rehearsal-qualified.json", rehearsal.qualify(root, work, results))
+    seen = []
+    monkeypatch.setattr(rehearsal, "lifecycle", lambda *args: seen.append(args))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rehearsal",
+            "deliver",
+            "--work",
+            str(work),
+            "--results",
+            str(results),
+            "--bot",
+            BOT,
+            "--artifact-id",
+            "456",
+        ],
+    )
+    rehearsal.main()
+    assert len(seen) == 1
+    assert seen[0][1] == read(work / "current/receipt.json")
+    assert "rehearsalFixture" not in seen[0][1]
+    assert seen[0][2]["evidenceMode"] == "historical-replay"

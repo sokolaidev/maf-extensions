@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       case:
-        description: Case that must be present in authenticated current monitoring
+        description: Current finding case or explicitly pinned historical rebuild replay
         type: choice
-        options: [current-rebuild, bicep-update, apk-pinned, apk-unpinned]
+        options: [current-rebuild, bicep-update, apk-pinned, apk-unpinned, historical-rebuild]
         default: current-rebuild
         required: true
       exercise_delivery:
@@ -96,7 +96,7 @@ jobs:
         env:
           PROFILE: ${{ matrix.profile }}
           VARIANT: ${{ matrix.variant }}
-        run: uv run --locked python scripts/platform_remediation.py scan --work "$RUNNER_TEMP/remediation" --profile "$PROFILE" --variant "$VARIANT" --results "$RUNNER_TEMP/results/$VARIANT-$PROFILE"
+        run: uv run --locked python scripts/platform_remediation_rehearsal.py scan --work "$RUNNER_TEMP/remediation" --profile "$PROFILE" --variant "$VARIANT" --results "$RUNNER_TEMP/results/$VARIANT-$PROFILE"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -124,7 +124,7 @@ jobs:
           name: platform-rehearsal-plan-${{ github.run_attempt }}
           path: ${{ runner.temp }}/remediation
       - name: Validate and apply bounded package updates
-        run: uv run --locked python scripts/platform_remediation.py apply --work "$RUNNER_TEMP/remediation"
+        run: uv run --locked python scripts/platform_remediation_rehearsal.py apply --work "$RUNNER_TEMP/remediation"
       - name: Run the source gate
         run: uv run --locked poe gate
       - name: Check Markdown and trackers
