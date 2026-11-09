@@ -882,6 +882,7 @@ def consolidatable_record_groups(messages: list[Message]) -> list[dict[str, Any]
     content outside the matched records also stay intact, since the summarizer never sees it;
     that includes a reasoning item, which the framework groups with the call it precedes. So does
     a record whose call id another output answers too, which excluding the call would orphan.
+    Results carrying metadata, provider state or non-text items also stay whole.
 
     Args:
         messages: The conversation, already grouped.
@@ -908,6 +909,7 @@ def _consolidatable_record_groups(
         for group in _active_record_groups(messages, spans, recalls)
         if (group["start_index"], group["end_index"]) in removable
         and _record_only_group(messages, group, record_contents)
+        and _plain_record_results(messages, group)
         and not _call_ids(messages, group) & answered
     ]
     return groups, recalls
@@ -969,8 +971,7 @@ def _reshape_payload(
     summarizer, and a reshape must keep indentation and trailing space the values carry. A
     written record is one bare text, so a result whose items carry metadata, a non-text item or
     provider state, or which carries fields of its own, has no exact form -- the rule
-    :func:`~._tool_result.can_shorten_result` sets for shortening a result in place. Record merges
-    and harder rewrites do not apply it yet.
+    :func:`~._tool_result.can_shorten_result` sets for shortening a result in place.
     """
     contents = [
         content
@@ -999,6 +1000,15 @@ def _bare_text_result(content: Content) -> bool:
             content.items is None
             or "\n".join(item.text or "" for item in content.items) == str(content.result)
         )
+    )
+
+
+def _plain_record_results(messages: Sequence[Message], group: dict[str, Any]) -> bool:
+    return all(
+        _bare_text_result(content)
+        for message in messages[group["start_index"] : group["end_index"] + 1]
+        for content in message.contents
+        if content.type == "function_result"
     )
 
 
@@ -2090,7 +2100,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             text: The replacement's own text, without marker or preamble.
 
         Raises:
-            ValueError: When a group contains unrelated content, or is not
+            ValueError: When a result carries more than bare text, a group contains unrelated
+                content, or is not
                 :func:`~._preserve.removable_whole`: excluding it would
                 leave a call standing without its result, or the reverse, which the provider
                 refuses -- as it refuses an extra output left behind its excluded call. Refused
@@ -2113,6 +2124,8 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         record_contents = _record_contents(messages, matches, recall_results)
         if not all(_record_only_group(messages, group, record_contents) for group in groups):
             raise ValueError("A record handed to consolidate_records contains unrelated content.")
+        if not all(_plain_record_results(messages, group) for group in groups):
+            raise ValueError("A record handed to consolidate_records carries more than bare text.")
         replaces_value_anchor = (
             bool(self._value_target_anchor)
             and self._value_targets is not None
@@ -2638,6 +2651,10 @@ class _RecallRefused(Exception):
 
 class _RecallTruncated(Exception):
     """A length-limited response contains no usable recall record."""
+
+
+class _RecallTooLarge(Exception):
+    """A recall call and its result cannot fit the next request together."""
 
 
 def _has_refusal(contents: Sequence[Content]) -> bool:
@@ -3279,8 +3296,11 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             "compaction_strategy", getattr(context.client, "compaction_strategy", None)
         )
         prompt: Message | None = None
+        outgoing: list[Message] | None = None
 
         async def compact(messages: list[Message]) -> bool:
+            nonlocal outgoing
+            outgoing = messages
             if forced_this_call and self._capture_value_targets is not None:
                 self._capture_value_targets(messages)
             # History providers can load retained asks after middleware entry.
@@ -3306,6 +3326,48 @@ class ToolResultRecallMiddleware(ChatMiddleware):
 
                 request_budget = sending_budget
 
+        def observe(response: ChatResponse[Any]) -> bool:
+            normalized = self._observe_forced(response)
+            if request_budget is None or outgoing is None:
+                return normalized
+            results: list[Content] = []
+            for message in response.messages:
+                for content in message.contents:
+                    if content.type != "function_call" or content.name != RECALL_TOOL_NAME:
+                        continue
+                    if not content.call_id:
+                        raise ValueError("Forced recall requires a call id.")
+                    arguments = content.arguments
+                    if isinstance(arguments, str):
+                        arguments = json.loads(arguments)
+                    values = cast(dict[str, Any], arguments)["values"]
+                    results.append(
+                        Content.from_function_result(
+                            call_id=content.call_id, result=make_recall_tool()(values)
+                        )
+                    )
+            if not results:
+                return normalized
+            projected = (
+                [
+                    message
+                    for message in outgoing
+                    if not message.additional_properties.get(RECALL_PROMPT_KEY)
+                ]
+                + list(response.messages)
+                + [Message("tool", results)]
+            )
+            annotate_token_counts(projected, tokenizer=self.tokenizer)
+            forced_options = context.options
+            try:
+                context.options = original_options
+                budget = request_budget()
+            finally:
+                context.options = forced_options
+            if included_token_count(projected) > budget:
+                raise _RecallTooLarge
+            return normalized
+
         def restore_request() -> None:
             context.options = original_options
             context.messages = list(original_messages)
@@ -3330,11 +3392,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 await call_next()
                 if forced_this_call:
                     if isinstance(context.result, ResponseStream):
-                        context.result, _ = await _buffer_recall_stream(
-                            context.result, self._observe_forced
-                        )
+                        context.result, _ = await _buffer_recall_stream(context.result, observe)
                     elif isinstance(context.result, ChatResponse):
-                        self._observe_forced(context.result)
+                        observe(context.result)
             finally:
                 if prompt is not None:
                     # Downstream reconciliation can retain the sent list after this call.
@@ -3398,14 +3458,19 @@ class ToolResultRecallMiddleware(ChatMiddleware):
             if forced_this_call:
                 self._requeue_forced(reforced=reforced_this_call)
             raise
-        except _RecallTruncated:
+        except (_RecallTruncated, _RecallTooLarge) as exc:
             truncated_this_call = True
             self._force_next = True
             self._reforce_next = reforced_this_call
             self._awaiting_record = False
             self._ignored_streak = 0
             self._feedback = (
-                "The previous recall reached the response limit. Write a shorter record"
+                (
+                    "The previous recall would exceed the next request's input budget."
+                    if isinstance(exc, _RecallTooLarge)
+                    else "The previous recall reached the response limit."
+                )
+                + " Write a shorter record"
                 + (
                     f", targeting at most {max(1, self.record_max_tokens // 4):,} tokens."
                     if self.record_max_tokens is not None

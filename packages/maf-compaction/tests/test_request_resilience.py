@@ -20,6 +20,7 @@ from agent_framework._compaction import EXCLUDED_KEY, included_token_count
 from maf_compaction import (
     AnchoredCompactionStrategy,
     CompactionBudgetExceeded,
+    CompactionPendingResultBudgetExceeded,
     RecallGate,
     ToolResultAnchoredSummarizationCompactionStrategy,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
@@ -321,3 +322,28 @@ async def test_post_call_budget_callback_does_not_hide_unrelated_errors():
 
     with pytest.raises(RuntimeError, match="callback bug"):
         await middleware.process(context, respond, request_budget=broken_budget)
+
+
+@pytest.mark.parametrize("overhead", [False, True])
+@pytest.mark.parametrize(
+    "loaded_call, loaded_result", [(True, False), (True, True), (False, False)]
+)
+async def test_budget_refusal_identifies_unstored_results(overhead, loaded_call, loaded_result):
+    call = Message(
+        "assistant", [Content.from_function_call(call_id="call", name="lookup", arguments={})]
+    )
+    result = Message("tool", [Content.from_function_result(call_id="call", result="x" * 8000)])
+    if loaded_call:
+        call.additional_properties["_attribution"] = {"source_id": "history"}
+    if loaded_result:
+        result.additional_properties["_attribution"] = {"source_id": "history"}
+    messages = [Message("user", ["head"]), call, result]
+    options = {"instructions": "x" * 8000} if overhead else {}
+    with pytest.raises(CompactionBudgetExceeded) as failure:
+        await composition().compact_before(messages, options=options)
+    if loaded_call and not loaded_result:
+        assert isinstance(failure.value, CompactionPendingResultBudgetExceeded)
+        assert failure.value.pending_results == (result,)
+        assert failure.value.pending_results[0] is result
+    else:
+        assert type(failure.value) is CompactionBudgetExceeded
