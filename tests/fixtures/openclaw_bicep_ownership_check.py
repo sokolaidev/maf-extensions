@@ -35,6 +35,7 @@ from typing import Any
 
 import httpx
 from agent_framework import MCPStreamableHTTPTool
+from openclaw_gateway_check import compiler_running
 from openclaw_gateway_http_check import records, require, rpc_result, strict_json, workload_result
 from openclaw_http_observer import ObserveHTTP, digest, resolve_image
 from openclaw_sources import LARGE_SOURCE, SIMPLE_SOURCE
@@ -117,21 +118,6 @@ def verify_result(value: Any, prototype: Any, image: str, config: str) -> dict[s
             "source_sha256",
         )
     }
-
-
-def compiler_running(processes: str) -> bool:
-    for line in processes.splitlines():
-        words = line.split()
-        if words and words[0].isdigit():
-            words = words[1:]
-        if (
-            len(words) > 1
-            and words[0].rsplit("/", 1)[-1] == "bicep"
-            and words[1] in {"build", "lint", "build-params"}
-            and "--no-restore" in words
-        ):
-            return True
-    return False
 
 
 def verify_controls(events, sid: str, *, cancels: int = 0, deleted: bool = False) -> None:

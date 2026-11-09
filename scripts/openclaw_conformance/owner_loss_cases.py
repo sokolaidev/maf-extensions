@@ -139,7 +139,7 @@ def case(
     free_port = importlib.import_module("agent").free_port
     from maf_sandbox_mcp.server import ownership
 
-    compiler_running = importlib.import_module("openclaw_bicep_ownership_check").compiler_running
+    compiler_running = importlib.import_module("openclaw_gateway_check").compiler_running
     projected_result = importlib.import_module("openclaw_gateway_http_check").projected_result
     rpc_result = importlib.import_module("openclaw_gateway_http_check").rpc_result
     verify_outcome = importlib.import_module("openclaw_gateway_http_check").verify_outcome

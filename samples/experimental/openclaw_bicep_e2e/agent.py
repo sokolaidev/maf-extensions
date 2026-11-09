@@ -32,10 +32,11 @@ from _windows_job import Job
 
 OPENCLAW = "2026.9.7"
 WORKER_REQUIREMENTS = (
-    "maf-sandbox==0.51.1",
-    "maf-sandbox-bicep==0.24.0",
-    "maf-sandbox-docker==0.29.0",
-    "agent-framework-core==1.22.0",
+    "maf-sandbox==0.53.1",
+    "maf-sandbox-bicep==0.25.1",
+    "maf-sandbox-docker==0.30.6",
+    "agent-framework-core==1.24.0",
+    "mcp==2.2.0",
 )
 HERE = Path(__file__).resolve().parent
 FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
