@@ -23,6 +23,8 @@ This kind exposes no plan, apply or state commands. It does not write to the age
 
 Each call supplies a file manifest and root module. All files are read through the session with their original listing records, checked against transfer limits and staged before execution.
 
+Variable-value files (`.tfvars`, `.tfvars.json`) are optional manifest entries. The model chooses entries from the host's visible listing; files omitted from the manifest are not staged. Expose these files only when their contents may enter tool results, including diagnostic excerpts and whole changed files from the optional formatter. Integrity labels and closed egress do not redact secrets; file visibility and result confidentiality remain host policy.
+
 The tool refuses:
 
 - Missing files, normalized name collisions and reserved paths.
@@ -134,6 +136,7 @@ All four combinations also passed in the [all-sample published-package dispatch]
 | Contract | State | Details |
 |---|---|---|
 | Offline validation and optional formatting | Implemented | [Package README](../../../packages/maf-sandbox-terraform/README.md) |
+| Explicit variable-file staging with host-controlled visibility | Implemented | [#2610](https://github.com/sokolaidev/maf-extensions/pull/2610) (merged) |
 | Approved providers, local modules and registry modules for both engines | Implemented; support depends on the selected image | [Image guide](../../../images/terraform-sandbox/README.md) |
 | OpenTofu AVM network image | Implemented; bounded local Docker qualification, publication pending | [#2182](https://github.com/sokolaidev/maf-extensions/issues/2182) (closed) by [#2186](https://github.com/sokolaidev/maf-extensions/pull/2186) (merged); [Image guide](../../../images/terraform-sandbox/OPENTOFU-AVM.md) |
 | OpenTofu AVM mirror for plain Azure roots | Implemented in source; expanded-image publication pending | Source expansion by [#2607](https://github.com/sokolaidev/maf-extensions/pull/2607) (merged); publication tracked in [#2603](https://github.com/sokolaidev/maf-extensions/issues/2603) (open); [Image guide](../../../images/terraform-sandbox/OPENTOFU-AVM.md) |
