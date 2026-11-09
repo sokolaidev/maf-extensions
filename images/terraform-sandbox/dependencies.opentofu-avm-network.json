@@ -68,6 +68,126 @@
       }
     },
     {
+      "source": "registry.opentofu.org/hashicorp/azuread",
+      "version": "3.10.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-azuread/releases/download/v3.10.0/terraform-provider-azuread_3.10.0_linux_amd64.zip",
+        "sha256": "504017a69b92a9bee4e80f6bd92073f094b3d658d46ffdcc4d38de8304b94781",
+        "provenance": "opentofu azuread v3.10.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499692"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-azuread",
+        "revision": "e2a2ab1964df42b8fcbeaeb3ac76892e844866e1",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-azuread/zip/e2a2ab1964df42b8fcbeaeb3ac76892e844866e1",
+          "sha256": "25ed0ce7c721b3a09c15defd00ffa3256c1c98f214fe788cdb2184990d6430d6",
+          "provenance": "OpenTofu v3.10.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.62.0"
+        },
+        "module_files": {
+          "go.mod": "46a545a12090c8da8e38122b2c201927bd1aa96a5b0379ee82c95b1a871a3a24",
+          "go.sum": "c5d2787f63e5bd636693140b03b3b9a4dc30bc675666768317638eaca14e9d3d"
+        },
+        "sha256": "1140a0bde66b671bfe86e2cc65a4c0b996a9ee58cc2f8b0fdbd527b951f76053"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/azurerm",
+      "version": "4.81.0",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-azurerm/releases/download/v4.81.0/terraform-provider-azurerm_4.81.0_linux_amd64.zip",
+        "sha256": "faf96f32e7bd9bf4886a34635c93e80f512214228531e7548ac5b2e3b93a525d",
+        "provenance": "opentofu azurerm v4.81.0 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499680"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-azurerm",
+        "revision": "5782a75422c68a0d0804ac16d97dcaf3df5ee2fa",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-azurerm/zip/5782a75422c68a0d0804ac16d97dcaf3df5ee2fa",
+          "sha256": "0add085dff37898e77b654c378defbcd289569e09f83ab970c4da7adc97ab0a2",
+          "provenance": "OpenTofu v4.81.0 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/crypto": "v0.58.0",
+          "golang.org/x/mod": "v0.41.0",
+          "golang.org/x/net": "v0.62.0",
+          "golang.org/x/text": "v0.43.0",
+          "google.golang.org/grpc": "v1.83.2"
+        },
+        "module_files": {
+          "go.mod": "8e1ad4ea6a346e9f257910e7c7147fbf4c4ac4f109d704309ae9cc70a7c362e3",
+          "go.sum": "e80a233ea5553f68ac30258bf469a28cc922eb8e1b4678da96dbf2ecc45d123f"
+        },
+        "sha256": "1b876e5a4d128b4a184715e713f27ff629a9d59535371edae5b8454919376f6e"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/local",
+      "version": "2.9.1",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-local/releases/download/v2.9.1/terraform-provider-local_2.9.1_linux_amd64.zip",
+        "sha256": "5f25e3e5e58d516e3c81ef1ba712bdab3a40e45028bbb62c7ec98659a6dab65f",
+        "provenance": "opentofu local v2.9.1 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499490"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-local",
+        "revision": "95ad8e4b1c13f74be02143846e13cc8f588bc096",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-local/zip/95ad8e4b1c13f74be02143846e13cc8f588bc096",
+          "sha256": "158e4f621d4c7ce75c1c62cf2a6fb824be13ee93ac5924be363048dd4f680cd4",
+          "provenance": "OpenTofu v2.9.1 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.62.0"
+        },
+        "module_files": {
+          "go.mod": "2277c61f5bbd091ea1628c159640183b281fdddc2fdb23bdc03a612e576c2868",
+          "go.sum": "0c733b077da9ead21958111c147e52efdfd8fd6fcae25f7513ca9fdce047844b"
+        },
+        "sha256": "ec05304e103a8ec7b5674c7d2d524c7351e80d6bfa8a6f368e37d20b2582de38"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/null",
+      "version": "3.3.2",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-null/releases/download/v3.3.2/terraform-provider-null_3.3.2_linux_amd64.zip",
+        "sha256": "73ac02bc3b680e1ea75aab24ec2a359c8f0a021f73d43b2feae0a899e75a93ad",
+        "provenance": "opentofu null v3.3.2 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499464"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-null",
+        "revision": "a7fd5e4c96c97a2f4b0c8f9b27ec6471cf90d11e",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-null/zip/a7fd5e4c96c97a2f4b0c8f9b27ec6471cf90d11e",
+          "sha256": "a621b7e0a304e55ac68ac17429293f825486a9086cc5977f485fde6a8d85bd8a",
+          "provenance": "OpenTofu v3.3.2 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.62.0"
+        },
+        "module_files": {
+          "go.mod": "3fed711bd2f2e555494757cc1a1c857c8085dfc7dd900f978ab29cdc5dc4e9d7",
+          "go.sum": "64b0e94726ae5037a7268f017f4691c7d37d27c35e854011aae40f7916dd31dd"
+        },
+        "sha256": "07536b5fe7e2d0952604ea8cff16848f52b8ed146e8f6202c2e49d19d30fe231"
+      }
+    },
+    {
       "source": "registry.opentofu.org/hashicorp/random",
       "version": "3.7.2",
       "platform": "linux_amd64",
@@ -98,6 +218,64 @@
           "go.sum": "24cc70bcb0a0a040bee69388111ac5e174e115619e51dade6b56691ce9abf6cf"
         },
         "sha256": "70589f793c82f302da33b9e766624ea168d5cfa39230fa4b47fc01824afd8fed"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/time",
+      "version": "0.14.2",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-time/releases/download/v0.14.2/terraform-provider-time_0.14.2_linux_amd64.zip",
+        "sha256": "0c5caf61f978612c78eead85fac256ce42a62e5a04616afedf41065a98639c9f",
+        "provenance": "opentofu time v0.14.2 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499419"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-time",
+        "revision": "c6ce8a254a3ad0811ad5622772b0dbf5ff98b514",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-time/zip/c6ce8a254a3ad0811ad5622772b0dbf5ff98b514",
+          "sha256": "e3a369517f5ba6d0b2da49b39daf0476c2093c3b245d941e204887f1429d0332",
+          "provenance": "OpenTofu v0.14.2 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.62.0"
+        },
+        "module_files": {
+          "go.mod": "22a99896821aadaeb64d75b2a92a5ec035146b6241a36726c546f25ba46d6101",
+          "go.sum": "60fb37c9a3dfa2aaebc122936f82262a830ef997b93d00af7a89be8c5c3f25d6"
+        },
+        "sha256": "50bca20dc00b6c4b1196bb04f11decab5948366b0ab9ad3c3a94b9025324a87a"
+      }
+    },
+    {
+      "source": "registry.opentofu.org/hashicorp/tls",
+      "version": "4.4.1",
+      "platform": "linux_amd64",
+      "artifact": {
+        "url": "https://github.com/opentofu/terraform-provider-tls/releases/download/v4.4.1/terraform-provider-tls_4.4.1_linux_amd64.zip",
+        "sha256": "3fcc9caff4fd3b7b4790ad0a2050379d953de46298c61455535bfbeffe93e53f",
+        "provenance": "opentofu tls v4.4.1 release SHA256SUMS matching registry download metadata",
+        "github_repository_id": "691499409"
+      },
+      "source_build": {
+        "repository": "https://github.com/opentofu/terraform-provider-tls",
+        "revision": "623d9ccc2d963372cfcaa54b252a1c507ca69900",
+        "artifact": {
+          "url": "https://codeload.github.com/opentofu/terraform-provider-tls/zip/623d9ccc2d963372cfcaa54b252a1c507ca69900",
+          "sha256": "4469500e686b1634dbf7007f0b4efab88ebaf313538737c8fe79190cb9cdaf76",
+          "provenance": "OpenTofu v4.4.1 source archive at verified release commit"
+        },
+        "go_version": "go1.27.2",
+        "modules": {
+          "golang.org/x/net": "v0.62.0"
+        },
+        "module_files": {
+          "go.mod": "83ec43b0a56fcff6cb2244d8036702e70f655b0507f722162c03a6383619ce58",
+          "go.sum": "1d97cbcb55a3f065b98ba35e16907279b6972c5875603a39d0758c7808786366"
+        },
+        "sha256": "8d407591c0ded2188717703d34303065bbdb444029f825a2044fefc7bab935d4"
       }
     }
   ],

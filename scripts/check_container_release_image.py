@@ -186,7 +186,7 @@ def check(
             "printf 'digraph { a -> b }' | dot -Tpng -o /tmp/render.png; test -s /tmp/render.png",
         ]
     elif profile in {"terraform-avm", "opentofu-avm"}:
-        command = terraform_avm_qualification.command(profile.split("-")[0])
+        command = terraform_avm_qualification.command(profile.split("-")[0], published=published)
     elif profile == "terraform-random":
         command = terraform_random_qualification.command()
     elif profile == "opentofu-random":
