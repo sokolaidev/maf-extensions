@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "cases": {
+    "current-rebuild": {
+      "type": "dotnet",
+      "findingStatus": "source-pin-sufficient",
+      "qualificationStatus": "release-needed",
+      "requireBaselineMatch": false
+    },
+    "bicep-update": {
+      "type": "dotnet",
+      "findingStatus": "update",
+      "qualificationStatus": "ready",
+      "requireBaselineMatch": true
+    },
+    "apk-pinned": {
+      "type": "apk",
+      "findingStatus": "update",
+      "qualificationStatus": "ready",
+      "requireBaselineMatch": true
+    },
+    "apk-unpinned": {
+      "type": "apk",
+      "findingStatus": "rebuild-required",
+      "qualificationStatus": "release-needed",
+      "requireBaselineMatch": false
+    }
+  }
+}
