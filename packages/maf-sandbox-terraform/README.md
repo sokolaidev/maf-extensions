@@ -45,7 +45,7 @@ Supply a complete manifest of configuration files, local modules and referenced 
 
 Terraform accepts `.tf` and `.tf.json`. OpenTofu also accepts `.tofu` and `.tofu.json`, using its native precedence rules. The root must contain recognized configuration. Upload names cannot traverse with `..`; valid relative module references inside files are preserved.
 
-State, plans, variable-value files, CLI credentials, plugin binaries and reserved directories are refused. Inputs are text only, with limits of 64 files, 8 MiB per file and 32 MiB total.
+State, plans, CLI credentials, plugin binaries and reserved directories are refused. Variable-value files (`.tfvars`, `.tfvars.json`) are staged when the manifest names them, and are never required beside the configuration. Inputs are text only, with limits of 64 files, 8 MiB per file and 32 MiB total.
 
 ## Validation
 

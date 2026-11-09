@@ -257,7 +257,6 @@ def test_timeout_validation(timeout):
         ([".main.tf"], ".", [".main.tf"]),
         (["main.tf", ".terraform/evil.tf"], ".", ["main.tf", ".terraform/evil.tf"]),
         (["main.tf", "terraform.tfstate.backup"], ".", ["main.tf", "terraform.tfstate.backup"]),
-        (["main.tf", "x.tfvars.json"], ".", ["main.tf", "x.tfvars.json"]),
         (["main.tf", "credentials.tfrc.json"], ".", ["main.tf", "credentials.tfrc.json"]),
         (["missing.tf"], ".", ["main.tf"]),
     ],
@@ -275,6 +274,28 @@ def test_nested_modules_json_and_ancillary_assets_preserve_layout():
     assert isinstance(backend.sandbox, RecordingSandbox)
     assert [x[0] for x in backend.sandbox.uploads] == ["project/" + x for x in data]
     assert store.files == data
+
+
+def test_variable_files_given_in_the_manifest_are_staged():
+    # A host that hands over variable files gets them validated and formatted, not refused.
+    data = {
+        "main.tf": "",
+        "terraform.tfvars": 'name = "x"\n',
+        "env/dev.tfvars.json": "{}",
+        "prod.auto.tfvars": "",
+    }
+    tool, backend, store = attach(data)
+    result = asyncio.run(tool.func(files=list(data)))
+    assert "validation PASS" in _body(result)
+    assert isinstance(backend.sandbox, RecordingSandbox)
+    assert [x[0] for x in backend.sandbox.uploads] == ["project/" + x for x in data]
+
+
+def test_variable_files_are_never_required_siblings():
+    root, selected = resolve_manifest(
+        ["main.tf"], ".", [ListedFile(name=x) for x in ["main.tf", "terraform.tfvars"]], "terraform"
+    )
+    assert [path for path, _ in selected] == ["main.tf"]
 
 
 @pytest.mark.parametrize("failure", ["missing", "read", "write", "oversize"])
