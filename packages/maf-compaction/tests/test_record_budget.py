@@ -26,6 +26,7 @@ from agent_framework._compaction import (
 )
 
 from maf_compaction._composed import (
+    _MAX_BATCH_PROBES,
     DEFAULT_RECORD_BUDGET_SHARE,
     DEFAULT_RECORD_MERGE_PROMPT,
     CompactionBudgetExceeded,
@@ -216,13 +217,14 @@ def _strategy(
     share: float | None = DEFAULT_RECORD_BUDGET_SHARE,
     cap: int | None = _CAP,
     policy: Literal["shed", "raise"] = "raise",
+    tokenizer: CharacterEstimatorTokenizer = TOKENIZER,
 ) -> ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     """Return the composed row with a tiny head and tail, and its record half never waiting."""
     return ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
-        tokenizer=TOKENIZER,
+        tokenizer=tokenizer,
         tool_results=ToolResultAnchoredSummarizationCompactionStrategy(
             max_input_tokens=budget,
-            tokenizer=TOKENIZER,
+            tokenizer=tokenizer,
             keep_head_groups=1,
             keep_tail_groups=1,
             trigger_fraction=0.01,
@@ -230,7 +232,7 @@ def _strategy(
         ),
         user_turns=UserTurnAnchoredSummarizationCompactionStrategy(
             max_input_tokens=budget,
-            tokenizer=TOKENIZER,
+            tokenizer=tokenizer,
             client=summarizer,
             trigger_fraction=0.01,
             summary_mode=SUMMARY_MODE_BOUNDARY,
@@ -696,3 +698,60 @@ def test_sequential_complete_occurrences_sharing_a_call_id_stay_replaceable() ->
 
     assert len(reshapeable_record_groups(messages)) == 2
     assert len(consolidatable_record_groups(messages)) == 2
+
+
+class _CountingTokenizer(CharacterEstimatorTokenizer):
+    """Count the record transcripts measured: one for each batch prefix a sweep renders."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.transcripts = 0
+
+    def count_tokens(self, text: str) -> int:
+        if '"role": "user"' in text and '"text": "1. ' in text:
+            self.transcripts += 1
+        return super().count_tokens(text)
+
+
+def _padded_history(records: int, padding: int, *, plain_tail: int = 0) -> list[Message]:
+    """Return records each padded by ``padding`` characters, then ``plain_tail`` unpadded ones."""
+    messages = _history(records + plain_tail)
+    for index in range(records):
+        start = 2 + 2 * index
+        messages[start : start + 2] = _record_pair(
+            index, body=_body(index) + " and its full listing" * (padding // 21)
+        )
+    return messages
+
+
+async def test_a_sweep_past_records_over_the_cap_renders_each_once_and_merges_a_later_batch() -> (
+    None
+):
+    """A record whose own request exceeds the cap is passed over without a search from it."""
+    tokenizer = _CountingTokenizer()
+    messages = _padded_history(30, 5_500, plain_tail=2)
+    budget = _record_size(copy.deepcopy(messages)) - 200
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=budget, share=0.25, tokenizer=tokenizer)
+
+    await strategy(messages)
+
+    (merged,) = summarizer.merges
+    assert "lookup_30 " in merged and "lookup_31 " in merged, "the feasible batch at the end"
+    assert strategy.records_merged == 1
+    assert tokenizer.transcripts <= 2 * 32, f"{tokenizer.transcripts} transcripts rendered"
+
+
+async def test_a_sweep_spends_at_most_its_probe_limit_when_no_two_records_share_a_batch() -> None:
+    """Records that each fit alone and never in pairs cannot make every start scan every prefix."""
+    tokenizer = _CountingTokenizer()
+    messages = _padded_history(30, 2_400)
+    budget = _record_size(copy.deepcopy(messages)) - 200
+    strategy = _strategy(_Summarizer(), budget=budget, share=0.25, tokenizer=tokenizer)
+
+    await strategy(messages)
+
+    assert strategy.records_merged == 0, "the premise: no two records fit one request"
+    assert tokenizer.transcripts <= 30 + _MAX_BATCH_PROBES, f"{tokenizer.transcripts} rendered"
+    unbounded = sum(range(1, 30))
+    assert _MAX_BATCH_PROBES < unbounded, "the limit is below every start scanning every prefix"

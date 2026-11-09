@@ -969,7 +969,8 @@ def _reshape_payload(
     summarizer, and a reshape must keep indentation and trailing space the values carry. A
     written record is one bare text, so a result whose items carry metadata, a non-text item or
     provider state, or which carries fields of its own, has no exact form -- the rule
-    :func:`~._tool_result.can_shorten_result` sets for every other rewrite of a result.
+    :func:`~._tool_result.can_shorten_result` sets for shortening a result in place. Record merges
+    and harder rewrites do not apply it yet.
     """
     contents = [
         content

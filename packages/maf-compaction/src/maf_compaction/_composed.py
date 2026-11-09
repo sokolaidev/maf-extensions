@@ -91,6 +91,10 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
+class _BatchProbesSpent(Exception):
+    """A record-merge sweep has rendered :data:`_MAX_BATCH_PROBES` batch prefixes."""
+
+
 class CompactionBudgetExceeded(ValueError):
     """The composed strategy could not fit the prompt without removing protected material."""
 
@@ -199,6 +203,17 @@ DEFAULT_CHAIN_GAIN_FRACTION: Final[float] = DEFAULT_MIN_GAIN_FRACTION
 #: round is the last, because the fallback sheds oldest first and its first shed is its
 #: earliest.
 _MAX_FALLBACK_ROUNDS: Final[int] = 3
+
+#: Batch prefixes one record-merge sweep may render and count while looking for batches.
+#:
+#: Finding a batch of ``k`` records takes about ``2 * log2(k)`` of them, so this is some sixteen
+#: batches of eight, more than a sweep that stops at the record share needs. What it bounds is
+#: a run of records that each fit the cap alone and never two together: token counts need not
+#: grow with text, so one failed prefix proves nothing, and every start would otherwise render
+#: every longer prefix. A sweep that spends them stops, and the next firing goes on from where
+#: it left the records. A record that does not fit alone is passed over without a search and
+#: costs none of them.
+_MAX_BATCH_PROBES: Final[int] = 128
 
 #: Share of the sending budget the active records may hold once the chain has started.
 #:
@@ -1439,8 +1454,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         can be lost: the payload after the record's framing moves byte for byte, whitespace
         included (:func:`~._toolsummary.reshapeable_record_groups`). A record whose
         span holds anything else -- a reasoning item the framework grouped with the call, an
-        extra output under its call id -- or whose result this model call carried in is left
-        exactly as it is, as a merge leaves it.
+        extra output under its call id -- whose result carries metadata or non-text items, or
+        whose result this model call carried in is left exactly as it is. A merge spares the
+        same spans, except a result carrying metadata, which it still flattens into its text.
 
         **Only when the chain fires, not whenever the written form is cheaper.** A reshape
         rewrites the prompt from the record it replaces. Inside a firing it is one more edit the
@@ -1482,8 +1498,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
         Batches are taken oldest first and do not overlap, each the longest run of whole records
         whose request fits :meth:`_record_request_limit`, so a batch the summarizer can answer
-        whole replaces a few records rather than all of them. A record too large to share a
-        batch is passed over, and so is a batch already refused on the same records, which
+        whole replaces a few records rather than all of them. A record whose own request
+        exceeds the cap is passed over without searching batches from it, the search spends at
+        most :data:`_MAX_BATCH_PROBES` prefixes a sweep, and each record's body is rendered
+        once. A batch already refused on the same records is passed over too; it
         stays as it is until it changes; a refusal is remembered, logged at WARNING with counts
         and never values while the records exceed their share, and the sweep goes on to the next
         batch. A summarizer that fails ends the sweep, since the next batch would be asked of it
@@ -1493,11 +1511,22 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             True if any batch was merged.
         """
         bound = int(self._budget * share)
+        limit = self._record_request_limit()
         handled: set[int] = set()
+        bodies: dict[int, str] = {}
+        alone: dict[int, bool] = {}
+        probes = 0
         changed = False
 
         def last(group: dict[str, Any]) -> int:
             return id(messages[int(group["end_index"])])
+
+        def render(prefix: list[dict[str, Any]]) -> str:
+            nonlocal probes
+            probes += 1
+            if probes > _MAX_BATCH_PROBES:
+                raise _BatchProbesSpent
+            return _numbered_records([bodies[last(group)] for group in prefix])
 
         while self._record_tokens(messages) > bound or (
             start is not None and self._short_of_target(messages, start)
@@ -1509,12 +1538,43 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             ]
             if len(groups) < 2:
                 break
-            batch = self._bounded_records(messages, self.merge_prompt, groups=groups, min_items=2)
+            missing = [group for group in groups if last(group) not in bodies]
+            for group, body in zip(missing, record_bodies(messages, missing), strict=True):
+                bodies[last(group)] = body
+            oldest = last(groups[0])
+            if oldest not in alone:
+                alone[oldest] = fits_summary_input(
+                    self.merge_prompt,
+                    _numbered_records([bodies[oldest]]),
+                    tokenizer=self.tokenizer,
+                    limit=limit,
+                )
+            try:
+                batch = (
+                    bounded_prefix(
+                        groups,
+                        render=render,
+                        prompt=self.merge_prompt,
+                        tokenizer=self.tokenizer,
+                        limit=limit,
+                        min_items=2,
+                    )
+                    if alone[oldest]
+                    else []
+                )
+            except _BatchProbesSpent:
+                logger.info(
+                    "Compaction stopped looking for record batches after %d prefixes; "
+                    "%d records were left unsearched.",
+                    _MAX_BATCH_PROBES,
+                    len(groups),
+                )
+                break
             if len(batch) < 2:
-                handled.add(last(groups[0]))
+                handled.add(oldest)
                 continue
             handled.update(last(group) for group in batch)
-            transcript = _transcript(messages, batch)
+            transcript = _numbered_records([bodies[last(group)] for group in batch])
             key = (transcript, len(batch))
             if key in self._refused_merges:
                 self._record_merges_skipped += 1
