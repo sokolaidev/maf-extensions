@@ -26,7 +26,7 @@ from agent_framework._compaction import (
     project_included_messages,
 )
 
-import maf_compaction._composed as composed_module
+from maf_compaction import _composed as composed_module
 from maf_compaction._composed import (
     _MAX_BATCH_PROBES,
     DEFAULT_RECORD_BUDGET_SHARE,
