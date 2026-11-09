@@ -68,6 +68,7 @@ from ._toolsummary import (
     find_record_index,
     record_anchor_position,
     record_bodies,
+    reshape_payloads,
     reshapeable_record_groups,
 )
 from ._toolsummary import _tokens as _record_tokens  # pyright: ignore[reportPrivateUsage]
@@ -314,9 +315,9 @@ def _numbered_records(bodies: list[str]) -> str:
     return "\n".join(f"{number}. {body}" for number, body in enumerate(bodies, start=1))
 
 
-def _body_digest(body: str) -> str:
-    """Key a reshape by its record's body without storing the body in session state."""
-    return hashlib.sha256(body.encode()).hexdigest()
+def _payload_digest(payload: str) -> str:
+    """Key a reshape by its record's payload without storing the payload in session state."""
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def _is_excluded(message: Message) -> bool:
@@ -1021,6 +1022,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
         replayed_shed = self._keep_shedding(messages)
+        # Before the record phase counts records, so a stand-in and the pair it replaced are
+        # never both counted.
+        replayed = self._reshape_records(messages, replay=True) or replayed_shed
         decisions_kept = self._decisions_kept
         shed_sources = (
             [
@@ -1060,7 +1064,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 trigger_tokens=int(self._budget * self.user_trigger_fraction),
             )
         chained = await self._last_resort(messages, replayed_user_fold=replay.chain_fold)
-        if replayed_shed and self._decisions_kept == decisions_kept:
+        if replayed and self._decisions_kept == decisions_kept:
             self._decisions_kept += 1
         try:
             fitted = self._enforce_budget(messages)
@@ -1074,7 +1078,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     for message in members
                 )
             )
-        return replayed_shed or replay.changed or changed or compacted or chained or fitted
+        return replayed or replay.changed or changed or compacted or chained or fitted
 
     def _enforce_budget(self, messages: list[Message]) -> bool:
         """Shed unrecorded groups as a last resort, or refuse an oversized prompt."""
@@ -1271,8 +1275,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         **What.** Whatever the chain changes on one list is put on every list that holds what it
         changed, whatever that list's size, before the chain decides anything new:
 
-        - a reshape, by a digest of the record's body, through
-          :meth:`~._toolsummary.ToolResultAnchoredSummarizationCompactionStrategy.reshape_records`;
+        - a reshape, by a digest of the record's payload, put back by :meth:`__call__` before the
+          record phase so no record is counted in both forms;
         - a record merge or rewrite, by the transcript of the records it replaced -- the one
           thing both lists present identically -- replacing any run of the records that
           matches one, as often as one does, since a merge followed by a rewrite is two;
@@ -1294,8 +1298,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
-        changed = self._reshape_records(messages, replay=True)
-        changed = self._keep_records(messages) or changed or replayed_user_fold
+        changed = self._keep_records(messages) or replayed_user_fold
         if changed:
             annotate_message_groups(messages)
             annotate_token_counts(messages, tokenizer=self.tokenizer)
@@ -1417,13 +1420,13 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return changed
 
     def _reshape_records(self, messages: list[Message], *, replay: bool = False) -> bool:
-        """Rewrite each model-made record as a written record holding the same body, losslessly.
+        """Rewrite each model-made record as a written record holding the same payload, losslessly.
 
         A record the model made is paid twice, once in the recall call's arguments and again in
         its result; the written form (:func:`~._toolsummary.build_record_message`) carries it
         once, and is the form a merge would write anyway. No summarizer is asked and no value
-        can be lost: the body moves byte for byte, and only records whose body is their whole
-        text are offered (:func:`~._toolsummary.reshapeable_record_groups`). A record whose
+        can be lost: the payload after the record's framing moves byte for byte, whitespace
+        included (:func:`~._toolsummary.reshapeable_record_groups`). A record whose
         span holds anything else -- a reasoning item the framework grouped with the call, an
         extra output under its call id -- or whose result this model call carried in is left
         exactly as it is, as a merge leaves it.
@@ -1434,8 +1437,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         what that edit re-bills -- the rule every other step answers to -- and the merge it
         precedes edits at the same record. Reshaping each record as soon as it could be would
         break the cache once per record, on prompts that fit. The decision is kept by a digest of
-        the body and, with ``replay``, put back on every list that holds the record, whatever its
-        size, so the copies a call sends and the store agree.
+        the payload and, with ``replay``, put back on every list that holds the record, whatever
+        its size, so the copies a call sends and the store agree.
 
         Args:
             messages: The conversation, mutated in place.
@@ -1447,7 +1450,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             True if any record was reshaped.
         """
         groups = reshapeable_record_groups(messages)
-        digests = [_body_digest(body) for body in record_bodies(messages, groups)]
+        digests = [_payload_digest(payload) for payload in reshape_payloads(messages, groups)]
         chosen = [
             (group, digest)
             for group, digest in zip(groups, digests, strict=True)
@@ -1495,7 +1498,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             ]
             if len(groups) < 2:
                 break
-            batch = self._bounded_records(messages, self.merge_prompt, groups=groups)
+            batch = self._bounded_records(messages, self.merge_prompt, groups=groups, min_items=2)
             if len(batch) < 2:
                 handled.add(last(groups[0]))
                 continue

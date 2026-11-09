@@ -114,6 +114,7 @@ __all__ = [
     "record_body",
     "record_bodies",
     "record_anchor_position",
+    "reshape_payloads",
     "reshapeable_record_groups",
 ]
 
@@ -935,10 +936,10 @@ def _call_ids(messages: Sequence[Message], group: dict[str, Any]) -> set[str]:
 def reshapeable_record_groups(messages: list[Message]) -> list[dict[str, Any]]:
     """Return the model-made records a reshape may rewrite as written records, oldest first.
 
-    :func:`consolidatable_record_groups` that hold a recall call rather than a record this package
-    already wrote, and each of whose results opens with :data:`RECORD_MARKER` and carries it once:
-    :func:`record_body` drops what precedes a marker and the marker itself, so only such a record
-    keeps every byte of its body.
+    :func:`consolidatable_record_groups` that hold one recall call and its one result, framed the
+    way :func:`make_recall_tool` frames it or as :data:`RECORD_MARKER` and a space, so the payload
+    after that framing can move into the written record byte for byte -- see
+    :func:`_reshape_payload`.
 
     Args:
         messages: The conversation, already grouped.
@@ -948,23 +949,51 @@ def reshapeable_record_groups(messages: list[Message]) -> list[dict[str, Any]]:
         handed.
     """
     groups, recalls = _consolidatable_record_groups(messages)
-    reshapeable: list[dict[str, Any]] = []
+    return [
+        group
+        for group in groups
+        if not any(
+            _is_written_record(message)
+            for message in messages[group["start_index"] : group["end_index"] + 1]
+        )
+        and _reshape_payload(messages, group, recalls) is not None
+    ]
+
+
+def _reshape_payload(
+    messages: Sequence[Message], group: dict[str, Any], recall_results: dict[int, str]
+) -> str | None:
+    """Return a record's payload exactly as the model wrote it, or None without one exact form.
+
+    Only the framing comes off, never whitespace: :func:`record_body` strips both ends for the
+    summarizer, and a reshape must keep indentation and trailing space the values carry.
+    """
+    results = [
+        str(content.result)
+        for message in messages[group["start_index"] : group["end_index"] + 1]
+        for content in message.contents
+        if id(content) in recall_results and RECORD_MARKER in str(content.result)
+    ]
+    if len(results) != 1:
+        return None
+    (result,) = results
+    if result.startswith(f"{_WRITTEN_RECORD_PREFIX}\n"):
+        return result[len(_WRITTEN_RECORD_PREFIX) + 1 :]
+    if result.startswith(f"{RECORD_MARKER} ") and not result.startswith(_WRITTEN_RECORD_PREFIX):
+        return result[len(RECORD_MARKER) + 1 :]
+    return None
+
+
+def reshape_payloads(messages: list[Message], groups: list[dict[str, Any]]) -> list[str]:
+    """Return each reshapeable record's exact payload, the text its written record carries."""
+    recalls = _recall_results(messages)
+    payloads: list[str] = []
     for group in groups:
-        members = messages[group["start_index"] : group["end_index"] + 1]
-        if any(_is_written_record(message) for message in members):
-            continue
-        results = [
-            str(content.result)
-            for message in members
-            for content in message.contents
-            if id(content) in recalls and RECORD_MARKER in str(content.result)
-        ]
-        if results and all(
-            result.lstrip().startswith(RECORD_MARKER) and result.count(RECORD_MARKER) == 1
-            for result in results
-        ):
-            reshapeable.append(group)
-    return reshapeable
+        payload = _reshape_payload(messages, group, recalls)
+        if payload is None:
+            raise ValueError("A record handed to reshape_payloads has no exact payload.")
+        payloads.append(payload)
+    return payloads
 
 
 def _record_contents(
@@ -2122,7 +2151,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             and not message.additional_properties.get(EXCLUDED_KEY, False)
         }
         plans: list[tuple[dict[str, Any], str, str]] = []
-        for group in groups:
+        for group, payload in zip(groups, reshape_payloads(messages, groups), strict=True):
             members = messages[group["start_index"] : group["end_index"] + 1]
             identity = next(
                 (
@@ -2132,8 +2161,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 ),
                 "",
             )
-            plans.append((group, _record_body(messages, group, recall_results), identity))
-        inserted = 0
+            plans.append((group, payload, identity))
         # Newest first, so each insertion lands behind every span still to be reshaped.
         for group, body, identity in sorted(
             plans, key=lambda plan: plan[0]["start_index"], reverse=True
@@ -2145,13 +2173,11 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 continue
             standing.add(key)
             messages.insert(int(group["end_index"]) + 1, replacement)
-            inserted += 1
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
+        # One record in, one record out, so an outstanding ask keeps the count it was made at.
         records = _preserve_records(messages)
         self._records_in_conversation = max(self._records_in_conversation, records)
-        if self._reforce is not None:
-            self._reforce.records = max(self._reforce.records - (len(groups) - inserted), 0)
 
     def _record_candidates(
         self, messages: list[Message], anchor: int, recall_results: dict[int, str]
@@ -2254,8 +2280,9 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         candidates: list[tuple[dict[str, Any], set[str], set[str]]],
         recall_results: dict[int, str],
     ) -> None:
-        # Consolidation sees standing records, not the pending recall's target groups.
-        if _is_written_record(messages[anchor]):
+        # Consolidation sees standing records, not the pending recall's target groups; a reshaped
+        # record is the model's own, under the identity it carries.
+        if _is_written_record(messages[anchor]) and not stands_in([messages[anchor]]):
             return
         identity = _record_identity(messages[anchor], recall_results)
         if not identity:

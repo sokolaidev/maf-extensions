@@ -388,7 +388,7 @@ def test_nonmonotonic_tokenizer_finds_a_prefix_after_an_oversized_first_item():
     ) == list("abc")
 
 
-@pytest.mark.parametrize("kind", ["fold", "merge", "rewrite", "recompact"])
+@pytest.mark.parametrize("kind", ["fold", "merge", "batch", "rewrite", "recompact"])
 async def test_nonmonotonic_counts_respect_each_operations_minimum_prefix(kind):
     class NonmonotonicTokenizer:
         def count_tokens(self, text):
@@ -413,11 +413,11 @@ async def test_nonmonotonic_counts_respect_each_operations_minimum_prefix(kind):
         messages[1] = summaries()[0]
         assert await strategy(messages)
     else:
-        chain = composed(client)
+        chain = composed(client, record_budget_share=0.5 if kind == "batch" else None)
         chain.user_turns = strategy
         chain.tokenizer = strategy.tokenizer
         messages = records()
-        if kind == "merge":
+        if kind in {"merge", "batch"}:
             assert await chain._merge_records(messages)
         else:
             assert await chain._rewrite_records(

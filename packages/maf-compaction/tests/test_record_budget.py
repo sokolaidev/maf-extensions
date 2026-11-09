@@ -38,9 +38,9 @@ from maf_compaction._toolsummary import (
     ToolResultAnchoredSummarizationCompactionStrategy,
     _is_written_record,
     _newest_record_identity,
+    _Reforce,
     active_record_groups,
     make_recall_tool,
-    record_bodies,
 )
 from maf_compaction._usersummary import (
     SUMMARY_MODE_BOUNDARY,
@@ -251,14 +251,20 @@ async def test_records_alone_over_the_budget_fit_by_the_reshape_with_no_summariz
     assert pairs > budget, "the premise: the records alone exceed the budget"
     summarizer = _Summarizer()
     strategy = _strategy(summarizer, budget=budget, share=share)
-    bodies = record_bodies(messages, active_record_groups(messages))
+    results = [
+        str(content.result)
+        for message in messages
+        for content in message.contents
+        if content.type == "function_result"
+    ]
 
     await strategy(messages)
 
     assert summarizer.requests == [], "no summarizer call"
     assert _size(messages) <= budget
     assert strategy.records_reshaped == 12
-    assert record_bodies(messages, active_record_groups(messages)) == bodies, "byte for byte"
+    written = [m.text for m in project_included_messages(messages) if _is_written_record(m)]
+    assert written == results, "each record's text exactly as the recall tool returned it"
     assert _sent_values(messages) == {value for index in range(12) for value in _values(index)}
     assert _included_record_calls(messages) == [], "no record is paid in a call's arguments"
     assert _record_size(messages) * 10 < pairs * 6, "about half: the second copy is gone"
@@ -414,15 +420,46 @@ async def test_a_reshape_keeps_the_records_identity_and_replays_without_duplicat
     assert cold.records_reshaped == 0, "replayed, not decided again"
     assert cold.chain_decisions_kept == 1
     assert _newest_record_identity(rebuilt) == identity
+    assert cold.tool_results.last_record_value_judgment == (
+        first.tool_results.last_record_value_judgment
+    ), "the record phase reads a replayed stand-in as the record it was"
 
-    # A store that kept the written records but lost the exclusions: no record is written twice.
+    # A store that kept the written records but lost the exclusions: no record is written twice,
+    # and the record phase never counts a record in both forms, which would read as a new one.
     flagless = copy.deepcopy(stored)
     for message in flagless:
         message.additional_properties.pop(EXCLUDED_KEY, None)
+    cold.tool_results._reforce = _Reforce(targets=frozenset({"pending"}), records=12)
     await cold(flagless)
     assert len([m for m in flagless if _is_written_record(m)]) == 12
     assert _sent(flagless) == sent
+    assert cold.records_in_conversation == 12
+    pending = cold.tool_results.decision_state().reforce
+    assert pending is not None and pending.passes == 1, "the pending recall still waits"
     assert summarizer.requests == []
+
+
+async def test_a_reshape_keeps_the_payload_byte_for_byte_whitespace_included() -> None:
+    """Indentation and trailing whitespace the model wrote survive the reshape and its replay."""
+    values = "  lookup_50:\n    - VAL-050-0  \n\t- VAL-050-1\t\n\n"
+    messages = _history(6)
+    messages[-1:-1] = _record_pair(50, body=values)
+    original = copy.deepcopy(messages)
+    budget = _record_size(copy.deepcopy(messages)) - 200
+    first = _strategy(_Summarizer(), budget=budget, share=None)
+
+    await first(messages)
+
+    (stand_in,) = (
+        m for m in messages if m.additional_properties.get(STANDS_IN_KEY) == "message:rec50_call:0"
+    )
+    assert stand_in.text == make_recall_tool()(values), "the recall result, byte for byte"
+    cold = _strategy(_Summarizer(), budget=budget, share=None)
+    cold.restore_session_state(json.loads(json.dumps(first.session_state())))
+    rebuilt = copy.deepcopy(original)
+    await cold(rebuilt)
+    assert cold.records_reshaped == 0, "replayed under the same exact payload"
+    assert _sent(rebuilt) == _sent(messages)
 
 
 @pytest.mark.parametrize("shape", ["preceding", "co-located"])
