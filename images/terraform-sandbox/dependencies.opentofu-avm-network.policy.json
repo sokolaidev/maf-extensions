@@ -11,8 +11,32 @@
       "constraint": "= 0.4.0"
     },
     {
+      "address": "registry.opentofu.org/hashicorp/azuread",
+      "constraint": "= 3.10.0"
+    },
+    {
+      "address": "registry.opentofu.org/hashicorp/azurerm",
+      "constraint": "= 4.81.0"
+    },
+    {
+      "address": "registry.opentofu.org/hashicorp/local",
+      "constraint": "= 2.9.1"
+    },
+    {
+      "address": "registry.opentofu.org/hashicorp/null",
+      "constraint": "= 3.3.2"
+    },
+    {
       "address": "registry.opentofu.org/hashicorp/random",
       "constraint": "= 3.7.2"
+    },
+    {
+      "address": "registry.opentofu.org/hashicorp/time",
+      "constraint": "= 0.14.2"
+    },
+    {
+      "address": "registry.opentofu.org/hashicorp/tls",
+      "constraint": "= 4.4.1"
     }
   ],
   "registry_modules": [
