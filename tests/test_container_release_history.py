@@ -29,6 +29,7 @@ from container_release_history import (  # noqa: E402
     GitHub,
     History,
     HistoryAdvanced,
+    HistoryListingIncomplete,
     decode,
     encode,
     sha256,
@@ -507,7 +508,7 @@ def test_late_publication_of_skipped_draft_is_detected_as_a_fork():
         history.head()
 
 
-def test_missing_old_predecessor_is_detected_without_downloading_old_assets():
+def test_missing_old_predecessor_is_detected_without_downloading_old_assets(monkeypatch):
     gh = FakeGitHub()
     history = History(gh)
     append_reservation(history)
@@ -517,8 +518,193 @@ def test_missing_old_predecessor_is_detected_without_downloading_old_assets():
     history.head()
     assert gh.downloads == 1
     del gh.entries[1]
-    with pytest.raises(ValueError, match="missing predecessor"):
+    delays = []
+    monkeypatch.setattr("container_release_history.time.sleep", delays.append)
+    with pytest.raises(HistoryListingIncomplete, match="missing predecessor"):
         history.head()
+    assert gh.downloads == 4
+    assert delays == [1, 2]
+
+
+@pytest.mark.parametrize("missing_reads", [1, 2, 3])
+def test_head_retries_missing_ancestors_with_verified_hashes(monkeypatch, capsys, missing_reads):
+    gh = FakeGitHub()
+    history = History(gh)
+    first = append_reservation(history)
+    newest = append_reservation(history, "124/reserve", CANDIDATE | {"profile": "graphviz"})
+    original = gh.releases
+    retained = copy.deepcopy(gh.entries)
+    reads = 0
+    delays = []
+
+    def releases():
+        nonlocal reads
+        reads += 1
+        return [r for r in original() if reads > missing_reads or r["id"] != first.release_id]
+
+    monkeypatch.setattr(gh, "releases", releases)
+    monkeypatch.setattr("container_release_history.time.sleep", delays.append)
+    if missing_reads == 3:
+        with pytest.raises(HistoryListingIncomplete):
+            history.head()
+        assert reads == 3
+    else:
+        assert history.head() == newest
+        assert reads == missing_reads + 2
+    assert delays == [1, 2][:missing_reads]
+    assert gh.entries == retained
+    diagnostics = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    assert len(diagnostics) == missing_reads
+    for diagnostic in diagnostics:
+        assert diagnostic == {
+            "event": "security-history-mismatch",
+            "snapshot": newest.reference,
+            "releaseId": newest.release_id,
+            "expectedCount": 2,
+            "listedCount": 1,
+            "retryable": True,
+            "differences": [
+                {
+                    "sequence": first.number,
+                    "expectedSha256": first.digest,
+                    "listedSha256": None,
+                    "release": None,
+                }
+            ],
+        }
+
+
+@pytest.mark.parametrize("defect", ["hash", "extra", "draft", "tag", "bytes"])
+def test_ancestry_conflicts_are_not_retried(monkeypatch, capsys, defect):
+    gh = FakeGitHub()
+    history = History(gh)
+    first = append_reservation(history)
+    newest = append_reservation(history, "124/reserve", CANDIDATE | {"profile": "graphviz"})
+    original = gh.releases
+
+    def releases():
+        entries = original()
+        if defect == "hash":
+            entries[0]["assets"][0]["digest"] = DIGEST
+        elif defect == "draft":
+            entries[0]["draft"] = True
+        elif defect in {"tag", "bytes"}:
+            entries.pop(0)
+        return entries
+
+    if defect == "extra":
+        gh.replace(newest.release_id, newest.document | {"ancestors": [], "previous": None})
+    elif defect == "tag":
+        monkeypatch.setattr(gh, "tag_commit", lambda tag: "d" * 40)
+    elif defect == "bytes":
+        gh.blobs[newest.release_id] += b"corruption"
+    monkeypatch.setattr(gh, "releases", releases)
+    monkeypatch.setattr("container_release_history.time.sleep", lambda _: pytest.fail("retry"))
+    with pytest.raises(ValueError) as caught:
+        history.head()
+    assert not isinstance(caught.value, HistoryListingIncomplete)
+    if defect in {"hash", "extra", "draft"}:
+        diagnostic = json.loads(capsys.readouterr().err)
+        assert diagnostic["retryable"] is False
+        difference = diagnostic["differences"][0]
+        assert difference["sequence"] == first.number
+        assert difference["release"]["id"] == first.release_id
+        assert difference["expectedSha256"] == (None if defect == "extra" else first.digest)
+        assert (
+            difference["listedSha256"]
+            == {"hash": DIGEST, "extra": first.digest, "draft": None}[defect]
+        )
+
+
+@pytest.mark.parametrize(
+    "change", ["observed-hash", "observed-id", "missing-hash", "backfill", "remove"]
+)
+def test_missing_ancestor_retry_preserves_all_observed_evidence(monkeypatch, change):
+    gh = FakeGitHub()
+    history = History(gh)
+    gh.create(TAG + "000000000001", SOURCE)
+    first = append_reservation(history)
+    newest = append_reservation(history, "124/reserve", CANDIDATE | {"profile": "graphviz"})
+    original = gh.releases
+    reads = 0
+    delays = []
+
+    def releases():
+        nonlocal reads
+        reads += 1
+        entries = original()
+        if reads == 1:
+            return [r for r in entries if r["id"] != first.release_id]
+        if change == "observed-hash":
+            entries[-1]["assets"][0]["digest"] = DIGEST
+        elif change == "observed-id":
+            entries[-1]["id"] = 99
+        elif change == "missing-hash":
+            entries[1]["assets"][0]["digest"] = DIGEST
+        elif change == "backfill":
+            entries[0].update(draft=False, immutable=True)
+        else:
+            entries = [r for r in entries if r["id"] != newest.release_id]
+        return entries
+
+    monkeypatch.setattr(gh, "releases", releases)
+    monkeypatch.setattr("container_release_history.time.sleep", delays.append)
+    with pytest.raises(ValueError, match="changed during retrieval"):
+        history.head()
+    assert reads == 2
+    assert delays == [1]
+
+
+def test_writer_does_not_mutate_history_when_predecessors_remain_missing(monkeypatch):
+    gh = FakeGitHub()
+    history = History(gh)
+    first = append_reservation(history)
+    append_reservation(history, "124/reserve", CANDIDATE | {"profile": "graphviz"})
+    original = gh.releases
+    retained = copy.deepcopy(gh.entries)
+    monkeypatch.setattr(
+        gh, "releases", lambda: [r for r in original() if r["id"] != first.release_id]
+    )
+    monkeypatch.setattr("container_release_history.time.sleep", lambda _: None)
+    with pytest.raises(HistoryListingIncomplete):
+        append_reservation(history, "125/reserve", CANDIDATE | {"profile": "drawio-export"})
+    assert gh.entries == retained
+
+
+@pytest.mark.parametrize("drops_missing", [False, True])
+def test_missing_ancestor_retry_keeps_verified_ancestry_when_head_advances(
+    monkeypatch, drops_missing
+):
+    gh = FakeGitHub()
+    history = History(gh)
+    first = append_reservation(history)
+    second = append_reservation(history, "124/reserve", CANDIDATE | {"profile": "graphviz"})
+    newest = append_reservation(history, "125/reserve", CANDIDATE | {"profile": "drawio-export"})
+    assert first is not None and second is not None and newest is not None
+    if drops_missing:
+        gh.replace(newest.release_id, newest.document | {"ancestors": [second.reference]})
+    original = gh.releases
+    reads = 0
+    delays = []
+
+    def releases():
+        nonlocal reads
+        reads += 1
+        entries = original()
+        if reads == 1:
+            return [r for r in entries if r["id"] == second.release_id]
+        return [r for r in entries if not drops_missing or r["id"] != first.release_id]
+
+    monkeypatch.setattr(gh, "releases", releases)
+    monkeypatch.setattr("container_release_history.time.sleep", delays.append)
+    if drops_missing:
+        with pytest.raises(ValueError, match="changed previously verified ancestry"):
+            history.head()
+        assert reads == 2
+    else:
+        assert history.head() == newest
+        assert reads == 3
+    assert delays == [1]
 
 
 def test_changed_head_between_upload_and_commit_refuses_publication(monkeypatch):
