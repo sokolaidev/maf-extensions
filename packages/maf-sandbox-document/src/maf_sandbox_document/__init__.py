@@ -3,6 +3,7 @@
 import warnings as _warnings
 
 from ._export import ExportOptions, document_export_sandbox_spec, export_pdf
+from ._export_contract import is_valid_asset_name, validate_svg
 from ._tool import (
     DOCUMENT_KIND,
     DOCUMENT_READ_TOOL_NAME,
@@ -18,7 +19,9 @@ __all__ = [
     "document_sandbox_spec",
     "document_export_sandbox_spec",
     "export_pdf",
+    "is_valid_asset_name",
     "make_document_tools",
+    "validate_svg",
 ]
 
 

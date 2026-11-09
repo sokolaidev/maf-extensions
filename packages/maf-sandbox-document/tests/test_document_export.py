@@ -24,12 +24,17 @@ from maf_sandbox import (
 )
 from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InProcessSandbox, InProcessSandboxBackend
 
-from maf_sandbox_document import ExportOptions, document_export_sandbox_spec, export_pdf
+from maf_sandbox_document import (
+    ExportOptions,
+    document_export_sandbox_spec,
+    export_pdf,
+    is_valid_asset_name,
+    validate_svg,
+)
 from maf_sandbox_document._export_contract import (
     MAX_SVG_DEPTH,
     MAX_SVG_ELEMENTS,
     MAXIMA,
-    validate_svg,
 )
 
 SVG = b'<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>'
@@ -138,8 +143,13 @@ def test_metadata_options(options):
     ],
 )
 def test_active_or_non_svg_is_refused(content):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as preflight:
         validate_svg(content)
+    _, backend, routing = setup()
+    with pytest.raises(ValueError) as export:
+        asyncio.run(export_pdf("report", {"chart.svg": content}, **routing))
+    assert str(export.value) == str(preflight.value)
+    assert not backend.keys
 
 
 def test_passive_svg_local_references_are_allowed():
@@ -173,7 +183,7 @@ def test_svg_namespace_amplification_is_refused_without_expanding_names():
     program = """
 import sys
 import tracemalloc
-from maf_sandbox_document._export_contract import validate_svg
+from maf_sandbox_document import validate_svg
 asset = sys.stdin.buffer.read()
 tracemalloc.start()
 try:
@@ -243,6 +253,48 @@ def test_svg_element_count_is_bounded(excess):
 def test_svg_must_be_utf8(encoding, text):
     with pytest.raises(ValueError):
         validate_svg(text.encode(encoding))
+
+
+@pytest.mark.parametrize("name", ["chart.svg", "figures/Chart_1-2.svg", "x" * 252 + ".svg"])
+def test_public_asset_name_check_accepts_export_names(name):
+    assert is_valid_asset_name(name) is True
+    assert validate_svg(SVG) is None
+    _, _, routing = setup()
+    assert asyncio.run(export_pdf("report", {name: SVG}, **routing)) == PDF
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "",
+        "../a.svg",
+        "/a.svg",
+        "a/../b.svg",
+        "a//b.svg",
+        "a\\b.svg",
+        "a.png",
+        "a.SVG",
+        "a.b.svg",
+        ".svg",
+        "a b.svg",
+        "café.svg",
+        "https://example.invalid/a.svg",
+        "a.svg\n",
+        "a.svg\x00",
+        "x" * 253 + ".svg",
+        None,
+        1,
+        b"a.svg",
+    ],
+)
+def test_public_asset_name_check_rejects_export_names(name):
+    assert is_valid_asset_name(name) is False
+    _, backend, routing = setup()
+    with pytest.raises(
+        ValueError, match="^asset names must be relative SVG names without traversal$"
+    ):
+        asyncio.run(export_pdf("report", {name: SVG}, **routing))
+    assert not backend.keys
 
 
 @pytest.mark.parametrize(
