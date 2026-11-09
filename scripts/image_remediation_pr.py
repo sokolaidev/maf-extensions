@@ -25,6 +25,9 @@ MARKER = "maf-image-remediation-v1"
 COMMIT_MARKER = "maf-image-remediation-commit-v1"
 MARKER_PATTERN = r"<!-- " + MARKER + r" (.+?) -->"
 TITLE = "build: rebuild Go image dependencies with verified security fixes"
+REHEARSAL_BRANCH = "bot/platform-remediation-rehearsal-"
+REHEARSAL_PATH = "tests/fixtures/image_dependencies/platform-rehearsal-receipt.json"
+REHEARSAL_TITLE = "test: retain platform remediation rehearsal evidence"
 PENDING_NOTICE = (
     "## Refresh incomplete\n\nThe qualification below is from the last completed refresh "
     "and does not qualify the current branch. Do not merge until the refresh completes.\n\n"
@@ -157,6 +160,10 @@ def require_pull(client: GitHub, pull: dict[str, Any] | None) -> None:
     if pull is None:
         return
     latest = request(client, f"pulls/{pull['number']}")
+    if getattr(client, "branch", BRANCH).startswith(REHEARSAL_BRANCH) and (
+        latest.get("draft") is not True or latest.get("title") != REHEARSAL_TITLE
+    ):
+        raise ValueError("Rehearsal pull request is no longer a draft with its expected title")
     if latest.get("body") != pull.get("body"):
         raise ValueError("Pull-request body changed during refresh")
     for value in ("state", "merged_at"):
@@ -191,6 +198,20 @@ def pending_body(text: str, state: dict[str, Any]) -> str:
 
 def body(state: dict[str, Any], report: dict[str, Any], evidence_url: str) -> str:
     """Report residual findings without implying publication or closing release requests."""
+    if report.get("kind") == "platform-rehearsal":
+        text = (
+            "## Rehearsal only: do not merge\n\n"
+            "This draft changes only a test receipt to exercise App signing, interrupted branch "
+            "recovery and idempotent delivery. It is not a proposed dependency fix.\n\n"
+            f"Harness source: `{report['source']}`. Recorded head: `{state['current']['head']}`. "
+            f"[Retained qualification]({evidence_url}).\n\n"
+            "Image builds and residual findings are described in that evidence. "
+            "No image was published and normal platform automation was not enabled. "
+            "PR CI is a separate result; this receipt does not assert that it passed.\n\n"
+            "Refs #2514, #2517.\n\n"
+            f"<!-- {MARKER} {{}} -->\n"
+        )
+        return with_marker(text, state)
     scans = [row for row in report["scans"] if row["variant"] == "candidate"]
     summary = "\n".join(
         f"- {row['profile']}: `{row['imageId']}`; assessment `{row['assessment']['outcome']}`."
@@ -355,6 +376,16 @@ def publish(
     hashes = {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()}
     if hashes != report["files"] or not hashes or len(hashes) > 20:
         raise ValueError("Qualified files differ from the proposed commit")
+    rehearsal = report.get("kind") == "platform-rehearsal"
+    branch = getattr(client, "branch", BRANCH)
+    if rehearsal or branch.startswith(REHEARSAL_BRANCH):
+        if (
+            not rehearsal
+            or not re.fullmatch(REHEARSAL_BRANCH + r"[1-9][0-9]*", branch)
+            or getattr(client, "title", TITLE) != REHEARSAL_TITLE
+            or set(files) != {REHEARSAL_PATH}
+        ):
+            raise ValueError("Rehearsal delivery requires its isolated branch and receipt file")
     current(client, receipt)
     pull = latest_pull(client)
     ownership_pull = pull
@@ -362,6 +393,8 @@ def publish(
     head = branch_head(client)
     previous = None
     if pull is not None:
+        if rehearsal and (pull.get("draft") is not True or pull.get("title") != REHEARSAL_TITLE):
+            raise ValueError("Rehearsal pull request is no longer a draft with its expected title")
         if (
             pull.get("user", {}).get("login") != bot
             or pull["head"]["repo"]["full_name"] != REPOSITORY
@@ -485,7 +518,7 @@ def publish(
                     "body": body(state, report, evidence_url),
                     "head": getattr(client, "branch", BRANCH),
                     "base": "main",
-                    "draft": False,
+                    "draft": rehearsal,
                 }
             ),
         )
