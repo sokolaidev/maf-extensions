@@ -14,6 +14,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+import image_remediation_evidence as acquisition  # noqa: E402
 import image_remediation_pr as publication  # noqa: E402
 import platform_remediation_rehearsal as rehearsal  # noqa: E402
 from container_release import REPOSITORY, read, scan_result, write  # noqa: E402
@@ -93,32 +94,54 @@ def test_rebuild_case_does_not_hide_unrelated_source_edits(context):
         rehearsal.case_rows(context, expected, "apk-unpinned")
 
 
-def test_acquisition_reuses_authenticated_platform_scope(context, tmp_path, monkeypatch):
+@pytest.mark.parametrize("outcome", ["ready", "recovered", "deferred"])
+def test_acquisition_reuses_authenticated_platform_scope(context, tmp_path, monkeypatch, outcome):
     work = tmp_path / "work"
     expected = {"findings": [{"type": "dotnet", "status": "update"}], "updates": [1]}
     calls = []
 
     def acquire(client, root, directory, **kwargs):
         calls.append((root, directory, kwargs))
+        if outcome == "deferred" or (outcome == "recovered" and len(calls) == 1):
+            raise EvidenceChanging("Monitoring changed during acquisition")
+        write(directory / "receipt.json", {"source": SOURCE})
+        write(directory / "plan.json", expected)
         return expected
 
-    monkeypatch.setattr(rehearsal, "acquire_with_retry", acquire)
-    assert rehearsal.acquire(context, work) == expected
+    monkeypatch.setattr(acquisition, "acquire", acquire)
+    monkeypatch.setattr(acquisition.time, "sleep", lambda *_: None)
+    if outcome == "deferred":
+        with pytest.raises(ValueError, match="deferred"):
+            rehearsal.acquire(context, work)
+        assert not (work / "receipt.json").exists()
+        assert not (work / "plan.json").exists()
+    else:
+        assert rehearsal.acquire(context, work) == expected
+        assert read(work / "receipt.json") == {"source": SOURCE}
+        assert read(work / "plan.json") == expected
+    attempts = {"ready": 1, "recovered": 2, "deferred": 3}[outcome]
     assert calls == [
         (
             context,
-            work,
+            work / "attempts" / str(attempt),
             {
-                "selected_profiles": rehearsal.RUNTIME_RECIPES,
+                "selected_profiles": tuple(rehearsal.RUNTIME_RECIPES),
                 "planner": rehearsal.plan,
                 "require_all_profiles": False,
             },
         )
+        for attempt in range(1, attempts + 1)
     ]
     assert read(work / "rehearsal-request.json") == rehearsal.request_record(context)
-    monkeypatch.setattr(rehearsal, "acquire_with_retry", lambda *a, **kw: None)
-    with pytest.raises(ValueError, match="deferred"):
+
+
+def test_acquisition_refuses_existing_work_without_replacing_its_request(context, tmp_path):
+    work = tmp_path / "work"
+    previous = {"runId": 99}
+    write(work / "rehearsal-request.json", previous)
+    with pytest.raises(FileExistsError):
         rehearsal.acquire(context, work)
+    assert read(work / "rehearsal-request.json") == previous
 
 
 def test_bicep_qualification_revalidates_real_aggregate(qualified, context, monkeypatch):

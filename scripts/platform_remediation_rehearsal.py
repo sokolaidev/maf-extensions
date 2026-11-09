@@ -119,7 +119,6 @@ def case_rows(root: Path, expected: dict[str, Any], case: str) -> list[dict[str,
 def acquire(root: Path, work: Path) -> dict[str, Any]:
     """Use production acquisition and freshness rules; never substitute synthetic findings."""
     request = request_record(root)
-    write(work / "rehearsal-request.json", request)
     expected = acquire_with_retry(
         GitHub(),
         root,
@@ -128,6 +127,7 @@ def acquire(root: Path, work: Path) -> dict[str, Any]:
         planner=plan,
         require_all_profiles=False,
     )
+    write(work / "rehearsal-request.json", request)
     if expected is None:
         raise ValueError("Rehearsal acquisition deferred; retry after evidence stabilizes")
     case_rows(root, expected, request["case"])
