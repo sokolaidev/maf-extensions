@@ -26,8 +26,10 @@ from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InProcessSandbox, InP
 
 from maf_sandbox_document import (
     ExportOptions,
+    ExportResult,
     document_export_sandbox_spec,
     export_pdf,
+    export_pdf_result,
     is_valid_asset_name,
     validate_svg,
 )
@@ -35,6 +37,7 @@ from maf_sandbox_document._export_contract import (
     MAX_SVG_DEPTH,
     MAX_SVG_ELEMENTS,
     MAXIMA,
+    validate_request,
 )
 
 SVG = b'<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>'
@@ -126,6 +129,20 @@ def test_deadline_is_bounded(value):
 def test_metadata_options(options):
     with pytest.raises(ValueError):
         ExportOptions(**options)
+
+
+@pytest.mark.parametrize("value", [None, True, 0, [], {}, "ignore", "Placeholder"])
+def test_unsupplied_image_option_is_validated(value):
+    with pytest.raises(ValueError, match="unsupplied_images"):
+        ExportOptions(unsupplied_images=value)
+
+
+def test_old_requests_default_to_refusal():
+    from dataclasses import asdict
+
+    request = asdict(ExportOptions()) | {"markdown": "report", "assets": {}}
+    del request["unsupplied_images"]
+    assert validate_request(request) == {}
 
 
 @pytest.mark.parametrize(
@@ -309,10 +326,13 @@ def test_public_asset_name_check_rejects_export_names(name):
         ("ok", {"a.svg": "not bytes"}, ExportOptions()),
     ],
 )
-def test_invalid_input_refused_before_acquisition(markdown, assets, options):
+@pytest.mark.parametrize("mode", ["refuse", "placeholder"])
+def test_invalid_input_refused_before_acquisition(markdown, assets, options, mode):
     _, backend, routing = setup()
     with pytest.raises(ValueError):
-        asyncio.run(export_pdf(markdown, assets, options, **routing))
+        asyncio.run(
+            export_pdf(markdown, assets, replace(options, unsupplied_images=mode), **routing)
+        )
     assert not backend.keys
 
 
@@ -331,6 +351,53 @@ def test_returns_verified_bytes_and_disposes_fresh_calls():
     assert len({key.call_id for key in keys}) == 2
     assert all(key.scope == "host-scope" for key in keys)
     assert renderer.requests[0]["markdown"] == "# Report"
+    assert renderer.requests[0]["unsupplied_images"] == "refuse"
+
+
+@pytest.mark.parametrize("api", [export_pdf, export_pdf_result])
+def test_placeholder_result_and_request(api):
+    renderer, backend, routing = setup(Renderer(mutation={"images_replaced": 2}))
+    result = asyncio.run(
+        api(
+            "![one](missing.svg) ![two](remote.png)",
+            {},
+            ExportOptions(unsupplied_images="placeholder"),
+            **routing,
+        )
+    )
+    assert result == (PDF if api is export_pdf else ExportResult(PDF, 2))
+    assert renderer.requests[0]["unsupplied_images"] == "placeholder"
+    assert backend.disposed
+
+
+def test_default_result_accepts_older_renderer_without_count():
+    _, backend, routing = setup()
+    assert asyncio.run(export_pdf_result("report", {}, **routing)) == ExportResult(PDF, 0)
+    assert backend.disposed
+
+
+@pytest.mark.parametrize("api", [export_pdf, export_pdf_result])
+@pytest.mark.parametrize("count", [None, True, -1, 1.5, "1", 100])
+def test_invalid_replacement_count_refused_and_disposed(api, count):
+    _, backend, routing = setup(Renderer(mutation={"images_replaced": count}))
+    with pytest.raises(ValueError, match="metadata"):
+        asyncio.run(api("report", {}, ExportOptions(unsupplied_images="placeholder"), **routing))
+    assert backend.disposed
+
+
+@pytest.mark.parametrize("api", [export_pdf, export_pdf_result])
+def test_placeholder_mode_requires_renderer_count(api):
+    _, backend, routing = setup()
+    with pytest.raises(ValueError, match="metadata"):
+        asyncio.run(api("report", {}, ExportOptions(unsupplied_images="placeholder"), **routing))
+    assert backend.disposed
+
+
+def test_refusal_mode_rejects_nonzero_replacement_count():
+    _, backend, routing = setup(Renderer(mutation={"images_replaced": 1}))
+    with pytest.raises(ValueError, match="metadata"):
+        asyncio.run(export_pdf_result("report", {}, **routing))
+    assert backend.disposed
 
 
 @pytest.mark.parametrize(
@@ -379,11 +446,12 @@ def test_cancellation_disposes():
     asyncio.run(run())
 
 
-def test_failed_disposal_prevents_byte_delivery():
+@pytest.mark.parametrize("api", [export_pdf, export_pdf_result])
+def test_failed_disposal_prevents_byte_delivery(api):
     _, backend, routing = setup()
     backend.dispose_failure = DisposalFailure("unknown", "could not dispose")
     with pytest.raises(RuntimeError, match="cleanup failed"):
-        asyncio.run(export_pdf("report", {}, **routing))
+        asyncio.run(api("report", {}, **routing))
     assert backend.disposed
 
 

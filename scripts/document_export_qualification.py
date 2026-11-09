@@ -15,7 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 from maf_sandbox import Isolation, Sandbox, SandboxKey, SandboxRouter, SandboxSpec
-from maf_sandbox_document import ExportOptions, export_pdf
+from maf_sandbox_document import ExportOptions, export_pdf, export_pdf_result
 from pypdf import PdfReader
 
 SVG = (
@@ -207,6 +207,34 @@ async def check(image_id: str, *, directory: Path | None = None) -> dict[str, An
             "Mermaid fallback is missing",
         )
         require(metadata[-1]["mermaid_fallbacks"] == 1, "fallback evidence is missing")
+        placeholders = await export_pdf_result(
+            "![Remote](https://example.invalid/image.png)\n\n![Missing](missing.svg)\n\n"
+            "![Missing](missing.svg)\n\n![Supplied](diagram.svg)",
+            {"diagram.svg": SVG},
+            ExportOptions(unsupplied_images="placeholder"),
+            router=router,
+            key=key,
+            image=image_id,
+        )
+        if directory is not None:
+            (directory / "placeholders.pdf").write_bytes(placeholders.pdf)
+        placeholder_text = " ".join(
+            page.extract_text() for page in PdfReader(io.BytesIO(placeholders.pdf)).pages
+        )
+        require(placeholders.images_replaced == 3, "image replacement count differs")
+        require(
+            "[Image: Remote]" in placeholder_text
+            and placeholder_text.count("[Image: Missing]") == 2
+            and "[Image: Supplied]" not in placeholder_text
+            and "Supplied SVG" in placeholder_text,
+            "image placeholders are missing or supplied image was replaced",
+        )
+        require(metadata[-1]["network_requests"] == [], "placeholder attempted network access")
+        evidence["placeholders"] = {
+            "sha256": hashlib.sha256(placeholders.pdf).hexdigest(),
+            "imagesReplaced": placeholders.images_replaced,
+            "renderer": metadata[-1],
+        }
         for markdown, assets, options in (
             (FIXTURE, {"diagram.svg": SVG}, ExportOptions(max_pages=1, deadline_seconds=120)),
             ("![remote](https://example.invalid/image.svg)", {}, ExportOptions()),
@@ -225,14 +253,15 @@ async def check(image_id: str, *, directory: Path | None = None) -> dict[str, An
     )
     require(not remaining, "export containers remain")
     require(
-        len({row["instance"] for row in observations}) == 5,
-        "calls did not receive five fresh instances",
+        len({row["instance"] for row in observations}) == 6,
+        "calls did not receive six fresh instances",
     )
     return {
         "backend": "docker",
         "imageId": image_id,
         "checks": evidence,
         "mermaidFallbackVerified": True,
+        "imagePlaceholdersVerified": True,
         "refusalsVerified": True,
         "observations": observations,
         "containersRemaining": [],
