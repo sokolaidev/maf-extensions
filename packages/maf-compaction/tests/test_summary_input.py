@@ -269,6 +269,8 @@ async def test_oversized_user_band_can_fall_back_to_an_eligible_fold(mode, limit
 
 
 def composed(client, **kwargs):
+    # These pin the max_summary_input_tokens bound; the record budget's batches have their own.
+    kwargs.setdefault("record_budget_share", None)
     return ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
         tokenizer=TOKENIZER,
         tool_results=ToolResultAnchoredSummarizationCompactionStrategy(

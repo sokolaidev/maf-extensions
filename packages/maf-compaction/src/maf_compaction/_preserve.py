@@ -76,6 +76,11 @@ PRESERVED_KEY: Final[str] = "_preserved"
 #: claimed it. Mirrors ``EXCLUDE_REASON_KEY``.
 PRESERVE_REASON_KEY: Final[str] = "_preserve_reason"
 
+#: On a written record that losslessly replaced one model-made record: that record's identity.
+#: Stored with the message, like the written-record mark, so the record keeps its identity, and
+#: positional rules count the excluded original in its place rather than both.
+STANDS_IN_KEY: Final[str] = "maf_compaction_record_identity"
+
 
 def set_preserved(message: Message, *, preserved: bool, reason: str | None = None) -> bool:
     """Mark ``message`` as protected from removal, or release it.
@@ -129,6 +134,14 @@ def any_preserved(messages: Iterable[Message]) -> bool:
         True when at least one is protected.
     """
     return any(is_preserved(message) for message in messages)
+
+
+def stands_in(messages: Iterable[Message]) -> bool:
+    """Return whether ``messages`` are only stand-ins for records excluded beside them."""
+    members = list(messages)
+    return bool(members) and all(
+        isinstance(message.additional_properties.get(STANDS_IN_KEY), str) for message in members
+    )
 
 
 def removable_whole(

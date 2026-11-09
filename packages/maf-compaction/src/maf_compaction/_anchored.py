@@ -67,7 +67,7 @@ from agent_framework._compaction import (
 )
 
 from ._media import annotate_token_counts
-from ._preserve import any_preserved, is_preserved, removable_spans
+from ._preserve import any_preserved, is_preserved, removable_spans, stands_in
 from ._request import RECALL_PROMPT_KEY
 from ._summary_links import has_summary_links
 from ._tool_result import (
@@ -392,7 +392,8 @@ class AnchoredCompactionStrategy:
             The middle groups, oldest first. Empty when the conversation is still short
             enough that the anchors cover all of it.
         """
-        # Removal notes and request-only prompts must not shift the retained working set.
+        # Removal notes, request-only prompts and a reshaped record's stand-in must not shift the
+        # retained working set; the stand-in's excluded original keeps its place.
         real = [
             group
             for group in groups
@@ -400,6 +401,7 @@ class AnchoredCompactionStrategy:
             and not messages[int(group["start_index"])].additional_properties.get(
                 RECALL_PROMPT_KEY, False
             )
+            and not stands_in(messages[group["start_index"] : group["end_index"] + 1])
         ]
         tail_start = len(real) - self.keep_tail_groups
         if tail_start <= self.keep_head_groups:

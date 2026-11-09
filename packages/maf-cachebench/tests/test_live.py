@@ -62,7 +62,7 @@ from maf_compaction import (
     make_recall_tool,
 )
 from maf_compaction._composed import DEFAULT_RECORD_MERGE_PROMPT, harder_record_prompt
-from maf_compaction._preserve import is_preserved
+from maf_compaction._preserve import STANDS_IN_KEY, is_preserved
 from maf_compaction._toolsummary import _distinctive_tokens  # pyright: ignore[reportPrivateUsage]
 from maf_compaction._usersummary import (
     SUMMARY_ID_PREFIX,
@@ -2713,8 +2713,9 @@ async def test_a_merge_through_the_live_path_sends_the_model_no_call_it_never_ma
         if message.role == "assistant"
         and (message.text or "").startswith(RECORD_MARKER)
         and not message.additional_properties.get(EXCLUDED_KEY)
+        and STANDS_IN_KEY not in message.additional_properties
     ]
-    assert len(written) == 1, "one merged record stands in the store"
+    assert len(written) == 1, "one merged record stands in the store, beside any reshaped one"
     index = written[0]
     record = run.stored[index]
     assert [content.type for content in record.contents] == ["text"], "a message, not a call"
@@ -3039,16 +3040,23 @@ async def test_a_refused_rewrite_is_asked_once_through_the_live_paths_two_lists(
     """Repeated oversized requests reuse refusals without reaching the model again.
 
     The records cannot shrink, so later turns meet the same protected record content.
-    Each merge or rewrite request is paid for once, then skipped on subsequent retries.
+    Each merge or rewrite request is paid for once, then skipped on subsequent retries. The
+    records are large enough to stay over the budget once the chain pays each of them once, and
+    the summary request bound is wide enough for two of them to share one merge.
     """
+
+    def widen(strategy: Any) -> None:
+        strategy.user_turns.max_summary_input_tokens = 12_000
+
     summarizer = _RefusingRecordSummarizer()
     run = await _run_wait_fixture(
         min_groups_before_repeat=1,
         allow_overflow=True,
-        record_padding=12_000,
+        record_padding=18_000,
         later_lookups=("d", "e"),
         later_filler_turns=6,
         summarizer=summarizer,
+        on_strategy=widen,
     )
     strategy = run.strategy
     rewrites = [
@@ -3068,8 +3076,9 @@ async def test_a_refused_rewrite_is_asked_once_through_the_live_paths_two_lists(
     )
     assert strategy.record_merges_rejected == len(merges)
     assert strategy.record_rewrites_skipped > 0 and strategy.record_merges_skipped > 0
-    assert len({body for _, body in rewrites}) == 1, (
-        "no new record arrives while the model is blocked"
+    assert rewrites[-1][1] == merges[-1][1], (
+        "no new record arrives while the model is blocked: the last rewrite is of the records "
+        "the merge was refused on"
     )
     assert strategy.last_resort_fallbacks * DEFAULT_HARDER_ATTEMPTS > strategy.record_rewrites, (
         "the chain reached step d on passes whose step c asked nothing"
