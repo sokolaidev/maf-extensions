@@ -326,8 +326,27 @@ def catalogue_asset(assets: Any) -> dict[str, Any]:
     return assets[0]
 
 
+def history_metadata(release: dict[str, Any]) -> dict[str, Any]:
+    """Keep evidence identity without mutable prose, counters or unrelated API fields."""
+    record = {
+        key: release.get(key) for key in ("id", "draft", "immutable", "target_commitish", "assets")
+    }
+    if isinstance(record["assets"], list):
+        record["assets"] = [
+            {key: asset.get(key) for key in ("id", "name", "state", "size", "digest")}
+            if isinstance(asset, dict)
+            else asset
+            for asset in record["assets"]
+        ]
+    return record
+
+
 class HistoryAdvanced(ValueError):
     """New committed records require a fresh, fully validated read."""
+
+
+class HistoryListingIncomplete(ValueError):
+    """A verified snapshot names predecessors absent from the release listing."""
 
 
 class History:
@@ -337,7 +356,9 @@ class History:
         self.github = github or GitHub()
 
     def records(
-        self, observed: dict[int, dict[str, Any]] | None = None
+        self,
+        observed: dict[int, dict[str, Any]] | None = None,
+        expected: dict[int, str] | None = None,
     ) -> dict[int, dict[str, Any]]:
         """Retry identical page overlaps without forgetting previously observed records."""
         seen: dict[int, dict[str, Any]] = {}
@@ -348,7 +369,7 @@ class History:
             if any(records.get(n) != release for n, release in seen.items()):
                 raise ValueError("Security history changed while retrying overlapping pages")
             seen.update(deepcopy(records))
-            self._remember({n: r for n, r in records.items() if not r["draft"]}, observed)
+            self._remember({n: r for n, r in records.items() if not r["draft"]}, observed, expected)
             if overlap is None:
                 return records
             if attempt == 2:
@@ -430,48 +451,53 @@ class History:
         return Snapshot(number, hashed, value, release["id"])
 
     def head(self) -> Snapshot | None:
-        """Retry concurrent publication twice, then raise HistoryAdvanced if it remains busy."""
+        """Retry publication or missing predecessors twice without forgetting verified evidence."""
         observed: dict[int, dict[str, Any]] = {}
+        expected: dict[int, str] = {}
         for delay in (1, 2):
             try:
-                return self._head_once(observed)
-            except HistoryAdvanced:
+                return self._head_once(observed, expected)
+            except (HistoryAdvanced, HistoryListingIncomplete):
                 time.sleep(delay)
-        return self._head_once(observed)
+        try:
+            return self._head_once(observed, expected)
+        except HistoryListingIncomplete as error:
+            error.add_note("Release listing still omits verified predecessors after 3 reads")
+            raise
 
-    def _committed(self, observed: dict[int, dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    def _committed(
+        self, observed: dict[int, dict[str, Any]], expected: dict[int, str]
+    ) -> dict[int, dict[str, Any]]:
         """Keep committed evidence seen during one head read, including its retries."""
-        return {n: r for n, r in self.records(observed).items() if not r["draft"]}
+        return {n: r for n, r in self.records(observed, expected).items() if not r["draft"]}
 
     @staticmethod
     def _remember(
-        committed: dict[int, dict[str, Any]], observed: dict[int, dict[str, Any]]
+        committed: dict[int, dict[str, Any]],
+        observed: dict[int, dict[str, Any]],
+        expected: dict[int, str] | None = None,
     ) -> None:
         """Retain security evidence while allowing mutable prose and download counters."""
-        evidence = {}
-        for number, release in committed.items():
-            record = {
-                key: release.get(key)
-                for key in ("id", "draft", "immutable", "target_commitish", "assets")
-            }
-            if isinstance(record["assets"], list):
-                record["assets"] = [
-                    {key: asset.get(key) for key in ("id", "name", "state", "size", "digest")}
-                    if isinstance(asset, dict)
-                    else asset
-                    for asset in record["assets"]
-                ]
-            evidence[number] = record
+        evidence = {number: history_metadata(release) for number, release in committed.items()}
         latest = max(observed, default=0)
         if any(evidence.get(n) != record for n, record in observed.items()) or any(
-            n <= latest for n in evidence.keys() - observed.keys()
+            n <= latest
+            and (
+                expected is None
+                or n not in expected
+                or catalogue_asset(evidence[n]["assets"]).get("digest") != expected[n]
+            )
+            for n in evidence.keys() - observed.keys()
         ):
             raise ValueError("Security history changed during retrieval")
         observed.update(deepcopy(evidence))
 
-    def _head_once(self, observed: dict[int, dict[str, Any]]) -> Snapshot | None:
+    def _head_once(
+        self, observed: dict[int, dict[str, Any]], expected: dict[int, str]
+    ) -> Snapshot | None:
         """Check retained ancestry and current bytes without downloading every old snapshot."""
-        committed = self._committed(observed)
+        records = self.records(observed, expected)
+        committed = {n: r for n, r in records.items() if not r["draft"]}
         references = []
         for number, release in sorted(committed.items()):
             if release.get("immutable") is not True:
@@ -479,15 +505,51 @@ class History:
             asset = catalogue_asset(release.get("assets"))
             references.append({"sequence": number, "sha256": require_digest(asset.get("digest"))})
         current = self.snapshot(max(committed), committed[max(committed)]) if committed else None
-        if current and current.lineage != references:
-            raise ValueError("Security history has a fork, changed asset or missing predecessor")
         if (
             current
             and self.github.tag_commit(f"{TAG}{current.number:012d}")
             != current.document["sourceCommit"]
         ):
             raise ValueError("Committed history tag identifies another source")
-        checked = self._committed(observed)
+        if current:
+            lineage = {r["sequence"]: r["sha256"] for r in current.lineage}
+            if any(lineage.get(n) != digest for n, digest in expected.items()):
+                raise ValueError("Security history changed previously verified ancestry")
+            if current.lineage != references:
+                listed = {r["sequence"]: r["sha256"] for r in references}
+                differences = [
+                    {
+                        "sequence": n,
+                        "expectedSha256": lineage.get(n),
+                        "listedSha256": listed.get(n),
+                        "release": history_metadata(records[n]) if n in records else None,
+                    }
+                    for n in sorted(lineage.keys() | listed.keys())
+                    if lineage.get(n) != listed.get(n)
+                ]
+                missing_only = all(d["release"] is None for d in differences)
+                print(
+                    json.dumps(
+                        {
+                            "event": "security-history-mismatch",
+                            "snapshot": current.reference,
+                            "releaseId": current.release_id,
+                            "expectedCount": len(lineage),
+                            "listedCount": len(listed),
+                            "retryable": missing_only,
+                            "differences": differences,
+                        },
+                        sort_keys=True,
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+                message = "Security history has a fork, changed asset or missing predecessor"
+                if missing_only:
+                    expected.update(lineage)
+                    raise HistoryListingIncomplete(message)
+                raise ValueError(message)
+        checked = self._committed(observed, expected)
         if checked.keys() != committed.keys():
             raise HistoryAdvanced("Security history advanced during retrieval")
         return current
