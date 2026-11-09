@@ -136,12 +136,19 @@ def select_price(
 ) -> dict[str, Any]:
     """Require one current, complete, exact consumption meter; never pick the cheapest."""
     rows = report.get("prices")
+    received = report.get("received_rows")
+    returned = report.get("returned_rows")
+    selected = report.get("selected_rows", received)
     if (
         not isinstance(rows, list)
         or report.get("truncated") is not False
         or report.get("upstream_limit_reached") is not False
-        or report.get("returned_rows") != len(rows)
-        or report.get("received_rows") != len(rows)
+        or type(received) is not int
+        or type(returned) is not int
+        or type(selected) is not int
+        or returned != len(rows)
+        or selected != len(rows)
+        or received < selected
     ):
         raise ValueError("Incomplete pricing response")
     matches = []
