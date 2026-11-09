@@ -5,7 +5,9 @@ record trigger unless overridden, and waits for a pending record for at most
 two model responses. The caller supplies its summary mode and wires the recall
 tool and middleware; ``repeat_records`` requests repeated recording.
 
-If the prompt still exceeds the budget, the chain merges records, folds user
+If the prompt still exceeds the budget, the chain rewrites model-made records
+losslessly as written records, merges the oldest records in bounded batches
+while they exceed ``record_budget_share``, merges records, folds user
 summaries, tries harder record rewrites, then runs the anchored fallback with
 unrecorded tool groups held. It aims to remove ``chain_gain_fraction`` of the
 tokens behind its earliest edit, accepting only non-empty, smaller replacements.
@@ -25,7 +27,9 @@ See ``docs/compaction/strategies.md`` for defaults, replay and design rationale.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+from bisect import bisect_left
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -50,7 +54,7 @@ from ._media import annotate_token_counts
 from ._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
 from ._request import RequestOverhead
 from ._shed import durable_message_id, unique_shed_groups
-from ._summary_input import bounded_prefix, fits_summary_input
+from ._summary_input import bounded_prefix, bounded_prefix_extent, fits_summary_input
 from ._toolsummary import (
     PRESERVE_REASON_UNCOVERED,
     PRESERVE_REASON_UNRECORDED,
@@ -59,11 +63,14 @@ from ._toolsummary import (
     _distinctive_tokens,  # pyright: ignore[reportPrivateUsage]
     _is_written_record,  # pyright: ignore[reportPrivateUsage]
     _newest_record_identity,  # pyright: ignore[reportPrivateUsage]
+    active_record_groups,
     build_record_message,
     consolidatable_record_groups,
     find_record_index,
     record_anchor_position,
     record_bodies,
+    reshape_payloads,
+    reshapeable_record_groups,
 )
 from ._toolsummary import _tokens as _record_tokens  # pyright: ignore[reportPrivateUsage]
 from ._usersummary import SUMMARY_MODE_RECOMPACT, UserTurnAnchoredSummarizationCompactionStrategy
@@ -75,12 +82,17 @@ __all__ = [
     "CompactionBudgetExceeded",
     "DEFAULT_CHAIN_GAIN_FRACTION",
     "DEFAULT_HARDER_ATTEMPTS",
+    "DEFAULT_RECORD_BUDGET_SHARE",
     "DEFAULT_RECORD_MERGE_PROMPT",
     "ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy",
     "harder_record_prompt",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+class _BatchProbesSpent(Exception):
+    """A record-merge sweep has rendered :data:`_MAX_BATCH_PROBES` batch prefixes."""
 
 
 class CompactionBudgetExceeded(ValueError):
@@ -192,6 +204,29 @@ DEFAULT_CHAIN_GAIN_FRACTION: Final[float] = DEFAULT_MIN_GAIN_FRACTION
 #: earliest.
 _MAX_FALLBACK_ROUNDS: Final[int] = 3
 
+#: Batch prefixes one record-merge sweep may render and count while looking for batches.
+#:
+#: Finding a batch of ``k`` records takes about ``2 * log2(k)`` of them, so this is some sixteen
+#: batches of eight, more than a sweep that stops at the record share needs. What it bounds is
+#: a run of records that each fit the cap alone and never two together: token counts need not
+#: grow with text, so one failed prefix proves nothing, and every start would otherwise render
+#: every longer prefix. A sweep that spends them stops, and the next one resumes each start
+#: where this one left it, so it goes on from where the last left off. A record that does not
+#: fit alone is passed over without a search and costs none of them.
+_MAX_BATCH_PROBES: Final[int] = 128
+
+#: Share of the sending budget the active records may hold once the chain has started.
+#:
+#: **Nothing else bounds their total.** Every record is preserved for the run and
+#: ``record_target_tokens`` sizes one record, not how many there are, so on a long tool-heavy run
+#: the records alone can outgrow the budget; the overflow shed may take only unrecorded history,
+#: and every pass then ends over the budget. Past this share the chain merges the oldest records
+#: in batches; see ``_merge_batches``. **Half**, leaving the rest for what no merge can shrink:
+#: the head and tail, user turns, and the tool work the next record will cover. A judgment rather
+#: than a measurement. ``None`` switches the bound off, and with it the batch limit on record
+#: requests.
+DEFAULT_RECORD_BUDGET_SHARE: Final[float] = 0.5
+
 #: Model responses the user half waits through for a record that is due, before acting anyway.
 #:
 #: **Two, and it is the re-force layer's number for the re-force layer's reason**, counted in a
@@ -296,9 +331,45 @@ def _numbered_records(bodies: list[str]) -> str:
     return "\n".join(f"{number}. {body}" for number, body in enumerate(bodies, start=1))
 
 
+def _has_prefix(ordered: list[str], prefix: str) -> bool:
+    """Return whether any of the sorted ``ordered`` starts with ``prefix``.
+
+    The strings that do sort together, from the first at or after ``prefix``, so that one is
+    the only one to read.
+    """
+    index = bisect_left(ordered, prefix)
+    return index < len(ordered) and ordered[index].startswith(prefix)
+
+
+def _digest(text: str) -> str:
+    """Key a decision by a record's text without storing the text in session state."""
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+#: A Mersenne prime and a fixed base for the polynomial hash a batch sweep combines record
+#: digests with: shared prefix sums give the digest of any run of records in constant time, so
+#: a start checks what it searched against the records standing without hashing them again.
+_RUN_MODULUS: Final[int] = (1 << 521) - 1
+_RUN_BASE: Final[int] = int(hashlib.sha256(b"maf-compaction record runs").hexdigest(), 16)
+
+
 def _is_excluded(message: Message) -> bool:
     """Return whether ``message`` carries the exclusion flag."""
     return bool(message.additional_properties.get(EXCLUDED_KEY, False))
+
+
+@dataclass(frozen=True, slots=True)
+class _Searched:
+    """How far a batch search from one start record got, and what it found there."""
+
+    #: Records from the start the search's answer was decided on.
+    covered: int
+    #: The digest of those records' run, so the answer holds only while they stand unchanged.
+    records: str
+    #: The batch found, in records, or 0 for no run within ``covered`` that fits.
+    batch: int = 0
+    #: Whether where the records ended decided the answer too, so a record appended reopens it.
+    ended: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -437,12 +508,19 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if need be. Overflow shedding reserves the same share behind its own earliest
             edit below the budget, capped at that share of the budget, when groups permit. See
             :data:`DEFAULT_CHAIN_GAIN_FRACTION`; zero stops both at the budget.
+        record_budget_share: Share of the sending budget, in ``(0.0, 1.0]``, the active records
+            may hold once the chain has started; past it the oldest records are merged in
+            batches no larger than the summarizer's output cap where ``summary_options`` gives
+            one, and every record merge or rewrite is held to that cap. See
+            :data:`DEFAULT_RECORD_BUDGET_SHARE`. ``None`` keeps record requests bounded by
+            ``max_summary_input_tokens`` alone.
 
     Raises:
         ValueError: If the two phases measure against different ceilings or with different
             tokenizer objects, if an explicit
             ``user_trigger_fraction`` is outside ``(0.0, 1.0]``, or if ``harder_attempts`` is
-            negative, or if ``chain_gain_fraction`` is outside ``[0.0, 1.0)``, or if a user half
+            negative, or if ``chain_gain_fraction`` is outside ``[0.0, 1.0)``, or
+            ``record_budget_share`` outside ``(0.0, 1.0]``, or if a user half
             outside the recompacting mode remembers fewer than two requests. Each phase's
             trigger is a fraction of its own ``max_input_tokens``, and one shared line is a line
             only while the two fractions are fractions of one number;
@@ -464,6 +542,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         chain_gain_fraction: float = DEFAULT_CHAIN_GAIN_FRACTION,
         overflow_policy: Literal["shed", "raise"] = "shed",
         estimate_margin: float = 0.0,
+        record_budget_share: float | None = DEFAULT_RECORD_BUDGET_SHARE,
     ) -> None:
         """Validate the pair and store it."""
         if tool_results.max_input_tokens != user_turns.max_input_tokens:
@@ -497,6 +576,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             raise ValueError("overflow_policy must be 'shed' or 'raise'.")
         if isinstance(estimate_margin, bool) or not 0.0 <= estimate_margin < 1.0:
             raise ValueError("estimate_margin must be in [0.0, 1.0).")
+        if record_budget_share is not None and (
+            isinstance(record_budget_share, bool) or not 0.0 < record_budget_share <= 1.0
+        ):
+            raise ValueError("record_budget_share must be in (0.0, 1.0] or None.")
+        self.record_budget_share = record_budget_share
         self.estimate_margin = estimate_margin
         self._request_overhead = RequestOverhead(tokenizer)
         self._request_budget: ContextVar[int | None] = ContextVar("request_budget", default=None)
@@ -516,6 +600,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self.merge_prompt = merge_prompt or DEFAULT_RECORD_MERGE_PROMPT
         self.chain_gain_fraction = chain_gain_fraction
         self._removed_by_record = 0
+        self._records_reshaped = 0
         self._records_merged = 0
         self._record_merges_rejected = 0
         self._user_summaries_merged = 0
@@ -548,10 +633,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # transcript and source count, with their replacement text; and the ids of the messages
         # its fallback shed. See ``_keep_decisions``. The user half keeps its fold decisions.
         self._kept_records: dict[tuple[str, int | None], str] = {}
+        # Digests of the record bodies the chain reshaped, which every list reshapes alike.
+        self._reshaped: set[str] = set()
         self._shed_ids: set[str] = set()
         self._shed_groups: set[str] = set()
         # Shrink acceptance depends on the source count as well as the request's transcript.
         self._refused_merges: set[tuple[str, int]] = set()
+        # Per start record (body digest, cap): how far the batch search from it got, so a later
+        # sweep resumes it, or takes the batch it found, only while those records stand.
+        self._searched: dict[tuple[str, int], _Searched] = {}
         self._refused_rewrites: dict[tuple[str, int], int] = {}
 
     @property
@@ -710,6 +800,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 {"transcript": transcript, "source_count": count, "text": text}
                 for (transcript, count), text in self._kept_records.items()
             ],
+            "reshaped_records": sorted(self._reshaped),
+            "searched_records": [
+                [start, limit, found.covered, found.records, found.batch, found.ended]
+                for (start, limit), found in sorted(self._searched.items())
+            ],
             "shed_ids": sorted(self._shed_ids),
             "shed_groups": sorted(self._shed_groups),
             "refused_merges": [
@@ -738,6 +833,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 (entry["transcript"], entry["source_count"]): entry["text"]
                 for entry in kept_records
             }
+        self._reshaped = set(data.get("reshaped_records", []))
+        # Earlier snapshots of this schema kept only searches that found nothing.
+        searched = data.get("searched_records", data.get("unpaired_records", []))
+        self._searched = {
+            (entry[0], entry[1]): _Searched(*entry[2:])
+            for entry in searched
+            if len(entry) in (4, 6)
+        }
         self._shed_ids = {value for value in data["shed_ids"] if durable_message_id(value)}
         self._shed_groups = set(data.get("shed_groups", []))
         # A legacy refusal without a count cannot safely suppress another request.
@@ -785,11 +888,21 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return self._removed_by_record
 
     @property
-    def records_merged(self) -> int:
-        """Passes where the chain merged the active records into one, and kept the merge.
+    def records_reshaped(self) -> int:
+        """Model-made records the chain rewrote as written records, paying their values once.
 
-        Step a. Each is a summarizer call and a rewrite of the prompt from the oldest record, and
-        a floor under the prompt lowered from several records to one. ``RECMERGE`` in the flags.
+        The chain's first step, lossless and with no summarizer call: see :meth:`_reshape_records`.
+        Counted when decided, not when put back on another list.
+        """
+        return self._records_reshaped
+
+    @property
+    def records_merged(self) -> int:
+        """Record merges the chain kept in step a: one a pass, or one a batch with a record budget.
+
+        Each is a summarizer call and a rewrite of the prompt from the oldest record it replaced,
+        and a floor under the prompt lowered from several records to one. ``RECMERGE`` in the
+        flags.
         """
         return self._records_merged
 
@@ -970,6 +1083,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
         replayed_shed = self._keep_shedding(messages)
+        # Before the record phase counts records, so a stand-in and the pair it replaced are
+        # never both counted.
+        replayed = self._reshape_records(messages, replay=True) or replayed_shed
         decisions_kept = self._decisions_kept
         shed_sources = (
             [
@@ -1009,7 +1125,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 trigger_tokens=int(self._budget * self.user_trigger_fraction),
             )
         chained = await self._last_resort(messages, replayed_user_fold=replay.chain_fold)
-        if replayed_shed and self._decisions_kept == decisions_kept:
+        if replayed and self._decisions_kept == decisions_kept:
             self._decisions_kept += 1
         try:
             fitted = self._enforce_budget(messages)
@@ -1023,7 +1139,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     for message in members
                 )
             )
-        return replayed_shed or replay.changed or changed or compacted or chained or fitted
+        return replayed or replay.changed or changed or compacted or chained or fitted
 
     def _enforce_budget(self, messages: list[Message]) -> bool:
         """Shed unrecorded groups as a last resort, or refuse an oversized prompt."""
@@ -1163,14 +1279,20 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         which is below the budget by :data:`DEFAULT_CHAIN_GAIN_FRACTION`'s argument. A pass that
         started is counted as reaching the target or missing it.
 
+        **Records first.** Model-made records are reshaped into written ones, which pays their
+        values once at no summarizer cost -- :meth:`_reshape_records`, run whenever the chain
+        does. The merge then runs while the prompt is short of its target and, with
+        :attr:`record_budget_share` set, also while the records exceed their share, so they
+        leave room for the turns after this firing -- :meth:`_merge_records`.
+
         **Which steps reach the target.** Each is as bounded as it was: the merge runs once per
-        set of records, the fold once, the harder rewrites up to :attr:`harder_attempts` times
-        (the second is asked while the prompt is short of the target, not only while it is over
-        the budget), and the fallback sheds narration, and only narration, down to the target it
-        is handed -- see :meth:`_fall_back`. Measured offline with a fuzzed model, the fallback
-        does about two thirds of the removal, the record merge and the user fold about a third
-        between them, and the rewrites almost nothing, a record dense with codes having little
-        else to lose.
+        set of records or batch, the fold once, the harder rewrites up to :attr:`harder_attempts`
+        times (the second is asked while the prompt is short of the target, not only while it is
+        over the budget), and the fallback sheds narration, and only narration, down to the
+        target it is handed -- see :meth:`_fall_back`. Measured offline with a fuzzed model, the
+        fallback does about two thirds of the removal, the record merge and the user fold about a
+        third between them, and the rewrites almost nothing, a record dense with codes having
+        little else to lose.
 
         Args:
             messages: The conversation, mutated in place.
@@ -1182,7 +1304,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if not self._over(messages):
             return changed
         start = _ChainStart.take(messages)
-        changed = await self._merge_records(messages) or changed
+        changed = self._reshape_records(messages) or changed
+        changed = await self._merge_records(messages, start) or changed
         if self._short_of_target(messages, start):
             changed = await self._merge_user_summaries(messages) or changed
         if self._short_of_target(messages, start):
@@ -1213,8 +1336,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         **What.** Whatever the chain changes on one list is put on every list that holds what it
         changed, whatever that list's size, before the chain decides anything new:
 
+        - a reshape, by a digest of the record's payload, put back by :meth:`__call__` before the
+          record phase so no record is counted in both forms;
         - a record merge or rewrite, by the transcript of the records it replaced -- the one
-          thing both lists present identically -- replacing any leading run of the records that
+          thing both lists present identically -- replacing any run of the records that
           matches one, as often as one does, since a merge followed by a rewrite is two;
         - a user fold, through
           :meth:`~._usersummary.UserTurnAnchoredSummarizationCompactionStrategy.refold`;
@@ -1259,35 +1384,47 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return self.tool_results.shed_again_after_record(messages, message_ids)
 
     def _keep_records(self, messages: list[Message]) -> bool:
-        """Replace every leading run of records the chain has already replaced, as it did."""
+        """Replace every run of records the chain has already replaced, as it did.
+
+        The earliest run first, and at one start the longest. A batch merge need not start at the
+        oldest record, so any start is tried; an entry from a legacy snapshot, which has no
+        source count, only at the oldest, as it was taken.
+        """
         changed = False
         while self._kept_records:
             groups = consolidatable_record_groups(messages)
-            # Legacy snapshots need a search until their source counts have been learned.
             source_counts = {count for _, count in self._kept_records}
-            counts = (
-                range(len(groups), 0, -1)
-                if None in source_counts
-                else sorted((count for count in source_counts if count is not None), reverse=True)
-            )
-            needed = min(len(groups), max(counts, default=0))
-            bodies = record_bodies(messages, groups[:needed])
-            for count in counts:
-                if not 1 <= count <= len(groups):
+            counted = sorted((count for count in source_counts if count is not None), reverse=True)
+            # Legacy snapshots need a search until their source counts have been learned.
+            legacy = range(len(groups), 0, -1) if None in source_counts else counted
+            bodies = record_bodies(messages, groups)
+            transcripts = sorted(transcript for transcript, _ in self._kept_records)
+            found = None
+            for start in range(len(groups)):
+                # Every kept transcript opens with its first record, which skips most starts.
+                head = _numbered_records(bodies[start : start + 1])
+                if not _has_prefix(transcripts, head):
                     continue
-                transcript = _transcript(messages, groups[:count], bodies=bodies[:count])
-                key = (transcript, count)
-                text = self._kept_records.get(key)
-                if text is None:
-                    text = self._kept_records.pop((transcript, None), None)
+                for count in legacy if start == 0 else counted:
+                    if not 1 <= count <= len(groups) - start:
+                        continue
+                    run = groups[start : start + count]
+                    transcript = _transcript(messages, run, bodies=bodies[start : start + count])
+                    key = (transcript, count)
+                    text = self._kept_records.get(key)
+                    if text is None and start == 0:
+                        text = self._kept_records.pop((transcript, None), None)
+                        if text is not None:
+                            self._kept_records[key] = text
                     if text is not None:
-                        self._kept_records[key] = text
-                if text is not None:
-                    self.tool_results.consolidate_records(messages, groups[:count], text)
-                    changed = True
+                        found = (run, text)
+                        break
+                if found is not None:
                     break
-            else:
+            if found is None:
                 break
+            self.tool_results.consolidate_records(messages, *found)
+            changed = True
         return changed
 
     def _over(self, messages: list[Message]) -> bool:
@@ -1343,7 +1480,288 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 break
         return changed
 
-    async def _merge_records(self, messages: list[Message]) -> bool:
+    def _reshape_records(self, messages: list[Message], *, replay: bool = False) -> bool:
+        """Rewrite each model-made record as a written record holding the same payload, losslessly.
+
+        A record the model made is paid twice, once in the recall call's arguments and again in
+        its result; the written form (:func:`~._toolsummary.build_record_message`) carries it
+        once, and is the form a merge would write anyway. No summarizer is asked and no value
+        can be lost: the payload after the record's framing moves byte for byte, whitespace
+        included (:func:`~._toolsummary.reshapeable_record_groups`). A record whose
+        span holds anything else -- a reasoning item the framework grouped with the call, an
+        extra output under its call id -- whose result carries metadata or non-text items, or
+        whose result this model call carried in is left exactly as it is. A merge spares the
+        same spans, except a result carrying metadata, which it still flattens into its text.
+
+        **Only when the chain fires, not whenever the written form is cheaper.** A reshape
+        rewrites the prompt from the record it replaces. Inside a firing it is one more edit the
+        firing's target is measured from, so the firing goes on until it has removed its share of
+        what that edit re-bills -- the rule every other step answers to -- and the merge it
+        precedes edits at the same record. Reshaping each record as soon as it could be would
+        break the cache once per record, on prompts that fit. The decision is kept by a digest of
+        the payload and, with ``replay``, put back on every list that holds the record, whatever
+        its size, so the copies a call sends and the store agree.
+
+        Args:
+            messages: The conversation, mutated in place.
+
+        Keyword Args:
+            replay: Reshape only records an earlier pass reshaped.
+
+        Returns:
+            True if any record was reshaped.
+        """
+        groups = reshapeable_record_groups(messages)
+        digests = [_digest(payload) for payload in reshape_payloads(messages, groups)]
+        chosen = [
+            (group, digest)
+            for group, digest in zip(groups, digests, strict=True)
+            if not replay or digest in self._reshaped
+        ]
+        if not chosen:
+            return False
+        self.tool_results.reshape_records(messages, [group for group, _ in chosen])
+        if not replay:
+            self._records_reshaped += len(chosen)
+            self._reshaped.update(digest for _, digest in chosen)
+        return True
+
+    async def _merge_batches(
+        self, messages: list[Message], start: _ChainStart | None, share: float
+    ) -> bool:
+        """Merge the oldest records in batches while they exceed ``share`` or the prompt its target.
+
+        Batches are taken oldest first and do not overlap, each the longest run of whole records
+        whose request fits :meth:`_record_request_limit`, so a batch the summarizer can answer
+        whole replaces a few records rather than all of them. The history is read once, and
+        again only after a merge changes it; passing a record over moves on to the next.
+
+        A record whose own request exceeds the cap is passed over without a search from it. One
+        whose two-record request does not fit is searched over longer runs, since token counts
+        need not grow with text. What a search from a record found -- its batch, or how far it
+        got with nothing fitting -- is remembered with a digest of the records that decided it,
+        and a later sweep takes that batch, or resumes the search past those records, while
+        they stand unchanged: an appended record is tried without searching again what was
+        searched, and a changed one, or one appended where the end of the records decided the
+        answer, has the search start afresh. The search spends at most
+        :data:`_MAX_BATCH_PROBES` prefixes a sweep and a remembered batch costs none, so a run of
+        refused batches longer than one sweep can search does not hold every later sweep short
+        of the batches after it. A batch already refused on the same records is passed over
+        too, and stays as it is until it changes; a refusal is remembered, logged at WARNING with
+        counts and never values while the records exceed their share, and the sweep goes on to
+        the next batch. A summarizer that fails ends the sweep, since the next batch would be
+        asked of it too, and a record a batch writes is not merged again on the same pass.
+
+        Returns:
+            True if any batch was merged.
+        """
+        bound = int(self._budget * share)
+        limit = self._record_request_limit()
+        handled: set[int] = set()
+        bodies: dict[int, str] = {}
+        digests: dict[int, str] = {}
+        runs: list[int] = [0]
+        powers: list[int] = [1]
+        alone: dict[int, bool] = {}
+        probes = 0
+        changed = False
+
+        def last(group: dict[str, Any]) -> int:
+            return id(messages[int(group["end_index"])])
+
+        def render(prefix: list[dict[str, Any]]) -> str:
+            nonlocal probes
+            probes += 1
+            if probes > _MAX_BATCH_PROBES:
+                raise _BatchProbesSpent
+            return _numbered_records([bodies[last(group)] for group in prefix])
+
+        def survey() -> tuple[list[dict[str, Any]], int, bool]:
+            groups = consolidatable_record_groups(messages)
+            missing = [group for group in groups if last(group) not in bodies]
+            if missing:
+                for group, body in zip(missing, record_bodies(messages, missing), strict=True):
+                    bodies[last(group)] = body
+                    digests[last(group)] = _digest(body)
+            runs[:] = [0]
+            for group in groups:
+                value = int(digests[last(group)], 16)
+                runs.append((runs[-1] * _RUN_BASE + value) % _RUN_MODULUS)
+            while len(powers) <= len(groups):
+                powers.append(powers[-1] * _RUN_BASE % _RUN_MODULUS)
+            held = self._record_tokens(messages)
+            over = held > bound or (start is not None and self._short_of_target(messages, start))
+            return groups, held, over
+
+        def fits(run: list[dict[str, Any]]) -> bool:
+            return fits_summary_input(
+                self.merge_prompt, render(run), tokenizer=self.tokenizer, limit=limit
+            )
+
+        def chain(first: int, count: int) -> str:
+            run = (runs[first + count] - runs[first] * powers[count]) % _RUN_MODULUS
+            return format(run, "x")
+
+        def remember(first: int, covered: int, batch: int = 0, *, ended: bool = False) -> None:
+            key = (digests[last(groups[first])], limit)
+            self._searched[key] = _Searched(covered, chain(first, covered), batch, ended)
+
+        def search(first: int) -> list[dict[str, Any]]:
+            """Return the batch from ``first``, resuming a search of the same records."""
+            remaining = len(groups) - first
+            checked = 1
+            known = self._searched.get((digests[last(groups[first])], limit))
+            if (
+                known is not None
+                and known.covered <= remaining
+                and (not known.ended or known.covered == remaining)
+                and chain(first, known.covered) == known.records
+            ):
+                if known.batch:
+                    return groups[first : first + known.batch]
+                checked = known.covered
+            if checked < 2:
+                if fits(groups[first : first + 2]):
+                    batch, extent = bounded_prefix_extent(
+                        groups[first:],
+                        render=render,
+                        prompt=self.merge_prompt,
+                        tokenizer=self.tokenizer,
+                        limit=limit,
+                        min_items=2,
+                    )
+                    if extent is None:
+                        remember(first, remaining, len(batch), ended=True)
+                    else:
+                        remember(first, extent, len(batch))
+                    return batch
+                checked = 2
+            # Token counts need not grow with text, so a longer run may fit where two do not.
+            for count in range(checked + 1, remaining + 1):
+                try:
+                    fit = fits(groups[first : first + count])
+                except _BatchProbesSpent:
+                    remember(first, checked)
+                    raise
+                if fit:
+                    remember(first, count, count)
+                    return groups[first : first + count]
+                checked = count
+            remember(first, checked)
+            return []
+
+        groups, held, over = survey()
+        cursor = 0
+        while over:
+            while cursor < len(groups) and last(groups[cursor]) in handled:
+                cursor += 1
+            if len(groups) - cursor < 2:
+                break
+            oldest = last(groups[cursor])
+            if oldest not in alone:
+                alone[oldest] = fits_summary_input(
+                    self.merge_prompt,
+                    _numbered_records([bodies[oldest]]),
+                    tokenizer=self.tokenizer,
+                    limit=limit,
+                )
+            if not alone[oldest]:
+                handled.add(oldest)
+                continue
+            try:
+                batch = search(cursor)
+            except _BatchProbesSpent:
+                logger.info(
+                    "Compaction stopped looking for record batches after %d prefixes; "
+                    "%d records were left unsearched.",
+                    _MAX_BATCH_PROBES,
+                    len(groups) - cursor,
+                )
+                break
+            if len(batch) < 2:
+                handled.add(oldest)
+                continue
+            handled.update(last(group) for group in batch)
+            transcript = _numbered_records([bodies[last(group)] for group in batch])
+            key = (transcript, len(batch))
+            if key in self._refused_merges:
+                self._record_merges_skipped += 1
+                continue
+            standing = {id(message) for message in messages}
+            lossy = self._record_consolidations_lossy
+            outcome = await self._consolidate(
+                messages, batch, prompt=self.merge_prompt, transcript=transcript
+            )
+            if outcome == "failed":
+                break
+            if outcome == "accepted":
+                self._records_merged += 1
+                handled.update(id(message) for message in messages if id(message) not in standing)
+                changed = True
+                groups, held, over = survey()
+                cursor = 0
+                continue
+            self._record_merges_rejected += 1
+            self._refused_merges.add(key)
+            if held > bound:
+                logger.warning(
+                    "Compaction kept a batch of %d records unmerged: the merge was refused as "
+                    "%s; records hold %d tokens against a share of %d.",
+                    len(batch),
+                    "dropping values"
+                    if self._record_consolidations_lossy > lossy
+                    else "no smaller",
+                    held,
+                    bound,
+                )
+        # Kept only while its start record stands, so it stays one entry a record.
+        starts = {(digests[last(group)], limit) for group in groups}
+        self._searched = {key: found for key, found in self._searched.items() if key in starts}
+        return changed
+
+    def _record_tokens(self, messages: list[Message]) -> int:
+        """Return the included tokens of every record still being sent."""
+        annotate_message_groups(messages)
+        annotate_token_counts(messages, tokenizer=self.tokenizer)
+        return included_token_count(
+            [
+                message
+                for group in active_record_groups(messages)
+                for message in messages[group["start_index"] : group["end_index"] + 1]
+            ]
+        )
+
+    def _record_request_limit(self) -> int:
+        """Return the tokens one record merge or rewrite request may hold.
+
+        With :attr:`record_budget_share` set, the summarizer's output cap, or
+        ``max_summary_input_tokens`` where that is lower. **One cap, not a multiple of it**: the
+        merge prompt asks for every value copied and only wording cut, so its longest acceptable
+        answer is about the batch itself, and a request within the cap has an answer the cap
+        cannot cut. At twice the cap an answer must halve its batch to fit, which a batch dense
+        with values cannot; it is cut, refused as lossy and remembered -- the doomed request this
+        bound exists to avoid, only smaller. The cap is ``max_tokens`` in the user half's
+        ``summary_options``, which every record request is sent with. Without one, or once those
+        options are retired, no cap is known and ``max_summary_input_tokens`` alone bounds the
+        request: an assumed cap would be a guess, and one below twice a record's size would stop
+        records being merged at all.
+        """
+        limit = self.user_turns.max_summary_input_tokens
+        if self.record_budget_share is None:
+            return limit
+        options = (
+            {}
+            if self.user_turns._summary_options_disabled  # pyright: ignore[reportPrivateUsage]
+            else self.user_turns.summary_options
+        )
+        cap = options.get("max_tokens")
+        if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
+            return limit
+        return min(limit, cap)
+
+    async def _merge_records(
+        self, messages: list[Message], start: _ChainStart | None = None
+    ) -> bool:
         """Step a: merge the oldest records that fit, when at least two fit.
 
         Only records :func:`~._toolsummary.consolidatable_record_groups` offers: a record whose
@@ -1355,7 +1773,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         goes over the budget -- possibly passes later, long after the request was made. The same
         records give the same transcript and source count, and a merge refused on that pair is
         skipped. Changing either makes the merge eligible again.
+
+        **In batches, with a record budget.** With :attr:`record_budget_share` set, the records
+        are merged in bounded batches -- :meth:`_merge_batches` -- while the prompt is short of
+        its target or the records exceed their share, rather than in one request of every record
+        that fits ``max_summary_input_tokens``, which a summarizer whose answer is capped below
+        that cannot answer without dropping values. Without it, one such merge while the prompt is
+        short of its target. Without ``start`` there is no target, only the share.
         """
+        if self.record_budget_share is not None:
+            return await self._merge_batches(messages, start, self.record_budget_share)
+        if start is not None and not self._short_of_target(messages, start):
+            return False
         groups = self._bounded_records(messages, self.merge_prompt, min_items=2)
         if len(groups) < 2:
             return False
@@ -1443,16 +1872,22 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return changed
 
     def _bounded_records(
-        self, messages: list[Message], prompt: str, *, min_items: int = 1
+        self,
+        messages: list[Message],
+        prompt: str,
+        *,
+        min_items: int = 1,
+        groups: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
-        groups = consolidatable_record_groups(messages)
+        if groups is None:
+            groups = consolidatable_record_groups(messages)
         bodies = record_bodies(messages, groups)
         return bounded_prefix(
             groups,
             render=lambda prefix: _transcript(messages, prefix, bodies=bodies[: len(prefix)]),
             prompt=prompt,
             tokenizer=self.tokenizer,
-            limit=self.user_turns.max_summary_input_tokens,
+            limit=self._record_request_limit(),
             min_items=min_items,
         )
 

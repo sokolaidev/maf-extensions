@@ -70,7 +70,12 @@ from maf_compaction._composed import (
     _responses,
     harder_record_prompt,
 )
-from maf_compaction._preserve import PRESERVE_REASON_KEY, is_preserved, removable_whole
+from maf_compaction._preserve import (
+    PRESERVE_REASON_KEY,
+    STANDS_IN_KEY,
+    is_preserved,
+    removable_whole,
+)
 from maf_compaction._toolsummary import (
     CONSOLIDATE_EXCLUDE_REASON,
     DEFAULT_TRIGGER_FRACTION,
@@ -1947,13 +1952,32 @@ def _active_record_ids(messages: list[Message]) -> list[str]:
     """Return every record still being sent, oldest first: a model's by message id, a written one by body.
 
     A record the chain wrote carries no id of its own -- the framework numbers it by position,
-    which says nothing -- so it is named ``written:<body>``, which is what a test can check.
+    which says nothing -- so it is named ``written:<body>``, which is what a test can check. A
+    model's record the chain reshaped keeps the identity it had, and is named by that.
     """
+    named: list[str] = []
+    for group in active_record_groups(messages):
+        last = messages[group["end_index"]]
+        if STANDS_IN_KEY in last.additional_properties:
+            named.append(f"reshaped:{last.additional_properties[STANDS_IN_KEY]}")
+        elif _is_written_record(last):
+            named.append(f"written:{record_body(messages, group)}")
+        else:
+            named.append(str(last.message_id))
+    return named
+
+
+def _reshaped_id(call_id: str) -> str:
+    """Name the record :func:`_record_messages` built under ``call_id`` once the chain reshaped it."""
+    return f"reshaped:message:{call_id}_call:0"
+
+
+def _merged_records(messages: list[Message]) -> list[Message]:
+    """Return the written records a merge or rewrite inserted, excluded or not; not reshapes."""
     return [
-        f"written:{record_body(messages, group)}"
-        if _is_written_record(messages[group["end_index"]])
-        else str(messages[group["end_index"]].message_id)
-        for group in active_record_groups(messages)
+        m
+        for m in messages
+        if _is_written_record(m) and STANDS_IN_KEY not in m.additional_properties
     ]
 
 
@@ -2028,8 +2052,9 @@ async def test_the_chain_merges_the_records_first_and_stops_once_the_prompt_fits
 async def test_a_merge_that_is_no_smaller_is_refused_and_the_old_records_stay() -> None:
     """The acceptance rule on step a: no smaller, and the records it would have replaced stand.
 
-    Nothing is mutated on a refusal -- the records keep their preservation and are not excluded
-    -- and the chain moves on to the next step rather than stopping.
+    Nothing is mutated on a refusal -- the records, reshaped by the chain's first step, keep their
+    preservation and are not excluded -- and the chain moves on to the next step rather than
+    stopping.
     """
     summarizer = _RoutingSummarizer(merge=_longer, fold=_short_summary)
     budget = await _post_record_size() - 500
@@ -2040,11 +2065,12 @@ async def test_a_merge_that_is_no_smaller_is_refused_and_the_old_records_stay() 
 
     assert summarizer.log[:2] == ["merge", "fold"], "refused, and the chain moved on to the fold"
     assert (strategy.records_merged, strategy.record_merges_rejected) == (0, 1)
-    assert _active_record_ids(messages) == ["rec1_res", "rec2_res"], "both records still being sent"
-    for message_id in ("rec1_call", "rec1_res", "rec2_call", "rec2_res"):
-        (message,) = (m for m in messages if m.message_id == message_id)
+    assert _active_record_ids(messages) == [_reshaped_id("rec1"), _reshaped_id("rec2")], (
+        "both records still being sent"
+    )
+    for message in (m for m in messages if STANDS_IN_KEY in m.additional_properties):
         assert is_preserved(message) and not message.additional_properties.get(EXCLUDED_KEY, False)
-    assert not [m for m in messages if _is_written_record(m)], "nothing inserted"
+    assert not _merged_records(messages), "nothing merged inserted"
 
 
 async def test_a_smaller_merge_that_drops_values_is_refused_and_the_old_records_stay() -> None:
@@ -2064,8 +2090,10 @@ async def test_a_smaller_merge_that_drops_values_is_refused_and_the_old_records_
     assert summarizer.log[:2] == ["merge", "fold"], "refused, and the chain moved on"
     assert (strategy.records_merged, strategy.record_merges_rejected) == (0, 1)
     assert strategy.record_consolidations_lossy == 1
-    assert _active_record_ids(messages) == ["rec1_res", "rec2_res"], "both records still being sent"
-    assert not [m for m in messages if _is_written_record(m)], "nothing inserted"
+    assert _active_record_ids(messages) == [_reshaped_id("rec1"), _reshaped_id("rec2")], (
+        "both records still being sent"
+    )
+    assert not _merged_records(messages), "nothing merged inserted"
 
 
 async def test_a_merge_that_keeps_the_values_and_cuts_the_wording_is_kept() -> None:
@@ -2090,7 +2118,7 @@ async def test_a_harder_rewrite_that_drops_values_is_refused_as_lossy() -> None:
     assert "harder1" in summarizer.log
     assert (strategy.record_rewrites, strategy.record_rewrites_rejected) == (1, 1)
     assert strategy.record_consolidations_lossy == 1
-    assert _active_record_ids(messages) == ["rec1_res", "rec2_res"]
+    assert _active_record_ids(messages) == [_reshaped_id("rec1"), _reshaped_id("rec2")]
 
 
 @pytest.mark.parametrize(("share", "kept"), [(0.5, True), (0.8, False)])
@@ -2318,7 +2346,10 @@ async def test_an_exhausted_chain_ends_in_the_fallback_over_the_budget() -> None
     assert "code_1=CODE-5 " + "x" * _PAYLOAD_CHARS in _rendered(messages), (
         "which comes through whole"
     )
-    assert _active_record_ids(messages) == ["rec1_res", "rec2_res"], "and the records untouched"
+    assert _active_record_ids(messages) == [_reshaped_id("rec1"), _reshaped_id("rec2")], (
+        "and the records reshaped, never merged or rewritten"
+    )
+    assert strategy.records_reshaped == 2
     assert _size(messages) > _CHAIN_CEILING, "still over the budget: the intended loud failure"
     assert (
         strategy.record_merges_rejected,
@@ -2667,7 +2698,7 @@ async def test_a_summarizer_that_fails_a_merge_leaves_the_records_and_moves_on()
 
     assert log[:2] == ["merge", "fold"]
     assert (strategy.record_summary_failures, strategy.record_merges_rejected) == (1, 0)
-    assert _active_record_ids(messages) == ["rec1_res", "rec2_res"]
+    assert _active_record_ids(messages) == [_reshaped_id("rec1"), _reshaped_id("rec2")]
 
 
 @pytest.mark.parametrize("answer", ["", "  \t\n  "], ids=["empty", "whitespace"])
@@ -2693,7 +2724,7 @@ async def test_an_empty_merge_answer_is_a_failure_and_never_replaces_the_records
     assert log[0] == "merge"
     assert (strategy.record_summary_failures, strategy.record_merges_rejected) == (1, 0)
     assert strategy.records_merged == 0
-    assert _active_record_ids(messages) == ["rec1_res", "rec2_res"]
+    assert _active_record_ids(messages) == [_reshaped_id("rec1"), _reshaped_id("rec2")]
 
 
 def test_the_standalone_user_row_keeps_its_defaults() -> None:
@@ -2854,9 +2885,8 @@ async def test_a_written_record_is_merged_again_and_rewritten_harder() -> None:
     assert _active_record_ids(messages) == [f"written:{harder}"], (
         "the written record, rewritten harder"
     )
-    assert len([m for m in messages if _is_written_record(m)]) == 3, (
-        "three written, two of them replaced"
-    )
+    assert len(_merged_records(messages)) == 3, "three merged or rewritten, two of them replaced"
+    assert strategy.records_reshaped == 3, "each model record reshaped before it was merged"
     assert _function_call_ids(messages) == {"call_1", "call_2", "rec1", "rec2", "rec9"}, (
         "and still no call id minted"
     )
@@ -2916,7 +2946,10 @@ async def test_a_rewrite_is_measured_like_for_like_against_a_record_the_model_ma
     assert (strategy.record_rewrites, strategy.record_rewrites_rejected) == (1, 1), (
         "the same text is no shorter"
     )
-    assert _active_record_ids(messages) == ["rec_res"], "and the model's record stands"
+    assert _active_record_ids(messages) == [_reshaped_id("rec")], (
+        "and the model's record stands, paid once by the reshape and not by the rewrite"
+    )
+    assert strategy.records_reshaped == 1
 
 
 async def test_the_wait_reads_a_written_record_arriving_the_same_way_on_both_lists() -> None:
@@ -3243,7 +3276,11 @@ async def test_what_the_chain_changes_on_a_calls_copies_is_what_the_store_ends_u
 
 
 async def test_a_kept_decision_is_not_put_back_on_records_that_have_changed() -> None:
-    """A merge is keyed by what it replaced: a record whose text differs is not the record merged."""
+    """A merge is keyed by what it replaced: a record whose text differs is not the record merged.
+
+    A reshape is keyed by its own record, so the unchanged record is reshaped as it was on the
+    copies, and the changed one is left as the model wrote it.
+    """
     summarizer = _RoutingSummarizer(merge=_short_record, fold=_longer)
     budget = await _post_record_size() + 100
     strategy = _chain_composed(summarizer, ceiling=budget)
@@ -3255,8 +3292,9 @@ async def test_a_kept_decision_is_not_put_back_on_records_that_have_changed() ->
     _change_record(store, "rec2", [2, 9])
     await strategy(store)
 
-    assert _active_record_ids(store) == ["rec1_res", "rec2_res"], "neither record replaced"
-    assert strategy.chain_decisions_kept == 0
+    assert _active_record_ids(store) == [_reshaped_id("rec1"), "rec2_res"], "neither record merged"
+    assert not _merged_records(store)
+    assert strategy.chain_decisions_kept == 1, "only the unchanged record's reshape put back"
 
 
 def test_a_compactions_own_insertions_are_not_responses_to_the_user_halfs_wait() -> None:

@@ -72,9 +72,11 @@ from ._media import annotate_token_counts
 from ._occurrences import ContentPosition, function_result_candidates
 from ._preserve import (
     PRESERVE_REASON_KEY,
+    STANDS_IN_KEY,
     is_preserved,
     removable_spans,
     set_preserved,
+    stands_in,
 )
 from ._request import RECALL_PROMPT_KEY, request_tools
 from ._tool_result import (
@@ -112,6 +114,8 @@ __all__ = [
     "record_body",
     "record_bodies",
     "record_anchor_position",
+    "reshape_payloads",
+    "reshapeable_record_groups",
 ]
 
 #: Name of the tool the agent must call. The strategy looks for this name in the history, so
@@ -460,8 +464,9 @@ def _newest_record_identity(messages: list[Message]) -> str:
     and the store after it both carry -- not a position, which differs between the two lists.
 
     A record the model made is named by its call occurrence, falling back to its declaration's
-    message identity or a unique legacy service call id. A record the
-    chain wrote has no call id -- it is an ordinary message, see
+    message identity or a unique legacy service call id, and keeps that name when a reshape
+    rewrites it as a written record (:data:`~._preserve.STANDS_IN_KEY`). A record the
+    chain merged or rewrote has no call id -- it is an ordinary message, see
     :func:`build_record_message` -- so it is named by its text. The two lists agree on that text
     because the chain puts the answer the copies pass was given on the store
     (:meth:`~._composed.ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy._ask`).
@@ -482,7 +487,10 @@ def _record_identity(message: Message, recall_results: dict[int, str]) -> str:
     for content in reversed(message.contents):
         if id(content) in recall_results and RECORD_MARKER in str(content.result):
             return recall_results[id(content)]
-    return f"text:{message.text}" if _is_written_record(message) else ""
+    if not _is_written_record(message):
+        return ""
+    carried = message.additional_properties.get(STANDS_IN_KEY)
+    return carried if isinstance(carried, str) and carried else f"text:{message.text}"
 
 
 def record_anchor_position(messages: list[Message], identity: str) -> ContentPosition | None:
@@ -494,7 +502,8 @@ def record_anchor_position(messages: list[Message], identity: str) -> ContentPos
     positions = [
         (index, len(message.contents) - 1)
         for index, message in enumerate(messages)
-        if _is_written_record(message) and identity == f"text:{message.text}"
+        if _is_written_record(message)
+        and identity in (f"text:{message.text}", message.additional_properties.get(STANDS_IN_KEY))
     ]
     for (index, position), candidates in function_result_candidates(messages).items():
         if len(candidates) != 1:
@@ -870,7 +879,9 @@ def consolidatable_record_groups(messages: list[Message]) -> list[dict[str, Any]
     leave its call standing, which a provider refuses. It stays out of this pass's merge
     or rewrite and is in the next one's, once its result has been stored. It remains a record to
     everything else -- preserved, counted, and the anchor if it is the newest. Spans containing
-    content outside the matched records also stay intact, since the summarizer never sees it.
+    content outside the matched records also stay intact, since the summarizer never sees it;
+    that includes a reasoning item, which the framework groups with the call it precedes. So does
+    a record whose call id another output answers too, which excluding the call would orphan.
 
     Args:
         messages: The conversation, already grouped.
@@ -879,17 +890,128 @@ def consolidatable_record_groups(messages: list[Message]) -> list[dict[str, Any]
         The spans :meth:`ToolResultAnchoredSummarizationCompactionStrategy.consolidate_records`
         may be handed.
     """
+    return _consolidatable_record_groups(messages)[0]
+
+
+def _consolidatable_record_groups(
+    messages: list[Message],
+) -> tuple[list[dict[str, Any]], dict[int, str]]:
+    """Return :func:`consolidatable_record_groups` and the recall matches it was read with."""
     spans = group_messages(messages)
     matches = function_result_candidates(messages)
     recalls = _recall_results(messages, matches)
     removable = removable_spans(messages, spans, matches=matches)
     record_contents = _record_contents(messages, matches, recalls)
-    return [
+    answered = _answered_elsewhere(messages, matches)
+    groups = [
         group
         for group in _active_record_groups(messages, spans, recalls)
         if (group["start_index"], group["end_index"]) in removable
         and _record_only_group(messages, group, record_contents)
+        and not _call_ids(messages, group) & answered
     ]
+    return groups, recalls
+
+
+def _answered_elsewhere(
+    messages: Sequence[Message], matches: dict[ContentPosition, tuple[ContentPosition, ...]]
+) -> set[str]:
+    """Return the call ids of outputs that answer no unanswered call: extra outputs of a call."""
+    return {
+        str(messages[index].contents[position].call_id)
+        for (index, position), candidates in matches.items()
+        if not candidates
+    }
+
+
+def _call_ids(messages: Sequence[Message], group: dict[str, Any]) -> set[str]:
+    return {
+        str(content.call_id)
+        for message in messages[group["start_index"] : group["end_index"] + 1]
+        for content in message.contents
+        if content.type == "function_call" and content.call_id
+    }
+
+
+def reshapeable_record_groups(messages: list[Message]) -> list[dict[str, Any]]:
+    """Return the model-made records a reshape may rewrite as written records, oldest first.
+
+    :func:`consolidatable_record_groups` that hold one recall call and its one result, framed the
+    way :func:`make_recall_tool` frames it or as :data:`RECORD_MARKER` and a space, so the payload
+    after that framing can move into the written record byte for byte, and carrying nothing a
+    written record cannot -- see :func:`_reshape_payload`.
+
+    Args:
+        messages: The conversation, already grouped.
+
+    Returns:
+        The spans :meth:`ToolResultAnchoredSummarizationCompactionStrategy.reshape_records` may be
+        handed.
+    """
+    groups, recalls = _consolidatable_record_groups(messages)
+    return [
+        group
+        for group in groups
+        if not any(
+            _is_written_record(message)
+            for message in messages[group["start_index"] : group["end_index"] + 1]
+        )
+        and _reshape_payload(messages, group, recalls) is not None
+    ]
+
+
+def _reshape_payload(
+    messages: Sequence[Message], group: dict[str, Any], recall_results: dict[int, str]
+) -> str | None:
+    """Return a record's payload exactly as the model wrote it, or None without one exact form.
+
+    Only the framing comes off, never whitespace: :func:`record_body` strips both ends for the
+    summarizer, and a reshape must keep indentation and trailing space the values carry. A
+    written record is one bare text, so a result whose items carry metadata, a non-text item or
+    provider state, or which carries fields of its own, has no exact form -- the rule
+    :func:`~._tool_result.can_shorten_result` sets for shortening a result in place. Record merges
+    and harder rewrites do not apply it yet.
+    """
+    contents = [
+        content
+        for message in messages[group["start_index"] : group["end_index"] + 1]
+        for content in message.contents
+        if id(content) in recall_results and RECORD_MARKER in str(content.result)
+    ]
+    if len(contents) != 1 or not _bare_text_result(contents[0]):
+        return None
+    result = str(contents[0].result)
+    if result.startswith(f"{_WRITTEN_RECORD_PREFIX}\n"):
+        return result[len(_WRITTEN_RECORD_PREFIX) + 1 :]
+    if result.startswith(f"{RECORD_MARKER} ") and not result.startswith(_WRITTEN_RECORD_PREFIX):
+        return result[len(RECORD_MARKER) + 1 :]
+    return None
+
+
+def _bare_text_result(content: Content) -> bool:
+    """Return whether ``content`` is a result whose text is all it carries."""
+    return (
+        can_shorten_result(content)
+        and not content.additional_properties
+        and not content.annotations
+        and content.raw_representation is None
+        and (
+            content.items is None
+            or "\n".join(item.text or "" for item in content.items) == str(content.result)
+        )
+    )
+
+
+def reshape_payloads(messages: list[Message], groups: list[dict[str, Any]]) -> list[str]:
+    """Return each reshapeable record's exact payload, the text its written record carries."""
+    recalls = _recall_results(messages)
+    payloads: list[str] = []
+    for group in groups:
+        payload = _reshape_payload(messages, group, recalls)
+        if payload is None:
+            raise ValueError("A record handed to reshape_payloads has no exact payload.")
+        payloads.append(payload)
+    return payloads
 
 
 def _record_contents(
@@ -1002,10 +1124,28 @@ def build_record_message(text: str) -> Message:
     Returns:
         The message, with no id: nothing reads one, and the framework assigns it on grouping.
     """
+    return _record_message(text)
+
+
+def _exclude_record(messages: list[Message], group: dict[str, Any]) -> None:
+    """Take a replaced record's call and result out of the prompt together."""
+    for message in messages[group["start_index"] : group["end_index"] + 1]:
+        # Released before the exclusion, as ``_drop_before`` releases a hold: the promise the
+        # mark made passes to the replacement, and "preserved" and "included" keep meaning one
+        # thing on a conversation read back.
+        set_preserved(message, preserved=False)
+        set_excluded(message, excluded=True, reason=CONSOLIDATE_EXCLUDE_REASON)
+
+
+def _record_message(text: str, *, stands_in_for: str | None = None) -> Message:
+    """Build a written record, carrying the identity of the one record it reshapes if any."""
+    properties: dict[str, Any] = {_WRITTEN_RECORD_KEY: True}
+    if stands_in_for:
+        properties[STANDS_IN_KEY] = stands_in_for
     return Message(
         role="assistant",
         contents=[f"{_WRITTEN_RECORD_PREFIX}\n{text}"],
-        additional_properties={_WRITTEN_RECORD_KEY: True},
+        additional_properties=properties,
     )
 
 
@@ -1953,8 +2093,9 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             ValueError: When a group contains unrelated content, or is not
                 :func:`~._preserve.removable_whole`: excluding it would
                 leave a call standing without its result, or the reverse, which the provider
-                refuses. Refused here as well as by the walk that picks the groups, so no caller
-                can reach the half-removal by handing over a list of its own.
+                refuses -- as it refuses an extra output left behind its excluded call. Refused
+                here as well as by the walk that picks the groups, so no caller can reach the
+                half-removal by handing over a list of its own.
         """
         spans = group_messages(messages)
         matches = function_result_candidates(messages)
@@ -1962,6 +2103,11 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         if not all((group["start_index"], group["end_index"]) in removable for group in groups):
             raise ValueError(
                 "A record handed to consolidate_records cannot be removed with its call and result."
+            )
+        answered = _answered_elsewhere(messages, matches)
+        if any(_call_ids(messages, group) & answered for group in groups):
+            raise ValueError(
+                "A record handed to consolidate_records shares its call id with another output."
             )
         recall_results = _recall_results(messages, matches)
         record_contents = _record_contents(messages, matches, recall_results)
@@ -1977,12 +2123,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             )
         )
         for group in groups:
-            for message in messages[group["start_index"] : group["end_index"] + 1]:
-                # Released before the exclusion, as ``_drop_before`` releases a hold: the promise
-                # the mark made passes to the replacement, and "preserved" and "included" keep
-                # meaning one thing on a conversation read back.
-                set_preserved(message, preserved=False)
-                set_excluded(message, excluded=True, reason=CONSOLIDATE_EXCLUDE_REASON)
+            _exclude_record(messages, group)
         insertion_index = int(groups[-1]["end_index"]) + 1
         replacement = build_record_message(text)
         messages.insert(insertion_index, replacement)
@@ -1995,6 +2136,67 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         if self._reforce is not None:
             self._reforce.records = max(self._reforce.records - (len(groups) - 1), 0)
 
+    def reshape_records(self, messages: list[Message], groups: list[dict[str, Any]]) -> None:
+        """Put a written record holding each record's own body in place of each of ``groups``.
+
+        The composed row's seam for paying a model-made record once: the recall call's arguments
+        repeat the values its result carries, and the written form carries the result alone. No
+        summarizer is asked and no byte of a body changes. Each record keeps its identity, which
+        its written form carries in :data:`~._preserve.STANDS_IN_KEY`, so the wait, the value
+        bookkeeping and the middleware's record count read it as the record it was, and each is
+        inserted where :meth:`consolidate_records` inserts, on the group boundary behind its
+        excluded call and result. Where a written record carrying that identity and body already
+        stands, the call and result are only excluded, so a reshape never writes a record twice.
+
+        Args:
+            messages: The conversation, mutated in place. Already grouped.
+            groups: Spans from :func:`reshapeable_record_groups`.
+
+        Raises:
+            ValueError: When a group is not one :func:`reshapeable_record_groups` offers.
+        """
+        offered = {
+            (group["start_index"], group["end_index"])
+            for group in reshapeable_record_groups(messages)
+        }
+        if not all((group["start_index"], group["end_index"]) in offered for group in groups):
+            raise ValueError("A record handed to reshape_records cannot be reshaped without loss.")
+        recall_results = _recall_results(messages)
+        standing = {
+            (message.additional_properties.get(STANDS_IN_KEY), message.text)
+            for message in messages
+            if _is_written_record(message)
+            and not message.additional_properties.get(EXCLUDED_KEY, False)
+        }
+        plans: list[tuple[dict[str, Any], str, str]] = []
+        for group, payload in zip(groups, reshape_payloads(messages, groups), strict=True):
+            members = messages[group["start_index"] : group["end_index"] + 1]
+            identity = next(
+                (
+                    found
+                    for message in reversed(members)
+                    if (found := _record_identity(message, recall_results))
+                ),
+                "",
+            )
+            plans.append((group, payload, identity))
+        # Newest first, so each insertion lands behind every span still to be reshaped.
+        for group, body, identity in sorted(
+            plans, key=lambda plan: plan[0]["start_index"], reverse=True
+        ):
+            _exclude_record(messages, group)
+            replacement = _record_message(body, stands_in_for=identity or None)
+            key = (replacement.additional_properties.get(STANDS_IN_KEY), replacement.text)
+            if key in standing:
+                continue
+            standing.add(key)
+            messages.insert(int(group["end_index"]) + 1, replacement)
+        annotate_message_groups(messages)
+        annotate_token_counts(messages, tokenizer=self.tokenizer)
+        # One record in, one record out, so an outstanding ask keeps the count it was made at.
+        records = _preserve_records(messages)
+        self._records_in_conversation = max(self._records_in_conversation, records)
+
     def _record_candidates(
         self, messages: list[Message], anchor: int, recall_results: dict[int, str]
     ) -> list[tuple[dict[str, Any], set[str], set[str]]]:
@@ -2002,7 +2204,13 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         groups = group_messages(messages)
         removable = removable_spans(messages, groups)
         candidates: list[tuple[dict[str, Any], set[str], set[str]]] = []
-        for position, group in enumerate(groups):
+        # A reshaped record's stand-in takes no head position of its own, as the band's count.
+        counted = [
+            group
+            for group in groups
+            if not stands_in(messages[group["start_index"] : group["end_index"] + 1])
+        ]
+        for position, group in enumerate(counted):
             if position < self.keep_head_groups or group.get("kind") != "tool_call":
                 continue
             if group["end_index"] >= anchor:
@@ -2090,8 +2298,9 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         candidates: list[tuple[dict[str, Any], set[str], set[str]]],
         recall_results: dict[int, str],
     ) -> None:
-        # Consolidation sees standing records, not the pending recall's target groups.
-        if _is_written_record(messages[anchor]):
+        # Consolidation sees standing records, not the pending recall's target groups; a reshaped
+        # record is the model's own, under the identity it carries.
+        if _is_written_record(messages[anchor]) and not stands_in([messages[anchor]]):
             return
         identity = _record_identity(messages[anchor], recall_results)
         if not identity:

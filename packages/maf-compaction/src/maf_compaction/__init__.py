@@ -54,6 +54,7 @@ from ._anchored import (
 from ._composed import (
     DEFAULT_CHAIN_GAIN_FRACTION,
     DEFAULT_HARDER_ATTEMPTS,
+    DEFAULT_RECORD_BUDGET_SHARE,
     ChainDecisions,
     CompactionBudgetExceeded,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
@@ -125,6 +126,7 @@ __all__ = [
     "DEFAULT_MIN_BAND_SHARE",
     "DEFAULT_MIN_GAIN_FRACTION",
     "DEFAULT_RECORD_INSTRUCTION",
+    "DEFAULT_RECORD_BUDGET_SHARE",
     "DEFAULT_RECORD_MAX_TOKENS",
     "DEFAULT_RECORD_TARGET_TOKENS",
     "DEFAULT_SUMMARY_MODE",
