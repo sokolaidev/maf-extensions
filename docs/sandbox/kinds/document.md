@@ -16,6 +16,8 @@ The host-facing `export_pdf` API accepts Markdown, passive SVG assets and `Expor
 
 The [export qualification](../../../scripts/document_export_qualification.py) checks the public API against an exact Docker image with A4/Letter fixtures, embedded fonts, extracted text, Mermaid/SVG rendering, request evidence and disposal. Its Linux image and signed release evidence remain distinct from native browser checks.
 
+Hosts can import `validate_svg` and `is_valid_asset_name` from `maf_sandbox_document` to preflight individual assets before export. They share the export's passive-SVG and naming rules; `validate_svg` returns `None` or raises `ValueError` with the same refusal messages, and `is_valid_asset_name` returns a boolean including the 256-character limit. Aggregate export limits still apply. See the package contract for an example that omits rejected assets; the host must also replace their Markdown image references with placeholder text to avoid an unresolved-image refusal.
+
 ## Verification
 
 Deterministic tests execute the fixed guest program against real small documents and crafted archive, XML, stream, page, character and image-limit failures. The [image checker](../../../scripts/document_qualification.py) exercises the same kind through Docker or an explicitly configured ACAS group, recording output hashes, per-call instances and cleanup. [Image instructions](../../../images/document-sandbox/README.md) explain the opt-in requirements. Backend conformance, image publication and production acceptance are separate evidence.

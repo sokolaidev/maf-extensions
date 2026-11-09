@@ -76,7 +76,10 @@ class _PassiveSVG:
 
 
 def validate_svg(data: bytes) -> None:
-    """Refuse active SVG, external references and unsupported styling instead of stripping it."""
+    """Apply export_pdf's passive-SVG check, returning None or raising ValueError.
+
+    Input must be UTF-8 SVG bytes. This does not check asset names or ExportOptions byte/count caps.
+    """
     # NULs allow UTF-16 autodetection to bypass the UTF-8 byte guards.
     if b"\x00" in data:
         raise ValueError("asset is not UTF-8 SVG")
@@ -88,6 +91,15 @@ def validate_svg(data: bytes) -> None:
         parser.close()
     except (ET.ParseError, UnicodeError) as exc:
         raise ValueError("asset is not UTF-8 SVG") from exc
+
+
+def is_valid_asset_name(name: str) -> bool:
+    """Return whether a name meets export_pdf's relative SVG naming rule and 256-character cap."""
+    return (
+        isinstance(cast(object, name), str)
+        and len(name) <= 256
+        and re.fullmatch(r"[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*\.svg", name) is not None
+    )
 
 
 def validate_request(request: dict[str, Any]) -> dict[str, bytes]:
@@ -118,11 +130,7 @@ def validate_request(request: dict[str, Any]) -> dict[str, bytes]:
     decoded: dict[str, bytes] = {}
     total = 0
     for name, encoded in assets.items():
-        if (
-            not isinstance(cast(object, name), str)
-            or len(name) > 256
-            or not re.fullmatch(r"[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*\.svg", name)
-        ):
+        if not is_valid_asset_name(name):
             raise ValueError("asset names must be relative SVG names without traversal")
         if not isinstance(encoded, str) or len(encoded) > (request["max_asset_bytes"] + 2) // 3 * 4:
             raise ValueError("max_asset_bytes exceeded")

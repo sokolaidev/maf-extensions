@@ -34,6 +34,24 @@ pdf = await export_pdf(
 
 The fixed print layout includes wrapping code, GFM tables, Mermaid diagrams, passive SVG assets and page-number footers. `page_size` accepts `A4` or `Letter`; `title` and `date` are literal text, each limited to 1024 UTF-8 bytes. Raw HTML is escaped. Assets are a mapping of relative names such as `chart.svg` or `figures/chart.svg` to UTF-8 SVG bytes. Names allow ASCII letters, digits, underscores and hyphens in each component (maximum 256 characters); traversal, remote images and non-SVG content are refused. The passive SVG subset supports shapes, text, gradients and local fragment references; CSS, scripts, event attributes, external references and embedded HTML are refused. Only SVG and XLink namespace declarations are supported. Each SVG is limited to 128 nested element levels and 100,000 elements, including its root, and is validated incrementally without building a tree. Invalid Mermaid renders as source with a visible note. Mermaid configuration directives are disabled.
 
+Hosts can preflight individual assets with `is_valid_asset_name(name: str) -> bool` and `validate_svg(data: bytes) -> None`, both exported from `maf_sandbox_document`. These are the exact name and passive-SVG checks used by `export_pdf` and its guest: `validate_svg` returns `None` for accepted bytes and raises `ValueError` with the same messages for rejected SVG. Neither helper checks the aggregate `ExportOptions` byte/count limits or guarantees that the complete export will succeed. A host can omit rejected assets and replace their Markdown image references with placeholder text before exporting; unresolved image references are still refused.
+
+```python
+from maf_sandbox_document import is_valid_asset_name, validate_svg
+
+def accepted_assets(candidates: dict[str, bytes]) -> dict[str, bytes]:
+    assets: dict[str, bytes] = {}
+    for name, data in candidates.items():
+        if not is_valid_asset_name(name):
+            continue
+        try:
+            validate_svg(data)
+        except ValueError:
+            continue
+        assets[name] = data
+    return assets
+```
+
 | Export option | Default | Kind maximum |
 |---|---:|---:|
 | `max_markdown_bytes` (UTF-8) | 1,000,000 | 2,000,000 |
