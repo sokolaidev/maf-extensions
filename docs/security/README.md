@@ -25,6 +25,7 @@ When adding or correcting a release record, follow the [evidence maintenance rul
 | [Container image security](container-images.md) | Covered image profiles, scan policy and retained reports |
 | [Container image release contract](container-image-releases.md) | Accepted publication, verification and monitoring policy; implementation status |
 | [Consumer qualification: 2026-11-06](consumer-qualification-2026-11-06.md) | Trusted-main Docker execution, consumer attestation verification and rejection evidence |
+| [Platform remediation qualification: 2026-11-09](platform-remediation-qualification-2026-11-09.md) | Bicep rebuild evidence, residual findings and the remaining App/OS qualification plan |
 | [Sandbox policy and isolation](../sandbox/policy-isolation.md) | Backend admission and the host's isolation floor |
 | [Sandbox host boundary](../sandbox/hosts.md) | Host tools, artifact sinks and file integrity |
 | [Security policy](../../SECURITY.md) | Private reporting, disclosure and supported versions |
