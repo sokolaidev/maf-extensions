@@ -30,6 +30,7 @@ from maf_compaction._composed import (
     DEFAULT_RECORD_MERGE_PROMPT,
     CompactionBudgetExceeded,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+    _has_prefix,
 )
 from maf_compaction._preserve import STANDS_IN_KEY
 from maf_compaction._summary_input import fits_summary_input
@@ -40,7 +41,9 @@ from maf_compaction._toolsummary import (
     _newest_record_identity,
     _Reforce,
     active_record_groups,
+    consolidatable_record_groups,
     make_recall_tool,
+    reshapeable_record_groups,
 )
 from maf_compaction._usersummary import (
     SUMMARY_MODE_BOUNDARY,
@@ -516,3 +519,180 @@ async def test_a_record_with_a_reasoning_item_is_left_whole_and_no_reasoning_is_
         if m.message_id in reasoned_ids
     ), "the record with its reasoning item, whole"
     assert "rec6" in _included_record_calls(messages)
+
+
+def _label(result: Content, shape: str) -> None:
+    """Give a recall result the metadata or rich content ``shape`` names."""
+    text = str(result.result)
+    if shape == "labelled item":
+        item = Content.from_text(text)
+        item.additional_properties["security_label"] = {"confidentiality": "private"}
+        result.items = [item]
+    elif shape == "annotated item":
+        result.items = [
+            Content.from_text(
+                text, annotations=[{"type": "citation", "url": "https://example.org/"}]
+            )
+        ]
+    elif shape == "non-text item":
+        result.items = [
+            Content.from_text(text),
+            Content.from_uri("https://example.org/chart.png", media_type="image/png"),
+        ]
+    else:
+        result.additional_properties["security_label"] = {"confidentiality": "private"}
+
+
+@pytest.mark.parametrize(
+    "shape", ["labelled item", "annotated item", "non-text item", "labelled result"]
+)
+async def test_a_record_carrying_metadata_is_not_reshaped_and_keeps_it(shape: str) -> None:
+    """A written record is one bare text, so a result carrying more than its text stays as it is."""
+    messages = _history(6)
+    labelled = _record_pair(6)
+    _label(labelled[1].contents[0], shape)
+    before = labelled[1].contents[0].to_dict()
+    messages[-1:-1] = labelled
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=_record_size(messages) - 200, share=None)
+
+    await strategy(messages)
+
+    assert strategy.records_reshaped == 6, "every record but the one carrying metadata"
+    assert summarizer.requests == [], "and nothing merged it either"
+    assert not any(m.additional_properties.get(EXCLUDED_KEY) for m in labelled)
+    assert labelled[1].contents[0].to_dict() == before, "its metadata intact"
+    assert "rec6" in _included_record_calls(messages)
+
+
+async def test_a_batch_merged_behind_an_oversized_record_replays_on_rebuilt_history() -> None:
+    """A kept merge that did not start at the oldest record is put back where it was made."""
+    messages = _history(9)
+    messages[2:4] = _record_pair(0, body=_body(0) + " and its full listing" * 300)
+    original = copy.deepcopy(messages)
+    budget = _record_size(copy.deepcopy(messages)) - 200
+    summarizer = _Summarizer()
+    first = _strategy(summarizer, budget=budget, share=0.25)
+
+    await first(messages)
+
+    assert first.records_merged >= 1, "the premise: a batch was merged"
+    assert all("lookup_0 " not in body for body in summarizer.merges), (
+        "the premise: the oversized oldest record shared no batch, so the merge was not leading"
+    )
+    asked = len(summarizer.requests)
+    # A host whose larger budget leaves the rebuilt history under every trigger: only replay runs.
+    cold = _strategy(summarizer, budget=budget * 1_000, share=0.25)
+    cold.restore_session_state(json.loads(json.dumps(first.session_state())))
+    rebuilt = copy.deepcopy(original)
+
+    await cold(rebuilt)
+
+    assert _sent(rebuilt) == _sent(messages)
+    assert len(summarizer.requests) == asked, "replayed, not asked again"
+
+
+def test_the_kept_transcript_index_answers_as_a_scan_of_every_transcript_would() -> None:
+    """The sorted lookup agrees with checking every retained transcript, on near misses too."""
+    transcripts = [
+        "1. alpha\n2. beta",
+        "1. alpha",
+        "1. alphabet",
+        "1. alp",
+        "1. beta\n2. gamma",
+        "1. b",
+        "1. gamma",
+        "1. \u00e9clair",
+        "",
+    ]
+    heads = [
+        "1. alpha",
+        "1. alph",
+        "1. alphabets",
+        "1. b",
+        "1. gamma",
+        "1. beta",
+        "1. betas",
+        "1. \u00e9",
+        "1. z",
+        "",
+        "2. alpha",
+    ]
+    ordered = sorted(transcripts)
+    for head in heads:
+        assert _has_prefix(ordered, head) == any(t.startswith(head) for t in transcripts), head
+
+
+def _extra_output(call_id: str, message_id: str) -> Message:
+    return Message(
+        role="tool",
+        contents=[{"type": "function_result", "call_id": call_id, "result": "late output"}],
+        message_id=message_id,
+    )
+
+
+def _occurrence(occurrence: str, values: str) -> list[Message]:
+    """Return a complete recall call and result under the shared service call id ``shared``."""
+    return [
+        Message(
+            role="assistant",
+            contents=[
+                Content.from_function_call(
+                    call_id="shared",
+                    id=occurrence,
+                    name=RECALL_TOOL_NAME,
+                    arguments=json.dumps({"values": values}),
+                )
+            ],
+            message_id=f"{occurrence}_call",
+        ),
+        Message(
+            role="tool",
+            contents=[
+                Content.from_function_result(
+                    call_id="shared", id=occurrence, result=make_recall_tool()(values)
+                )
+            ],
+            message_id=f"{occurrence}_res",
+        ),
+    ]
+
+
+def test_a_record_whose_call_id_another_output_answers_is_never_replaced() -> None:
+    """Excluding the call would leave the later output under its id without a call."""
+    messages = [
+        Message(role="user", contents=["Look everything up."], message_id="task"),
+        *_record_pair(0),
+        Message(role="assistant", contents=["Noted."], message_id="between"),
+        _extra_output("rec0", "late"),
+        *_record_pair(1),
+    ]
+    annotate_message_groups(messages)
+    standing = copy.deepcopy(messages)
+
+    def ends(groups: list[dict[str, Any]]) -> list[str]:
+        return [str(messages[group["end_index"]].message_id) for group in groups]
+
+    assert ends(reshapeable_record_groups(messages)) == ["rec1_res"]
+    assert ends(consolidatable_record_groups(messages)) == ["rec1_res"]
+    (record,) = [group for group in active_record_groups(messages) if group["start_index"] == 1]
+    strategy = _strategy(_Summarizer(), budget=10_000)
+    with pytest.raises(ValueError, match="another output"):
+        strategy.tool_results.consolidate_records(messages, [record], "replacement")
+    with pytest.raises(ValueError, match="without loss"):
+        strategy.tool_results.reshape_records(messages, [record])
+    assert [m.to_dict() for m in messages] == [m.to_dict() for m in standing], "nothing mutated"
+
+
+def test_sequential_complete_occurrences_sharing_a_call_id_stay_replaceable() -> None:
+    """The control: each output answers its own occurrence, so neither record is held back."""
+    messages = [
+        Message(role="user", contents=["Look everything up."], message_id="task"),
+        *_occurrence("first", _body(0)),
+        Message(role="assistant", contents=["Noted."], message_id="between"),
+        *_occurrence("second", _body(1)),
+    ]
+    annotate_message_groups(messages)
+
+    assert len(reshapeable_record_groups(messages)) == 2
+    assert len(consolidatable_record_groups(messages)) == 2

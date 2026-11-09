@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from bisect import bisect_left
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -313,6 +314,16 @@ def _transcript(
 
 def _numbered_records(bodies: list[str]) -> str:
     return "\n".join(f"{number}. {body}" for number, body in enumerate(bodies, start=1))
+
+
+def _has_prefix(ordered: list[str], prefix: str) -> bool:
+    """Return whether any of the sorted ``ordered`` starts with ``prefix``.
+
+    The strings that do sort together, from the first at or after ``prefix``, so that one is
+    the only one to read.
+    """
+    index = bisect_left(ordered, prefix)
+    return index < len(ordered) and ordered[index].startswith(prefix)
 
 
 def _payload_digest(payload: str) -> str:
@@ -1337,12 +1348,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             # Legacy snapshots need a search until their source counts have been learned.
             legacy = range(len(groups), 0, -1) if None in source_counts else counted
             bodies = record_bodies(messages, groups)
-            transcripts = [transcript for transcript, _ in self._kept_records]
+            transcripts = sorted(transcript for transcript, _ in self._kept_records)
             found = None
             for start in range(len(groups)):
                 # Every kept transcript opens with its first record, which skips most starts.
                 head = _numbered_records(bodies[start : start + 1])
-                if not any(transcript.startswith(head) for transcript in transcripts):
+                if not _has_prefix(transcripts, head):
                     continue
                 for count in legacy if start == 0 else counted:
                     if not 1 <= count <= len(groups) - start:

@@ -938,8 +938,8 @@ def reshapeable_record_groups(messages: list[Message]) -> list[dict[str, Any]]:
 
     :func:`consolidatable_record_groups` that hold one recall call and its one result, framed the
     way :func:`make_recall_tool` frames it or as :data:`RECORD_MARKER` and a space, so the payload
-    after that framing can move into the written record byte for byte -- see
-    :func:`_reshape_payload`.
+    after that framing can move into the written record byte for byte, and carrying nothing a
+    written record cannot -- see :func:`_reshape_payload`.
 
     Args:
         messages: The conversation, already grouped.
@@ -966,22 +966,39 @@ def _reshape_payload(
     """Return a record's payload exactly as the model wrote it, or None without one exact form.
 
     Only the framing comes off, never whitespace: :func:`record_body` strips both ends for the
-    summarizer, and a reshape must keep indentation and trailing space the values carry.
+    summarizer, and a reshape must keep indentation and trailing space the values carry. A
+    written record is one bare text, so a result whose items carry metadata, a non-text item or
+    provider state, or which carries fields of its own, has no exact form -- the rule
+    :func:`~._tool_result.can_shorten_result` sets for every other rewrite of a result.
     """
-    results = [
-        str(content.result)
+    contents = [
+        content
         for message in messages[group["start_index"] : group["end_index"] + 1]
         for content in message.contents
         if id(content) in recall_results and RECORD_MARKER in str(content.result)
     ]
-    if len(results) != 1:
+    if len(contents) != 1 or not _bare_text_result(contents[0]):
         return None
-    (result,) = results
+    result = str(contents[0].result)
     if result.startswith(f"{_WRITTEN_RECORD_PREFIX}\n"):
         return result[len(_WRITTEN_RECORD_PREFIX) + 1 :]
     if result.startswith(f"{RECORD_MARKER} ") and not result.startswith(_WRITTEN_RECORD_PREFIX):
         return result[len(RECORD_MARKER) + 1 :]
     return None
+
+
+def _bare_text_result(content: Content) -> bool:
+    """Return whether ``content`` is a result whose text is all it carries."""
+    return (
+        can_shorten_result(content)
+        and not content.additional_properties
+        and not content.annotations
+        and content.raw_representation is None
+        and (
+            content.items is None
+            or "\n".join(item.text or "" for item in content.items) == str(content.result)
+        )
+    )
 
 
 def reshape_payloads(messages: list[Message], groups: list[dict[str, Any]]) -> list[str]:
