@@ -13,6 +13,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import codeql_go  # noqa: E402
+import codeql_languages  # noqa: E402
 
 pytestmark = pytest.mark.workflow
 
@@ -129,7 +130,8 @@ def test_coverage_requires_original_paths_and_bytes(tmp_path, monkeypatch, defec
 def test_workflow_preserves_languages_and_checks_coverage_before_upload():
     workflow = yaml.safe_load((ROOT / ".github/workflows/codeql.yml").read_text(encoding="utf-8"))
     job = workflow["jobs"]["analyze"]
-    matrix = job["strategy"]["matrix"]["include"]
+    assert job["strategy"]["matrix"]["include"] == "${{ fromJSON(needs.select.outputs.matrix) }}"
+    matrix = codeql_languages.analysis_matrix("schedule", ROOT)
     assert {row["language"] for row in matrix} == {
         "actions",
         "javascript-typescript",

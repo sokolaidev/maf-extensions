@@ -17,8 +17,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  select:
+    name: Select CodeQL languages
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select languages from changed inputs
+        id: select
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/codeql_languages.py
+
   analyze:
     name: Analyze (${{ matrix.language }})
+    needs: select
+    if: needs.select.outputs.matrix != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -27,17 +47,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - language: actions
-            build-mode: none
-          - language: javascript-typescript
-            build-mode: none
-          - language: python
-            build-mode: none
-          - language: rust
-            build-mode: none
-          - language: go
-            build-mode: manual
+        include: ${{ fromJSON(needs.select.outputs.matrix) }}
     env:
       CODEQL_EXTRACTOR_GO_OPTION_EXTRACT_TESTS: 'true'
     steps:
@@ -95,8 +105,8 @@ jobs:
 
   report-failure:
     name: Report CodeQL analysis failure
-    needs: analyze
-    if: always() && needs.analyze.result == 'failure'
+    needs: [select, analyze]
+    if: always() && (needs.select.result == 'failure' || needs.analyze.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -114,5 +124,5 @@ jobs:
           --marker '<!-- codeql-analysis-failure-tracker -->'
           --title 'CodeQL analysis failed'
           --reproduce 'Re-run the linked attempt or dispatch codeql.yml at the failing commit. Inspect the language job, retained SARIF and Go source-coverage check; verify the documented default-to-advanced cutover before enabling uploads.'
-          --expected 'All five language analyses complete, every tracked Go source is extracted at its original path and bytes, and enabled code-scanning uploads succeed.'
+          --expected 'Language selection succeeds, all selected analyses complete, selected Go analysis extracts every tracked Go source at its original path and bytes, and enabled code-scanning uploads succeed.'
           --packages maf-sandbox-docker maf-sandbox-wslc
