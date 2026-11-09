@@ -18,7 +18,6 @@ import image_remediation_evidence as acquisition  # noqa: E402
 import image_remediation_pr as publication  # noqa: E402
 import platform_remediation_rehearsal as rehearsal  # noqa: E402
 from container_release import REPOSITORY, read, scan_result, write  # noqa: E402
-from image_remediation_evidence import EvidenceChanging  # noqa: E402
 from test_go_remediation import AT, IMAGE, retained  # noqa: E402
 from test_image_remediation import BOT, SOURCE, URL, FakeGitHub  # noqa: E402
 from test_image_remediation import app_key as app_key  # noqa: E402
@@ -103,7 +102,7 @@ def test_acquisition_reuses_authenticated_platform_scope(context, tmp_path, monk
     def acquire(client, root, directory, **kwargs):
         calls.append((root, directory, kwargs))
         if outcome == "deferred" or (outcome == "recovered" and len(calls) == 1):
-            raise EvidenceChanging("Monitoring changed during acquisition")
+            raise acquisition.EvidenceChanging("Monitoring changed during acquisition")
         write(directory / "receipt.json", {"source": SOURCE})
         write(directory / "plan.json", expected)
         return expected
@@ -186,10 +185,10 @@ def test_changed_current_evidence_never_admits_rehearsal(qualified, context, mon
     write(work / "rehearsal-request.json", rehearsal.request_record(root))
 
     def stale(*args):
-        raise EvidenceChanging("Main changed during remediation")
+        raise acquisition.EvidenceChanging("Main changed during remediation")
 
     monkeypatch.setattr(rehearsal, "current", stale)
-    with pytest.raises(EvidenceChanging, match="Main changed"):
+    with pytest.raises(acquisition.EvidenceChanging, match="Main changed"):
         rehearsal.qualify(root, work, results)
 
 
@@ -336,10 +335,10 @@ def test_freshness_change_after_branch_write_preserves_a_recoverable_orphan(deli
 
     def current(*_):
         if client.head is not None:
-            raise EvidenceChanging("Monitor changed after branch write")
+            raise acquisition.EvidenceChanging("Monitor changed after branch write")
 
     monkeypatch.setattr(publication, "current", current)
-    with pytest.raises(EvidenceChanging, match="Monitor changed"):
+    with pytest.raises(acquisition.EvidenceChanging, match="Monitor changed"):
         rehearsal.lifecycle(client, {"source": SOURCE}, report, files, BOT, URL, work)
     assert client.head is not None and not client.pulls
     assert publication.orphan(client, client.head, BOT)["head"] == client.head
