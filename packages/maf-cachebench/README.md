@@ -63,7 +63,7 @@ cachebench_live --from-jsonl runs/cell.jsonl
 
 ## Compaction controls and session experiments
 
-`cachebench_live` supports `maf-compaction>=0.11.0,<0.12`, including the `SessionPersistence` API used by record-bearing `roundtrip` and `restart` experiments and the per-part media selector. Persistence support is checked before any model calls.
+`cachebench_live` supports `maf-compaction>=0.12.0,<0.13`, including the `SessionPersistence` API used by record-bearing `roundtrip` and `restart` experiments and the per-part media selector. Persistence support is checked before any model calls.
 
 ```bash
 cachebench_live foundry:gpt-5.6-luna --dry-run \
