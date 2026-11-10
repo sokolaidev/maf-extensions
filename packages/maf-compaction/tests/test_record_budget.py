@@ -344,8 +344,8 @@ async def test_a_lossy_batch_is_refused_unchanged_and_not_asked_again_until_it_c
     stand_in.contents = [Content.from_text((stand_in.text or "").replace("VAL-000-3", "VAL-000-9"))]
     with pytest.raises(CompactionBudgetExceeded):
         await strategy.compact_before(messages, options=options)
-    assert len(summarizer.merges) == len(asked) + 1
-    assert "VAL-000-9" in summarizer.merges[-1]
+    assert len(summarizer.merges) == len(asked) + 2, "the changed parent and its smaller half"
+    assert all("VAL-000-9" in body for body in summarizer.merges[len(asked) :])
 
 
 async def test_the_measured_shape_fits_without_the_overflow_shed(

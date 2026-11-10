@@ -27,6 +27,7 @@ See ``docs/compaction/strategies.md`` for defaults, replay and design rationale.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from bisect import bisect_left
@@ -34,7 +35,8 @@ from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from math import ceil
+from math import ceil, isfinite
+from time import monotonic
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from agent_framework import Message
@@ -76,12 +78,13 @@ from ._toolsummary import _tokens as _record_tokens  # pyright: ignore[reportPri
 from ._usersummary import SUMMARY_MODE_RECOMPACT, UserTurnAnchoredSummarizationCompactionStrategy
 
 if TYPE_CHECKING:
-    from agent_framework import TokenizerProtocol
+    from agent_framework import ChatResponse, TokenizerProtocol
 
 __all__ = [
     "CompactionBudgetExceeded",
     "CompactionPendingResultBudgetExceeded",
     "DEFAULT_CHAIN_GAIN_FRACTION",
+    "DEFAULT_CHAIN_SECONDS",
     "DEFAULT_HARDER_ATTEMPTS",
     "DEFAULT_RECORD_BUDGET_SHARE",
     "DEFAULT_RECORD_MERGE_PROMPT",
@@ -94,6 +97,18 @@ logger = logging.getLogger(__name__)
 
 class _BatchProbesSpent(Exception):
     """A record-merge sweep has rendered :data:`_MAX_BATCH_PROBES` batch prefixes."""
+
+
+class _ChainTimeSpent(Exception):
+    """The current pass has spent its summarizer deadline."""
+
+
+@dataclass(frozen=True)
+class _RecordAnswer:
+    """Record text and the provider's output-limit verdict."""
+
+    text: str
+    incomplete: bool = False
 
 
 class CompactionBudgetExceeded(ValueError):
@@ -145,7 +160,10 @@ _Phase = (
 )
 
 #: What one attempt to replace the records ended as.
-_Consolidation = Literal["accepted", "rejected", "failed"]
+_Consolidation = Literal["accepted", "rejected", "lossy", "incomplete", "failed"]
+
+#: Shared time allowance for the chain's merges, user fold and record rewrites.
+DEFAULT_CHAIN_SECONDS: Final[float] = 30.0
 
 #: Rewrites of the record the chain may try on one pass, each asking for more compression.
 #:
@@ -527,6 +545,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             one, and every record merge or rewrite is held to that cap. See
             :data:`DEFAULT_RECORD_BUDGET_SHARE`. ``None`` keeps record requests bounded by
             ``max_summary_input_tokens`` alone.
+        chain_seconds: Positive finite seconds shared by the last-resort chain's merge,
+            fold and rewrite requests, including retries. Defaults to 30; ``None`` disables
+            the deadline. Earlier user-turn summaries and local fallback work are outside it.
+        record_merge_split_depth: Maximum recursive halvings of a lossy or truncated merge
+            batch, default two. Zero disables smaller retries. Every child holds at least
+            two records and shares the chain deadline.
 
     Raises:
         ValueError: If the two phases measure against different ceilings or with different
@@ -556,6 +580,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         overflow_policy: Literal["shed", "raise"] = "shed",
         estimate_margin: float = 0.0,
         record_budget_share: float | None = DEFAULT_RECORD_BUDGET_SHARE,
+        chain_seconds: float | None = DEFAULT_CHAIN_SECONDS,
+        record_merge_split_depth: int = 2,
     ) -> None:
         """Validate the pair and store it."""
         if tool_results.max_input_tokens != user_turns.max_input_tokens:
@@ -594,6 +620,16 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         ):
             raise ValueError("record_budget_share must be in (0.0, 1.0] or None.")
         self.record_budget_share = record_budget_share
+        if chain_seconds is not None and (
+            isinstance(chain_seconds, bool) or not isfinite(chain_seconds) or chain_seconds <= 0
+        ):
+            raise ValueError("chain_seconds must be positive and finite or None.")
+        if type(record_merge_split_depth) is not int or record_merge_split_depth < 0:
+            raise ValueError("record_merge_split_depth must be a non-negative integer.")
+        self.chain_seconds = chain_seconds
+        self.record_merge_split_depth = record_merge_split_depth
+        self._chain_deadline: ContextVar[float | None] = ContextVar("chain_deadline", default=None)
+        self._chain_timeouts = 0
         self.estimate_margin = estimate_margin
         self._request_overhead = RequestOverhead(tokenizer)
         self._request_budget: ContextVar[int | None] = ContextVar("request_budget", default=None)
@@ -652,6 +688,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._shed_groups: set[str] = set()
         # Shrink acceptance depends on the source count as well as the request's transcript.
         self._refused_merges: set[tuple[str, int]] = set()
+        self._split_merges: set[tuple[str, int]] = set()
         # Per start record (body digest, cap): how far the batch search from it got, so a later
         # sweep resumes it, or takes the batch it found, only while those records stand.
         self._searched: dict[tuple[str, int], _Searched] = {}
@@ -824,6 +861,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 {"transcript": transcript, "source_count": count}
                 for transcript, count in sorted(self._refused_merges)
             ],
+            "split_merges": [
+                {"transcript": transcript, "source_count": count}
+                for transcript, count in sorted(self._split_merges)
+            ],
             "refused_rewrites": [
                 {"transcript": transcript, "source_count": count, "attempt": attempt}
                 for (transcript, count), attempt in self._refused_rewrites.items()
@@ -863,6 +904,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             for entry in merges
             if not isinstance(entry, str)
         }
+        self._split_merges = {
+            (entry["transcript"], entry["source_count"]) for entry in data.get("split_merges", [])
+        } & self._refused_merges
         rewrites: dict[str, int] | list[dict[str, Any]] = data["refused_rewrites"]
         self._refused_rewrites = (
             {}
@@ -1026,6 +1070,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         store.
         """
         return self._chain_targets_reached
+
+    @property
+    def chain_timeouts(self) -> int:
+        """Passes whose last-resort summarizer work exhausted its shared deadline."""
+        return self._chain_timeouts
 
     @property
     def chain_targets_missed(self) -> int:
@@ -1329,11 +1378,31 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return changed
         start = _ChainStart.take(messages)
         changed = self._reshape_records(messages) or changed
-        changed = await self._merge_records(messages, start) or changed
-        if self._short_of_target(messages, start):
-            changed = await self._merge_user_summaries(messages) or changed
-        if self._short_of_target(messages, start):
-            changed = await self._rewrite_records(messages, start) or changed
+        kept = len(self._kept_records), self._user_summaries_merged
+        deadline = None if self.chain_seconds is None else monotonic() + self.chain_seconds
+        token = self._chain_deadline.set(deadline)
+        timeout = asyncio.timeout(self.chain_seconds)
+        try:
+            async with timeout:
+                changed = await self._merge_records(messages, start) or changed
+                self._check_chain_deadline()
+                if self._short_of_target(messages, start):
+                    changed = await self._merge_user_summaries(messages) or changed
+                self._check_chain_deadline()
+                if self._short_of_target(messages, start):
+                    changed = await self._rewrite_records(messages, start) or changed
+        except (TimeoutError, _ChainTimeSpent) as error:
+            if isinstance(error, TimeoutError) and not timeout.expired():
+                raise
+            self._chain_timeouts += 1
+            changed = kept != (len(self._kept_records), self._user_summaries_merged) or changed
+            logger.warning(
+                "Compaction stopped last-resort summary work after %.3f seconds; "
+                "completed reductions are retained and unfinished requests remain eligible.",
+                self.chain_seconds,
+            )
+        finally:
+            self._chain_deadline.reset(token)
         if self._short_of_target(messages, start) and find_record_index(messages) is not None:
             # With no record, budget enforcement owns unrecorded shedding and its headroom.
             self._last_resort_fallbacks += 1
@@ -1343,6 +1412,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         else:
             self._chain_targets_reached += 1
         return changed
+
+    def _check_chain_deadline(self) -> None:
+        deadline = self._chain_deadline.get()
+        if deadline is not None and monotonic() >= deadline:
+            raise _ChainTimeSpent
 
     def _keep_decisions(self, messages: list[Message], *, replayed_user_fold: bool = False) -> bool:
         """Put back on ``messages`` every decision the chain made on an earlier pass.
@@ -1595,6 +1669,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
         def render(prefix: list[dict[str, Any]]) -> str:
             nonlocal probes
+            self._check_chain_deadline()
             probes += 1
             if probes > _MAX_BATCH_PROBES:
                 raise _BatchProbesSpent
@@ -1674,9 +1749,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             remember(first, checked)
             return []
 
-        groups, held, over = survey()
+        groups, _, over = survey()
         cursor = 0
         while over:
+            self._check_chain_deadline()
             while cursor < len(groups) and last(groups[cursor]) in handled:
                 cursor += 1
             if len(groups) - cursor < 2:
@@ -1707,41 +1783,85 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 continue
             handled.update(last(group) for group in batch)
             transcript = _numbered_records([bodies[last(group)] for group in batch])
-            key = (transcript, len(batch))
-            if key in self._refused_merges:
-                self._record_merges_skipped += 1
-                continue
             standing = {id(message) for message in messages}
-            lossy = self._record_consolidations_lossy
-            outcome = await self._consolidate(
-                messages, batch, prompt=self.merge_prompt, transcript=transcript
-            )
-            if outcome == "failed":
-                break
-            if outcome == "accepted":
-                self._records_merged += 1
+            merged, failed = await self._merge_batch(messages, batch, transcript=transcript)
+            if merged:
                 handled.update(id(message) for message in messages if id(message) not in standing)
                 changed = True
-                groups, held, over = survey()
+                groups, _, over = survey()
                 cursor = 0
-                continue
-            self._record_merges_rejected += 1
-            self._refused_merges.add(key)
-            if held > bound:
-                logger.warning(
-                    "Compaction kept a batch of %d records unmerged: the merge was refused as "
-                    "%s; records hold %d tokens against a share of %d.",
-                    len(batch),
-                    "dropping values"
-                    if self._record_consolidations_lossy > lossy
-                    else "no smaller",
-                    held,
-                    bound,
-                )
+            if failed:
+                break
         # Kept only while its start record stands, so it stays one entry a record.
         starts = {(digests[last(group)], limit) for group in groups}
         self._searched = {key: found for key, found in self._searched.items() if key in starts}
         return changed
+
+    async def _merge_batch(
+        self,
+        messages: list[Message],
+        groups: list[dict[str, Any]],
+        *,
+        transcript: str,
+        depth: int = 0,
+    ) -> tuple[bool, bool]:
+        """Merge a batch or its smaller halves; return whether it changed or failed."""
+        self._check_chain_deadline()
+        key = transcript, len(groups)
+        if key in self._refused_merges:
+            self._record_merges_skipped += 1
+        else:
+            outcome = await self._consolidate(
+                messages, groups, prompt=self.merge_prompt, transcript=transcript
+            )
+            if outcome == "failed":
+                return False, True
+            if outcome == "accepted":
+                self._records_merged += 1
+                return True, False
+            self._record_merges_rejected += 1
+            self._refused_merges.add(key)
+            if outcome in {"lossy", "incomplete"}:
+                self._split_merges.add(key)
+        if (
+            key not in self._split_merges
+            or depth >= self.record_merge_split_depth
+            or len(groups) < 3
+        ):
+            return False, False
+        midpoint = len(groups) // 2
+        changed = False
+        children = groups[:midpoint], groups[midpoint:]
+        identities = [
+            {id(messages[int(group["end_index"])]) for group in child} for child in children
+        ]
+        for child, expected in zip(children, identities, strict=True):
+            self._check_chain_deadline()
+            if len(child) < 2:
+                continue
+            if changed:
+                child = [
+                    group
+                    for group in consolidatable_record_groups(messages)
+                    if id(messages[int(group["end_index"])]) in expected
+                ]
+                if len(child) != len(expected):
+                    continue
+            child_transcript = _transcript(messages, child)
+            if not fits_summary_input(
+                self.merge_prompt,
+                child_transcript,
+                tokenizer=self.tokenizer,
+                limit=self._record_request_limit(),
+            ):
+                continue
+            merged, failed = await self._merge_batch(
+                messages, child, transcript=child_transcript, depth=depth + 1
+            )
+            changed = merged or changed
+            if failed:
+                return changed, True
+        return changed, False
 
     def _record_tokens(self, messages: list[Message]) -> int:
         """Return the included tokens of every record still being sent."""
@@ -1758,17 +1878,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     def _record_request_limit(self) -> int:
         """Return the tokens one record merge or rewrite request may hold.
 
-        With :attr:`record_budget_share` set, the summarizer's output cap, or
-        ``max_summary_input_tokens`` where that is lower. **One cap, not a multiple of it**: the
-        merge prompt asks for every value copied and only wording cut, so its longest acceptable
-        answer is about the batch itself, and a request within the cap has an answer the cap
-        cannot cut. At twice the cap an answer must halve its batch to fit, which a batch dense
-        with values cannot; it is cut, refused as lossy and remembered -- the doomed request this
-        bound exists to avoid, only smaller. The cap is ``max_tokens`` in the user half's
-        ``summary_options``, which every record request is sent with. Without one, or once those
-        options are retired, no cap is known and ``max_summary_input_tokens`` alone bounds the
-        request: an assumed cap would be a guess, and one below twice a record's size would stop
-        records being merged at all.
+        With a record share, use the lesser of ``max_summary_input_tokens`` and an active
+        ``summary_options.max_tokens`` cap. Reasoning also consumes the output allowance,
+        so this limits batch size without promising an untruncated answer.
         """
         limit = self.user_turns.max_summary_input_tokens
         if self.record_budget_share is None:
@@ -1813,20 +1925,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if len(groups) < 2:
             return False
         transcript = _transcript(messages, groups)
-        key = (transcript, len(groups))
-        if key in self._refused_merges:
-            self._record_merges_skipped += 1
-            return False
-        outcome = await self._consolidate(
-            messages, groups, prompt=self.merge_prompt, transcript=transcript
-        )
-        if outcome == "accepted":
-            self._records_merged += 1
-            return True
-        if outcome == "rejected":
-            self._record_merges_rejected += 1
-            self._refused_merges.add(key)
-        return False
+        changed, _ = await self._merge_batch(messages, groups, transcript=transcript)
+        return changed
 
     async def _merge_user_summaries(self, messages: list[Message]) -> bool:
         """Step b: fold the oldest user summaries that fit, when at least two fit."""
@@ -1873,6 +1973,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """
         changed = False
         for attempt in range(1, self.harder_attempts + 1):
+            self._check_chain_deadline()
             if attempt > 1 and not self._short_of_target(messages, start):
                 break
             prompt = harder_record_prompt(attempt)
@@ -1890,7 +1991,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             )
             if outcome == "accepted":
                 changed = True
-            elif outcome == "rejected":
+            elif outcome in {"rejected", "lossy", "incomplete"}:
                 self._record_rewrites_rejected += 1
                 self._refused_rewrites[key] = max(self._refused_rewrites.get(key, 0), attempt)
         return changed
@@ -1941,19 +2042,39 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             Whether the replacement was kept, refused as no smaller or as lossy, or never arrived.
         """
-        text = await self._ask(prompt=prompt, transcript=transcript)
-        if text is None:
+        answer = await self._ask(prompt=prompt, transcript=transcript)
+        if answer is None:
             return "failed"
+        self._check_chain_deadline()
+        text = answer.text
         bodies = record_bodies(messages, groups)
+        total, kept, required = self._value_coverage(bodies, text)
         candidate = [build_record_message(text)]
         replaced = [build_record_message(body) for body in bodies]
         annotate_token_counts(candidate, tokenizer=self.tokenizer, force_retokenize=True)
         annotate_token_counts(replaced, tokenizer=self.tokenizer, force_retokenize=True)
-        if included_token_count(candidate) >= included_token_count(replaced):
-            return "rejected"
-        if not self._keeps_values(bodies, text):
+        outcome: _Consolidation = "accepted"
+        reason = ""
+        if answer.incomplete:
+            outcome, reason = "incomplete", "output limit"
+        elif included_token_count(candidate) >= included_token_count(replaced):
+            outcome, reason = "rejected", "no smaller"
+        elif kept < required:
             self._record_consolidations_lossy += 1
-            return "rejected"
+            outcome, reason = "lossy", "dropping values"
+        if outcome != "accepted":
+            logger.warning(
+                "Compaction kept a batch of %d records unmerged: the %s was refused as %s; "
+                "values_total=%d kept=%d missing=%d required=%d.",
+                len(groups),
+                "merge" if prompt == self.merge_prompt else "rewrite",
+                reason,
+                total,
+                kept,
+                total - kept,
+                required,
+            )
+            return outcome
         self.tool_results.consolidate_records(messages, groups, text)
         self._kept_records[(transcript, len(groups))] = text
         # The new record may read exactly as one an earlier pass went on to replace -- a merge of
@@ -1969,15 +2090,22 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         :meth:`~._toolsummary.ToolResultAnchoredSummarizationCompactionStrategy._is_covered`),
         applied to a record that replaces records. Records holding no distinctive value pass.
         """
+        _, kept, required = self._value_coverage(bodies, text)
+        return kept >= required
+
+    def _value_coverage(self, bodies: list[str], text: str) -> tuple[int, int, int]:
+        """Return distinct source values, matched values and the required match count."""
         values: set[str] = set()
         for body in bodies:
             values |= _distinctive_tokens(body)
-        if not values:
-            return True
         quoted = set(_record_tokens(text, fold_case=False))
-        return len(values & quoted) >= ceil(len(values) * self.tool_results.coverage_share)
+        return (
+            len(values),
+            len(values & quoted),
+            ceil(len(values) * self.tool_results.coverage_share),
+        )
 
-    async def _ask(self, *, prompt: str, transcript: str) -> str | None:
+    async def _ask(self, *, prompt: str, transcript: str) -> _RecordAnswer | None:
         """Return the summarizer's answer to one merge or rewrite request.
 
         Asked every time it is reached, because nothing reaches it twice for the same records: a
@@ -2004,11 +2132,41 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             logger.warning("Skipping record consolidation: summary input exceeds its token limit.")
             self._record_summary_failures += 1
             return None
+        self._check_chain_deadline()
+        started = monotonic()
+        incomplete = False
+
+        def observe(response: ChatResponse) -> None:
+            nonlocal incomplete
+            finish = (
+                str(response.finish_reason) if response.finish_reason is not None else "unknown"
+            )
+            incomplete = finish == "length"
+            if finish not in {"stop", "length", "content_filter", "tool_calls"}:
+                finish = "unknown"
+            usage = response.usage_details or {}
+            logger.info(
+                "Compaction record %s response: seconds=%.3f finish_reason=%s "
+                "input_tokens=%s output_tokens=%s reasoning_tokens=%s.",
+                "merge" if prompt == self.merge_prompt else "rewrite",
+                monotonic() - started,
+                finish,
+                usage.get("input_token_count"),
+                usage.get("output_token_count"),
+                usage.get("reasoning_output_token_count"),
+            )
+
         try:
-            return await self.user_turns._generate(transcript, prompt=prompt)  # pyright: ignore[reportPrivateUsage]
+            text = await self.user_turns._generate(  # pyright: ignore[reportPrivateUsage]
+                transcript, prompt=prompt, observe=observe
+            )
+            return _RecordAnswer(text, incomplete)
         except Exception as error:
             # Broad on purpose, as the user half's is: this runs inside the chat client's own
             # call path, so anything not caught here fails the user's turn.
-            logger.warning("Skipping record consolidation: summary generation failed (%s).", error)
+            logger.warning(
+                "Skipping record consolidation: summary generation failed (%s).",
+                type(error).__name__,
+            )
             self._record_summary_failures += 1
             return None

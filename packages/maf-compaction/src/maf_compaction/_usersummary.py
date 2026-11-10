@@ -49,7 +49,7 @@ from ._summary_links import has_summary_links
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from agent_framework import TokenizerProtocol
+    from agent_framework import ChatResponse, TokenizerProtocol
     from agent_framework._clients import SupportsChatGetResponse
 
 __all__ = [
@@ -1894,7 +1894,13 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             chunks.append(current)
         return chunks
 
-    async def _generate(self, transcript: str, *, prompt: str) -> str:
+    async def _generate(
+        self,
+        transcript: str,
+        *,
+        prompt: str,
+        observe: Callable[[ChatResponse], None] | None = None,
+    ) -> str:
         """Ask once, optionally retiring incompatible options after one failed attempt."""
         options = self.summary_options if not self._summary_options_disabled else {}
 
@@ -1902,6 +1908,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             response = await self.client.get_response(
                 summary_request(prompt, transcript), stream=False, options=call_options
             )
+            if observe is not None:
+                observe(response)
             summary = response.text.strip() if response.text else ""
             if not summary:
                 raise ValueError("The summarizer returned no text.")
