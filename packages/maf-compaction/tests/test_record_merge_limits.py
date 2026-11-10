@@ -10,7 +10,7 @@ import re
 from typing import Any
 
 import pytest
-from agent_framework import ChatResponse, Message
+from agent_framework import ChatResponse, Message, UsageDetails
 from test_record_budget import (
     _VALUE,
     _history,
@@ -103,11 +103,11 @@ async def test_truncated_answer_is_split_even_when_it_keeps_every_value(
         async def get_response(self, messages: list[Message], **kwargs: Any) -> ChatResponse:
             response = await super().get_response(messages, **kwargs)
             response.finish_reason = "length" if _batch_size(self.merges[-1]) > 2 else "stop"
-            response.usage_details = {
-                "input_token_count": 500,
-                "output_token_count": 100,
-                "reasoning_output_token_count": 80,
-            }
+            response.usage_details = UsageDetails(
+                input_token_count=500,
+                output_token_count=100,
+                reasoning_output_token_count=80,
+            )
             return response
 
     summarizer = Limited()
@@ -150,7 +150,7 @@ async def test_deadline_retains_accepted_merge_and_never_starts_fold_or_rewrite(
         scopes.append(scope)
         return scope
 
-    monkeypatch.setattr(composed_module.asyncio, "timeout", controlled_timeout)
+    monkeypatch.setattr(asyncio, "timeout", controlled_timeout)
     cancelled = asyncio.Event()
 
     class Waiting(_Summarizer):
@@ -214,7 +214,7 @@ async def test_timeout_before_a_child_resumes_halves_after_restore(
         scopes.append(scope)
         return scope
 
-    monkeypatch.setattr(composed_module.asyncio, "timeout", controlled_timeout)
+    monkeypatch.setattr(asyncio, "timeout", controlled_timeout)
 
     class Waiting(_Summarizer):
         async def get_response(self, messages: list[Message], **kwargs: Any) -> ChatResponse:
