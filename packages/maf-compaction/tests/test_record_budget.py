@@ -44,6 +44,7 @@ from maf_compaction._toolsummary import (
     _newest_record_identity,
     _Reforce,
     active_record_groups,
+    build_record_message,
     consolidatable_record_groups,
     make_recall_tool,
     reshapeable_record_groups,
@@ -193,10 +194,11 @@ def _included_record_calls(messages: list[Message]) -> list[str]:
 
 
 class _Summarizer:
-    """A summarizer that answers merges by ``merge`` and anything else with one short line."""
+    """A summarizer with configurable merge and rewrite answers."""
 
-    def __init__(self, merge: Any = None) -> None:
+    def __init__(self, merge: Any = None, rewrite: Any = None) -> None:
         self.merge = merge or (lambda body: " ".join(sorted(set(_VALUE.findall(body)))))
+        self.rewrite = rewrite or (lambda body: "Short summary.")
         self.requests: list[tuple[str, str]] = []
 
     @property
@@ -208,7 +210,7 @@ class _Summarizer:
     ) -> ChatResponse:
         prompt, body = messages[0].text or "", messages[-1].text or ""
         self.requests.append((prompt, body))
-        text = self.merge(body) if prompt == DEFAULT_RECORD_MERGE_PROMPT else "Short summary."
+        text = self.merge(body) if prompt == DEFAULT_RECORD_MERGE_PROMPT else self.rewrite(body)
         return ChatResponse(messages=[Message(role="assistant", contents=[text])])
 
 
@@ -467,6 +469,70 @@ async def test_a_reshape_keeps_the_payload_byte_for_byte_whitespace_included() -
     await cold(rebuilt)
     assert cold.records_reshaped == 0, "replayed under the same exact payload"
     assert _sent(rebuilt) == _sent(messages)
+
+
+@pytest.mark.parametrize("restore", [False, True])
+@pytest.mark.parametrize(
+    ("operation", "written"),
+    [("reshape", False), ("merge", False), ("merge", True), ("rewrite", False), ("rewrite", True)],
+)
+async def test_record_replacements_survive_calls_sharing_original_messages(
+    operation: str, written: bool, restore: bool
+) -> None:
+    records = 1 if operation == "rewrite" else 9
+    carried = _history(records)
+    if written:
+        carried[2:-1] = [build_record_message(_body(index)) for index in range(records)]
+    originals = list(carried[2:-1])
+    budget = _record_size(carried) - 200 if operation == "reshape" else 350
+    if operation == "merge":
+        budget = 1100
+    summarizer = _Summarizer(rewrite=lambda body: " ".join(sorted(set(_VALUE.findall(body)))))
+    strategy = _strategy(summarizer, budget=budget, share=None, cap=None)
+    strategy.harder_attempts = 1
+    strategy.user_turns.max_summary_input_tokens = 100_000
+    outgoing = list(carried)
+
+    await strategy(outgoing)
+
+    if operation == "reshape":
+        assert strategy.records_reshaped == records
+        assert strategy.records_merged == strategy.record_rewrites == 0
+    elif operation == "merge":
+        assert strategy.records_merged == 1
+    else:
+        assert strategy.record_rewrites == 1
+    expected = _sent_values(outgoing)
+    assert expected == {value for index in range(records) for value in _values(index)}
+    expected_records = [
+        m.text for m in project_included_messages(outgoing) if _is_written_record(m)
+    ]
+    asked = len(summarizer.requests)
+
+    strategy.max_input_tokens = 100_000
+    if restore:
+        cold = _strategy(summarizer, budget=100_000, share=None, cap=None)
+        cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+        strategy = cold
+
+    for index in range(3):
+        carried.extend(_tool_group(100 + index))
+        outgoing = list(carried)
+        await strategy(outgoing)
+        assert _sent_values(outgoing) == expected
+        assert [
+            m.text for m in project_included_messages(outgoing) if _is_written_record(m)
+        ] == expected_records
+        assert not _included_record_calls(outgoing)
+        assert len(summarizer.requests) == asked
+
+    assert all(not m.additional_properties.get(EXCLUDED_KEY) for m in originals)
+
+    await strategy(outgoing)
+    assert [
+        m.text for m in project_included_messages(outgoing) if _is_written_record(m)
+    ] == expected_records
+    assert len(summarizer.requests) == asked
 
 
 @pytest.mark.parametrize("shape", ["preceding", "co-located"])

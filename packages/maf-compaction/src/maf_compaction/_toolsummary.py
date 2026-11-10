@@ -1138,8 +1138,12 @@ def build_record_message(text: str) -> Message:
 
 
 def _exclude_record(messages: list[Message], group: dict[str, Any]) -> None:
-    """Take a replaced record's call and result out of the prompt together."""
-    for message in messages[group["start_index"] : group["end_index"] + 1]:
+    """Exclude a replaced record only in the list that also receives its replacement."""
+    for index in range(group["start_index"], group["end_index"] + 1):
+        # Carried-in objects outlive this list; keep them available for the next call's replay.
+        message = copy(messages[index])
+        message.additional_properties = dict(message.additional_properties)
+        messages[index] = message
         # Released before the exclusion, as ``_drop_before`` releases a hold: the promise the
         # mark made passes to the replacement, and "preserved" and "included" keep meaning one
         # thing on a conversation read back.
