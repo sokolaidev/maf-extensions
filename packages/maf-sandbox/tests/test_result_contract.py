@@ -149,14 +149,16 @@ class TestAnUnlabelledItemTakesTheToolDeclaration:
     """
 
     def _through_middleware(self, answer):
-        tool = _attach(answer, guidance=(_GUIDANCE,))
+        from agent_framework._middleware import FunctionMiddlewarePipeline
+
+        tool = _attach(answer, guidance=(_GUIDANCE,), reads=(SourceIntegrity.UNTRUSTED,))
         middleware = LabelTrackingFunctionMiddleware()
         context = FunctionInvocationContext(function=tool, arguments={})
 
-        async def call_next() -> None:
-            context.result = await tool.invoke(arguments={})
+        async def call_next(current):
+            return await tool.invoke(arguments=current.arguments, context=current)
 
-        asyncio.run(middleware.process(context, call_next))
+        asyncio.run(FunctionMiddlewarePipeline(middleware).execute(context, call_next))
         return context.result, middleware
 
     def test_the_verdict_stays_readable_while_the_output_is_hidden(self):
