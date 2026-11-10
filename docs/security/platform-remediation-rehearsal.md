@@ -1,6 +1,6 @@
 # Manual platform remediation rehearsal
 
-The [rehearsal workflow](../../.github/workflows/platform-image-remediation-rehearsal.yml) implements an isolated manual entry point for the [remaining qualification plan](platform-remediation-qualification-2026-11-09.md#remaining-qualification-plan). It qualifies current authenticated platform evidence or an explicitly selected historical rebuild case and can exercise App delivery with a draft receipt PR while normal platform automation stays disabled. Hosted App delivery/recovery has not yet been qualified. Positive Bicep and OS update cases, normal PR CI and production operation remain acceptance work under [#2517](https://github.com/sokolaidev/maf-extensions/issues/2517).
+The [rehearsal workflow](../../.github/workflows/platform-image-remediation-rehearsal.yml) implements an isolated manual entry point for the [remaining qualification plan](platform-remediation-qualification-2026-11-09.md#remaining-qualification-plan). It qualifies current authenticated platform evidence or an explicitly selected historical rebuild case and can exercise App delivery with a draft receipt PR while normal platform automation stays disabled. [Hosted historical rebuild, App delivery/recovery and the draft receipt PR's normal CI passed on 2026-11-10](platform-remediation-qualification-2026-11-10.md). Positive Bicep and OS update cases, actual dependency-diff delivery and production operation remain acceptance work under [#2517](https://github.com/sokolaidev/maf-extensions/issues/2517).
 
 ## Select a case
 
