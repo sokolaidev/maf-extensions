@@ -131,7 +131,7 @@ def test_workflow_preserves_languages_and_checks_coverage_before_upload():
     workflow = yaml.safe_load((ROOT / ".github/workflows/codeql.yml").read_text(encoding="utf-8"))
     job = workflow["jobs"]["analyze"]
     assert job["strategy"]["matrix"]["include"] == "${{ fromJSON(needs.select.outputs.matrix) }}"
-    matrix = codeql_languages.analysis_matrix("schedule", ROOT)
+    matrix = codeql_languages.analysis_matrix("schedule")
     assert {row["language"] for row in matrix} == {
         "actions",
         "javascript-typescript",
