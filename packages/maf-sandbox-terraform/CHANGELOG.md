@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-terraform-v0.8.2...maf-sandbox-terraform-v0.8.3) (2026-11-10)
+
+
+### Fixes
+
+* **terraform:** stage variable-value files the manifest names instead of refusing them ([#2610](https://github.com/sokolaidev/maf-extensions/issues/2610)) ([66fd995](https://github.com/sokolaidev/maf-extensions/commit/66fd995db600a8f94d9aaae28c3de828f9dd0233))
+
 ## [0.8.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-terraform-v0.8.1...maf-sandbox-terraform-v0.8.2) (2026-11-05)
 
 
