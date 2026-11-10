@@ -33,8 +33,9 @@ _PRICE_FIELDS = frozenset(
 )
 _RESERVATION_TERMS = ("1 Year", "3 Years")
 _CURRENCY = re.compile("[A-Z]{3}")
+_CLOCK = r"(?:[01]\d|2[0-3]):[0-5]\d"
 _DATE = re.compile(
-    r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?)?"
+    rf"\d{{4}}-\d{{2}}-\d{{2}}(?:T{_CLOCK}:[0-5]\d(?:\.\d{{1,7}})?(?:Z|[+-]{_CLOCK})?)?"
 )
 _CHECKED_SETS: dict[str, frozenset[str]] = {
     "unitOfMeasure": UNITS_OF_MEASURE,
@@ -48,8 +49,9 @@ def _is_currency(value: str) -> bool:
 
 
 def _is_date(value: str) -> bool:
-    # The shape admits only digits and separators and bounds the offset, which parsing would
-    # normalise (+05:60 to +06:00); parsing then refuses an impossible date or time.
+    # The shape admits only digits and separators and bounds the time and the offset, which
+    # parsing may normalise (24:00 to the next day on Python 3.14, +05:60 to +06:00); parsing
+    # then refuses an impossible calendar date.
     if _DATE.fullmatch(value) is None:
         return False
     try:
