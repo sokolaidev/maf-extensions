@@ -30,23 +30,23 @@ All packages require Python 3.12–3.14. Install the backend and workload or fra
 
 | Package | Released | What it is | Depends on |
 |---|---|---|---|
-| [`maf-sandbox-azure-pricing`](packages/maf-sandbox-azure-pricing/) | not yet released | Public Azure retail prices in disposable GET-only sandboxes | `maf-sandbox`, `agent-framework-core` |
+| [`maf-sandbox-azure-pricing`](packages/maf-sandbox-azure-pricing/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-azure-pricing)](https://pypi.org/project/maf-sandbox-azure-pricing/) | Public Azure retail prices in disposable GET-only sandboxes | `maf-sandbox`, `agent-framework-core` |
 | [`maf-sandbox`](packages/maf-sandbox/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox)](https://pypi.org/project/maf-sandbox/) | Shared sandbox protocol, routing, policy and MAF integration | `agent-framework-core` (protocol modules are import-clean; the glue imports lazily) |
 | [`maf-sandbox-acas`](packages/maf-sandbox-acas/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-acas)](https://pypi.org/project/maf-sandbox-acas/) | MicroVM backend using Azure Container Apps Sandboxes | `maf-sandbox`, `azure-core`, `azure-identity`, `azure-containerapps-sandbox` (preview) |
-| [`maf-sandbox-antivirus`](packages/maf-sandbox-antivirus/) | not yet released | Offline upload scans with a baked ClamAV seed and host-supplied signed updates | `maf-sandbox`, `agent-framework-core` |
+| [`maf-sandbox-antivirus`](packages/maf-sandbox-antivirus/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-antivirus)](https://pypi.org/project/maf-sandbox-antivirus/) | Offline upload scans with a baked ClamAV seed and host-supplied signed updates | `maf-sandbox`, `agent-framework-core` |
 | [`maf-sandbox-bicep`](packages/maf-sandbox-bicep/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-bicep)](https://pypi.org/project/maf-sandbox-bicep/) | Bicep compilation and linting | `maf-sandbox`, `agent-framework-core` |
 | [`maf-sandbox-bubblewrap`](packages/maf-sandbox-bubblewrap/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-bubblewrap)](https://pypi.org/project/maf-sandbox-bubblewrap/) | Linux namespace and cgroup backend without a container engine | `maf-sandbox` |
 | [`maf-sandbox-codeact`](packages/maf-sandbox-codeact/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-codeact)](https://pypi.org/project/maf-sandbox-codeact/) | Python execution with optional files and host tools | `maf-sandbox`, `agent-framework-core` |
 | [`maf-sandbox-deepagents`](packages/maf-sandbox-deepagents/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-deepagents)](https://pypi.org/project/maf-sandbox-deepagents/) | Sandbox integration for LangChain Deep Agents | `maf-sandbox`, `deepagents` |
 | [`maf-sandbox-docker`](packages/maf-sandbox-docker/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-docker)](https://pypi.org/project/maf-sandbox-docker/) | Container backend for Docker-compatible engines | `maf-sandbox` |
 | [`maf-sandbox-docker-sbx`](packages/maf-sandbox-docker-sbx/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-docker-sbx)](https://pypi.org/project/maf-sandbox-docker-sbx/) | MicroVM backend on Docker Sandboxes (`sbx`), local on Windows, macOS and Linux | `maf-sandbox` |
-| [`maf-sandbox-document`](packages/maf-sandbox-document/) | not yet released | Guarded PDF, DOCX, PPTX and RTF extraction in disposable sandboxes | `maf-sandbox`, `agent-framework-core` |
+| [`maf-sandbox-document`](packages/maf-sandbox-document/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-document)](https://pypi.org/project/maf-sandbox-document/) | Guarded PDF, DOCX, PPTX and RTF extraction in disposable sandboxes | `maf-sandbox`, `agent-framework-core` |
 | [`maf-sandbox-drawio`](packages/maf-sandbox-drawio/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-drawio)](https://pypi.org/project/maf-sandbox-drawio/) | Validation and layout of editable draw.io diagrams, with optional PNG/JPG/SVG export | `maf-sandbox`, `agent-framework-core` |
 | [`maf-sandbox-hyperlight`](packages/maf-sandbox-hyperlight/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-hyperlight)](https://pypi.org/project/maf-sandbox-hyperlight/) | Python microVM backend for Windows and Linux | `maf-sandbox`, the matched Hyperlight 0.7.0 Python SDK, Wasm backend and guest |
 | [`maf-sandbox-otel`](packages/maf-sandbox-otel/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-otel)](https://pypi.org/project/maf-sandbox-otel/) | OpenTelemetry logs, traces and metrics for sandbox activity | `maf-sandbox`, `opentelemetry-api` |
-| [`maf-sandbox-shell`](packages/maf-sandbox-shell/) | not yet released | Offline Bash, sh, dash and PowerShell validation with suppression auditing | `maf-sandbox`, `agent-framework-core` |
+| [`maf-sandbox-shell`](packages/maf-sandbox-shell/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-shell)](https://pypi.org/project/maf-sandbox-shell/) | Offline Bash, sh, dash and PowerShell validation with suppression auditing | `maf-sandbox`, `agent-framework-core` |
 | [`maf-sandbox-terraform`](packages/maf-sandbox-terraform/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-terraform)](https://pypi.org/project/maf-sandbox-terraform/) | Offline Terraform and OpenTofu validation and formatting | `maf-sandbox`, `agent-framework-core` |
-| [`maf-sandbox-mcp`](packages/maf-sandbox-mcp/) | not yet released | Supervised MCP worker for closed-network Bicep validation | `maf-sandbox`, Bicep, Docker, MCP |
+| [`maf-sandbox-mcp`](packages/maf-sandbox-mcp/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-mcp)](https://pypi.org/project/maf-sandbox-mcp/) | Supervised MCP worker for closed-network Bicep validation | `maf-sandbox`, Bicep, Docker, MCP |
 | [`maf-sandbox-tui`](packages/maf-sandbox-tui/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-tui)](https://pypi.org/project/maf-sandbox-tui/) | Terminal console to inspect and dispose application sandboxes | `maf-sandbox`, `textual` |
 | [`maf-sandbox-wslc`](packages/maf-sandbox-wslc/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-wslc)](https://pypi.org/project/maf-sandbox-wslc/) | Local container backend using WSL's container CLI | `maf-sandbox` |
 
@@ -69,8 +69,8 @@ Use [OpenTelemetry](packages/maf-sandbox-otel/) to observe sandbox activity and 
 
 | Package | Released | What it is | Depends on |
 |---|---|---|---|
-| [`maf-compaction`](packages/maf-compaction/) | not yet released | Prompt-cache-aware compaction strategies | `agent-framework-core` |
-| [`maf-cachebench`](packages/maf-cachebench/) | not yet released | The benchmark the compaction strategies were measured with: cost, cache hits and facts kept, on a replayed conversation or a live agent | `maf-compaction`, `agent-framework-core`, `httpx`; provider clients as extras |
+| [`maf-compaction`](packages/maf-compaction/) | [![PyPI](https://img.shields.io/pypi/v/maf-compaction)](https://pypi.org/project/maf-compaction/) | Prompt-cache-aware compaction strategies | `agent-framework-core` |
+| [`maf-cachebench`](packages/maf-cachebench/) | [![PyPI](https://img.shields.io/pypi/v/maf-cachebench)](https://pypi.org/project/maf-cachebench/) | The benchmark the compaction strategies were measured with: cost, cache hits and facts kept, on a replayed conversation or a live agent | `maf-compaction`, `agent-framework-core`, `httpx`; provider clients as extras |
 
 ### Compaction
 
