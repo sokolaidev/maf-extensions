@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-azure-pricing-v0.2.1...maf-sandbox-azure-pricing-v0.2.2) (2026-11-10)
+
+
+### Fixes
+
+* **azure-pricing:** repeat each row's prices and checked units as trusted checked_prices beside the full untrusted report ([#2636](https://github.com/sokolaidev/maf-extensions/issues/2636)) ([a522d98](https://github.com/sokolaidev/maf-extensions/commit/a522d984d4c932edbea076c740da2736eade3ab7))
+
 ## [0.2.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-azure-pricing-v0.2.0...maf-sandbox-azure-pricing-v0.2.1) (2026-11-05)
 
 
