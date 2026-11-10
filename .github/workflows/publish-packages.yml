@@ -130,12 +130,13 @@ jobs:
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       # Which package, which version, which registry — derived once so every later step
-      # agrees. A tag drives a real release; a manual run is a rehearsal.
+      # agrees. PyPI requires the release tag; branches can rehearse on TestPyPI.
       - name: Resolve the release
         id: resolve
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
+          WORKFLOW_REF: ${{ github.ref }}
           INPUT_PACKAGE: ${{ inputs.package }}
           INPUT_TARGET: ${{ inputs.target }}
           INPUT_VERSION: ${{ inputs.version }}
@@ -166,6 +167,7 @@ jobs:
             echo "::error::tag '${REF_NAME}' resolves to package '${package}', which does not exist under packages/"
             exit 1
           fi
+          python3 scripts/check_publish_ref.py "$target" "$package" "$version" "$WORKFLOW_REF"
           # A rehearsal resolves from the index it uploads to, with PyPI behind it for
           # everything TestPyPI does not carry — the install line this workflow already prints
           # on a rehearsal summary, in uv's spelling. `first-index` is uv's default, so the
@@ -618,6 +620,14 @@ jobs:
           python3 release-guard/scripts/release_workflow.py pre-upload "$PACKAGE" "$VERSION" -- \
             python3 release-guard/scripts/check_published_dependents_work.py "$VERSION" \
             "dist/maf_sandbox-${VERSION}-py3-none-any.whl" --since-snapshot admitting-snapshot.json
+
+      - name: Check the workflow ref before upload
+        env:
+          TARGET: ${{ needs.build.outputs.target }}
+          PACKAGE: ${{ needs.build.outputs.package }}
+          VERSION: ${{ needs.build.outputs.version }}
+          WORKFLOW_REF: ${{ github.ref }}
+        run: python3 release-guard/scripts/check_publish_ref.py "$TARGET" "$PACKAGE" "$VERSION" "$WORKFLOW_REF"
 
       - name: Publish
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
