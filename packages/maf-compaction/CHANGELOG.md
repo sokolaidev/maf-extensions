@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.3](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.12.2...maf-compaction-v0.12.3) (2026-11-10)
+
+
+### Fixes
+
+* **compaction:** keep user summaries, folds and removal notes on every later model call of a run ([#2648](https://github.com/sokolaidev/maf-extensions/issues/2648)) ([c117a2a](https://github.com/sokolaidev/maf-extensions/commit/c117a2a840c5a5bbc1a3bbb4880529288514db37))
+
 ## [0.12.2](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.12.1...maf-compaction-v0.12.2) (2026-11-10)
 
 
