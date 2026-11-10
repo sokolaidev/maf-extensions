@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-document-v0.4.0...maf-sandbox-document-v0.4.1) (2026-11-10)
+
+
+### Miscellaneous
+
+* prepare document 0.4.1 and require release tags for PyPI ([de14326](https://github.com/sokolaidev/maf-extensions/commit/de14326ba892b7e0ba070d24af68b57f5de034f1))
+
 ## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-document-v0.3.1...maf-sandbox-document-v0.4.0) (2026-11-10)
 
 > **Attestation correction.** This version reached PyPI through a [workflow dispatched from `main`](https://github.com/sokolaidev/maf-extensions/actions/runs/42793253517), so its wheel and sdist attestations identify `refs/heads/main` rather than `refs/tags/maf-sandbox-document-v0.4.0`. Consumers requiring the exact release-tag identity reject these artifacts. The replacement is planned as 0.4.1 through release-please and must be published from its own tag; this note does not establish that it has published or that its attestations have been verified. See [#2639](https://github.com/sokolaidev/maf-extensions/issues/2639).
