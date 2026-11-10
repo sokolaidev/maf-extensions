@@ -26,19 +26,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
           persist-credentials: false
-      - name: Select languages from changed inputs
+      - name: Prepare all language configurations
         id: select
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/codeql_languages.py
 
   analyze:
     name: Analyze (${{ matrix.language }})
     needs: select
-    if: needs.select.outputs.matrix != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
