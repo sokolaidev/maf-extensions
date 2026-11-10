@@ -28,6 +28,8 @@ from openshell_recovery import AllocationAuthority, AuthorityBusyError, _write, 
 class Client:
     """Use one workspace-scoped token with bounded raw RPCs."""
 
+    expected_version = "0.1.2"
+
     def __init__(self, workspace: str, token: str, image: str) -> None:
         self.grpc = import_module("grpc")
         self.pb = import_module("openshell._proto.openshell_pb2")

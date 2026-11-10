@@ -19,6 +19,6 @@ gateway_id = "openshell-native-fixture"
 [openshell.drivers.docker]
 image_pull_policy = "never"
 sandbox_label = "maf-openshell-1833"
-sandbox_runtime_image = "ghcr.io/nvidia/openshell/sandbox@sha256:b0f0f6217b11b22954b10a033a9fd798cf0a4e35cf4af63c1ba0d9c03e74338a"
-supervisor_image = "ghcr.io/nvidia/openshell/supervisor@sha256:90a6f1a7257a8d3c76f89cc7cc1a1050567cf065a59ce76888f23dfd4f4c757d"
+sandbox_runtime_image = "ghcr.io/nvidia/openshell/sandbox@sha256:89819c03f291d9b909c3fc2962360e24af4516627422d18f3e681829f003f347"
+supervisor_image = "ghcr.io/nvidia/openshell/supervisor@sha256:a07864bd0c546716039c2000a919f50ce8f7f1f67ba37dda350cf64d3a7cfb06"
 app_armor_profile = "Unconfined"

@@ -58,6 +58,7 @@ def test_reports_must_advance_within_the_accepted_session(probe, sequence):
 
 
 @pytest.mark.parametrize("attached", [True, False])
+@pytest.mark.parametrize("version", ["0.1.2", "0.1.7"])
 @pytest.mark.parametrize(
     "failure",
     [
@@ -77,7 +78,7 @@ def test_reports_must_advance_within_the_accepted_session(probe, sequence):
     ],
 )
 def test_recovery_brackets_traffic_with_fresh_stable_authority(
-    probe, monkeypatch, attached, failure
+    probe, monkeypatch, attached, failure, version
 ):
     saved, events, persisted, cached_before_guest = [], [], [], []
     spec = Message(policy="expected")
@@ -86,8 +87,13 @@ def test_recovery_brackets_traffic_with_fresh_stable_authority(
         "after": {},
         "after_spec_hex": spec.SerializeToString().hex(),
         "completed": False,
+        "before": {},
+        "original_supervisor_absent": True,
+        "original_processes_retired": True,
     }
-    fixture = NS(client=NS(), owners=[{"name": "owned", "sandbox_id": "physical"}])
+    fixture = NS(
+        client=NS(expected_version=version), owners=[{"name": "owned", "sandbox_id": "physical"}]
+    )
     fixture.save = lambda: persisted.append(copy.deepcopy(saved))
 
     def retained(method, request):
@@ -116,6 +122,7 @@ def test_recovery_brackets_traffic_with_fresh_stable_authority(
         lambda: NS(spec=Message(policy="wrong") if failure == "intent" else spec),
     )
     monkeypatch.setattr(probe, "snapshot", lambda identity: {})
+    monkeypatch.setattr(probe, "boundary_descriptor", lambda *args: {"session_id": "old-process"})
     monkeypatch.setattr(probe, "runtime_continuity", lambda *args: failure != "runtime")
     tick = iter(range(0, 10000, 31))
     monkeypatch.setattr(probe.time, "monotonic", lambda: next(tick))
@@ -148,10 +155,15 @@ def test_recovery_brackets_traffic_with_fresh_stable_authority(
             sequence = 2
         if failure == "cached_after" and sequence >= 3:
             return cached_before_guest[-1]
-        return status(prefix, sequence)
+        result = status(prefix, sequence)
+        if version == "0.1.7":
+            result.observed.process_instance_id = "old-process"
+        return result
 
     def observe(client, name, ip, record, label, host, path, expected, method):
         cached_before_guest.append(status(sequence=3))
+        if version == "0.1.7":
+            cached_before_guest[-1].observed.process_instance_id = "old-process"
         events.append("guest")
         result = {"case": label, "passed": failure != "guest"}
         record("cases", result)

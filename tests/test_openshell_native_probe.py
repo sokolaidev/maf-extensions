@@ -219,7 +219,9 @@ def test_disposal_failure_retains_physical_ownership(modules, monkeypatch, tmp_p
     probe, _ = modules
     owner = {"sandbox_id": "original", "containers": ["container"], "processes": {"123": "1"}}
     fixture = probe.Fixture(SimpleNamespace(), {"owners": [owner]}, tmp_path / "report.json")
-    monkeypatch.setattr(probe, "snapshot", lambda identity: {"containers": [], "processes": {}})
+    monkeypatch.setattr(
+        probe, "snapshot", lambda identity, **kwargs: {"containers": [], "processes": {}}
+    )
 
     def failed(*args):
         raise RuntimeError("observer unavailable")
@@ -310,7 +312,9 @@ def test_uncertain_create_retains_selector_and_blocks_cleanup(
     fixture = probe.Fixture(client, {}, report_path)
     if earlier_owner:
         fixture.owners.append({"sandbox_id": "earlier", "containers": [], "processes": {}})
-    monkeypatch.setattr(probe, "snapshot", lambda identity: {"containers": [], "processes": {}})
+    monkeypatch.setattr(
+        probe, "snapshot", lambda identity, **kwargs: {"containers": [], "processes": {}}
+    )
     monkeypatch.setattr(
         probe, "dispose_fixture", lambda client, owner: deleted.append(owner["sandbox_id"])
     )
@@ -336,7 +340,9 @@ def test_confirmed_cleanup_can_delete_workspace(modules, monkeypatch, tmp_path):
     )
     fixture = probe.Fixture(client, {}, tmp_path / "report.json")
     fixture.owners.append({"sandbox_id": "confirmed", "containers": [], "processes": {}})
-    monkeypatch.setattr(probe, "snapshot", lambda identity: {"containers": [], "processes": {}})
+    monkeypatch.setattr(
+        probe, "snapshot", lambda identity, **kwargs: {"containers": [], "processes": {}}
+    )
     monkeypatch.setattr(probe, "dispose_fixture", lambda *args: None)
     monkeypatch.setattr(probe, "verify_workspace_absent", lambda *args: True)
     assert fixture.cleanup(workspace_created=True) == []
@@ -374,6 +380,13 @@ def test_workflow_retains_evidence_on_failure():
     assert "--egress-restart" in composition["run"]
     assert "restart.json" in composition["run"]
     assert "restart.log" in composition["run"]
+    https = next(s for s in job["steps"] if "--https-ca" in s.get("run", ""))
+    assert "steps.prepare.outcome == 'success'" in https["if"]
+    assert "!cancelled()" in https["if"]
+    assert "additional_ca_bundle" in https["run"]
+    assert "active-ca.pem" in https["run"]
+    assert "update-ca-certificates" not in https["run"]
+    assert "trust_image" not in https["run"]
 
 
 @pytest.mark.parametrize(
