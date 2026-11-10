@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-document-v0.3.1...maf-sandbox-document-v0.4.0) (2026-11-10)
+
+
+### Features
+
+* **document:** expose SVG and asset-name preflight checks ([#2609](https://github.com/sokolaidev/maf-extensions/issues/2609)) ([a0ecd56](https://github.com/sokolaidev/maf-extensions/commit/a0ecd56c97ee3f0e61bd31709749624f36272aeb))
+* **document:** render unsupplied images as optional placeholders ([#2611](https://github.com/sokolaidev/maf-extensions/issues/2611)) ([f185bff](https://github.com/sokolaidev/maf-extensions/commit/f185bff7650a1f3463de17320e567c8cf433c641))
+
 ## [0.3.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-document-v0.3.0...maf-sandbox-document-v0.3.1) (2026-11-08)
 
 
