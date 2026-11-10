@@ -170,8 +170,8 @@ def parse_report(raw: bytes, max_rows: int, *, region: str | None = None) -> tup
     """Return the price report, the row descriptions, and whether more rows may exist.
 
     The report holds the numbered prices, the counts and the selection the kind made; the
-    descriptions hold what else the API wrote about the same numbered rows. A requested region
-    the kind does not know is echoed among the descriptions, never in the report.
+    descriptions hold only what else the API wrote about the same numbered rows. A requested
+    region the kind does not know is echoed nowhere, so neither part repeats the caller's text.
     """
     envelope = _object(
         json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=_constant)
@@ -187,10 +187,10 @@ def parse_report(raw: bytes, max_rows: int, *, region: str | None = None) -> tup
     # Validate omitted rows too: a cap must not turn a malformed report into a success.
     projected = [_row(row) for row in rows]
     selection: dict[str, Any] = {}
-    echo: dict[str, Any] = {}
     if region is not None:
         projected, notes = select_region(projected, region)
-        (selection if region in PRICE_LIST_LOCATIONS else echo)["requested_region"] = region
+        if region in PRICE_LIST_LOCATIONS:
+            selection["requested_region"] = region
         selection |= {"selected_rows": len(projected), "selection_notes": notes}
     upstream_limit = len(rows) == UPSTREAM_ROW_LIMIT
     truncated = len(projected) > max_rows or upstream_limit
@@ -203,5 +203,5 @@ def parse_report(raw: bytes, max_rows: int, *, region: str | None = None) -> tup
         "upstream_limit_reached": upstream_limit,
         **selection,
     }
-    descriptions = {"descriptions": [description for _, description in split], **echo}
+    descriptions = {"descriptions": [description for _, description in split]}
     return _dumps(report), _dumps(descriptions), truncated
