@@ -148,7 +148,7 @@ class RestartAuthority(Transitions):
             raise RuntimeError("recovery experiment requires independently verified replacement")
         runtime, spec = row["after"], row["after_spec_hex"]
         self.stable(runtime, spec)
-        if original_boundary is not None:
+        if original_runtime is not None and original_boundary is not None:
             if (
                 not row.get("original_supervisor_absent")
                 or not row.get("original_processes_retired")

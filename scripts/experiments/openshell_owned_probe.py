@@ -66,13 +66,15 @@ def process_identity(pid: str) -> str | None:
         return None
 
 
-def snapshot(sandbox_id: str) -> dict:
-    """Capture immutable container identities and independently observed workload processes."""
+def snapshot(sandbox_id: str, *, allow_stopped: bool = False) -> dict:
+    """Capture container/process identities; cleanup may retain stopped containers without top."""
     result = inventory(sandbox_id)
     result["processes"] = {}
     result["top"] = []
     for container in result["containers"]:
         if container["Labels"].get("openshell.ai/isolation-role") == "sandbox":
+            if allow_stopped and container.get("State") in {"created", "exited", "dead"}:
+                continue
             top = docker_get(f"/containers/{container['Id']}/top?ps_args=-eo%20pid,ppid,args")
             if top is None:
                 raise RuntimeError("workload disappeared during process observation")

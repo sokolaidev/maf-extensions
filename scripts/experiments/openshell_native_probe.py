@@ -152,7 +152,7 @@ class Fixture:
         identity = owner["sandbox_id"]
         if identity in self.disposed:
             return
-        current = await asyncio.to_thread(snapshot, identity)
+        current = await asyncio.to_thread(snapshot, identity, allow_stopped=True)
         owner["containers"] = sorted(
             set(owner["containers"]) | {c["Id"] for c in current["containers"]}
         )
