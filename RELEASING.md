@@ -161,7 +161,11 @@ Packages version independently. There is no lockstep release, and a fix in one i
 
 ## If a release goes wrong
 
-**A version cannot be replaced.** PyPI does not allow re-uploading a version, even after deleting it — deletion burns the number permanently. So:
+**A version cannot be replaced.** PyPI does not allow re-uploading a version, even after deleting it — deletion burns the number permanently.
+
+**PyPI publication requires the exact release tag.** Both release resolution and the upload check require the workflow's full `github.ref` to equal `refs/tags/<package>-v<version>`, so its attestation names the tagged source. A branch dispatch can only rehearse on TestPyPI; checking out a tag inside a branch-dispatched run does not change that run's OIDC identity. If a tag run fails on a prerequisite that later clears, re-run that tag's workflow. If no run exists, dispatch with `--ref <package>-v<version>` as below. Older tags retain their original workflow, so this guard applies only to tags containing it; follow the same tag-only procedure for older releases.
+
+If files already reached PyPI with a branch attestation, re-running cannot replace them. Prepare a replacement through release-please, publish it from its own tag, and verify both wheel and sdist attestations against that exact tag before considering the incident recovered. Only then consider yanking the affected version. For [#2639](https://github.com/sokolaidev/maf-extensions/issues/2639), the affected release is `maf-sandbox-document` 0.4.0 and the proposed replacement is 0.4.1; the workflow guard alone neither creates nor publishes that replacement. Do not hand-edit generated versions, manifests or Release PRs to obtain it.
 
 - **Bad metadata, correct code** (a broken README, a wrong URL): ship it as an ordinary `docs:` change and let it cut a patch release. PyPI renders the newest release, so the corrected text supersedes what is shown. A PEP 440 `.postN` release is the traditional answer and is *not* available here — versions are generated, release-please parses them as SemVer, and hand-setting `0.1.0.post1` puts the manifest, the tag and the package's own metadata into three-way disagreement. That `docs:` releases at all is precisely so this route exists.
 - **Bad code**: publish the fix as a new patch version and [yank](https://pypi.org/help/#yanked) the bad one. Yanking keeps it installable for anyone who pinned it exactly while removing it from fresh resolutions — almost always better than deleting.
