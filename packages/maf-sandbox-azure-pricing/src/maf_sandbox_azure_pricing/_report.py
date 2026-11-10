@@ -1,8 +1,8 @@
-"""Validate the pinned CLI envelope, and split each retained row into its price and description.
+"""Validate the pinned CLI envelope, and report each retained row whole and its checked part.
 
-The price carries only what cannot hold an instruction: numbers, flags, the kind's own selection
-labels, and text the kind checks against a set or a strict format. Everything else the API wrote
-about a row is its description, joined to the price by the row's number.
+The report carries every retained field of each numbered row. The checked prices repeat, under the
+same numbers, only what cannot hold an instruction: numbers, flags, the kind's own selection
+labels, and text the kind checks against a set or a strict format.
 """
 
 import json
@@ -146,20 +146,17 @@ def _checked(name: str, value: object) -> bool:
     return pattern is not None and isinstance(value, str) and pattern.fullmatch(value) is not None
 
 
-def split_row(number: int, row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Split a projected row into its price and its description, each carrying ``row: number``.
+def checked_row(number: int, row: dict[str, Any]) -> dict[str, Any]:
+    """The part of a projected row the kind can vouch for, carrying ``row: number``.
 
-    A null and every field of :data:`_PRICE_FIELDS` go to the price; a text field goes there only
-    when its check holds, so a unit outside the set leaves the row's prices without a unit.
+    A null and every field of :data:`_PRICE_FIELDS` are kept; a text field only when its check
+    holds, so a unit outside the set leaves the checked row without a unit.
     """
-    price: dict[str, Any] = {"row": number}
-    description: dict[str, Any] = {"row": number}
+    checked: dict[str, Any] = {"row": number}
     for name, value in row.items():
         if value is None or name in _PRICE_FIELDS or _checked(name, value):
-            price[name] = value
-        else:
-            description[name] = value
-    return price, description
+            checked[name] = value
+    return checked
 
 
 def _dumps(value: dict[str, Any]) -> str:
@@ -167,11 +164,12 @@ def _dumps(value: dict[str, Any]) -> str:
 
 
 def parse_report(raw: bytes, max_rows: int, *, region: str | None = None) -> tuple[str, str, bool]:
-    """Return the price report, the row descriptions, and whether more rows may exist.
+    """Return the report, its checked prices, and whether more rows may exist.
 
-    The report holds the numbered prices, the counts and the selection the kind made; the
-    descriptions hold only what else the API wrote about the same numbered rows. A requested
-    region the kind does not know is echoed nowhere, so neither part repeats the caller's text.
+    The report holds every retained field of the numbered rows, the counts and the selection the
+    kind made. The checked prices repeat the rows' checked parts with the same counts and
+    selection. A requested region the kind does not know is echoed in neither, so neither repeats
+    the caller's text.
     """
     envelope = _object(
         json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=_constant)
@@ -194,14 +192,14 @@ def parse_report(raw: bytes, max_rows: int, *, region: str | None = None) -> tup
         selection |= {"selected_rows": len(projected), "selection_notes": notes}
     upstream_limit = len(rows) == UPSTREAM_ROW_LIMIT
     truncated = len(projected) > max_rows or upstream_limit
-    split = [split_row(number, row) for number, row in enumerate(projected[:max_rows], 1)]
-    report = {
-        "prices": [price for price, _ in split],
-        "returned_rows": len(split),
+    shown = list(enumerate(projected[:max_rows], 1))
+    summary = {
+        "returned_rows": len(shown),
         "received_rows": len(rows),
         "truncated": truncated,
         "upstream_limit_reached": upstream_limit,
         **selection,
     }
-    descriptions = {"descriptions": [description for _, description in split]}
-    return _dumps(report), _dumps(descriptions), truncated
+    report = {"prices": [{"row": number, **row} for number, row in shown], **summary}
+    checked = {"checked_prices": [checked_row(number, row) for number, row in shown], **summary}
+    return _dumps(report), _dumps(checked), truncated

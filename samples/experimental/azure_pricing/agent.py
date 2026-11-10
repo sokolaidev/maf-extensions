@@ -53,19 +53,6 @@ def measure(stage: str, **values: object) -> None:
     print(PREFIX + json.dumps({"stage": stage, **values}), flush=True)
 
 
-def with_descriptions(value: dict[str, Any], texts: list[str]) -> dict[str, Any]:
-    """Merge each row's description back into its price, by the row number both carry."""
-    described = [json.loads(text) for text in texts if text.startswith('{"descriptions":')]
-    if not described:
-        return value
-    by_row = {entry["row"]: entry for entry in described[0]["descriptions"]}
-    value["prices"] = [
-        {key: item for key, item in (row | by_row[row["row"]]).items() if key != "row"}
-        for row in value["prices"]
-    ]
-    return value
-
-
 def report(answer: Any, category: str | None = None) -> dict[str, Any]:
     """Validate the actual completed tool report, preserving empty and truncated semantics."""
     require(isinstance(answer, list), "Missing tool contents")
@@ -73,7 +60,7 @@ def report(answer: Any, category: str | None = None) -> dict[str, Any]:
     require(COMPLETED_TEXT in texts, "Pricing tool did not complete: " + repr(texts)[:8192])
     reports = [json.loads(text) for text in texts if text.startswith('{"prices":')]
     require(len(reports) == 1, "Expected exactly one pricing report")
-    value = with_descriptions(reports[0], texts)
+    value = reports[0]
     require(isinstance(value.get("prices"), list), "Missing prices")
     require(type(value.get("truncated")) is bool, "Missing truncation status")
     for row in value["prices"]:
