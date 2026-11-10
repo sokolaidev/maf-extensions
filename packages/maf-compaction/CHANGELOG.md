@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.12.0...maf-compaction-v0.12.1) (2026-11-10)
+
+
+### Fixes
+
+* **compaction:** preserve recall pairs and metadata during compaction ([#2617](https://github.com/sokolaidev/maf-extensions/issues/2617)) ([8154f13](https://github.com/sokolaidev/maf-extensions/commit/8154f13f2272973259594c347edd115acaf50560))
+
 ## [0.12.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.11.1...maf-compaction-v0.12.0) (2026-11-09)
 
 
