@@ -17,7 +17,7 @@ from collections import Counter
 from typing import Any, Literal
 
 import pytest
-from agent_framework import CharacterEstimatorTokenizer, ChatResponse, Content, Message
+from agent_framework import Annotation, CharacterEstimatorTokenizer, ChatResponse, Content, Message
 from agent_framework._compaction import (
     EXCLUDED_KEY,
     annotate_message_groups,
@@ -543,8 +543,100 @@ def _label(result: Content, shape: str) -> None:
             Content.from_text(text),
             Content.from_uri("https://example.org/chart.png", media_type="image/png"),
         ]
+    elif shape == "annotated result":
+        result.annotations = [Annotation(type="citation", url="https://example.org/")]
+    elif shape == "provider result":
+        result.raw_representation = {"provider": "state"}
+    elif shape == "provider item":
+        result.items = [Content.from_text(text, raw_representation={"provider": "state"})]
+    elif shape == "different items":
+        result.items = [Content.from_text("Additional text outside the compatibility result")]
     else:
         result.additional_properties["security_label"] = {"confidentiality": "private"}
+
+
+@pytest.mark.parametrize("share", [None, 0.1])
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "labelled item",
+        "annotated item",
+        "non-text item",
+        "labelled result",
+        "annotated result",
+        "provider result",
+        "provider item",
+        "different items",
+    ],
+)
+async def test_merges_and_rewrites_preserve_rich_records_between_plain_records(shape, share):
+    messages = _history(9)
+    protected = messages[10:12]
+    result = protected[1].contents[0]
+    _label(result, shape)
+    before = result.to_dict()
+    raw = copy.deepcopy(
+        [result.raw_representation, *[c.raw_representation for c in result.items or []]]
+    )
+    _size(messages)
+    assert len(consolidatable_record_groups(messages)) == 8
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=1100, share=share, cap=None)
+    strategy.harder_attempts = 2
+
+    with pytest.raises(ValueError, match="bare text"):
+        strategy.tool_results.consolidate_records(messages, active_record_groups(messages), "short")
+    assert not any(m.additional_properties.get(EXCLUDED_KEY) for m in messages)
+    try:
+        await strategy(messages)
+    except CompactionBudgetExceeded:
+        pass
+
+    assert summarizer.merges
+    assert strategy.records_merged > 0
+    assert all(not m.additional_properties.get(EXCLUDED_KEY) for m in protected)
+    assert result.to_dict() == before
+    assert [result.raw_representation, *[c.raw_representation for c in result.items or []]] == raw
+    assert "rec4" in _included_record_calls(messages)
+    assert all("VAL-004" not in body for _, body in summarizer.requests)
+    # Replaying the accepted merges must retain the same protected record.
+    try:
+        await strategy(messages)
+    except CompactionBudgetExceeded:
+        pass
+    assert result.to_dict() == before
+    assert "rec4" in _included_record_calls(messages)
+
+
+@pytest.mark.parametrize(
+    "shape", ["labelled result", "annotated item", "provider result", "non-text item"]
+)
+async def test_harder_rewrite_cannot_flatten_a_protected_record(shape):
+    messages = _history(1)
+    result = messages[3].contents[0]
+    _label(result, shape)
+    before = result.to_dict()
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=100, cap=None)
+    strategy.harder_attempts = 2
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
+    assert not summarizer.requests
+    assert result.to_dict() == before
+    assert _included_record_calls(messages) == ["rec0"]
+
+
+async def test_replayed_merge_skips_a_record_that_now_carries_metadata():
+    original = _history(9)
+    strategy = _strategy(_Summarizer(), budget=1100, cap=None)
+    await strategy(copy.deepcopy(original))
+    assert strategy.records_merged > 0
+    result = original[11].contents[0]
+    _label(result, "labelled result")
+    before = result.to_dict()
+    await strategy(original)
+    assert result.to_dict() == before
+    assert "rec4" in _included_record_calls(original)
 
 
 @pytest.mark.parametrize(

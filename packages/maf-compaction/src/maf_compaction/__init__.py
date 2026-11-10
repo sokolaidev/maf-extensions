@@ -57,6 +57,7 @@ from ._composed import (
     DEFAULT_RECORD_BUDGET_SHARE,
     ChainDecisions,
     CompactionBudgetExceeded,
+    CompactionPendingResultBudgetExceeded,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
 )
 from ._media import MediaTokenEstimator
@@ -153,6 +154,7 @@ __all__ = [
     "ChainDecisions",
     "CompactionStack",
     "CompactionBudgetExceeded",
+    "CompactionPendingResultBudgetExceeded",
     "MafCompactionExperimentalWarning",
     "MinimumGainAnchoredCompactionStrategy",
     "MediaTokenEstimator",

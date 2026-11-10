@@ -38,6 +38,7 @@ from maf_compaction import (
     DEFAULT_RECORD_INSTRUCTION,
     ChainDecisions,
     CompactionBudgetExceeded,
+    CompactionPendingResultBudgetExceeded,
     CompactionStack,
     RecallGate,
     RecordDecisions,
@@ -882,6 +883,119 @@ async def test_harness_refuses_irreducible_overflow_before_contacting_model(stre
         else:
             await result
     assert model.prompts == []
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("prompted", [False, True])
+@pytest.mark.parametrize("cap", [None, 4000])
+async def test_harness_discards_recall_that_cannot_fit_with_its_result(stream, prompted, cap):
+    class LargeRecordModel(Model):
+        def _inner_get_response(self, *, messages, stream, options, **kwargs):
+            self.prompts.append(deepcopy(list(messages)))
+            contents = [Content.from_text("answer")]
+            if len(self.prompts) == 1:
+                contents = [
+                    Content.from_function_call(
+                        call_id="oversized",
+                        name="recall_earlier_tool_results",
+                        arguments={"values": "SKU-123 " + "x" * 12000},
+                    )
+                ]
+            response = ChatResponse(messages=Message("assistant", contents))
+            if stream:
+
+                async def updates():
+                    yield ChatResponseUpdate(role="assistant", contents=contents)
+
+                return ResponseStream(updates(), finalizer=lambda _: response)
+
+            async def answer():
+                return response
+
+            return answer()
+
+    def build():
+        stack = build_stack(budget=5000)
+        stack.middleware.supports_tool_choice = not prompted
+        stack.middleware.record_max_tokens = cap
+        return stack
+
+    registry = SessionCompactionRegistry(build)
+    model = LargeRecordModel()
+    agent = harness(registry, model)
+    session = AgentSession()
+    with registry.activate(session) as stack:
+        stack.middleware._force_next = True
+    result = agent.run("Recall SKU-123.", session=session, stream=stream)
+    response = (
+        await result.get_final_response() if isinstance(result, ResponseStream) else await result
+    )
+    assert response.text == "answer"
+    assert len(model.prompts) == 2
+    assert "oversized" not in json.dumps(session.to_dict())
+    assert all(c.type != "function_call" for m in response.messages for c in m.contents)
+    with registry.activate(session) as stack:
+        assert stack.middleware.session_state()["force_next"]
+        assert stack.middleware.pin_disabled == prompted
+        assert not stack.gate.take()
+
+    restored = AgentSession.from_dict(round_trip(session.to_dict()))
+    registry = SessionCompactionRegistry(build)
+    agent = harness(registry, Model())
+    result = agent.run("Continue.", session=restored, stream=stream)
+    response = (
+        await result.get_final_response() if isinstance(result, ResponseStream) else await result
+    )
+    assert response.text == "answer"
+    assert "oversized" not in json.dumps(restored.to_dict())
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_host_can_store_pending_result_before_retrying_an_overflow(stream):
+    session = AgentSession()
+    session.state["in_memory"] = {
+        "messages": [
+            Message("user", ["Look up the data."]),
+            Message(
+                "assistant",
+                [Content.from_function_call(call_id="lookup", name="lookup", arguments={})],
+            ),
+        ]
+    }
+    pending = Message("tool", [Content.from_function_result(call_id="lookup", result="x" * 24000)])
+    pending.contents[0].additional_properties["security_label"] = {"confidentiality": "private"}
+    registry = SessionCompactionRegistry(lambda: build_stack(budget=5000))
+    agent = harness(registry, Model())
+    with pytest.raises(CompactionPendingResultBudgetExceeded) as failure:
+        response = agent.run(pending, session=session, stream=stream)
+        if isinstance(response, ResponseStream):
+            await response.get_final_response()
+        else:
+            await response
+    assert len(failure.value.pending_results) == 1
+    assert failure.value.pending_results[0].contents[0].to_dict() == pending.contents[0].to_dict()
+    history = next(p for p in agent.context_providers if isinstance(p, InMemoryHistoryProvider))
+    await history.save_messages(
+        session.session_id, failure.value.pending_results, state=session.state[history.source_id]
+    )
+    restored = AgentSession.from_dict(round_trip(session.to_dict()))
+    registry = SessionCompactionRegistry(lambda: build_stack(budget=100_000))
+    model = Model()
+    agent = harness(registry, model)
+    result = agent.run("Continue.", session=restored, stream=stream)
+    response = (
+        await result.get_final_response() if isinstance(result, ResponseStream) else await result
+    )
+    assert response.text == "answer"
+    stored = restored.state[history.source_id]["messages"]
+    outputs = [
+        c
+        for m in stored
+        for c in m.contents
+        if c.type == "function_result" and c.call_id == "lookup"
+    ]
+    assert len(outputs) == 1
+    assert outputs[0].additional_properties["security_label"] == {"confidentiality": "private"}
 
 
 @pytest.mark.parametrize("stream", [False, True])

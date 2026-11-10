@@ -51,7 +51,7 @@ from ._anchored import (
     _is_marker,  # pyright: ignore[reportPrivateUsage]
 )
 from ._media import annotate_token_counts
-from ._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
+from ._preserve import PRESERVE_REASON_KEY, is_preserved, pending_result_messages, set_preserved
 from ._request import RequestOverhead
 from ._shed import durable_message_id, unique_shed_groups
 from ._summary_input import bounded_prefix, bounded_prefix_extent, fits_summary_input
@@ -80,6 +80,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CompactionBudgetExceeded",
+    "CompactionPendingResultBudgetExceeded",
     "DEFAULT_CHAIN_GAIN_FRACTION",
     "DEFAULT_HARDER_ATTEMPTS",
     "DEFAULT_RECORD_BUDGET_SHARE",
@@ -104,6 +105,18 @@ class CompactionBudgetExceeded(ValueError):
         super().__init__(
             f"Compacted prompt has {tokens} tokens, exceeding max_input_tokens={budget}."
         )
+
+
+class CompactionPendingResultBudgetExceeded(CompactionBudgetExceeded):
+    """Budget refusal with unstored results for calls already in history.
+
+    ``pending_results`` retains the input message objects. The host must persist those results
+    or roll back their stored calls before retrying the conversation.
+    """
+
+    def __init__(self, tokens: int, budget: int, pending_results: tuple[Message, ...]) -> None:
+        self.pending_results = pending_results
+        super().__init__(tokens, budget)
 
 
 @contextmanager
@@ -1051,7 +1064,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
     async def compact_before(self, messages: list[Message], *, options: Mapping[str, Any]) -> bool:
         """Compact outgoing messages; direct calls retain the history-storage budget."""
-        budget = self.sending_budget(options)
+        try:
+            budget = self.sending_budget(options)
+        except CompactionBudgetExceeded as exc:
+            if pending := pending_result_messages(messages):
+                raise CompactionPendingResultBudgetExceeded(
+                    exc.tokens, exc.budget, pending
+                ) from exc
+            raise
         token = self._request_budget.set(budget)
         try:
             return await self(messages)
@@ -1172,6 +1192,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     [message.message_id for message in lost],
                 )
         if self._over(messages):
+            if pending := pending_result_messages(messages):
+                raise CompactionPendingResultBudgetExceeded(
+                    included_token_count(messages), self._budget, pending
+                )
             raise CompactionBudgetExceeded(included_token_count(messages), self._budget)
         return changed
 

@@ -215,3 +215,14 @@ def removable_spans(
                 if call_span is not None:
                     allowed.discard(call_span)
     return allowed
+
+
+def pending_result_messages(messages: Sequence[Message]) -> tuple[Message, ...]:
+    """Return carried-in results answering calls loaded from history."""
+    indices = {
+        result[0]
+        for result, candidates in function_result_candidates(messages).items()
+        if _ATTRIBUTION_KEY not in messages[result[0]].additional_properties
+        and any(_ATTRIBUTION_KEY in messages[call[0]].additional_properties for call in candidates)
+    }
+    return tuple(messages[index] for index in sorted(indices))

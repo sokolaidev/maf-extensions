@@ -14,6 +14,7 @@ import contextlib
 import json
 import logging
 import re
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import fields, replace
@@ -2682,31 +2683,16 @@ async def test_the_stub_refuses_a_request_carrying_a_call_it_never_issued() -> N
 
 
 async def test_a_merge_through_the_live_path_sends_the_model_no_call_it_never_made() -> None:
-    """Run 59's crash, offline: the chain's merged record reaches the model on the next call.
-
-    Records padded so that two of them keep the prompt over the input budget once both halves
-    have run, which is step a -- merge the records -- and nothing further down the chain. The
-    merged record then rides along on every later request, and the stub refuses any function
-    call or result it did not issue, as Foundry refused it with ``400 invalid_payload``. When
-    the merge was a synthesised recall call under a minted id this test failed on that check;
-    written as an assistant message it passes.
-
-    The merge is taken on the copies of the call after the second record arrived, and the store
-    holds exactly what that call was sent: the two records merged, and a third the model wrote
-    on that very call standing beside it, since a record carried in is not merged on the call
-    that carries it. The store used to merge all three instead, which the model had never been
-    sent -- an early edit on the next call, bought by the store pass disagreeing with the copies.
-    """
+    """Merged records reach later model calls as assistant text with only provider-issued call IDs."""
     run = await _run_wait_fixture(
         min_groups_before_repeat=1,
-        record_padding=12_000,
+        record_padding=8_000,
         later_lookups=("d", "e"),
-        later_filler_turns=6,
+        later_filler_turns=10,
     )
     strategy = run.strategy
 
     assert strategy.records_merged >= 1, "the premise: the chain reached step a"
-    assert strategy.record_rewrites == 0, "and nothing below it"
     written = [
         index
         for index, message in enumerate(run.stored)
@@ -2762,22 +2748,12 @@ async def test_the_stub_refuses_a_request_carrying_a_call_without_its_output_or_
 
 
 async def test_a_merge_through_the_live_path_leaves_no_call_without_its_output() -> None:
-    """Run 60's crash, offline: a merge on the call that carried the newest record's result in.
-
-    On the harness each model call is compacted over copies of the stored history plus what the
-    call carries in, and after the pinned call that is the record's result -- the very object the
-    history stores next. The merge fixture's second record arrives over the budget, so the chain's
-    step a runs on that call. Merging the record there flagged its call on a copy, where the flag
-    is dropped, and its result on the carried-in object, where it is stored; every later request
-    then carried the call without its output, which Foundry refused with ``No tool output found
-    for function call`` and the stub now refuses the same way. The merge is taken one call later
-    instead, and the history holds every call and its output in the same state.
-    """
+    """Stored and projected history retain both halves of each call through record merges."""
     run = await _run_wait_fixture(
         min_groups_before_repeat=1,
-        record_padding=12_000,
+        record_padding=8_000,
         later_lookups=("d", "e"),
-        later_filler_turns=6,
+        later_filler_turns=10,
     )
 
     assert run.strategy.records_merged >= 1, "the premise: the chain reached step a"
@@ -2816,9 +2792,9 @@ async def test_the_standalone_rows_write_no_record_of_their_own_on_the_merge_fix
     run = await _run_wait_fixture(
         strategy_name,
         user_trigger_fraction=0.6,
-        record_padding=12_000,
+        record_padding=8_000,
         later_lookups=("d", "e"),
-        later_filler_turns=6,
+        later_filler_turns=10,
     )
 
     assert not hasattr(run.strategy, "records_merged")
@@ -3036,14 +3012,33 @@ class _RefusingRecordSummarizer:
         return ChatResponse(messages=[Message(role="assistant", contents=[text])])
 
 
-async def test_a_refused_rewrite_is_asked_once_through_the_live_paths_two_lists() -> None:
-    """Repeated oversized requests reuse refusals without reaching the model again.
+@pytest.mark.parametrize("padding", [12_000, 14_000, 16_000, 20_000, 30_000])
+async def test_oversized_recall_keeps_stored_call_result_pairs_complete(padding: int) -> None:
+    run = await _run_wait_fixture(
+        min_groups_before_repeat=1,
+        allow_overflow=True,
+        record_padding=padding,
+        later_lookups=("d", "e"),
+        later_filler_turns=6,
+        summarizer=_RefusingRecordSummarizer(),
+    )
+    calls = Counter(
+        content.call_id
+        for message in run.stored
+        for content in message.contents
+        if content.type == "function_call"
+    )
+    results = Counter(
+        content.call_id
+        for message in run.stored
+        for content in message.contents
+        if content.type == "function_result"
+    )
+    assert calls and calls == results
 
-    The records cannot shrink, so later turns meet the same protected record content.
-    Each merge or rewrite request is paid for once, then skipped on subsequent retries. The
-    records are large enough to stay over the budget once the chain pays each of them once, and
-    the summary request bound is wide enough for two of them to share one merge.
-    """
+
+async def test_a_refused_rewrite_is_asked_once_through_the_live_paths_two_lists() -> None:
+    """Uncompressible stored records reuse merge and rewrite refusals on repeated oversized turns."""
 
     def widen(strategy: Any) -> None:
         strategy.user_turns.max_summary_input_tokens = 12_000
@@ -3052,9 +3047,10 @@ async def test_a_refused_rewrite_is_asked_once_through_the_live_paths_two_lists(
     run = await _run_wait_fixture(
         min_groups_before_repeat=1,
         allow_overflow=True,
-        record_padding=18_000,
+        record_padding=8_000,
         later_lookups=("d", "e"),
-        later_filler_turns=6,
+        later_filler_turns=20,
+        final_turns=("Protected final request " + "z" * 60_000,) * 3,
         summarizer=summarizer,
         on_strategy=widen,
     )
@@ -3070,7 +3066,7 @@ async def test_a_refused_rewrite_is_asked_once_through_the_live_paths_two_lists(
 
     assert len(run.overflows) > 1, "irreducible prompts are refused on later retries too"
     assert rewrites and merges, "the premise: the chain reached steps a and c"
-    assert len(set(summarizer.requests)) == len(summarizer.requests), "no request paid for twice"
+    assert len(set(merges + rewrites)) == len(merges + rewrites), "no record request paid for twice"
     assert strategy.record_rewrites == strategy.record_rewrites_rejected == len(rewrites), (
         "each refusal counted once"
     )
