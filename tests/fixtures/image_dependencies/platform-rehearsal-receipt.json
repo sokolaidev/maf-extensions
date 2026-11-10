@@ -1,5 +1,32 @@
 {
-  "schemaVersion": 1,
+  "case": "historical-rebuild",
+  "evidence": "https://github.com/sokolaidev/maf-extensions/actions/runs/42806754075/artifacts/13760983135",
+  "evidenceMode": "historical-replay",
+  "fixture": {
+    "directories": [
+      "bicep-docker-sbx-0.2.2"
+    ],
+    "files": {
+      "bicep-docker-sbx-0.2.2/assessment.json": "sha256:8a301f8477e1f8721a4b70c7e7e93f130c2834977b329963958e0053415cd2f6",
+      "bicep-docker-sbx-0.2.2/grype.json": "sha256:f14636620646db6c58cd4a87d7a896019c0640a7d8df90adf106661dc8ce14be",
+      "bicep-docker-sbx-0.2.2/observation.json": "sha256:80bbd7ff7e96257072380380b463630a0aff7784327e747ddfbe89e1c1a6fcd9",
+      "bicep-docker-sbx-0.2.2/sbom.syft.json": "sha256:1d1f05d2b03e3c3e0f8ee3c5a3697af1a59f4af72a0fa8bd7393deb46aa76b95",
+      "monitor-index.json": "sha256:eaaad6fef5066cd9022f2aa5f0f3a2db2567170960e19790daf33e5ae23598b2"
+    },
+    "monitor": {
+      "conclusion": "failure",
+      "id": 42613419444,
+      "run_attempt": 1,
+      "stateDeliveryVerified": true,
+      "status": "completed"
+    },
+    "producer": "3117c76c9c51bcf5ebe209b62de8221ea6a690c0"
+  },
+  "productionRecovery": false,
   "purpose": "platform-remediation-rehearsal",
-  "status": "not-run"
+  "qualificationSha256": "2d4401f5873d6cc47b33d137b4b3ffa93c38c5816b3048d9aa54caa0fad72f9c",
+  "runAttempt": 1,
+  "runId": 42806754075,
+  "schemaVersion": 1,
+  "source": "ea0bda4ce1a18d4380c2a5327a9587f23a09b97e"
 }
