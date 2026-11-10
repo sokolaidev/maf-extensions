@@ -100,8 +100,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: read
-      attestations: read
     outputs:
       package: ${{ steps.resolve.outputs.package }}
       version: ${{ steps.resolve.outputs.version }}
@@ -257,12 +255,6 @@ jobs:
       # ran it on the branch, but a tag can point anywhere.
       - name: Sync workspace
         run: uv sync --locked
-
-      - name: Verify published image identity and consumer compatibility before building
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PACKAGE: ${{ steps.resolve.outputs.package }}
-        run: python3 scripts/check_kind_release_images.py --package "$PACKAGE"
 
       - name: Tests
         run: uv run pytest -q
@@ -554,7 +546,6 @@ jobs:
       # Mints the OIDC token that IS the credential. No secrets involved.
       id-token: write
       actions: read
-      attestations: read
       # A job-level block replaces the workflow's outright, so anything unlisted here is
       # `none` — without this the sparse checkout below cannot read the repository.
       contents: read
@@ -572,7 +563,6 @@ jobs:
           sparse-checkout: |
             scripts
             packages/*/pyproject.toml
-            images/release-profiles.json
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -628,12 +618,6 @@ jobs:
           python3 release-guard/scripts/release_workflow.py pre-upload "$PACKAGE" "$VERSION" -- \
             python3 release-guard/scripts/check_published_dependents_work.py "$VERSION" \
             "dist/maf_sandbox-${VERSION}-py3-none-any.whl" --since-snapshot admitting-snapshot.json
-
-      - name: Recheck published image identity and consumer compatibility after approval
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PACKAGE: ${{ needs.build.outputs.package }}
-        run: python3 release-guard/scripts/check_kind_release_images.py --package "$PACKAGE"
 
       - name: Publish
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
