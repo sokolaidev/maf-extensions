@@ -1522,7 +1522,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """
         changed = False
         while self._kept_records:
-            groups = consolidatable_record_groups(messages)
+            groups = consolidatable_record_groups(messages, replay=True)
             source_counts = {count for _, count in self._kept_records}
             counted = sorted((count for count in source_counts if count is not None), reverse=True)
             # Legacy snapshots need a search until their source counts have been learned.
@@ -1553,7 +1553,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     break
             if found is None:
                 break
-            self.tool_results.consolidate_records(messages, *found)
+            self.tool_results.consolidate_records(messages, *found, replay=True)
             changed = True
         return changed
 
@@ -1618,10 +1618,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         once, and is the form a merge would write anyway. No summarizer is asked and no value
         can be lost: the payload after the record's framing moves byte for byte, whitespace
         included (:func:`~._toolsummary.reshapeable_record_groups`). A record whose
-        span holds anything else -- a reasoning item the framework grouped with the call, an
-        extra output under its call id -- whose result carries metadata or non-text items, or
-        whose result this model call carried in is left exactly as it is. A merge spares the
-        same spans, except a result carrying metadata, which it still flattens into its text.
+        span holds unrelated content or active-turn reasoning, whose result carries metadata
+        or non-text items, or whose result this model call carried in is left as it is.
+        Reasoning attached only to a completed-turn record leaves with the whole group, working
+        backward so later retained reasoning never sees its prefix edited. Merges spare the
+        same protected spans.
 
         **Only when the chain fires, not whenever the written form is cheaper.** A reshape
         rewrites the prompt from the record it replaces. Inside a firing it is one more edit the
@@ -1641,20 +1642,24 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             True if any record was reshaped.
         """
-        groups = reshapeable_record_groups(messages)
-        digests = [_digest(payload) for payload in reshape_payloads(messages, groups)]
-        chosen = [
-            (group, digest)
-            for group, digest in zip(groups, digests, strict=True)
-            if not replay or digest in self._reshaped
-        ]
-        if not chosen:
-            return False
-        self.tool_results.reshape_records(messages, [group for group, _ in chosen])
-        if not replay:
-            self._records_reshaped += len(chosen)
-            self._reshaped.update(digest for _, digest in chosen)
-        return True
+        changed = False
+        while groups := reshapeable_record_groups(messages, replay=replay):
+            digests = [_digest(payload) for payload in reshape_payloads(messages, groups)]
+            chosen = [
+                (group, digest)
+                for group, digest in zip(groups, digests, strict=True)
+                if not replay or digest in self._reshaped
+            ]
+            if not chosen:
+                break
+            self.tool_results.reshape_records(
+                messages, [group for group, _ in chosen], replay=replay
+            )
+            if not replay:
+                self._records_reshaped += len(chosen)
+                self._reshaped.update(digest for _, digest in chosen)
+            changed = True
+        return changed
 
     async def _merge_batches(
         self, messages: list[Message], start: _ChainStart | None, share: float | None

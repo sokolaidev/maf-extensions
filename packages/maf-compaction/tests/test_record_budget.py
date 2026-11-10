@@ -536,17 +536,10 @@ async def test_record_replacements_survive_calls_sharing_original_messages(
 
 
 @pytest.mark.parametrize("shape", ["preceding", "co-located"])
-async def test_a_record_with_a_reasoning_item_is_left_whole_and_no_reasoning_is_orphaned(
+async def test_completed_record_reasoning_leaves_atomically_and_other_reasoning_stays(
     shape: str,
 ) -> None:
-    """A reasoning item stays with the call it precedes, as every exclusion here leaves it.
-
-    The framework groups a reasoning item with the function call it precedes, and a provider
-    such as the Responses API refuses a reasoning item sent without that call. A record whose
-    span holds one is not reshaped -- the reshape, like a merge, takes only spans holding nothing
-    but the record -- and the written records the others become are inserted on group boundaries,
-    never between a reasoning item and its call.
-    """
+    """Completed recall reasoning leaves with its pair; unrelated tool reasoning stays paired."""
     reasoning = Content.from_text_reasoning(text="I should record what I found.")
     messages = _history(6)
     reasoned = _record_pair(6)
@@ -563,7 +556,8 @@ async def test_a_record_with_a_reasoning_item_is_left_whole_and_no_reasoning_is_
             message_id="think200",
         ),
     )
-    messages[-1:-1] = [*reasoned, *later]
+    messages[2:2] = later
+    messages[-1:-1] = reasoned
     budget = _record_size(messages) - 200
     strategy = _strategy(_Summarizer(), budget=budget, share=None, policy="shed")
     reasoned_ids = {m.message_id for m in reasoned}
@@ -581,14 +575,12 @@ async def test_a_record_with_a_reasoning_item_is_left_whole_and_no_reasoning_is_
         assert any(c.type == "function_call" for c in carrier.contents), (
             f"{message.message_id}'s reasoning sent without the call it precedes"
         )
-    assert reasoning_sent == 2, "no reasoning item dropped with a reshaped record"
-    assert strategy.records_reshaped == 6, "every record but the one holding reasoning"
+    assert reasoning_sent == 1, "only the ordinary tool group's reasoning remains"
+    assert strategy.records_reshaped == 7
     assert all(
-        not m.additional_properties.get(EXCLUDED_KEY)
-        for m in messages
-        if m.message_id in reasoned_ids
-    ), "the record with its reasoning item, whole"
-    assert "rec6" in _included_record_calls(messages)
+        m.additional_properties.get(EXCLUDED_KEY) for m in messages if m.message_id in reasoned_ids
+    ), "the completed record and its reasoning leave together"
+    assert "rec6" not in _included_record_calls(messages)
 
 
 def _label(result: Content, shape: str) -> None:

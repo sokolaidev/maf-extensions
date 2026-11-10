@@ -79,6 +79,7 @@ from ._preserve import (
     stands_in,
 )
 from ._request import RECALL_PROMPT_KEY, request_tools
+from ._summary_links import has_summary_links
 from ._tool_result import (
     ResultTextRewriter,
     can_shorten_result,
@@ -869,7 +870,9 @@ def _active_record_groups(
     ]
 
 
-def consolidatable_record_groups(messages: list[Message]) -> list[dict[str, Any]]:
+def consolidatable_record_groups(
+    messages: list[Message], *, replay: bool = False
+) -> list[dict[str, Any]]:
     """Return the active records a consolidation may replace on this pass, oldest first.
 
     :func:`active_record_groups`, less any record whose call and result would not both keep the
@@ -880,22 +883,30 @@ def consolidatable_record_groups(messages: list[Message]) -> list[dict[str, Any]
     or rewrite and is in the next one's, once its result has been stored. It remains a record to
     everything else -- preserved, counted, and the anchor if it is the newest. Spans containing
     content outside the matched records also stay intact, since the summarizer never sees it;
-    that includes a reasoning item, which the framework groups with the call it precedes. So does
+    except reasoning attached to a record in a completed user turn. Reasoning in the active
+    tool loop remains intact, as does the record prefix before any later retained reasoning.
+    So does
     a record whose call id another output answers too, which excluding the call would orphan.
     Results carrying metadata, provider state or non-text items also stay whole.
 
     Args:
         messages: The conversation, already grouped.
 
+    Keyword Args:
+        replay: Restore a previously accepted edit on its exact sources, including the prefix
+            on which later reasoning was produced. Never use this to decide a new replacement.
+
     Returns:
         The spans :meth:`ToolResultAnchoredSummarizationCompactionStrategy.consolidate_records`
         may be handed.
     """
-    return _consolidatable_record_groups(messages)[0]
+    return _consolidatable_record_groups(messages, replay=replay)[0]
 
 
 def _consolidatable_record_groups(
     messages: list[Message],
+    *,
+    replay: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[int, str]]:
     """Return :func:`consolidatable_record_groups` and the recall matches it was read with."""
     spans = group_messages(messages)
@@ -903,12 +914,20 @@ def _consolidatable_record_groups(
     recalls = _recall_results(messages, matches)
     removable = removable_spans(messages, spans, matches=matches)
     record_contents = _record_contents(messages, matches, recalls)
+    completed_before = _completed_user_boundary(messages)
+    last_reasoning = -1 if replay else _last_reasoning_index(messages)
     answered = _answered_elsewhere(messages, matches)
     groups = [
         group
         for group in _active_record_groups(messages, spans, recalls)
         if (group["start_index"], group["end_index"]) in removable
-        and _record_only_group(messages, group, record_contents)
+        and _record_only_group(
+            messages,
+            group,
+            record_contents,
+            completed_before=completed_before,
+            last_reasoning=last_reasoning,
+        )
         and _plain_record_results(messages, group)
         and not _call_ids(messages, group) & answered
     ]
@@ -935,7 +954,9 @@ def _call_ids(messages: Sequence[Message], group: dict[str, Any]) -> set[str]:
     }
 
 
-def reshapeable_record_groups(messages: list[Message]) -> list[dict[str, Any]]:
+def reshapeable_record_groups(
+    messages: list[Message], *, replay: bool = False
+) -> list[dict[str, Any]]:
     """Return the model-made records a reshape may rewrite as written records, oldest first.
 
     :func:`consolidatable_record_groups` that hold one recall call and its one result, framed the
@@ -950,7 +971,7 @@ def reshapeable_record_groups(messages: list[Message]) -> list[dict[str, Any]]:
         The spans :meth:`ToolResultAnchoredSummarizationCompactionStrategy.reshape_records` may be
         handed.
     """
-    groups, recalls = _consolidatable_record_groups(messages)
+    groups, recalls = _consolidatable_record_groups(messages, replay=replay)
     return [
         group
         for group in groups
@@ -1038,14 +1059,58 @@ def _record_contents(
     return record_contents
 
 
+def _completed_user_boundary(messages: Sequence[Message]) -> int:
+    """Return the last included user request, excluding tool results and synthetic prompts."""
+    return next(
+        (
+            index
+            for index in range(len(messages) - 1, -1, -1)
+            if (message := messages[index]).role == "user"
+            and not message.additional_properties.get(EXCLUDED_KEY)
+            and not message.additional_properties.get(RECALL_PROMPT_KEY)
+            and not has_summary_links(message)
+            and any(content.type in {"text", "uri", "data"} for content in message.contents)
+            and not any(
+                content.type in {"function_call", "function_result"} for content in message.contents
+            )
+        ),
+        -1,
+    )
+
+
+def _last_reasoning_index(messages: Sequence[Message]) -> int:
+    """Locate the last retained reasoning block, whose prefix must remain unchanged."""
+    return next(
+        (
+            index
+            for index in range(len(messages) - 1, -1, -1)
+            if not messages[index].additional_properties.get(EXCLUDED_KEY)
+            and any(content.type == "text_reasoning" for content in messages[index].contents)
+        ),
+        -1,
+    )
+
+
 def _record_only_group(
-    messages: Sequence[Message], group: dict[str, Any], record_contents: set[int]
+    messages: Sequence[Message],
+    group: dict[str, Any],
+    record_contents: set[int],
+    *,
+    completed_before: int,
+    last_reasoning: int,
 ) -> bool:
-    """Require every removed content item to belong to the records being summarized."""
+    """Allow only matched records and their reasoning from completed user turns."""
+    if group["end_index"] < last_reasoning:
+        return False
+    completed = group["end_index"] < completed_before
     for message in messages[group["start_index"] : group["end_index"] + 1]:
         if _is_written_record(message) and all(c.type == "text" for c in message.contents):
             continue
-        if any(id(content) not in record_contents for content in message.contents):
+        if any(
+            id(content) not in record_contents
+            and not (completed and message.role == "assistant" and content.type == "text_reasoning")
+            for content in message.contents
+        ):
             return False
     return True
 
@@ -2075,7 +2140,12 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         return self.fallback.shed_again(messages, message_ids)
 
     def consolidate_records(
-        self, messages: list[Message], groups: list[dict[str, Any]], text: str
+        self,
+        messages: list[Message],
+        groups: list[dict[str, Any]],
+        text: str,
+        *,
+        replay: bool = False,
     ) -> None:
         """Put one record carrying ``text`` in place of the records ``groups`` span.
 
@@ -2126,7 +2196,18 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             )
         recall_results = _recall_results(messages, matches)
         record_contents = _record_contents(messages, matches, recall_results)
-        if not all(_record_only_group(messages, group, record_contents) for group in groups):
+        completed_before = _completed_user_boundary(messages)
+        last_reasoning = -1 if replay else _last_reasoning_index(messages)
+        if not all(
+            _record_only_group(
+                messages,
+                group,
+                record_contents,
+                completed_before=completed_before,
+                last_reasoning=last_reasoning,
+            )
+            for group in groups
+        ):
             raise ValueError("A record handed to consolidate_records contains unrelated content.")
         if not all(_plain_record_results(messages, group) for group in groups):
             raise ValueError("A record handed to consolidate_records carries more than bare text.")
@@ -2153,7 +2234,9 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         if self._reforce is not None:
             self._reforce.records = max(self._reforce.records - (len(groups) - 1), 0)
 
-    def reshape_records(self, messages: list[Message], groups: list[dict[str, Any]]) -> None:
+    def reshape_records(
+        self, messages: list[Message], groups: list[dict[str, Any]], *, replay: bool = False
+    ) -> None:
         """Put a written record holding each record's own body in place of each of ``groups``.
 
         The composed row's seam for paying a model-made record once: the recall call's arguments
@@ -2169,12 +2252,16 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             messages: The conversation, mutated in place. Already grouped.
             groups: Spans from :func:`reshapeable_record_groups`.
 
+        Keyword Args:
+            replay: Restore a persisted decision on its exact sources; see
+                :func:`consolidatable_record_groups`.
+
         Raises:
             ValueError: When a group is not one :func:`reshapeable_record_groups` offers.
         """
         offered = {
             (group["start_index"], group["end_index"])
-            for group in reshapeable_record_groups(messages)
+            for group in reshapeable_record_groups(messages, replay=replay)
         }
         if not all((group["start_index"], group["end_index"]) in offered for group in groups):
             raise ValueError("A record handed to reshape_records cannot be reshaped without loss.")

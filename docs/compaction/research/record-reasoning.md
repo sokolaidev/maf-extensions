@@ -1,0 +1,17 @@
+# Completed recall records with reasoning
+
+[#2631](https://github.com/sokolaidev/maf-extensions/issues/2631) proposes removing reasoning together with the recall call and result it belongs to. The implementation requires a later genuine user request, excludes synthetic recall instructions, tool results, generated summaries and excluded users as boundaries, and retains the current carried result. A mixed group or a rich result remains protected.
+
+Removing an old record can also change the prefix of reasoning that remains later in the conversation. Anthropic's [preserved-thinking contract](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking#compact-on-the-client) makes this a separate constraint from keeping the current tool loop whole. Record replacement therefore stops before any later retained reasoning. Lossless reshapes proceed backward through eligible completed records, rechecking after each replacement; an unrelated or active reasoning group stops that walk. This is a conservative record-selection rule, not provider-wide qualification of the other compaction strategies.
+
+## Qualification still required
+
+Unit tests cover whole-group exclusion, exact value retention, completed and active turns, synthetic boundaries, later-reasoning protection, mixed content, carried results and persisted decision replay. Replay restores a previously accepted edit on exact matching sources even when later reasoning has arrived: that reasoning was produced on the compacted prefix, so restoring the original prefix would change its input. These tests do not establish service acceptance. Keep the change in draft until the following probes have retained evidence for the actual model, API, SDK and reasoning settings.
+
+| Route | Required probe | Acceptance evidence |
+|---|---|---|
+| OpenAI Responses, stateless | Request real recall calls with reasoning and encrypted reasoning replay where supported; complete that tool loop, add a new user request, replace the old recall group, and send the projected messages with `store=false`. Repeat after session serialization and restore. | Both baseline and compacted requests succeed; no orphaned reasoning, calls or results; record values remain available. Active-loop input remains unchanged. |
+| Anthropic thinking | Obtain actual signed thinking and recall blocks, finish the assistant tool loop, then replace completed records. Include a later retained thinking block as a negative selection case. On models supporting binding controls, explicitly request prefix mismatch errors. | Baseline and compacted requests succeed without dropping invalid thinking to hide a prefix mismatch. Current-loop and later-prefix guard cases remain byte-for-byte unchanged on the wire. |
+| Gemini | Specify the API and framework adapter, capture a real signed function call, complete the turn, replace the old record, and replay after restore. Cover the adapter's actual thought/signature representation. | Call/signature leave together, with no surviving signature attached to the wrong part; continuation and restored continuation succeed. |
+
+Use synthetic record values only. Retain model and SDK versions, request shapes, finish reasons and usage; keep credentials and opaque provider tokens out of the public evidence. A missing reasoning/signature block is an unqualified probe, not a pass. The AG-UI history adapter drops reasoning across reconstructed runs, as the issue's comment explains, so these probes must exercise an adapter that actually replays it.
