@@ -38,7 +38,7 @@ dependencies = [
     "maf-sandbox>=0.53.2,<0.54",
     # Approvals must bind to the issuing session. Admit only the framework minor
     # qualified by the framework-contract tests.
-    "agent-framework-core>=1.24.0,<1.25",
+    "agent-framework-core>=1.25.0,<1.26",
 ]
 
 [project.urls]

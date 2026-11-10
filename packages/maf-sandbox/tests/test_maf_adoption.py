@@ -499,6 +499,7 @@ def test_concurrent_rewrites_keep_separate_call_contexts():
 
 
 def test_schema_alias_cannot_strand_hidden_provenance_under_the_old_name():
+    from agent_framework._middleware import FunctionMiddlewarePipeline
     from pydantic import BaseModel, Field
 
     class Arguments(BaseModel):
@@ -521,14 +522,10 @@ def test_schema_alias_cannot_strand_hidden_provenance_under_the_old_name():
             function=tool, arguments={"fileNames": [f"[{ref}]", "literal"]}
         )
 
-        async def invoke():
-            context.arguments = Arguments.model_validate(context.arguments).model_dump()
-            context.result = await body(**context.arguments)
+        async def invoke(current):
+            return await tool.invoke(arguments=current.arguments, context=current)
 
-        async def inner():
-            await observer.process(context, invoke)
-
-        await tracker.process(context, inner)
+        await FunctionMiddlewarePipeline(tracker, observer).execute(context, invoke)
         assert seen and 0 in seen[0]
 
     asyncio.run(scenario())
@@ -711,6 +708,18 @@ def test_nested_calls_restore_the_outer_public_map():
 def test_public_provenance_covers_payload_expansion_without_store_scans(
     in_kwargs, mutation, producer, monkeypatch
 ):
+    from typing import Annotated
+
+    from agent_framework._middleware import FunctionMiddlewarePipeline
+    from pydantic import AfterValidator
+
+    def transform(values):
+        if mutation == "reverse":
+            return list(reversed(values))
+        if mutation == "filter":
+            return values[1:]
+        return values
+
     async def scenario():
         tracker = LabelTrackingFunctionMiddleware()
         observer = argument_provenance_middleware()
@@ -729,14 +738,17 @@ def test_public_provenance_covers_payload_expansion_without_store_scans(
         def no_store_access():
             raise AssertionError("Refusal provenance must not inspect stored payloads")
 
-        async def body(files: list[str]):
+        async def body(files: Annotated[list[str], AfterValidator(transform)]):
             with monkeypatch.context() as patch:
                 patch.setattr(tracker, "get_variable_store", no_store_access)
                 seen.append(positions_holding_hidden_content(files, argument="files"))
                 assert positions_holding_hidden_content(files) == set(range(len(files)))
             return "ok"
 
-        tool = FunctionTool(name="payload", func=body)
+        async def runtime_body(context: FunctionInvocationContext):
+            return await body(transform(context.kwargs["files"]))
+
+        tool = FunctionTool(name="payload", func=runtime_body if in_kwargs else body)
         values = {"files": ["literal", f"prefix-[{ref}].txt"]}
         context = FunctionInvocationContext(
             function=tool,
@@ -744,19 +756,10 @@ def test_public_provenance_covers_payload_expansion_without_store_scans(
             kwargs=values if in_kwargs else {},
         )
 
-        async def invoke():
-            current = context.kwargs if in_kwargs else context.arguments
-            assert isinstance(current, dict)
-            if mutation == "reverse":
-                current["files"].reverse()
-            elif mutation == "filter":
-                current["files"] = current["files"][1:]
-            await tool.invoke(arguments=context.arguments or None, **context.kwargs)
+        async def invoke(current):
+            return await tool.invoke(arguments=current.arguments, context=current)
 
-        async def inner():
-            await observer.process(context, invoke)
-
-        await tracker.process(context, inner)
+        await FunctionMiddlewarePipeline(tracker, observer).execute(context, invoke)
         expected = {0} if mutation == "filter" else {0, 1}
         if not in_kwargs and mutation == "preserve":
             expected = {1}

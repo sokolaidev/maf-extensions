@@ -1951,6 +1951,7 @@ class TestHostToolsEnabled:
 
     def test_fides_still_mediates_the_same_function_as_a_direct_agent_tool(self):
         from agent_framework import FunctionInvocationContext, FunctionTool, MiddlewareTermination
+        from agent_framework._middleware import FunctionMiddlewarePipeline
         from agent_framework.security import (
             ConfidentialityLabel,
             ContentLabel,
@@ -1990,13 +1991,10 @@ class TestHostToolsEnabled:
                 function=direct, arguments={"value": f"[{variable}]"}
             )
 
-            async def body():
-                context.result = await direct.invoke(arguments=context.arguments)
+            async def body(current):
+                return await direct.invoke(arguments=current.arguments, context=current)
 
-            async def enforce():
-                await policy.process(context, body)
-
-            await tracking.process(context, enforce)
+            await FunctionMiddlewarePipeline(tracking, policy).execute(context, body)
 
         asyncio.run(direct_call(ConfidentialityLabel.PUBLIC))
         assert calls == ["called"]
@@ -4054,27 +4052,44 @@ class TestAWithheldResultSplits:
 class TestWhatAFidesHostSeesOfAWithheldResult:
     """Driven against the real middleware, because the value of the split is entirely its."""
 
-    def _processed(self, tool, *, host_default=None, **kw):
+    def _processed(self, tool, *, host_default=None, trusted_input=False, **kw):
         from agent_framework import FunctionInvocationContext
-        from agent_framework.security import LabelTrackingFunctionMiddleware
+        from agent_framework._middleware import FunctionMiddlewarePipeline
+        from agent_framework.security import (
+            ContentLabel,
+            IntegrityLabel,
+            LabelTrackingFunctionMiddleware,
+        )
 
         middleware = (
             LabelTrackingFunctionMiddleware()
             if host_default is None
             else LabelTrackingFunctionMiddleware(default_integrity=host_default)
         )
-        arguments = {"code": "print(1)", **kw}
+        code = "print(1)"
+        if not trusted_input:
+            variable = middleware.get_variable_store().store(
+                code, ContentLabel(integrity=IntegrityLabel.UNTRUSTED)
+            )
+            code = f"[{variable}]"
+        arguments = {"code": code, **kw}
         context = FunctionInvocationContext(function=tool, arguments=arguments)
 
-        async def call_next() -> None:
-            context.result = await tool.invoke(arguments=arguments)
+        async def call_next(current):
+            return await tool.invoke(arguments=current.arguments, context=current)
 
-        asyncio.run(middleware.process(context, call_next))
+        asyncio.run(FunctionMiddlewarePipeline(middleware).execute(context, call_next))
         seen = [
             "hidden" if (item.additional_properties or {}).get("_variable_reference") else item.text
             for item in context.result
         ]
         return seen, context.metadata["result_label"], middleware.get_context_label()
+
+    def test_trusted_inputs_allow_the_declared_promotion(self):
+        tool = _withholding_tool(_ScriptedSandbox(ExecResult(stdout="42")))
+        seen, result, conversation = self._processed(tool, trusted_input=True, files=[], outputs=[])
+        assert "hidden" not in seen
+        assert str(result.integrity) == str(conversation.integrity) == "trusted"
 
     def test_completion_verdict_and_route_stay_readable_while_the_report_is_hidden(self):
         tool = _withholding_tool(_ScriptedSandbox(ExecResult(stdout="42")))

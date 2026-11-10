@@ -1190,9 +1190,7 @@ def sandbox_tool_declarations(
             means.
     """
     declarations: dict[str, Any] = {}
-    # Coerced for the reason the scope below is, and this one is the value FIDES acts on: it
-    # accepts two spellings and treats every other as absent, so an uncoerced typo here is a
-    # tool that declares nothing while its author reads the keyword and believes otherwise.
+    # Validate caller declarations before attaching a tool.
     claimed = None if source_integrity is None else SourceIntegrity(str(source_integrity))
     cleared = frozenset(SourceChannel(str(channel)) for channel in nothing_survives_from)
     over_claimed = cleared - _open_source_channels(spec)
