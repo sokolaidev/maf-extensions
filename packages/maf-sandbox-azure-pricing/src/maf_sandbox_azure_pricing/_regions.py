@@ -75,6 +75,11 @@ _EDGE_ZONE = {region: zone for zone, regions in _EDGE_REGIONS.items() for region
 #: Every price-list location the kind knows: its ARM regions, Global, the billing zones, and the
 #: empty location of meters that have none.
 PRICE_LIST_LOCATIONS = frozenset({*_EDGE_ZONE, "Global", *BILLING_ZONES, ""})
+#: Every value the selection below writes into a row's ``matched_by``, ``zone_family`` and
+#: ``zone_basis``; a test pins that it writes nothing else.
+MATCH_KINDS = frozenset({"region", "zone", "global"})
+ZONE_FAMILIES = frozenset({"network", "front_door", "cdn_classic", "dns"})
+ZONE_BASES = frozenset({"published_region", "nearest_region", "geography", "uniform_commercial"})
 
 
 def expanded_region(region: str | None, predicate: str | None) -> str | None:

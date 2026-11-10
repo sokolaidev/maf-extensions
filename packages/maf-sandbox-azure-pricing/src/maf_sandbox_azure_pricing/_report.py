@@ -1,8 +1,9 @@
 """Validate the pinned CLI envelope, and report each retained row whole and its checked part.
 
 The report carries every retained field of each numbered row. The checked prices repeat, under the
-same numbers, only what cannot hold an instruction: numbers, flags, the kind's own selection
-labels, and text the kind checks against a set or a strict format.
+same numbers, only what cannot hold an instruction: finite prices, flags, savings plans of known
+terms, and text the kind checks against a set it holds or a strict format, its own selection labels
+included. Each value is checked where it is kept, whatever produced the row.
 """
 
 import json
@@ -12,26 +13,21 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any, cast
 
-from ._regions import PRICE_LIST_LOCATIONS, select_region
+from ._regions import (
+    BILLING_ZONES,
+    MATCH_KINDS,
+    PRICE_LIST_LOCATIONS,
+    ZONE_BASES,
+    ZONE_FAMILIES,
+    select_region,
+)
 from ._spec import PriceType
 from ._units import UNITS_OF_MEASURE
 
 UPSTREAM_ROW_LIMIT = 5000
-_PRICE_FIELDS = frozenset(
-    {
-        "retailPrice",
-        "unitPrice",
-        "isPrimaryMeterRegion",
-        "priceType",
-        "savingsPlan",
-        "matched_by",
-        "zone",
-        "zone_basis",
-        "zone_reference_region",
-        "zone_family",
-    }
-)
 _RESERVATION_TERMS = ("1 Year", "3 Years")
+_PRICES = ("retailPrice", "unitPrice")
+_SAVINGS_PLAN_FIELDS = frozenset({"term", *_PRICES})
 _CURRENCY = re.compile("[A-Z]{3}")
 _CLOCK = r"(?:[01]\d|2[0-3]):[0-5]\d"
 _DATE = re.compile(
@@ -41,6 +37,48 @@ _CHECKED_SETS: dict[str, frozenset[str]] = {
     "unitOfMeasure": UNITS_OF_MEASURE,
     "region": PRICE_LIST_LOCATIONS,
     "reservationTerm": frozenset(_RESERVATION_TERMS),
+    "priceType": frozenset(PriceType),
+    "matched_by": MATCH_KINDS,
+    "zone": frozenset(BILLING_ZONES),
+    "zone_basis": ZONE_BASES,
+    "zone_reference_region": PRICE_LIST_LOCATIONS,
+    "zone_family": ZONE_FAMILIES,
+}
+
+
+def _is_price(value: object) -> bool:
+    if type(value) not in (int, float):
+        return False
+    number = cast("float", value)
+    return math.isfinite(number) and number >= 0
+
+
+def _is_flag(value: object) -> bool:
+    return type(value) is bool
+
+
+def _is_savings_plan(value: object) -> bool:
+    if not isinstance(value, list):
+        return False
+    plans = cast("list[object]", value)
+    if len(plans) > len(_RESERVATION_TERMS):
+        return False
+    for raw in plans:
+        if not isinstance(raw, dict):
+            return False
+        plan = cast("dict[str, object]", raw)
+        if frozenset(plan) != _SAVINGS_PLAN_FIELDS or plan["term"] not in _RESERVATION_TERMS:
+            return False
+        if not all(_is_price(plan[name]) for name in _PRICES):
+            return False
+    return True
+
+
+_CHECKED_VALUES: dict[str, Callable[[object], bool]] = {
+    "retailPrice": _is_price,
+    "unitPrice": _is_price,
+    "isPrimaryMeterRegion": _is_flag,
+    "savingsPlan": _is_savings_plan,
 }
 
 
@@ -164,21 +202,25 @@ def _row(raw: object) -> dict[str, Any]:
 
 
 def _checked(name: str, value: object) -> bool:
+    if (check_value := _CHECKED_VALUES.get(name)) is not None:
+        return check_value(value)
+    if not isinstance(value, str):
+        return False
     if (allowed := _CHECKED_SETS.get(name)) is not None:
         return value in allowed
     check = _CHECKED_FORMATS.get(name)
-    return check is not None and isinstance(value, str) and check(value)
+    return check is not None and check(value)
 
 
 def checked_row(number: int, row: dict[str, Any]) -> dict[str, Any]:
     """The part of a projected row the kind can vouch for, carrying ``row: number``.
 
-    A null and every field of :data:`_PRICE_FIELDS` are kept; a text field only when its check
-    holds, so a unit outside the set leaves the checked row without a unit.
+    A null is kept, and any other value only when its own check holds, whatever produced the row;
+    so a unit outside the set leaves the checked row without a unit.
     """
     checked: dict[str, Any] = {"row": number}
     for name, value in row.items():
-        if value is None or name in _PRICE_FIELDS or _checked(name, value):
+        if value is None or _checked(name, value):
             checked[name] = value
     return checked
 
