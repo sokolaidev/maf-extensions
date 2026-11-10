@@ -38,9 +38,12 @@ from agent_framework import (
     tool,
 )
 from agent_framework._compaction import (
+    EXCLUDE_REASON_KEY,
     EXCLUDED_KEY,
     GROUP_ANNOTATION_KEY,
     SUMMARIZED_BY_SUMMARY_ID_KEY,
+    annotate_message_groups,
+    annotate_token_counts,
 )
 
 from maf_compaction import (
@@ -447,29 +450,73 @@ async def test_a_replacement_made_on_a_refused_pinned_call_reaches_its_retry(
     assert run.sent[pinned + 1] == run.sent[pinned], "the retry sent other messages"
 
 
+def _user_half(
+    summarizer: _Summarizer, mode: str = SUMMARY_MODE_BOUNDARY
+) -> UserTurnAnchoredSummarizationCompactionStrategy:
+    return UserTurnAnchoredSummarizationCompactionStrategy(
+        max_input_tokens=1_000,
+        tokenizer=TOKENIZER,
+        client=summarizer,
+        max_summary_input_tokens=100_000,
+        summary_mode=mode,
+        remembered_requests=2,
+    )
+
+
+@pytest.mark.parametrize("change", ["removed", "edited"])
+@pytest.mark.parametrize("mode", [SUMMARY_MODE_BOUNDARY, SUMMARY_MODE_RECOMPACT])
+async def test_a_held_summary_excludes_again_what_it_links_when_another_source_changed(
+    mode: str, change: str
+) -> None:
+    summarizer = _Summarizer()
+    strategy = _user_half(summarizer, mode)
+    if mode == SUMMARY_MODE_RECOMPACT:
+        messages = _turns(after_summary=True)
+        assert await strategy(messages)
+    else:
+        messages = _summaries()
+        annotate_message_groups(messages)
+        annotate_token_counts(messages, tokenizer=TOKENIZER)
+        assert await strategy.fold_if_smaller(messages) == "folded"
+    released = [m for m in messages if _is_superseded(m.text or "")][-1]
+    index, other = next(
+        (index, m)
+        for index, m in enumerate(messages)
+        if m.additional_properties.get(EXCLUDED_KEY) and m is not released
+    )
+    if change == "removed":
+        del messages[index]
+    else:
+        messages[index] = Message(
+            other.role,
+            [f"{other.text} Edited."],
+            message_id=other.message_id,
+            additional_properties=dict(other.additional_properties),
+        )
+    # What the framework's tool loop does to a superseded summary while it keeps the new one.
+    released.additional_properties[GROUP_ANNOTATION_KEY].pop(SUMMARIZED_BY_SUMMARY_ID_KEY)
+    released.additional_properties.pop(EXCLUDE_REASON_KEY)
+    released.additional_properties[EXCLUDED_KEY] = False
+    annotate_message_groups(messages)
+
+    strategy.replay_summaries(messages)
+
+    assert released.additional_properties[EXCLUDED_KEY], "sent beside the summary superseding it"
+    assert summarizer.requests == 1
+
+
 @pytest.mark.parametrize("lost", ["source", "state"])
 async def test_turns_excluded_for_a_summary_that_cannot_be_put_back_are_compacted_afresh(
     lost: str,
 ) -> None:
     summarizer = _Summarizer()
-
-    def strategy() -> UserTurnAnchoredSummarizationCompactionStrategy:
-        return UserTurnAnchoredSummarizationCompactionStrategy(
-            max_input_tokens=1_000,
-            tokenizer=TOKENIZER,
-            client=summarizer,
-            max_summary_input_tokens=100_000,
-            summary_mode=SUMMARY_MODE_BOUNDARY,
-            remembered_requests=2,
-        )
-
-    compaction = strategy()
+    compaction = _user_half(summarizer)
     carried = _turns()
     assert await compaction(list(carried))
     if lost == "source":
         carried.remove(next(m for m in carried if m.additional_properties.get(EXCLUDED_KEY)))
     else:
-        compaction = strategy()
+        compaction = _user_half(summarizer)
 
     retry = list(carried)
     assert await compaction(retry)

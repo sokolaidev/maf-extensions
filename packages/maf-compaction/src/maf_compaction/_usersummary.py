@@ -392,12 +392,18 @@ def _linked_ids(message: Message) -> list[str]:
     return [value for value in cast(list[Any], ids) if isinstance(value, str)]
 
 
-def _superseded_standing(messages: list[Message], summary: Message) -> bool:
-    """Return whether a summary ``summary`` stands for is still being sent beside it."""
+def _superseded_standing(messages: list[Message], summary: Message) -> list[Message]:
+    """Return the summaries ``summary`` stands for that are still being sent beside it.
+
+    Found by its links, whatever became of its other sources. Summaries only: this strategy
+    makes their ids unique, while a turn's id may be positional.
+    """
     linked = set(_linked_ids(summary))
-    return any(
-        message.message_id in linked and _is_standing_summary(message) for message in messages
-    )
+    return [
+        message
+        for message in messages
+        if message.message_id in linked and _is_standing_summary(message)
+    ]
 
 
 def _release_sources(messages: list[Message], summary_ids: set[str]) -> bool:
@@ -420,21 +426,12 @@ def _release_sources(messages: list[Message], summary_ids: set[str]) -> bool:
     return released
 
 
-def _supersede_again(members: list[Message], *, summary_id: str, reason: str) -> bool:
-    """Exclude again the standing summaries among ``members`` of a summary already in the list.
-
-    Only summaries, whose ids this strategy makes unique; a turn's id may be positional. A
-    boundary mark is released first, as a fold releases it.
-
-    Returns:
-        True if any summary was excluded.
-    """
-    standing = [message for message in members if _is_standing_summary(message)]
-    for message in standing:
+def _supersede_again(summaries: list[Message], *, summary_id: str, reason: str) -> None:
+    """Exclude again ``summaries`` for the summary superseding them, releasing a boundary mark."""
+    for message in summaries:
         set_preserved(message, preserved=False)
         _mark_summarized_by(message, summary_id)
         set_excluded(message, excluded=True, reason=reason)
-    return bool(standing)
 
 
 def _next_summary_id(messages: list[Message], *, prefix: str, minimum: int) -> str:
@@ -1150,7 +1147,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         excluded for an edit that cannot be put back are released, so they are sent whole
         rather than not at all. The framework's tool loop releases the summaries a fold or a
         recompaction superseded while it keeps the summary that superseded them, so those are
-        excluded again.
+        excluded again, found by the held summary's links whatever became of its other sources.
         """
         self._protect_media(messages)
         held = {message.message_id for message in messages if message.message_id}
@@ -1167,9 +1164,10 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             summary = next(
                 (message for message in messages if message.message_id == kept.summary_id), None
             )
-            if summary is None and kept.summary_id in linked:
-                continue
-            if summary is not None and not _superseded_standing(messages, summary):
+            superseded = [] if summary is None else _superseded_standing(messages, summary)
+            if (summary is None and kept.summary_id in linked) or (
+                summary is not None and not superseded
+            ):
                 continue
             turns = [
                 span
@@ -1187,41 +1185,45 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 for index in range(len(turns) - width + 1)
                 if identities[index : index + width] == kept.sources
             ]
+            if summary is not None:
+                # Held, so only its exclusions are repeated; the window says whether turns grew.
+                _supersede_again(superseded, summary_id=kept.summary_id, reason=kept.reason)
+                self._replayed += 1
+                changed = True
+                grew = len(matches) != 1 or identities[matches[0] + width :] != kept.tail
+                chain_fold = kept.summary_id in self._kept_folds or chain_fold
+                continue
             if len(matches) != 1:
-                if summary is None and _release_sources(messages, {kept.summary_id}):
+                if _release_sources(messages, {kept.summary_id}):
                     released.add(kept.summary_id)
                 continue
             start = matches[0]
             selected = [turns[start + offset] for offset in kept.selected]
             members = [messages[int(span["start_index"])] for span in selected]
-            if summary is not None:
-                if not _supersede_again(members, summary_id=kept.summary_id, reason=kept.reason):
-                    continue
-            else:
-                # Sources still excluded for the edit carry the decision; it was made on them.
-                if any(_excluded_for(member) != kept.summary_id for member in members):
-                    freed = _release_sources(messages, {kept.summary_id})
-                    standing = self._observe_summaries(messages)
-                    eligible = (
-                        standing
-                        if kept.reason == FOLD_EXCLUDE_REASON
-                        else self._band(messages, standing)
-                    )
-                    if any(span not in eligible for span in selected):
-                        if freed:
-                            released.add(kept.summary_id)
-                        continue
-                if kept.reason == FOLD_EXCLUDE_REASON:
-                    for member in members:
-                        set_preserved(member, preserved=False)
-                self._replace(
-                    messages,
-                    selected,
-                    kept.text,
-                    summary_id=kept.summary_id,
-                    reason=kept.reason,
-                    remember=False,
+            # Sources still excluded for the edit carry the decision; it was made on them.
+            if any(_excluded_for(member) != kept.summary_id for member in members):
+                freed = _release_sources(messages, {kept.summary_id})
+                standing = self._observe_summaries(messages)
+                eligible = (
+                    standing
+                    if kept.reason == FOLD_EXCLUDE_REASON
+                    else self._band(messages, standing)
                 )
+                if any(span not in eligible for span in selected):
+                    if freed:
+                        released.add(kept.summary_id)
+                    continue
+            if kept.reason == FOLD_EXCLUDE_REASON:
+                for member in members:
+                    set_preserved(member, preserved=False)
+            self._replace(
+                messages,
+                selected,
+                kept.text,
+                summary_id=kept.summary_id,
+                reason=kept.reason,
+                remember=False,
+            )
             self._replayed += 1
             if kept.reason == EXCLUDE_REASON:
                 self._replaced = len(selected)
