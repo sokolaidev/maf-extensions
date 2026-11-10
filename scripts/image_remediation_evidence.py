@@ -197,6 +197,8 @@ def restore_monitor(
 
 def current(client: GitHub, receipt: dict[str, Any]) -> None:
     """Refuse stale base, catalogue or monitor attempts before a proposal can be published."""
+    if "rehearsalFixture" in receipt:
+        raise ValueError("Historical findings are not a current-evidence receipt")
     if (
         not timedelta(0)
         <= timestamp(now()) - timestamp(receipt["acquiredAt"])

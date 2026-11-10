@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +76,8 @@ def competing_pulls(client: GitHub, paths: set[str]) -> list[int]:
 def validate(root: Path, work: Path) -> tuple[dict[str, Any], dict[str, bytes]]:
     """Recompute every edit from retained evidence before consuming a proposal."""
     receipt = read(work / "receipt.json")
+    if "rehearsalFixture" in receipt:
+        raise ValueError("Historical evidence requires the isolated rehearsal entry point")
     if git(root, "rev-parse", "HEAD").strip() != receipt["source"]:
         raise ValueError("Platform qualification source changed")
     expected = read(work / "plan.json")
@@ -159,9 +162,17 @@ def vendor_checks(expected: dict[str, Any], profile: str) -> list[dict[str, str]
     return reports
 
 
-def scan(root: Path, work: Path, profile: str, variant: str, output: Path) -> None:
+def scan(
+    root: Path,
+    work: Path,
+    profile: str,
+    variant: str,
+    output: Path,
+    *,
+    validator: Callable[[Path, Path], tuple[dict[str, Any], dict[str, bytes]]] = validate,
+) -> None:
     """Build ordinary recipes and retain runtime, vendor and exact-image scan evidence."""
-    expected, files = validate(root, work)
+    expected, files = validator(root, work)
     if profile not in expected["affectedProfiles"] or variant not in {"baseline", "candidate"}:
         raise ValueError("Unplanned platform qualification target")
     output.mkdir(parents=True, exist_ok=False)
@@ -241,9 +252,15 @@ def verify_packages(expected: dict[str, Any], sbom: dict[str, Any], profile: str
                     raise ValueError("Targeted package inventory identifies another vendor")
 
 
-def qualify(root: Path, work: Path, results: Path) -> dict[str, Any]:
+def qualify(
+    root: Path,
+    work: Path,
+    results: Path,
+    *,
+    validator: Callable[[Path, Path], tuple[dict[str, Any], dict[str, bytes]]] = validate,
+) -> dict[str, Any]:
     """Require complete baseline/candidate evidence for every inherited affected profile."""
-    expected, files = validate(root, work)
+    expected, files = validator(root, work)
     receipt = read(work / "receipt.json")
     baseline_hashes = expected["inputs"]
     candidate_hashes = baseline_hashes | file_hashes(files)

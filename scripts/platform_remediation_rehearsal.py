@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import image_remediation_pr as publication
+import platform_rehearsal_history as history
 import platform_remediation as platform
 from container_release import REPOSITORY, ROOT, read, write
 from container_release_history import GitHub, decode, encode, positive_id
@@ -22,7 +23,7 @@ from plan_platform_remediation import RUNTIME_RECIPES, plan
 
 MANIFEST = "scripts/platform_rehearsal_cases.json"
 WORKFLOW = "platform-image-remediation-rehearsal.yml"
-CASES = ("current-rebuild", "bicep-update", "apk-pinned", "apk-unpinned")
+CASES = ("current-rebuild", "bicep-update", "apk-pinned", "apk-unpinned", history.CASE)
 
 
 class InterruptedDelivery(RuntimeError):
@@ -110,22 +111,26 @@ def case_rows(root: Path, expected: dict[str, Any], case: str) -> list[dict[str,
         if row["type"] == rule["type"] and row["status"] == rule["findingStatus"]
     ]
     if not rows:
-        raise ValueError(f"Requested rehearsal case {case} is unavailable in current evidence")
+        raise ValueError(f"Requested rehearsal case {case} is unavailable in selected evidence")
     if rule["qualificationStatus"] == "release-needed" and expected["updates"]:
         raise ValueError("Rebuild-only rehearsal requires a plan without source edits")
     return rows
 
 
 def acquire(root: Path, work: Path) -> dict[str, Any]:
-    """Use production acquisition and freshness rules; never substitute synthetic findings."""
+    """Acquire the explicit finding case and current delivery authority without fallback."""
     request = request_record(root)
-    expected = acquire_with_retry(
-        GitHub(),
-        root,
-        work,
-        selected_profiles=RUNTIME_RECIPES,
-        planner=plan,
-        require_all_profiles=False,
+    expected = (
+        history.acquire(root, work)
+        if request["case"] == history.CASE
+        else acquire_with_retry(
+            GitHub(),
+            root,
+            work,
+            selected_profiles=RUNTIME_RECIPES,
+            planner=plan,
+            require_all_profiles=False,
+        )
     )
     write(work / "rehearsal-request.json", request)
     if expected is None:
@@ -134,14 +139,26 @@ def acquire(root: Path, work: Path) -> dict[str, Any]:
     return expected
 
 
-def qualify(root: Path, work: Path, results: Path) -> dict[str, Any]:
-    """Require the chosen case, all ordinary profile checks and fresh production evidence."""
+def validator(root: Path, work: Path):
+    """Bind every worker to the dispatched case before selecting its evidence validator."""
     request = request_record(root)
     if read(work / "rehearsal-request.json") != request:
         raise ValueError("Rehearsal request belongs to another source, run, attempt or case")
-    expected, _ = platform.validate(root, work)
+    return history.validate if request["case"] == history.CASE else platform.validate
+
+
+def authority(work: Path, case: str) -> dict[str, Any]:
+    """Historical findings never replace the current receipt used at every delivery write."""
+    return history.authority(work) if case == history.CASE else read(work / "receipt.json")
+
+
+def qualify(root: Path, work: Path, results: Path) -> dict[str, Any]:
+    """Require the chosen case, all ordinary profile checks and fresh production evidence."""
+    request = request_record(root)
+    validate = validator(root, work)
+    expected, _ = validate(root, work)
     rows = case_rows(root, expected, request["case"])
-    report = platform.qualify(root, work, results)
+    report = platform.qualify(root, work, results, validator=validate)
     rule = read(root / MANIFEST)["cases"][request["case"]]
     if report["status"] != rule["qualificationStatus"]:
         raise ValueError("Platform results do not satisfy the requested rehearsal case")
@@ -163,12 +180,14 @@ def qualify(root: Path, work: Path, results: Path) -> dict[str, Any]:
         rule["requireBaselineMatch"] and observed != {(row["id"], row["component"]) for row in rows}
     ):
         raise ValueError("Requested finding removal was not demonstrated")
-    current(GitHub(), read(work / "receipt.json"))
+    current(GitHub(), authority(work, request["case"]))
     return {
         **request,
         "status": "qualified",
         "scope": "controlled-rehearsal",
         "productionRecovery": False,
+        "evidenceMode": "historical-replay" if request["case"] == history.CASE else "current",
+        "fixture": history.fixture(root) if request["case"] == history.CASE else None,
         "caseMatches": counts,
         "qualification": report,
     }
@@ -189,10 +208,13 @@ def delivery_payload(
         "qualificationSha256": hashlib.sha256(encode(qualified)).hexdigest(),
         "evidence": evidence_url,
         "productionRecovery": False,
+        "evidenceMode": qualified.get("evidenceMode", "current"),
+        "fixture": qualified.get("fixture"),
     }
     files = {publication.REHEARSAL_PATH: encode(record)}
     report = {
         "kind": "platform-rehearsal",
+        "evidenceMode": qualified.get("evidenceMode", "current"),
         "status": "ready",
         "source": qualified["source"],
         "files": {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()},
@@ -272,9 +294,11 @@ def lifecycle(
 def main() -> None:
     """Expose the manual workflow's read-only qualification and explicit isolated delivery."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("acquire", "qualify", "deliver"))
+    parser.add_argument("command", choices=("acquire", "apply", "scan", "qualify", "deliver"))
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--results", type=Path)
+    parser.add_argument("--profile")
+    parser.add_argument("--variant", choices=("baseline", "candidate"))
     parser.add_argument("--bot")
     parser.add_argument("--artifact-id", type=int)
     args = parser.parse_args()
@@ -286,8 +310,23 @@ def main() -> None:
                 {"source": request["source"], "profiles": json.dumps(expected["affectedProfiles"])}
             )
             return
+        if args.command == "apply":
+            platform.apply(ROOT, validator(ROOT, args.work)(ROOT, args.work)[1])
+            return
         if args.results is None:
             parser.error("qualification requires results")
+        if args.command == "scan":
+            if args.profile is None or args.variant is None:
+                parser.error("scan requires profile and variant")
+            platform.scan(
+                ROOT,
+                args.work,
+                args.profile,
+                args.variant,
+                args.results,
+                validator=validator(ROOT, args.work),
+            )
+            return
         qualified = qualify(ROOT, args.work, args.results)
         if args.command == "qualify":
             write(args.work / "rehearsal-qualified.json", qualified)
@@ -306,7 +345,7 @@ def main() -> None:
             report, files = delivery_payload(ROOT, qualified, url)
             lifecycle(
                 RehearsalGitHub(request["runId"]),
-                read(args.work / "receipt.json"),
+                authority(args.work, request["case"]),
                 report,
                 files,
                 args.bot,
