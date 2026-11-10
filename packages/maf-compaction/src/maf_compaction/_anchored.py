@@ -52,10 +52,11 @@ from __future__ import annotations
 import re
 from collections.abc import Collection
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from agent_framework import Content, Message
 from agent_framework._compaction import (
+    EXCLUDE_REASON_KEY,
     EXCLUDED_KEY,
     GROUP_ANNOTATION_KEY,
     SUMMARY_OF_GROUP_IDS_KEY,
@@ -196,6 +197,12 @@ def _is_marker(message: Message) -> bool:
         and message.message_id.startswith(MARKER_ID_PREFIX)
         and message.text in (*_NOTES.values(), _ANSWERED_NOTE)
     )
+
+
+def _noted_group_ids(note: Message) -> list[str]:
+    """Return the ids of the groups a note stands in for."""
+    links = cast(dict[str, Any], note.additional_properties[GROUP_ANNOTATION_KEY])
+    return cast(list[str], links[SUMMARY_OF_GROUP_IDS_KEY])
 
 
 @dataclass(frozen=True, slots=True)
@@ -739,20 +746,27 @@ class AnchoredCompactionStrategy:
         :meth:`_shed` keeps are kept here too -- a preserved group, a group whose call and
         result would not leave together, and a note are never shed -- and a group is shed only
         when every one of its messages carries an id in ``message_ids``, so a group that has
-        gained a message since is left alone.
+        gained a message since is left alone. A group already shed whose note this list lacks
+        gets the note back: the messages outlive the list the note was inserted into.
 
         Args:
             messages: The conversation, mutated in place.
             message_ids: The ids of the messages shed before.
 
         Returns:
-            True if any group was shed.
+            True if any group was shed or had its note put back.
         """
         if not message_ids:
             return False
         annotate_message_groups(messages)
         spans = group_messages(messages)
         removable = removable_spans(messages, spans)
+        noted = {
+            group_id
+            for message in messages
+            if _is_marker(message)
+            for group_id in _noted_group_ids(message)
+        }
         dropped: list[dict[str, Any]] = []
         for group in spans:
             kind = group.get("kind")
@@ -762,6 +776,11 @@ class AnchoredCompactionStrategy:
             if not all(message.message_id in message_ids for message in members):
                 continue
             if all(message.additional_properties.get(EXCLUDED_KEY, False) for message in members):
+                if group["group_id"] not in noted and all(
+                    message.additional_properties.get(EXCLUDE_REASON_KEY) == EXCLUDE_REASON
+                    for message in members
+                ):
+                    dropped.append(group)
                 continue
             if (
                 any_preserved(members)
