@@ -8,6 +8,8 @@ labels, and text the kind checks against a set or a strict format.
 import json
 import math
 import re
+from collections.abc import Callable
+from datetime import datetime
 from typing import Any, cast
 
 from ._regions import PRICE_LIST_LOCATIONS, select_region
@@ -31,15 +33,35 @@ _PRICE_FIELDS = frozenset(
 )
 _RESERVATION_TERMS = ("1 Year", "3 Years")
 _CURRENCY = re.compile("[A-Z]{3}")
-_DATE = re.compile(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})?)?")
+_DATE = re.compile(
+    r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?)?"
+)
 _CHECKED_SETS: dict[str, frozenset[str]] = {
     "unitOfMeasure": UNITS_OF_MEASURE,
     "region": PRICE_LIST_LOCATIONS,
     "reservationTerm": frozenset(_RESERVATION_TERMS),
 }
-_CHECKED_FORMATS: dict[str, re.Pattern[str]] = {
-    "currencyCode": _CURRENCY,
-    "effectiveStartDate": _DATE,
+
+
+def _is_currency(value: str) -> bool:
+    return _CURRENCY.fullmatch(value) is not None
+
+
+def _is_date(value: str) -> bool:
+    # The shape admits only digits and separators and bounds the offset, which parsing would
+    # normalise (+05:60 to +06:00); parsing then refuses an impossible date or time.
+    if _DATE.fullmatch(value) is None:
+        return False
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+_CHECKED_FORMATS: dict[str, Callable[[str], bool]] = {
+    "currencyCode": _is_currency,
+    "effectiveStartDate": _is_date,
 }
 _TEXT_FIELDS = (
     "armSkuName",
@@ -142,8 +164,8 @@ def _row(raw: object) -> dict[str, Any]:
 def _checked(name: str, value: object) -> bool:
     if (allowed := _CHECKED_SETS.get(name)) is not None:
         return value in allowed
-    pattern = _CHECKED_FORMATS.get(name)
-    return pattern is not None and isinstance(value, str) and pattern.fullmatch(value) is not None
+    check = _CHECKED_FORMATS.get(name)
+    return check is not None and isinstance(value, str) and check(value)
 
 
 def checked_row(number: int, row: dict[str, Any]) -> dict[str, Any]:
