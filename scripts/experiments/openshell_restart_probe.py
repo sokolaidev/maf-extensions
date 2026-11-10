@@ -136,11 +136,10 @@ class RestartAuthority(Transitions):
 
     def recover(self, gateway, receipt, attached):
         boundary = None
+        original = None
         if getattr(self.client, "expected_version", "0.1.2") == "0.1.7":
             original_runtime = snapshot(self.identity)
-            original_boundary = boundary_descriptor(self.identity, original_runtime)
-        else:
-            original_runtime = original_boundary = None
+            original = original_runtime, boundary_descriptor(self.identity, original_runtime)
         row, before = self.restart_runtime(gateway, receipt, attached)
         row["before_status_hex"] = before.SerializeToString().hex()
         self.fixture.save()
@@ -148,7 +147,8 @@ class RestartAuthority(Transitions):
             raise RuntimeError("recovery experiment requires independently verified replacement")
         runtime, spec = row["after"], row["after_spec_hex"]
         self.stable(runtime, spec)
-        if original_runtime is not None and original_boundary is not None:
+        if original is not None:
+            original_runtime, original_boundary = original
             if (
                 not row.get("original_supervisor_absent")
                 or not row.get("original_processes_retired")
