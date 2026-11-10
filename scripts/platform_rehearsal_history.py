@@ -73,6 +73,11 @@ def validate(root: Path, work: Path) -> tuple[dict[str, Any], dict[str, bytes]]:
     return expected, proposal(root, expected)
 
 
+def authority_scope(_root: Path, _directories: list[Path]) -> dict[str, Any]:
+    """Retain authority for every rebuilt profile independently of current actionable findings."""
+    return {"kind": "platform-rehearsal-authority", "affectedProfiles": sorted(BICEP_ROUTES)}
+
+
 def acquire(root: Path, work: Path) -> dict[str, Any]:
     """Restore immutable historical findings and retain fresh production delivery authority."""
     work.mkdir(parents=True, exist_ok=False)
@@ -91,7 +96,7 @@ def acquire(root: Path, work: Path) -> dict[str, Any]:
         root,
         work / "current",
         selected_profiles=BICEP_ROUTES,
-        planner=plan,
+        planner=authority_scope,
         require_all_profiles=False,
     )
     if acquired is None:

@@ -8,6 +8,7 @@ import json
 import shutil
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -22,6 +23,7 @@ from container_release import REPOSITORY, digest, read, scan_result, write  # no
 from test_go_remediation import AT, IMAGE, retained  # noqa: E402
 from test_image_remediation import BOT, SOURCE, URL, FakeGitHub  # noqa: E402
 from test_image_remediation import app_key as app_key  # noqa: E402
+from test_image_remediation import current_state as current_state  # noqa: E402
 from test_platform_remediation import apk, dotnet, planner  # noqa: E402
 from test_platform_remediation import checkout as checkout  # noqa: E402
 from test_platform_remediation import qualified as qualified  # noqa: E402
@@ -548,7 +550,7 @@ def test_historical_acquisition_authenticates_pins_and_current_scope(
         assert observed == [
             {
                 "selected_profiles": history.BICEP_ROUTES,
-                "planner": history.plan,
+                "planner": history.authority_scope,
                 "require_all_profiles": False,
             }
         ]
@@ -570,6 +572,76 @@ def test_historical_delivery_receipt_labels_its_evidence(historical, monkeypatch
     assert receipt["evidenceMode"] == "historical-replay"
     assert receipt["fixture"] == history.fixture(root)
     assert receipt["productionRecovery"] is False
+
+
+@pytest.mark.parametrize("finding_profile", ["bicep-docker-sbx", "bicep", None])
+def test_historical_acquisition_keeps_all_current_bicep_authority(
+    historical, current_state, tmp_path, monkeypatch, finding_profile
+):
+    root, old_work, _ = historical
+    seeds = tmp_path / "current-monitor"
+    catalogue = {"current": {}, "releases": {}}
+    for profile in sorted(history.BICEP_ROUTES):
+        name = f"{profile}-0.2.3"
+        seed = retained(seeds, [apk()], profile=profile, name=name)
+        observation = read(seed / "observation.json")
+        if profile != finding_profile:
+            report = read(seed / "grype.json")
+            report["matches"] = []
+            write(seed / "grype.json", report)
+            observation["assessment"] = scan_result(
+                report, IMAGE, AT, sbom=read(seed / "sbom.syft.json")
+            ) | {"digest": observation["candidate"]["registryDigest"]}
+        observation["assessment"].update(monitorRunId="123", monitorRunAttempt=1)
+        write(seed / "observation.json", observation)
+        candidate = observation["candidate"]
+        catalogue["current"][profile] = name
+        catalogue["releases"][name] = {
+            **candidate,
+            "candidate": candidate,
+            "latestAttempt": {
+                **observation["assessment"],
+                "evidenceRelease": "image-monitor-123-1",
+            },
+        }
+    current_plan = planner.plan(root, list(seeds.iterdir()))
+    expected_scope = (
+        [finding_profile]
+        if finding_profile == "bicep-docker-sbx"
+        else sorted(history.BICEP_ROUTES)
+        if finding_profile
+        else []
+    )
+    assert current_plan["affectedProfiles"] == expected_scope
+    assert not current_plan["updates"]
+    if finding_profile:
+        assert current_plan["findings"][0]["status"] == "rebuild-required"
+    snapshot = SimpleNamespace(reference=current_state["catalogue"], catalogue=catalogue)
+    monkeypatch.setattr(acquisition, "History", lambda _: SimpleNamespace(head=lambda: snapshot))
+    monkeypatch.setattr(acquisition, "git", lambda *_: SOURCE)
+    monkeypatch.setattr(acquisition, "monitor_source", lambda *_: SOURCE)
+    authenticated = []
+    monkeypatch.setattr(
+        acquisition,
+        "release_evidence",
+        lambda _, record, __: authenticated.append(record["profile"]),
+    )
+    monkeypatch.setattr(
+        acquisition, "restore_monitor", lambda *args: shutil.copytree(seeds, args[-1])
+    )
+    monkeypatch.setattr(history, "monitor_source", lambda *_: history.fixture(root)["producer"])
+    monkeypatch.setattr(
+        history, "restore_monitor", lambda *args: shutil.copytree(old_work / "evidence", args[-1])
+    )
+    work = tmp_path / "acquired-authority"
+    rehearsal.acquire(root, work)
+    assert authenticated == sorted(history.BICEP_ROUTES)
+    assert set(read(work / "current/receipt.json")["images"]) == set(history.BICEP_ROUTES)
+    assert history.validate(root, work)[0] == read(old_work / "plan.json")
+    acquisition.current(acquisition.GitHub(), history.authority(work))
+    catalogue["releases"][catalogue["current"]["bicep-avm"]]["registryDigest"] = "changed"
+    with pytest.raises(acquisition.EvidenceChanging, match="releases or assessments changed"):
+        acquisition.current(acquisition.GitHub(), history.authority(work))
 
 
 def test_historical_delivery_cli_passes_only_current_authority_to_publisher(
