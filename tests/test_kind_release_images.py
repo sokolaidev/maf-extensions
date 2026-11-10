@@ -1,4 +1,4 @@
-"""Kind releases require qualified compatible images independently of vulnerability monitoring."""
+"""Image compatibility remains strict independently of Python package publication."""
 
 from __future__ import annotations
 
@@ -550,7 +550,7 @@ def test_non_image_packages_and_implementation_changes_need_no_catalogue(monkeyp
 
 
 @pytest.mark.workflow
-def test_image_readiness_gates_publication_only_and_is_rechecked_after_approval():
+def test_package_publication_has_no_image_readiness_prerequisite():
     root = Path(__file__).resolve().parents[1]
     tests = yaml.safe_load((root / ".github/workflows/tests.yml").read_text(encoding="utf-8"))
     assert "kind-images" not in tests["jobs"]["tests"]["needs"]
@@ -562,19 +562,40 @@ def test_image_readiness_gates_publication_only_and_is_rechecked_after_approval(
     publish = yaml.safe_load(
         (root / ".github/workflows/publish-packages.yml").read_text(encoding="utf-8")
     )
-    for name in ("build", "publish"):
-        assert publish["jobs"][name]["permissions"]["actions"] == "read"
-        steps = publish["jobs"][name]["steps"]
-        guard_step = next(s for s in steps if "check_kind_release_images.py" in s.get("run", ""))
-        assert "if" not in guard_step
-        assert '--package "$PACKAGE"' in guard_step["run"]
-    steps = publish["jobs"]["publish"]["steps"]
-    check_index = next(
-        i for i, s in enumerate(steps) if "check_kind_release_images.py" in s.get("run", "")
+    # An indirect upload prerequisite must not restore the image gate.
+    pending = ["publish"]
+    visited = set()
+    while pending:
+        name = pending.pop()
+        if name in visited:
+            continue
+        visited.add(name)
+        job = publish["jobs"][name]
+        serialized = json.dumps(job)
+        for image_check in (
+            "check_kind_release_images",
+            "qualify_kind_consumers",
+            "kind-consumer-qualification",
+            "container-image-",
+            "image-security",
+            "pull_live_image",
+        ):
+            assert image_check not in serialized, (name, image_check)
+        assert "attestations" not in job.get("permissions", {})
+        needs = job.get("needs", [])
+        pending.extend([needs] if isinstance(needs, str) else needs)
+    assert {"build", "smoke", "published-cores", "core-against-dependents"} <= visited
+
+
+@pytest.mark.workflow
+def test_independent_image_qualification_keeps_runtime_failures_visible():
+    root = Path(__file__).resolve().parents[1]
+    workflow = yaml.safe_load(
+        (root / ".github/workflows/kind-consumer-qualification.yml").read_text(encoding="utf-8")
     )
-    upload_index = next(i for i, s in enumerate(steps) if s.get("name") == "Publish")
-    assert check_index < upload_index
-    checkout = next(s for s in steps if s.get("with", {}).get("path") == "release-guard")
-    assert "if" not in checkout
-    assert checkout["with"]["fetch-depth"] == 0
-    assert "images/release-profiles.json" in checkout["with"]["sparse-checkout"]
+    job = workflow["jobs"]["qualify"]
+    assert not job.get("continue-on-error", False)
+    step = next(s for s in job["steps"] if "qualify_kind_consumers.py qualify" in s.get("run", ""))
+    assert not step.get("continue-on-error", False)
+    assert "||" not in step["run"]
+    assert workflow["jobs"]["attest"]["permissions"]["attestations"] == "write"

@@ -1,4 +1,4 @@
-"""Verify published image identity and consumer compatibility before releasing kinds."""
+"""Verify published image identity and consumer compatibility independently of package releases."""
 
 from __future__ import annotations
 
@@ -224,7 +224,7 @@ def check(root: Path, head: str, packages: list[str]) -> list[dict[str, Any]]:
 
 
 def main() -> None:
-    """Check version-changing PRs or an explicitly selected package before upload."""
+    """Check image compatibility for version changes or an explicitly selected package."""
     parser = argparse.ArgumentParser(description=__doc__)
     selection = parser.add_mutually_exclusive_group(required=True)
     selection.add_argument("--base", help="PR base commit")
@@ -249,7 +249,7 @@ def main() -> None:
         message = (
             str(error) if isinstance(error, ValueError) else "Image readiness evidence unavailable"
         )
-        parser.exit(1, f"Kind release blocked: {message}\n")
+        parser.exit(1, f"Image compatibility check failed: {message}\n")
 
 
 if __name__ == "__main__":
