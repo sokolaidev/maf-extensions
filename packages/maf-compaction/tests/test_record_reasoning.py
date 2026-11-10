@@ -26,8 +26,8 @@ from test_record_budget import (
 )
 
 from maf_compaction._composed import DEFAULT_RECORD_MERGE_PROMPT, _transcript, harder_record_prompt
+from maf_compaction._request import RECALL_PROMPT_KEY
 from maf_compaction._toolsummary import (
-    RECALL_PROMPT_KEY,
     active_record_groups,
     consolidatable_record_groups,
     reshapeable_record_groups,
