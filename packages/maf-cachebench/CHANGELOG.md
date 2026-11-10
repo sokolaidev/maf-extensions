@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.6.0...maf-cachebench-v0.6.1) (2026-11-10)
+
+
+### Fixes
+
+* **cachebench:** support the maf-compaction 0.12 release line ([#2612](https://github.com/sokolaidev/maf-extensions/issues/2612)) ([d8e68c3](https://github.com/sokolaidev/maf-extensions/commit/d8e68c34a64d2882626fa1434d4ad3c042c1a7aa))
+
 ## [0.6.0](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.5.1...maf-cachebench-v0.6.0) (2026-11-08)
 
 
