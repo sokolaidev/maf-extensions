@@ -72,6 +72,9 @@ _EDGE_REGIONS = {
     9: "usgovarizona usgovtexas usgovvirginia".split(),
 }
 _EDGE_ZONE = {region: zone for zone, regions in _EDGE_REGIONS.items() for region in regions}
+#: Every price-list location the kind knows: its ARM regions, Global, the billing zones, and the
+#: empty location of meters that have none.
+PRICE_LIST_LOCATIONS = frozenset({*_EDGE_ZONE, "Global", *BILLING_ZONES, ""})
 
 
 def expanded_region(region: str | None, predicate: str | None) -> str | None:

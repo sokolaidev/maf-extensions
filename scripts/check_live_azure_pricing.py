@@ -251,14 +251,21 @@ async def check(
                 f"Pricing tool did not complete: {name}",
             )
             reports = [item for item in items if item.text and item.text.startswith('{"prices":')]
-            require(len(reports) == 1, "Expected one pricing report")
-            report = reports[0]
-            label = report.additional_properties.get("security_label", {})
-            require(
-                label.get("integrity") == "trusted" and label.get("confidentiality") == "public",
-                "Price report was not promoted through framework call evidence",
-            )
-            data = json.loads(report.text)
+            described = [
+                item for item in items if item.text and item.text.startswith('{"descriptions":')
+            ]
+            require(len(reports) == 1 and len(described) == 1, "Expected one report and its rows")
+            for part, message in (
+                (reports[0], "Price report is not the kind's trusted output"),
+                (described[0], "Descriptions were not promoted through framework call evidence"),
+            ):
+                label = part.additional_properties.get("security_label", {})
+                require(
+                    label.get("integrity") == "trusted"
+                    and label.get("confidentiality") == "public",
+                    message,
+                )
+            data = with_descriptions(json.loads(reports[0].text), [item.text for item in described])
             require(
                 bool(data["prices"]) and not data["truncated"],
                 f"Expected complete narrow prices: {name}",
@@ -349,6 +356,19 @@ async def check(
         "wslcVerified": False,
         "productionVerified": False,
     }
+
+
+def with_descriptions(value: dict[str, Any], texts: list[str]) -> dict[str, Any]:
+    """Merge each row's description back into its price, by the row number both carry."""
+    described = [json.loads(text) for text in texts if text.startswith('{"descriptions":')]
+    if not described:
+        return value
+    by_row = {entry["row"]: entry for entry in described[0]["descriptions"]}
+    value["prices"] = [
+        {key: item for key, item in (row | by_row[row["row"]]).items() if key != "row"}
+        for row in value["prices"]
+    ]
+    return value
 
 
 def main() -> None:

@@ -120,6 +120,19 @@ def result_items(answer: object, verdict: str | None = None) -> list[str]:
     return [str(text) for text in texts]
 
 
+def with_descriptions(value: dict[str, Any], texts: list[str]) -> dict[str, Any]:
+    """Merge each row's description back into its price, by the row number both carry."""
+    described = [json.loads(text) for text in texts if text.startswith('{"descriptions":')]
+    if not described:
+        return value
+    by_row = {entry["row"]: entry for entry in described[0]["descriptions"]}
+    value["prices"] = [
+        {key: item for key, item in (row | by_row[row["row"]]).items() if key != "row"}
+        for row in value["prices"]
+    ]
+    return value
+
+
 class PricingResponseError(ValueError):
     """Retain tool text when completion or report decoding fails."""
 
@@ -135,7 +148,7 @@ def pricing_report(answer: object) -> dict[str, Any]:
         reports = [json.loads(text) for text in texts if text.startswith('{"prices":')]
         if len(reports) != 1:
             raise ValueError("Pricing tool did not return one report")
-        return reports[0]
+        return with_descriptions(reports[0], texts)
     except ValueError as exc:
         response = (
             [
