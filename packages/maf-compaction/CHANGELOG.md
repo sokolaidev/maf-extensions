@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.2](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.12.1...maf-compaction-v0.12.2) (2026-11-10)
+
+
+### Fixes
+
+* **compaction:** retain replaced records across model calls ([#2634](https://github.com/sokolaidev/maf-extensions/issues/2634)) ([12e99b7](https://github.com/sokolaidev/maf-extensions/commit/12e99b7938885ecbbc249594b2f27fdcb6b339a0))
+
 ## [0.12.1](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.12.0...maf-compaction-v0.12.1) (2026-11-10)
 
 
