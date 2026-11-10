@@ -191,8 +191,9 @@ def test_sequential_idless_results_leave_complete_occurrences_removable(reload):
     )
     original = list(messages)
     strategy.consolidate_records(messages, records, "CODE-123")
-    assert all(original[i].additional_properties[EXCLUDED_KEY] for i in (0, 1, 3, 4))
-    assert not original[2].additional_properties.get(EXCLUDED_KEY, False)
+    assert all(messages[i].additional_properties[EXCLUDED_KEY] for i in (0, 1, 3, 4))
+    assert not messages[2].additional_properties.get(EXCLUDED_KEY, False)
+    assert not any(m.additional_properties.get(EXCLUDED_KEY, False) for m in original)
 
 
 def test_a_batch_containing_only_matched_recall_results_can_be_consolidated():
