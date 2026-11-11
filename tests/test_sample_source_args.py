@@ -106,9 +106,17 @@ class TestBranch:
             named = {sample_blocks.distribution(entry) for entry in block.get("dependencies", [])}
             assert declared <= named, sample.name
 
-    def test_every_real_sample_has_something_to_inject(self):
-        """If one did not, the refusal below would fire in the workflow rather than in a test."""
+    def test_samples_have_branch_packages_or_use_the_published_worker(self):
         for sample in sample_blocks.sample_directories():
+            if sample.name == "24_openclaw_bicep":
+                assert sample_source_args.declared_packages(sample / "agent.py") == []
+                result = run(str(sample), "--source", "branch")
+                assert result.returncode == 1
+                assert "nothing to run from the branch" in result.stderr
+                assert "samples/24_openclaw_bicep" not in (
+                    _ROOT / ".github/workflows/verify-live.yml"
+                ).read_text(encoding="utf-8")
+                continue
             assert sample_source_args.declared_packages(sample / "agent.py"), sample.name
 
     def test_a_sample_naming_no_package_is_refused(self, tmp_path: Path):
