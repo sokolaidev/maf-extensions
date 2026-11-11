@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import socket
 import stat
 import threading
@@ -19,8 +20,10 @@ from openshell_files_probe import execute, main
 
 
 @contextmanager
-def native_sftp(client, name, sandbox_id):
+def native_sftp(client, name, sandbox_id, *, seconds=60):
     """Bridge the public ForwardTcp stream to a bounded-lifetime local SSH client."""
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError("SFTP session budget must be positive and finite")
     paramiko = import_module("paramiko")
     session = client.rpc(
         "CreateSshSession",
@@ -66,7 +69,7 @@ def native_sftp(client, name, sandbox_id):
                     yield client.pb.TcpForwardFrame(data=data)
 
             call = client.stub.ForwardTcp(
-                requests(), metadata=[("authorization", "Bearer " + client.token)], timeout=60
+                requests(), metadata=[("authorization", "Bearer " + client.token)], timeout=seconds
             )
             cleanup.callback(call.cancel)
 

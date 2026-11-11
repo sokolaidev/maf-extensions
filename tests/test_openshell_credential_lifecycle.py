@@ -244,12 +244,16 @@ def test_transition_journal_and_cleanup_survive_guest_start_failure(probe, monke
     class Transition:
         def __init__(self, fixture, profile, ip, record):
             self.record = record
+            self.identity = "physical-sandbox"
 
         def provider(self, attached):
-            row = {"method": "AttachSandboxProvider", "state": "pending"}
+            method = "AttachSandboxProvider" if attached else "DetachSandboxProvider"
+            row = {"method": method, "state": "pending"}
             self.record("mutations", row)
             row["state"] = "acknowledged"
-            self.record("barriers", {"provider_state": "READY"})
+            self.record("barriers", {"provider_state": "READY" if attached else "REVOKED"})
+            if not attached:
+                cleanup.append("detach")
 
     class Guest:
         def __init__(self, sandbox, key, **kwargs):
@@ -278,6 +282,7 @@ def test_transition_journal_and_cleanup_survive_guest_start_failure(probe, monke
         save=lambda: None,
         client=NS(image="image"),
         owners=[owner],
+        disposed=set(),
         acquire=acquire,
         dispose=dispose,
     )
@@ -285,12 +290,15 @@ def test_transition_journal_and_cleanup_survive_guest_start_failure(probe, monke
         asyncio.run(probe.measure_credentials(fixture, "10.23.45.67", tmp_path / "ca.pem"))
     evidence = fixture.report["credentials"]
     assert evidence["controls"][0]["host"] == host + ":8443"
-    assert evidence["mutations"] == [{"method": "AttachSandboxProvider", "state": "acknowledged"}]
-    assert evidence["barriers"] == [{"provider_state": "READY"}]
+    assert evidence["mutations"] == [
+        {"method": "AttachSandboxProvider", "state": "acknowledged"},
+        {"method": "DetachSandboxProvider", "state": "acknowledged"},
+    ]
+    assert evidence["barriers"] == [{"provider_state": "READY"}, {"provider_state": "REVOKED"}]
     assert not evidence["characterization_completed"]
     assert not evidence["qualification_passed"]
     assert evidence["provider_and_profile_cleanup_verified"]
-    assert cleanup == ["guest", "sandbox", "provider-profile"]
+    assert cleanup == ["detach", "guest", "sandbox", "provider-profile"]
 
 
 def test_control_retry_budget_is_bounded_and_retained(probe, monkeypatch):
@@ -312,3 +320,64 @@ def test_control_retry_budget_is_bounded_and_retained(probe, monkeypatch):
 
     asyncio.run(scenario())
     assert records == [{"operation": "read", "sequence": 0, "error": "EOFError"}] * 2
+
+
+def test_control_files_use_one_owned_session_and_bound_paths_and_reads(probe, monkeypatch):
+    import io
+    from contextlib import contextmanager
+
+    calls = []
+
+    class Session:
+        def open(self, path, mode):
+            calls.append((path, mode))
+            return io.BytesIO(b'{"ready":true}')
+
+    @contextmanager
+    def connection(client, name, identity, *, seconds):
+        calls.append((name, identity, seconds))
+        try:
+            yield Session()
+        finally:
+            calls.append("closed")
+
+    monkeypatch.setattr(probe, "native_sftp", connection)
+    directory = "/sandbox/credential-" + "a" * 32
+    sandbox = NS(client=object(), owner={"name": "owned", "sandbox_id": "physical"})
+    files = probe.ControlFiles(sandbox, directory)
+
+    async def scenario():
+        for _ in range(2):
+            assert (
+                await files.read_file(
+                    directory + "/ready.json", working_directory="/sandbox", max_bytes=100
+                )
+                == b'{"ready":true}'
+            )
+        with pytest.raises(RuntimeError, match="capture budget"):
+            await files.read_file(
+                directory + "/ready.json", working_directory="/sandbox", max_bytes=1
+            )
+        for path in (
+            directory + "/../escape",
+            directory + "-other/ready.json",
+            "/sandbox/elsewhere/ready.json",
+        ):
+            with pytest.raises(ValueError, match="outside"):
+                await files.read_file(path, working_directory="/sandbox", max_bytes=100)
+        await files.write_file(directory + "/command-1.json", "{}", working_directory="/sandbox")
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        files.close()
+    assert calls[0] == ("owned", "physical", 620)
+    assert calls[-1] == "closed"
+    assert len(calls) == 6
+
+
+@pytest.mark.parametrize("seconds", [0, -1, float("inf"), float("nan")])
+def test_persistent_control_session_requires_finite_budget(probe, seconds):
+    with pytest.raises(ValueError, match="positive and finite"):
+        with probe.native_sftp(None, "owned", "physical", seconds=seconds):
+            pytest.fail("invalid lifetime admitted")

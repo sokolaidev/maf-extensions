@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import socket
 import ssl
 import time
@@ -16,6 +17,7 @@ from openshell_egress_probe import origin_get
 from openshell_https_probe import control_https
 from openshell_owned_probe import fixture_spec
 from openshell_refresh_probe import RefreshProfile, TokenIssuer
+from openshell_sftp_probe import native_sftp
 from openshell_transition_probe import Transitions
 
 
@@ -111,11 +113,47 @@ def propagation_observation(observed, events, request, minted):
     )
 
 
+class ControlFiles:
+    """Keep an authenticated SFTP process alive for one exclusive fixture's command directory."""
+
+    def __init__(self, sandbox, directory):
+        if not re.fullmatch(r"/sandbox/credential-[0-9a-f]{32}", directory):
+            raise ValueError("requires a fresh owned control directory")
+        self.directory = directory
+        self.context = native_sftp(
+            sandbox.client, sandbox.owner["name"], sandbox.owner["sandbox_id"], seconds=620
+        )
+        self.session = self.context.__enter__()
+
+    def path(self, path):
+        if not path.startswith(self.directory + "/") or not re.fullmatch(
+            r"(?:ready|command-[0-9]+|result-[0-9]+)\.json", path[len(self.directory) + 1 :]
+        ):
+            raise ValueError("file is outside the owned control protocol")
+        return path.removeprefix("/sandbox/")
+
+    async def read_file(self, path, *, working_directory, max_bytes):
+        with self.session.open(self.path(path), "rb") as stream:
+            data = stream.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise RuntimeError("control response exceeds its capture budget")
+        return data
+
+    async def write_file(self, path, content, *, working_directory):
+        with self.session.open(self.path(path), "wb") as stream:
+            stream.write(content.encode())
+
+    def close(self):
+        self.context.__exit__(None, None, None)
+
+
 class ContinuousGuest:
     """Own one bounded exec stream and correlate each file-controlled request with its process."""
 
-    def __init__(self, sandbox, key, *, record=None):
+    def __init__(self, sandbox, key, *, record=None, persistent_files=False):
         self.sandbox, self.key = sandbox, key
+        self.files = sandbox
+        self.persistent_files = persistent_files
         self.record = record or (lambda row: None)
         self.directory = "/sandbox/credential-" + uuid.uuid4().hex
         self.sequence = 0
@@ -146,7 +184,7 @@ class ContinuousGuest:
             try:
                 data = await self.control_io(
                     "read",
-                    lambda: self.sandbox.read_file(
+                    lambda: self.files.read_file(
                         self.directory + "/" + name, working_directory="/sandbox", max_bytes=16384
                     ),
                 )
@@ -156,6 +194,8 @@ class ContinuousGuest:
         raise RuntimeError("continuous guest response deadline exceeded")
 
     async def start(self):
+        if self.persistent_files:
+            self.files = ControlFiles(self.sandbox, self.directory)
         self.task = asyncio.create_task(
             self.sandbox.exec(
                 ["python", "-c", guest_program(self.directory, self.key)],
@@ -171,7 +211,7 @@ class ContinuousGuest:
         path = f"{self.directory}/command-{self.sequence}.json"
         content = json.dumps({"sequence": self.sequence, **fields})
         await self.control_io(
-            "write", lambda: self.sandbox.write_file(path, content, working_directory="/sandbox")
+            "write", lambda: self.files.write_file(path, content, working_directory="/sandbox")
         )
 
     async def request(self, url, source="original"):
@@ -215,9 +255,14 @@ class ContinuousGuest:
             if result.exit_code or result.stderr:
                 raise RuntimeError("continuous guest failed: " + result.stderr)
         finally:
-            if not self.task.done():
-                self.task.cancel()
-                await asyncio.gather(self.task, return_exceptions=True)
+            try:
+                if not self.task.done():
+                    self.task.cancel()
+                    await asyncio.gather(self.task, return_exceptions=True)
+            finally:
+                if self.files is not self.sandbox:
+                    self.files.close()
+                    self.files = self.sandbox
 
 
 class HTTPSRefreshProfile(RefreshProfile):
@@ -291,6 +336,7 @@ async def measure_credentials(fixture, ip, ca_file):
         profile.ip, profile.provider_host = ip, host
         profile.endpoint_path = "/provider/**"
         guest = None
+        transitions = None
         try:
             evidence.update(
                 profile=profile.profile_id, provider=profile.provider, prepare="pending"
@@ -307,7 +353,10 @@ async def measure_credentials(fixture, ip, ca_file):
             transitions = Transitions(fixture, profile, ip, record)
             await asyncio.to_thread(transitions.provider, True)
             guest = ContinuousGuest(
-                sandbox, profile.env_key, record=lambda row: record("control_retries", row)
+                sandbox,
+                profile.env_key,
+                record=lambda row: record("control_retries", row),
+                persistent_files=True,
             )
             evidence["guest"] = await guest.start()
             fixture.save()
@@ -465,8 +514,12 @@ async def measure_credentials(fixture, ip, ca_file):
             evidence["characterization_completed"] = True
         finally:
             try:
-                if guest is not None:
-                    await guest.close()
+                try:
+                    if transitions is not None and transitions.identity not in fixture.disposed:
+                        await asyncio.to_thread(transitions.provider, False)
+                finally:
+                    if guest is not None:
+                        await guest.close()
             finally:
                 try:
                     for owner in fixture.owners:
