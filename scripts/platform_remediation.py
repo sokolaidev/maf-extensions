@@ -264,9 +264,7 @@ def verify_packages(expected: dict[str, Any], sbom: dict[str, Any], profile: str
                     raise ValueError(
                         "Targeted package inventory differs from vendor advisory identity"
                     )
-                prefix = f"pkg:apk/{vendor}/{row['component']}@{item['version']}"
-                purl = item.get("purl", "")
-                if not (purl == prefix or purl.startswith((prefix + "?", prefix + "#"))):
+                if not vendor_fix_evidence.matches_apk_purl(item, vendor):
                     raise ValueError("Targeted package inventory identifies another vendor")
 
 
@@ -293,7 +291,6 @@ def vendor_resolutions(
         for row in proofs:
             proof = row["vendorFix"]
             vendor = vendor_fix_evidence.SOURCES[proof["feed"]][0]
-            prefix = f"pkg:apk/{vendor}/{component['name']}@{component['version']}"
             if (
                 vulnerability.get("namespace") != "nvd:cpe"
                 or fix.get("versions")
@@ -304,9 +301,7 @@ def vendor_resolutions(
                 or not apk_inventory(actual)
                 or locations(component) != locations(actual)
                 or vendor_fix_evidence.source_package(actual) != proof["sourcePackage"]
-                or not (
-                    actual.get("purl") == prefix or actual.get("purl", "").startswith(prefix + "?")
-                )
+                or not vendor_fix_evidence.matches_apk_purl(actual, vendor)
             ):
                 continue
             try:

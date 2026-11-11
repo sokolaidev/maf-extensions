@@ -52,12 +52,16 @@ def stale_match(installed="2.43-r0"):
 
 
 @pytest.mark.parametrize("guest_path", ["/lib/apk/db/installed", "/usr/lib/apk/db/installed"])
+@pytest.mark.parametrize(
+    "suffix", ["", "?arch=x86_64", "#usr/lib/libc.so.6", "?arch=x86_64#usr/lib/libc.so.6"]
+)
 def test_vendor_fix_enables_rebuild_without_rewriting_scanner_evidence(
-    checkout, tmp_path, monkeypatch, guest_path
+    checkout, tmp_path, monkeypatch, guest_path, suffix
 ):
     work = tmp_path / "work"
     snapshot = feeds(monkeypatch, work / "vendor-security")
     match = stale_match()
+    match["artifact"]["purl"] = "pkg:apk/wolfi/glibc@2.43-r0" + suffix
     match["artifact"]["locations"] = [{"path": guest_path}]
     directory = retained(work / "evidence", [match], profile="graphviz")
     original = (directory / "grype.json").read_bytes()
@@ -71,6 +75,7 @@ def test_vendor_fix_enables_rebuild_without_rewriting_scanner_evidence(
     assert (directory / "grype.json").read_bytes() == original
     assert vendor.fixes(snapshot, match["artifact"], "CVE-unaffected") == []
     candidate = stale_match("2.43-r2")
+    candidate["artifact"]["purl"] = "pkg:apk/wolfi/glibc@2.43-r2" + suffix
     candidate["artifact"]["locations"] = [{"path": guest_path}]
     sbom = {"artifacts": [candidate["artifact"]]}
     remediation.verify_packages(result, sbom, "graphviz")

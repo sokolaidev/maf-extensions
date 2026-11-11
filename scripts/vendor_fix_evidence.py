@@ -127,18 +127,26 @@ def source_package(component: dict[str, Any]) -> str | None:
     return source
 
 
+def matches_apk_purl(component: dict[str, Any], vendor: str) -> bool:
+    """Match the exact APK identity while allowing PURL qualifiers and a subpath."""
+    name, installed = component["name"], component["version"]
+    return (
+        re.fullmatch(
+            rf"pkg:apk/{vendor}/{re.escape(name)}@{re.escape(installed)}(?:[?#].*)?",
+            component.get("purl", ""),
+        )
+        is not None
+    )
+
+
 def fixes(evidence: dict[str, Any], component: dict[str, Any], cve: str) -> list[dict[str, str]]:
     """Map a CVE through the SBOM's exact APK vendor, source package and architecture."""
     source = source_package(component)
     if source is None:
         return []
-    name, installed = component["name"], component["version"]
     result = []
     for feed, (vendor, _) in SOURCES.items():
-        if not re.fullmatch(
-            rf"pkg:apk/{vendor}/{re.escape(name)}@{re.escape(installed)}(?:[?#].*)?",
-            component.get("purl", ""),
-        ):
+        if not matches_apk_purl(component, vendor):
             continue
         for fixed, ids in evidence["packages"][feed].get(source, {}).items():
             # SecDB's zero denotes not-affected, not an installable security update.

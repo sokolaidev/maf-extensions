@@ -184,9 +184,8 @@ def plan(
                     row["status"] = "unsupported-vendor"
                     continue
                 vendor_name = "wolfi" if base.startswith("cgr.dev/") else "alpine"
-                if not re.fullmatch(
-                    rf"pkg:apk/{vendor_name}/{re.escape(name)}@{re.escape(component['version'])}(?:[?#].*)?",
-                    component.get("purl", ""),
+                if not vendor_fix_evidence.matches_apk_purl(
+                    component, vendor_name
                 ) or not apk_inventory(component):
                     row["status"] = "unmapped-vendor-package"
                     continue
