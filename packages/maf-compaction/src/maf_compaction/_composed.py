@@ -2158,7 +2158,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
         try:
             text = await self.user_turns._generate(  # pyright: ignore[reportPrivateUsage]
-                transcript, prompt=prompt, observe=observe
+                transcript, prompt=prompt, observe=observe, allow_empty_on_length=True
             )
             return _RecordAnswer(text, incomplete)
         except Exception as error:

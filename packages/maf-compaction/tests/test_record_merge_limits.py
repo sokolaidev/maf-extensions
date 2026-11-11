@@ -10,7 +10,7 @@ import re
 from typing import Any
 
 import pytest
-from agent_framework import ChatResponse, Message, UsageDetails
+from agent_framework import ChatResponse, Content, Message, UsageDetails
 from test_record_budget import (
     _VALUE,
     _history,
@@ -121,6 +121,69 @@ async def test_truncated_answer_is_split_even_when_it_keeps_every_value(
     assert "finish_reason=length" in caplog.text
     assert "input_tokens=500 output_tokens=100 reasoning_tokens=80" in caplog.text
     assert not _VALUE.search(caplog.text)
+
+
+@pytest.mark.parametrize("retry", [False, True])
+@pytest.mark.parametrize("output", ["empty", "whitespace", "reasoning_only"])
+async def test_empty_length_response_splits_without_retiring_options(
+    retry: bool,
+    output: str,
+) -> None:
+    class Limited(_Summarizer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.options: list[dict[str, Any]] = []
+
+        async def get_response(self, messages: list[Message], **kwargs: Any) -> ChatResponse:
+            self.options.append(dict(kwargs.get("options", {})))
+            response = await super().get_response(messages, **kwargs)
+            if _batch_size(self.merges[-1]) <= 2:
+                return response
+            contents = (
+                [Content.from_text_reasoning(text="Still deciding.")]
+                if output == "reasoning_only"
+                else [Content.from_text(" \n\t " if output == "whitespace" else "")]
+            )
+            return ChatResponse(messages=[Message("assistant", contents)], finish_reason="length")
+
+    summarizer = Limited()
+    messages = _history(4)
+    values = _sent_values(messages)
+    strategy = _strategy(summarizer, budget=100_000, share=0.001, cap=10_000)
+    strategy.user_turns.retry_without_summary_options = retry
+    configured = dict(strategy.user_turns.summary_options)
+
+    assert await strategy._merge_batches(messages, None, 0.001)
+
+    assert [_batch_size(body) for body in summarizer.merges] == [4, 2, 2]
+    assert summarizer.options == [configured] * 3
+    assert not strategy.user_turns._summary_options_disabled
+    assert strategy.record_summary_failures == 0
+    assert strategy.records_merged == 2
+    assert _sent_values(messages) == values
+
+
+@pytest.mark.parametrize("retry", [False, True])
+async def test_empty_length_rewrite_is_refused_without_retiring_options(retry: bool) -> None:
+    class Limited(_Summarizer):
+        async def get_response(self, messages: list[Message], **kwargs: Any) -> ChatResponse:
+            response = await super().get_response(messages, **kwargs)
+            response.finish_reason = "length"
+            return response
+
+    summarizer = Limited(rewrite=lambda _: " \n\t ")
+    messages = _history(2)
+    original = _sent(messages)
+    strategy = _strategy(summarizer, budget=100_000, cap=10_000)
+    strategy.harder_attempts = 1
+    strategy.user_turns.retry_without_summary_options = retry
+
+    assert not await strategy._rewrite_records(messages, composed_module._ChainStart.take(messages))
+    assert len(summarizer.requests) == 1
+    assert strategy.record_rewrites_rejected == 1
+    assert strategy.record_summary_failures == 0
+    assert not strategy.user_turns._summary_options_disabled
+    assert _sent(messages) == original
 
 
 async def test_refusal_reports_exact_distinct_value_counts(

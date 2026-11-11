@@ -771,7 +771,7 @@ async def test_chunk_deadline_and_cooldown_cover_the_whole_pass():
     assert strategy.user_summary_skips == 1
 
 
-@pytest.mark.parametrize("failure", ["empty", "exception"])
+@pytest.mark.parametrize("failure", ["empty", "length", "exception"])
 async def test_summary_options_retry_once_and_stay_disabled(failure):
     class OptionsClient(BoundedClient):
         def __init__(self):
@@ -784,7 +784,10 @@ async def test_summary_options_retry_once_and_stay_disabled(failure):
             if options:
                 if failure == "exception":
                     raise ValueError("unsupported options")
-                return ChatResponse(messages=Message("assistant", [""]))
+                return ChatResponse(
+                    messages=Message("assistant", [""]),
+                    finish_reason="length" if failure == "length" else None,
+                )
             return await super().get_response(messages, **kwargs)
 
     client = OptionsClient()
