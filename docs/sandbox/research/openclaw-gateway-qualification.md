@@ -292,6 +292,7 @@ The [2026-10-12 consolidated reconciliation](openclaw-qualification-closure-audi
 | GitHub-hosted real-model Bicep sample | Complete for the recorded Ubuntu/Azure OpenAI candidate with reasoning disabled: actual invalid/valid compiler results and independent cleanup passed | [#2288](https://github.com/sokolaidev/maf-extensions/issues/2288) (closed) by [#2294](https://github.com/sokolaidev/maf-extensions/pull/2294) (merged) |
 | GitHub-hosted Linux actor-loss profile | Complete for the recorded Ubuntu v2 candidate: thirteen actor-loss cases and independent cleanup passed; broader failure modes remain unqualified | [#2386](https://github.com/sokolaidev/maf-extensions/issues/2386) (closed) by [#2387](https://github.com/sokolaidev/maf-extensions/pull/2387) (merged) |
 | Current published Docker/Bicep candidate | Complete for the recorded worker 0.3.1 candidate: fresh baseline, all fifteen recovery cases and real-model Bicep sample passed | [#2542](https://github.com/sokolaidev/maf-extensions/issues/2542) (closed) by [#2545](https://github.com/sokolaidev/maf-extensions/pull/2545) (merged) |
+| Numbered published Bicep sample | Complete: verified published worker quick start and routine deterministic hosted smoke; both compiler verdicts and independent cleanup passed | [#2657](https://github.com/sokolaidev/maf-extensions/issues/2657) (closed) by [#2659](https://github.com/sokolaidev/maf-extensions/pull/2659) (merged) |
 | Linux Docker access and removal failure recovery | Complete for the reviewed v4 candidate: all fifteen cases passed with pre-probe startup observations and exact removal-command joins; broader failures remain unqualified | [#2413](https://github.com/sokolaidev/maf-extensions/issues/2413) (closed) by [#2414](https://github.com/sokolaidev/maf-extensions/pull/2414) (merged) |
 | Linux Gateway-to-Docker sample | Recorded deterministic Linux-on-Docker-Desktop run passed; real-model behavior remains unqualified | [#2185](https://github.com/sokolaidev/maf-extensions/issues/2185) (closed) by [#2191](https://github.com/sokolaidev/maf-extensions/pull/2191) (merged) |
 | Installed worker | Published 0.1.0; historical and fresh fixed-profile qualifications recorded separately below | [#1898](https://github.com/sokolaidev/maf-extensions/issues/1898) (closed) by [#1920](https://github.com/sokolaidev/maf-extensions/pull/1920) (merged) |
@@ -1994,3 +1995,70 @@ Complete installed Python inventories are compared below. Matching version strin
 | uvicorn | `0.54.0` | `0.54.0` |
 
 This accepts the selected published candidate for the recorded Linux deterministic recovery profile and separately observed real-model Bicep path. It does not qualify model decisions after injected failures, actual daemon/host loss, escaped process trees, unattended watchdogs, newer package sets or production. Historical campaigns remain unchanged; the failed initial recovery run is not counted toward acceptance. Only a workflow pin assertion and documentation follow the final recovery source.
+
+## Numbered published sample smoke (2026-11-11)
+
+[#2657](https://github.com/sokolaidev/maf-extensions/issues/2657) adds [sample 24](../../../samples/24_openclaw_bicep/), a numbered launcher that downloads and verifies the published worker, pulls the pinned compiler image, and calls the existing Gateway harness in the same process. The worker installs into a private environment from its wheel and published dependencies; no worker is built from the checkout. The launcher uses only standard-library dependencies and the canonical sample scaffold. Keep the full checkout for the shared qualification harness.
+
+[GitHub-hosted run 43108932108, attempt 1](https://github.com/sokolaidev/maf-extensions/actions/runs/43108932108) passed at `f3ba1f3d2333ffd80736f53574164c7f7feff3fd` through the numbered entry point. The collector returned `qualified: true` for `published-smoke-v1`: one invalid result and one valid result, one call each, confirmed per-call cleanup, stopped service processes, a released owner lock and independently observed zero owned containers. The provider was deterministic (`actual_model: false`); no model account or inference was used. Retained Markdown SHA-256: `6e2bcac0e955d020d8c74d6a263ffe662994ef309d9ebe3311754b2538289db8`.
+
+The host was Ubuntu image `20261101.360.1`, `Linux-7.0.0-1017-azure-x86_64-with-glibc2.39`, Docker `28.0.4` / API `1.48`, Node `v26.8.1`, `uv 0.12.5 (x86_64-unknown-linux-gnu)` and worker `Python 3.13.15`. The fixed principal versions and worker module hashes match the 2026-11-07 candidate. Transitive resolution changed `regex` from `2026.11.7` to `2026.11.9`; the full installed inventory below records this smoke candidate rather than assuming a transitive lock.
+
+| Identity | SHA-256 or immutable reference |
+|---|---|
+| Launcher | `423ad7e07f012ccd38359104e1c6cf4acfeb01e3023d4b052f4c4c8c1d5b91ca` |
+| Shared harness | `bc8392eeb0158cca6dc08896f5be358cf3e75a657b8d8c07f04e13df58f39bd6` |
+| Private report | `dfabd1e039bfa0180d3be844bf432ccb1195cc5a525a7af39144b3286b99a498` |
+| Private tool evidence | `812e41eaa778b2ad0d545da6c6f22dee386586e596f8ee77e1e55e458603f892` |
+| Compiler image ID | `sha256:fb02b2f79c7428f7595f1fa664cc4f240ed54c349e059d8e4a0dccb0e435fab3` |
+| Compiler registry reference | `ghcr.io/sokolaidev/maf-extensions/bicep-avm@sha256:b3f14b266052def3f7b5a7b6ca4fb38f06acdff0e99e7df2437dd4f0c6b0b82e` |
+| Published worker wheel | `36d1af36ef6ed6fc174eeedc34a2c5f9a5e6a670134e0f6682d9c35955b079b1` |
+| Installed worker __init__.py | `6cd4609954365facc1edf656bfffc2366bf5da541f1fc699b88122dd007f2430` |
+| Installed worker server.py | `c69866ad7b3d35d7dc4fd1373493ccd404a1153101af45f72d7a6dcc1a31a89b` |
+| Installed worker workload_http.py | `6d0047e30349d80ef076f34eef7172bf0f0e8ad07a00e6fae4f7aab8a6d57f07` |
+| Installed worker workload_service.py | `f9cd38791fac1ed5254aac7bbb170a4a395d289712dd8468ac8a70c538b8ca91` |
+| invalid submitted source | `91285d8d03f8c76ee86fddeab9f039132ebc75ddcc0f5dbd3a0f5e4bd7b4b0cf` |
+| valid submitted source | `25a645af6181b25dc4727c19663a910c8c45d8ca84bf4db34548c16c11c301c7` |
+| Compiler configuration | `d3f160d081dcf48e41f0f0cdf006595b380402ac9730f3ee920738ba616d87e1` |
+
+| Installed distribution | Version |
+|---|---|
+| PyJWT | `2.15.1` |
+| PyYAML | `6.0.3` |
+| agent-framework-core | `1.24.0` |
+| annotated-types | `0.8.0` |
+| anyio | `4.16.0` |
+| attrs | `26.1.0` |
+| cffi | `2.1.1` |
+| click | `8.5.1` |
+| cryptography | `50.0.2` |
+| h11 | `0.16.0` |
+| httpcore2 | `2.16.0` |
+| httpx2 | `2.16.0` |
+| idna | `3.20` |
+| jsonschema | `4.26.0` |
+| jsonschema-specifications | `2025.9.1` |
+| maf-sandbox | `0.53.1` |
+| maf-sandbox-bicep | `0.25.1` |
+| maf-sandbox-docker | `0.30.6` |
+| maf-sandbox-mcp | `0.3.1` |
+| mcp | `2.2.0` |
+| mcp-types | `2.2.0` |
+| msgspec | `0.22.0` |
+| opentelemetry-api | `1.45.2` |
+| pycparser | `3.12` |
+| pydantic | `2.14.3` |
+| pydantic_core | `2.50.4` |
+| python-dotenv | `1.2.4` |
+| python-multipart | `0.0.33` |
+| referencing | `0.37.0` |
+| regex | `2026.11.9` |
+| rpds-py | `2026.9.1` |
+| sse-starlette | `3.7.0` |
+| starlette | `1.7.0` |
+| truststore | `0.10.5` |
+| typing-inspection | `0.4.5` |
+| typing_extensions | `4.16.0` |
+| uvicorn | `0.54.0` |
+
+The deterministic published profile now runs on main pushes, the daily Docker-live schedule and ordinary manual dispatches; explicit model and owner-loss selections retain their separate opt-in jobs. The retained run proves the new entry point on this hosted candidate. Optional model mode is documented and its routing is tested offline, but was not rerun through sample 24. The fifteen-case recovery campaign was not rerun against this transitive resolution. Production operation, other hosts/models, unattended recovery and actual daemon/host loss remain unqualified. Only bounded Markdown is retained; private state and JSON reports stay outside the checkout.

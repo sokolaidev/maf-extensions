@@ -61,6 +61,8 @@ Copy the canonical [_scaffold.py](samples/01_acas_bicep/_scaffold.py) unchanged.
 
 Success must establish the workload's result, not just a model's claim or exit code zero. For stored outputs, verify actual bytes and read-back, track ownership of each destination, and clean up files and sandboxes on success, failure and cancellation. Report incomplete cleanup as failure. When reporting tool latency, use core's `SandboxObserver.tool_call_ended` and `ToolCallEnded.seconds`; it includes the tool body and cleanup, and is distinct from model latency or the whole sample's elapsed time.
 
+Sample 24 is a published external-process integration: its standard-library launcher delegates to the existing OpenClaw harness in the checkout, while the worker and all runtime packages install into a separate environment. Keep its qualified candidate pins independent of the ordinary sample floors. Its installed-version report and bounded evidence collector inspect that worker environment, and its credential-free smoke runs routinely in `docker-live.yml`; the release workflow's newest-package and branch-source modes would select a different, unqualified candidate. Keep the explicit-wheel experimental entry point for that separate qualification work.
+
 ### Workflow wiring
 
 1. Add a job to [verify-live.yml](.github/workflows/verify-live.yml). Select it when `inputs.package` is empty or names a package the sample exercises: core, the backend, the kind and any adapter it uses. Normal sample jobs run in both `published` and `branch` modes; do not add a branch-only condition. Billable execution belongs in live verification, not ordinary pull-request tests.
