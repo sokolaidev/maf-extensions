@@ -1100,6 +1100,48 @@ async def test_single_record_fit_is_rechecked_when_its_inputs_change(changed: st
     assert _sent_values(messages) == {value for index in range(2) for value in _values(index)}
 
 
+@pytest.mark.parametrize("state_mode", ["same_instance", "snapshot", "legacy_snapshot"])
+async def test_changed_prompt_rechecks_a_pair_saved_before_deadline(
+    state_mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class PromptSensitiveTokenizer(_CountingTokenizer):
+        def count_tokens(self, text: str) -> int:
+            counted = super().count_tokens(text)
+            payload = json.loads(text) if text.startswith("{") else {}
+            body = (payload.get("contents") or [{}])[0].get("text") or ""
+            if payload.get("role") == "system":
+                return 150 if "extra prompt cost" in body else 0
+            if payload.get("role") == "user" and body.startswith("1. "):
+                return 100 * len(re.findall(r"^\d+\. ", body, flags=re.MULTILINE))
+            return counted
+
+    tokenizer = PromptSensitiveTokenizer()
+    monkeypatch.setattr(composed_module, "monotonic", lambda: float(tokenizer.batches))
+    summarizer = _Summarizer()
+    messages = _history(4)
+    strategy = _strategy(summarizer, budget=100_000, share=0.001, cap=250, tokenizer=tokenizer)
+    token = strategy._chain_deadline.set(2.0)
+    try:
+        with pytest.raises(composed_module._ChainTimeSpent):
+            await strategy._merge_batches(messages, None, 0.001)
+    finally:
+        strategy._chain_deadline.reset(token)
+    assert not summarizer.requests
+
+    if state_mode != "same_instance":
+        restored = _strategy(summarizer, budget=100_000, share=0.001, cap=250, tokenizer=tokenizer)
+        state = json.loads(json.dumps(strategy.session_state()))
+        if state_mode == "legacy_snapshot":
+            state.pop("search_prompt", None)
+        restored.restore_session_state(state)
+        strategy = restored
+    strategy.merge_prompt += " extra prompt cost"
+
+    assert not await strategy._merge_batches(messages, None, 0.001)
+    assert not summarizer.requests
+    assert _sent_values(messages) == {value for index in range(4) for value in _values(index)}
+
+
 class _PairsDoNotFitTokenizer(CharacterEstimatorTokenizer):
     """Count a two-record request far over the cap and a three-record one under it.
 

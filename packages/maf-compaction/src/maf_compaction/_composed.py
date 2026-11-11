@@ -692,6 +692,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # Per start record (body digest, cap): how far the batch search from it got, so a later
         # sweep resumes it, or takes the batch it found, only while those records stand.
         self._searched: dict[tuple[str, int], _Searched] = {}
+        self._search_prompt: str | None = None
         self._record_input_fits: dict[tuple[str, str, int], bool] = {}
         self._batch_resume: tuple[str, int, int, str, int] | None = None
         self._refused_rewrites: dict[tuple[str, int], int] = {}
@@ -857,6 +858,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 [start, limit, found.covered, found.records, found.batch, found.ended]
                 for (start, limit), found in sorted(self._searched.items())
             ],
+            "search_prompt": self._search_prompt,
             "record_input_fits": [
                 [prompt, record, limit, fits]
                 for (prompt, record, limit), fits in sorted(self._record_input_fits.items())
@@ -902,6 +904,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             for entry in searched
             if len(entry) in (4, 6)
         }
+        self._search_prompt = data.get("search_prompt")
         self._record_input_fits = {
             (entry[0], entry[1], entry[2]): entry[3] for entry in data.get("record_input_fits", [])
         }
@@ -1647,6 +1650,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         again only after a merge changes it; passing a record over moves on to the next.
         An interrupted batch expansion retains its fitting pair for the next sweep.
         An interrupted sweep resumes its position while the record layout, prompt and cap stand.
+        A changed merge prompt invalidates cached batch searches too.
 
         Single-record fit results persist while their record, prompt and cap stand unchanged.
         A record whose own request exceeds the cap is passed over without a search from it. One
@@ -1671,6 +1675,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         bound = int(self._budget * share)
         limit = self._record_request_limit()
         prompt_digest = _digest(self.merge_prompt)
+        if self._search_prompt != prompt_digest:
+            self._searched.clear()
+            self._search_prompt = prompt_digest
         handled: set[int] = set()
         bodies: dict[int, str] = {}
         digests: dict[int, str] = {}
