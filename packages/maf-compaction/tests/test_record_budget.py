@@ -1004,6 +1004,45 @@ async def test_deadline_limited_sweeps_eventually_reach_later_mergeable_records(
     assert strategy.records_merged == 1
 
 
+@pytest.mark.parametrize("restore", [False, True])
+@pytest.mark.parametrize("exhausted", ["deadline", "probes"])
+async def test_interrupted_batch_expansion_keeps_the_known_fitting_pair(
+    restore: bool, exhausted: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tokenizer = _CountingTokenizer()
+    monkeypatch.setattr(composed_module, "monotonic", lambda: float(tokenizer.batches))
+    if exhausted == "probes":
+        monkeypatch.setattr(composed_module, "_MAX_BATCH_PROBES", 2)
+    messages = _history(4)
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=100_000, share=0.001, cap=None, tokenizer=tokenizer)
+
+    async def sweep() -> None:
+        deadline = tokenizer.batches + 2.0 if exhausted == "deadline" else None
+        token = strategy._chain_deadline.set(deadline)
+        try:
+            await strategy._merge_batches(messages, None, 0.001)
+        except composed_module._ChainTimeSpent:
+            assert exhausted == "deadline"
+        finally:
+            strategy._chain_deadline.reset(token)
+
+    await sweep()
+    assert not summarizer.requests
+    if restore:
+        restored = _strategy(summarizer, budget=100_000, share=0.001, cap=None, tokenizer=tokenizer)
+        restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+        strategy = restored
+
+    await sweep()
+
+    assert summarizer.merges
+    first = summarizer.merges[0]
+    assert "lookup_0 " in first and "lookup_1 " in first and "lookup_2 " not in first
+    assert strategy.records_merged == len(summarizer.merges)
+    assert _sent_values(messages) == {value for index in range(4) for value in _values(index)}
+
+
 class _PairsDoNotFitTokenizer(CharacterEstimatorTokenizer):
     """Count a two-record request far over the cap and a three-record one under it.
 

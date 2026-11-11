@@ -1633,6 +1633,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         whose request fits :meth:`_record_request_limit`, so a batch the summarizer can answer
         whole replaces a few records rather than all of them. The history is read once, and
         again only after a merge changes it; passing a record over moves on to the next.
+        An interrupted batch expansion retains its fitting pair for the next sweep.
 
         A record whose own request exceeds the cap is passed over without a search from it. One
         whose two-record request does not fit is searched over longer runs, since token counts
@@ -1721,6 +1722,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 checked = known.covered
             if checked < 2:
                 if fits(groups[first : first + 2]):
+                    remember(first, 2, 2)
                     batch, extent = bounded_prefix_extent(
                         groups[first:],
                         render=render,
