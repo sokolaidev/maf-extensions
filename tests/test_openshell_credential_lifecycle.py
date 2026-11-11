@@ -199,22 +199,26 @@ def test_transition_journal_and_cleanup_survive_guest_start_failure(probe, monke
     from collections import defaultdict
 
     cleanup = []
+    origin = []
     host = "allowed.10.23.45.67.nip.io"
     monkeypatch.setattr(
         probe.socket, "getaddrinfo", lambda *args: [(0, 0, 0, 0, ("10.23.45.67", 8443))]
     )
     monkeypatch.setattr(probe.ssl, "create_default_context", lambda **kwargs: object())
-    monkeypatch.setattr(
-        probe,
-        "control_https",
-        lambda host, path, **kwargs: {
+
+    def control(host, path, **kwargs):
+        row = {
             "method": "GET",
             "path": path,
             "host": host + ":8443",
             "port": 8443,
             "authorization_sha256": None,
-        },
-    )
+        }
+        origin.append(row)
+        return row
+
+    monkeypatch.setattr(probe, "control_https", control)
+    monkeypatch.setattr(probe, "origin_get", lambda *args: list(origin))
 
     def rule():
         return NS(binaries=NS(add=lambda **kwargs: None))
@@ -268,7 +272,10 @@ def test_transition_journal_and_cleanup_survive_guest_start_failure(probe, monke
     owner = {"sandbox_id": "physical-sandbox"}
 
     async def acquire(**kwargs):
-        return NS(owner=owner)
+        async def delete():
+            await dispose(owner)
+
+        return NS(owner=owner, dispose=delete)
 
     async def dispose(value):
         assert value == owner
@@ -299,6 +306,35 @@ def test_transition_journal_and_cleanup_survive_guest_start_failure(probe, monke
     assert not evidence["qualification_passed"]
     assert evidence["provider_and_profile_cleanup_verified"]
     assert cleanup == ["detach", "guest", "sandbox", "provider-profile"]
+
+
+@pytest.mark.parametrize("uncertain", [False, True])
+def test_automatic_and_final_cleanup_share_one_detach_and_delete(probe, uncertain):
+    events = []
+
+    def detach(attached):
+        assert attached is False
+        events.append("detach")
+        if uncertain:
+            raise RuntimeError("detach acknowledgement lost")
+
+    async def delete():
+        events.append("delete")
+
+    async def scenario():
+        sandbox = NS(dispose=delete)
+        cleanup = probe.ProviderCleanup(sandbox, NS(provider=detach))
+        results = await asyncio.gather(sandbox.dispose(), cleanup.dispose(), return_exceptions=True)
+        if uncertain:
+            assert all(isinstance(result, RuntimeError) for result in results)
+            with pytest.raises(RuntimeError, match="acknowledgement lost"):
+                await cleanup.detach()
+        else:
+            assert results == [None, None]
+            await cleanup.detach()
+
+    asyncio.run(scenario())
+    assert events == ["detach", "delete"]
 
 
 def test_control_retry_budget_is_bounded_and_retained(probe, monkeypatch):
@@ -381,3 +417,222 @@ def test_persistent_control_session_requires_finite_budget(probe, seconds):
     with pytest.raises(ValueError, match="positive and finite"):
         with probe.native_sftp(None, "owned", "physical", seconds=seconds):
             pytest.fail("invalid lifetime admitted")
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "reset", "unattributed", "final", "expiry_before", "expiry_after"]
+)
+def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
+    probe, monkeypatch, tmp_path, fault
+):
+    from collections import defaultdict
+    from urllib.parse import urlsplit
+
+    origin, cleanup = [], []
+    state = NS(now=1000, attached=False, attaches=0, epoch=1, requests=0)
+    monkeypatch.setattr(probe.time, "time", lambda: state.now)
+    monkeypatch.setattr(
+        probe.socket, "getaddrinfo", lambda *a: [(0, 0, 0, 0, ("10.23.45.67", 8443))]
+    )
+    monkeypatch.setattr(probe.ssl, "create_default_context", lambda **kw: object())
+    monkeypatch.setattr(probe, "origin_get", lambda *a: list(origin))
+
+    def control(host, path, **kwargs):
+        row = dict(
+            method="GET", path=path, host=host + ":8443", port=8443, authorization_sha256=None
+        )
+        origin.append(row)
+        return row
+
+    monkeypatch.setattr(probe, "control_https", control)
+    monkeypatch.setattr(
+        probe,
+        "fixture_spec",
+        lambda image: NS(
+            policy=NS(
+                network_policies=defaultdict(
+                    lambda: NS(name="", binaries=NS(add=lambda **kw: None))
+                )
+            )
+        ),
+    )
+
+    class Retryable(Exception):
+        def code(self):
+            return "unavailable"
+
+    class Issuer:
+        def __init__(self):
+            self.events, self.latest, self.mode = [], {}, "ok"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def configure(self, *, mode="ok", **kwargs):
+            self.mode = mode
+
+        def snapshot(self):
+            generation = self.latest.get("generation", 0) + 1
+            self.latest = dict(
+                generation=generation,
+                mode="ok",
+                at=state.now + generation,
+                expires_at=state.now + 300,
+                authorization_sha256=str(generation),
+            )
+            self.events.append(self.latest)
+            if generation == 4:
+                state.recovered = self.latest
+                if fault == "reset":
+                    origin.clear()
+                elif fault == "unattributed":
+                    origin.append({"path": "/unexpected"})
+            return dict(self.latest)
+
+        def journal(self):
+            return list(self.events)
+
+    class Profile:
+        def __init__(self, issuer):
+            state.issuer = issuer
+            self.profile_id, self.provider, self.provider_id, self.env_key = (
+                "profile",
+                "provider",
+                "id",
+                "TOKEN",
+            )
+
+        def prepare_workspace(self, client):
+            pass
+
+        def endpoint(self, *args):
+            pass
+
+        def configure_refresh(self, client):
+            state.epoch += 1
+
+        def rotate(self, client):
+            if state.issuer.mode != "ok":
+                state.issuer.events.append(dict(mode=state.issuer.mode, at=state.now))
+                raise Retryable()
+
+        def refresh_status(self, client):
+            return NS(
+                status="refreshed",
+                expiration_time=NS(seconds=state.issuer.latest["expires_at"], nanos=0),
+                failure_code="oauth_token_endpoint_retryable",
+                HasField=lambda name: True,
+                SerializeToString=lambda: b"status",
+            )
+
+        def cleanup_workspace(self, client):
+            cleanup.append("profile")
+
+    class Transition:
+        def __init__(self, *args):
+            self.identity = "sandbox"
+
+        def current(self):
+            pass
+
+        def provider(self, attached):
+            state.attached = attached
+            if attached:
+                state.attaches += 1
+                if state.attaches == 2 and fault == "expiry_before":
+                    state.now = state.recovered["expires_at"] - 34
+            else:
+                cleanup.append("detach")
+
+    class Guest:
+        def __init__(self, *args, **kwargs):
+            self.ready = dict(identity=identity(), reference_sha256="original")
+
+        async def start(self):
+            return self.ready
+
+        async def capture_current(self):
+            return "current"
+
+        async def request(self, url, source):
+            state.requests += 1
+            target = urlsplit(url)
+            if source != "none" and (
+                not state.attached or source == "original" and state.epoch > 1
+            ):
+                if state.attaches == 2 and fault == "expiry_after":
+                    state.now = state.recovered["expires_at"] - 34
+                response = dict(status=500, body='{"error":"credential_unavailable"}')
+            elif target.path == "/outside":
+                response = dict(status=403, body='{"error":"credential_endpoint_mismatch"}')
+            else:
+                row = dict(
+                    method="GET",
+                    path=target.path + "?" + target.query,
+                    host=target.netloc,
+                    port=8443,
+                    authorization_sha256=None
+                    if source == "none"
+                    else state.issuer.latest["authorization_sha256"],
+                )
+                origin.append(row)
+                response = dict(status=200, body=json.dumps(row))
+            return dict(guest=response)
+
+        async def close(self):
+            cleanup.append("guest")
+            if fault == "final":
+                origin.clear()
+
+    owner = {"sandbox_id": "sandbox"}
+
+    async def delete():
+        cleanup.append("sandbox")
+
+    async def acquire(**kwargs):
+        return NS(owner=owner, dispose=delete)
+
+    async def dispose(owner):
+        await delete()
+
+    for name, value in (
+        ("TokenIssuer", Issuer),
+        ("HTTPSRefreshProfile", Profile),
+        ("Transitions", Transition),
+        ("ContinuousGuest", Guest),
+    ):
+        monkeypatch.setattr(probe, name, value)
+    fixture = NS(
+        report={},
+        save=lambda: None,
+        client=NS(
+            image="image", grpc=NS(RpcError=Retryable, StatusCode=NS(UNAVAILABLE="unavailable"))
+        ),
+        owners=[owner],
+        disposed=set(),
+        acquire=acquire,
+        dispose=dispose,
+    )
+    if fault is None:
+        asyncio.run(probe.measure_credentials(fixture, "10.23.45.67", tmp_path / "ca.pem"))
+        assert state.requests == 13
+        assert fixture.report["credentials"]["characterization_completed"]
+    else:
+        match = "expiry" if fault.startswith("expiry") else "continuity|unattributed"
+        with pytest.raises(RuntimeError, match=match):
+            asyncio.run(probe.measure_credentials(fixture, "10.23.45.67", tmp_path / "ca.pem"))
+        assert not fixture.report["credentials"]["characterization_completed"]
+        if fault == "expiry_before":
+            assert state.requests == 11
+        elif fault == "expiry_after":
+            assert state.requests == 12
+    assert cleanup[-3:] == ["detach", "sandbox", "profile"] or cleanup[-4:] == [
+        "detach",
+        "guest",
+        "sandbox",
+        "profile",
+    ]
+    assert fixture.report["credentials"]["provider_and_profile_cleanup_verified"]

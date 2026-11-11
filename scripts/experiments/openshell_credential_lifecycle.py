@@ -93,6 +93,49 @@ def journal_delta(before, after):
     return after[len(before) :]
 
 
+class OriginJournal:
+    """Account for every origin event across controls, traffic and idle measurement intervals."""
+
+    def __init__(self):
+        self.events = []
+
+    def advance(self, snapshot, *, expected=None):
+        events = journal_delta(self.events, snapshot)
+        if expected is not None and events != expected:
+            raise RuntimeError("unattributed TLS origin traffic between observations")
+        self.events = snapshot
+        return events
+
+
+class ProviderCleanup:
+    """Share one detach-before-delete operation between exec failure and experiment cleanup."""
+
+    def __init__(self, sandbox, transitions):
+        self.delete = sandbox.dispose
+        self.transitions = transitions
+        self.detachment = None
+        self.disposal = None
+        sandbox.dispose = self.dispose
+
+    async def detach(self):
+        if self.detachment is None:
+            self.detachment = asyncio.create_task(
+                asyncio.to_thread(self.transitions.provider, False)
+            )
+        await asyncio.shield(self.detachment)
+
+    async def dispose(self):
+        async def ordered():
+            try:
+                await self.detach()
+            finally:
+                await self.delete()
+
+        if self.disposal is None:
+            self.disposal = asyncio.create_task(ordered())
+        await asyncio.shield(self.disposal)
+
+
 def unexpired(mint, *, now=None):
     """Leave a full observation budget before expiry when attributing revocation."""
     if mint.get("expires_at", 0) <= (time.time() if now is None else now) + 35:
@@ -315,6 +358,15 @@ async def measure_credentials(fixture, ip, ca_file):
     if {address[4][0] for address in addresses} != {ip}:
         raise RuntimeError("credential origin DNS did not resolve to the owned origin")
     context = ssl.create_default_context(cafile=str(ca_file))
+    origin = OriginJournal()
+
+    async def reconcile(*, expected=None):
+        snapshot = await asyncio.to_thread(origin_get, ip, "/__tls_events")
+        evidence["origin_journal"] = snapshot
+        fixture.save()
+        return origin.advance(snapshot, expected=expected)
+
+    await reconcile(expected=[])
     for path in ("/provider/ok", "/provider/other", "/outside"):
         row = await asyncio.to_thread(control_https, host, path, port=8443, context=context)
         if row != {
@@ -326,6 +378,7 @@ async def measure_credentials(fixture, ip, ca_file):
         }:
             raise RuntimeError("credential origin positive control failed")
         evidence["controls"].append(row)
+        await reconcile(expected=[row])
 
     def record(kind, row):
         evidence[kind].append(row)
@@ -337,6 +390,7 @@ async def measure_credentials(fixture, ip, ca_file):
         profile.endpoint_path = "/provider/**"
         guest = None
         transitions = None
+        cleanup = None
         try:
             evidence.update(
                 profile=profile.profile_id, provider=profile.provider, prepare="pending"
@@ -351,6 +405,7 @@ async def measure_credentials(fixture, ip, ca_file):
             profile.endpoint(rule, host, "/**")
             sandbox = await fixture.acquire(policy=policy)
             transitions = Transitions(fixture, profile, ip, record)
+            cleanup = ProviderCleanup(sandbox, transitions)
             await asyncio.to_thread(transitions.provider, True)
             guest = ContinuousGuest(
                 sandbox,
@@ -388,19 +443,23 @@ async def measure_credentials(fixture, ip, ca_file):
                 expected: int | str = 200,
                 path="/provider/ok",
                 converge=False,
+                revoked=None,
             ):
                 assert guest is not None
                 row = {"case": label, "attempts": [], "passed": False}
                 record("cases", row)
                 deadline = time.monotonic() + (30 if converge else 0)
                 while True:
+                    if revoked is not None:
+                        unexpired(revoked)
                     await asyncio.to_thread(transitions.current)
                     marker = uuid.uuid4().hex
                     target = path + "?case=" + marker
-                    before = await asyncio.to_thread(origin_get, ip, "/__tls_events")
+                    await reconcile(expected=[])
                     observed = await guest.request(f"https://{host}:8443{target}", source)
-                    after = await asyncio.to_thread(origin_get, ip, "/__tls_events")
-                    events = journal_delta(before, after)
+                    events = await reconcile()
+                    if revoked is not None:
+                        unexpired(revoked)
                     request = {
                         "method": "GET",
                         "path": target,
@@ -479,6 +538,7 @@ async def measure_credentials(fixture, ip, ca_file):
                 "reconfiguration_revokes_unexpired_launch_reference",
                 expected="credential_unavailable",
                 converge=True,
+                revoked=recovered,
             )
             unexpired(recovered)
             fresh = await guest.capture_current()
@@ -496,12 +556,15 @@ async def measure_credentials(fixture, ip, ca_file):
                 "installed_detach_revokes_current_reference",
                 source="current",
                 expected="credential_unavailable",
+                revoked=reconfigured,
             )
             unexpired(reconfigured)
             await check("base_route_remains_without_credential_after_detach", source="none")
             await asyncio.to_thread(transitions.provider, True)
             await check(
-                "reattach_does_not_revive_original_epoch", expected="credential_unavailable"
+                "reattach_does_not_revive_original_epoch",
+                expected="credential_unavailable",
+                revoked=recovered,
             )
             await guest.capture_current()
             await check(
@@ -512,19 +575,23 @@ async def measure_credentials(fixture, ip, ca_file):
             )
             await guest.close()
             guest = None
+            await reconcile(expected=[])
             evidence["characterization_completed"] = True
         finally:
             try:
                 try:
-                    if transitions is not None and transitions.identity not in fixture.disposed:
-                        await asyncio.to_thread(transitions.provider, False)
+                    if cleanup is not None:
+                        await cleanup.detach()
                 finally:
                     if guest is not None:
                         await guest.close()
             finally:
                 try:
-                    for owner in fixture.owners:
-                        await fixture.dispose(owner)
+                    if cleanup is not None:
+                        await cleanup.dispose()
+                    else:
+                        for owner in fixture.owners:
+                            await fixture.dispose(owner)
                     await asyncio.to_thread(profile.cleanup_workspace, fixture.client)
                     evidence["provider_and_profile_cleanup_verified"] = (
                         evidence.get("prepare") == "confirmed"
