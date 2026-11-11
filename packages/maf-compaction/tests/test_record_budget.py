@@ -1043,6 +1043,60 @@ async def test_interrupted_batch_expansion_keeps_the_known_fitting_pair(
     assert _sent_values(messages) == {value for index in range(4) for value in _values(index)}
 
 
+@pytest.mark.parametrize("restore", [False, True])
+async def test_deadline_limited_sweeps_get_past_oversized_records(
+    restore: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tokenizer = _CountingTokenizer()
+    monkeypatch.setattr(composed_module, "monotonic", lambda: float(tokenizer.transcripts))
+    messages = _padded_history(8, 5_500, plain_tail=2)
+    budget = _record_size(copy.deepcopy(messages)) - 200
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=budget, share=0.25, tokenizer=tokenizer)
+
+    for _ in range(12):
+        token = strategy._chain_deadline.set(tokenizer.transcripts + 2.0)
+        try:
+            await strategy._merge_batches(messages, None, 0.25)
+        except composed_module._ChainTimeSpent:
+            pass
+        finally:
+            strategy._chain_deadline.reset(token)
+        if summarizer.merges:
+            break
+        if restore:
+            restored = _strategy(summarizer, budget=budget, share=0.25, tokenizer=tokenizer)
+            restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+            strategy = restored
+
+    (merged,) = summarizer.merges
+    assert "lookup_8 " in merged and "lookup_9 " in merged
+    assert strategy.records_merged == 1
+    assert _sent_values(messages) == {value for index in range(10) for value in _values(index)}
+
+
+@pytest.mark.parametrize("changed", ["record", "cap", "prompt"])
+async def test_single_record_fit_is_rechecked_when_its_inputs_change(changed: str) -> None:
+    messages = _history(2) if changed == "prompt" else _padded_history(1, 5_500, plain_tail=1)
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=100_000, share=0.001)
+    if changed == "prompt":
+        strategy.merge_prompt += " Additional instructions." * 1000
+    assert not await strategy._merge_batches(messages, None, 0.001)
+    assert not summarizer.requests
+
+    if changed == "record":
+        messages[2:4] = _record_pair(0)
+    restored = _strategy(
+        summarizer, budget=100_000, share=0.001, cap=10_000 if changed == "cap" else _CAP
+    )
+    restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+
+    assert await restored._merge_batches(messages, None, 0.001)
+    assert restored.records_merged == 1
+    assert _sent_values(messages) == {value for index in range(2) for value in _values(index)}
+
+
 class _PairsDoNotFitTokenizer(CharacterEstimatorTokenizer):
     """Count a two-record request far over the cap and a three-record one under it.
 

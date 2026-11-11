@@ -692,6 +692,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # Per start record (body digest, cap): how far the batch search from it got, so a later
         # sweep resumes it, or takes the batch it found, only while those records stand.
         self._searched: dict[tuple[str, int], _Searched] = {}
+        self._record_input_fits: dict[tuple[str, str, int], bool] = {}
         self._refused_rewrites: dict[tuple[str, int], int] = {}
 
     @property
@@ -855,6 +856,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 [start, limit, found.covered, found.records, found.batch, found.ended]
                 for (start, limit), found in sorted(self._searched.items())
             ],
+            "record_input_fits": [
+                [prompt, record, limit, fits]
+                for (prompt, record, limit), fits in sorted(self._record_input_fits.items())
+            ],
             "shed_ids": sorted(self._shed_ids),
             "shed_groups": sorted(self._shed_groups),
             "refused_merges": [
@@ -894,6 +899,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             (entry[0], entry[1]): _Searched(*entry[2:])
             for entry in searched
             if len(entry) in (4, 6)
+        }
+        self._record_input_fits = {
+            (entry[0], entry[1], entry[2]): entry[3] for entry in data.get("record_input_fits", [])
         }
         self._shed_ids = {value for value in data["shed_ids"] if durable_message_id(value)}
         self._shed_groups = set(data.get("shed_groups", []))
@@ -1635,6 +1643,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         again only after a merge changes it; passing a record over moves on to the next.
         An interrupted batch expansion retains its fitting pair for the next sweep.
 
+        Single-record fit results persist while their record, prompt and cap stand unchanged.
         A record whose own request exceeds the cap is passed over without a search from it. One
         whose two-record request does not fit is searched over longer runs, since token counts
         need not grow with text. What a search from a record found -- its batch, or how far it
@@ -1656,12 +1665,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """
         bound = int(self._budget * share)
         limit = self._record_request_limit()
+        prompt_digest = _digest(self.merge_prompt)
         handled: set[int] = set()
         bodies: dict[int, str] = {}
         digests: dict[int, str] = {}
         runs: list[int] = [0]
         powers: list[int] = [1]
-        alone: dict[int, bool] = {}
         probes = 0
         changed = False
 
@@ -1689,6 +1698,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 runs.append((runs[-1] * _RUN_BASE + value) % _RUN_MODULUS)
             while len(powers) <= len(groups):
                 powers.append(powers[-1] * _RUN_BASE % _RUN_MODULUS)
+            inputs = {(prompt_digest, digests[last(group)], limit) for group in groups}
+            self._record_input_fits = {
+                key: fits for key, fits in self._record_input_fits.items() if key in inputs
+            }
             held = self._record_tokens(messages)
             over = held > bound or (start is not None and self._short_of_target(messages, start))
             return groups, held, over
@@ -1760,14 +1773,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if len(groups) - cursor < 2:
                 break
             oldest = last(groups[cursor])
-            if oldest not in alone:
-                alone[oldest] = fits_summary_input(
+            key = prompt_digest, digests[oldest], limit
+            if key not in self._record_input_fits:
+                self._record_input_fits[key] = fits_summary_input(
                     self.merge_prompt,
                     _numbered_records([bodies[oldest]]),
                     tokenizer=self.tokenizer,
                     limit=limit,
                 )
-            if not alone[oldest]:
+            if not self._record_input_fits[key]:
                 handled.add(oldest)
                 continue
             try:
