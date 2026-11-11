@@ -401,13 +401,15 @@ async def test_legacy_record_decisions_do_not_bypass_retained_reasoning(operatio
 @pytest.mark.anyio
 @pytest.mark.parametrize("operation", ["reshape", "merge"])
 @pytest.mark.parametrize("restore_exclusions", [False, True])
-async def test_replay_checks_intervening_exclusion_state(
-    operation: str, restore_exclusions: bool
+@pytest.mark.parametrize("placement", ["between", "after"])
+async def test_replay_checks_original_reasoning_exclusion_state(
+    operation: str, restore_exclusions: bool, placement: str
 ) -> None:
     messages = _history(2)
     between = _tool_group(19)
     between[0].contents.insert(0, Content.from_text_reasoning(text="Protect this prefix."))
-    messages[4:4] = between
+    insertion = 4 if placement == "between" else len(messages) - 1
+    messages[insertion:insertion] = between
     original = copy.deepcopy(messages)
     text = " ".join(sorted(_sent_values(messages)))
     strategy = _strategy(_Summarizer(merge=lambda _: text), budget=100_000)
@@ -474,3 +476,38 @@ def test_replay_miss_serializes_each_message_at_most_once(monkeypatch: pytest.Mo
     monkeypatch.setattr(Content, "to_dict", counted)
     assert replay_match(messages, groups, {(accepted, 40)}) is None
     assert serializations <= len(messages)
+
+
+@pytest.mark.anyio
+async def test_consolidated_lineage_does_not_depend_on_later_excluded_reasoning() -> None:
+    messages = _history(2)
+    original = copy.deepcopy(messages)
+    text = " ".join(sorted(_sent_values(messages)))
+    answers = iter([text + ". Additional explanation. " * 12, text])
+    strategy = _strategy(_Summarizer(merge=lambda _: next(answers)), budget=100_000)
+    for _ in range(2):
+        groups = consolidatable_record_groups(messages)
+        assert (
+            await strategy._consolidate(
+                messages,
+                groups,
+                prompt=DEFAULT_RECORD_MERGE_PROMPT,
+                transcript=_transcript(messages, groups),
+            )
+            == "accepted"
+        )
+    excluded = Message(
+        "assistant",
+        [Content.from_text_reasoning(text="Later excluded thought.")],
+        message_id="later-excluded",
+    )
+    excluded.additional_properties[EXCLUDED_KEY] = True
+    retained = _tool_group(20)
+    retained[0].contents.insert(0, Content.from_text_reasoning(text="Used the compacted prefix."))
+    for history in (messages, original):
+        history.extend(copy.deepcopy([excluded, *retained]))
+        annotate_message_groups(history)
+    cold = _strategy(_Summarizer(), budget=100_000)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    assert cold._keep_decisions(original)
+    assert _sent(original) == _sent(messages)
