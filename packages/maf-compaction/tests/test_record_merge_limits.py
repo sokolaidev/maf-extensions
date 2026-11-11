@@ -303,8 +303,9 @@ async def test_timeout_before_a_child_resumes_halves_after_restore(
 @pytest.mark.parametrize("records", [4, 8])
 @pytest.mark.parametrize("restore", [False, True])
 @pytest.mark.parametrize("rebuild", [False, True])
+@pytest.mark.parametrize("share", [None, 0.001])
 async def test_pending_sibling_resumes_after_an_accepted_child(
-    records: int, restore: bool, rebuild: bool, monkeypatch: pytest.MonkeyPatch
+    records: int, restore: bool, rebuild: bool, share: float | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     now = 0.0
     monkeypatch.setattr(composed_module, "monotonic", lambda: now)
@@ -326,11 +327,11 @@ async def test_pending_sibling_resumes_after_an_accepted_child(
     )
     messages = _history(records)
     original = copy.deepcopy(messages)
-    strategy = _strategy(summarizer, budget=100_000, share=0.001, cap=None)
+    strategy = _strategy(summarizer, budget=100_000, share=share, cap=None)
     token = strategy._chain_deadline.set(30.0)
     try:
         with pytest.raises(composed_module._ChainTimeSpent):
-            await strategy._merge_batches(messages, None, 0.001)
+            await strategy._merge_records(messages)
     finally:
         strategy._chain_deadline.reset(token)
     assert strategy.records_merged == 1
@@ -346,7 +347,7 @@ async def test_pending_sibling_resumes_after_an_accepted_child(
         )
     )
     if restore:
-        restored = _strategy(resumed, budget=100_000, share=0.001, cap=None)
+        restored = _strategy(resumed, budget=100_000, share=share, cap=None)
         restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
         strategy = restored
     else:
@@ -356,13 +357,15 @@ async def test_pending_sibling_resumes_after_an_accepted_child(
         assert strategy._keep_decisions(messages)
     before = strategy.records_merged
 
-    assert await strategy._merge_batches(messages, None, 0.001)
+    assert await strategy._merge_records(messages)
     assert resumed.merges[0] == pending
     assert strategy.records_merged - before == records // 2 - 1
     assert _sent_values(messages) == {value for index in range(records) for value in _values(index)}
 
 
+@pytest.mark.parametrize("share", [None, 0.001])
 async def test_resumed_batch_retains_partial_success_when_a_later_child_fails(
+    share: float | None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     now = 0.0
@@ -384,11 +387,11 @@ async def test_resumed_batch_retains_partial_success_when_a_later_child_fails(
         )
     )
     messages = _history(8)
-    strategy = _strategy(first, budget=100_000, share=0.001, cap=None)
+    strategy = _strategy(first, budget=100_000, share=share, cap=None)
     token = strategy._chain_deadline.set(30.0)
     try:
         with pytest.raises(composed_module._ChainTimeSpent):
-            await strategy._merge_batches(messages, None, 0.001)
+            await strategy._merge_records(messages)
     finally:
         strategy._chain_deadline.reset(token)
     assert strategy.records_merged == 1
@@ -408,18 +411,18 @@ async def test_resumed_batch_retains_partial_success_when_a_later_child_fails(
             )
         ),
         budget=100_000,
-        share=0.001,
+        share=share,
         cap=None,
     )
     resumed.restore_session_state(json.loads(json.dumps(strategy.session_state())))
-    assert await resumed._merge_batches(messages, None, 0.001)
+    assert await resumed._merge_records(messages)
     assert resumed.records_merged == 1
     assert resumed.record_summary_failures == 1
 
     final_model = _Summarizer()
-    final = _strategy(final_model, budget=100_000, share=0.001, cap=None)
+    final = _strategy(final_model, budget=100_000, share=share, cap=None)
     final.restore_session_state(json.loads(json.dumps(resumed.session_state())))
-    assert await final._merge_batches(messages, None, 0.001)
+    assert await final._merge_records(messages)
     assert [_batch_size(body) for body in final_model.merges] == [2]
     assert _sent_values(messages) == {value for index in range(8) for value in _values(index)}
 

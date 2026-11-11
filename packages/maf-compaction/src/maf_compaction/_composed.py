@@ -1657,7 +1657,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return True
 
     async def _merge_batches(
-        self, messages: list[Message], start: _ChainStart | None, share: float
+        self, messages: list[Message], start: _ChainStart | None, share: float | None
     ) -> bool:
         """Merge the oldest records in batches while they exceed ``share`` or the prompt its target.
 
@@ -1669,6 +1669,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         An interrupted sweep resumes its position while the record layout, prompt and cap stand.
         A changed merge prompt invalidates cached batch searches too.
         Pending smaller batches resume before a new sweep and retain their split depth.
+        Without a share, pending work resumes before the single input-bounded merge.
 
         Single-record fit results persist while their record, prompt and cap stand unchanged.
         A record whose own request exceeds the cap is passed over without a search from it. One
@@ -1690,7 +1691,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             True if any batch was merged.
         """
-        bound = int(self._budget * share)
+        bound = None if share is None else int(self._budget * share)
         limit = self._record_request_limit()
         prompt_digest = _digest(self.merge_prompt)
         if self._search_prompt != prompt_digest:
@@ -1733,7 +1734,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 key: fits for key, fits in self._record_input_fits.items() if key in inputs
             }
             held = self._record_tokens(messages)
-            over = held > bound or (start is not None and self._short_of_target(messages, start))
+            over = (
+                (bound is not None and held > bound)
+                or (start is not None and self._short_of_target(messages, start))
+                or (bound is None and start is None)
+            )
             return groups, held, over
 
         def fits(run: list[dict[str, Any]]) -> bool:
@@ -1837,6 +1842,16 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 groups, _, over = survey()
         if resumed:
             self._batch_resume = None
+            return changed
+        if share is None:
+            if not over:
+                return False
+            groups = self._bounded_records(messages, self.merge_prompt, min_items=2)
+            if len(groups) < 2:
+                return False
+            changed, _ = await self._merge_batch(
+                messages, groups, transcript=_transcript(messages, groups)
+            )
             return changed
         layout = prompt_digest, limit, len(groups), chain(0, len(groups))
         cursor = 0
@@ -2038,16 +2053,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         that cannot answer without dropping values. Without it, one such merge while the prompt is
         short of its target. Without ``start`` there is no target, only the share.
         """
-        if self.record_budget_share is not None:
-            return await self._merge_batches(messages, start, self.record_budget_share)
-        if start is not None and not self._short_of_target(messages, start):
-            return False
-        groups = self._bounded_records(messages, self.merge_prompt, min_items=2)
-        if len(groups) < 2:
-            return False
-        transcript = _transcript(messages, groups)
-        changed, _ = await self._merge_batch(messages, groups, transcript=transcript)
-        return changed
+        return await self._merge_batches(messages, start, self.record_budget_share)
 
     async def _merge_user_summaries(self, messages: list[Message]) -> bool:
         """Step b: fold the oldest user summaries that fit, when at least two fit."""
