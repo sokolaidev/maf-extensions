@@ -65,6 +65,7 @@ from ._toolsummary import (
     ToolResultAnchoredSummarizationCompactionStrategy,
     _distinctive_tokens,  # pyright: ignore[reportPrivateUsage]
     _is_written_record,  # pyright: ignore[reportPrivateUsage]
+    _last_reasoning_index,  # pyright: ignore[reportPrivateUsage]
     _newest_record_identity,  # pyright: ignore[reportPrivateUsage]
     active_record_groups,
     build_record_message,
@@ -1201,6 +1202,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # Before the record phase counts records, so a stand-in and the pair it replaced are
         # never both counted.
         replayed = self._reshape_records(messages, replay=True) or replayed_shed
+        if _last_reasoning_index(messages) >= 0:
+            # Restore the accepted reasoning prefix before user edits change its source window.
+            replayed = self._keep_records(messages, exact_only=True) or replayed
         decisions_kept = self._decisions_kept
         shed_sources = (
             [
@@ -1229,6 +1233,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._removed_by_record += max(entry_tokens - included_token_count(messages), 0)
 
         replay = self.user_turns.replay_summaries(messages)
+        if replay.changed:
+            replayed = self._reshape_records(messages, replay=True) or replayed
         prompt_tokens = included_token_count(messages)
         compacted = False
         if (not replay.changed or replay.new_turns) and not self._holds_for_record(
@@ -1529,7 +1535,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         ):
             return self.tool_results.shed_again_after_record(messages, message_ids)
 
-    def _keep_records(self, messages: list[Message]) -> bool:
+    def _keep_records(self, messages: list[Message], *, exact_only: bool = False) -> bool:
         """Replace every run of records the chain has already replaced, as it did.
 
         The earliest run first, and at one start the longest. A batch merge need not start at the
@@ -1551,6 +1557,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     )
                     changed = True
                     continue
+            if exact_only:
+                break
             groups = consolidatable_record_groups(messages)
             source_counts = {count for _, count in self._kept_records}
             counted = sorted((count for count in source_counts if count is not None), reverse=True)

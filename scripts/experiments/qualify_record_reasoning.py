@@ -460,7 +460,7 @@ class Probe:
             )
             await self.send(f"{operation}-restored-later", restored_later)
 
-    async def close(self, error: Exception | None) -> None:
+    async def close(self, error: BaseException | None) -> None:
         """Persist payload digests and qualification metrics, then close clients."""
         self.output.mkdir(parents=True, exist_ok=True)
         packages = (
@@ -555,8 +555,10 @@ async def main() -> int:
     error = None
     try:
         await probe.run()
-    except Exception as exc:
+    except BaseException as exc:
         error = exc
+        if not isinstance(exc, Exception):
+            raise
         print(
             canonical(
                 {

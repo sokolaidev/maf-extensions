@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -106,3 +107,25 @@ def test_rejected_transformations_do_not_leak_to_artifacts_or_stdout(probe, tmp_
     assert "private-transformation-sentinel" not in output + persisted
     event = json.loads(output)
     assert event["input_transformation_count"] == 1
+
+
+@pytest.mark.parametrize("failure", [asyncio.CancelledError, KeyboardInterrupt, SystemExit])
+def test_aborted_probe_never_writes_success(probe, tmp_path, monkeypatch, capsys, failure):
+    module = importlib.import_module("qualify_record_reasoning")
+    probe.run = AsyncMock(side_effect=failure("private-abort-sentinel"))
+    monkeypatch.setattr(module, "Probe", lambda *args: probe)
+    monkeypatch.setattr(sys, "argv", ["probe", "--provider", "openai", "--output", str(tmp_path)])
+    monkeypatch.setenv("AZURE_OPENAI_MODEL", "model")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.invalid")
+
+    with pytest.raises(failure):
+        asyncio.run(module.main())
+
+    report_text = (tmp_path / "openai.json").read_text(encoding="utf-8")
+    report = json.loads(report_text)
+    assert report["passed"] is False
+    assert report["error_type"] == failure.__name__
+    assert report["error_stage"] == "seed-0"
+    assert "private-abort-sentinel" not in report_text + capsys.readouterr().out
+    probe.http.aclose.assert_awaited_once()
+    probe.credential.close.assert_awaited_once()

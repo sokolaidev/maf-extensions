@@ -27,7 +27,10 @@ def source_key(messages: list[Message], groups: list[dict[str, Any]]) -> str | N
         if message.additional_properties.get(EXCLUDED_KEY, False)
         and any(content.type == "text_reasoning" for content in message.contents)
     }
-    return key + ":" + ",".join(sorted(excluded_reasoning))
+    if None in excluded_reasoning:
+        # Content cannot identify old reasoning once unrelated metadata changes.
+        return None
+    return "v2:" + key + ":" + ",".join(sorted(value for value in excluded_reasoning if value))
 
 
 def source_lineage(messages: list[Message], groups: list[dict[str, Any]]) -> str | None:
@@ -35,7 +38,7 @@ def source_lineage(messages: list[Message], groups: list[dict[str, Any]]) -> str
     return _source_key(messages, groups, {})
 
 
-def _message_key(message: Message, *, include_exclusion: bool = True) -> str:
+def _message_key(message: Message) -> str:
     payload = [
         message.role,
         message.author_name,
@@ -46,16 +49,16 @@ def _message_key(message: Message, *, include_exclusion: bool = True) -> str:
         else None,
         message.additional_properties.get(STANDS_IN_KEY),
         message.additional_properties.get(LINEAGE_KEY),
-        bool(message.additional_properties.get(EXCLUDED_KEY, False)) if include_exclusion else None,
+        bool(message.additional_properties.get(EXCLUDED_KEY, False)),
         [content.to_dict(exclude={"raw_representation"}) for content in message.contents],
     ]
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def _reasoning_key(message: Message) -> str:
+def _reasoning_key(message: Message) -> str | None:
     if durable_message_id(message.message_id):
         return hashlib.sha256(str(message.message_id).encode()).hexdigest()
-    return _message_key(message, include_exclusion=False)
+    return None
 
 
 def _source_key(
@@ -94,8 +97,9 @@ def replay_match(
     message_keys: dict[int, str] = {}
     certificates: dict[tuple[str, int], list[tuple[str, set[str]]]] = {}
     for certificate, count in accepted:
-        key, separator, excluded = certificate.partition(":")
-        if separator and count > 0:
+        version, _, payload = certificate.partition(":")
+        key, separator, excluded = payload.partition(":")
+        if version == "v2" and separator and count > 0:
             certificates.setdefault((key, count), []).append(
                 (certificate, set(excluded.split(",")) if excluded else set())
             )

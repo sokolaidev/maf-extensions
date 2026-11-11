@@ -13,6 +13,7 @@ from agent_framework._compaction import (
     SUMMARY_OF_GROUP_IDS_KEY,
     SUMMARY_OF_MESSAGE_IDS_KEY,
     annotate_message_groups,
+    group_messages,
     project_included_messages,
 )
 from test_record_budget import (
@@ -20,6 +21,7 @@ from test_record_budget import (
     _record_pair,
     _sent,
     _sent_values,
+    _size,
     _strategy,
     _Summarizer,
     _tool_group,
@@ -368,7 +370,10 @@ def test_reshape_batch_replay_requires_unchanged_source_window(change: str) -> N
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("operation", ["reshape", "rewrite"])
-async def test_legacy_record_decisions_do_not_bypass_retained_reasoning(operation: str) -> None:
+@pytest.mark.parametrize("certificate", ["missing", "v1"])
+async def test_legacy_record_decisions_do_not_bypass_retained_reasoning(
+    operation: str, certificate: str
+) -> None:
     messages = _reasoned(1)
     original = copy.deepcopy(messages)
     text = " ".join(sorted(_sent_values(messages)))
@@ -387,8 +392,14 @@ async def test_legacy_record_decisions_do_not_bypass_retained_reasoning(operatio
             == "accepted"
         )
     state = json.loads(json.dumps(strategy.session_state()))
-    state.pop("record_replays", None)
-    state.pop("reshape_batches", None)
+    if certificate == "missing":
+        state.pop("record_replays", None)
+        state.pop("reshape_batches", None)
+    else:
+        for entry in state["record_replays"]:
+            entry[0] = entry[0].removeprefix("v2:")
+        for entry in state["reshape_batches"]:
+            entry[0] = entry[0].removeprefix("v2:")
     cold = _strategy(_Summarizer(), budget=100_000)
     cold.restore_session_state(state)
     _retain_later_reasoning(original)
@@ -510,4 +521,105 @@ async def test_consolidated_lineage_does_not_depend_on_later_excluded_reasoning(
     cold = _strategy(_Summarizer(), budget=100_000)
     cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
     assert cold._keep_decisions(original)
+    assert _sent(original) == _sent(messages)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["reshape", "merge"])
+@pytest.mark.parametrize("message_id", [None, "msg_5"])
+async def test_anonymous_excluded_reasoning_cannot_gain_replay_authority(
+    operation: str, message_id: str | None
+) -> None:
+    messages = _history(2)
+    reasoning = Content.from_text_reasoning(text="Keep the original prefix.")
+    reasoning.additional_properties["signature"] = "original-signature"
+    later = Message("assistant", [reasoning], message_id=message_id)
+    messages.append(later)
+    original = copy.deepcopy(messages)
+    later.additional_properties[EXCLUDED_KEY] = True
+    annotate_message_groups(messages)
+    text = " ".join(sorted(_sent_values(messages)))
+    strategy = _strategy(_Summarizer(merge=lambda _: text), budget=100_000)
+    if operation == "reshape":
+        assert strategy._reshape_records(messages)
+    else:
+        groups = consolidatable_record_groups(messages)
+        assert (
+            await strategy._consolidate(
+                messages,
+                groups,
+                prompt=DEFAULT_RECORD_MERGE_PROMPT,
+                transcript=_transcript(messages, groups),
+            )
+            == "accepted"
+        )
+    original[-1].contents[0].additional_properties["classification"] = "changed"
+    cold = _strategy(_Summarizer(), budget=100_000)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    before = _sent(original)
+    assert not cold._reshape_records(original, replay=True)
+    assert not cold._keep_decisions(original)
+    assert _sent(original) == before
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["reshape", "merge"])
+@pytest.mark.parametrize("summary_first", [False, True])
+@pytest.mark.parametrize("user_edit", ["summary", "fold"])
+async def test_record_replay_restores_interleaved_user_summary(
+    operation: str, summary_first: bool, user_edit: str
+) -> None:
+    messages = _history(2)
+    messages.insert(4, Message("user", ["Additional facts. " * 1_000], message_id="middle"))
+    if user_edit == "fold":
+        messages.insert(5, Message("user", ["More facts. " * 1_000], message_id="middle2"))
+    original = copy.deepcopy(messages)
+    text = " ".join(sorted(_sent_values(messages)))
+    strategy = _strategy(_Summarizer(merge=lambda _: text), budget=100_000, cap=None)
+
+    async def summarize() -> None:
+        if user_edit == "fold":
+            _size(messages)
+            for index, identity in enumerate(("middle", "middle2")):
+                group = next(
+                    group
+                    for group in group_messages(messages)
+                    if messages[group["start_index"]].message_id == identity
+                )
+                strategy.user_turns._replace(
+                    messages,
+                    [group],
+                    f"Summary {index}. " * 100,
+                    summary_id=f"summary_{index}",
+                )
+            assert await strategy.user_turns.fold_if_smaller(messages) == "folded"
+            return
+        assert await strategy.user_turns.compact_against(
+            messages,
+            prompt_tokens=_size(messages),
+            trigger_tokens=1,
+        )
+
+    if summary_first:
+        await summarize()
+    if operation == "reshape":
+        assert strategy._reshape_records(messages)
+    else:
+        groups = consolidatable_record_groups(messages)
+        assert (
+            await strategy._consolidate(
+                messages,
+                groups,
+                prompt=DEFAULT_RECORD_MERGE_PROMPT,
+                transcript=_transcript(messages, groups),
+            )
+            == "accepted"
+        )
+    if not summary_first:
+        await summarize()
+    for history in (messages, original):
+        _retain_later_reasoning(history)
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    assert await cold(original)
     assert _sent(original) == _sent(messages)
