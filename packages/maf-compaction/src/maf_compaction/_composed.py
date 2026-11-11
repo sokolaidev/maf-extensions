@@ -1620,9 +1620,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         included (:func:`~._toolsummary.reshapeable_record_groups`). A record whose
         span holds unrelated content or active-turn reasoning, whose result carries metadata
         or non-text items, or whose result this model call carried in is left as it is.
-        Reasoning attached only to a completed-turn record leaves with the whole group, working
-        backward so later retained reasoning never sees its prefix edited. Merges spare the
-        same protected spans.
+        Reasoning attached only to completed-turn records leaves with their whole groups in one
+        batch, so later retained reasoning never sees its prefix edited. Merges spare the same
+        protected spans.
 
         **Only when the chain fires, not whenever the written form is cheaper.** A reshape
         rewrites the prompt from the record it replaces. Inside a firing it is one more edit the
@@ -1642,24 +1642,20 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             True if any record was reshaped.
         """
-        changed = False
-        while groups := reshapeable_record_groups(messages, replay=replay):
-            digests = [_digest(payload) for payload in reshape_payloads(messages, groups)]
-            chosen = [
-                (group, digest)
-                for group, digest in zip(groups, digests, strict=True)
-                if not replay or digest in self._reshaped
-            ]
-            if not chosen:
-                break
-            self.tool_results.reshape_records(
-                messages, [group for group, _ in chosen], replay=replay
-            )
-            if not replay:
-                self._records_reshaped += len(chosen)
-                self._reshaped.update(digest for _, digest in chosen)
-            changed = True
-        return changed
+        groups = reshapeable_record_groups(messages, replay=replay)
+        digests = [_digest(payload) for payload in reshape_payloads(messages, groups)]
+        chosen = [
+            (group, digest)
+            for group, digest in zip(groups, digests, strict=True)
+            if not replay or digest in self._reshaped
+        ]
+        if not chosen:
+            return False
+        self.tool_results.reshape_records(messages, [group for group, _ in chosen], replay=replay)
+        if not replay:
+            self._records_reshaped += len(chosen)
+            self._reshaped.update(digest for _, digest in chosen)
+        return True
 
     async def _merge_batches(
         self, messages: list[Message], start: _ChainStart | None, share: float | None

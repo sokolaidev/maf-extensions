@@ -971,8 +971,8 @@ def reshapeable_record_groups(
         The spans :meth:`ToolResultAnchoredSummarizationCompactionStrategy.reshape_records` may be
         handed.
     """
-    groups, recalls = _consolidatable_record_groups(messages, replay=replay)
-    return [
+    groups, recalls = _consolidatable_record_groups(messages, replay=True)
+    eligible = [
         group
         for group in groups
         if not any(
@@ -981,6 +981,10 @@ def reshapeable_record_groups(
         )
         and _reshape_payload(messages, group, recalls) is not None
     ]
+    if replay:
+        return eligible
+    barrier = _last_reasoning_index(messages, excluding=_span_indices(eligible))
+    return [group for group in eligible if group["start_index"] > barrier]
 
 
 def _reshape_payload(
@@ -1078,13 +1082,20 @@ def _completed_user_boundary(messages: Sequence[Message]) -> int:
     )
 
 
-def _last_reasoning_index(messages: Sequence[Message]) -> int:
+def _span_indices(groups: list[dict[str, Any]]) -> set[int]:
+    return {
+        index for group in groups for index in range(group["start_index"], group["end_index"] + 1)
+    }
+
+
+def _last_reasoning_index(messages: Sequence[Message], *, excluding: Collection[int] = ()) -> int:
     """Locate the last retained reasoning block, whose prefix must remain unchanged."""
     return next(
         (
             index
             for index in range(len(messages) - 1, -1, -1)
-            if not messages[index].additional_properties.get(EXCLUDED_KEY)
+            if index not in excluding
+            and not messages[index].additional_properties.get(EXCLUDED_KEY)
             and any(content.type == "text_reasoning" for content in messages[index].contents)
         ),
         -1,
@@ -2265,6 +2276,10 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         }
         if not all((group["start_index"], group["end_index"]) in offered for group in groups):
             raise ValueError("A record handed to reshape_records cannot be reshaped without loss.")
+        if not replay:
+            barrier = _last_reasoning_index(messages, excluding=_span_indices(groups))
+            if any(group["start_index"] <= barrier for group in groups):
+                raise ValueError("A record reshape would edit a retained reasoning prefix.")
         recall_results = _recall_results(messages)
         standing = {
             (message.additional_properties.get(STANDS_IN_KEY), message.text)

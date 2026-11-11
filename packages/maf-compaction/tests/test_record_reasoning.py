@@ -25,6 +25,7 @@ from test_record_budget import (
     _tool_group,
 )
 
+from maf_compaction import _toolsummary as toolsummary_module
 from maf_compaction._composed import DEFAULT_RECORD_MERGE_PROMPT, _transcript, harder_record_prompt
 from maf_compaction._request import RECALL_PROMPT_KEY
 from maf_compaction._toolsummary import (
@@ -177,6 +178,36 @@ def test_later_retained_reasoning_protects_its_entire_record_prefix() -> None:
     with pytest.raises(ValueError):
         strategy.tool_results.consolidate_records(messages, active_record_groups(messages), "short")
     assert _sent(messages) == before
+
+
+def test_a_partial_reshape_cannot_edit_reasoning_left_out_of_its_plan() -> None:
+    messages = _reasoned(2)
+    groups = reshapeable_record_groups(messages)
+    assert len(groups) == 2
+    before = _sent(messages)
+    strategy = _strategy(_Summarizer(), budget=100_000)
+    with pytest.raises(ValueError, match="retained reasoning prefix"):
+        strategy.tool_results.reshape_records(messages, groups[:1])
+    assert _sent(messages) == before
+
+
+def test_reasoned_records_do_not_rescan_history_once_per_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan = toolsummary_module._consolidatable_record_groups
+    scans = 0
+
+    def counted(messages: list[Message], *, replay: bool = False):
+        nonlocal scans
+        scans += 1
+        return scan(messages, replay=replay)
+
+    monkeypatch.setattr(toolsummary_module, "_consolidatable_record_groups", counted)
+    messages = _reasoned(80)
+    strategy = _strategy(_Summarizer(), budget=100_000)
+    assert strategy._reshape_records(messages)
+    assert strategy.records_reshaped == 80
+    assert scans <= 4
 
 
 def test_current_carried_result_still_protects_completed_reasoning() -> None:
