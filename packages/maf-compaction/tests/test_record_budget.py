@@ -972,6 +972,38 @@ async def test_sweeps_past_records_that_never_pair_go_on_where_the_last_one_stop
     assert "lookup_30 " in merged, "the feasible batch past the run that never pairs"
 
 
+@pytest.mark.parametrize("restore", [False, True])
+async def test_deadline_limited_sweeps_eventually_reach_later_mergeable_records(
+    restore: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tokenizer = _CountingTokenizer()
+    monkeypatch.setattr(composed_module, "monotonic", lambda: float(tokenizer.batches))
+    messages = _padded_history(30, 2_400, plain_tail=2)
+    budget = _record_size(copy.deepcopy(messages)) - 200
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=budget, share=0.25, tokenizer=tokenizer)
+    expirations = 0
+
+    for _ in range(120):
+        token = strategy._chain_deadline.set(tokenizer.batches + 8.0)
+        try:
+            if await strategy._merge_batches(messages, None, 0.25):
+                break
+        except composed_module._ChainTimeSpent:
+            expirations += 1
+        finally:
+            strategy._chain_deadline.reset(token)
+        if restore:
+            restored = _strategy(summarizer, budget=budget, share=0.25, tokenizer=tokenizer)
+            restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+            strategy = restored
+
+    assert expirations > 1
+    (merged,) = summarizer.merges
+    assert "lookup_30 " in merged
+    assert strategy.records_merged == 1
+
+
 class _PairsDoNotFitTokenizer(CharacterEstimatorTokenizer):
     """Count a two-record request far over the cap and a three-record one under it.
 

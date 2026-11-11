@@ -1739,7 +1739,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             for count in range(checked + 1, remaining + 1):
                 try:
                     fit = fits(groups[first : first + count])
-                except _BatchProbesSpent:
+                except (_BatchProbesSpent, _ChainTimeSpent):
                     remember(first, checked)
                     raise
                 if fit:
