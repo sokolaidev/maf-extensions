@@ -114,13 +114,28 @@ def propagation_observation(observed, events, request, minted):
 class ContinuousGuest:
     """Own one bounded exec stream and correlate each file-controlled request with its process."""
 
-    def __init__(self, sandbox, key):
+    def __init__(self, sandbox, key, *, record=None):
         self.sandbox, self.key = sandbox, key
+        self.record = record or (lambda row: None)
         self.directory = "/sandbox/credential-" + uuid.uuid4().hex
         self.sequence = 0
         self.task = None
         self.ready = {}
         self.current_reference = None
+
+    async def control_io(self, operation, action):
+        """Retry identical sequenced file operations, never guest execution or provider mutations."""
+        deadline = time.monotonic() + 15
+        while True:
+            try:
+                return await action()
+            except (EOFError, ConnectionError) as exc:
+                self.record(
+                    {"operation": operation, "sequence": self.sequence, "error": type(exc).__name__}
+                )
+                if time.monotonic() >= deadline:
+                    raise
+                await asyncio.sleep(0.2)
 
     async def read(self, name):
         deadline = time.monotonic() + 15
@@ -129,8 +144,11 @@ class ContinuousGuest:
                 result = await self.task
                 raise RuntimeError("continuous guest exited before observation: " + result.stderr)
             try:
-                data = await self.sandbox.read_file(
-                    self.directory + "/" + name, working_directory="/sandbox", max_bytes=16384
+                data = await self.control_io(
+                    "read",
+                    lambda: self.sandbox.read_file(
+                        self.directory + "/" + name, working_directory="/sandbox", max_bytes=16384
+                    ),
                 )
                 return json.loads(data)
             except FileNotFoundError:
@@ -150,10 +168,10 @@ class ContinuousGuest:
 
     async def command(self, **fields):
         self.sequence += 1
-        await self.sandbox.write_file(
-            f"{self.directory}/command-{self.sequence}.json",
-            json.dumps({"sequence": self.sequence, **fields}),
-            working_directory="/sandbox",
+        path = f"{self.directory}/command-{self.sequence}.json"
+        content = json.dumps({"sequence": self.sequence, **fields})
+        await self.control_io(
+            "write", lambda: self.sandbox.write_file(path, content, working_directory="/sandbox")
         )
 
     async def request(self, url, source="original"):
@@ -230,6 +248,7 @@ async def measure_credentials(fixture, ip, ca_file):
         "cases": [],
         "barriers": [],
         "mutations": [],
+        "control_retries": [],
         "issuer_events": [],
         "controls": [],
         "characterization_completed": False,
@@ -287,7 +306,9 @@ async def measure_credentials(fixture, ip, ca_file):
             sandbox = await fixture.acquire(policy=policy)
             transitions = Transitions(fixture, profile, ip, record)
             await asyncio.to_thread(transitions.provider, True)
-            guest = ContinuousGuest(sandbox, profile.env_key)
+            guest = ContinuousGuest(
+                sandbox, profile.env_key, record=lambda row: record("control_retries", row)
+            )
             evidence["guest"] = await guest.start()
             fixture.save()
 

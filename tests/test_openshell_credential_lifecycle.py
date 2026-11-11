@@ -71,7 +71,8 @@ def test_propagation_only_accepts_attributed_issuer_generations(probe):
     assert not probe.propagation_observation({"error": "TimeoutError"}, [], request, minted)
 
 
-def test_real_guest_keeps_launch_reference_across_new_launches(probe, tmp_path):
+@pytest.mark.parametrize("uncertain_write", [False, True])
+def test_real_guest_keeps_launch_reference_across_new_launches(probe, tmp_path, uncertain_write):
     """Exercise generated guest code and file controls in a real subprocess, without OpenShell."""
     events = []
 
@@ -93,6 +94,8 @@ def test_real_guest_keeps_launch_reference_across_new_launches(probe, tmp_path):
     thread.start()
     launch = {**os.environ, "QUALIFICATION_TOKEN": "openshell:resolve:first"}
     processes = []
+    failures = []
+    retries = []
 
     class LocalSandbox:
         async def exec(self, command, **kwargs):
@@ -123,9 +126,12 @@ def test_real_guest_keeps_launch_reference_across_new_launches(probe, tmp_path):
 
         async def write_file(self, path, content, **kwargs):
             Path(path).write_text(content, encoding="utf-8")
+            if uncertain_write and not failures:
+                failures.append(content)
+                raise EOFError("write acknowledgement lost")
 
     async def scenario():
-        guest = probe.ContinuousGuest(LocalSandbox(), "QUALIFICATION_TOKEN")
+        guest = probe.ContinuousGuest(LocalSandbox(), "QUALIFICATION_TOKEN", record=retries.append)
         guest.directory = str(tmp_path / "guest")
         try:
             ready = await guest.start()
@@ -142,6 +148,12 @@ def test_real_guest_keeps_launch_reference_across_new_launches(probe, tmp_path):
             assert explicit["reference_sha256"] == fresh
             assert events[0] == events[1] != events[2]
             assert len(processes) == 2
+            assert len(events) == 3
+            assert retries == (
+                [{"operation": "write", "sequence": 1, "error": "EOFError"}]
+                if uncertain_write
+                else []
+            )
             evidence = json.dumps([ready, first, second, explicit])
             assert "openshell:resolve:" not in evidence
         finally:
@@ -240,7 +252,7 @@ def test_transition_journal_and_cleanup_survive_guest_start_failure(probe, monke
             self.record("barriers", {"provider_state": "READY"})
 
     class Guest:
-        def __init__(self, sandbox, key):
+        def __init__(self, sandbox, key, **kwargs):
             pass
 
         async def start(self):
@@ -279,3 +291,24 @@ def test_transition_journal_and_cleanup_survive_guest_start_failure(probe, monke
     assert not evidence["qualification_passed"]
     assert evidence["provider_and_profile_cleanup_verified"]
     assert cleanup == ["guest", "sandbox", "provider-profile"]
+
+
+def test_control_retry_budget_is_bounded_and_retained(probe, monkeypatch):
+    times = iter([0, 1, 16])
+    records = []
+    monkeypatch.setattr(probe, "time", NS(monotonic=lambda: next(times)))
+
+    async def failure():
+        raise EOFError("control unavailable")
+
+    async def pause(seconds):
+        pass
+
+    async def scenario():
+        guest = probe.ContinuousGuest(None, "TOKEN", record=records.append)
+        monkeypatch.setattr(probe.asyncio, "sleep", pause)
+        with pytest.raises(EOFError):
+            await guest.control_io("read", failure)
+
+    asyncio.run(scenario())
+    assert records == [{"operation": "read", "sequence": 0, "error": "EOFError"}] * 2
