@@ -350,7 +350,7 @@ async def test_pending_sibling_resumes_after_an_accepted_child(
         restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
         strategy = restored
     else:
-        strategy.user_turns.client = resumed
+        monkeypatch.setattr(strategy.user_turns, "client", resumed)
     if rebuild:
         messages = original
         assert strategy._keep_decisions(messages)
