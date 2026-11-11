@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import vendor_fix_evidence
 from bicep_source import policy
 from bicep_source import verify_inventory as verify_bicep_inventory
 from check_container_release_image import check
@@ -27,6 +28,8 @@ from plan_go_remediation import CONTEXT, RECIPE, digest, locations
 from plan_platform_remediation import (
     BICEP,
     RUNTIME_RECIPES,
+    acquire_plan,
+    apk_inventory,
     file_hashes,
     inputs,
     plan,
@@ -83,7 +86,10 @@ def validate(root: Path, work: Path) -> tuple[dict[str, Any], dict[str, bytes]]:
     expected = read(work / "plan.json")
     require_image_scope(receipt, expected["affectedProfiles"])
     directories = [work / "evidence" / name for name in receipt["directories"]]
-    if plan(root, directories) != expected:
+    vendor = (
+        vendor_fix_evidence.load(work / "vendor-security") if "vendorEvidence" in expected else None
+    )
+    if plan(root, directories, vendor=vendor) != expected:
         raise ValueError("Platform plan differs from retained monitoring and source")
     return expected, proposal(root, expected)
 
@@ -240,8 +246,12 @@ def verify_packages(expected: dict[str, Any], sbom: dict[str, Any], profile: str
         versions = [version(item["version"], row["type"]) for item in artifacts]
         if not versions or any(value[:2] != target[:2] or value < target for value in versions):
             raise ValueError("Targeted package fix is absent from the rebuilt inventory")
-        guest_path = "/usr/local/bin/bicep" if row["type"] == "dotnet" else "/lib/apk/db/installed"
-        if any(locations(item) != [guest_path] for item in artifacts):
+        if any(
+            locations(item) != ["/usr/local/bin/bicep"]
+            if row["type"] == "dotnet"
+            else not apk_inventory(item)
+            for item in artifacts
+        ):
             raise ValueError("Targeted package inventory identifies another component location")
         if row["type"] == "apk":
             vendor = "wolfi" if row["base"].startswith("cgr.dev/") else "alpine"
@@ -250,6 +260,68 @@ def verify_packages(expected: dict[str, Any], sbom: dict[str, Any], profile: str
                 purl = item.get("purl", "")
                 if not (purl == prefix or purl.startswith((prefix + "?", prefix + "#"))):
                     raise ValueError("Targeted package inventory identifies another vendor")
+
+
+def vendor_resolutions(
+    found: list[dict[str, Any]], rows: list[dict[str, Any]], sbom: dict[str, Any]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Account for stale NVD matches only against exact vendor-fixed APK inventory."""
+    unresolved, resolved = [], []
+    artifacts = {item["id"]: item for item in sbom["artifacts"]}
+    if len(artifacts) != len(sbom["artifacts"]):
+        raise ValueError("Ambiguous inventory component IDs")
+    for match in found:
+        component, vulnerability = match["artifact"], match["vulnerability"]
+        actual = artifacts.get(component.get("id"))
+        proofs = [
+            row
+            for row in rows
+            if row.get("vendorFix")
+            and row["status"] in ACTIONABLE
+            and (row["id"], row["component"]) == (vulnerability["id"], component["name"])
+        ]
+        accepted = None
+        for row in proofs:
+            proof = row["vendorFix"]
+            vendor = vendor_fix_evidence.SOURCES[proof["feed"]][0]
+            prefix = f"pkg:apk/{vendor}/{component['name']}@{component['version']}"
+            if (
+                vulnerability.get("namespace") != "nvd:cpe"
+                or vulnerability.get("fix", {}).get("versions")
+                or vulnerability.get("fix", {}).get("state")
+                not in (None, "", "unknown", "not-fixed")
+                or actual is None
+                or any(actual.get(key) != component.get(key) for key in ("name", "version", "type"))
+                or actual.get("type") != "apk"
+                or not apk_inventory(actual)
+                or locations(component) != locations(actual)
+                or actual.get("metadata", {}).get("originPackage") != proof["sourcePackage"]
+                or actual.get("metadata", {}).get("architecture") != "x86_64"
+                or not (
+                    actual.get("purl") == prefix or actual.get("purl", "").startswith(prefix + "?")
+                )
+            ):
+                continue
+            try:
+                installed, fixed = (
+                    version(actual["version"], "apk"),
+                    version(proof["fixedVersion"], "apk"),
+                )
+            except (TypeError, ValueError):
+                continue
+            if installed[:2] == fixed[:2] and installed >= fixed:
+                accepted = {
+                    **proof,
+                    "component": row["component"],
+                    "artifactId": actual["id"],
+                    "installed": actual["version"],
+                }
+                break
+        if accepted is None:
+            unresolved.append(match)
+        else:
+            resolved.append(accepted)
+    return unresolved, resolved
 
 
 def qualify(
@@ -321,6 +393,7 @@ def qualify(
             rows = [row for row in expected["findings"] if applies(row, profile)]
             wanted = {(row["id"], row["component"]) for row in rows if row["status"] in ACTIONABLE}
             found = remaining(report, wanted)
+            resolved = []
             if variant == "baseline":
                 updates = {
                     (row["id"], row["component"]) for row in rows if row["status"] == "update"
@@ -338,8 +411,9 @@ def qualify(
                         not in row["stdout"].splitlines()
                     ):
                         raise ValueError("Vendor evidence did not install the requested package")
-                if found:
-                    unresolved.extend(found)
+                outstanding, resolved = vendor_resolutions(found, rows, sbom)
+                if outstanding:
+                    unresolved.extend(outstanding)
                 else:
                     verify_packages(expected, sbom, profile)
             scans.append(
@@ -349,6 +423,9 @@ def qualify(
                     "imageId": image,
                     "assessment": assessment,
                     "targetedFindings": len(found),
+                    **(
+                        {"vendorResolvedFindings": resolved} if "vendorEvidence" in expected else {}
+                    ),
                 }
             )
     status = (
@@ -392,7 +469,7 @@ def main() -> None:
             ROOT,
             work,
             selected_profiles=RUNTIME_RECIPES,
-            planner=plan,
+            planner=acquire_plan,
             require_all_profiles=False,
         )
         if result is None:

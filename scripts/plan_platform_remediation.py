@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import vendor_fix_evidence
 from bicep_source import policy
 from container_image_inputs import build_inputs, inventory
 from image_scan_policy import BICEP_ROUTES
@@ -75,6 +76,12 @@ def target(installed: str, kind: str, fix: dict[str, Any]) -> str | None:
     return max(candidates)[1] if candidates else None
 
 
+def apk_inventory(component: dict[str, Any]) -> bool:
+    """Accept the APK database paths used before and after usr-merge."""
+    paths = locations(component)
+    return bool(paths) and set(paths) <= {"/lib/apk/db/installed", "/usr/lib/apk/db/installed"}
+
+
 def runtime_base(root: Path, profile: str) -> str | None:
     """Resolve only the reviewed Wolfi or Alpine runtime recipe."""
     name = RUNTIME_RECIPES.get(profile)
@@ -88,7 +95,17 @@ def runtime_base(root: Path, profile: str) -> str | None:
     return next(iter(references)) if len(references) == 1 else None
 
 
-def plan(root: Path, directories: list[Path]) -> dict[str, Any]:
+def acquire_plan(root: Path, directories: list[Path]) -> dict[str, Any]:
+    """Acquire vendor feeds alongside the authenticated monitor inputs."""
+    if not directories or len({path.parent for path in directories}) != 1:
+        raise ValueError("Expected one retained monitoring directory")
+    vendor = vendor_fix_evidence.acquire(directories[0].parent.parent / "vendor-security")
+    return plan(root, directories, vendor=vendor)
+
+
+def plan(
+    root: Path, directories: list[Path], *, vendor: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Retain unsupported findings; absence of an edit never establishes a clean image."""
     hashes = inputs(root)
     source = policy(root / BICEP / "source.json")
@@ -120,6 +137,20 @@ def plan(root: Path, directories: list[Path]) -> dict[str, Any]:
                 continue
             try:
                 fixed = target(component["version"], kind, row["fix"])
+                if kind == "apk" and vendor is not None:
+                    declarations = vendor_fix_evidence.fixes(vendor, component, row["id"])
+                    vendor_target = target(
+                        component["version"],
+                        kind,
+                        {"state": "fixed", "versions": [d["fixedVersion"] for d in declarations]},
+                    )
+                    if vendor_target and (
+                        fixed is None or version(vendor_target, kind) >= version(fixed, kind)
+                    ):
+                        fixed = vendor_target
+                        row["vendorFix"] = next(
+                            d for d in declarations if d["fixedVersion"] == fixed
+                        )
             except (ValueError, TypeError):
                 row["status"] = "unsupported-version"
                 continue
@@ -152,11 +183,11 @@ def plan(root: Path, directories: list[Path]) -> dict[str, Any]:
                 if base is None or not re.fullmatch(r"[a-z0-9][a-z0-9+_.-]*", name):
                     row["status"] = "unsupported-vendor"
                     continue
-                vendor = "wolfi" if base.startswith("cgr.dev/") else "alpine"
+                vendor_name = "wolfi" if base.startswith("cgr.dev/") else "alpine"
                 if not re.fullmatch(
-                    rf"pkg:apk/{vendor}/{re.escape(name)}@{re.escape(component['version'])}(?:[?#].*)?",
+                    rf"pkg:apk/{vendor_name}/{re.escape(name)}@{re.escape(component['version'])}(?:[?#].*)?",
                     component.get("purl", ""),
-                ) or row["guestPaths"] != ["/lib/apk/db/installed"]:
+                ) or not apk_inventory(component):
                     row["status"] = "unmapped-vendor-package"
                     continue
                 row["base"] = base
@@ -217,6 +248,7 @@ def plan(root: Path, directories: list[Path]) -> dict[str, Any]:
         "findings": sorted({stable(row): row for row in findings}.values(), key=stable),
         "updates": [updates[key] for key in sorted(updates)],
         "affectedProfiles": sorted(affected),
+        **({"vendorEvidence": vendor["receipt"]} if vendor is not None else {}),
     }
 
 

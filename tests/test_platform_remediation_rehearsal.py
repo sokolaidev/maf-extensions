@@ -128,7 +128,7 @@ def test_acquisition_reuses_authenticated_platform_scope(context, tmp_path, monk
             work / "attempts" / str(attempt),
             {
                 "selected_profiles": tuple(rehearsal.RUNTIME_RECIPES),
-                "planner": rehearsal.plan,
+                "planner": rehearsal.acquire_plan,
                 "require_all_profiles": False,
             },
         )

@@ -19,7 +19,7 @@ from image_release_needed import git
 from image_remediation import outputs, remaining
 from image_remediation_evidence import acquire_with_retry, current
 from plan_go_remediation import digest
-from plan_platform_remediation import RUNTIME_RECIPES, plan
+from plan_platform_remediation import RUNTIME_RECIPES, acquire_plan
 
 MANIFEST = "scripts/platform_rehearsal_cases.json"
 WORKFLOW = "platform-image-remediation-rehearsal.yml"
@@ -128,7 +128,7 @@ def acquire(root: Path, work: Path) -> dict[str, Any]:
             root,
             work,
             selected_profiles=RUNTIME_RECIPES,
-            planner=plan,
+            planner=acquire_plan,
             require_all_profiles=False,
         )
     )
@@ -164,6 +164,7 @@ def qualify(root: Path, work: Path, results: Path) -> dict[str, Any]:
         raise ValueError("Platform results do not satisfy the requested rehearsal case")
     observed: set[tuple[str, str]] = set()
     counts = {"baseline": 0, "candidate": 0}
+    raw_counts = {"baseline": 0, "candidate": 0}
     for scan in report["scans"]:
         wanted = {
             (row["id"], row["component"]) for row in rows if platform.applies(row, scan["profile"])
@@ -171,6 +172,13 @@ def qualify(root: Path, work: Path, results: Path) -> dict[str, Any]:
         matches = remaining(
             read(results / f"{scan['variant']}-{scan['profile']}" / "grype.json"), wanted
         )
+        raw_counts[scan["variant"]] += len(matches)
+        if scan["variant"] == "candidate":
+            matches, _ = platform.vendor_resolutions(
+                matches,
+                rows,
+                read(results / f"candidate-{scan['profile']}" / "sbom.syft.json"),
+            )
         counts[scan["variant"]] += len(matches)
         if scan["variant"] == "baseline":
             observed.update(
@@ -189,6 +197,7 @@ def qualify(root: Path, work: Path, results: Path) -> dict[str, Any]:
         "evidenceMode": "historical-replay" if request["case"] == history.CASE else "current",
         "fixture": history.fixture(root) if request["case"] == history.CASE else None,
         "caseMatches": counts,
+        **({"rawCaseMatches": raw_counts} if "vendorEvidence" in expected else {}),
         "qualification": report,
     }
 

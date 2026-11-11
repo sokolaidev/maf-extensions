@@ -447,7 +447,7 @@ def test_platform_acquisition_retries_and_defers_without_downstream_work(
 
     def acquire(client, root, directory, **options):
         assert tuple(options["selected_profiles"]) == tuple(planner.RUNTIME_RECIPES)
-        assert options["planner"] is planner.plan
+        assert options["planner"] is planner.acquire_plan
         assert options["require_all_profiles"] is False
         attempts.append(directory)
         if len(attempts) < 3 or not recover:
@@ -530,6 +530,7 @@ def test_publish_requires_an_actions_run_before_qualification(
         ("bicep", "verified"),
         ("apk-pin", "verified"),
         ("apk-rebuild", "verified"),
+        ("apk-vendor", "verified"),
         ("apk-rebuild", "missing"),
         ("apk-rebuild", "null"),
         ("apk-rebuild", "survivor"),
@@ -542,10 +543,17 @@ def test_scan_worker_artifacts_require_complete_qualification(
         "bicep": ("bicep", dotnet()),
         "apk-pin": ("antivirus", apk("clamav-scanner", "1.4.6-r0", "1.4.6-r1", "alpine")),
         "apk-rebuild": ("graphviz", apk()),
+        "apk-vendor": ("graphviz", apk()),
     }[kind]
     work = tmp_path / "work"
+    vendor = None
+    if kind == "apk-vendor":
+        from test_vendor_fix_evidence import feeds, stale_match
+
+        vendor = feeds(monkeypatch, work / "vendor-security")
+        match = stale_match()
     evidence = retained(work / "evidence", [match], profile=profile)
-    expected = planner.plan(checkout, [evidence])
+    expected = planner.plan(checkout, [evidence], vendor=vendor)
     write(work / "receipt.json", {"source": SOURCE, "directories": [evidence.name]})
     write(work / "plan.json", expected)
     monkeypatch.setattr(remediation, "git", lambda *_: SOURCE)
@@ -638,13 +646,20 @@ def test_scan_worker_artifacts_require_complete_qualification(
                             vendor="alpine" if kind == "apk-pin" else "wolfi",
                         )["artifact"]
                     ]
+                    if kind == "apk-vendor":
+                        packages[0]["metadata"] = {
+                            "originPackage": "glibc",
+                            "architecture": "x86_64",
+                        }
                 sbom = {
                     "source": {"type": "image", "metadata": {"imageID": image_id}},
                     "artifacts": packages,
                 }
                 report = read(evidence / "grype.json")
                 report["source"]["target"]["imageID"] = image_id
-                report["matches"] = [] if variant == "candidate" else [match]
+                report["matches"] = (
+                    [] if variant == "candidate" and kind != "apk-vendor" else [match]
+                )
                 if report["matches"]:
                     report["matches"][0]["artifact"] = next(
                         item for item in packages if item["name"] == match["artifact"]["name"]
@@ -694,7 +709,15 @@ def test_scan_worker_artifacts_require_complete_qualification(
             remediation.qualify(checkout, work, results)
         return
     report = remediation.qualify(checkout, work, results)
-    assert report["status"] == ("release-needed" if kind == "apk-rebuild" else "ready")
+    assert report["status"] == (
+        "release-needed" if kind in {"apk-rebuild", "apk-vendor"} else "ready"
+    )
+    if kind == "apk-vendor":
+        candidate = report["scans"][-1]
+        assert candidate["targetedFindings"] == 1
+        assert candidate["assessment"]["outcome"] == "vulnerable"
+        assert candidate["vendorResolvedFindings"][0]["fixedVersion"] == "2.43-r2"
+        assert read(results / "candidate-graphviz/grype.json")["matches"]
     assert [row["imageId"] for row in report["scans"]] == images
     assert planner.inputs(checkout) == expected["inputs"]
 
