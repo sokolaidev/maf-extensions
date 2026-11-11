@@ -693,6 +693,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # sweep resumes it, or takes the batch it found, only while those records stand.
         self._searched: dict[tuple[str, int], _Searched] = {}
         self._record_input_fits: dict[tuple[str, str, int], bool] = {}
+        self._batch_resume: tuple[str, int, int, str, int] | None = None
         self._refused_rewrites: dict[tuple[str, int], int] = {}
 
     @property
@@ -860,6 +861,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 [prompt, record, limit, fits]
                 for (prompt, record, limit), fits in sorted(self._record_input_fits.items())
             ],
+            "batch_resume": list(self._batch_resume) if self._batch_resume is not None else None,
             "shed_ids": sorted(self._shed_ids),
             "shed_groups": sorted(self._shed_groups),
             "refused_merges": [
@@ -903,6 +905,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._record_input_fits = {
             (entry[0], entry[1], entry[2]): entry[3] for entry in data.get("record_input_fits", [])
         }
+        resume = data.get("batch_resume")
+        self._batch_resume = cast(tuple[str, int, int, str, int], tuple(resume)) if resume else None
         self._shed_ids = {value for value in data["shed_ids"] if durable_message_id(value)}
         self._shed_groups = set(data.get("shed_groups", []))
         # A legacy refusal without a count cannot safely suppress another request.
@@ -1642,6 +1646,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         whole replaces a few records rather than all of them. The history is read once, and
         again only after a merge changes it; passing a record over moves on to the next.
         An interrupted batch expansion retains its fitting pair for the next sweep.
+        An interrupted sweep resumes its position while the record layout, prompt and cap stand.
 
         Single-record fit results persist while their record, prompt and cap stand unchanged.
         A record whose own request exceeds the cap is passed over without a search from it. One
@@ -1765,13 +1770,19 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return []
 
         groups, _, over = survey()
+        layout = prompt_digest, limit, len(groups), chain(0, len(groups))
         cursor = 0
+        if self._batch_resume is not None and self._batch_resume[:4] == layout:
+            cursor = self._batch_resume[4]
+        self._batch_resume = None
         while over:
-            self._check_chain_deadline()
             while cursor < len(groups) and last(groups[cursor]) in handled:
                 cursor += 1
             if len(groups) - cursor < 2:
+                self._batch_resume = None
                 break
+            self._batch_resume = (*layout, cursor)
+            self._check_chain_deadline()
             oldest = last(groups[cursor])
             key = prompt_digest, digests[oldest], limit
             if key not in self._record_input_fits:
@@ -1805,6 +1816,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 handled.update(id(message) for message in messages if id(message) not in standing)
                 changed = True
                 groups, _, over = survey()
+                layout = prompt_digest, limit, len(groups), chain(0, len(groups))
+                self._batch_resume = None
                 cursor = 0
             if failed:
                 break

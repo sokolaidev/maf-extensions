@@ -987,12 +987,13 @@ async def test_deadline_limited_sweeps_eventually_reach_later_mergeable_records(
     for _ in range(120):
         token = strategy._chain_deadline.set(tokenizer.batches + 8.0)
         try:
-            if await strategy._merge_batches(messages, None, 0.25):
-                break
+            await strategy._merge_batches(messages, None, 0.25)
         except composed_module._ChainTimeSpent:
             expirations += 1
         finally:
             strategy._chain_deadline.reset(token)
+        if strategy.records_merged:
+            break
         if restore:
             restored = _strategy(summarizer, budget=budget, share=0.25, tokenizer=tokenizer)
             restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
@@ -1054,12 +1055,13 @@ async def test_deadline_limited_sweeps_get_past_oversized_records(
     summarizer = _Summarizer()
     strategy = _strategy(summarizer, budget=budget, share=0.25, tokenizer=tokenizer)
 
+    expirations = 0
     for _ in range(12):
         token = strategy._chain_deadline.set(tokenizer.transcripts + 2.0)
         try:
             await strategy._merge_batches(messages, None, 0.25)
         except composed_module._ChainTimeSpent:
-            pass
+            expirations += 1
         finally:
             strategy._chain_deadline.reset(token)
         if summarizer.merges:
@@ -1069,6 +1071,7 @@ async def test_deadline_limited_sweeps_get_past_oversized_records(
             restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
             strategy = restored
 
+    assert expirations > 1
     (merged,) = summarizer.merges
     assert "lookup_8 " in merged and "lookup_9 " in merged
     assert strategy.records_merged == 1
@@ -1247,6 +1250,90 @@ async def test_sweeps_past_refused_batches_go_on_where_the_last_one_stopped(
     # most four on the pair it stops in. Finding a refused pair again would cost four each time.
     found_once = 5 * (refused + 1) + 4 * sweeps
     assert tokenizer.batches <= found_once, f"{tokenizer.batches} counted in {sweeps} sweeps"
+
+
+@pytest.mark.parametrize("restore", [False, True])
+async def test_deadline_limited_sweeps_get_past_refused_batches(
+    restore: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ticks = 0
+
+    def clock() -> float:
+        nonlocal ticks
+        ticks += 1
+        return float(ticks)
+
+    monkeypatch.setattr(composed_module, "monotonic", clock)
+    feasible = "lookup_16 "
+    summarizer = _Summarizer(
+        merge=lambda body: (
+            " ".join(sorted(set(_VALUE.findall(body))))
+            if feasible in body
+            else _VALUE.findall(body)[0]
+        )
+    )
+    tokenizer = _OnlyPairsFitTokenizer()
+    messages = _history(18)
+    strategy = _strategy(summarizer, budget=100_000, share=0.001, tokenizer=tokenizer)
+    expirations = 0
+    for _ in range(30):
+        token = strategy._chain_deadline.set(ticks + 12.0)
+        try:
+            await strategy._merge_batches(messages, None, 0.001)
+        except composed_module._ChainTimeSpent:
+            expirations += 1
+        finally:
+            strategy._chain_deadline.reset(token)
+        if strategy.records_merged:
+            break
+        if restore:
+            restored = _strategy(summarizer, budget=100_000, share=0.001, tokenizer=tokenizer)
+            restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+            strategy = restored
+
+    assert expirations > 1
+    assert strategy.records_merged == 1
+    assert feasible in summarizer.merges[-1]
+    assert _sent_values(messages) == {value for index in range(18) for value in _values(index)}
+
+
+async def test_resumed_sweep_reconsiders_a_changed_earlier_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ticks = 0
+
+    def clock() -> float:
+        nonlocal ticks
+        ticks += 1
+        return float(ticks)
+
+    monkeypatch.setattr(composed_module, "monotonic", clock)
+    summarizer = _Summarizer(
+        merge=lambda body: (
+            " ".join(sorted(set(_VALUE.findall(body))))
+            if "now mergeable" in body
+            else _VALUE.findall(body)[0]
+        )
+    )
+    tokenizer = _OnlyPairsFitTokenizer()
+    messages = _history(8)
+    strategy = _strategy(summarizer, budget=100_000, share=0.001, tokenizer=tokenizer)
+    token = strategy._chain_deadline.set(20.0)
+    try:
+        with pytest.raises(composed_module._ChainTimeSpent):
+            await strategy._merge_batches(messages, None, 0.001)
+    finally:
+        strategy._chain_deadline.reset(token)
+    state = json.loads(json.dumps(strategy.session_state()))
+    assert state["batch_resume"][-1] > 0
+
+    messages[2:4] = _record_pair(0, body=_body(0) + " now mergeable")
+    restored = _strategy(summarizer, budget=100_000, share=0.001, tokenizer=tokenizer)
+    restored.restore_session_state(state)
+
+    assert await restored._merge_batches(messages, None, 0.001)
+    assert restored.records_merged == 1
+    assert _sent_values(messages) == {value for index in range(8) for value in _values(index)}
 
 
 class _UpToThreeFitTokenizer(CharacterEstimatorTokenizer):
