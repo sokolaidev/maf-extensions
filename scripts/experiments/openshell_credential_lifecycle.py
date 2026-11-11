@@ -587,15 +587,17 @@ async def measure_credentials(fixture, ip, ca_file):
                         await guest.close()
             finally:
                 try:
-                    if cleanup is not None:
-                        await cleanup.dispose()
-                    else:
-                        for owner in fixture.owners:
-                            await fixture.dispose(owner)
-                    await asyncio.to_thread(profile.cleanup_workspace, fixture.client)
-                    evidence["provider_and_profile_cleanup_verified"] = (
-                        evidence.get("prepare") == "confirmed"
-                    )
+                    try:
+                        if cleanup is not None:
+                            await cleanup.dispose()
+                        else:
+                            for owner in fixture.owners:
+                                await fixture.dispose(owner)
+                    finally:
+                        await asyncio.to_thread(profile.cleanup_workspace, fixture.client)
+                        evidence["provider_and_profile_cleanup_verified"] = (
+                            evidence.get("prepare") == "confirmed"
+                        )
                 finally:
                     evidence["issuer_events"] = issuer.journal()
                     fixture.save()

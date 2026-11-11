@@ -195,7 +195,10 @@ def test_issuer_journal_is_an_independent_copy(probe):
         assert issuer.journal() == [{"mode": "ok", "generation": 1}]
 
 
-def test_transition_journal_and_cleanup_survive_guest_start_failure(probe, monkeypatch, tmp_path):
+@pytest.mark.parametrize("lost_detach_ack", [False, True])
+def test_transition_journal_and_cleanup_survive_guest_start_failure(
+    probe, monkeypatch, tmp_path, lost_detach_ack
+):
     from collections import defaultdict
 
     cleanup = []
@@ -258,6 +261,9 @@ def test_transition_journal_and_cleanup_survive_guest_start_failure(probe, monke
             self.record("barriers", {"provider_state": "READY" if attached else "REVOKED"})
             if not attached:
                 cleanup.append("detach")
+                if lost_detach_ack:
+                    row["state"] = "unknown"
+                    raise RuntimeError("detach acknowledgement lost")
 
     class Guest:
         def __init__(self, sandbox, key, **kwargs):
@@ -293,13 +299,17 @@ def test_transition_journal_and_cleanup_survive_guest_start_failure(probe, monke
         acquire=acquire,
         dispose=dispose,
     )
-    with pytest.raises(RuntimeError, match="guest startup refused"):
+    failure = "detach acknowledgement lost" if lost_detach_ack else "guest startup refused"
+    with pytest.raises(RuntimeError, match=failure):
         asyncio.run(probe.measure_credentials(fixture, "10.23.45.67", tmp_path / "ca.pem"))
     evidence = fixture.report["credentials"]
     assert evidence["controls"][0]["host"] == host + ":8443"
     assert evidence["mutations"] == [
         {"method": "AttachSandboxProvider", "state": "acknowledged"},
-        {"method": "DetachSandboxProvider", "state": "acknowledged"},
+        {
+            "method": "DetachSandboxProvider",
+            "state": "unknown" if lost_detach_ack else "acknowledged",
+        },
     ]
     assert evidence["barriers"] == [{"provider_state": "READY"}, {"provider_state": "REVOKED"}]
     assert not evidence["characterization_completed"]
