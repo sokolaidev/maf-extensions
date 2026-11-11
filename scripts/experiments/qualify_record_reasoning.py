@@ -12,7 +12,6 @@ import json
 import os
 import platform
 import subprocess
-import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -90,7 +89,7 @@ def strategy() -> ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
 
 class Probe:
-    """Keep raw request bodies private and publish only bounded qualification evidence."""
+    """Compare provider bodies in memory and publish only bounded qualification evidence."""
 
     def __init__(self, provider: str, model: str, endpoint: str, output: Path) -> None:
         self.provider = provider
@@ -161,7 +160,7 @@ class Probe:
         self.requests.append({"label": self.label, "body": body})
 
     async def capture_response(self, response: httpx.Response) -> None:
-        """Capture opaque response bodies for local replay diagnostics."""
+        """Capture response bodies for in-memory replay checks."""
         await response.aread()
         body = response.json()
         self.responses.append({"label": self.label, "status": response.status_code, "body": body})
@@ -240,7 +239,7 @@ class Probe:
                 item.type == "text_reasoning" and bool(item.protected_data) for item in contents
             ),
             "reasoning_items": sum(item.type == "text_reasoning" for item in contents),
-            "input_transformations": transformations,
+            "input_transformation_count": len(transformations),
             "request_sha256": digest(self.requests[-1]["body"]),
         }
         if self.provider == "gemini":
@@ -462,7 +461,7 @@ class Probe:
             await self.send(f"{operation}-restored-later", restored_later)
 
     async def close(self, error: Exception | None) -> None:
-        """Write separate public metrics and private provider payloads, then close clients."""
+        """Persist payload digests and qualification metrics, then close clients."""
         self.output.mkdir(parents=True, exist_ok=True)
         packages = (
             "agent-framework-core",
@@ -471,6 +470,9 @@ class Probe:
             "anthropic",
             "azure-identity",
         )
+        history_field = {"openai": "input", "anthropic": "messages", "gemini": "contents"}[
+            self.provider
+        ]
         report = {
             "provider": self.provider,
             "model": self.model_name,
@@ -491,8 +493,26 @@ class Probe:
             "packages": {name: importlib.metadata.version(name) for name in packages},
             "checks": self.checks,
             "events": self.events,
+            "requests": [
+                {
+                    "label": request["label"],
+                    "sha256": digest(request["body"]),
+                    "history_items": len(request["body"].get(history_field, [])),
+                    "tool_count": len(request["body"].get("tools", [])),
+                }
+                for request in self.requests
+            ],
+            "responses": [
+                {
+                    "label": response["label"],
+                    "http_status": response["status"],
+                    "sha256": digest(response["body"]),
+                }
+                for response in self.responses
+            ],
             "passed": error is None,
             "error_type": type(error).__name__ if error else None,
+            "error_stage": self.label if error else None,
         }
         if self.provider == "anthropic":
             report["packages"]["agent-framework-anthropic"] = importlib.metadata.version(
@@ -512,17 +532,6 @@ class Probe:
                 report["packages"][name] = importlib.metadata.version(name)
         (self.output / f"{self.provider}.json").write_text(
             json.dumps(report, indent=2), encoding="utf-8"
-        )
-        (self.output / f"{self.provider}.private.json").write_text(
-            json.dumps(
-                {
-                    "requests": self.requests,
-                    "responses": self.responses,
-                    "error": "".join(traceback.format_exception(error)) if error else None,
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
         )
         await self.http.aclose()
         if self.provider == "gemini":
