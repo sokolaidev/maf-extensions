@@ -256,6 +256,14 @@ def verify_packages(expected: dict[str, Any], sbom: dict[str, Any], profile: str
         if row["type"] == "apk":
             vendor = "wolfi" if row["base"].startswith("cgr.dev/") else "alpine"
             for item in artifacts:
+                if (
+                    row.get("vendorFix")
+                    and vendor_fix_evidence.source_package(item)
+                    != row["vendorFix"]["sourcePackage"]
+                ):
+                    raise ValueError(
+                        "Targeted package inventory differs from vendor advisory identity"
+                    )
                 prefix = f"pkg:apk/{vendor}/{row['component']}@{item['version']}"
                 purl = item.get("purl", "")
                 if not (purl == prefix or purl.startswith((prefix + "?", prefix + "#"))):
@@ -272,6 +280,7 @@ def vendor_resolutions(
         raise ValueError("Ambiguous inventory component IDs")
     for match in found:
         component, vulnerability = match["artifact"], match["vulnerability"]
+        fix = vulnerability.get("fix") or {}
         actual = artifacts.get(component.get("id"))
         proofs = [
             row
@@ -287,16 +296,14 @@ def vendor_resolutions(
             prefix = f"pkg:apk/{vendor}/{component['name']}@{component['version']}"
             if (
                 vulnerability.get("namespace") != "nvd:cpe"
-                or vulnerability.get("fix", {}).get("versions")
-                or vulnerability.get("fix", {}).get("state")
-                not in (None, "", "unknown", "not-fixed")
+                or fix.get("versions")
+                or fix.get("state") not in (None, "", "unknown", "not-fixed")
                 or actual is None
                 or any(actual.get(key) != component.get(key) for key in ("name", "version", "type"))
                 or actual.get("type") != "apk"
                 or not apk_inventory(actual)
                 or locations(component) != locations(actual)
-                or actual.get("metadata", {}).get("originPackage") != proof["sourcePackage"]
-                or actual.get("metadata", {}).get("architecture") != "x86_64"
+                or vendor_fix_evidence.source_package(actual) != proof["sourcePackage"]
                 or not (
                     actual.get("purl") == prefix or actual.get("purl", "").startswith(prefix + "?")
                 )

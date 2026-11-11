@@ -111,10 +111,11 @@ def load(directory: Path) -> dict[str, Any]:
     return {"receipt": receipt, "packages": records}
 
 
-def fixes(evidence: dict[str, Any], component: dict[str, Any], cve: str) -> list[dict[str, str]]:
-    """Map a CVE through the SBOM's exact APK vendor, source package and architecture."""
-    metadata = component.get("metadata", {})
-    name, installed = component["name"], component["version"]
+def source_package(component: dict[str, Any]) -> str | None:
+    """Return the source identity only for an APK on the supported architecture."""
+    metadata = component.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
     source = metadata.get("originPackage")
     if (
         component.get("type") != "apk"
@@ -122,7 +123,16 @@ def fixes(evidence: dict[str, Any], component: dict[str, Any], cve: str) -> list
         or not isinstance(source, str)
         or not re.fullmatch(r"[a-z0-9][a-z0-9+_.-]*", source)
     ):
+        return None
+    return source
+
+
+def fixes(evidence: dict[str, Any], component: dict[str, Any], cve: str) -> list[dict[str, str]]:
+    """Map a CVE through the SBOM's exact APK vendor, source package and architecture."""
+    source = source_package(component)
+    if source is None:
         return []
+    name, installed = component["name"], component["version"]
     result = []
     for feed, (vendor, _) in SOURCES.items():
         if not re.fullmatch(

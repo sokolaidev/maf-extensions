@@ -531,6 +531,12 @@ def test_publish_requires_an_actions_run_before_qualification(
         ("apk-pin", "verified"),
         ("apk-rebuild", "verified"),
         ("apk-vendor", "verified"),
+        ("apk-vendor", "nullable-fix"),
+        ("apk-vendor", "vendor-origin"),
+        ("apk-vendor", "vendor-architecture"),
+        ("apk-vendor", "vendor-missing"),
+        ("apk-vendor", "vendor-null"),
+        ("apk-vendor", "vendor-malformed"),
         ("apk-rebuild", "missing"),
         ("apk-rebuild", "null"),
         ("apk-rebuild", "survivor"),
@@ -664,6 +670,8 @@ def test_scan_worker_artifacts_require_complete_qualification(
                     report["matches"][0]["artifact"] = next(
                         item for item in packages if item["name"] == match["artifact"]["name"]
                     )
+                    if cleanup == "nullable-fix":
+                        report["matches"][0]["vulnerability"]["fix"] = None
                 write(directory / "sbom.syft.json", sbom)
                 write(directory / "grype.json", report)
                 write(directory / "assessment.json", scan_result(report, image_id, AT, sbom=sbom))
@@ -697,7 +705,27 @@ def test_scan_worker_artifacts_require_complete_qualification(
             assert len(calls) == (
                 1 + (kind != "bicep" and variant == "candidate") + 4 * (profile == "graphviz")
             )
-    if cleanup != "verified":
+    if cleanup.startswith("vendor-"):
+        directory = results / "candidate-graphviz"
+        sbom = read(directory / "sbom.syft.json")
+        artifact = sbom["artifacts"][0]
+        if cleanup == "vendor-missing":
+            del artifact["metadata"]
+        elif cleanup in {"vendor-null", "vendor-malformed"}:
+            artifact["metadata"] = None if cleanup == "vendor-null" else "invalid"
+        else:
+            artifact["metadata"][
+                "originPackage" if cleanup == "vendor-origin" else "architecture"
+            ] = "other"
+        write(directory / "sbom.syft.json", sbom)
+        report = read(directory / "grype.json")
+        report["matches"] = []
+        write(directory / "grype.json", report)
+        write(directory / "assessment.json", scan_result(report, images[-1], AT, sbom=sbom))
+        with pytest.raises(ValueError, match="vendor advisory identity"):
+            remediation.qualify(checkout, work, results)
+        return
+    if cleanup not in {"verified", "nullable-fix"}:
         path = results / "candidate-graphviz/runtime.json"
         receipt = read(path)
         if cleanup == "missing":
@@ -718,6 +746,15 @@ def test_scan_worker_artifacts_require_complete_qualification(
         assert candidate["assessment"]["outcome"] == "vulnerable"
         assert candidate["vendorResolvedFindings"][0]["fixedVersion"] == "2.43-r2"
         assert read(results / "candidate-graphviz/grype.json")["matches"]
+        directory = results / "candidate-graphviz"
+        scan = read(directory / "grype.json")
+        scan["matches"] = []
+        write(directory / "grype.json", scan)
+        write(
+            directory / "assessment.json",
+            scan_result(scan, images[-1], AT, sbom=read(directory / "sbom.syft.json")),
+        )
+        assert remediation.qualify(checkout, work, results)["status"] == "release-needed"
     assert [row["imageId"] for row in report["scans"]] == images
     assert planner.inputs(checkout) == expected["inputs"]
 
