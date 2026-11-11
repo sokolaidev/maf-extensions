@@ -19,6 +19,20 @@ from importlib import import_module
 from openshell_files_probe import execute, main
 
 
+def relay_chunks(bridge, stopped):
+    """Idle polling must not half-close an otherwise live SSH session."""
+    while not stopped.is_set():
+        try:
+            data = bridge.recv(65536)
+        except TimeoutError:
+            continue
+        except OSError:
+            return
+        if not data:
+            return
+        yield data
+
+
 @contextmanager
 def native_sftp(client, name, sandbox_id, *, seconds=60):
     """Bridge the public ForwardTcp stream to a bounded-lifetime local SSH client."""
@@ -59,13 +73,7 @@ def native_sftp(client, name, sandbox_id, *, seconds=60):
                         authorization_token=session.token,
                     )
                 )
-                while not stopped.is_set():
-                    try:
-                        data = bridge.recv(65536)
-                    except OSError:
-                        return
-                    if not data:
-                        return
+                for data in relay_chunks(bridge, stopped):
                     yield client.pb.TcpForwardFrame(data=data)
 
             call = client.stub.ForwardTcp(
