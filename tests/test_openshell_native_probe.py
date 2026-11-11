@@ -387,6 +387,17 @@ def test_workflow_retains_evidence_on_failure():
     assert "active-ca.pem" in https["run"]
     assert "update-ca-certificates" not in https["run"]
     assert "trust_image" not in https["run"]
+    selection = workflow[True]["workflow_dispatch"]["inputs"]["profile"]
+    assert selection["default"] == "all"
+    assert selection["options"] == ["all", "credentials"]
+    credentials = next(s for s in job["steps"] if "--credential-lifecycle" in s.get("run", ""))
+    assert "inputs.profile" not in credentials["if"]
+    assert "steps.prepare.outcome == 'success'" in credentials["if"]
+    assert "--record-authorization" in credentials["run"]
+    assert "credentials.json" in credentials["run"]
+    assert "trap cleanup_credentials EXIT" in credentials["run"]
+    for step in (measure, composition, https):
+        assert "inputs.profile != 'credentials'" in step["if"]
 
 
 @pytest.mark.parametrize(

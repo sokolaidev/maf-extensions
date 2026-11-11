@@ -181,3 +181,101 @@ def test_issuer_journal_is_an_independent_copy(probe):
         retained[0]["generation"] = 999
         retained.append({"mode": "unrelated"})
         assert issuer.journal() == [{"mode": "ok", "generation": 1}]
+
+
+def test_transition_journal_and_cleanup_survive_guest_start_failure(probe, monkeypatch, tmp_path):
+    from collections import defaultdict
+
+    cleanup = []
+    host = "allowed.10.23.45.67.nip.io"
+    monkeypatch.setattr(
+        probe.socket, "getaddrinfo", lambda *args: [(0, 0, 0, 0, ("10.23.45.67", 8443))]
+    )
+    monkeypatch.setattr(probe.ssl, "create_default_context", lambda **kwargs: object())
+    monkeypatch.setattr(
+        probe,
+        "control_https",
+        lambda host, path, **kwargs: {
+            "method": "GET",
+            "path": path,
+            "host": host + ":8443",
+            "port": 8443,
+            "authorization_sha256": None,
+        },
+    )
+
+    def rule():
+        return NS(binaries=NS(add=lambda **kwargs: None))
+
+    monkeypatch.setattr(
+        probe, "fixture_spec", lambda image: NS(policy=NS(network_policies=defaultdict(rule)))
+    )
+
+    class Profile:
+        def __init__(self, issuer):
+            self.profile_id, self.provider, self.provider_id, self.env_key = (
+                "profile",
+                "provider",
+                "physical-provider",
+                "TOKEN",
+            )
+
+        def prepare_workspace(self, client):
+            pass
+
+        def endpoint(self, *args):
+            pass
+
+        def cleanup_workspace(self, client):
+            cleanup.append("provider-profile")
+
+    class Transition:
+        def __init__(self, fixture, profile, ip, record):
+            self.record = record
+
+        def provider(self, attached):
+            row = {"method": "AttachSandboxProvider", "state": "pending"}
+            self.record("mutations", row)
+            row["state"] = "acknowledged"
+            self.record("barriers", {"provider_state": "READY"})
+
+    class Guest:
+        def __init__(self, sandbox, key):
+            pass
+
+        async def start(self):
+            raise RuntimeError("guest startup refused")
+
+        async def close(self):
+            cleanup.append("guest")
+
+    owner = {"sandbox_id": "physical-sandbox"}
+
+    async def acquire(**kwargs):
+        return NS(owner=owner)
+
+    async def dispose(value):
+        assert value == owner
+        cleanup.append("sandbox")
+
+    monkeypatch.setattr(probe, "HTTPSRefreshProfile", Profile)
+    monkeypatch.setattr(probe, "Transitions", Transition)
+    monkeypatch.setattr(probe, "ContinuousGuest", Guest)
+    fixture = NS(
+        report={},
+        save=lambda: None,
+        client=NS(image="image"),
+        owners=[owner],
+        acquire=acquire,
+        dispose=dispose,
+    )
+    with pytest.raises(RuntimeError, match="guest startup refused"):
+        asyncio.run(probe.measure_credentials(fixture, "10.23.45.67", tmp_path / "ca.pem"))
+    evidence = fixture.report["credentials"]
+    assert evidence["controls"][0]["host"] == host + ":8443"
+    assert evidence["mutations"] == [{"method": "AttachSandboxProvider", "state": "acknowledged"}]
+    assert evidence["barriers"] == [{"provider_state": "READY"}]
+    assert not evidence["characterization_completed"]
+    assert not evidence["qualification_passed"]
+    assert evidence["provider_and_profile_cleanup_verified"]
+    assert cleanup == ["guest", "sandbox", "provider-profile"]

@@ -2,6 +2,12 @@ name: OpenShell native Linux characterization
 
 on:
   workflow_dispatch:
+    inputs:
+      profile:
+        description: Qualification profiles to run
+        type: choice
+        options: [all, credentials]
+        default: all
   pull_request:
     paths:
       - '.github/workflows/openshell-native.yml'
@@ -43,6 +49,7 @@ jobs:
           docker build --iidfile "$RUNNER_TEMP/workload-id" -f scripts/experiments/openshell-native.Dockerfile .
           docker image inspect "$(cat "$RUNNER_TEMP/workload-id")" ghcr.io/nvidia/openshell/sandbox@sha256:89819c03f291d9b909c3fc2962360e24af4516627422d18f3e681829f003f347 ghcr.io/nvidia/openshell/supervisor@sha256:a07864bd0c546716039c2000a919f50ce8f7f1f67ba37dda350cf64d3a7cfb06 > "$RUNNER_TEMP/openshell-evidence/images.json"
       - name: Measure shared probes, replacement barriers and cleanup
+        if: ${{ success() && inputs.profile != 'credentials' }}
         shell: bash
         env:
           OTEL_SDK_DISABLED: 'true'
@@ -50,7 +57,7 @@ jobs:
           set -euo pipefail
           uv run --no-project --python 3.13 --with 'openshell==0.1.7' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --report "$RUNNER_TEMP/openshell-evidence/report.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/probe.log"
       - name: Measure native HTTP policy, routes, provider authority and transitions
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.profile != 'credentials' }}
         shell: bash
         env:
           OTEL_SDK_DISABLED: 'true'
@@ -77,7 +84,7 @@ jobs:
           uv run --no-project --python 3.13 --with 'openshell==0.1.7' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --egress-transitions --egress-origin-ip "$origin_ip" --report "$RUNNER_TEMP/openshell-evidence/transitions.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/transitions.log"
           uv run --no-project --python 3.13 --with 'openshell==0.1.7' --with 'grpcio==1.84.0' --with 'paramiko==4.0.0' --with-editable ./packages/maf-sandbox python scripts/experiments/openshell_native_probe.py --execute --image "$(cat "$RUNNER_TEMP/workload-id")" --config scripts/experiments/openshell-native.toml --egress-restart --egress-origin-ip "$origin_ip" --report "$RUNNER_TEMP/openshell-evidence/restart.json" 2>&1 | tee "$RUNNER_TEMP/openshell-evidence/restart.log"
       - name: Characterize owned HTTPS trust and certificate validation
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.profile != 'credentials' }}
         shell: bash
         env:
           OTEL_SDK_DISABLED: 'true'

@@ -229,6 +229,7 @@ async def measure_credentials(fixture, ip, ca_file):
         "scope": "one synthetic OAuth client-credentials provider; continuous guest, fresh HTTPS connections",
         "cases": [],
         "barriers": [],
+        "mutations": [],
         "issuer_events": [],
         "controls": [],
         "characterization_completed": False,
