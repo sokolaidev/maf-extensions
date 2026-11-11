@@ -53,6 +53,7 @@ from ._anchored import (
 )
 from ._composed import (
     DEFAULT_CHAIN_GAIN_FRACTION,
+    DEFAULT_CHAIN_SECONDS,
     DEFAULT_HARDER_ATTEMPTS,
     DEFAULT_RECORD_BUDGET_SHARE,
     ChainDecisions,
@@ -118,6 +119,7 @@ from ._usersummary import (
 __all__ = [
     "DEFAULT_BAND_SHARE",
     "DEFAULT_CHAIN_GAIN_FRACTION",
+    "DEFAULT_CHAIN_SECONDS",
     "DEFAULT_COVERAGE_SHARE",
     "DEFAULT_FALLBACK_FRACTION",
     "DEFAULT_HARDER_ATTEMPTS",

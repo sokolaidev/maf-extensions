@@ -49,7 +49,7 @@ from ._summary_links import has_summary_links
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from agent_framework import TokenizerProtocol
+    from agent_framework import ChatResponse, TokenizerProtocol
     from agent_framework._clients import SupportsChatGetResponse
 
 __all__ = [
@@ -1894,16 +1894,28 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             chunks.append(current)
         return chunks
 
-    async def _generate(self, transcript: str, *, prompt: str) -> str:
-        """Ask once, optionally retiring incompatible options after one failed attempt."""
+    async def _generate(
+        self,
+        transcript: str,
+        *,
+        prompt: str,
+        observe: Callable[[ChatResponse], None] | None = None,
+        allow_empty_on_length: bool = False,
+    ) -> str:
+        """Ask once, optionally retiring incompatible options after one failed attempt.
+
+        Record callers may retain empty length-limited answers for their own refusal handling.
+        """
         options = self.summary_options if not self._summary_options_disabled else {}
 
         async def ask(call_options: dict[str, Any]) -> str:
             response = await self.client.get_response(
                 summary_request(prompt, transcript), stream=False, options=call_options
             )
+            if observe is not None:
+                observe(response)
             summary = response.text.strip() if response.text else ""
-            if not summary:
+            if not summary and not (allow_empty_on_length and response.finish_reason == "length"):
                 raise ValueError("The summarizer returned no text.")
             return summary
 
