@@ -2574,6 +2574,1403 @@
           ]
         }
       ]
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-flash-latest",
+      "model_version": "gemini-3.8-flash",
+      "script_sha256": "ad2437060158cec09a2114bba2227d3a500820818ea1f03e98e5e6e15a99f96e",
+      "settings": {
+        "api_version": "v1beta",
+        "thinking_level": "MEDIUM",
+        "finish_thinking_level": "LOW",
+        "include_thoughts": true,
+        "finish_include_thoughts": false,
+        "fresh_adapter_per_request": true,
+        "automatic_function_calling": false
+      },
+      "utc": "2026-11-11T21:18:36.246905+00:00",
+      "commit": "a8e9ff9091133b372400ace18228036a65796bbd",
+      "python": "3.13.12",
+      "packages": {
+        "agent-framework-core": "1.24.0",
+        "agent-framework-openai": "1.18.0",
+        "openai": "3.29.0",
+        "anthropic": "1.13.0",
+        "azure-identity": "1.26.0",
+        "agent-framework-gemini": "1.0.0b261106",
+        "google-genai": "2.29.0"
+      },
+      "checks": {
+        "seed-0_actual_wire_matches": true,
+        "seed-0_model_version": true,
+        "seed_0_protected_reasoning": true,
+        "seed_0_signed_call": true,
+        "seed_0_one_recall": true,
+        "seed_0_exact_value": true,
+        "active_loop_not_selected": true,
+        "active_loop_unchanged": true,
+        "seed_0_signed_loop_restored": true,
+        "finish-0_actual_wire_matches": true,
+        "finish-0_model_version": true,
+        "finish_0_no_later_reasoning": true,
+        "seed-1_actual_wire_matches": true,
+        "seed-1_model_version": true,
+        "seed_1_protected_reasoning": true,
+        "seed_1_signed_call": true,
+        "seed_1_one_recall": true,
+        "seed_1_exact_value": true,
+        "seed_1_signed_loop_restored": true,
+        "finish-1_actual_wire_matches": true,
+        "finish-1_model_version": true,
+        "finish_1_no_later_reasoning": true,
+        "two_completed_records": true,
+        "baseline_actual_wire_matches": true,
+        "baseline_model_version": true,
+        "baseline_values": true,
+        "later_reasoning_present": true,
+        "later_reasoning_not_selected": true,
+        "later_reasoning_unchanged": true,
+        "later-reasoning-guard_actual_wire_matches": true,
+        "later-reasoning-guard_model_version": true,
+        "reshape_applied": true,
+        "reshape_record_values": true,
+        "reshape_wire_reduced": true,
+        "reshape_two_signed_sources": true,
+        "reshape_call_signatures_removed_together": true,
+        "reshape_surviving_signature_pairing": true,
+        "reshape_actual_wire_matches": true,
+        "reshape_model_version": true,
+        "reshape_later_reasoning_present": true,
+        "reshape_values": true,
+        "reshape_restored": true,
+        "reshape_restored_wire_equal": true,
+        "reshape-restored_actual_wire_matches": true,
+        "reshape-restored_model_version": true,
+        "reshape_restored_values": true,
+        "reshape_later_replay": true,
+        "reshape_later_wire_equal": true,
+        "reshape-restored-later_actual_wire_matches": true,
+        "reshape-restored-later_model_version": true,
+        "merge_lossless_reshape_applied": true,
+        "merge_source_count": true,
+        "merge_applied": true,
+        "merge_record_values": true,
+        "merge_wire_reduced": true,
+        "merge_two_signed_sources": true,
+        "merge_call_signatures_removed_together": true,
+        "merge_surviving_signature_pairing": true,
+        "merge_actual_wire_matches": true,
+        "merge_model_version": true,
+        "merge_later_reasoning_present": true,
+        "merge_values": true,
+        "merge_restored": true,
+        "merge_restored_wire_equal": true,
+        "merge-restored_actual_wire_matches": true,
+        "merge-restored_model_version": true,
+        "merge_restored_values": true,
+        "merge_later_replay": true,
+        "merge_later_wire_equal": true,
+        "merge-restored-later_actual_wire_matches": true,
+        "merge-restored-later_model_version": true,
+        "rewrite_source_count": true,
+        "rewrite_applied": true,
+        "rewrite_record_values": true,
+        "rewrite_wire_reduced": true,
+        "rewrite_two_signed_sources": true,
+        "rewrite_call_signatures_removed_together": true,
+        "rewrite_surviving_signature_pairing": true,
+        "rewrite_actual_wire_matches": true,
+        "rewrite_model_version": true,
+        "rewrite_later_reasoning_present": true,
+        "rewrite_values": true,
+        "rewrite_restored": true,
+        "rewrite_restored_wire_equal": true,
+        "rewrite-restored_actual_wire_matches": true,
+        "rewrite-restored_model_version": true,
+        "rewrite_restored_values": true,
+        "rewrite_later_replay": true,
+        "rewrite_later_wire_equal": true,
+        "rewrite-restored-later_actual_wire_matches": true,
+        "rewrite-restored-later_model_version": true
+      },
+      "events": [
+        {
+          "label": "seed-0",
+          "http_status": 200,
+          "finish_reason": "stop",
+          "usage": {
+            "input_token_count": 397,
+            "output_token_count": 132,
+            "total_token_count": 1147,
+            "reasoning_output_token_count": 618
+          },
+          "content_types": [
+            "text_reasoning",
+            "text_reasoning",
+            "function_call"
+          ],
+          "protected_reasoning": 1,
+          "reasoning_items": 2,
+          "input_transformations": [],
+          "request_sha256": "0feb3bffbfae304f5f5d099e99383854507293d1676c8ef98ac32542816edadd",
+          "model_version": "gemini-3.8-flash",
+          "signed_calls": 1
+        },
+        {
+          "label": "finish-0",
+          "http_status": 200,
+          "finish_reason": "stop",
+          "usage": {
+            "input_token_count": 1325,
+            "output_token_count": 1,
+            "total_token_count": 1346,
+            "reasoning_output_token_count": 20
+          },
+          "content_types": [
+            "text"
+          ],
+          "protected_reasoning": 0,
+          "reasoning_items": 0,
+          "input_transformations": [],
+          "request_sha256": "f6c301eb90c32ffc5f11a19e823cf17ecfca958075130a294e4fc0f20be4bc7e",
+          "model_version": "gemini-3.8-flash",
+          "signed_calls": 0
+        },
+        {
+          "label": "seed-1",
+          "http_status": 200,
+          "finish_reason": "stop",
+          "usage": {
+            "input_token_count": 1414,
+            "output_token_count": 142,
+            "total_token_count": 2050,
+            "reasoning_output_token_count": 494
+          },
+          "content_types": [
+            "text_reasoning",
+            "text_reasoning",
+            "function_call"
+          ],
+          "protected_reasoning": 1,
+          "reasoning_items": 2,
+          "input_transformations": [],
+          "request_sha256": "0315e2e5555ec0d0e6edd855f5f2018a75f4ae01c335725522328c62dfea62f2",
+          "model_version": "gemini-3.8-flash",
+          "signed_calls": 1
+        },
+        {
+          "label": "finish-1",
+          "http_status": 200,
+          "finish_reason": "stop",
+          "usage": {
+            "input_token_count": 2238,
+            "output_token_count": 1,
+            "total_token_count": 2239
+          },
+          "content_types": [
+            "text"
+          ],
+          "protected_reasoning": 0,
+          "reasoning_items": 0,
+          "input_transformations": [],
+          "request_sha256": "8ab4150c3d6d2be71e7b64b7f1b478ac009bfc35ec0376bb2324967ae699f65f",
+          "model_version": "gemini-3.8-flash",
+          "signed_calls": 0
+        },
+        {
+          "label": "baseline",
+          "http_status": 200,
+          "finish_reason": "stop",
+          "usage": {
+            "input_token_count": 2277,
+            "output_token_count": 145,
+            "total_token_count": 2826,
+            "reasoning_output_token_count": 404
+          },
+          "content_types": [
+            "text_reasoning",
+            "text"
+          ],
+          "protected_reasoning": 0,
+          "reasoning_items": 1,
+          "input_transformations": [],
+          "request_sha256": "0b5f098cf9e2580a73129d499f719e2a6b23399b7dcc412c7f4d355344c66971",
+          "model_version": "gemini-3.8-flash",
+          "signed_calls": 0
+        },
+        {
+          "label": "later-reasoning-guard",
+          "http_status": 200,
+          "finish_reason": "stop",
+          "usage": {
+            "input_token_count": 2427,
+            "output_token_count": 24,
+            "total_token_count": 2513,
+            "reasoning_output_token_count": 62
+          },
+          "content_types": [
+            "text_reasoning",
+            "text"
+          ],
+          "protected_reasoning": 0,
+          "reasoning_items": 1,
+          "input_transformations": [],
+          "request_sha256": "4d2c579c7dc17f7c674cef2dd13982d0aeb0e9b916621351fe06ae68ce4187fe",
+          "model_version": "gemini-3.8-flash",
+          "signed_calls": 0
+        },
+        {
+          "label": "reshape",
+          "http_status": 200,
+          "finish_reason": "stop",
+          "usage": {
+            "input_token_count": 857,
+            "output_token_count": 143,
+            "total_token_count": 1395,
+            "reasoning_output_token_count": 395
+          },
+          "content_types": [
+            "text_reasoning",
+            "text"
+          ],
+          "protected_reasoning": 0,
+          "reasoning_items": 1,
+          "input_transformations": [],
+          "request_sha256": "6066e28ce588c7d92fdc4104af9a87c0ac14951e606def9f0cecb32beab04f2d",
+          "model_version": "gemini-3.8-flash",
+          "signed_calls": 0
+        },
+        {
+          "label": "reshape-restored",
+          "http_status": 200,
+          "finish_reason": "stop",
+          "usage": {
+            "input_token_count": 857,
+            "output_token_count": 198,
+            "total_token_count": 1444,
+            "reasoning_output_token_count": 389
+          },
+          "content_types": [
+            "text_reasoning",
+            "text"
+          ],
+          "protected_reasoning": 0,
+          "reasoning_items": 1,
+          "input_transformations": [],
+          "request_sha256": "6066e28ce588c7d92fdc4104af9a87c0ac14951e606def9f0cecb32beab04f2d",
+          "model_version": "gemini-3.8-flash",
+          "signed_calls": 0
+        },
+        {
+          "label": "reshape-restored-later",
+          "http_status": 200,
+          "finish_reason": "stop",
+          "usage": {
+            "input_token_count": 1007,
+            "output_token_count": 19,
+            "total_token_count": 1026
+          },
+          "content_types": [
+            "text"
+          ],
+          "protected_reasoning": 0,
+          "reasoning_items": 0,
+          "input_transformations": [],
+          "request_sha256": "7c12525f6d4d56375a0915c3cc6e3bd922c2d004d2c968a0b5ed4254ec5957bb",
+          "model_version": "gemini-3.8-flash",
+          "signed_calls": 0
+        },
+        {
+          "label": "merge",
+          "http_status": 200,
+          "finish_reason": "stop",
+          "usage": {
+            "input_token_count": 626,
+            "output_token_count": 252,
+            "total_token_count": 1321,
+            "reasoning_output_token_count": 443
+          },
+          "content_types": [
+            "text_reasoning",
+            "text"
+          ],
+          "protected_reasoning": 0,
+          "reasoning_items": 1,
+          "input_transformations": [],
+          "request_sha256": "523213d07f00451add9524385878b3c2357b3fbbf15f3e586681b827e107373f",
+          "model_version": "gemini-3.8-flash",
+          "signed_calls": 0
+        },
+        {
+          "label": "merge-restored",
+          "http_status": 200,
+          "finish_reason": "stop",
+          "usage": {
+            "input_token_count": 626,
+            "output_token_count": 132,
+            "total_token_count": 1235,
+            "reasoning_output_token_count": 477
+          },
+          "content_types": [
+            "text_reasoning",
+            "text"
+          ],
+          "protected_reasoning": 0,
+          "reasoning_items": 1,
+          "input_transformations": [],
+          "request_sha256": "523213d07f00451add9524385878b3c2357b3fbbf15f3e586681b827e107373f",
+          "model_version": "gemini-3.8-flash",
+          "signed_calls": 0
+        },
+        {
+          "label": "merge-restored-later",
+          "http_status": 200,
+          "finish_reason": "stop",
+          "usage": {
+            "input_token_count": 886,
+            "output_token_count": 18,
+            "total_token_count": 961,
+            "reasoning_output_token_count": 57
+          },
+          "content_types": [
+            "text_reasoning",
+            "text"
+          ],
+          "protected_reasoning": 0,
+          "reasoning_items": 1,
+          "input_transformations": [],
+          "request_sha256": "d3ca710f33af25ab24d1c23ff80f2c75028497e79493703b3438feacd5f68682",
+          "model_version": "gemini-3.8-flash",
+          "signed_calls": 0
+        },
+        {
+          "label": "rewrite",
+          "http_status": 200,
+          "finish_reason": "stop",
+          "usage": {
+            "input_token_count": 1531,
+            "output_token_count": 228,
+            "total_token_count": 2192,
+            "reasoning_output_token_count": 433
+          },
+          "content_types": [
+            "text_reasoning",
+            "text"
+          ],
+          "protected_reasoning": 0,
+          "reasoning_items": 1,
+          "input_transformations": [],
+          "request_sha256": "e54ce1bbd756d639fb629dd93eea98434943d02b495307673b0ee7b61e453e9f",
+          "model_version": "gemini-3.8-flash",
+          "signed_calls": 0
+        },
+        {
+          "label": "rewrite-restored",
+          "http_status": 200,
+          "finish_reason": "stop",
+          "usage": {
+            "input_token_count": 1531,
+            "output_token_count": 228,
+            "total_token_count": 2165,
+            "reasoning_output_token_count": 406
+          },
+          "content_types": [
+            "text_reasoning",
+            "text"
+          ],
+          "protected_reasoning": 0,
+          "reasoning_items": 1,
+          "input_transformations": [],
+          "request_sha256": "e54ce1bbd756d639fb629dd93eea98434943d02b495307673b0ee7b61e453e9f",
+          "model_version": "gemini-3.8-flash",
+          "signed_calls": 0
+        },
+        {
+          "label": "rewrite-restored-later",
+          "http_status": 200,
+          "finish_reason": "stop",
+          "usage": {
+            "input_token_count": 1766,
+            "output_token_count": 22,
+            "total_token_count": 1836,
+            "reasoning_output_token_count": 48
+          },
+          "content_types": [
+            "text_reasoning",
+            "text"
+          ],
+          "protected_reasoning": 0,
+          "reasoning_items": 1,
+          "input_transformations": [],
+          "request_sha256": "2d3406be6626faa6636955a6134df1ecd9232f66f7bf9bce0eeb8d2e97b037da",
+          "model_version": "gemini-3.8-flash",
+          "signed_calls": 0
+        }
+      ],
+      "passed": true,
+      "error_type": null,
+      "request_shapes": [
+        {
+          "label": "seed-0",
+          "history_utf8_bytes": 365,
+          "tool_count": 1,
+          "items": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "label": "finish-0",
+          "history_utf8_bytes": 4333,
+          "tool_count": 1,
+          "items": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "thoughtSignature": true,
+                  "functionCall": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "functionResponse": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "label": "seed-1",
+          "history_utf8_bytes": 4741,
+          "tool_count": 1,
+          "items": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "thoughtSignature": true,
+                  "functionCall": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "functionResponse": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "label": "finish-1",
+          "history_utf8_bytes": 7431,
+          "tool_count": 1,
+          "items": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "thoughtSignature": true,
+                  "functionCall": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "functionResponse": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "thoughtSignature": true,
+                  "functionCall": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "functionResponse": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "label": "baseline",
+          "history_utf8_bytes": 7676,
+          "tool_count": 1,
+          "items": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "thoughtSignature": true,
+                  "functionCall": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "functionResponse": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "thoughtSignature": true,
+                  "functionCall": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "functionResponse": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "label": "later-reasoning-guard",
+          "history_utf8_bytes": 8105,
+          "tool_count": 1,
+          "items": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "thoughtSignature": true,
+                  "functionCall": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "functionResponse": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "thoughtSignature": true,
+                  "functionCall": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "functionResponse": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "label": "reshape",
+          "history_utf8_bytes": 2512,
+          "tool_count": 1,
+          "items": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "label": "reshape-restored",
+          "history_utf8_bytes": 2512,
+          "tool_count": 1,
+          "items": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "label": "reshape-restored-later",
+          "history_utf8_bytes": 2950,
+          "tool_count": 1,
+          "items": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "label": "merge",
+          "history_utf8_bytes": 1376,
+          "tool_count": 1,
+          "items": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "label": "merge-restored",
+          "history_utf8_bytes": 1376,
+          "tool_count": 1,
+          "items": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "label": "merge-restored-later",
+          "history_utf8_bytes": 2090,
+          "tool_count": 1,
+          "items": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "label": "rewrite",
+          "history_utf8_bytes": 5313,
+          "tool_count": 1,
+          "items": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "thoughtSignature": true,
+                  "functionCall": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "functionResponse": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "label": "rewrite-restored",
+          "history_utf8_bytes": 5313,
+          "tool_count": 1,
+          "items": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "thoughtSignature": true,
+                  "functionCall": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "functionResponse": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "label": "rewrite-restored-later",
+          "history_utf8_bytes": 5911,
+          "tool_count": 1,
+          "items": [
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "thoughtSignature": true,
+                  "functionCall": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "functionResponse": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "model",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "parts": [
+                {
+                  "text": true
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "retained_body_checks": {
+        "all_later_restored_answers_preserve_identifiers": true
+      }
     }
   ]
 }
