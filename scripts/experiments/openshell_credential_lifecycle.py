@@ -465,7 +465,8 @@ async def measure_credentials(fixture, ip, ca_file):
             )
             await check("current_value_survives_retryable_failure", worker)
             issuer.configure()
-            recovered = await minted(worker["generation"], budget=85)
+            # A scheduled retry can miss a sweep by almost one full worker interval.
+            recovered = await minted(worker["generation"], budget=135)
             if recovered["at"] <= failed[-1]["at"]:
                 raise RuntimeError("scheduled retry was not followed by a new issuer request")
             await check("automatic_retry_recovers_without_rotate", recovered, converge=True)
