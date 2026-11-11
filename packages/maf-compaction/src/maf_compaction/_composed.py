@@ -54,6 +54,7 @@ from ._anchored import (
 )
 from ._media import annotate_token_counts
 from ._preserve import PRESERVE_REASON_KEY, is_preserved, pending_result_messages, set_preserved
+from ._record_replay import replay_match, source_key
 from ._request import RequestOverhead
 from ._shed import durable_message_id, unique_shed_groups
 from ._summary_input import bounded_prefix, bounded_prefix_extent, fits_summary_input
@@ -693,8 +694,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # transcript and source count, with their replacement text; and the ids of the messages
         # its fallback shed. See ``_keep_decisions``. The user half keeps its fold decisions.
         self._kept_records: dict[tuple[str, int | None], str] = {}
-        # Digests of the record bodies the chain reshaped, which every list reshapes alike.
+        # Content caches can be reused only where current reasoning guards permit edits.
         self._reshaped: set[str] = set()
+        # Only source-bound decisions may replay across retained reasoning.
+        self._record_replays: dict[tuple[str, int], str] = {}
+        self._reshape_batches: set[tuple[str, int]] = set()
         self._shed_ids: set[str] = set()
         self._shed_groups: set[str] = set()
         # Shrink acceptance depends on the source count as well as the request's transcript.
@@ -866,6 +870,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 for (transcript, count), text in self._kept_records.items()
             ],
             "reshaped_records": sorted(self._reshaped),
+            "record_replays": [
+                [sources, count, text] for (sources, count), text in self._record_replays.items()
+            ],
+            "reshape_batches": [list(batch) for batch in sorted(self._reshape_batches)],
             "searched_records": [
                 [start, limit, found.covered, found.records, found.batch, found.ended]
                 for (start, limit), found in sorted(self._searched.items())
@@ -913,6 +921,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 for entry in kept_records
             }
         self._reshaped = set(data.get("reshaped_records", []))
+        self._record_replays = {
+            (sources, count): text for sources, count, text in data.get("record_replays", [])
+        }
+        self._reshape_batches = {
+            (sources, count) for sources, count in data.get("reshape_batches", [])
+        }
         # Earlier snapshots of this schema kept only searches that found nothing.
         searched = data.get("searched_records", data.get("unpaired_records", []))
         self._searched = {
@@ -1466,11 +1480,13 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         **What.** Whatever the chain changes on one list is put on every list that holds what it
         changed, whatever that list's size, before the chain decides anything new:
 
-        - a reshape, by a digest of the record's payload, put back by :meth:`__call__` before the
-          record phase so no record is counted in both forms;
+        - a reshape, by its complete accepted batch of identified sources, put back by
+          :meth:`__call__` before the record phase so no record is counted in both forms;
         - a record merge or rewrite, by the transcript of the records it replaced -- the one
           thing both lists present identically -- replacing any run of the records that
-          matches one, as often as one does, since a merge followed by a rewrite is two;
+          matches one, as often as one does, since a merge followed by a rewrite is two.
+          Bypassing a retained-reasoning guard additionally requires exact source identities
+          and the accepted source window, including written-record lineage;
         - a user fold, through
           :meth:`~._usersummary.UserTurnAnchoredSummarizationCompactionStrategy.refold`;
         - narration the chain's fallback shed, by message id, through
@@ -1522,7 +1538,20 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """
         changed = False
         while self._kept_records:
-            groups = consolidatable_record_groups(messages, replay=True)
+            if self._record_replays:
+                matched = replay_match(
+                    messages,
+                    consolidatable_record_groups(messages, replay=True),
+                    self._record_replays.keys(),
+                )
+                if matched is not None:
+                    run, key = matched
+                    self.tool_results.consolidate_records(
+                        messages, run, self._record_replays[key], replay=True
+                    )
+                    changed = True
+                    continue
+            groups = consolidatable_record_groups(messages)
             source_counts = {count for _, count in self._kept_records}
             counted = sorted((count for count in source_counts if count is not None), reverse=True)
             # Legacy snapshots need a search until their source counts have been learned.
@@ -1553,7 +1582,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     break
             if found is None:
                 break
-            self.tool_results.consolidate_records(messages, *found, replay=True)
+            sources = source_key(messages, found[0])
+            if sources is not None:
+                self._record_replays[(sources, len(found[0]))] = found[1]
+            self.tool_results.consolidate_records(messages, *found)
             changed = True
         return changed
 
@@ -1629,9 +1661,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         firing's target is measured from, so the firing goes on until it has removed its share of
         what that edit re-bills -- the rule every other step answers to -- and the merge it
         precedes edits at the same record. Reshaping each record as soon as it could be would
-        break the cache once per record, on prompts that fit. The decision is kept by a digest of
-        the payload and, with ``replay``, put back on every list that holds the record, whatever
-        its size, so the copies a call sends and the store agree.
+        break the cache once per record, on prompts that fit. Replay across retained reasoning
+        requires the complete accepted batch and its exact identified source window. Legacy
+        payload-only decisions remain subject to the current reasoning guards.
 
         Args:
             messages: The conversation, mutated in place.
@@ -1642,7 +1674,19 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             True if any record was reshaped.
         """
-        groups = reshapeable_record_groups(messages, replay=replay)
+        changed = False
+        if replay:
+            while self._reshape_batches:
+                matched = replay_match(
+                    messages,
+                    reshapeable_record_groups(messages, replay=True),
+                    self._reshape_batches,
+                )
+                if matched is None:
+                    break
+                self.tool_results.reshape_records(messages, matched[0], replay=True)
+                changed = True
+        groups = reshapeable_record_groups(messages)
         digests = [_digest(payload) for payload in reshape_payloads(messages, groups)]
         chosen = [
             (group, digest)
@@ -1650,8 +1694,17 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if not replay or digest in self._reshaped
         ]
         if not chosen:
-            return False
-        self.tool_results.reshape_records(messages, [group for group, _ in chosen], replay=replay)
+            return changed
+        selected = [group for group, _ in chosen]
+        sources = source_key(messages, selected)
+        try:
+            self.tool_results.reshape_records(messages, selected)
+        except ValueError:
+            if not replay:
+                raise
+            return changed
+        if sources is not None:
+            self._reshape_batches.add((sources, len(selected)))
         if not replay:
             self._records_reshaped += len(chosen)
             self._reshaped.update(digest for _, digest in chosen)
@@ -2203,8 +2256,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 required,
             )
             return outcome
+        sources = source_key(messages, groups)
         self.tool_results.consolidate_records(messages, groups, text)
         self._kept_records[(transcript, len(groups))] = text
+        if sources is not None:
+            self._record_replays[(sources, len(groups))] = text
         # The new record may read exactly as one an earlier pass went on to replace -- a merge of
         # new material can come back as the record an earlier rewrite started from -- and that
         # replacement is already decided, so it is taken here rather than asked for again.

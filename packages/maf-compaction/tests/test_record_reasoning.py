@@ -234,3 +234,165 @@ def test_completed_reasoning_does_not_license_unrelated_content(extra: str) -> N
     annotate_message_groups(messages)
     assert not consolidatable_record_groups(messages)
     assert not reshapeable_record_groups(messages)
+
+
+def _different_sources(messages: list[Message]) -> list[Message]:
+    other = copy.deepcopy(messages)
+    for message in other:
+        if message.message_id:
+            message.message_id = f"other-{message.message_id}"
+        for content in message.contents:
+            if content.call_id:
+                content.call_id = f"other-{content.call_id}"
+    annotate_message_groups(other)
+    return other
+
+
+def _retain_later_reasoning(messages: list[Message]) -> None:
+    later = _tool_group(20)
+    later[0].contents.insert(0, Content.from_text_reasoning(text="Retain this prefix."))
+    messages[-1:-1] = later
+    annotate_message_groups(messages)
+
+
+@pytest.mark.parametrize("restore", [False, True])
+def test_reshape_replay_does_not_authorize_duplicate_bodies(restore: bool) -> None:
+    messages = _reasoned(1)
+    duplicate = _different_sources(messages)
+    strategy = _strategy(_Summarizer(), budget=100_000)
+    assert strategy._reshape_records(messages)
+    if restore:
+        cold = _strategy(_Summarizer(), budget=100_000)
+        cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+        strategy = cold
+    _retain_later_reasoning(duplicate)
+    before = _sent(duplicate)
+    assert not strategy._reshape_records(duplicate, replay=True)
+    assert _sent(duplicate) == before
+
+
+@pytest.mark.parametrize("shape", ["preceding", "co-located"])
+def test_reshape_replay_requires_the_complete_accepted_batch(shape: str) -> None:
+    messages = _reasoned(2, shape)
+    original = copy.deepcopy(messages)
+    strategy = _strategy(_Summarizer(), budget=100_000)
+    assert strategy._reshape_records(messages)
+    next(message for message in original if message.message_id == "rec1_res").contents[
+        0
+    ].additional_properties["classification"] = "changed"
+    cold = _strategy(_Summarizer(), budget=100_000)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    before = _sent(original)
+    assert not cold._reshape_records(original, replay=True)
+    assert _sent(original) == before
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["merge", "rewrite"])
+async def test_consolidation_replay_does_not_authorize_duplicate_bodies(operation: str) -> None:
+    messages = _reasoned(1)
+    if operation == "merge":
+        messages[-1:-1] = _record_pair(1)
+        annotate_message_groups(messages)
+    duplicate = _different_sources(messages)
+    text = " ".join(sorted(_sent_values(messages)))
+    strategy = _strategy(_Summarizer(merge=lambda _: text), budget=100_000)
+    groups = consolidatable_record_groups(messages)
+    assert (
+        await strategy._consolidate(
+            messages,
+            groups,
+            prompt=DEFAULT_RECORD_MERGE_PROMPT,
+            transcript=_transcript(messages, groups),
+        )
+        == "accepted"
+    )
+    cold = _strategy(_Summarizer(), budget=100_000)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    _retain_later_reasoning(duplicate)
+    before = _sent(duplicate)
+    assert not cold._keep_decisions(duplicate)
+    assert _sent(duplicate) == before
+
+
+@pytest.mark.anyio
+async def test_rewritten_record_replay_preserves_consolidated_source_lineage() -> None:
+    messages = _history(2)
+    duplicate = _different_sources(messages)
+    text = " ".join(sorted(_sent_values(messages)))
+    intermediate = text + ". Additional record explanation. " * 12
+    strategy = _strategy(_Summarizer(merge=lambda _: text), budget=100_000)
+    for history in (messages, duplicate):
+        strategy.tool_results.consolidate_records(
+            history, consolidatable_record_groups(history), intermediate
+        )
+    groups = consolidatable_record_groups(messages)
+    assert (
+        await strategy._consolidate(
+            messages,
+            groups,
+            prompt=DEFAULT_RECORD_MERGE_PROMPT,
+            transcript=_transcript(messages, groups),
+        )
+        == "accepted"
+    )
+    cold = _strategy(_Summarizer(), budget=100_000)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    _retain_later_reasoning(duplicate)
+    before = _sent(duplicate)
+    assert not cold._keep_decisions(duplicate)
+    assert _sent(duplicate) == before
+
+
+@pytest.mark.parametrize("change", ["reasoning", "interleaved", "missing"])
+def test_reshape_batch_replay_requires_unchanged_source_window(change: str) -> None:
+    messages = _reasoned(2)
+    original = copy.deepcopy(messages)
+    strategy = _strategy(_Summarizer(), budget=100_000)
+    assert strategy._reshape_records(messages)
+    if change == "reasoning":
+        original[2].contents[0].protected_data = "changed-reasoning"
+    elif change == "interleaved":
+        original.insert(5, Message("assistant", ["A different intervening answer."]))
+    else:
+        original[:] = [
+            m for m in original if m.message_id not in {"think1", "rec1_call", "rec1_res"}
+        ]
+    _retain_later_reasoning(original)
+    cold = _strategy(_Summarizer(), budget=100_000)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    before = _sent(original)
+    assert not cold._reshape_records(original, replay=True)
+    assert _sent(original) == before
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["reshape", "rewrite"])
+async def test_legacy_record_decisions_do_not_bypass_retained_reasoning(operation: str) -> None:
+    messages = _reasoned(1)
+    original = copy.deepcopy(messages)
+    text = " ".join(sorted(_sent_values(messages)))
+    strategy = _strategy(_Summarizer(merge=lambda _: text), budget=100_000)
+    if operation == "reshape":
+        assert strategy._reshape_records(messages)
+    else:
+        groups = consolidatable_record_groups(messages)
+        assert (
+            await strategy._consolidate(
+                messages,
+                groups,
+                prompt=DEFAULT_RECORD_MERGE_PROMPT,
+                transcript=_transcript(messages, groups),
+            )
+            == "accepted"
+        )
+    state = json.loads(json.dumps(strategy.session_state()))
+    state.pop("record_replays", None)
+    state.pop("reshape_batches", None)
+    cold = _strategy(_Summarizer(), budget=100_000)
+    cold.restore_session_state(state)
+    _retain_later_reasoning(original)
+    before = _sent(original)
+    assert not cold._reshape_records(original, replay=True)
+    assert not cold._keep_decisions(original)
+    assert _sent(original) == before

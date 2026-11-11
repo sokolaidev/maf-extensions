@@ -78,6 +78,7 @@ from ._preserve import (
     set_preserved,
     stands_in,
 )
+from ._record_replay import LINEAGE_KEY, source_key
 from ._request import RECALL_PROMPT_KEY, request_tools
 from ._summary_links import has_summary_links
 from ._tool_result import (
@@ -2231,10 +2232,13 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 for message in messages[group["start_index"] : group["end_index"] + 1]
             )
         )
+        lineage = source_key(messages, groups)
         for group in groups:
             _exclude_record(messages, group)
         insertion_index = int(groups[-1]["end_index"]) + 1
         replacement = build_record_message(text)
+        if lineage is not None:
+            replacement.additional_properties[LINEAGE_KEY] = lineage
         messages.insert(insertion_index, replacement)
         if replaces_value_anchor:
             self._value_target_anchor = _record_identity(replacement, {})
