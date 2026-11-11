@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.10](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.30.9...maf-sandbox-docker-v0.30.10) (2026-11-11)
+
+
+### Fixes
+
+* bump the proxy-modules group across 2 directories with 5 updates ([#2653](https://github.com/sokolaidev/maf-extensions/issues/2653)) ([efb3d5f](https://github.com/sokolaidev/maf-extensions/commit/efb3d5f41505c8230772d8a0ab934530bfb8ce74))
+
 ## [0.30.9](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.30.8...maf-sandbox-docker-v0.30.9) (2026-11-10)
 
 
