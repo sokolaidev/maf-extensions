@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.4](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.12.3...maf-compaction-v0.12.4) (2026-11-11)
+
+
+### Fixes
+
+* **compaction:** bound record reduction and retry smaller merge batches ([#2651](https://github.com/sokolaidev/maf-extensions/issues/2651)) ([518b1fa](https://github.com/sokolaidev/maf-extensions/commit/518b1facecefa81ed0eea0e68237b2f32cfec29f))
+
 ## [0.12.3](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.12.2...maf-compaction-v0.12.3) (2026-11-10)
 
 
