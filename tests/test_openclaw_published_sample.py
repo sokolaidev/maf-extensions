@@ -17,11 +17,15 @@ SPEC = importlib.util.spec_from_file_location(
 )
 assert SPEC and SPEC.loader
 sample = importlib.util.module_from_spec(SPEC)
+_previous_scaffold = sys.modules.pop("_scaffold", None)
 sys.path.insert(0, str(ROOT / "samples/24_openclaw_bicep"))
 try:
     SPEC.loader.exec_module(sample)
 finally:
     sys.path.pop(0)
+    sys.modules.pop("_scaffold", None)
+    if _previous_scaffold is not None:
+        sys.modules["_scaffold"] = _previous_scaffold
 
 
 @pytest.mark.parametrize(
