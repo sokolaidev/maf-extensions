@@ -1505,12 +1505,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
-        changed = self._keep_records(messages) or replayed_user_fold
+        changed = self._keep_shedding(messages) or replayed_user_fold
+        changed = self._keep_records(messages) or changed
         if changed:
             annotate_message_groups(messages)
             annotate_token_counts(messages, tokenizer=self.tokenizer)
         changed = self.user_turns.refold(messages) or changed
-        changed = self._keep_shedding(messages) or changed
         if changed:
             self._decisions_kept += 1
         return changed

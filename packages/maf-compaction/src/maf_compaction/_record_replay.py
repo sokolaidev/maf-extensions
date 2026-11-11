@@ -8,6 +8,7 @@ from collections.abc import Collection
 from typing import Any, Final
 
 from agent_framework import Message
+from agent_framework._compaction import EXCLUDED_KEY
 
 from ._preserve import STANDS_IN_KEY
 from ._shed import durable_message_id
@@ -17,6 +18,29 @@ LINEAGE_KEY: Final[str] = "maf_compaction_record_lineage"
 
 def source_key(messages: list[Message], groups: list[dict[str, Any]]) -> str | None:
     """Fingerprint identified sources and their complete intervening message window."""
+    return _source_key(messages, groups, {})
+
+
+def _message_key(message: Message) -> str:
+    payload = [
+        message.role,
+        message.author_name,
+        message.message_id
+        if durable_message_id(message.message_id)
+        and not message.additional_properties.get(STANDS_IN_KEY)
+        and not message.additional_properties.get(LINEAGE_KEY)
+        else None,
+        message.additional_properties.get(STANDS_IN_KEY),
+        message.additional_properties.get(LINEAGE_KEY),
+        bool(message.additional_properties.get(EXCLUDED_KEY, False)),
+        [content.to_dict(exclude={"raw_representation"}) for content in message.contents],
+    ]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _source_key(
+    messages: list[Message], groups: list[dict[str, Any]], message_keys: dict[int, str]
+) -> str | None:
     for group in groups:
         members = messages[group["start_index"] : group["end_index"] + 1]
         if not any(
@@ -30,23 +54,12 @@ def source_key(messages: list[Message], groups: list[dict[str, Any]]) -> str | N
         ):
             return None
     start, end = groups[0]["start_index"], groups[-1]["end_index"]
+    for index in range(start, end + 1):
+        if index not in message_keys:
+            message_keys[index] = _message_key(messages[index])
     payload = [
         [[group["start_index"] - start, group["end_index"] - start] for group in groups],
-        [
-            [
-                message.role,
-                message.author_name,
-                message.message_id
-                if durable_message_id(message.message_id)
-                and not message.additional_properties.get(STANDS_IN_KEY)
-                and not message.additional_properties.get(LINEAGE_KEY)
-                else None,
-                message.additional_properties.get(STANDS_IN_KEY),
-                message.additional_properties.get(LINEAGE_KEY),
-                [content.to_dict(exclude={"raw_representation"}) for content in message.contents],
-            ]
-            for message in messages[start : end + 1]
-        ],
+        [message_keys[index] for index in range(start, end + 1)],
     ]
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -58,10 +71,11 @@ def replay_match(
 ) -> tuple[list[dict[str, Any]], tuple[str, int]] | None:
     """Find the earliest complete accepted batch, refusing ambiguous source matches."""
     matches: dict[tuple[str, int], list[list[dict[str, Any]]]] = {}
+    message_keys: dict[int, str] = {}
     for count in sorted({count for _, count in accepted}, reverse=True):
         for start in range(len(groups) - count + 1):
             run = groups[start : start + count]
-            key = source_key(messages, run)
+            key = _source_key(messages, run, message_keys)
             if key is not None and (key, count) in accepted:
                 matches.setdefault((key, count), []).append(run)
     candidates = [(runs[0], key) for key, runs in matches.items() if len(runs) == 1]

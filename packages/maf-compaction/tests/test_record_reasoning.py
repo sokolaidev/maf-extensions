@@ -396,3 +396,81 @@ async def test_legacy_record_decisions_do_not_bypass_retained_reasoning(operatio
     assert not cold._reshape_records(original, replay=True)
     assert not cold._keep_decisions(original)
     assert _sent(original) == before
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["reshape", "merge"])
+@pytest.mark.parametrize("restore_exclusions", [False, True])
+async def test_replay_checks_intervening_exclusion_state(
+    operation: str, restore_exclusions: bool
+) -> None:
+    messages = _history(2)
+    between = _tool_group(19)
+    between[0].contents.insert(0, Content.from_text_reasoning(text="Protect this prefix."))
+    messages[4:4] = between
+    original = copy.deepcopy(messages)
+    text = " ".join(sorted(_sent_values(messages)))
+    strategy = _strategy(_Summarizer(merge=lambda _: text), budget=100_000)
+    if restore_exclusions:
+        strategy._shed_ids.update(message.message_id for message in between if message.message_id)
+        assert strategy._keep_shedding(messages)
+    else:
+        for message in between:
+            message.additional_properties[EXCLUDED_KEY] = True
+    annotate_message_groups(messages)
+    if operation == "reshape":
+        assert strategy._reshape_records(messages)
+    else:
+        groups = consolidatable_record_groups(messages)
+        assert len(groups) == 2
+        assert (
+            await strategy._consolidate(
+                messages,
+                groups,
+                prompt=DEFAULT_RECORD_MERGE_PROMPT,
+                transcript=_transcript(messages, groups),
+            )
+            == "accepted"
+        )
+    cold = _strategy(_Summarizer(), budget=100_000)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    _retain_later_reasoning(original)
+    if restore_exclusions:
+        _retain_later_reasoning(messages)
+        if operation == "reshape":
+            assert await cold(original)
+        else:
+            assert cold._keep_decisions(original)
+        assert _sent(original) == _sent(messages)
+    else:
+        before = _sent(original)
+        assert not cold._reshape_records(original, replay=True)
+        assert not cold._keep_decisions(original)
+        assert _sent(original) == before
+
+
+def test_replay_miss_serializes_each_message_at_most_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    from maf_compaction._record_replay import replay_match, source_key
+    from maf_compaction._toolsummary import build_record_message
+
+    messages = [
+        build_record_message(f"Record {index}: " + "detail " * 2_000) for index in range(80)
+    ]
+    for index, message in enumerate(messages):
+        message.message_id = f"record-{index}"
+    annotate_message_groups(messages)
+    groups = consolidatable_record_groups(messages)
+    accepted = source_key(messages, groups[:40])
+    assert accepted is not None
+    messages[0].contents[0].text += " changed"
+    serializations = 0
+    original = Content.to_dict
+
+    def counted(self, *args, **kwargs):
+        nonlocal serializations
+        serializations += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Content, "to_dict", counted)
+    assert replay_match(messages, groups, {(accepted, 40)}) is None
+    assert serializations <= len(messages)
