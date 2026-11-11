@@ -300,6 +300,130 @@ async def test_timeout_before_a_child_resumes_halves_after_restore(
     assert restored.records_merged == 2
 
 
+@pytest.mark.parametrize("records", [4, 8])
+@pytest.mark.parametrize("restore", [False, True])
+@pytest.mark.parametrize("rebuild", [False, True])
+async def test_pending_sibling_resumes_after_an_accepted_child(
+    records: int, restore: bool, rebuild: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = 0.0
+    monkeypatch.setattr(composed_module, "monotonic", lambda: now)
+
+    class Interrupting(_Summarizer):
+        async def get_response(self, messages: list[Message], **kwargs: Any) -> ChatResponse:
+            nonlocal now
+            response = await super().get_response(messages, **kwargs)
+            if len(self.requests) == (3 if records == 4 else 4):
+                now = 31.0
+            return response
+
+    summarizer = Interrupting(
+        merge=lambda body: (
+            _VALUE.findall(body)[0]
+            if _batch_size(body) > 2
+            else " ".join(sorted(set(_VALUE.findall(body))))
+        )
+    )
+    messages = _history(records)
+    original = copy.deepcopy(messages)
+    strategy = _strategy(summarizer, budget=100_000, share=0.001, cap=None)
+    token = strategy._chain_deadline.set(30.0)
+    try:
+        with pytest.raises(composed_module._ChainTimeSpent):
+            await strategy._merge_batches(messages, None, 0.001)
+    finally:
+        strategy._chain_deadline.reset(token)
+    assert strategy.records_merged == 1
+    pending = summarizer.merges[-1]
+
+    resumed = _Summarizer(
+        merge=lambda body: (
+            " ".join(sorted(set(_VALUE.findall(body))))
+            if _batch_size(body) == 2
+            else _VALUE.findall(body)[0]
+            if _batch_size(body) == 4 and records == 8
+            else body + " padding" * 2000
+        )
+    )
+    if restore:
+        restored = _strategy(resumed, budget=100_000, share=0.001, cap=None)
+        restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+        strategy = restored
+    else:
+        strategy.user_turns.client = resumed
+    if rebuild:
+        messages = original
+        assert strategy._keep_decisions(messages)
+    before = strategy.records_merged
+
+    assert await strategy._merge_batches(messages, None, 0.001)
+    assert resumed.merges[0] == pending
+    assert strategy.records_merged - before == records // 2 - 1
+    assert _sent_values(messages) == {value for index in range(records) for value in _values(index)}
+
+
+async def test_resumed_batch_retains_partial_success_when_a_later_child_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 0.0
+    monkeypatch.setattr(composed_module, "monotonic", lambda: now)
+
+    class Interrupting(_Summarizer):
+        async def get_response(self, messages: list[Message], **kwargs: Any) -> ChatResponse:
+            nonlocal now
+            response = await super().get_response(messages, **kwargs)
+            if len(self.requests) == 3:
+                now = 31.0
+            return response
+
+    first = Interrupting(
+        merge=lambda body: (
+            _VALUE.findall(body)[0]
+            if _batch_size(body) > 4
+            else " ".join(sorted(set(_VALUE.findall(body))))
+        )
+    )
+    messages = _history(8)
+    strategy = _strategy(first, budget=100_000, share=0.001, cap=None)
+    token = strategy._chain_deadline.set(30.0)
+    try:
+        with pytest.raises(composed_module._ChainTimeSpent):
+            await strategy._merge_batches(messages, None, 0.001)
+    finally:
+        strategy._chain_deadline.reset(token)
+    assert strategy.records_merged == 1
+
+    class Failing(_Summarizer):
+        async def get_response(self, messages: list[Message], **kwargs: Any) -> ChatResponse:
+            if len(self.requests) == 2:
+                raise ConnectionError("temporarily unavailable")
+            return await super().get_response(messages, **kwargs)
+
+    resumed = _strategy(
+        Failing(
+            merge=lambda body: (
+                _VALUE.findall(body)[0]
+                if _batch_size(body) > 2
+                else " ".join(sorted(set(_VALUE.findall(body))))
+            )
+        ),
+        budget=100_000,
+        share=0.001,
+        cap=None,
+    )
+    resumed.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    assert await resumed._merge_batches(messages, None, 0.001)
+    assert resumed.records_merged == 1
+    assert resumed.record_summary_failures == 1
+
+    final_model = _Summarizer()
+    final = _strategy(final_model, budget=100_000, share=0.001, cap=None)
+    final.restore_session_state(json.loads(json.dumps(resumed.session_state())))
+    assert await final._merge_batches(messages, None, 0.001)
+    assert [_batch_size(body) for body in final_model.merges] == [2]
+    assert _sent_values(messages) == {value for index in range(8) for value in _values(index)}
+
+
 async def test_expired_deadline_still_enforces_the_sending_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -404,6 +404,17 @@ class _Searched:
 
 
 @dataclass(frozen=True, slots=True)
+class _PendingMerge:
+    """A smaller batch still awaiting its result after an interrupted split."""
+
+    count: int
+    records: str
+    depth: int
+    prompt: str
+    limit: int
+
+
+@dataclass(frozen=True, slots=True)
 class _ChainStart:
     """The prompt the chain started from on one pass, which its target is measured against.
 
@@ -695,6 +706,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._search_prompt: str | None = None
         self._record_input_fits: dict[tuple[str, str, int], bool] = {}
         self._batch_resume: tuple[str, int, int, str, int] | None = None
+        self._pending_merges: list[_PendingMerge] = []
         self._refused_rewrites: dict[tuple[str, int], int] = {}
 
     @property
@@ -864,6 +876,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 for (prompt, record, limit), fits in sorted(self._record_input_fits.items())
             ],
             "batch_resume": list(self._batch_resume) if self._batch_resume is not None else None,
+            "pending_merges": [
+                [pending.count, pending.records, pending.depth, pending.prompt, pending.limit]
+                for pending in self._pending_merges
+            ],
             "shed_ids": sorted(self._shed_ids),
             "shed_groups": sorted(self._shed_groups),
             "refused_merges": [
@@ -910,6 +926,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         }
         resume = data.get("batch_resume")
         self._batch_resume = cast(tuple[str, int, int, str, int], tuple(resume)) if resume else None
+        self._pending_merges = [_PendingMerge(*entry) for entry in data.get("pending_merges", [])]
         self._shed_ids = {value for value in data["shed_ids"] if durable_message_id(value)}
         self._shed_groups = set(data.get("shed_groups", []))
         # A legacy refusal without a count cannot safely suppress another request.
@@ -1651,6 +1668,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         An interrupted batch expansion retains its fitting pair for the next sweep.
         An interrupted sweep resumes its position while the record layout, prompt and cap stand.
         A changed merge prompt invalidates cached batch searches too.
+        Pending smaller batches resume before a new sweep and retain their split depth.
 
         Single-record fit results persist while their record, prompt and cap stand unchanged.
         A record whose own request exceeds the cap is passed over without a search from it. One
@@ -1776,7 +1794,50 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             remember(first, checked)
             return []
 
+        def pending_batch() -> tuple[_PendingMerge, list[dict[str, Any]]] | None:
+            matches: list[tuple[int, _PendingMerge]] = []
+            for pending in self._pending_merges:
+                if (
+                    pending.prompt != prompt_digest
+                    or pending.limit != limit
+                    or pending.depth > self.record_merge_split_depth
+                ):
+                    continue
+                for first in range(len(groups) - pending.count + 1):
+                    if chain(first, pending.count) == pending.records:
+                        matches.append((first, pending))
+                        break
+            self._pending_merges = [pending for _, pending in matches]
+            if not matches:
+                return None
+            first, pending = min(matches, key=lambda match: (match[0], -match[1].depth))
+            return pending, groups[first : first + pending.count]
+
         groups, _, over = survey()
+        resumed = False
+        while over and (selected := pending_batch()) is not None:
+            self._check_chain_deadline()
+            pending, batch = selected
+            transcript = _numbered_records([bodies[last(group)] for group in batch])
+            if not fits_summary_input(
+                self.merge_prompt, transcript, tokenizer=self.tokenizer, limit=limit
+            ):
+                self._pending_merges.remove(pending)
+                continue
+            resumed = True
+            merged, failed = await self._merge_batch(
+                messages, batch, transcript=transcript, depth=pending.depth
+            )
+            changed = merged or changed
+            if failed:
+                return changed
+            if pending in self._pending_merges:
+                self._pending_merges.remove(pending)
+            if merged:
+                groups, _, over = survey()
+        if resumed:
+            self._batch_resume = None
+            return changed
         layout = prompt_digest, limit, len(groups), chain(0, len(groups))
         cursor = 0
         if self._batch_resume is not None and self._batch_resume[:4] == layout:
@@ -1841,7 +1902,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         transcript: str,
         depth: int = 0,
     ) -> tuple[bool, bool]:
-        """Merge a batch or its smaller halves; return whether it changed or failed."""
+        """Merge a batch or its smaller halves; return whether it changed or failed.
+
+        Unfinished smaller batches are retained independently of their parent.
+        """
         self._check_chain_deadline()
         key = transcript, len(groups)
         if key in self._refused_merges:
@@ -1871,7 +1935,22 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         identities = [
             {id(messages[int(group["end_index"])]) for group in child} for child in children
         ]
-        for child, expected in zip(children, identities, strict=True):
+        queued: list[_PendingMerge] = []
+        for child in children:
+            records = 0
+            for body in record_bodies(messages, child):
+                records = (records * _RUN_BASE + int(_digest(body), 16)) % _RUN_MODULUS
+            pending = _PendingMerge(
+                len(child),
+                format(records, "x"),
+                depth + 1,
+                _digest(self.merge_prompt),
+                self._record_request_limit(),
+            )
+            queued.append(pending)
+            if len(child) >= 2 and pending not in self._pending_merges:
+                self._pending_merges.append(pending)
+        for child, expected, pending in zip(children, identities, queued, strict=True):
             self._check_chain_deadline()
             if len(child) < 2:
                 continue
@@ -1882,6 +1961,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     if id(messages[int(group["end_index"])]) in expected
                 ]
                 if len(child) != len(expected):
+                    if pending in self._pending_merges:
+                        self._pending_merges.remove(pending)
                     continue
             child_transcript = _transcript(messages, child)
             if not fits_summary_input(
@@ -1890,6 +1971,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 tokenizer=self.tokenizer,
                 limit=self._record_request_limit(),
             ):
+                if pending in self._pending_merges:
+                    self._pending_merges.remove(pending)
                 continue
             merged, failed = await self._merge_batch(
                 messages, child, transcript=child_transcript, depth=depth + 1
@@ -1897,6 +1980,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             changed = merged or changed
             if failed:
                 return changed, True
+            if pending in self._pending_merges:
+                self._pending_merges.remove(pending)
         return changed, False
 
     def _record_tokens(self, messages: list[Message]) -> int:
