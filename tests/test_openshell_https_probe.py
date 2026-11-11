@@ -60,7 +60,7 @@ def test_https_success_and_policy_controls(oracle):
 
 
 @pytest.fixture
-def native_tls(monkeypatch, tmp_path):
+def native_tls(monkeypatch, tmp_path, request):
     import socket
     import ssl
 
@@ -68,10 +68,15 @@ def native_tls(monkeypatch, tmp_path):
     probe = importlib.import_module("openshell_https_probe")
     directory = tmp_path / "tls"
     probe.prepare_native_tls(directory, "10.23.45.67")
-    servers, events = probe.native_tls_servers(directory, bind="127.0.0.1", ports=(0, 0, 0, 0))
+    servers, events = probe.native_tls_servers(
+        directory,
+        bind="127.0.0.1",
+        ports=(0, 0, 0, 0),
+        record_authorization=getattr(request, "param", False),
+    )
     context = ssl.create_default_context(cafile=str(directory / "ca.pem"))
 
-    def connect(index, hostname="allowed.10.23.45.67.nip.io", method="GET"):
+    def connect(index, hostname="allowed.10.23.45.67.nip.io", method="GET", headers=None):
         import http.client
 
         port = servers[index].server_port
@@ -84,7 +89,7 @@ def native_tls(monkeypatch, tmp_path):
         connection = http.client.HTTPConnection(hostname, port, timeout=3)
         connection.sock = secured
         try:
-            connection.request(method, "/anything?case=local")
+            connection.request(method, "/anything?case=local", headers=headers or {})
             response = connection.getresponse()
             return {"status": response.status, "body": response.read().decode()}
         finally:
@@ -112,6 +117,20 @@ def test_owned_tls_roundtrip_and_independent_origin_attribution(native_tls):
     assert not probe.matches_native_https(observed, events * 2, 200, expected)
     assert not probe.matches_native_https(observed, events, 200, dict(expected, method="POST"))
     assert connect(0, method="POST")["status"] == 200
+
+
+@pytest.mark.parametrize("native_tls", [True], indirect=True)
+def test_tls_origin_retains_only_authorization_digests(native_tls):
+    import hashlib
+
+    _, connect, _, events, _ = native_tls
+    synthetic = "Bearer synthetic-qualification-value"
+    observed = connect(0, headers={"Authorization": synthetic})
+    digest = hashlib.sha256(synthetic.encode()).hexdigest()
+    assert json.loads(observed["body"])["authorization_sha256"] == digest
+    assert events[0]["authorization_sha256"] == digest
+    assert synthetic not in json.dumps([observed, events])
+    assert json.loads(connect(0)["body"])["authorization_sha256"] is None
 
 
 @pytest.mark.parametrize("index,code", [(1, 62), (2, 10), (3, 20)])
