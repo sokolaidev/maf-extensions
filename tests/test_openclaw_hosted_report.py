@@ -5,9 +5,37 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
+
+
+@pytest.mark.parametrize("published", [False, True])
+def test_collector_identifies_numbered_launcher_without_replacing_harness(
+    tmp_path, monkeypatch, published
+):
+    root = Path(__file__).resolve().parents[1]
+    output = tmp_path / "evidence.md"
+    args = ["report", "--output", str(output)] + (["--published"] if published else [])
+    monkeypatch.setattr(sys, "argv", args)
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setattr(report, "command", lambda *args: "{}" if args[0] == "docker" else "version")
+    monkeypatch.setattr(report, "collect", lambda *args: ({}, True))
+    assert report.main() == 0
+    evidence = json.loads(output.read_text().split("```json\n")[1].split("\n```")[0])
+    assert evidence["sample_sha256"] == report.digest(
+        root / "samples/experimental/openclaw_bicep_e2e/agent.py"
+    )
+    if published:
+        assert evidence["launcher_sha256"] == report.digest(
+            root / "samples/24_openclaw_bicep/agent.py"
+        )
+        assert evidence["profile"] == "published-smoke-v1"
+    else:
+        assert "launcher_sha256" not in evidence and "profile" not in evidence
+
 
 _spec = importlib.util.spec_from_file_location(
     "report_openclaw_hosted",

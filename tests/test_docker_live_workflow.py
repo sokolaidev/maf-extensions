@@ -91,7 +91,7 @@ def test_process_cleanup_runs_on_an_image_of_each_launcher_path():
     assert job["env"]["MAF_SANDBOX_DOCKER_E2E_IMAGE"] not in step["run"]
 
 
-def test_openclaw_is_opt_in_and_only_uploads_bounded_evidence():
+def test_published_openclaw_smoke_runs_routinely_and_only_uploads_bounded_evidence():
     live = workflow("docker-live.yml")
     assert live[True]["workflow_dispatch"]["inputs"]["openclaw_bicep"]["default"] is False
     for name in ("docker-e2e", "capability-policy", "document"):
@@ -101,14 +101,19 @@ def test_openclaw_is_opt_in_and_only_uploads_bounded_evidence():
         )
     job = live["jobs"]["openclaw-bicep"]
     assert job["if"] == (
-        "github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep "
-        "&& inputs.openclaw_mode == 'smoke'"
+        "github.event_name != 'workflow_dispatch' || !inputs.openclaw_bicep "
+        "|| inputs.openclaw_mode == 'smoke'"
     )
     assert "environment" not in job and "permissions" not in job
     assert job["runs-on"] == "ubuntu-24.04"
     assert "container" not in job
     steps = {step.get("name"): step for step in job["steps"]}
     assert "continue-on-error" not in steps["Run the installed sample"]
+    assert "samples/24_openclaw_bicep/agent.py" in steps["Run the installed sample"]["run"]
+    assert "uv build" not in str(job)
+    assert (
+        "--published" in steps["Record bounded evidence and independently check owner scope"]["run"]
+    )
     upload = steps["Retain bounded Markdown evidence"]
     assert upload["if"] == "always()"
     assert upload["with"]["path"] == "${{ runner.temp }}/openclaw-bicep-evidence.md"

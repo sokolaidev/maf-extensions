@@ -340,7 +340,7 @@ jobs:
 
   openclaw-bicep:
     name: OpenClaw Gateway-to-Docker on native Linux
-    if: github.event_name == 'workflow_dispatch' && inputs.openclaw_bicep && inputs.openclaw_mode == 'smoke'
+    if: github.event_name != 'workflow_dispatch' || !inputs.openclaw_bicep || inputs.openclaw_mode == 'smoke'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -356,22 +356,15 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.8.1'
-      - name: Build worker and pull prepared compiler
-        run: |
-          uv build --package maf-sandbox-mcp --out-dir "$RUNNER_TEMP/openclaw-wheel"
-          docker pull "$BICEP_IMAGE"
       - name: Run the installed sample
         timeout-minutes: 18
         run: |
-          set -euo pipefail
-          wheels=("$RUNNER_TEMP"/openclaw-wheel/*.whl)
-          test "${#wheels[@]}" -eq 1
-          uv run --no-project --python 3.13.15 samples/experimental/openclaw_bicep_e2e/agent.py \
-            --wheel "${wheels[0]}" --image "$BICEP_IMAGE" --output "$RUNNER_TEMP/openclaw-bicep-private"
+          uv run --no-project --python 3.13.15 samples/24_openclaw_bicep/agent.py \
+            --output "$RUNNER_TEMP/openclaw-bicep-private"
       - name: Record bounded evidence and independently check owner scope
         if: always()
         run: |
-          python3 scripts/report_openclaw_hosted.py --output "$RUNNER_TEMP/openclaw-bicep-evidence.md"
+          python3 scripts/report_openclaw_hosted.py --published --output "$RUNNER_TEMP/openclaw-bicep-evidence.md"
           cat "$RUNNER_TEMP/openclaw-bicep-evidence.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Retain bounded Markdown evidence
         if: always()

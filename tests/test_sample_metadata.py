@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
 import tomllib
 from collections.abc import Iterable
 from pathlib import Path
@@ -61,7 +62,18 @@ def _metadata(agent: Path) -> dict:
 def test_the_block_parses_and_names_a_python_floor(sample: Path):
     metadata = _metadata(sample / "agent.py")
     assert metadata.get("requires-python"), "the block declares no requires-python"
-    assert metadata.get("dependencies"), "the block declares no dependencies"
+    dependencies = metadata.get("dependencies")
+    assert isinstance(dependencies, list), "the block declares no dependency list"
+    if not dependencies:
+        imported = set()
+        for module in sample.glob("*.py"):
+            for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.Import):
+                    imported.update(alias.name.split(".")[0] for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imported.add(node.module.split(".")[0])
+        local = {module.stem for module in sample.glob("*.py")}
+        assert imported <= sys.stdlib_module_names | local
 
 
 @pytest.mark.parametrize("sample", _SAMPLE_DIRS, ids=lambda path: path.name)

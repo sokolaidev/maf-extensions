@@ -126,6 +126,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mode", choices=("smoke", "model"), default="smoke")
+    parser.add_argument(
+        "--published", action="store_true", help="Collect the numbered published sample"
+    )
     args = parser.parse_args()
     evidence: dict[str, Any] = {"qualified": False}
     try:
@@ -151,6 +154,11 @@ def main() -> int:
             command("docker", "version", "--format", "{{json .Server}}")
         )
         evidence["sample_sha256"] = digest(Path("samples/experimental/openclaw_bicep_e2e/agent.py"))
+        if args.published:
+            evidence["launcher_sha256"] = digest(Path("samples/24_openclaw_bicep/agent.py"))
+            evidence["profile"] = (
+                "published-smoke-v1" if args.mode == "smoke" else "published-model-v1"
+            )
         root = Path(os.environ["RUNNER_TEMP"]) / "openclaw-bicep-private"
         observed, accepted = collect(root, args.mode)
         evidence.update(observed)
