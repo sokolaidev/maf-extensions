@@ -57,6 +57,7 @@ class ReplayView:
     summary_preview: UserTurnAnchoredSummarizationCompactionStrategy | None = None
     record_replacements: set[int] = field(default_factory=set[int])
     restored_summary_ids: set[str] = field(default_factory=set[str])
+    invalid_summary_ids: set[str] = field(default_factory=set[str])
     replacement_keys: dict[tuple[tuple[str, str] | None, str | None, bool], str] = field(
         default_factory=dict[tuple[tuple[str, str] | None, str | None, bool], str]
     )

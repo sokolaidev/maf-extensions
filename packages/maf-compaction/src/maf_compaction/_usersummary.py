@@ -1159,6 +1159,109 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self._replaced = preview._replaced
         self._observe_summaries(messages)
 
+    def invalid_replay_summaries(self, messages: list[Message]) -> set[str]:
+        """Reject changed held replacements and the summaries whose facts they now own."""
+        if not self._replacements:
+            return set()
+        held: dict[str, list[int]] = {}
+        for index, message in enumerate(messages):
+            if message.message_id:
+                held.setdefault(message.message_id, []).append(index)
+        expected = {
+            identity: media_identity(
+                Message("user", [f"{USER_SUMMARY_MARKER}\n{kept.text}"], message_id=identity)
+            )
+            for identity, kept in self._replacements.items()
+        }
+        identities = {fingerprint: identity for identity, fingerprint in expected.items()}
+        fingerprints: dict[int, str] = {}
+
+        def fingerprint(index: int) -> str:
+            if index not in fingerprints:
+                fingerprints[index] = media_identity(messages[index])
+            return fingerprints[index]
+
+        invalid: set[str] = set()
+        for identity, kept in self._replacements.items():
+            positions = held.get(identity, [])
+            if not positions:
+                continue
+            index = positions[0]
+            summary = messages[index]
+            links = _linked_ids(summary)
+            selected = [kept.sources[offset] for offset in kept.selected]
+            owner = _excluded_for(summary)
+            if (
+                len(positions) != 1
+                or summary.role != "user"
+                or summary.author_name is not None
+                or fingerprint(index) != expected[identity]
+                or len(links) != len(selected)
+                or len(set(links)) != len(links)
+                or any(
+                    source_key in identities and source != identities[source_key]
+                    for source, source_key in zip(links, selected, strict=False)
+                )
+                or (summary.additional_properties.get(EXCLUDED_KEY) and owner not in expected)
+                or (
+                    owner in self._replacements
+                    and expected[identity]
+                    not in {
+                        self._replacements[owner].sources[offset]
+                        for offset in self._replacements[owner].selected
+                    }
+                )
+                or any(
+                    len(held[source]) != 1
+                    or (
+                        (source in expected or _excluded_for(messages[held[source][0]]) != identity)
+                        and fingerprint(held[source][0]) != source_key
+                    )
+                    for source, source_key in zip(links, selected, strict=False)
+                    if source in held
+                )
+                or (owner in held and identity not in _linked_ids(messages[held[owner][0]]))
+            ):
+                invalid.add(identity)
+                continue
+            first = held[links[0]][0] if links and links[0] in held else None
+            if first is None and selected:
+                source_key = selected[0]
+                visited: set[str] = set()
+                while source_key in identities and source_key not in visited:
+                    visited.add(source_key)
+                    source_id = identities[source_key]
+                    if len(held.get(source_id, [])) == 1:
+                        first = held[source_id][0]
+                        break
+                    source = self._replacements[source_id]
+                    if not source.selected:
+                        break
+                    source_key = source.sources[source.selected[0]]
+                if first is None:
+                    candidates = [
+                        position
+                        for position, message in enumerate(messages)
+                        if message.role == "user" and fingerprint(position) == source_key
+                    ]
+                    if len(candidates) == 1:
+                        first = candidates[0]
+            if first is not None:
+                if index >= first or any(
+                    not message.additional_properties.get(EXCLUDED_KEY)
+                    for message in messages[index + 1 : first]
+                ):
+                    invalid.add(identity)
+        pending = list(invalid)
+        while pending:
+            kept = self._replacements[pending.pop()]
+            for offset in kept.selected:
+                child = identities.get(kept.sources[offset])
+                if child is not None and child not in invalid:
+                    invalid.add(child)
+                    pending.append(child)
+        return invalid
+
     def replay_summaries(
         self,
         messages: list[Message],
@@ -1166,6 +1269,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         summary_ids: list[str] | None = None,
         restore_held_sources: bool = False,
         skip_summary_ids: set[str] | None = None,
+        invalid_summary_ids: set[str] | None = None,
     ) -> _SummaryReplay:
         """Restore accepted edits on unchanged sources; report replay and trailing-turn changes.
 
@@ -1175,6 +1279,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         ``restore_held_sources`` is for isolated candidates whose record certificate must
         still authorize restoring the original inclusion state.
         ``skip_summary_ids`` leaves staged replacements for their existing message objects.
+        ``invalid_summary_ids`` retains refusals from before later edits were staged away.
 
         Message objects outlive the list an edit was inserted into, so a list can hold an edit's
         sources still excluded for it without the edit: the edit is put back on them. Sources
@@ -1184,6 +1289,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         excluded again, found by the held summary's links whatever became of its other sources.
         """
         self._protect_media(messages)
+        invalid = self.invalid_replay_summaries(messages) | (invalid_summary_ids or set())
         held = {message.message_id for message in messages if message.message_id}
         linked = {value for message in messages for value in _linked_ids(message)}
         known = held | linked | set(self._replacements)
@@ -1195,6 +1301,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         _release_sources(messages, released)
         changed = grew = chain_fold = False
         for kept in self._replacements.values():
+            if kept.summary_id in invalid:
+                continue
             if summary_ids is not None and kept.summary_id not in summary_ids:
                 continue
             if skip_summary_ids is not None and kept.summary_id in skip_summary_ids:
@@ -1202,23 +1310,6 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             summary = next(
                 (message for message in messages if message.message_id == kept.summary_id), None
             )
-            if summary is not None:
-                expected = Message(
-                    "user", [f"{USER_SUMMARY_MARKER}\n{kept.text}"], message_id=kept.summary_id
-                )
-                if (
-                    sum(message.message_id == kept.summary_id for message in messages) != 1
-                    or summary.role != expected.role
-                    or summary.author_name != expected.author_name
-                    or media_identity(summary) != media_identity(expected)
-                ):
-                    continue
-            if (
-                summary is not None
-                and summary.additional_properties.get(EXCLUDED_KEY)
-                and _excluded_for(summary) not in self._replacements
-            ):
-                continue
             superseded = (
                 []
                 if summary is None
@@ -1226,6 +1317,10 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                     message
                     for message in _superseded_standing(messages, summary)
                     if media_identity(message) in {kept.sources[index] for index in kept.selected}
+                    and (
+                        not any_preserved([message])
+                        or message.additional_properties.get(PRESERVE_REASON_KEY) == PRESERVE_REASON
+                    )
                 ]
             )
             if (summary is None and kept.summary_id in linked and not restore_held_sources) or (
@@ -1282,6 +1377,12 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             start = matches[0]
             selected = [turns[start + offset] for offset in kept.selected]
             members = [messages[int(span["start_index"])] for span in selected]
+            if any(
+                any_preserved([member])
+                and member.additional_properties.get(PRESERVE_REASON_KEY) != PRESERVE_REASON
+                for member in members
+            ):
+                continue
             # Sources still excluded for the edit carry the decision; it was made on them.
             if any(_excluded_for(member) != kept.summary_id for member in members):
                 freed = _release_sources(messages, {kept.summary_id})
@@ -1584,7 +1685,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         summaries = [messages[int(span["start_index"])] for span in standing]
         if not self.recompacts_summaries:
             for message in summaries:
-                set_preserved(message, preserved=True, reason=PRESERVE_REASON)
+                if not any_preserved([message]):
+                    set_preserved(message, preserved=True, reason=PRESERVE_REASON)
         self._summaries_in_conversation = len(summaries)
         self._summary_tokens = included_token_count(summaries)
         return standing
@@ -1795,7 +1897,12 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self, messages: list[Message], standing: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         return bounded_prefix(
-            standing,
+            [
+                span
+                for span in standing
+                if not any_preserved([message := messages[int(span["start_index"])]])
+                or message.additional_properties.get(PRESERVE_REASON_KEY) == PRESERVE_REASON
+            ],
             render=lambda spans: _format_turns(
                 [messages[span["start_index"]] for span in spans], text=_summary_body
             ),

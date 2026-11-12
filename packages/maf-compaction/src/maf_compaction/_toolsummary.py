@@ -834,7 +834,8 @@ def _preserve_records(messages: list[Message]) -> int:
     groups = active_record_groups(messages)
     for group in groups:
         for message in messages[group["start_index"] : group["end_index"] + 1]:
-            set_preserved(message, preserved=True, reason=PRESERVE_REASON)
+            if not is_preserved(message):
+                set_preserved(message, preserved=True, reason=PRESERVE_REASON)
     return len(groups)
 
 
@@ -1119,6 +1120,11 @@ def _record_only_group(
         return False
     completed = group["end_index"] < completed_before
     for message in messages[group["start_index"] : group["end_index"] + 1]:
+        if (
+            is_preserved(message)
+            and message.additional_properties.get(PRESERVE_REASON_KEY) != PRESERVE_REASON
+        ):
+            return False
         if _is_written_record(message) and all(c.type == "text" for c in message.contents):
             continue
         if any(

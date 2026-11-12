@@ -472,6 +472,239 @@ def test_edited_held_summary_outside_record_window_keeps_originals(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["reshape", "merge"])
+@pytest.mark.parametrize("part", ["function_call", "function_result", "text_reasoning"])
+@pytest.mark.parametrize("public", [False, True])
+@pytest.mark.parametrize("hold_output", [False, True])
+async def test_rebuilt_record_sources_keep_new_host_preservation(
+    operation: str, part: str, public: bool, hold_output: bool
+) -> None:
+    from maf_compaction._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
+
+    messages = _reasoned(2)
+    original = copy.deepcopy(messages)
+    strategy = _strategy(_Summarizer(), budget=100_000, cap=None)
+    selected = (
+        reshapeable_record_groups(messages)
+        if operation == "reshape"
+        else consolidatable_record_groups(messages)
+    )[0]
+    selected_ids = {
+        m.message_id for m in messages[selected["start_index"] : selected["end_index"] + 1]
+    }
+    if operation == "reshape":
+        assert strategy._reshape_records(messages)
+    else:
+        groups = consolidatable_record_groups(messages)
+        assert (
+            await strategy._consolidate(
+                messages,
+                groups,
+                prompt=DEFAULT_RECORD_MERGE_PROMPT,
+                transcript=_transcript(messages, groups),
+            )
+            == "accepted"
+        )
+    if hold_output:
+        _hold_later_user_edits(original, messages, include_records=True)
+    protected = next(
+        m
+        for m in original
+        if m.message_id in selected_ids and any(c.type == part for c in m.contents)
+    )
+    set_preserved(protected, preserved=True, reason="host")
+    protected_id = protected.message_id
+    _retain_later_reasoning(original)
+    before = _sent(original)
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    if public:
+        await cold(original)
+    else:
+        cold._replay_record_edits(original)
+    protected = next(m for m in original if m.message_id == protected_id)
+    assert not protected.additional_properties.get(EXCLUDED_KEY)
+    assert is_preserved(protected)
+    assert protected.additional_properties[PRESERVE_REASON_KEY] == "host"
+    assert _sent(original) == before
+
+
+@pytest.mark.parametrize("reason", [None, "host"])
+def test_record_holds_keep_the_existing_preservation_owner(reason: str | None) -> None:
+    from maf_compaction._preserve import PRESERVE_REASON_KEY, set_preserved
+
+    messages = _reasoned(2)
+    protected = messages[2]
+    set_preserved(protected, preserved=True, reason=reason)
+    toolsummary_module._preserve_records(messages)
+    assert protected.additional_properties.get(PRESERVE_REASON_KEY) == reason
+    assert all(
+        group["start_index"] > 2 for group in reshapeable_record_groups(messages, replay=True)
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("timing", ["before", "after"])
+@pytest.mark.parametrize("folds", [1, 2])
+@pytest.mark.parametrize("keep_intermediate", [False, True])
+@pytest.mark.parametrize(
+    "tamper", ["body", "links", "same-size-links", "metadata", "duplicate", "excluded", "moved"]
+)
+async def test_invalid_owning_fold_keeps_flagless_original_facts(
+    timing: str, folds: int, keep_intermediate: bool, tamper: str
+) -> None:
+    messages = _reasoned(2)
+    messages[-1:-1] = [
+        Message("user", [f"Original facts {index}. " * 100], message_id=f"outside-{index}")
+        for index in range(folds + 1)
+    ]
+    original = copy.deepcopy(messages)
+    strategy = _strategy(_Summarizer(), budget=100_000, cap=None)
+    _size(messages)
+    for index in range(2):
+        group = next(
+            g
+            for g in group_messages(messages)
+            if messages[g["start_index"]].message_id == f"outside-{index}"
+        )
+        strategy.user_turns._replace(
+            messages, [group], f"Saved facts {index}. " * 40, summary_id=f"outside-summary-{index}"
+        )
+    if timing == "after":
+        assert strategy._reshape_records(messages)
+    for index in range(folds):
+        if index:
+            group = next(
+                g
+                for g in group_messages(messages)
+                if messages[g["start_index"]].message_id == f"outside-{index + 1}"
+            )
+            strategy.user_turns._replace(
+                messages,
+                [group],
+                f"Extra facts {index}. " * 40,
+                summary_id=f"extra-summary-{index}",
+            )
+        assert await strategy.user_turns.fold_if_smaller(messages) == "folded"
+    if timing == "before":
+        assert strategy._reshape_records(messages)
+    _hold_later_user_edits(
+        original,
+        copy.deepcopy(
+            [
+                m
+                for m in messages
+                if keep_intermediate
+                or not (_is_summary(m) and m.additional_properties.get(EXCLUDED_KEY))
+            ]
+        ),
+    )
+    fold = next(
+        m for m in original if _is_summary(m) and not m.additional_properties.get(EXCLUDED_KEY)
+    )
+    if tamper == "body":
+        fold.contents[0].text += " Changed."
+    elif tamper in {"links", "same-size-links"}:
+        fold.additional_properties[GROUP_ANNOTATION_KEY][SUMMARY_OF_MESSAGE_IDS_KEY] = (
+            ["other"] if tamper == "links" else ["other-0", "other-1"]
+        )
+    elif tamper == "metadata":
+        fold.contents[0].additional_properties["provider_state"] = "changed"
+    elif tamper == "duplicate":
+        original.insert(original.index(fold), copy.deepcopy(fold))
+    elif tamper == "excluded":
+        fold.additional_properties[EXCLUDED_KEY] = True
+        fold.additional_properties[EXCLUDE_REASON_KEY] = "host"
+    _retain_later_reasoning(original)
+    if tamper == "moved":
+        original.remove(fold)
+        original.append(fold)
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    cold._replay_record_edits(original)
+    assert all(
+        not m.additional_properties.get(EXCLUDED_KEY)
+        for m in original
+        if m.message_id in {"outside-0", "outside-1"}
+    )
+
+
+@pytest.mark.parametrize("position", ["before", "after"])
+@pytest.mark.parametrize("hold_output", [False, True])
+def test_moved_prerequisite_summary_keeps_its_original_prefix(
+    position: str, hold_output: bool
+) -> None:
+    messages = _reasoned(2)
+    messages.insert(-1, Message("user", ["Original outside facts. " * 100], message_id="outside"))
+    original = copy.deepcopy(messages)
+    strategy = _strategy(_Summarizer(), budget=100_000, cap=None)
+    _size(messages)
+    group = next(
+        g for g in group_messages(messages) if messages[g["start_index"]].message_id == "outside"
+    )
+    strategy.user_turns._replace(
+        messages, [group], "Saved outside facts.", summary_id="outside-summary"
+    )
+    assert strategy._reshape_records(messages)
+    _hold_later_user_edits(original, copy.deepcopy(messages), include_records=hold_output)
+    _retain_later_reasoning(original)
+    summary = next(m for m in original if m.message_id == "outside-summary")
+    original.remove(summary)
+    original.insert(1 if position == "before" else len(original), summary)
+    annotate_message_groups(original)
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    cold._replay_record_edits(original)
+    source = next(m for m in original if m.message_id == "outside")
+    assert not source.additional_properties.get(EXCLUDED_KEY)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("entry", ["fresh", "held", "missing"])
+@pytest.mark.parametrize("reason", [None, "host"])
+async def test_summary_replay_and_folds_keep_host_preservation(
+    entry: str, reason: str | None
+) -> None:
+    from maf_compaction._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
+
+    messages = _history(2)
+    messages[-1:-1] = [
+        Message("user", [f"Facts {index}. " * 100], message_id=f"outside-{index}")
+        for index in range(2)
+    ]
+    strategy = _strategy(_Summarizer(), budget=100_000, cap=None)
+    _size(messages)
+    for index in range(2):
+        group = next(
+            g
+            for g in group_messages(messages)
+            if messages[g["start_index"]].message_id == f"outside-{index}"
+        )
+        strategy.user_turns._replace(
+            messages, [group], f"Summary {index}. " * 40, summary_id=f"summary-{index}"
+        )
+    if entry != "fresh":
+        assert await strategy.user_turns.fold_if_smaller(messages) == "folded"
+        for message in messages:
+            if message.message_id in {"summary-0", "summary-1"}:
+                message.additional_properties.pop(EXCLUDED_KEY, None)
+        if entry == "missing":
+            messages[:] = [
+                m for m in messages if not (m.message_id or "").startswith("user_summary_fold_")
+            ]
+    protected = next(m for m in messages if m.message_id == "summary-0")
+    protected.additional_properties.pop(PRESERVE_REASON_KEY, None)
+    set_preserved(protected, preserved=True, reason=reason)
+    if entry == "fresh":
+        assert await strategy.user_turns.fold_if_smaller(messages) == "skipped"
+    else:
+        strategy.user_turns.replay_summaries(messages)
+    assert not protected.additional_properties.get(EXCLUDED_KEY)
+    assert is_preserved(protected)
+    assert protected.additional_properties.get(PRESERVE_REASON_KEY) == reason
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("operation", ["reshape", "merge", "rewrite"])
 @pytest.mark.parametrize(
     "tamper", ["body", "metadata", "identity", "duplicate", "moved", "excluded", "preserved"]

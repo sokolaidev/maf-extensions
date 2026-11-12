@@ -1701,6 +1701,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     view.summary_preview.replay_summaries(
                         view.messages,
                         restore_held_sources=True,
+                        invalid_summary_ids=view.invalid_summary_ids,
                         skip_summary_ids={
                             message.message_id
                             for message, _ in view.deferred
@@ -1709,7 +1710,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     )
                 view.restore_later()
                 if view.summary_preview is not None:
-                    view.summary_preview.replay_summaries(view.messages, restore_held_sources=True)
+                    view.summary_preview.replay_summaries(
+                        view.messages,
+                        restore_held_sources=True,
+                        invalid_summary_ids=view.invalid_summary_ids,
+                    )
                 messages[:] = view.messages
                 if view.summary_preview is not None:
                     self.user_turns.accept_replay_preview(messages, view.summary_preview)
@@ -1946,6 +1951,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             and not record_indices
         ):
             return base
+        invalid_summaries = self.user_turns.invalid_replay_summaries(base.messages)
         messages = [copy(message) for message in base.messages]
         original_indices = {id(message): index for index, message in enumerate(messages)}
         for message in messages:
@@ -1979,7 +1985,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         preview = copy(self.user_turns)
         held_summary_ids = {message.message_id for message in messages}
         restored = preview.replay_summaries(
-            messages, summary_ids=edit.summaries, restore_held_sources=True
+            messages,
+            summary_ids=edit.summaries,
+            restore_held_sources=True,
+            invalid_summary_ids=invalid_summaries,
         ).changed
         return ReplayView(
             messages,
@@ -1995,6 +2004,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             exclusions=exclusions,
             deferred=deferred,
             summary_preview=preview,
+            invalid_summary_ids=invalid_summaries,
             record_replacements=staged_record_ids,
             restored_summary_ids={
                 message.message_id
