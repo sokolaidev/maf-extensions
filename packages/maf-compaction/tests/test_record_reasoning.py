@@ -274,6 +274,95 @@ async def test_replay_preserves_later_held_summary_outside_record_window(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["reshape", "merge"])
+@pytest.mark.parametrize("folds", [0, 1, 2, 3])
+@pytest.mark.parametrize("keep_intermediate", [False, True])
+@pytest.mark.parametrize("record_timing", ["before", "between", "after"])
+async def test_replay_restores_held_prerequisites_through_successive_folds(
+    operation: str, folds: int, keep_intermediate: bool, record_timing: str
+) -> None:
+    messages = _history(2)
+    messages[4:4] = [
+        Message("user", ["First facts. " * 100], message_id="middle0"),
+        Message("assistant", ["Narration."], message_id="narration"),
+        Message("user", ["Second facts. " * 100], message_id="middle1"),
+    ]
+    original = copy.deepcopy(messages)
+    text = " ".join(sorted(_sent_values(messages)))
+    answers = iter(text + " Additional details." * count for count in (40, 30, 20, 10, 0))
+    strategy = _strategy(
+        _Summarizer(merge=lambda _: next(answers) if record_timing == "between" else text),
+        budget=100_000,
+        cap=None,
+    )
+    _size(messages)
+    for index in range(2):
+        group = next(
+            g
+            for g in group_messages(messages)
+            if messages[g["start_index"]].message_id == f"middle{index}"
+        )
+        strategy.user_turns._replace(
+            messages, [group], f"Summary {index}. " * 40, summary_id=f"summary_{index}"
+        )
+
+    async def edit_records(*, reshape: bool) -> None:
+        if reshape:
+            assert strategy._reshape_records(messages)
+        else:
+            groups = consolidatable_record_groups(messages)
+            assert (
+                await strategy._consolidate(
+                    messages,
+                    groups,
+                    prompt=DEFAULT_RECORD_MERGE_PROMPT,
+                    transcript=_transcript(messages, groups),
+                )
+                == "accepted"
+            )
+
+    if record_timing != "after":
+        await edit_records(reshape=operation == "reshape")
+    for index in range(folds):
+        if index:
+            user = Message("user", ["Additional facts. " * 100], message_id=f"extra{index}")
+            messages.insert(-1, user)
+            original.insert(-1, copy.deepcopy(user))
+            _size(messages)
+            group = next(
+                g
+                for g in group_messages(messages)
+                if messages[g["start_index"]].message_id == user.message_id
+            )
+            strategy.user_turns._replace(
+                messages,
+                [group],
+                f"Extra summary {index}. " * 40,
+                summary_id=f"extra_summary_{index}",
+            )
+        assert await strategy.user_turns.fold_if_smaller(messages) == "folded"
+        if record_timing == "between":
+            await edit_records(reshape=False)
+    if record_timing == "after":
+        await edit_records(reshape=operation == "reshape")
+    retained = [
+        m
+        for m in messages
+        if keep_intermediate or not (_is_summary(m) and m.additional_properties.get(EXCLUDED_KEY))
+    ]
+    _hold_later_user_edits(original, retained)
+    for history in (messages, original):
+        _retain_later_reasoning(history)
+    expected = _sent(messages)
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    assert await cold(original)
+    assert _sent(original) == expected
+    assert _sent(messages) == expected
+    assert not cold._replay_record_edits(original)
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("shed_first", [False, True])
 @pytest.mark.parametrize("durable_shed", [False, True])
 @pytest.mark.parametrize("held_later", [False, True])

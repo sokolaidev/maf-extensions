@@ -1165,6 +1165,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         *,
         summary_ids: list[str] | None = None,
         restore_held_sources: bool = False,
+        skip_summary_ids: set[str] | None = None,
     ) -> _SummaryReplay:
         """Restore accepted edits on unchanged sources; report replay and trailing-turn changes.
 
@@ -1173,6 +1174,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         ``summary_ids`` limits restoration to prerequisites of an accepted record edit.
         ``restore_held_sources`` is for isolated candidates whose record certificate must
         still authorize restoring the original inclusion state.
+        ``skip_summary_ids`` leaves staged replacements for their existing message objects.
 
         Message objects outlive the list an edit was inserted into, so a list can hold an edit's
         sources still excluded for it without the edit: the edit is put back on them. Sources
@@ -1195,6 +1197,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         for kept in self._replacements.values():
             if summary_ids is not None and kept.summary_id not in summary_ids:
                 continue
+            if skip_summary_ids is not None and kept.summary_id in skip_summary_ids:
+                continue
             summary = next(
                 (message for message in messages if message.message_id == kept.summary_id), None
             )
@@ -1205,7 +1209,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             ):
                 continue
             superseded = [] if summary is None else _superseded_standing(messages, summary)
-            if (summary is None and kept.summary_id in linked) or (
+            if (summary is None and kept.summary_id in linked and not restore_held_sources) or (
                 summary is not None and not superseded and not restore_held_sources
             ):
                 continue

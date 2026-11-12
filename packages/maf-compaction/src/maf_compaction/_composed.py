@@ -1620,7 +1620,19 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     view.messages, matched[0], edit.text, replay=True
                 )
             if view is not base:
+                if view.summary_preview is not None:
+                    view.summary_preview.replay_summaries(
+                        view.messages,
+                        restore_held_sources=True,
+                        skip_summary_ids={
+                            message.message_id
+                            for message, _ in view.deferred
+                            if message.message_id is not None
+                        },
+                    )
                 view.restore_later()
+                if view.summary_preview is not None:
+                    view.summary_preview.replay_summaries(view.messages, restore_held_sources=True)
                 messages[:] = view.messages
                 if view.summary_preview is not None:
                     self.user_turns.accept_replay_preview(messages, view.summary_preview)
@@ -1662,7 +1674,24 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 and set(sources) <= later_shed
             )
         }
-        if not user_exclusions and not shed_indices and not later_indices:
+        prerequisite_sources = {
+            source
+            for message in base.messages
+            if message.message_id in edit.summaries
+            for source in _summary_source_ids(message)
+        }
+        missing_exclusions = any(
+            message.message_id in prerequisite_sources and not _is_excluded(message)
+            for message in base.messages
+        )
+        missing_summaries = set(edit.summaries) - {message.message_id for message in base.messages}
+        if (
+            not user_exclusions
+            and not shed_indices
+            and not later_indices
+            and not missing_exclusions
+            and not missing_summaries
+        ):
             return base
         messages = [copy(message) for message in base.messages]
         for message in messages:
