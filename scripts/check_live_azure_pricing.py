@@ -25,7 +25,6 @@ from maf_sandbox import (
     SandboxObserver,
     SandboxRouter,
     SandboxSpec,
-    SourceIntegrity,
     ToolCallEnded,
 )
 from maf_sandbox.maf import COMPLETED_TEXT, list_no_files
@@ -82,6 +81,53 @@ def result_text(result: Any) -> list[str]:
     return messages
 
 
+def verified_pricing_report(items: list[Any]) -> dict[str, Any]:
+    """Verify the default pricing trust boundary and match checked values to numbered rows."""
+    reports = {}
+    for key, integrity in (("prices", "untrusted"), ("checked_prices", "trusted")):
+        matching = [item for item in items if item.text and item.text.startswith('{"' + key + '":')]
+        require(len(matching) == 1, f"Expected one {key} report")
+        report = matching[0]
+        label = report.additional_properties.get("security_label", {})
+        require(
+            label.get("integrity") == integrity and label.get("confidentiality") == "public",
+            f"Expected {integrity}/public label on {key}",
+        )
+        reports[key] = json.loads(report.text)
+    full, checked = reports["prices"], reports["checked_prices"]
+    rows, checked_rows = full["prices"], checked["checked_prices"]
+    require(bool(rows) and len(rows) == len(checked_rows), "Checked pricing rows are missing")
+    require(
+        {key: value for key, value in full.items() if key != "prices"}
+        == {key: value for key, value in checked.items() if key != "checked_prices"},
+        "Pricing report summaries differ",
+    )
+    for number, (row, checked_row) in enumerate(zip(rows, checked_rows, strict=True), 1):
+        require(
+            row.get("row") == checked_row.get("row") == number
+            and {"retailPrice", "unitPrice", "currencyCode", "priceType"} <= checked_row.keys()
+            and all(key in row and row[key] == value for key, value in checked_row.items()),
+            "Checked pricing values do not match the numbered report row",
+        )
+        require(
+            not any(
+                checked_row.get(field) is not None
+                for field in (
+                    "armSkuName",
+                    "skuName",
+                    "productName",
+                    "serviceName",
+                    "serviceFamily",
+                    "location",
+                    "meterName",
+                    "meterId",
+                )
+            ),
+            "Unchecked pricing identity text entered checked_prices",
+        )
+    return full
+
+
 async def check(
     image: str, proxy_image: str | None = None, *, directory: Path | None = None
 ) -> dict[str, Any]:
@@ -135,12 +181,10 @@ async def check(
         "pricing-check",
         CallerContext(lambda: scope, lambda: "pricing", list_no_files),
         image=image_id,
-        egress_integrity=SourceIntegrity.TRUSTED,
         outbound_max_confidentiality="public",
         exec_timeout_seconds=90,
     )
     tool.additional_properties["confidentiality"] = "public"
-    tracker = LabelTrackingFunctionMiddleware(auto_hide_untrusted=False)
     policy = PolicyEnforcementFunctionMiddleware(block_on_violation=True)
     cases: list[dict[str, Any]] = []
     queries: list[tuple[str, dict[str, Any], dict[str, str]]] = [
@@ -232,6 +276,8 @@ async def check(
         for name, arguments, expected in queries:
             active_case = name
             event_start = len(events)
+            # Fixed qualification queries are independent public conversations.
+            tracker = LabelTrackingFunctionMiddleware(auto_hide_untrusted=False)
             context = FunctionInvocationContext(
                 function=tool,
                 arguments=arguments,
@@ -250,15 +296,7 @@ async def check(
                 isinstance(items, list) and bool(items) and items[0].text == COMPLETED_TEXT,
                 f"Pricing tool did not complete: {name}",
             )
-            reports = [item for item in items if item.text and item.text.startswith('{"prices":')]
-            require(len(reports) == 1, "Expected one pricing report")
-            report = reports[0]
-            label = report.additional_properties.get("security_label", {})
-            require(
-                label.get("integrity") == "trusted" and label.get("confidentiality") == "public",
-                "Price report was not promoted through framework call evidence",
-            )
-            data = json.loads(report.text)
+            data = verified_pricing_report(items)
             require(
                 bool(data["prices"]) and not data["truncated"],
                 f"Expected complete narrow prices: {name}",
@@ -286,7 +324,8 @@ async def check(
                     "priceType": arguments["price_type"],
                     "expected": expected,
                     "rows": len(data["prices"]),
-                    "integrity": "trusted",
+                    "checkedPricesIntegrity": "trusted",
+                    "reportIntegrity": "untrusted",
                     "seconds": events[-1].seconds,
                 }
             )

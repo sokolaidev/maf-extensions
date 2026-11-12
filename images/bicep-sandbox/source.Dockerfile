@@ -6,7 +6,7 @@ COPY --from=scripts bicep_source.py container_image_inputs.py /build/
 RUN --mount=type=cache,target=/root/.nuget/packages \
     python3 /build/bicep_source.py --policy /build/source.json --output /out
 
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:24f549a7fcace88e69b9557941168c74645688ecc4acf7fb6d734a6b74e9019d AS assembled
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:94fa13e26d449f7d78dbcd02d12ea37a0da80d24fcc3e1f17b95d515dec607a7 AS assembled
 RUN apk upgrade --no-cache && apk add --no-cache ca-certificates-bundle icu libstdc++ libssl3
 COPY --from=build /out/bicep /usr/local/bin/bicep
 COPY --from=build /out/build.json /usr/share/maf-bicep/build.json
