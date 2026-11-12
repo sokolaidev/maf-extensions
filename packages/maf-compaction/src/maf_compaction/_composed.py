@@ -1608,7 +1608,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     restored_summaries.clear()
                     changed = True
                 restored_summaries.add(summaries)
-            record_indices = self._held_record_replacements(messages, edit_index)
+            record_indices = self._held_record_replacements(base, edit_index)
             if record_indices is None:
                 continue
             prerequisites = (
@@ -1676,9 +1676,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._keep_shedding(messages)
         return changed
 
-    def _held_record_replacements(
-        self, messages: list[Message], edit_index: int
-    ) -> set[int] | None:
+    def _held_record_replacements(self, base: ReplayView, edit_index: int) -> set[int] | None:
+        messages = base.messages
         held = [
             (index, message)
             for index, message in enumerate(messages)
@@ -1726,15 +1725,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if (
                 identity in seen
                 or not _is_written_record(message)
-                or message.role != replacement.role
-                or message.author_name != replacement.author_name
                 or (
                     is_preserved(message)
                     and message.additional_properties.get(PRESERVE_REASON_KEY)
                     != _RECORD_PRESERVE_REASON
                 )
-                or [part.to_dict(exclude={"raw_representation"}) for part in message.contents]
-                != [part.to_dict(exclude={"raw_representation"}) for part in replacement.contents]
+                or not base.matches_replacement(index, replacement)
                 or (
                     _is_excluded(message)
                     and message.additional_properties.get(EXCLUDE_REASON_KEY)
@@ -1834,6 +1830,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         ):
             return base
         messages = [copy(message) for message in base.messages]
+        original_indices = {id(message): index for index, message in enumerate(messages)}
         for message in messages:
             message.additional_properties = dict(message.additional_properties)
             annotation = message.additional_properties.get(GROUP_ANNOTATION_KEY)
@@ -1869,6 +1866,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         ).changed
         return ReplayView(
             messages,
+            message_keys={
+                index: base.message_key(original_indices[id(message)])
+                for index, message in enumerate(messages)
+                if record_indices
+                and id(message) in original_indices
+                and _is_excluded(message)
+                == _is_excluded(base.messages[original_indices[id(message)]])
+            },
             shed_groups=base.shed_groups if not staged_indices and not restored else None,
             exclusions=exclusions,
             deferred=deferred,

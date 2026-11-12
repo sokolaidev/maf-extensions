@@ -56,10 +56,28 @@ class ReplayView:
     summary_preview: UserTurnAnchoredSummarizationCompactionStrategy | None = None
     record_replacements: set[int] = field(default_factory=set[int])
     restored_summary_ids: set[str] = field(default_factory=set[str])
+    replacement_keys: dict[tuple[tuple[str, str] | None, str | None, bool], str] = field(
+        default_factory=dict[tuple[tuple[str, str] | None, str | None, bool], str]
+    )
 
     def invalidate(self) -> None:
         self.message_keys.clear()
         self.shed_groups = None
+        self.replacement_keys.clear()
+
+    def message_key(self, index: int) -> str:
+        if index not in self.message_keys:
+            self.message_keys[index] = _message_key(self.messages[index])
+        return self.message_keys[index]
+
+    def matches_replacement(self, index: int, expected: Message) -> bool:
+        """Validate a newly built plain record output once per unchanged history."""
+        excluded = bool(self.messages[index].additional_properties.get(EXCLUDED_KEY))
+        expected.additional_properties[EXCLUDED_KEY] = excluded
+        key = (replacement_identity(expected), expected.text, excluded)
+        if key not in self.replacement_keys:
+            self.replacement_keys[key] = _message_key(expected)
+        return self.message_key(index) == self.replacement_keys[key]
 
     def shed_lookup(self) -> dict[str, set[str]]:
         if self.shed_groups is None:

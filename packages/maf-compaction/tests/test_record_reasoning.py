@@ -236,6 +236,38 @@ async def test_flagless_merge_replays_after_original_recall_sources_were_pruned(
     assert _sent(messages) == expected
 
 
+def test_held_record_misses_reuse_content_fingerprints(monkeypatch) -> None:
+    from maf_compaction._record_replay import LINEAGE_KEY
+    from maf_compaction._toolsummary import build_record_message
+
+    messages = [build_record_message(f"Record {index}: " + "detail " * 100) for index in range(40)]
+    for index, message in enumerate(messages):
+        message.message_id = f"source-{index}"
+    annotate_message_groups(messages)
+    strategy = _strategy(_Summarizer(), budget=100_000)
+    for group in consolidatable_record_groups(messages):
+        edit = strategy._record_edit(messages, [group], "replacement")
+        assert edit is not None
+        strategy._record_order.append(edit)
+    for index, edit in reversed(list(enumerate(strategy._record_order))):
+        replacement = build_record_message(edit.text or "")
+        replacement.additional_properties[LINEAGE_KEY] = edit.sources.split(":")[1]
+        messages[index].contents[0].text += " changed"
+        messages.insert(index + 1, replacement)
+    annotate_message_groups(messages)
+    original = Content.to_dict
+    serializations = 0
+
+    def counted(self, *args, **kwargs):
+        nonlocal serializations
+        serializations += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Content, "to_dict", counted)
+    assert not strategy._replay_record_edits(messages)
+    assert serializations <= len(messages) * 3
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("operation", ["reshape", "merge"])
 @pytest.mark.parametrize("later_edit", ["fold", "shed", "fold-and-shed"])
