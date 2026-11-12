@@ -661,13 +661,19 @@ def test_moved_prerequisite_summary_keeps_its_original_prefix(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("entrypoint", ["direct", "public"])
 @pytest.mark.parametrize("branch", ["direct", "nested-leaf", "nested-branch"])
 @pytest.mark.parametrize("record_timing", ["before", "after"])
 @pytest.mark.parametrize("keep_intermediate", [False, True])
 @pytest.mark.parametrize("hold_output", [False, True])
 @pytest.mark.parametrize("move", ["before", "after", "unchanged"])
 async def test_pruned_first_fold_branch_retains_surviving_prefix(
-    branch: str, record_timing: str, keep_intermediate: bool, hold_output: bool, move: str
+    entrypoint: str,
+    branch: str,
+    record_timing: str,
+    keep_intermediate: bool,
+    hold_output: bool,
+    move: str,
 ) -> None:
     count = 2 if branch == "direct" else 3
     messages = _reasoned(2)
@@ -716,13 +722,19 @@ async def test_pruned_first_fold_branch_retains_surviving_prefix(
     fold = next(
         m for m in original if _is_summary(m) and not m.additional_properties.get(EXCLUDED_KEY)
     )
+    unchanged = copy.deepcopy(original)
     if move != "unchanged":
         original.remove(fold)
         original.insert(1 if move == "before" else len(original), fold)
     annotate_message_groups(original)
     cold = _strategy(_Summarizer(), budget=100_000, cap=None)
     cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
-    cold._replay_record_edits(original)
+    if entrypoint == "public":
+        cold.user_trigger_fraction = 1.0
+        cold.tool_results.trigger_fraction = 1.0
+        await cold(original)
+    else:
+        cold._replay_record_edits(original)
     if move == "unchanged":
         sent = original
         if branch == "nested-leaf":
@@ -736,6 +748,11 @@ async def test_pruned_first_fold_branch_retains_surviving_prefix(
             for m in original
             if m.message_id in {f"outside-{index}" for index in range(count)} - pruned
         )
+        if entrypoint == "public":
+            await cold(unchanged)
+            if branch == "nested-leaf":
+                unchanged = [m for m in unchanged if m.message_id != "outside-summary-1"]
+            assert _sent(unchanged) == expected
 
 
 @pytest.mark.parametrize("count", [10, 40])
@@ -781,6 +798,28 @@ def test_distinct_summary_prerequisites_share_unchanged_fingerprints(
     monkeypatch.setattr(Content, "to_dict", counted)
     assert not strategy._replay_record_edits(messages)
     assert serializations <= len(messages) * 2
+
+
+def test_deep_pruned_summary_chain_retains_placement_anchor() -> None:
+    from maf_compaction._media import media_identity
+    from maf_compaction._usersummary import EXCLUDE_REASON, USER_SUMMARY_MARKER, _Replacement
+
+    strategy = _strategy(_Summarizer(), budget=100_000)
+    leaf = Message("user", ["Original facts."], message_id="original")
+    previous = leaf
+    for index in range(1100):
+        identity, text = f"summary-{index}", f"Saved facts {index}."
+        strategy.user_turns._replacements[identity] = _Replacement(
+            identity, text, EXCLUDE_REASON, [media_identity(previous)], [0], []
+        )
+        summary = Message("user", [f"{USER_SUMMARY_MARKER}\n{text}"], message_id=identity)
+        summary.additional_properties[GROUP_ANNOTATION_KEY] = {
+            SUMMARY_OF_MESSAGE_IDS_KEY: [previous.message_id]
+        }
+        previous = summary
+    messages = [previous, leaf]
+    annotate_message_groups(messages)
+    assert not strategy.user_turns.invalid_replay_summaries(messages)
 
 
 @pytest.mark.anyio

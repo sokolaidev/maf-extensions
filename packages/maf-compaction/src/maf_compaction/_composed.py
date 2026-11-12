@@ -1217,6 +1217,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return False
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
+        with self.user_turns.replay_scope(messages):
+            return await self._compact(messages)
+
+    async def _compact(self, messages: list[Message]) -> bool:
+        """Apply all phases within the caller's replay-refusal scope."""
         replayed = (
             self._replay_record_edits(messages) if _last_reasoning_index(messages) >= 0 else False
         )

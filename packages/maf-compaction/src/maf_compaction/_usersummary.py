@@ -22,6 +22,8 @@ import asyncio
 import logging
 import math
 from collections import OrderedDict
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from time import time
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, cast
@@ -48,7 +50,7 @@ from ._summary_input import bounded_prefix, fits_summary_input, summary_request
 from ._summary_links import has_summary_links
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Generator
 
     from agent_framework import ChatResponse, TokenizerProtocol
     from agent_framework._clients import SupportsChatGetResponse
@@ -724,6 +726,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self.remembered_requests = remembered_requests
         self._remembered: list[_Remembered] = []
         self._replacements: dict[str, _Replacement] = {}
+        self._replay_refusals: ContextVar[frozenset[str]] = ContextVar(
+            "user_summary_replay_refusals", default=frozenset()
+        )
         # Kept fold outputs identify how far a history has already replayed.
         self._kept_folds: dict[str, _Remembered] = {}
         self._kept_fold_counts: dict[str, int] = {}
@@ -1160,6 +1165,15 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self._replaced = preview._replaced
         self._observe_summaries(messages)
 
+    @contextmanager
+    def replay_scope(self, messages: list[Message]) -> Generator[None]:
+        """Retain entry-history refusals through a composed compaction pass."""
+        token = self._replay_refusals.set(frozenset(self.invalid_replay_summaries(messages)))
+        try:
+            yield
+        finally:
+            self._replay_refusals.reset(token)
+
     def invalid_replay_summaries(
         self,
         messages: list[Message],
@@ -1171,7 +1185,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         if cache is None:
             cache = SummaryReplayCache()
         if restore_held_sources in cache.invalid:
-            return cache.invalid[restore_held_sources]
+            return cache.invalid[restore_held_sources] | self._replay_refusals.get()
         if not self._replacements:
             return set()
         held: dict[str, list[int]] = {}
@@ -1197,38 +1211,48 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         anchors: dict[str, int | None] = {}
         user_positions: dict[str, list[int]] | None = None
 
-        def anchor(source_key: str, visiting: set[str]) -> int | None:
+        def anchor(source_key: str) -> int | None:
             nonlocal user_positions
-            if source_key in anchors:
-                return anchors[source_key]
-            if source_key in visiting:
-                return None
-            source_id = identities.get(source_key)
-            if source_id is not None:
-                positions = held.get(source_id, [])
-                if len(positions) == 1:
-                    result = positions[0]
+            pending = [(source_key, False)]
+            visiting: set[str] = set()
+            while pending:
+                current, expanded = pending.pop()
+                if current in anchors:
+                    continue
+                source_id = identities.get(current)
+                if source_id is not None:
+                    positions = held.get(source_id, [])
+                    if len(positions) == 1:
+                        result = positions[0]
+                    else:
+                        source = self._replacements[source_id]
+                        children = [source.sources[offset] for offset in source.selected]
+                        if not expanded:
+                            visiting.add(current)
+                            pending.append((current, True))
+                            pending.extend((key, False) for key in children if key not in visiting)
+                            continue
+                        result = min(
+                            (
+                                position
+                                for key in children
+                                if (position := anchors.get(key)) is not None
+                            ),
+                            default=None,
+                        )
+                        visiting.discard(current)
                 else:
-                    source = self._replacements[source_id]
-                    result = min(
-                        (
-                            position
-                            for offset in source.selected
-                            if (position := anchor(source.sources[offset], visiting | {source_key}))
-                            is not None
-                        ),
-                        default=None,
-                    )
-            else:
-                if user_positions is None:
-                    user_positions = {}
-                    for position, message in enumerate(messages):
-                        if message.role == "user":
-                            user_positions.setdefault(fingerprint(position), []).append(position)
-                positions = user_positions.get(source_key, [])
-                result = positions[0] if len(positions) == 1 else None
-            anchors[source_key] = result
-            return result
+                    if user_positions is None:
+                        user_positions = {}
+                        for position, message in enumerate(messages):
+                            if message.role == "user":
+                                user_positions.setdefault(fingerprint(position), []).append(
+                                    position
+                                )
+                    positions = user_positions.get(current, [])
+                    result = positions[0] if len(positions) == 1 else None
+                anchors[current] = result
+            return anchors[source_key]
 
         invalid: set[str] = set()
         for identity, kept in self._replacements.items():
@@ -1277,11 +1301,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 (
                     position
                     for source_id, source_key in zip(links, selected, strict=True)
-                    if (
-                        position := held[source_id][0]
-                        if source_id in held
-                        else anchor(source_key, set())
-                    )
+                    if (position := held[source_id][0] if source_id in held else anchor(source_key))
                     is not None
                 ),
                 default=None,
@@ -1308,7 +1328,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                     invalid.add(child)
                     pending.append(child)
         cache.invalid[restore_held_sources] = invalid
-        return invalid
+        return invalid | self._replay_refusals.get()
 
     def replay_summaries(
         self,
