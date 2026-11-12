@@ -87,6 +87,7 @@ from ._toolsummary import (
     _is_written_record,  # pyright: ignore[reportPrivateUsage]
     _last_reasoning_index,  # pyright: ignore[reportPrivateUsage]
     _newest_record_identity,  # pyright: ignore[reportPrivateUsage]
+    _record_has_external_hold,  # pyright: ignore[reportPrivateUsage]
     active_record_groups,
     build_record_message,
     consolidatable_record_groups,
@@ -97,7 +98,6 @@ from ._toolsummary import (
     reshape_replacements,
     reshapeable_record_groups,
 )
-from ._toolsummary import PRESERVE_REASON as _RECORD_PRESERVE_REASON
 from ._toolsummary import _tokens as _record_tokens  # pyright: ignore[reportPrivateUsage]
 from ._usersummary import SUMMARY_MODE_RECOMPACT, UserTurnAnchoredSummarizationCompactionStrategy
 from ._usersummary import (
@@ -190,7 +190,7 @@ _Phase = (
 )
 
 #: What one attempt to replace the records ended as.
-_Consolidation = Literal["accepted", "rejected", "lossy", "incomplete", "failed"]
+_Consolidation = Literal["accepted", "rejected", "lossy", "incomplete", "failed", "skipped"]
 
 #: Shared time allowance for the chain's merges, user fold and record rewrites.
 DEFAULT_CHAIN_SECONDS: Final[float] = 30.0
@@ -1749,10 +1749,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             for index, message in enumerate(messages)
             if _is_excluded(message)
             and message.additional_properties.get(EXCLUDE_REASON_KEY) == CONSOLIDATE_EXCLUDE_REASON
-            and (
-                not is_preserved(message)
-                or message.additional_properties.get(PRESERVE_REASON_KEY) == _RECORD_PRESERVE_REASON
-            )
+            and not _record_has_external_hold(message)
         }
 
     def _match_record_edit(
@@ -1856,11 +1853,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if (
                 identity in seen
                 or not _is_written_record(message)
-                or (
-                    is_preserved(message)
-                    and message.additional_properties.get(PRESERVE_REASON_KEY)
-                    != _RECORD_PRESERVE_REASON
-                )
+                or _record_has_external_hold(message)
                 or not base.matches_replacement(index, replacement)
                 or (
                     _is_excluded(message)
@@ -2464,6 +2457,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             )
             if outcome == "failed":
                 return False, True
+            if outcome == "skipped":
+                return False, False
             if outcome == "accepted":
                 self._records_merged += 1
                 return True, False
@@ -2700,12 +2695,21 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             transcript: ``groups`` as :func:`_transcript` numbers them.
 
         Returns:
-            Whether the replacement was kept, refused as no smaller or as lossy, or never arrived.
+            Whether it was kept, refused, unavailable, or its sources became ineligible.
         """
+        sources = [
+            message
+            for group in groups
+            for message in messages[group["start_index"] : group["end_index"] + 1]
+        ]
+        if any(_record_has_external_hold(message) for message in sources):
+            return "skipped"
         answer = await self._ask(prompt=prompt, transcript=transcript)
         if answer is None:
             return "failed"
         self._check_chain_deadline()
+        if any(_record_has_external_hold(message) for message in sources):
+            return "skipped"
         text = answer.text
         bodies = record_bodies(messages, groups)
         total, kept, required = self._value_coverage(bodies, text)

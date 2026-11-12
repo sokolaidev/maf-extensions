@@ -1107,6 +1107,12 @@ def _last_reasoning_index(messages: Sequence[Message], *, excluding: Collection[
     )
 
 
+def _record_has_external_hold(message: Message) -> bool:
+    return is_preserved(message) and (
+        message.additional_properties.get(PRESERVE_REASON_KEY) != PRESERVE_REASON
+    )
+
+
 def _record_only_group(
     messages: Sequence[Message],
     group: dict[str, Any],
@@ -1120,10 +1126,7 @@ def _record_only_group(
         return False
     completed = group["end_index"] < completed_before
     for message in messages[group["start_index"] : group["end_index"] + 1]:
-        if (
-            is_preserved(message)
-            and message.additional_properties.get(PRESERVE_REASON_KEY) != PRESERVE_REASON
-        ):
+        if _record_has_external_hold(message):
             return False
         if _is_written_record(message) and all(c.type == "text" for c in message.contents):
             continue

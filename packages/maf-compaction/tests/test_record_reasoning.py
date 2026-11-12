@@ -1025,6 +1025,236 @@ async def test_fresh_fold_rechecks_preservation_after_summary(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["merge", "rewrite"])
+@pytest.mark.parametrize("member", ["reasoning", "call", "result", "written"])
+@pytest.mark.parametrize("reason", [None, "host"])
+@pytest.mark.parametrize("answer", ["valid", "lossy"])
+async def test_record_summary_rechecks_transient_preservation(
+    operation: str, member: str, reason: str | None, answer: str
+) -> None:
+    from maf_compaction._composed import _ChainStart
+    from maf_compaction._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
+
+    messages = _reasoned(3 if operation == "merge" else 1)
+    messages[:] = [
+        m
+        for m in messages
+        if m.message_id == "think0" or not (m.message_id or "").startswith("think")
+    ]
+    annotate_message_groups(messages)
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=100_000, share=None, cap=None)
+    strategy.harder_attempts = 1
+    if member == "written":
+        assert strategy._reshape_records(messages)
+    _size(messages)
+    groups = consolidatable_record_groups(messages)
+    first = messages[groups[0]["start_index"] : groups[0]["end_index"] + 1]
+    kind = {"reasoning": "text_reasoning", "call": "function_call", "result": "function_result"}
+    protected = (
+        first[0]
+        if member == "written"
+        else next(m for m in first if any(c.type == kind[member] for c in m.contents))
+    )
+    valid = " ".join(sorted(_sent_values(messages)))
+
+    def hold(_body: str) -> str:
+        protected.additional_properties.pop(PRESERVE_REASON_KEY, None)
+        set_preserved(protected, preserved=True, reason=reason)
+        return valid if answer == "valid" else "No saved values."
+
+    summarizer.merge = summarizer.rewrite = hold
+
+    async def compact() -> bool:
+        if operation == "merge":
+            return await strategy._merge_records(messages)
+        return await strategy._rewrite_records(messages, _ChainStart.take(messages))
+
+    before = _sent(messages)
+    assert not await compact()
+    assert len(summarizer.requests) == 1
+    assert _sent(messages) == before
+    assert is_preserved(protected)
+    assert protected.additional_properties.get(PRESERVE_REASON_KEY) == reason
+    assert not strategy._refused_merges
+    assert not strategy._refused_rewrites
+    assert not strategy._kept_records
+    set_preserved(protected, preserved=False)
+    summarizer.merge = summarizer.rewrite = lambda _: valid
+    assert await compact()
+    assert len(summarizer.requests) == 2
+    assert _sent_values(messages) == set(valid.split())
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["merge", "rewrite"])
+@pytest.mark.parametrize("reason", [None, "host"])
+async def test_public_record_summary_keeps_late_host_hold(
+    operation: str, reason: str | None
+) -> None:
+    from maf_compaction._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
+
+    messages = _reasoned(3 if operation == "merge" else 1)
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=100_000, share=None, cap=None)
+    assert strategy._reshape_records(messages)
+    protected = next(m for m in messages if toolsummary_module._is_written_record(m))
+    strategy.max_input_tokens = _size(messages) + 100
+    strategy.user_trigger_fraction = strategy.tool_results.trigger_fraction = 1.0
+    strategy.harder_attempts = int(operation == "rewrite")
+    narration = Message("assistant", ["Unrecorded narration. " * 1000], message_id="narration")
+    messages.insert(len(messages) - 1, narration)
+    valid = " ".join(sorted(_sent_values(messages)))
+
+    def hold(_body: str) -> str:
+        protected.additional_properties.pop(PRESERVE_REASON_KEY, None)
+        set_preserved(protected, preserved=True, reason=reason)
+        return valid
+
+    summarizer.merge = summarizer.rewrite = hold
+    assert await strategy(messages)
+    assert len(summarizer.requests) == 1
+    assert is_preserved(protected)
+    assert protected.additional_properties.get(PRESERVE_REASON_KEY) == reason
+    assert not protected.additional_properties.get(EXCLUDED_KEY)
+    assert narration.additional_properties.get(EXCLUDED_KEY)
+    assert not strategy._refused_merges
+    assert not strategy._refused_rewrites
+    assert _sent_values(messages) == set(valid.split())
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("reason", [None, "host"])
+@pytest.mark.parametrize("share", [None, 0.001])
+async def test_split_record_summary_rechecks_transient_preservation(
+    resume: bool, reason: str | None, share: float | None
+) -> None:
+    from maf_compaction._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
+
+    messages = _history(4)
+    summarizer = _Summarizer()
+    compress = summarizer.merge
+    strategy = _strategy(summarizer, budget=100_000, share=share, cap=None)
+    protected = next(m for m in messages if m.message_id == "rec0_call")
+    values = _sent_values(messages)
+
+    def hold(body: str) -> str:
+        if "VAL-000-0" in body:
+            protected.additional_properties.pop(PRESERVE_REASON_KEY, None)
+            set_preserved(protected, preserved=True, reason=reason)
+        return compress(body)
+
+    def split(body: str) -> str:
+        if len(summarizer.requests) == 1:
+            return "No saved values."
+        if resume and len(summarizer.requests) == 2:
+            raise RuntimeError("Temporarily unavailable")
+        return hold(body)
+
+    summarizer.merge = split
+    if resume:
+        assert not await strategy._merge_records(messages)
+        assert len(strategy._pending_merges) == 2
+        restored = _strategy(summarizer, budget=100_000, share=share, cap=None)
+        restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+        strategy = restored
+        summarizer.merge = hold
+    assert await strategy._merge_records(messages)
+    assert strategy.records_merged == 1
+    assert not strategy._pending_merges
+    assert len(strategy._refused_merges) == 1
+    assert is_preserved(protected)
+    assert protected.additional_properties.get(PRESERVE_REASON_KEY) == reason
+    assert not protected.additional_properties.get(EXCLUDED_KEY)
+    assert _sent_values(messages) == values
+    set_preserved(protected, preserved=False)
+    summarizer.merge = compress
+    assert await strategy._merge_records(messages)
+    assert _sent_values(messages) == values
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("position", [0, 1, 2])
+@pytest.mark.parametrize("reason", [None, "host"])
+@pytest.mark.parametrize("restore", [False, True])
+@pytest.mark.parametrize("counts", [False, True])
+@pytest.mark.parametrize("public", [False, True])
+async def test_fold_round_trip_with_protected_summary(
+    position: int, reason: str | None, restore: bool, counts: bool, public: bool
+) -> None:
+    from maf_compaction._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
+
+    messages = [
+        Message("user", [f"Original facts {index}. " * 100], message_id=f"source-{index}")
+        for index in range(3)
+    ]
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=100_000, cap=None)
+    _size(messages)
+    for index in range(3):
+        group = next(
+            g
+            for g in group_messages(messages)
+            if messages[g["start_index"]].message_id == f"source-{index}"
+        )
+        strategy.user_turns._replace(
+            messages, [group], f"Saved facts {index}. " * 40, summary_id=f"summary-{index}"
+        )
+    protected = next(m for m in messages if m.message_id == f"summary-{position}")
+    protected.additional_properties.pop(PRESERVE_REASON_KEY, None)
+    set_preserved(protected, preserved=True, reason=reason)
+    original = copy.deepcopy(messages)
+    assert await strategy.user_turns.fold_if_smaller(messages) == "folded"
+    if restore:
+        cold = _strategy(summarizer, budget=100_000, cap=None)
+        cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+        strategy = cold
+    if not counts:
+        strategy.user_turns._kept_fold_counts.clear()
+    if public:
+        strategy.user_trigger_fraction = strategy.tool_results.trigger_fraction = 1.0
+        assert await strategy(original)
+    else:
+        assert strategy.user_turns.refold(original)
+    assert _sent(original) == _sent(messages)
+    retained = next(m for m in original if m.message_id == protected.message_id)
+    assert is_preserved(retained)
+    assert retained.additional_properties.get(PRESERVE_REASON_KEY) == reason
+    assert len(summarizer.requests) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("reason", [None, "host"])
+async def test_user_summary_rechecks_transient_preservation(reason: str | None) -> None:
+    from maf_compaction._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
+
+    messages = [
+        Message("user", [text], message_id=f"user-{index}")
+        for index, text in enumerate(["Head", "Original facts. " * 1000, "Tail"])
+    ]
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=100_000, cap=None).user_turns
+    protected = messages[1]
+
+    def hold(_body: str) -> str:
+        set_preserved(protected, preserved=True, reason=reason)
+        return "Saved facts."
+
+    summarizer.rewrite = hold
+    before = _sent(messages)
+    assert not await strategy(messages)
+    assert len(summarizer.requests) == 1
+    assert _sent(messages) == before
+    assert is_preserved(protected)
+    assert protected.additional_properties.get(PRESERVE_REASON_KEY) == reason
+    assert not strategy._replacements
+    set_preserved(protected, preserved=False)
+    assert await strategy(messages)
+    assert len(summarizer.requests) == 1
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("operation", ["reshape", "merge", "rewrite"])
 @pytest.mark.parametrize(
     "tamper", ["body", "metadata", "identity", "duplicate", "moved", "excluded", "preserved"]

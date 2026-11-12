@@ -1133,6 +1133,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             for span in band
             for message in messages[span["start_index"] : span["end_index"] + 1]
         ]
+        if any_preserved(replaced):
+            return restored
         if not self._smaller(replaced, band, summary, summary_id=summary_id):
             # Remembered all the same, so the other list replays the refusal instead of asking.
             if remembered is None:
@@ -2021,7 +2023,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         )
         changed = False
         for kept in kept_folds[applied + 1 :]:
-            standing = self._observe_summaries(messages)
+            standing = self._fold_candidates(messages, self._observe_summaries(messages))
             source_count = self._kept_fold_counts.get(kept.summary_id)
             # Snapshots without source counts learn them when their transcript first matches.
             counts = [source_count] if source_count is not None else range(len(standing), 1, -1)
@@ -2039,15 +2041,20 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                     break
         return changed
 
+    def _fold_candidates(
+        self, messages: list[Message], standing: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        return [
+            span
+            for span in standing
+            if not _externally_preserved(messages[int(span["start_index"])])
+        ]
+
     def _bounded_summaries(
         self, messages: list[Message], standing: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         return bounded_prefix(
-            [
-                span
-                for span in standing
-                if not _externally_preserved(messages[int(span["start_index"])])
-            ],
+            self._fold_candidates(messages, standing),
             render=lambda spans: _format_turns(
                 [messages[span["start_index"]] for span in spans], text=_summary_body
             ),
