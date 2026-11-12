@@ -42,6 +42,7 @@ from agent_framework._compaction import (
 
 from ._media import MEDIA_TYPES, annotate_token_counts, media_identity
 from ._preserve import PRESERVE_REASON_KEY, any_preserved, set_preserved
+from ._record_replay import SummaryReplayCache
 from ._request import RECALL_PROMPT_KEY
 from ._summary_input import bounded_prefix, fits_summary_input, summary_request
 from ._summary_links import has_summary_links
@@ -1159,27 +1160,75 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self._replaced = preview._replaced
         self._observe_summaries(messages)
 
-    def invalid_replay_summaries(self, messages: list[Message]) -> set[str]:
+    def invalid_replay_summaries(
+        self,
+        messages: list[Message],
+        *,
+        cache: SummaryReplayCache | None = None,
+        restore_held_sources: bool = True,
+    ) -> set[str]:
         """Reject changed held replacements and the summaries whose facts they now own."""
+        if cache is None:
+            cache = SummaryReplayCache()
+        if restore_held_sources in cache.invalid:
+            return cache.invalid[restore_held_sources]
         if not self._replacements:
             return set()
         held: dict[str, list[int]] = {}
         for index, message in enumerate(messages):
             if message.message_id:
                 held.setdefault(message.message_id, []).append(index)
-        expected = {
-            identity: media_identity(
-                Message("user", [f"{USER_SUMMARY_MARKER}\n{kept.text}"], message_id=identity)
-            )
-            for identity, kept in self._replacements.items()
-        }
+        expected: dict[str, str] = {}
+        for identity, kept in self._replacements.items():
+            key = (identity, kept.text)
+            if key not in cache.outputs:
+                cache.outputs[key] = media_identity(
+                    Message("user", [f"{USER_SUMMARY_MARKER}\n{kept.text}"], message_id=identity)
+                )
+            expected[identity] = cache.outputs[key]
         identities = {fingerprint: identity for identity, fingerprint in expected.items()}
         fingerprints: dict[int, str] = {}
 
         def fingerprint(index: int) -> str:
             if index not in fingerprints:
-                fingerprints[index] = media_identity(messages[index])
+                fingerprints[index] = cache.message_key(messages[index])
             return fingerprints[index]
+
+        anchors: dict[str, int | None] = {}
+        user_positions: dict[str, list[int]] | None = None
+
+        def anchor(source_key: str, visiting: set[str]) -> int | None:
+            nonlocal user_positions
+            if source_key in anchors:
+                return anchors[source_key]
+            if source_key in visiting:
+                return None
+            source_id = identities.get(source_key)
+            if source_id is not None:
+                positions = held.get(source_id, [])
+                if len(positions) == 1:
+                    result = positions[0]
+                else:
+                    source = self._replacements[source_id]
+                    result = min(
+                        (
+                            position
+                            for offset in source.selected
+                            if (position := anchor(source.sources[offset], visiting | {source_key}))
+                            is not None
+                        ),
+                        default=None,
+                    )
+            else:
+                if user_positions is None:
+                    user_positions = {}
+                    for position, message in enumerate(messages):
+                        if message.role == "user":
+                            user_positions.setdefault(fingerprint(position), []).append(position)
+                positions = user_positions.get(source_key, [])
+                result = positions[0] if len(positions) == 1 else None
+            anchors[source_key] = result
+            return result
 
         invalid: set[str] = set()
         for identity, kept in self._replacements.items():
@@ -1224,34 +1273,32 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             ):
                 invalid.add(identity)
                 continue
-            first = held[links[0]][0] if links and links[0] in held else None
-            if first is None and selected:
-                source_key = selected[0]
-                visited: set[str] = set()
-                while source_key in identities and source_key not in visited:
-                    visited.add(source_key)
-                    source_id = identities[source_key]
-                    if len(held.get(source_id, [])) == 1:
-                        first = held[source_id][0]
-                        break
-                    source = self._replacements[source_id]
-                    if not source.selected:
-                        break
-                    source_key = source.sources[source.selected[0]]
-                if first is None:
-                    candidates = [
-                        position
-                        for position, message in enumerate(messages)
-                        if message.role == "user" and fingerprint(position) == source_key
-                    ]
-                    if len(candidates) == 1:
-                        first = candidates[0]
-            if first is not None:
-                if index >= first or any(
+            first = min(
+                (
+                    position
+                    for source_id, source_key in zip(links, selected, strict=True)
+                    if (
+                        position := held[source_id][0]
+                        if source_id in held
+                        else anchor(source_key, set())
+                    )
+                    is not None
+                ),
+                default=None,
+            )
+            if (
+                first is None
+                or index >= first
+                or any(
                     not message.additional_properties.get(EXCLUDED_KEY)
+                    and (
+                        restore_held_sources
+                        or any(content.type == "text_reasoning" for content in message.contents)
+                    )
                     for message in messages[index + 1 : first]
-                ):
-                    invalid.add(identity)
+                )
+            ):
+                invalid.add(identity)
         pending = list(invalid)
         while pending:
             kept = self._replacements[pending.pop()]
@@ -1260,6 +1307,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 if child is not None and child not in invalid:
                     invalid.add(child)
                     pending.append(child)
+        cache.invalid[restore_held_sources] = invalid
         return invalid
 
     def replay_summaries(
@@ -1270,6 +1318,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         restore_held_sources: bool = False,
         skip_summary_ids: set[str] | None = None,
         invalid_summary_ids: set[str] | None = None,
+        cache: SummaryReplayCache | None = None,
     ) -> _SummaryReplay:
         """Restore accepted edits on unchanged sources; report replay and trailing-turn changes.
 
@@ -1288,8 +1337,12 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         recompaction superseded while it keeps the summary that superseded them, so those are
         excluded again, found by the held summary's links whatever became of its other sources.
         """
+        if cache is None:
+            cache = SummaryReplayCache()
         self._protect_media(messages)
-        invalid = self.invalid_replay_summaries(messages) | (invalid_summary_ids or set())
+        invalid = self.invalid_replay_summaries(
+            messages, cache=cache, restore_held_sources=restore_held_sources
+        ) | (invalid_summary_ids or set())
         held = {message.message_id for message in messages if message.message_id}
         linked = {value for message in messages for value in _linked_ids(message)}
         known = held | linked | set(self._replacements)
@@ -1316,7 +1369,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 else [
                     message
                     for message in _superseded_standing(messages, summary)
-                    if media_identity(message) in {kept.sources[index] for index in kept.selected}
+                    if cache.message_key(message)
+                    in {kept.sources[index] for index in kept.selected}
                     and (
                         not any_preserved([message])
                         or message.additional_properties.get(PRESERVE_REASON_KEY) == PRESERVE_REASON
@@ -1336,7 +1390,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                     or _excluded_for(messages[int(span["start_index"])]) == kept.summary_id
                 )
             ]
-            identities = [media_identity(messages[int(span["start_index"])]) for span in turns]
+            identities = [cache.message_key(messages[int(span["start_index"])]) for span in turns]
             width = len(kept.sources)
             matches = [
                 index
@@ -1420,6 +1474,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 sorted(released),
             )
         # Released turns are new material to the caller, as turns that arrived since are.
+        if changed or released:
+            cache.invalid.clear()
         return _SummaryReplay(changed or bool(released), grew or bool(released), chain_fold)
 
     def _protect_media(self, messages: list[Message]) -> None:

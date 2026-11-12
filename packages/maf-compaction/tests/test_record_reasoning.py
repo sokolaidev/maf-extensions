@@ -11,6 +11,7 @@ from agent_framework._compaction import (
     EXCLUDE_REASON_KEY,
     EXCLUDED_KEY,
     GROUP_ANNOTATION_KEY,
+    SUMMARIZED_BY_SUMMARY_ID_KEY,
     SUMMARY_OF_GROUP_IDS_KEY,
     SUMMARY_OF_MESSAGE_IDS_KEY,
     annotate_message_groups,
@@ -657,6 +658,166 @@ def test_moved_prerequisite_summary_keeps_its_original_prefix(
     cold._replay_record_edits(original)
     source = next(m for m in original if m.message_id == "outside")
     assert not source.additional_properties.get(EXCLUDED_KEY)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("branch", ["direct", "nested-leaf", "nested-branch"])
+@pytest.mark.parametrize("record_timing", ["before", "after"])
+@pytest.mark.parametrize("keep_intermediate", [False, True])
+@pytest.mark.parametrize("hold_output", [False, True])
+@pytest.mark.parametrize("move", ["before", "after", "unchanged"])
+async def test_pruned_first_fold_branch_retains_surviving_prefix(
+    branch: str, record_timing: str, keep_intermediate: bool, hold_output: bool, move: str
+) -> None:
+    count = 2 if branch == "direct" else 3
+    messages = _reasoned(2)
+    messages[-1:-1] = [
+        Message("user", [f"Original facts {index}. " * 100], message_id=f"outside-{index}")
+        for index in range(count)
+    ]
+    original = copy.deepcopy(messages)
+    strategy = _strategy(_Summarizer(), budget=100_000, cap=None)
+    _size(messages)
+    for index in range(count):
+        group = next(
+            g
+            for g in group_messages(messages)
+            if messages[g["start_index"]].message_id == f"outside-{index}"
+        )
+        strategy.user_turns._replace(
+            messages, [group], f"Saved facts {index}. " * 40, summary_id=f"outside-summary-{index}"
+        )
+        if index == 1:
+            if record_timing == "before":
+                assert strategy._reshape_records(messages)
+            assert await strategy.user_turns.fold_if_smaller(messages) == "folded"
+    if count == 3:
+        assert await strategy.user_turns.fold_if_smaller(messages) == "folded"
+    if record_timing == "after":
+        assert strategy._reshape_records(messages)
+    _hold_later_user_edits(original, copy.deepcopy(messages), include_records=hold_output)
+    pruned = {"outside-0", "outside-summary-0"}
+    if count == 3:
+        pruned.add("user_summary_fold_0")
+    if branch == "nested-branch":
+        pruned.update({"outside-1", "outside-summary-1"})
+    original[:] = [
+        m
+        for m in original
+        if m.message_id not in pruned
+        and (
+            keep_intermediate or not (_is_summary(m) and m.additional_properties.get(EXCLUDED_KEY))
+        )
+    ]
+    messages[:] = [m for m in messages if m.message_id not in pruned]
+    for history in (original, messages):
+        _retain_later_reasoning(history)
+    expected = _sent(messages)
+    fold = next(
+        m for m in original if _is_summary(m) and not m.additional_properties.get(EXCLUDED_KEY)
+    )
+    if move != "unchanged":
+        original.remove(fold)
+        original.insert(1 if move == "before" else len(original), fold)
+    annotate_message_groups(original)
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    cold._replay_record_edits(original)
+    if move == "unchanged":
+        sent = original
+        if branch == "nested-leaf":
+            # A missing intermediate fold can leave a redundant descendant summary standing.
+            sent = [m for m in original if m.message_id != "outside-summary-1"]
+        assert _sent(sent) == expected
+        assert not cold._replay_record_edits(original)
+    else:
+        assert all(
+            not m.additional_properties.get(EXCLUDED_KEY)
+            for m in original
+            if m.message_id in {f"outside-{index}" for index in range(count)} - pruned
+        )
+
+
+@pytest.mark.parametrize("count", [10, 40])
+def test_distinct_summary_prerequisites_share_unchanged_fingerprints(
+    monkeypatch: pytest.MonkeyPatch, count: int
+) -> None:
+    from maf_compaction._toolsummary import build_record_message
+
+    messages = [
+        build_record_message(f"Record {index}: " + "detail " * 100) for index in range(count)
+    ]
+    for index, message in enumerate(messages):
+        message.message_id = f"record-{index}"
+    messages.extend(
+        Message("user", [f"Facts {index}. " * 1000], message_id=f"source-{index}")
+        for index in range(count)
+    )
+    strategy = _strategy(_Summarizer(), budget=100_000)
+    _size(messages)
+    for index in range(count):
+        group = next(
+            g
+            for g in group_messages(messages)
+            if messages[g["start_index"]].message_id == f"source-{index}"
+        )
+        strategy.user_turns._replace(
+            messages, [group], f"Summary {index}. " * 100, summary_id=f"summary-{index}"
+        )
+        record = consolidatable_record_groups(messages)[index]
+        edit = strategy._record_edit(messages, [record], "replacement")
+        assert edit is not None
+        strategy._record_order.append(edit)
+    for message in messages[:count]:
+        message.contents[0].text = (message.contents[0].text or "") + " changed"
+    original = Content.to_dict
+    serializations = 0
+
+    def counted(self, *args, **kwargs):
+        nonlocal serializations
+        serializations += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Content, "to_dict", counted)
+    assert not strategy._replay_record_edits(messages)
+    assert serializations <= len(messages) * 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("move", ["before", "after", "unchanged"])
+async def test_ordinary_fold_replay_checks_surviving_branch_placement(move: str) -> None:
+    messages = _reasoned(2)
+    messages[-1:-1] = [
+        Message("user", [f"Original facts {index}. " * 100], message_id=f"outside-{index}")
+        for index in range(2)
+    ]
+    strategy = _strategy(_Summarizer(), budget=100_000, cap=None)
+    _size(messages)
+    for index in range(2):
+        group = next(
+            g
+            for g in group_messages(messages)
+            if messages[g["start_index"]].message_id == f"outside-{index}"
+        )
+        strategy.user_turns._replace(
+            messages, [group], f"Saved facts {index}. " * 40, summary_id=f"outside-summary-{index}"
+        )
+    assert await strategy.user_turns.fold_if_smaller(messages) == "folded"
+    messages[:] = [m for m in messages if m.message_id not in {"outside-0", "outside-summary-0"}]
+    source = next(m for m in messages if m.message_id == "outside-summary-1")
+    source.additional_properties[GROUP_ANNOTATION_KEY].pop(SUMMARIZED_BY_SUMMARY_ID_KEY)
+    source.additional_properties.pop(EXCLUDE_REASON_KEY)
+    source.additional_properties[EXCLUDED_KEY] = False
+    _retain_later_reasoning(messages)
+    fold = next(m for m in messages if m.message_id == "user_summary_fold_0")
+    if move != "unchanged":
+        messages.remove(fold)
+        messages.insert(1 if move == "before" else len(messages), fold)
+    annotate_message_groups(messages)
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    cold.user_turns.replay_summaries(messages)
+    assert bool(source.additional_properties.get(EXCLUDED_KEY)) == (move == "unchanged")
 
 
 @pytest.mark.anyio

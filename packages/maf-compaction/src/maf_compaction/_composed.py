@@ -1611,6 +1611,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         changed = False
         restored_view = False
         base = ReplayView(messages)
+        base.invalid_summary_ids = self.user_turns.invalid_replay_summaries(
+            messages, cache=base.summary_cache
+        )
         candidates: dict[
             tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[int, ...]], ReplayView
         ] = {}
@@ -1621,7 +1624,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             summaries = tuple(edit.summaries)
             if summaries not in restored_summaries:
                 restored = self.user_turns.replay_summaries(
-                    messages, summary_ids=edit.summaries
+                    messages,
+                    summary_ids=edit.summaries,
+                    cache=base.summary_cache,
+                    invalid_summary_ids=base.invalid_summary_ids,
                 ).changed
                 if restored:
                     base.invalidate()
@@ -1696,12 +1702,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 self.tool_results.reshape_records(view.messages, groups, replay=True)
             else:
                 self.tool_results.consolidate_records(view.messages, groups, edit.text, replay=True)
+            view.invalidate()
             if view is not base:
                 if view.summary_preview is not None:
                     view.summary_preview.replay_summaries(
                         view.messages,
                         restore_held_sources=True,
                         invalid_summary_ids=view.invalid_summary_ids,
+                        cache=view.summary_cache,
                         skip_summary_ids={
                             message.message_id
                             for message, _ in view.deferred
@@ -1714,6 +1722,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                         view.messages,
                         restore_held_sources=True,
                         invalid_summary_ids=view.invalid_summary_ids,
+                        cache=view.summary_cache,
                     )
                 messages[:] = view.messages
                 if view.summary_preview is not None:
@@ -1724,7 +1733,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             restored_summaries.clear()
             changed = True
         if restored_view:
-            self.user_turns.replay_summaries(messages)
+            self.user_turns.replay_summaries(messages, invalid_summary_ids=base.invalid_summary_ids)
             self._keep_shedding(messages)
         return None if required_outputs else changed
 
@@ -1951,7 +1960,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             and not record_indices
         ):
             return base
-        invalid_summaries = self.user_turns.invalid_replay_summaries(base.messages)
+        invalid_summaries = (
+            self.user_turns.invalid_replay_summaries(base.messages, cache=base.summary_cache)
+            | base.invalid_summary_ids
+        )
         messages = [copy(message) for message in base.messages]
         original_indices = {id(message): index for index, message in enumerate(messages)}
         for message in messages:
@@ -1984,19 +1996,21 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             annotate_message_groups(messages)
         preview = copy(self.user_turns)
         held_summary_ids = {message.message_id for message in messages}
+        summary_cache = base.summary_cache.fork()
         restored = preview.replay_summaries(
             messages,
             summary_ids=edit.summaries,
             restore_held_sources=True,
             invalid_summary_ids=invalid_summaries,
+            cache=summary_cache,
         ).changed
         return ReplayView(
             messages,
+            summary_cache=summary_cache,
             message_keys={
                 index: base.message_key(original_indices[id(message)])
                 for index, message in enumerate(messages)
-                if record_indices
-                and id(message) in original_indices
+                if id(message) in original_indices
                 and _is_excluded(message)
                 == _is_excluded(base.messages[original_indices[id(message)]])
             },

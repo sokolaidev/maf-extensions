@@ -19,6 +19,7 @@ from agent_framework._compaction import (
     annotate_message_groups,
 )
 
+from ._media import media_identity
 from ._preserve import STANDS_IN_KEY
 from ._shed import durable_message_id, unique_shed_groups
 
@@ -42,10 +43,31 @@ class RecordEdit:
 
 
 @dataclass
+class SummaryReplayCache:
+    """Share content fingerprints across annotation-only candidate copies."""
+
+    invalid: dict[bool, set[str]] = field(default_factory=dict[bool, set[str]])
+    outputs: dict[tuple[str, str], str] = field(default_factory=dict[tuple[str, str], str])
+    messages: dict[tuple[str | None, int], tuple[Message, str]] = field(
+        default_factory=dict[tuple[str | None, int], tuple[Message, str]]
+    )
+
+    def message_key(self, message: Message) -> str:
+        key = (message.message_id, id(message.contents))
+        if key not in self.messages:
+            self.messages[key] = (message, media_identity(message))
+        return self.messages[key][1]
+
+    def fork(self) -> SummaryReplayCache:
+        return SummaryReplayCache(outputs=self.outputs, messages=self.messages)
+
+
+@dataclass
 class ReplayView:
     """Cache source and shed identities until this candidate history changes."""
 
     messages: list[Message]
+    summary_cache: SummaryReplayCache = field(default_factory=SummaryReplayCache)
     message_keys: dict[int, str] = field(default_factory=dict[int, str])
     shed_groups: dict[str, set[str]] | None = None
     exclusions: list[tuple[Message, dict[str, Any]]] = field(
@@ -87,12 +109,14 @@ class ReplayView:
             ],
             record_replacements={id(copies[identity]) for identity in self.record_replacements},
             summary_preview=copy(self.summary_preview),
+            summary_cache=self.summary_cache.fork(),
         )
 
     def invalidate(self) -> None:
         self.message_keys.clear()
         self.shed_groups = None
         self.replacement_keys.clear()
+        self.summary_cache = SummaryReplayCache()
 
     def message_key(self, index: int) -> str:
         if index not in self.message_keys:
@@ -164,6 +188,7 @@ class ReplayView:
             )
             self.messages.insert(insertion, message)
         annotate_message_groups(self.messages)
+        self.invalidate()
 
 
 def replacement_identity(message: Message) -> tuple[str, str] | None:
