@@ -56,16 +56,32 @@ from ._anchored import (
     _is_marker,  # pyright: ignore[reportPrivateUsage]
 )
 from ._media import annotate_token_counts
-from ._preserve import PRESERVE_REASON_KEY, is_preserved, pending_result_messages, set_preserved
-from ._record_replay import RecordEdit, ReplayView, replay_match, source_key
+from ._preserve import (
+    PRESERVE_REASON_KEY,
+    STANDS_IN_KEY,
+    is_preserved,
+    pending_result_messages,
+    set_preserved,
+)
+from ._record_replay import (
+    LINEAGE_KEY,
+    RecordEdit,
+    ReplayView,
+    replacement_identity,
+    replay_match,
+    source_key,
+)
 from ._request import RequestOverhead
 from ._shed import durable_message_id, unique_shed_groups
 from ._summary_input import bounded_prefix, bounded_prefix_extent, fits_summary_input
 from ._toolsummary import (
+    CONSOLIDATE_EXCLUDE_REASON,
     PRESERVE_REASON_UNCOVERED,
     PRESERVE_REASON_UNRECORDED,
+    RECALL_TOOL_NAME,
     RecordDecisions,
     ToolResultAnchoredSummarizationCompactionStrategy,
+    _call_identity,  # pyright: ignore[reportPrivateUsage]
     _distinctive_tokens,  # pyright: ignore[reportPrivateUsage]
     _is_written_record,  # pyright: ignore[reportPrivateUsage]
     _last_reasoning_index,  # pyright: ignore[reportPrivateUsage]
@@ -77,8 +93,10 @@ from ._toolsummary import (
     record_anchor_position,
     record_bodies,
     reshape_payloads,
+    reshape_replacements,
     reshapeable_record_groups,
 )
+from ._toolsummary import PRESERVE_REASON as _RECORD_PRESERVE_REASON
 from ._toolsummary import _tokens as _record_tokens  # pyright: ignore[reportPrivateUsage]
 from ._usersummary import SUMMARY_MODE_RECOMPACT, UserTurnAnchoredSummarizationCompactionStrategy
 from ._usersummary import (
@@ -1572,9 +1590,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         changed = False
         restored_view = False
         base = ReplayView(messages)
-        candidates: dict[tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]], ReplayView] = {}
+        candidates: dict[
+            tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[int, ...]], ReplayView
+        ] = {}
         restored_summaries: set[tuple[str, ...]] = set()
-        for edit in self._record_order:
+        for edit_index, edit in enumerate(self._record_order):
             if reshape_only and edit.text is not None:
                 continue
             summaries = tuple(edit.summaries)
@@ -1588,10 +1608,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     restored_summaries.clear()
                     changed = True
                 restored_summaries.add(summaries)
-            prerequisites = (tuple(edit.summaries), tuple(edit.shed_ids), tuple(edit.shed_groups))
+            record_indices = self._held_record_replacements(messages, edit_index)
+            if record_indices is None:
+                continue
+            prerequisites = (
+                tuple(edit.summaries),
+                tuple(edit.shed_ids),
+                tuple(edit.shed_groups),
+                tuple(sorted(record_indices)),
+            )
             view = candidates.get(prerequisites)
             if view is None:
-                view = self._record_replay_view(base, edit)
+                view = self._record_replay_view(base, edit, record_indices)
                 candidates[prerequisites] = view
             if self._keep_shedding(
                 view.messages,
@@ -1612,6 +1640,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 view.messages, groups, {(edit.sources, edit.count)}, message_keys=view.message_keys
             )
             if matched is None:
+                continue
+            if not self._record_replacement_positions(view, edit, matched[0]):
                 continue
             if edit.text is None:
                 self.tool_results.reshape_records(view.messages, matched[0], replay=True)
@@ -1646,7 +1676,116 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._keep_shedding(messages)
         return changed
 
-    def _record_replay_view(self, base: ReplayView, edit: RecordEdit) -> ReplayView:
+    def _held_record_replacements(
+        self, messages: list[Message], edit_index: int
+    ) -> set[int] | None:
+        held = [
+            (index, message)
+            for index, message in enumerate(messages)
+            if replacement_identity(message) is not None
+        ]
+        if not held:
+            return set()
+        known = {
+            (LINEAGE_KEY, edit.sources.split(":")[1])
+            for edit in self._record_order
+            if edit.text is not None and edit.sources.startswith("v2:")
+        } | {
+            (STANDS_IN_KEY, _call_identity(message, position))
+            for message in messages
+            for position, content in enumerate(message.contents)
+            if content.type == "function_call" and content.name == RECALL_TOOL_NAME
+        }
+        remaining = self._record_order[edit_index:]
+        expected: dict[tuple[str, str], Message] = {}
+        if any(edit.text is None for edit in remaining):
+            for _, replacement in reshape_replacements(
+                messages, reshapeable_record_groups(messages, replay=True)
+            ):
+                identity = replacement_identity(replacement)
+                if identity is not None:
+                    expected[identity] = replacement
+        for edit in remaining:
+            if edit.text is not None and edit.sources.startswith("v2:"):
+                replacement = build_record_message(edit.text)
+                replacement.additional_properties[LINEAGE_KEY] = edit.sources.split(":")[1]
+                identity = replacement_identity(replacement)
+                assert identity is not None
+                expected[identity] = replacement
+        indices: set[int] = set()
+        seen: set[tuple[str, str]] = set()
+        for index, message in held:
+            identity = replacement_identity(message)
+            replacement = expected.get(identity) if identity is not None else None
+            if replacement is None:
+                if identity not in known and any(
+                    message.text == item.text for item in expected.values()
+                ):
+                    return None
+                continue
+            if (
+                identity in seen
+                or not _is_written_record(message)
+                or message.role != replacement.role
+                or message.author_name != replacement.author_name
+                or (
+                    is_preserved(message)
+                    and message.additional_properties.get(PRESERVE_REASON_KEY)
+                    != _RECORD_PRESERVE_REASON
+                )
+                or [part.to_dict(exclude={"raw_representation"}) for part in message.contents]
+                != [part.to_dict(exclude={"raw_representation"}) for part in replacement.contents]
+                or (
+                    _is_excluded(message)
+                    and message.additional_properties.get(EXCLUDE_REASON_KEY)
+                    != CONSOLIDATE_EXCLUDE_REASON
+                )
+            ):
+                return None
+            assert identity is not None
+            seen.add(identity)
+            indices.add(index)
+        return indices
+
+    def _record_replacement_positions(
+        self, view: ReplayView, edit: RecordEdit, groups: list[dict[str, Any]]
+    ) -> bool:
+        if not view.record_replacements:
+            return True
+        if edit.text is None:
+            plans = reshape_replacements(view.messages, groups)
+        else:
+            replacement = build_record_message(edit.text)
+            replacement.additional_properties[LINEAGE_KEY] = edit.sources.split(":")[1]
+            plans = [(groups[-1], replacement)]
+        following = {id(message): after for message, after in view.deferred}
+        for group, replacement in plans:
+            for message, after in view.deferred:
+                if id(message) not in view.record_replacements or (
+                    replacement_identity(message) != replacement_identity(replacement)
+                ):
+                    continue
+                while after is not None and id(after) in following:
+                    after = following[id(after)]
+                end = int(group["end_index"]) + 1
+                while end < len(view.messages) and (
+                    view.messages[end].message_id in view.restored_summary_ids
+                    and (after is None or view.messages[end].message_id != after.message_id)
+                ):
+                    end += 1
+                next_message = view.messages[end] if end < len(view.messages) else None
+                if after is not next_message and (
+                    after is None
+                    or next_message is None
+                    or not after.message_id
+                    or after.message_id != next_message.message_id
+                ):
+                    return False
+        return True
+
+    def _record_replay_view(
+        self, base: ReplayView, edit: RecordEdit, record_indices: set[int]
+    ) -> ReplayView:
         """Undo later owned exclusions on copies; the source certificate still authorizes edits."""
         user_exclusions = self.user_turns.replay_source_exclusions(base.messages, edit.summaries)
         later_summaries = set(self.user_turns.replay_summary_ids(base.messages)) - set(
@@ -1691,6 +1830,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             and not later_indices
             and not missing_exclusions
             and not missing_summaries
+            and not record_indices
         ):
             return base
         messages = [copy(message) for message in base.messages]
@@ -1711,25 +1851,34 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             for message, properties in originals
             if properties.get(EXCLUDED_KEY) and not _is_excluded(message)
         ]
+        staged_indices = later_indices | record_indices
+        staged_record_ids = {id(messages[index]) for index in record_indices}
         deferred = [
             (messages[index], messages[index + 1] if index + 1 < len(messages) else None)
-            for index in sorted(later_indices)
+            for index in sorted(staged_indices)
         ]
         messages[:] = [
-            message for index, message in enumerate(messages) if index not in later_indices
+            message for index, message in enumerate(messages) if index not in staged_indices
         ]
-        if later_indices:
+        if staged_indices:
             annotate_message_groups(messages)
         preview = copy(self.user_turns)
+        held_summary_ids = {message.message_id for message in messages}
         restored = preview.replay_summaries(
             messages, summary_ids=edit.summaries, restore_held_sources=True
         ).changed
         return ReplayView(
             messages,
-            shed_groups=base.shed_groups if not later_indices and not restored else None,
+            shed_groups=base.shed_groups if not staged_indices and not restored else None,
             exclusions=exclusions,
             deferred=deferred,
             summary_preview=preview,
+            record_replacements=staged_record_ids,
+            restored_summary_ids={
+                message.message_id
+                for message in messages
+                if message.message_id is not None and message.message_id not in held_summary_ids
+            },
         )
 
     def _keep_records(self, messages: list[Message]) -> bool:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Collection
+from copy import copy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 
@@ -53,6 +54,8 @@ class ReplayView:
         default_factory=list[tuple[Message, Message | None]]
     )
     summary_preview: UserTurnAnchoredSummarizationCompactionStrategy | None = None
+    record_replacements: set[int] = field(default_factory=set[int])
+    restored_summary_ids: set[str] = field(default_factory=set[str])
 
     def invalidate(self) -> None:
         self.message_keys.clear()
@@ -77,6 +80,24 @@ class ReplayView:
                     SUMMARIZED_BY_SUMMARY_ID_KEY
                 ] = owner
         for message, following in reversed(self.deferred):
+            if id(message) in self.record_replacements:
+                regenerated = next(
+                    (
+                        index
+                        for index, item in enumerate(self.messages)
+                        if replacement_identity(item) == replacement_identity(message)
+                    ),
+                    None,
+                )
+                if regenerated is not None:
+                    current = self.messages[regenerated]
+                    restored = copy(message)
+                    restored.additional_properties = dict(message.additional_properties)
+                    for key in (EXCLUDED_KEY, EXCLUDE_REASON_KEY):
+                        restored.additional_properties.pop(key, None)
+                    restored.additional_properties.update(current.additional_properties)
+                    self.messages[regenerated] = restored
+                    continue
             sources = message.additional_properties.get(GROUP_ANNOTATION_KEY, {}).get(
                 SUMMARY_OF_MESSAGE_IDS_KEY, []
             )
@@ -84,12 +105,27 @@ class ReplayView:
                 (
                     index
                     for index, item in enumerate(self.messages)
-                    if item is following or item.message_id in sources
+                    if item is following
+                    or (
+                        following is not None
+                        and following.message_id is not None
+                        and item.message_id == following.message_id
+                    )
+                    or item.message_id in sources
                 ),
                 len(self.messages),
             )
             self.messages.insert(insertion, message)
         annotate_message_groups(self.messages)
+
+
+def replacement_identity(message: Message) -> tuple[str, str] | None:
+    """Identify package-written record outputs without treating their bodies as authority."""
+    for key in (STANDS_IN_KEY, LINEAGE_KEY):
+        identity = message.additional_properties.get(key)
+        if isinstance(identity, str) and identity:
+            return key, identity
+    return None
 
 
 def source_key(messages: list[Message], groups: list[dict[str, Any]]) -> str | None:

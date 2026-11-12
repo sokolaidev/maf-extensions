@@ -56,10 +56,16 @@ def _reasoned(records: int, shape: str = "preceding") -> list[Message]:
     return messages
 
 
-def _hold_later_user_edits(original: list[Message], messages: list[Message]) -> None:
+def _hold_later_user_edits(
+    original: list[Message], messages: list[Message], *, include_records: bool = False
+) -> None:
     held = {message.message_id for message in original}
     for index, message in enumerate(messages):
-        if message.message_id in held or not (_is_summary(message) or _is_marker(message)):
+        if message.message_id in held or not (
+            _is_summary(message)
+            or _is_marker(message)
+            or (include_records and toolsummary_module._is_written_record(message))
+        ):
             continue
         following = next(
             (later.message_id for later in messages[index + 1 :] if later.message_id in held),
@@ -102,6 +108,132 @@ def test_completed_reasoning_reshapes_losslessly_and_replays(
     assert cold._reshape_records(original, replay=True)
     assert cold.records_reshaped == 0
     assert _sent(original) == _sent(messages)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "operation", ["reshape", "merge", "rewrite", "reshape-merge", "merge-rewrite"]
+)
+@pytest.mark.parametrize("shape", ["preceding", "co-located"])
+@pytest.mark.parametrize("all_flags", [False, True])
+async def test_flagless_record_replacements_replay_before_retained_reasoning(
+    operation: str, shape: str, all_flags: bool
+) -> None:
+    messages = _reasoned(1 if operation == "rewrite" else 3, shape)
+    originals = {m.message_id for m in messages}
+    text = " ".join(sorted(_sent_values(messages)))
+    answers = iter([text + " Additional details." * 20, text])
+    strategy = _strategy(_Summarizer(merge=lambda _: next(answers)), budget=100_000, cap=None)
+    if operation.startswith("reshape"):
+        assert strategy._reshape_records(messages)
+    if operation != "reshape":
+        for _ in range(2 if operation == "merge-rewrite" else 1):
+            groups = consolidatable_record_groups(messages)
+            assert (
+                await strategy._consolidate(
+                    messages,
+                    groups,
+                    prompt=DEFAULT_RECORD_MERGE_PROMPT,
+                    transcript=_transcript(messages, groups),
+                )
+                == "accepted"
+            )
+    _retain_later_reasoning(messages)
+    expected = _sent(messages)
+    flagless = copy.deepcopy(messages)
+    for message in flagless:
+        if all_flags or message.message_id in originals:
+            message.additional_properties.pop(EXCLUDED_KEY, None)
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    assert cold._replay_record_edits(flagless)
+    assert _sent(flagless) == expected
+    assert _sent(messages) == expected
+    assert len(flagless) == len(messages)
+    assert not cold._replay_record_edits(flagless)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["reshape", "merge", "rewrite"])
+@pytest.mark.parametrize(
+    "tamper", ["body", "metadata", "identity", "duplicate", "moved", "excluded", "preserved"]
+)
+async def test_invalid_held_record_cannot_authorize_flagless_replay(
+    operation: str, tamper: str
+) -> None:
+    from maf_compaction._preserve import STANDS_IN_KEY, set_preserved
+    from maf_compaction._record_replay import LINEAGE_KEY
+
+    messages = _reasoned(1 if operation == "rewrite" else 3)
+    text = " ".join(sorted(_sent_values(messages)))
+    strategy = _strategy(_Summarizer(merge=lambda _: text), budget=100_000, cap=None)
+    if operation == "reshape":
+        assert strategy._reshape_records(messages)
+    else:
+        groups = consolidatable_record_groups(messages)
+        assert (
+            await strategy._consolidate(
+                messages,
+                groups,
+                prompt=DEFAULT_RECORD_MERGE_PROMPT,
+                transcript=_transcript(messages, groups),
+            )
+            == "accepted"
+        )
+    for message in messages:
+        message.additional_properties.pop(EXCLUDED_KEY, None)
+    held = [m for m in messages if toolsummary_module._is_written_record(m)][-1]
+    if tamper == "body":
+        held.contents[0].text += " Changed."
+    elif tamper == "metadata":
+        held.contents[0].additional_properties["provider_state"] = "protected"
+    elif tamper == "identity":
+        identity_key = STANDS_IN_KEY if operation == "reshape" else LINEAGE_KEY
+        held.additional_properties[identity_key] = "different-source"
+    elif tamper == "duplicate":
+        messages.insert(messages.index(held), copy.deepcopy(held))
+    elif tamper == "moved":
+        messages.remove(held)
+        messages.insert(2, held)
+    elif tamper == "excluded":
+        held.additional_properties[EXCLUDED_KEY] = True
+        held.additional_properties[EXCLUDE_REASON_KEY] = "host"
+    else:
+        set_preserved(held, preserved=True, reason="host")
+    _retain_later_reasoning(messages)
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    before = _sent(messages)
+    assert not cold._replay_record_edits(messages)
+    assert _sent(messages) == before
+
+
+@pytest.mark.anyio
+async def test_flagless_merge_replays_after_original_recall_sources_were_pruned() -> None:
+    messages = _reasoned(3)
+    text = " ".join(sorted(_sent_values(messages)))
+    strategy = _strategy(_Summarizer(merge=lambda _: text), budget=100_000, cap=None)
+    assert strategy._reshape_records(messages)
+    messages[:] = [m for m in messages if not m.additional_properties.get(EXCLUDED_KEY)]
+    annotate_message_groups(messages)
+    groups = consolidatable_record_groups(messages)
+    assert (
+        await strategy._consolidate(
+            messages,
+            groups,
+            prompt=DEFAULT_RECORD_MERGE_PROMPT,
+            transcript=_transcript(messages, groups),
+        )
+        == "accepted"
+    )
+    _retain_later_reasoning(messages)
+    expected = _sent(messages)
+    for message in messages:
+        message.additional_properties.pop(EXCLUDED_KEY, None)
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    assert cold._replay_record_edits(messages)
+    assert _sent(messages) == expected
 
 
 @pytest.mark.anyio
@@ -278,8 +410,9 @@ async def test_replay_preserves_later_held_summary_outside_record_window(
 @pytest.mark.parametrize("folds", [0, 1, 2, 3])
 @pytest.mark.parametrize("keep_intermediate", [False, True])
 @pytest.mark.parametrize("record_timing", ["before", "between", "after"])
+@pytest.mark.parametrize("hold_records", [False, True])
 async def test_replay_restores_held_prerequisites_through_successive_folds(
-    operation: str, folds: int, keep_intermediate: bool, record_timing: str
+    operation: str, folds: int, keep_intermediate: bool, record_timing: str, hold_records: bool
 ) -> None:
     messages = _history(2)
     messages[4:4] = [
@@ -350,7 +483,7 @@ async def test_replay_restores_held_prerequisites_through_successive_folds(
         for m in messages
         if keep_intermediate or not (_is_summary(m) and m.additional_properties.get(EXCLUDED_KEY))
     ]
-    _hold_later_user_edits(original, retained)
+    _hold_later_user_edits(original, retained, include_records=hold_records)
     for history in (messages, original):
         _retain_later_reasoning(history)
     expected = _sent(messages)

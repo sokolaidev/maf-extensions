@@ -1243,6 +1243,26 @@ def _record_message(text: str, *, stands_in_for: str | None = None) -> Message:
     )
 
 
+def reshape_replacements(
+    messages: list[Message], groups: list[dict[str, Any]]
+) -> list[tuple[dict[str, Any], Message]]:
+    """Build the lossless replacements and source identities for eligible record groups."""
+    recall_results = _recall_results(messages)
+    plans: list[tuple[dict[str, Any], Message]] = []
+    for group, payload in zip(groups, reshape_payloads(messages, groups), strict=True):
+        members = messages[group["start_index"] : group["end_index"] + 1]
+        identity = next(
+            (
+                found
+                for message in reversed(members)
+                if (found := _record_identity(message, recall_results))
+            ),
+            "",
+        )
+        plans.append((group, _record_message(payload, stands_in_for=identity or None)))
+    return plans
+
+
 def _claimed_elsewhere(messages: Sequence[Message]) -> bool:
     """Return whether something other than this strategy's own hold protects any of ``messages``.
 
@@ -2287,31 +2307,18 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             barrier = _last_reasoning_index(messages, excluding=_span_indices(groups))
             if any(group["start_index"] <= barrier for group in groups):
                 raise ValueError("A record reshape would edit a retained reasoning prefix.")
-        recall_results = _recall_results(messages)
         standing = {
             (message.additional_properties.get(STANDS_IN_KEY), message.text)
             for message in messages
             if _is_written_record(message)
             and not message.additional_properties.get(EXCLUDED_KEY, False)
         }
-        plans: list[tuple[dict[str, Any], str, str]] = []
-        for group, payload in zip(groups, reshape_payloads(messages, groups), strict=True):
-            members = messages[group["start_index"] : group["end_index"] + 1]
-            identity = next(
-                (
-                    found
-                    for message in reversed(members)
-                    if (found := _record_identity(message, recall_results))
-                ),
-                "",
-            )
-            plans.append((group, payload, identity))
+        plans = reshape_replacements(messages, groups)
         # Newest first, so each insertion lands behind every span still to be reshaped.
-        for group, body, identity in sorted(
+        for group, replacement in sorted(
             plans, key=lambda plan: plan[0]["start_index"], reverse=True
         ):
             _exclude_record(messages, group)
-            replacement = _record_message(body, stands_in_for=identity or None)
             key = (replacement.additional_properties.get(STANDS_IN_KEY), replacement.text)
             if key in standing:
                 continue
