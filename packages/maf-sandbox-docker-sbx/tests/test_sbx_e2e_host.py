@@ -108,6 +108,73 @@ def test_a_host_forwarding_its_ssh_agent_is_refused(tmp_path):
         assert not _listed(sandbox_name("maf", key, "e2e"))
 
 
+async def _prove_forwarded_agent(backend: SbxSandboxBackend, name: str, tmp_path: Path) -> None:
+    public_key_path = os.environ.get("MAF_SANDBOX_SBX_E2E_AGENT_PUBLIC_KEY")
+    assert public_key_path, (
+        "set MAF_SANDBOX_SBX_E2E_AGENT_PUBLIC_KEY to an ephemeral agent's .pub file"
+    )
+    public_key = Path(public_key_path).read_text(encoding="utf-8").split()
+    assert len(public_key) >= 2 and public_key[0] == "ssh-ed25519", public_key_path
+    challenge = f"maf-sbx-forwarding-{uuid.uuid4().hex}"
+    print(
+        json.dumps(
+            {
+                "forwarded_agent_host": {
+                    "sandbox": name,
+                    "version": _checked("version").decode().strip(),
+                    "forwarding": _checked("settings", "get", _FORWARDING).decode().strip(),
+                    "socket_selection": _checked("settings", "get", "ssh.agentSocketPath")
+                    .decode()
+                    .strip(),
+                    "daemon": json.loads(_checked("daemon", "status", "--json")),
+                    "sandboxes": listed_rows(_checked("ls", "--json"), "sandboxes"),
+                }
+            }
+        ),
+        flush=True,
+    )
+    script = Path(__file__).with_name("_sbx_e2e_agent.py").read_text(encoding="utf-8")
+    result = await backend._sbx(
+        "exec",
+        name,
+        "python3",
+        "-c",
+        script,
+        "/run/ssh-agent.sock",
+        public_key[1],
+        challenge,
+        timeout=30,
+    )
+    print(f"forwarded_agent_guest: {result.stdout.decode(errors='replace')}", flush=True)
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    report = json.loads(result.stdout)
+    assert report["socket_present"] is True and report["socket_is_socket"] is True, report
+    signature = tmp_path / "agent.sig"
+    signature.write_text(report["signature"], encoding="utf-8", newline="\n")
+    allowed = tmp_path / "allowed_signers"
+    allowed.write_text(f"fixture {' '.join(public_key[:2])}\n", encoding="utf-8", newline="\n")
+    verified = subprocess.run(
+        [
+            "ssh-keygen",
+            "-Y",
+            "verify",
+            "-f",
+            str(allowed),
+            "-I",
+            "fixture",
+            "-n",
+            "git",
+            "-s",
+            str(signature),
+        ],
+        input=challenge.encode(),
+        capture_output=True,
+        timeout=10,
+    )
+    assert verified.returncode == 0, (verified.stdout, verified.stderr)
+    print(json.dumps({"forwarded_agent_signature_verified": name}), flush=True)
+
+
 def test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path, monkeypatch):
     with _setting_set(_FORWARDING, "true"):
         backend = _backend(tmp_path)
@@ -126,13 +193,22 @@ def test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path, monkey
             return await sbx(*args, **kwargs)
 
         monkeypatch.setattr(backend, "_sbx", with_agent)
+        check_sandbox = backend.check_sandbox
+
+        async def proved_then_checked(name: str) -> None:
+            await _prove_forwarded_agent(backend, name, tmp_path)
+            await check_sandbox(name)
+
+        monkeypatch.setattr(backend, "check_sandbox", proved_then_checked)
         key = _key("agent")
         try:
             with pytest.raises(SbxHostNotConfined, match="ssh-agent.sock"):
                 asyncio.run(backend.acquire(key, _spec()))
             assert not _listed(sandbox_name("maf", key, "e2e"))
+            print(json.dumps({"forwarded_agent_refused_and_discarded": True}), flush=True)
         finally:
             assert asyncio.run(backend.dispose(key)) is None
+            assert not _listed(sandbox_name("maf", key, "e2e"))
 
 
 def test_a_registered_mcp_server_is_refused(tmp_path):

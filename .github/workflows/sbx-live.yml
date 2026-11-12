@@ -85,6 +85,10 @@ jobs:
           set -euo pipefail
           # The forwarding tests need a host agent to forward.
           eval "$(ssh-agent -s)"
+          trap 'ssh-agent -k >/dev/null; rm -f "$RUNNER_TEMP/sbx-agent-key" "$RUNNER_TEMP/sbx-agent-key.pub"' EXIT
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/sbx-agent-key"
+          ssh-add "$RUNNER_TEMP/sbx-agent-key"
+          export MAF_SANDBOX_SBX_E2E_AGENT_PUBLIC_KEY="$RUNNER_TEMP/sbx-agent-key.pub"
           uv run pytest -q -rs -s packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e_host.py | tee host.log
           ! grep -q '^SKIPPED' host.log
 
@@ -161,8 +165,10 @@ jobs:
         run: |
           set -euo pipefail
           eval "$(ssh-agent -s)"
+          trap 'ssh-agent -k >/dev/null; rm -f "$RUNNER_TEMP/pricing-agent-key" "$RUNNER_TEMP/pricing-agent-key.pub"' EXIT
           ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/pricing-agent-key"
           ssh-add "$RUNNER_TEMP/pricing-agent-key"
+          export MAF_SANDBOX_SBX_E2E_AGENT_PUBLIC_KEY="$RUNNER_TEMP/pricing-agent-key.pub"
           uv run pytest -q -rs -s packages/maf-sandbox-docker-sbx/tests/test_sbx_e2e_host.py | tee pricing-host.log
           ! grep -q '^SKIPPED' pricing-host.log
 

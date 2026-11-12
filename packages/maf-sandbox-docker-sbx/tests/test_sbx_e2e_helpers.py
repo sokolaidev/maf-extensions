@@ -191,10 +191,16 @@ def test_lapsed_login_uses_supported_confirmation_and_restores_login(monkeypatch
     ]
 
 
-@pytest.mark.parametrize("refused", [True, False])
-def test_forwarded_agent_probe_requests_a_kit_and_cleans_up(monkeypatch, tmp_path, refused):
+@pytest.mark.parametrize("outcome", ["refused", "accepted", "broken-agent", "leftover"])
+def test_forwarded_agent_probe_requests_a_kit_and_cleans_up(monkeypatch, tmp_path, outcome):
     commands = []
     disposed = []
+    observed = []
+
+    async def prove(backend, name, path):
+        observed.append("probe")
+        if outcome == "broken-agent":
+            raise AssertionError("agent cannot sign")
 
     class AgentBackend:
         async def check_host(self):
@@ -203,23 +209,31 @@ def test_forwarded_agent_probe_requests_a_kit_and_cleans_up(monkeypatch, tmp_pat
         async def _sbx(self, *args, **kwargs):
             commands.append(args)
 
+        async def check_sandbox(self, name):
+            observed.append("check")
+            if outcome != "accepted":
+                raise host.SbxHostNotConfined("ssh-agent.sock")
+
         async def acquire(self, key, spec):
             await self.check_host()
             await self._sbx("create", "shell", "--template", spec.image, "/workspace")
             await self._sbx("exec", "probe", "true")
-            if refused:
-                raise host.SbxHostNotConfined("ssh-agent.sock")
+            await self.check_sandbox("probe")
 
         async def dispose(self, key):
             disposed.append(key)
 
     monkeypatch.setattr(host, "_setting_set", lambda *args: contextlib.nullcontext())
     monkeypatch.setattr(host, "_backend", lambda path: AgentBackend())
-    monkeypatch.setattr(host, "_listed", lambda name: False)
-    if refused:
+    monkeypatch.setattr(host, "_prove_forwarded_agent", prove)
+    monkeypatch.setattr(host, "_listed", lambda name: outcome == "leftover" and not disposed)
+    if outcome == "refused":
         host.test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path, monkeypatch)
-    else:
+    elif outcome == "accepted":
         with pytest.raises(pytest.fail.Exception, match="DID NOT RAISE"):
+            host.test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path, monkeypatch)
+    else:
+        with pytest.raises(AssertionError):
             host.test_a_sandbox_the_running_daemon_gave_the_agent_is_refused(tmp_path, monkeypatch)
     kit = host.Path(host.__file__).parent / "images" / "ssh-agent"
     assert (kit / "kit.yaml").is_file()
@@ -228,3 +242,4 @@ def test_forwarded_agent_probe_requests_a_kit_and_cleans_up(monkeypatch, tmp_pat
         ("exec", "probe", "true"),
     ]
     assert len(disposed) == 1
+    assert observed == (["probe"] if outcome == "broken-agent" else ["probe", "check"])
