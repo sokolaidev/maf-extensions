@@ -301,7 +301,7 @@ For exec and file workloads, acquisition prepares the base through the backend's
 
 | Decision | State | Tracking |
 |---|---|---|
-| Fixed result text on attached tools | Implementation pending | [#2681](https://github.com/sokolaidev/maf-extensions/issues/2681) (open) |
+| Fixed result text on attached tools | Implemented | [#2681](https://github.com/sokolaidev/maf-extensions/issues/2681) (closed) by [#2683](https://github.com/sokolaidev/maf-extensions/pull/2683) (merged) |
 | Artifact collection, sinks and names | Implemented; delivery remains per artifact | [#113](https://github.com/sokolaidev/maf-extensions/pull/113) (merged); [#156](https://github.com/sokolaidev/maf-extensions/pull/156) (merged) |
 | File-store output sink and read tools | Implemented | [#902](https://github.com/sokolaidev/maf-extensions/pull/902) (merged); [#1457](https://github.com/sokolaidev/maf-extensions/issues/1457) (closed) by [#1468](https://github.com/sokolaidev/maf-extensions/pull/1468) (merged) |
 | Atomic batch delivery | Unimplemented | untracked |
