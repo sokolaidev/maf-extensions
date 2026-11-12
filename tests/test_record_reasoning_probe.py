@@ -129,3 +129,29 @@ def test_aborted_probe_never_writes_success(probe, tmp_path, monkeypatch, capsys
     assert "private-abort-sentinel" not in report_text + capsys.readouterr().out
     probe.http.aclose.assert_awaited_once()
     probe.credential.close.assert_awaited_once()
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic", "gemini"])
+def test_report_requires_only_the_selected_provider_sdks(probe, tmp_path, monkeypatch, provider):
+    module = importlib.import_module("qualify_record_reasoning")
+    probe.provider = provider
+    selected = {
+        "openai": {"agent-framework-openai", "openai"},
+        "anthropic": {"agent-framework-anthropic", "anthropic"},
+        "gemini": {"agent-framework-gemini", "google-genai"},
+    }[provider]
+    installed = {"agent-framework-core", "azure-identity"} | selected
+
+    def version(name):
+        if name not in installed:
+            raise module.importlib.metadata.PackageNotFoundError(name)
+        return "test-version"
+
+    monkeypatch.setattr(module.importlib.metadata, "version", version)
+    asyncio.run(probe.close(RuntimeError("private-original-error")))
+    report = json.loads((tmp_path / f"{provider}.json").read_text(encoding="utf-8"))
+    assert set(report["packages"]) == installed
+    assert report["passed"] is False
+    assert report["error_type"] == "RuntimeError"
+    probe.http.aclose.assert_awaited_once()
+    probe.credential.close.assert_awaited_once()

@@ -1136,11 +1136,20 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self._replaced = len(band)
         return True
 
-    def replay_summaries(self, messages: list[Message]) -> _SummaryReplay:
+    def replay_summary_ids(self, messages: list[Message]) -> list[str]:
+        """Identify accepted user edits represented in this history, including superseded ones."""
+        held = {message.message_id for message in messages}
+        linked = {value for message in messages for value in _linked_ids(message)}
+        return [identity for identity in self._replacements if identity in held | linked]
+
+    def replay_summaries(
+        self, messages: list[Message], *, summary_ids: list[str] | None = None
+    ) -> _SummaryReplay:
         """Restore accepted edits on unchanged sources; report replay and trailing-turn changes.
 
         The caller supplies grouped, token-annotated history. Source windows must match
         uniquely and in order, and replay respects current anchors and preservation marks.
+        ``summary_ids`` limits restoration to prerequisites of an accepted record edit.
 
         Message objects outlive the list an edit was inserted into, so a list can hold an edit's
         sources still excluded for it without the edit: the edit is put back on them. Sources
@@ -1161,6 +1170,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         _release_sources(messages, released)
         changed = grew = chain_fold = False
         for kept in self._replacements.values():
+            if summary_ids is not None and kept.summary_id not in summary_ids:
+                continue
             summary = next(
                 (message for message in messages if message.message_id == kept.summary_id), None
             )

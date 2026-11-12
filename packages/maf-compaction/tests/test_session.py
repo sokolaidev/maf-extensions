@@ -253,8 +253,7 @@ def test_stack_writes_v8_snapshots_and_restores_older_versions(composed, version
     legacy = snapshot | {"version": version}
     if composed:
         legacy = deepcopy(legacy)
-        legacy["strategy"].pop("record_replays")
-        legacy["strategy"].pop("reshape_batches")
+        legacy["strategy"].pop("record_order")
         if version < 7:
             legacy["strategy"].pop("reshaped_records")
             legacy["strategy"].pop("searched_records")

@@ -83,6 +83,137 @@ def test_completed_reasoning_reshapes_losslessly_and_replays(
     assert cold._reshape_records(original, replay=True)
     assert cold.records_reshaped == 0
     assert _sent(original) == _sent(messages)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["reshape", "merge"])
+@pytest.mark.parametrize("later_edit", ["fold", "shed", "fold-and-shed"])
+async def test_record_replay_preserves_intermediate_edit_windows(
+    operation: str, later_edit: str
+) -> None:
+    messages = _history(2)
+    middle = [
+        Message("user", ["First facts. " * 100], message_id="middle0"),
+        Message("assistant", ["Intervening narration."], message_id="narration"),
+        Message("user", ["Second facts. " * 100], message_id="middle1"),
+    ]
+    messages[4:4] = middle
+    original = copy.deepcopy(messages)
+    text = " ".join(sorted(_sent_values(messages)))
+    strategy = _strategy(_Summarizer(merge=lambda _: text), budget=100_000, cap=None)
+    _size(messages)
+    for index in range(2):
+        group = next(
+            group
+            for group in group_messages(messages)
+            if messages[group["start_index"]].message_id == f"middle{index}"
+        )
+        strategy.user_turns._replace(
+            messages,
+            [group],
+            f"Summary {index}. " * 40,
+            summary_id=f"summary_{index}",
+        )
+    if operation == "reshape":
+        assert strategy._reshape_records(messages)
+    else:
+        groups = consolidatable_record_groups(messages)
+        assert (
+            await strategy._consolidate(
+                messages,
+                groups,
+                prompt=DEFAULT_RECORD_MERGE_PROMPT,
+                transcript=_transcript(messages, groups),
+            )
+            == "accepted"
+        )
+    if "fold" in later_edit:
+        assert await strategy.user_turns.fold_if_smaller(messages) == "folded"
+    if "shed" in later_edit:
+        strategy._shed_ids.add("narration")
+        assert strategy._keep_shedding(messages)
+    for history in (messages, original):
+        _retain_later_reasoning(history)
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    assert await cold(original)
+    assert _sent(original) == _sent(messages)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("shed_first", [False, True])
+@pytest.mark.parametrize("durable_shed", [False, True])
+async def test_replay_keeps_chained_record_edits_between_fold_and_shed(
+    shed_first: bool, durable_shed: bool
+) -> None:
+    from maf_compaction._shed import unique_shed_groups
+
+    messages = _history(2)
+    narration = Message(
+        "assistant",
+        ["Intervening narration."],
+        message_id="narration" if durable_shed else "msg_20",
+    )
+    messages[4:4] = [
+        Message("user", ["First facts. " * 100], message_id="middle0"),
+        narration,
+        Message("user", ["Second facts. " * 100], message_id="middle1"),
+    ]
+    original = copy.deepcopy(messages)
+    text = " ".join(sorted(_sent_values(messages)))
+    answers = iter([text + ". Extra explanation. " * 12, text])
+    summarizer = _Summarizer(merge=lambda _: next(answers))
+    strategy = _strategy(summarizer, budget=100_000, cap=None)
+    _size(messages)
+    for index in range(2):
+        group = next(
+            group
+            for group in group_messages(messages)
+            if messages[group["start_index"]].message_id == f"middle{index}"
+        )
+        strategy.user_turns._replace(
+            messages,
+            [group],
+            f"Summary {index}. " * 40,
+            summary_id=f"summary_{index}",
+        )
+    assert strategy._reshape_records(messages)
+
+    async def shed_or_fold(shed: bool) -> None:
+        if not shed:
+            assert await strategy.user_turns.fold_if_smaller(messages) == "folded"
+        else:
+            if durable_shed:
+                strategy._shed_ids.add("narration")
+            else:
+                key = next(
+                    key
+                    for key, members in unique_shed_groups(messages)
+                    if any(message is narration for message in members)
+                )
+                strategy._shed_groups.add(key)
+            assert strategy._keep_shedding(messages)
+
+    for shed in (shed_first, not shed_first):
+        await shed_or_fold(shed)
+        groups = consolidatable_record_groups(messages)
+        assert (
+            await strategy._consolidate(
+                messages,
+                groups,
+                prompt=DEFAULT_RECORD_MERGE_PROMPT,
+                transcript=_transcript(messages, groups),
+            )
+            == "accepted"
+        )
+    for history in (messages, original):
+        _retain_later_reasoning(history)
+    cold_summarizer = _Summarizer()
+    cold = _strategy(cold_summarizer, budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    assert await cold(original)
+    assert _sent(original) == _sent(messages)
+    assert not cold_summarizer.requests
     assert not cold._reshape_records(original, replay=True)
 
 
@@ -393,13 +524,10 @@ async def test_legacy_record_decisions_do_not_bypass_retained_reasoning(
         )
     state = json.loads(json.dumps(strategy.session_state()))
     if certificate == "missing":
-        state.pop("record_replays", None)
-        state.pop("reshape_batches", None)
+        state.pop("record_order", None)
     else:
-        for entry in state["record_replays"]:
-            entry[0] = entry[0].removeprefix("v2:")
-        for entry in state["reshape_batches"]:
-            entry[0] = entry[0].removeprefix("v2:")
+        for entry in state["record_order"]:
+            entry["sources"] = entry["sources"].removeprefix("v2:")
     cold = _strategy(_Summarizer(), budget=100_000)
     cold.restore_session_state(state)
     _retain_later_reasoning(original)
@@ -486,6 +614,33 @@ def test_replay_miss_serializes_each_message_at_most_once(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(Content, "to_dict", counted)
     assert replay_match(messages, groups, {(accepted, 40)}) is None
+    assert serializations <= len(messages)
+
+
+def test_ordered_replay_misses_share_message_fingerprints(monkeypatch: pytest.MonkeyPatch) -> None:
+    from maf_compaction._toolsummary import build_record_message
+
+    messages = [build_record_message(f"Record {index}: " + "detail " * 100) for index in range(40)]
+    for index, message in enumerate(messages):
+        message.message_id = f"record-{index}"
+    annotate_message_groups(messages)
+    strategy = _strategy(_Summarizer(), budget=100_000)
+    for group in consolidatable_record_groups(messages):
+        edit = strategy._record_edit(messages, [group], "replacement")
+        assert edit is not None
+        strategy._record_order.append(edit)
+    for message in messages:
+        message.contents[0].text += " changed"
+    serializations = 0
+    original = Content.to_dict
+
+    def counted(self, *args, **kwargs):
+        nonlocal serializations
+        serializations += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Content, "to_dict", counted)
+    assert not strategy._replay_record_edits(messages)
     assert serializations <= len(messages)
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Collection
+from dataclasses import dataclass
 from typing import Any, Final
 
 from agent_framework import Message
@@ -14,6 +15,18 @@ from ._preserve import STANDS_IN_KEY
 from ._shed import durable_message_id
 
 LINEAGE_KEY: Final[str] = "maf_compaction_record_lineage"
+
+
+@dataclass
+class RecordEdit:
+    """An accepted record replacement and the edits its source window already contained."""
+
+    sources: str
+    count: int
+    text: str | None
+    summaries: list[str]
+    shed_ids: list[str]
+    shed_groups: list[str]
 
 
 def source_key(messages: list[Message], groups: list[dict[str, Any]]) -> str | None:
@@ -91,10 +104,13 @@ def replay_match(
     messages: list[Message],
     groups: list[dict[str, Any]],
     accepted: Collection[tuple[str, int]],
+    *,
+    message_keys: dict[int, str] | None = None,
 ) -> tuple[list[dict[str, Any]], tuple[str, int]] | None:
-    """Find the earliest complete accepted batch, refusing ambiguous source matches."""
+    """Find an unambiguous accepted batch; shared fingerprints require an unchanged history."""
     matches: dict[tuple[str, int], list[list[dict[str, Any]]]] = {}
-    message_keys: dict[int, str] = {}
+    if message_keys is None:
+        message_keys = {}
     certificates: dict[tuple[str, int], list[tuple[str, set[str]]]] = {}
     for certificate, count in accepted:
         version, _, payload = certificate.partition(":")

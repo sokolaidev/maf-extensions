@@ -34,7 +34,7 @@ from bisect import bisect_left
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from math import ceil, isfinite
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
@@ -54,7 +54,7 @@ from ._anchored import (
 )
 from ._media import annotate_token_counts
 from ._preserve import PRESERVE_REASON_KEY, is_preserved, pending_result_messages, set_preserved
-from ._record_replay import replay_match, source_key
+from ._record_replay import RecordEdit, replay_match, source_key
 from ._request import RequestOverhead
 from ._shed import durable_message_id, unique_shed_groups
 from ._summary_input import bounded_prefix, bounded_prefix_extent, fits_summary_input
@@ -698,8 +698,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # Content caches can be reused only where current reasoning guards permit edits.
         self._reshaped: set[str] = set()
         # Only source-bound decisions may replay across retained reasoning.
-        self._record_replays: dict[tuple[str, int], str] = {}
-        self._reshape_batches: set[tuple[str, int]] = set()
+        self._record_order: list[RecordEdit] = []
         self._shed_ids: set[str] = set()
         self._shed_groups: set[str] = set()
         # Shrink acceptance depends on the source count as well as the request's transcript.
@@ -871,10 +870,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 for (transcript, count), text in self._kept_records.items()
             ],
             "reshaped_records": sorted(self._reshaped),
-            "record_replays": [
-                [sources, count, text] for (sources, count), text in self._record_replays.items()
-            ],
-            "reshape_batches": [list(batch) for batch in sorted(self._reshape_batches)],
+            "record_order": [asdict(edit) for edit in self._record_order],
             "searched_records": [
                 [start, limit, found.covered, found.records, found.batch, found.ended]
                 for (start, limit), found in sorted(self._searched.items())
@@ -922,12 +918,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 for entry in kept_records
             }
         self._reshaped = set(data.get("reshaped_records", []))
-        self._record_replays = {
-            (sources, count): text for sources, count, text in data.get("record_replays", [])
-        }
-        self._reshape_batches = {
-            (sources, count) for sources, count in data.get("reshape_batches", [])
-        }
+        self._record_order = [RecordEdit(**edit) for edit in data.get("record_order", [])]
         # Earlier snapshots of this schema kept only searches that found nothing.
         searched = data.get("searched_records", data.get("unpaired_records", []))
         self._searched = {
@@ -1198,13 +1189,13 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return False
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
-        replayed_shed = self._keep_shedding(messages)
+        replayed = (
+            self._replay_record_edits(messages) if _last_reasoning_index(messages) >= 0 else False
+        )
+        replayed = self._keep_shedding(messages) or replayed
         # Before the record phase counts records, so a stand-in and the pair it replaced are
         # never both counted.
-        replayed = self._reshape_records(messages, replay=True) or replayed_shed
-        if _last_reasoning_index(messages) >= 0:
-            # Restore the accepted reasoning prefix before user edits change its source window.
-            replayed = self._keep_records(messages, exact_only=True) or replayed
+        replayed = self._reshape_records(messages, replay=True) or replayed
         decisions_kept = self._decisions_kept
         shed_sources = (
             [
@@ -1233,8 +1224,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._removed_by_record += max(entry_tokens - included_token_count(messages), 0)
 
         replay = self.user_turns.replay_summaries(messages)
-        if replay.changed:
-            replayed = self._reshape_records(messages, replay=True) or replayed
         prompt_tokens = included_token_count(messages)
         compacted = False
         if (not replay.changed or replay.new_turns) and not self._holds_for_record(
@@ -1492,7 +1481,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
           thing both lists present identically -- replacing any run of the records that
           matches one, as often as one does, since a merge followed by a rewrite is two.
           Bypassing a retained-reasoning guard additionally requires exact source identities
-          and the accepted source window, including written-record lineage;
+          and the accepted source window, including written-record lineage. Record edits
+          replay in acceptance order with their prerequisite user edits and shedding;
         - a user fold, through
           :meth:`~._usersummary.UserTurnAnchoredSummarizationCompactionStrategy.refold`;
         - narration the chain's fallback shed, by message id, through
@@ -1511,7 +1501,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
-        changed = self._keep_shedding(messages) or replayed_user_fold
+        changed = self._replay_record_edits(messages) or replayed_user_fold
+        changed = self._keep_shedding(messages) or changed
         changed = self._keep_records(messages) or changed
         if changed:
             annotate_message_groups(messages)
@@ -1521,12 +1512,13 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._decisions_kept += 1
         return changed
 
-    def _keep_shedding(self, messages: list[Message]) -> bool:
+    def _keep_shedding(self, messages: list[Message], *, edit: RecordEdit | None = None) -> bool:
         """Replay prior removals before their contents can trigger new compaction work."""
-        message_ids = set(self._shed_ids)
-        if self._shed_groups:
+        message_ids = set(self._shed_ids if edit is None else edit.shed_ids)
+        group_keys = self._shed_groups if edit is None else set(edit.shed_groups)
+        if group_keys:
             for key, members in unique_shed_groups(messages):
-                if key in self._shed_groups:
+                if key in group_keys:
                     message_ids.update(
                         message.message_id for message in members if message.message_id
                     )
@@ -1535,30 +1527,73 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         ):
             return self.tool_results.shed_again_after_record(messages, message_ids)
 
-    def _keep_records(self, messages: list[Message], *, exact_only: bool = False) -> bool:
+    def _record_edit(
+        self, messages: list[Message], groups: list[dict[str, Any]], text: str | None
+    ) -> RecordEdit | None:
+        """Capture the accepted window's replay prerequisites without copying their contents."""
+        sources = source_key(messages, groups)
+        if sources is None:
+            return None
+        excluded = {message.message_id for message in messages if _is_excluded(message)}
+        shed_groups = (
+            [
+                key
+                for key, members in unique_shed_groups(messages)
+                if key in self._shed_groups and all(_is_excluded(message) for message in members)
+            ]
+            if self._shed_groups
+            else []
+        )
+        return RecordEdit(
+            sources,
+            len(groups),
+            text,
+            self.user_turns.replay_summary_ids(messages),
+            sorted(self._shed_ids & excluded),
+            shed_groups,
+        )
+
+    def _replay_record_edits(self, messages: list[Message], *, reshape_only: bool = False) -> bool:
+        """Restore each accepted record window before applying edits that followed it."""
+        changed = False
+        message_keys: dict[int, str] = {}
+        for edit in self._record_order:
+            if reshape_only and edit.text is not None:
+                continue
+            restored = self.user_turns.replay_summaries(
+                messages, summary_ids=edit.summaries
+            ).changed
+            restored = self._keep_shedding(messages, edit=edit) or restored
+            if restored:
+                message_keys.clear()
+                changed = True
+            groups = (
+                reshapeable_record_groups(messages, replay=True)
+                if edit.text is None
+                else consolidatable_record_groups(messages, replay=True)
+            )
+            matched = replay_match(
+                messages, groups, {(edit.sources, edit.count)}, message_keys=message_keys
+            )
+            if matched is None:
+                continue
+            if edit.text is None:
+                self.tool_results.reshape_records(messages, matched[0], replay=True)
+            else:
+                self.tool_results.consolidate_records(messages, matched[0], edit.text, replay=True)
+            message_keys.clear()
+            changed = True
+        return changed
+
+    def _keep_records(self, messages: list[Message]) -> bool:
         """Replace every run of records the chain has already replaced, as it did.
 
         The earliest run first, and at one start the longest. A batch merge need not start at the
         oldest record, so any start is tried; an entry from a legacy snapshot, which has no
         source count, only at the oldest, as it was taken.
         """
-        changed = False
+        changed = self._replay_record_edits(messages)
         while self._kept_records:
-            if self._record_replays:
-                matched = replay_match(
-                    messages,
-                    consolidatable_record_groups(messages, replay=True),
-                    self._record_replays.keys(),
-                )
-                if matched is not None:
-                    run, key = matched
-                    self.tool_results.consolidate_records(
-                        messages, run, self._record_replays[key], replay=True
-                    )
-                    changed = True
-                    continue
-            if exact_only:
-                break
             groups = consolidatable_record_groups(messages)
             source_counts = {count for _, count in self._kept_records}
             counted = sorted((count for count in source_counts if count is not None), reverse=True)
@@ -1590,10 +1625,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     break
             if found is None:
                 break
-            sources = source_key(messages, found[0])
-            if sources is not None:
-                self._record_replays[(sources, len(found[0]))] = found[1]
+            edit = self._record_edit(messages, found[0], found[1])
             self.tool_results.consolidate_records(messages, *found)
+            if edit is not None and edit not in self._record_order:
+                self._record_order.append(edit)
             changed = True
         return changed
 
@@ -1682,18 +1717,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             True if any record was reshaped.
         """
-        changed = False
-        if replay:
-            while self._reshape_batches:
-                matched = replay_match(
-                    messages,
-                    reshapeable_record_groups(messages, replay=True),
-                    self._reshape_batches,
-                )
-                if matched is None:
-                    break
-                self.tool_results.reshape_records(messages, matched[0], replay=True)
-                changed = True
+        changed = self._replay_record_edits(messages, reshape_only=True) if replay else False
         groups = reshapeable_record_groups(messages)
         digests = [_digest(payload) for payload in reshape_payloads(messages, groups)]
         chosen = [
@@ -1704,15 +1728,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if not chosen:
             return changed
         selected = [group for group, _ in chosen]
-        sources = source_key(messages, selected)
+        edit = self._record_edit(messages, selected, None)
         try:
             self.tool_results.reshape_records(messages, selected)
         except ValueError:
             if not replay:
                 raise
             return changed
-        if sources is not None:
-            self._reshape_batches.add((sources, len(selected)))
+        if edit is not None and edit not in self._record_order:
+            self._record_order.append(edit)
         if not replay:
             self._records_reshaped += len(chosen)
             self._reshaped.update(digest for _, digest in chosen)
@@ -2264,11 +2288,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 required,
             )
             return outcome
-        sources = source_key(messages, groups)
+        edit = self._record_edit(messages, groups, text)
         self.tool_results.consolidate_records(messages, groups, text)
         self._kept_records[(transcript, len(groups))] = text
-        if sources is not None:
-            self._record_replays[(sources, len(groups))] = text
+        if edit is not None and edit not in self._record_order:
+            self._record_order.append(edit)
         # The new record may read exactly as one an earlier pass went on to replace -- a merge of
         # new material can come back as the record an earlier rewrite started from -- and that
         # replacement is already decided, so it is taken here rather than asked for again.

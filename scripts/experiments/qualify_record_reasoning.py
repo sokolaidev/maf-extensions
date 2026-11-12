@@ -463,13 +463,11 @@ class Probe:
     async def close(self, error: BaseException | None) -> None:
         """Persist payload digests and qualification metrics, then close clients."""
         self.output.mkdir(parents=True, exist_ok=True)
-        packages = (
-            "agent-framework-core",
-            "agent-framework-openai",
-            "openai",
-            "anthropic",
-            "azure-identity",
-        )
+        packages = ("agent-framework-core", "azure-identity") + {
+            "openai": ("agent-framework-openai", "openai"),
+            "anthropic": ("agent-framework-anthropic", "anthropic"),
+            "gemini": ("agent-framework-gemini", "google-genai"),
+        }[self.provider]
         history_field = {"openai": "input", "anthropic": "messages", "gemini": "contents"}[
             self.provider
         ]
@@ -514,10 +512,6 @@ class Probe:
             "error_type": type(error).__name__ if error else None,
             "error_stage": self.label if error else None,
         }
-        if self.provider == "anthropic":
-            report["packages"]["agent-framework-anthropic"] = importlib.metadata.version(
-                "agent-framework-anthropic"
-            )
         if self.provider == "gemini":
             report["settings"] = {
                 "api_version": "v1beta",
@@ -528,8 +522,6 @@ class Probe:
                 "fresh_adapter_per_request": True,
                 "automatic_function_calling": False,
             }
-            for name in ("agent-framework-gemini", "google-genai"):
-                report["packages"][name] = importlib.metadata.version(name)
         (self.output / f"{self.provider}.json").write_text(
             json.dumps(report, indent=2), encoding="utf-8"
         )
