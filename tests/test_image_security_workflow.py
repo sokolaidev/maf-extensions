@@ -152,6 +152,9 @@ def test_pr_findings_warn_while_operational_errors_and_non_pr_findings_still_fai
         "GRYPE_DB_AUTO_UPDATE": "true",
         "GRYPE_DB_VALIDATE_AGE": "true",
         "GRYPE_DB_VALIDATE_BY_HASH_ON_START": "true",
+        "GRYPE_DB_REQUIRE_UPDATE_CHECK": "true",
+        "GRYPE_DB_MAX_ALLOWED_BUILT_AGE": "48h",
+        "GRYPE_DB_MAX_UPDATE_CHECK_FREQUENCY": "0",
     }
     assert upload["if"] == "always() && steps.identity.outcome == 'success'"
     assert upload["with"]["if-no-files-found"] == "error"
