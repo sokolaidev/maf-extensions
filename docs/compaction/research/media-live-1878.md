@@ -2,7 +2,7 @@
 
 > Verification record for the media-handling decision in [strategies.md](../strategies.md#media-handling), measured on 2026-10-14 for [#1878](https://github.com/sokolaidev/maf-extensions/issues/1878) and [#1942](https://github.com/sokolaidev/maf-extensions/pull/1942). This is a narrow image smoke test, not general multimodal qualification.
 
-The completed run passed **14 checks over 10 live model requests**. Two synthetic warehouse images retained all eight planted facts through image description, user-turn summarization and a fresh model answer using only the compacted history. Restoring the JSON session snapshot reproduced the same projected messages without another description or summary request. The [raw evidence](media-live-1878.json) preserves model outputs, usage, checks, fixture hashes and the first attempt's harness failure.
+The completed run passed **14 checks over 10 live model requests**. Two synthetic warehouse images retained all eight planted facts through image description, user-turn summarization and a fresh model answer using only the compacted history. Restoring the JSON session snapshot reproduced the same projected messages without another description or summary request.
 
 ## Setup
 
@@ -28,7 +28,7 @@ The single-image history's **local estimate** fell from 1,148 to 198 tokens. Thi
 
 ## Limits and retained failures
 
-The first attempt completed image compaction, replay, recall and usage probes, then failed a harness assertion that compared the returned model name with the local `:cloud` routing suffix still attached. The corrected assertion checks equality after removing only that suffix; the second full run passed. Both attempts' outputs are retained in the evidence. No package implementation change was required by this live run.
+The first attempt completed image compaction, replay, recall and usage probes, then failed a harness assertion that compared the returned model name with the local `:cloud` routing suffix still attached. The corrected assertion checks equality after removing only that suffix; the second full run passed. No package implementation change was required by this live run.
 
 Descriptions were useful but not exact transcriptions. Giving a per-image hook the full mixed turn prompted unnecessary commentary about an unavailable second image, and one description claimed a second warehouse appeared at the top of the layout despite receiving only one image. The first attempt also returned a literal `</think>` delimiter in one description. The final summaries and recall answers kept the planted facts correctly, but hosts should evaluate their description prompts and model output handling for their own content. These observations do not qualify arbitrary description fidelity or resistance to instructions embedded in media.
 
