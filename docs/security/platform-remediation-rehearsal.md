@@ -40,6 +40,8 @@ Production source, scoped release/assessment and latest-monitor freshness checks
 
 ## Inspect and retry
 
+Current cases retain vendor security feeds alongside the plan. When an exact vendor fix resolves a stale NVD match, `caseMatches` counts the remaining unresolved findings and `rawCaseMatches` preserves the original counts. The platform aggregate records `vendorResolvedFindings`; raw scanner reports and assessments still show the match. Historical fixtures retain their original evidence rules.
+
 Artifacts are retained for 30 days and include the workflow attempt in their names:
 
 - `platform-rehearsal-plan-<attempt>`: request, authenticated acquisition receipt, evidence and deterministic plan, or acquisition failure. Historical runs also retain the independent current acquisition under `current/`.

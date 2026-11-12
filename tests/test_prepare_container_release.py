@@ -60,6 +60,9 @@ def test_assessment_reports_blocking_packages_and_retains_evidence(
 
     def scan(command, **kwargs):
         assert command[command.index("--fail-on") + 1] == "critical"
+        assert kwargs["env"]["GRYPE_DB_REQUIRE_UPDATE_CHECK"] == "true"
+        assert kwargs["env"]["GRYPE_DB_MAX_ALLOWED_BUILT_AGE"] == "48h"
+        assert kwargs["env"]["GRYPE_DB_MAX_UPDATE_CHECK_FREQUENCY"] == "0"
         return subprocess.CompletedProcess(command, 2 if severity == "Critical" else 0)
 
     monkeypatch.setattr(preparation.subprocess, "run", scan)
@@ -79,6 +82,36 @@ def test_assessment_reports_blocking_packages_and_retains_evidence(
         assert "::warning::High findings remain" in capsys.readouterr().out
     assert preparation.read(tmp_path / "grype.json") == report
     assert preparation.read(tmp_path / "assessment.json")["outcome"] == "vulnerable"
+
+
+def test_database_refresh_failure_stops_scan_even_with_inherited_relaxed_policy(
+    monkeypatch, tmp_path
+):
+    preparation.write(tmp_path / "sbom.syft.json", {})
+    monkeypatch.setattr(preparation, "verify_inventory", lambda *args: None)
+    monkeypatch.setenv("GRYPE_DB_REQUIRE_UPDATE_CHECK", "false")
+    monkeypatch.setenv("GRYPE_DB_MAX_ALLOWED_BUILT_AGE", "720h")
+    monkeypatch.setenv("GRYPE_DB_MAX_UPDATE_CHECK_FREQUENCY", "48h")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[:3] == ["grype", "db", "update"]:
+            environment = kwargs["env"]
+            assert environment["GRYPE_DB_REQUIRE_UPDATE_CHECK"] == "true"
+            assert environment["GRYPE_DB_MAX_ALLOWED_BUILT_AGE"] == "48h"
+            assert environment["GRYPE_DB_MAX_UPDATE_CHECK_FREQUENCY"] == "0"
+            raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(preparation, "run", run)
+    monkeypatch.setattr(
+        preparation.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("Scan ran after failed database refresh"),
+    )
+    with pytest.raises(subprocess.CalledProcessError):
+        preparation.assess(tmp_path, "sha256:" + "a" * 64)
+    assert calls[-1][:3] == ["grype", "db", "update"]
 
 
 def test_failure_diagnostics_bound_output_and_escape_untrusted_fields():

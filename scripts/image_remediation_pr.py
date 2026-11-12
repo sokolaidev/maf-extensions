@@ -222,7 +222,7 @@ def body(state: dict[str, Any], report: dict[str, Any], evidence_url: str) -> st
     )
     platform = report.get("kind") == "platform"
     description = (
-        "Update build-consumed Bicep or OS package pins to remove targeted image findings."
+        "Update build-consumed Bicep or OS package pins to install verified security fixes."
         if platform
         else "Rebuild Go module overlays and provider locks to remove the targeted image findings."
     )
@@ -232,13 +232,19 @@ def body(state: dict[str, Any], report: dict[str, Any], evidence_url: str) -> st
         else "Only planned module overrides and regenerated provider locks change."
     )
     issue = 2517 if platform else 2516
+    vendor_note = (
+        " Vendor-fixed stale NVD matches remain in raw assessments; "
+        "vendorResolvedFindings records their exact package evidence."
+        if any(row.get("vendorResolvedFindings") for row in scans)
+        else ""
+    )
     text = (
         f"## Summary\n\n{description} All affected profiles passed ordinary builds, runtime checks, "
         f"inventory checks and rescans.\n\n## Related issue\n\nRefs #2514, #{issue}.\n\n"
         f"## Changes\n\n{changes}\n\n"
         f"## Verification\n\nQualified commit: `{state['current']['head']}`. "
         f"Base: `{report['source']}`. [Retained qualification]({evidence_url}).\n\n"
-        f"{summary}\n\n## Notes\n\nUnrelated findings remain in the retained assessments. "
+        f"{summary}\n\n## Notes\n\nUnrelated findings remain in the retained assessments.{vendor_note} "
         "No image was published; deployed images and release-needed issues remain unchanged. "
         "Review the source diff and residual findings before merging.\n\n"
         f"<!-- {MARKER} {{}} -->\n"
