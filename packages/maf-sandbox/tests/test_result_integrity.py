@@ -582,7 +582,7 @@ def test_no_reads_use_trusted_call_evidence_only_when_other_sources_allow_it(
 @pytest.mark.parametrize(
     "levels", [[], [None], [SourceIntegrity.UNTRUSTED], [SourceIntegrity.TRUSTED]]
 )
-def test_call_evidence_is_used_only_without_accepted_reads(evidence, levels):
+def test_untrusted_call_evidence_caps_even_trusted_file_reads(evidence, levels):
     from agent_framework.security import ContentLabel, IntegrityLabel
 
     tool = _reading(
@@ -601,7 +601,8 @@ def test_call_evidence_is_used_only_without_accepted_reads(evidence, levels):
     answer = asyncio.run(tool.invoke(context=context))
     assert answer[0].additional_properties["security_label"]["integrity"] == (
         "trusted"
-        if levels == [SourceIntegrity.TRUSTED] or (not levels and evidence == "trusted")
+        if (levels == [SourceIntegrity.TRUSTED] and evidence != "untrusted")
+        or (not levels and evidence == "trusted")
         else "untrusted"
     )
 

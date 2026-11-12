@@ -358,6 +358,44 @@ _CALL_CONTEXT: ContextVar[_CallProvenance | None] = ContextVar(
 )
 
 
+@dataclass
+class _ArgumentIntegrity:
+    """The argument label captured before host callbacks can change the conversation."""
+
+    level: SourceIntegrity | None
+    tracked: bool
+    closed: bool = False
+
+
+_ARGUMENT_INTEGRITY: ContextVar[_ArgumentIntegrity | None] = ContextVar(
+    "maf_sandbox_argument_integrity", default=None
+)
+
+
+def _argument_integrity(context: Any, override: SourceIntegrity | None) -> _ArgumentIntegrity:
+    middleware = _reachable_middleware()
+    if middleware is None:
+        level = override or _call_integrity(context)
+        return _ArgumentIntegrity(level or SourceIntegrity.TRUSTED, level is not None)
+    from agent_framework.security import ContentLabel, IntegrityLabel, rewritten_arguments
+
+    if override is not None:
+        level = override
+    else:
+        label = middleware.get_context_label()
+        level = (
+            SourceIntegrity.TRUSTED
+            if isinstance(label, ContentLabel) and label.integrity is IntegrityLabel.TRUSTED
+            else SourceIntegrity.UNTRUSTED
+        )
+        if _call_integrity(context) is SourceIntegrity.UNTRUSTED:
+            level = SourceIntegrity.UNTRUSTED
+    # Expanded arguments may be weaker than the conversation that supplied their references.
+    if any(rewritten_arguments().values()):
+        level = SourceIntegrity.UNTRUSTED
+    return _ArgumentIntegrity(level, True)
+
+
 def argument_provenance_middleware() -> Any:
     """Expose the active call context to the public argument-provenance adapter.
 
@@ -741,14 +779,20 @@ def _prefixed(name: str) -> str:
 def hidden_content_candidates() -> frozenset[str]:
     """Snapshot conservative refusal matching for values without argument provenance.
 
-    An information-flow context or closed inherited call returns the universal substring
-    ``""``: generated values have no positional provenance, so every name must be withheld.
-    Otherwise the set is empty. Pass this snapshot as ``candidates`` to retain the decision
-    across host work or outside the call; no stored payload is inspected.
+    Quarantine, positive rewrite evidence or a closed inherited call returns the universal
+    substring ``""``. With automatic quarantine disabled and no rewrites the set is empty.
+    Pass this snapshot as ``candidates`` to retain the decision across host work.
     """
     record = _CALL_CONTEXT.get()
-    if _reachable_middleware() is not None or (record is not None and record.closed):
+    middleware = _reachable_middleware()
+    integrity = _ARGUMENT_INTEGRITY.get()
+    if (record is not None and record.closed) or (integrity is not None and integrity.closed):
         return frozenset({""})
+    if middleware is not None:
+        from agent_framework.security import rewritten_arguments
+
+        if getattr(middleware, "auto_hide_untrusted", None) is not False or rewritten_arguments():
+            return frozenset({""})
     return frozenset()
 
 
@@ -775,9 +819,15 @@ def _public_rewritten_positions(
     ):
         return frozenset(range(len(values)))
     rewritten: Any = security.rewritten_arguments(context)
-    # Empty maps cannot establish tracking availability; use only positive public evidence.
+    # Quarantine-off calls can still expand manually stored hidden references.
     if rewritten == {}:
-        return frozenset(range(len(values))) if _reachable_middleware() is not None else frozenset()
+        middleware = _reachable_middleware()
+        return (
+            frozenset(range(len(values)))
+            if middleware is not None
+            and getattr(middleware, "auto_hide_untrusted", None) is not False
+            else frozenset()
+        )
     if not isinstance(rewritten, dict):
         return frozenset(range(len(values)))
     positions = cast("dict[str, Any]", rewritten).get(argument, set())
@@ -803,10 +853,10 @@ def positions_holding_hidden_content(
     API identifies rewritten positions in the complete current argument. Kwargs-only arguments,
     mismatched values and ambiguous empty maps under tracking withhold every position.
 
-    Without active named-argument provenance, an information-flow context withholds all names,
-    including generated values. ``candidates`` preserves a prior fallback decision across host
-    work; explicit substring sets remain supported. A closed call never supplies exact
-    provenance. Hosts with no information-flow context retain ordinary name rendering.
+    Automatic quarantine disabled with no reported rewrites leaves ordinary arguments visible.
+    This says nothing about their integrity: trusted refusals must separately check the call's
+    argument integrity. ``candidates`` preserves a prior fallback decision across host work.
+    A closed call never supplies exact provenance.
 
     Index the answer when calling :func:`~maf_sandbox.echoed_name`: equal values can have
     different provenance. Leave ``argument`` unset for names generated by a program.
@@ -814,7 +864,33 @@ def positions_holding_hidden_content(
     if not values:
         return frozenset()
     record = _CALL_CONTEXT.get()
-    if record is not None and not record.closed and argument is not None:
+    middleware = _reachable_middleware()
+    integrity = _ARGUMENT_INTEGRITY.get()
+    if (
+        (record is None or not record.closed)
+        and (integrity is None or not integrity.closed)
+        and middleware is not None
+        and getattr(middleware, "auto_hide_untrusted", None) is False
+    ):
+        from agent_framework.security import rewritten_arguments
+
+        rewritten = rewritten_arguments(record.context if record is not None else None)
+        if rewritten == {}:
+            return (
+                frozenset()
+                if candidates is None
+                else frozenset(
+                    index
+                    for index, value in enumerate(values)
+                    if any(payload in value for payload in candidates)
+                )
+            )
+    if (
+        record is not None
+        and not record.closed
+        and (integrity is None or not integrity.closed)
+        and argument is not None
+    ):
         return _public_rewritten_positions(record.context, argument, values)
     payloads = hidden_content_candidates() if candidates is None else candidates
     return frozenset(
@@ -1428,6 +1504,14 @@ class SandboxToolSession:
     def name(self) -> str:
         """The tool's name, as the model sees it."""
         return self._name
+
+    @property
+    def argument_integrity(self) -> SourceIntegrity | None:
+        """The call's argument label; only trusted names may enter trusted refusal text."""
+        record = _ARGUMENT_INTEGRITY.get()
+        if record is None:
+            return _argument_integrity(None, None).level
+        return None if record.closed else record.level
 
     @property
     def output_sink(self) -> OutputSink | None:
@@ -2672,6 +2756,10 @@ def _result_label(
             declared = IntegrityLabel.TRUSTED
     elif file_trust_can_promote and call_integrity is SourceIntegrity.TRUSTED:
         declared = IntegrityLabel.TRUSTED
+    arguments = _ARGUMENT_INTEGRITY.get()
+    if arguments is not None and arguments.tracked:
+        if arguments.closed or arguments.level is not SourceIntegrity.TRUSTED:
+            declared = IntegrityLabel.UNTRUSTED
     return ContentLabel(integrity=declared, confidentiality=classified).to_dict()
 
 
@@ -2905,6 +2993,7 @@ def sandboxed_tool(
     reclaim_timeout: float | None = None,
     admission_timeout: float | None = None,
     file_store_provenance: FileStoreProvenance | None = None,
+    argument_integrity: SourceIntegrity | None = None,
     requires_file_integrity: SourceIntegrity | None = None,
     egress_integrity: SourceIntegrity | None = None,
     logger: logging.Logger | None = None,
@@ -3032,6 +3121,10 @@ def sandboxed_tool(
             :meth:`SandboxToolSession.read_file` folds it around the read rather than trusting a
             label as old as the listing. Pass the **same** record the listing callable folds.
             Left unset, the listing's label stands.
+        argument_integrity: Explicit host policy for model-supplied arguments, including code
+            and names. By default an active FIDES call uses its conversation and argument
+            evidence. ``TRUSTED`` opts out of that integrity cap, but never reveals hidden
+            references or promotes untrusted file or network inputs.
         requires_file_integrity: The weakest integrity admitted by
             :meth:`SandboxToolSession.read_file`, after folding. ``None`` (the default) accepts
             every readable file. Unestablished integrity is below every level, so requiring
@@ -3119,6 +3212,8 @@ def sandboxed_tool(
     """
     if router is None or not router.enabled:
         return []
+    if argument_integrity is not None:
+        argument_integrity = SourceIntegrity(str(argument_integrity))
     if egress_integrity is not None:
         egress_integrity = SourceIntegrity(egress_integrity)
     if egress_integrity is SourceIntegrity.TRUSTED and (
@@ -3281,7 +3376,8 @@ def sandboxed_tool(
                 if injected_context
                 else kwargs.get(context_parameter)
             )
-            call_integrity = _call_integrity(call_context)
+            arguments = _argument_integrity(call_context, argument_integrity)
+            call_integrity = argument_integrity or _call_integrity(call_context)
             # No `_SandboxToolCall` — there is nothing to reclaim — so the id is minted here.
             # One all the same: every `ToolCallEnded` names its call, and a whole class of tool
             # would otherwise be the one that does not.
@@ -3289,6 +3385,7 @@ def sandboxed_tool(
             recorded = RECORDED_CALL.set(recording)
             files = _FileReads()
             file_token = _FILE_READS.set(files)
+            argument_token = _ARGUMENT_INTEGRITY.set(arguments)
             started = time.monotonic()
             raised_by_body: BaseException | None = None
             try:
@@ -3316,6 +3413,8 @@ def sandboxed_tool(
             finally:
                 files.close()
                 _FILE_READS.reset(file_token)
+                arguments.closed = True
+                _ARGUMENT_INTEGRITY.reset(argument_token)
                 recording.closed = True
                 RECORDED_CALL.reset(recorded)
                 if router.observer is not None:
@@ -3369,11 +3468,13 @@ def sandboxed_tool(
             if injected_context
             else kwargs.get(context_parameter)
         )
-        call_integrity = _call_integrity(call_context)
+        arguments = _argument_integrity(call_context, argument_integrity)
+        call_integrity = argument_integrity or _call_integrity(call_context)
         call = _SandboxToolCall(owner=session)
         token = _CALL.set(call)
         files = _FileReads()
         file_token = _FILE_READS.set(files)
+        argument_token = _ARGUMENT_INTEGRITY.set(arguments)
         # Unconditionally, not behind `router.observer`: the two registration points are
         # independent, and a host recording only host-tool calls would otherwise get runs that
         # name no call.
@@ -3415,6 +3516,8 @@ def sandboxed_tool(
             _CALL.reset(token)
             files.close()
             _FILE_READS.reset(file_token)
+            arguments.closed = True
+            _ARGUMENT_INTEGRITY.reset(argument_token)
             close_unclean_notes(notes)
             # Closed before the removal, not after: a task the body left running would otherwise
             # be handed this path while it is being deleted.

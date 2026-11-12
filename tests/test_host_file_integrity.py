@@ -7,6 +7,8 @@ from dataclasses import replace
 import pytest
 from agent_framework import FunctionInvocationContext, tool
 from agent_framework.security import (
+    ContentLabel,
+    IntegrityLabel,
     LabelTrackingFunctionMiddleware,
     PolicyEnforcementFunctionMiddleware,
 )
@@ -15,6 +17,7 @@ from maf_sandbox import (
     CallerContext,
     Capability,
     Egress,
+    ExecResult,
     FileStoreProvenance,
     Isolation,
     IsolationScope,
@@ -28,6 +31,7 @@ from maf_sandbox.maf import (
     COMPLETED_TEXT,
     DERIVED_INTEGRITY_PROPERTY,
     NOT_COMPLETED_TEXT,
+    argument_provenance_middleware,
     file_store_provenance_middleware,
 )
 from maf_sandbox.testing import (
@@ -40,8 +44,9 @@ from maf_sandbox_antivirus import make_antivirus_tools
 from maf_sandbox_bicep import make_bicep_tools
 from maf_sandbox_codeact import make_codeact_tools
 from maf_sandbox_document import make_document_tools
-from maf_sandbox_drawio import DrawioExport, make_drawio_export_tools
+from maf_sandbox_drawio import DrawioExport, make_drawio_export_tools, make_drawio_tools
 from maf_sandbox_shell import ShellFlavor, make_shell_tools
+from maf_sandbox_shell._report import EMPTY_INVENTORY_SHA256, IDENTITY
 from maf_sandbox_terraform import make_terraform_tools
 
 _REPORT = "host-vouched diagnostic text"
@@ -99,7 +104,16 @@ def _bicep_report():
     )
 
 
-def _attach(kind, levels, *, provenance=None, mutation=None, network=False, egress_integrity=None):
+def _attach(
+    kind,
+    levels,
+    *,
+    provenance=None,
+    mutation=None,
+    network=False,
+    egress_integrity=None,
+    argument_integrity=None,
+):
     extension = {"bicep": "bicep", "terraform": "tf", "codeact": "txt"}[kind]
     names = [f"main.{extension}", f"second.{extension}"][: len(levels)]
 
@@ -141,7 +155,12 @@ def _attach(kind, levels, *, provenance=None, mutation=None, network=False, egre
     arguments: dict[str, list[str] | str] = {"files": names}
     if kind == "terraform":
         attached = make_terraform_tools(
-            router, store, "agent", context, file_store_provenance=provenance
+            router,
+            store,
+            "agent",
+            context,
+            file_store_provenance=provenance,
+            argument_integrity=argument_integrity,
         )[0]
     elif kind == "bicep":
         attached = make_bicep_tools(
@@ -152,6 +171,7 @@ def _attach(kind, levels, *, provenance=None, mutation=None, network=False, egre
             egress=Egress.ALLOWLIST if network else Egress.CLOSED,
             file_store_provenance=provenance,
             egress_integrity=egress_integrity,
+            argument_integrity=argument_integrity,
         )[0]
     else:
         attached = make_codeact_tools(
@@ -161,9 +181,245 @@ def _attach(kind, levels, *, provenance=None, mutation=None, network=False, egre
             file_store=store,
             file_store_provenance=provenance,
             egress_allow=("example.com",) if network else (),
+            argument_integrity=argument_integrity,
         )[0]
         arguments["code"] = "print('report')"
     return attached, arguments
+
+
+async def _tracked_call(function, arguments, tracker, observer=None):
+    context = FunctionInvocationContext(function=function, arguments=arguments)
+
+    async def invoke():
+        context.result = await function.invoke(arguments=context.arguments, context=context)
+
+    async def tracked():
+        await tracker.process(context, invoke)
+
+    if observer == "outer":
+        await argument_provenance_middleware().process(context, tracked)
+    elif observer == "inner":
+
+        async def observed():
+            await argument_provenance_middleware().process(context, invoke)
+
+        await tracker.process(context, observed)
+    else:
+        await tracked()
+    return context.result
+
+
+async def _taint(tracker):
+    @tool(additional_properties={"source_integrity": "untrusted"})
+    async def source() -> str:
+        return "External content."
+
+    await _tracked_call(source, {}, tracker)
+    assert tracker.get_context_label().integrity is IntegrityLabel.UNTRUSTED
+
+
+@pytest.mark.parametrize("kind", ["bicep", "terraform", "codeact"])
+@pytest.mark.parametrize("observer", [None, "outer", "inner"])
+@pytest.mark.parametrize("tainted", [False, True])
+@pytest.mark.parametrize("file_level", [SourceIntegrity.TRUSTED, SourceIntegrity.UNTRUSTED, None])
+@pytest.mark.parametrize("override", [None, SourceIntegrity.TRUSTED])
+def test_quarantine_off_returns_diagnostics_with_names_and_files_folded(
+    kind, observer, tainted, file_level, override
+):
+    async def scenario():
+        attached, arguments = _attach(kind, [file_level], argument_integrity=override)
+        tracker = LabelTrackingFunctionMiddleware(auto_hide_untrusted=False)
+        if tainted:
+            await _taint(tracker)
+        items = await _tracked_call(attached, arguments, tracker, observer)
+        reports = [item for item in items if _REPORT in (item.text or "")]
+        assert reports
+        expected = (
+            "trusted"
+            if file_level is SourceIntegrity.TRUSTED and (not tainted or override is not None)
+            else "untrusted"
+        )
+        assert all(
+            item.additional_properties["security_label"]["integrity"] == expected
+            for item in reports
+        )
+        assert not any("argument names are hidden" in (item.text or "") for item in items)
+        assert items[0].text == COMPLETED_TEXT
+        assert items[0].additional_properties["security_label"]["integrity"] == "trusted"
+        if expected == "untrusted":
+            assert tracker.get_context_label().integrity is IntegrityLabel.UNTRUSTED
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("quarantine", [False, True])
+@pytest.mark.parametrize("observer", [None, "outer", "inner"])
+@pytest.mark.parametrize("override", [None, SourceIntegrity.TRUSTED])
+def test_manual_hidden_terraform_names_remain_withheld(quarantine, observer, override):
+    async def scenario():
+        attached, arguments = _attach(
+            "terraform", [SourceIntegrity.TRUSTED], argument_integrity=override
+        )
+        tracker = LabelTrackingFunctionMiddleware(auto_hide_untrusted=quarantine)
+        reference = tracker.get_variable_store().store(
+            "main.tf", ContentLabel(integrity=IntegrityLabel.UNTRUSTED)
+        )
+        arguments["files"] = [f"[{reference}]"]
+        items = await _tracked_call(attached, arguments, tracker, observer)
+        assert not any(_REPORT in (item.text or "") for item in items)
+        assert not any("main.tf" in (item.text or "") for item in items)
+        assert items[0].text == COMPLETED_TEXT
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("override", [None, SourceIntegrity.TRUSTED])
+def test_bicep_trusted_refusals_only_echo_trusted_argument_names(override):
+    async def scenario():
+        attached, _ = _attach("bicep", [SourceIntegrity.TRUSTED], argument_integrity=override)
+        tracker = LabelTrackingFunctionMiddleware(auto_hide_untrusted=False)
+        await _taint(tracker)
+        items = await _tracked_call(attached, {"files": ["untrusted-name.txt"]}, tracker)
+        trusted = "\n".join(
+            item.text or ""
+            for item in items
+            if item.additional_properties.get("security_label", {}).get("integrity") == "trusted"
+        )
+        assert ("untrusted-name.txt" in trusted) is (override is not None)
+        assert "only accepts" in trusted
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "kind", ["shell", "document", "drawio", "drawio-create", "terraform-format"]
+)
+@pytest.mark.parametrize("tainted", [False, True])
+@pytest.mark.parametrize("level", [SourceIntegrity.TRUSTED, SourceIntegrity.UNTRUSTED])
+@pytest.mark.parametrize("override", [None, SourceIntegrity.TRUSTED])
+def test_other_kind_reports_fold_argument_integrity(kind, tainted, level, override, tmp_path):
+    name = {
+        "shell": "main.sh",
+        "document": "input.pdf",
+        "drawio": "input.drawio",
+        "drawio-create": "unused",
+        "terraform-format": "main.tf",
+    }[kind]
+    phase = {"exit_code": 0, "stdout": "", "stderr": ""}
+    shell_report = {
+        "protocol": 1,
+        "identity": IDENTITY,
+        "flavor": "bash",
+        "error": None,
+        "dependency_inventory_sha256": EMPTY_INVENTORY_SHA256,
+        "files": [
+            {
+                "path": name,
+                "parsed": True,
+                "policy_conflict": False,
+                "syntax": phase,
+                "diagnostics": [
+                    {
+                        "file": name,
+                        "line": 1,
+                        "column": 1,
+                        "rule": "SC2086",
+                        "severity": "info",
+                        "message": _REPORT,
+                    }
+                ],
+                "suppressed_diagnostics": [],
+                "suppressions": [],
+            }
+        ],
+    }
+    format_report = {
+        "protocol": 1,
+        "engine": "terraform",
+        "version": "1.16.6",
+        "error": None,
+        "mode": "format",
+        "phases": {"fmt": phase},
+        "formatted_files": {name: _REPORT},
+    }
+
+    class Guest(InProcessSandbox):
+        async def exec(self, *args, **kwargs):
+            if kind in {"shell", "terraform-format"}:
+                return ExecResult(
+                    stdout=json.dumps(shell_report if kind == "shell" else format_report)
+                )
+            return ExecResult(exit_code=1, stderr=_REPORT)
+
+    class Store:
+        async def read(self, path):
+            return b"document" if kind == "document" else "original text"
+
+    async def listing(store):
+        return [ListedFile(name, level)]
+
+    backend = InProcessSandboxBackend(
+        Guest(),
+        isolation=Isolation.CONTAINER,
+        declarations=replace(
+            FAKE_BACKEND_DECLARATIONS,
+            capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT},
+            os_families=frozenset({OsFamily.POSIX}),
+            isolation_scopes=frozenset(IsolationScope),
+        ),
+    )
+    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+    context = CallerContext(lambda: "scope", lambda: "thread", listing)
+    sink = make_file_system_sink(tmp_path)
+    store = Store()
+    if kind == "shell":
+        attached = make_shell_tools(
+            router, store, "agent", context, flavor=ShellFlavor.BASH, argument_integrity=override
+        )[0]
+    elif kind == "terraform-format":
+        attached = make_terraform_tools(
+            router, store, "agent", context, formatting=True, argument_integrity=override
+        )[1]
+    elif kind == "document":
+        attached = make_document_tools(
+            router, store, "agent", context, sink, argument_integrity=override
+        )[0]
+    elif kind == "drawio":
+        attached = make_drawio_export_tools(
+            router,
+            "agent",
+            context,
+            sink,
+            store,
+            export=DrawioExport(),
+            argument_integrity=override,
+        )[0]
+    else:
+        attached = make_drawio_tools(router, "agent", context, sink, argument_integrity=override)[0]
+    arguments = (
+        {"files": [name]}
+        if kind in {"shell", "terraform-format"}
+        else {"xml": "<mxfile/>"}
+        if kind == "drawio-create"
+        else {"file": name}
+    )
+
+    async def scenario():
+        tracker = LabelTrackingFunctionMiddleware(auto_hide_untrusted=False)
+        if tainted:
+            await _taint(tracker)
+        items = await _tracked_call(attached, arguments, tracker, "inner")
+        report = next(item for item in items if _REPORT in (item.text or ""))
+        expected = (
+            "trusted"
+            if (not tainted or override is not None)
+            and (level is SourceIntegrity.TRUSTED or kind == "drawio-create")
+            else "untrusted"
+        )
+        assert report.additional_properties["security_label"]["integrity"] == expected
+        assert items[0].additional_properties["security_label"]["integrity"] == "trusted"
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize(
@@ -309,14 +565,7 @@ def test_trusted_report_or_torn_refusal_allows_a_following_write(kind, mutation)
         if mutation is not None:
             _assert_torn_refusal(items)
         else:
-            expected = (
-                "Guest diagnostic text and locations withheld because argument names are hidden."
-                if kind == "terraform"
-                else _REPORT
-            )
-            report = next(item for item in items if expected in (item.text or ""))
-            if kind == "terraform":
-                assert not any(_REPORT in (item.text or "") for item in items)
+            report = next(item for item in items if _REPORT in (item.text or ""))
             assert not report.additional_properties.get("_variable_reference")
         assert tracker.get_context_label().integrity.value == "trusted"
         await call(write_file, {"text": "fixed content"})

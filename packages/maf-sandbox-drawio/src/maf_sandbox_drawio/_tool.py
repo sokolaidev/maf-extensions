@@ -79,6 +79,7 @@ def make_drawio_tools(
     *,
     image: str | None = None,
     preserve_layout: bool = True,
+    argument_integrity: SourceIntegrity | None = None,
     direction: Literal["TB", "LR"] = "TB",
     exec_timeout_seconds: float = 60,
     export: DrawioExport | None = None,
@@ -88,6 +89,9 @@ def make_drawio_tools(
     Missing vertex geometry always triggers automatic layout on that page. The POSIX image must
     provide python3 and Graphviz dot. Choose a sink policy suitable for repeated diagram.drawio
     names; neither the output destination nor layout settings are model arguments.
+
+    ``argument_integrity`` overrides the FIDES label for all model arguments. It never
+    raises file evidence or reveals hidden references.
     """
     if export is not None and not isinstance(cast(object, export), DrawioExport):
         raise TypeError("export must be DrawioExport or None")
@@ -113,6 +117,7 @@ def make_drawio_tools(
         name=CREATE_DRAWIO_TOOL_NAME,
         approval_mode="never_require",
         source_integrity=SourceIntegrity.UNTRUSTED,
+        argument_integrity=argument_integrity,
         result_contract=True,
         verdicts=DRAWIO_VERDICTS,
         output_sink=sink,
@@ -313,12 +318,16 @@ def make_drawio_export_tools(
     image: str | None = None,
     exec_timeout_seconds: float = 60,
     file_store_provenance: FileStoreProvenance | None = None,
+    argument_integrity: SourceIntegrity | None = None,
     requires_file_integrity: SourceIntegrity | None = None,
 ) -> list[Any]:
     """Attach export_drawio(file), reading an exact authorized store reference with geometry.
 
     The store supplies uncompressed XML text. Resources must be embedded or present in the
     offline runtime; filenames never become guest paths or commands.
+
+    ``argument_integrity`` overrides the FIDES label for all model arguments. It never
+    raises file evidence or reveals hidden references.
     """
     if not isinstance(cast(object, export), DrawioExport):
         raise TypeError("export must be DrawioExport")
@@ -368,6 +377,7 @@ def make_drawio_export_tools(
         spec=drawio_sandbox_spec(image, export=export),
         name="export_drawio",
         file_store_provenance=file_store_provenance,
+        argument_integrity=argument_integrity,
         requires_file_integrity=requires_file_integrity,
         approval_mode="never_require",
         source_integrity=SourceIntegrity.UNTRUSTED,

@@ -50,8 +50,13 @@ def make_shell_tools(
     exec_timeout_seconds: float = 120,
     dependency_inventory_sha256: str = EMPTY_INVENTORY_SHA256,
     file_store_provenance: FileStoreProvenance | None = None,
+    argument_integrity: SourceIntegrity | None = None,
 ) -> list[Any]:
-    """Enable one flavor; the host fixes policy, image, dependency inventory and shared deadline."""
+    """Enable one flavor; the host fixes policy, image, dependency inventory and shared deadline.
+
+    ``argument_integrity`` overrides the FIDES label for all model arguments. It never
+    raises file evidence or reveals hidden references.
+    """
     flavor = ShellFlavor(flavor)
     if type(policy) is not ShellPolicy:
         raise TypeError("policy must be ShellPolicy")
@@ -77,6 +82,7 @@ def make_shell_tools(
         verdicts=VERDICTS,
         standing_guidance=(STANDING_GUIDANCE,),
         file_store_provenance=file_store_provenance,
+        argument_integrity=argument_integrity,
         admission_timeout=max(30, exec_timeout_seconds),
         logger=logger,
     )
