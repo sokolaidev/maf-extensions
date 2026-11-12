@@ -243,8 +243,8 @@ def test_unknown_record_identity_schema_is_rejected_before_restore():
 
 
 @pytest.mark.parametrize("composed", [False, True])
-@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, 7])
-def test_stack_writes_v8_snapshots_and_restores_older_versions(composed, version):
+@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, 7, 8])
+def test_stack_writes_v9_snapshots_and_restores_older_versions(composed, version):
     stack = build_stack(composed=composed)
     stack.gate.arm()
     stack.middleware._force_next = True
@@ -253,7 +253,8 @@ def test_stack_writes_v8_snapshots_and_restores_older_versions(composed, version
     legacy = snapshot | {"version": version}
     if composed:
         legacy = deepcopy(legacy)
-        legacy["strategy"].pop("record_order")
+        if version < 8:
+            legacy["strategy"].pop("record_order")
         if version < 7:
             legacy["strategy"].pop("reshaped_records")
             legacy["strategy"].pop("searched_records")

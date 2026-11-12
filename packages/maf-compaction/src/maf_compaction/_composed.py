@@ -1656,25 +1656,42 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if matched is None:
                 continue
             view, groups = matched
-            if not self._record_replacement_positions(view, edit, groups):
+            plans = self._record_replacement_plans(view, edit, groups)
+            if not self._record_replacement_positions(view, plans):
                 if required_outputs is not None:
                     return None
                 continue
             if required_outputs is not None:
+                outputs = {
+                    identity
+                    for _, replacement in plans
+                    if (identity := replacement_identity(replacement)) is not None
+                }
+                affected = set(outputs)
+                fingerprints = {
+                    ReplayView([replacement]).message_key(0) for _, replacement in plans
+                }
+                # Unrelated held outputs can outlive their pruned source windows.
+                for later in self._record_order[edit_index + 1 :]:
+                    if (
+                        later.text is None
+                        or not later.sources.startswith("v2:")
+                        or (later.members and not fingerprints.intersection(later.members))
+                    ):
+                        continue
+                    replacement = build_record_message(later.text)
+                    identity = (LINEAGE_KEY, later.sources.split(":")[1])
+                    replacement.additional_properties[LINEAGE_KEY] = identity[1]
+                    affected.add(identity)
+                    fingerprints.add(ReplayView([replacement]).message_key(0))
                 required_outputs.update(
                     identity
                     for message, _ in view.deferred
                     if id(message) in view.record_replacements
                     and (identity := replacement_identity(message)) is not None
+                    and identity in affected
                 )
-                if edit.text is None:
-                    required_outputs.difference_update(
-                        identity
-                        for _, replacement in reshape_replacements(view.messages, groups)
-                        if (identity := replacement_identity(replacement)) is not None
-                    )
-                else:
-                    required_outputs.discard((LINEAGE_KEY, edit.sources.split(":")[1]))
+                required_outputs.difference_update(outputs)
             if edit.text is None:
                 self.tool_results.reshape_records(view.messages, groups, replay=True)
             else:
@@ -1838,17 +1855,22 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             indices.add(index)
         return indices
 
+    @staticmethod
+    def _record_replacement_plans(
+        view: ReplayView, edit: RecordEdit, groups: list[dict[str, Any]]
+    ) -> list[tuple[dict[str, Any], Message]]:
+        if edit.text is None:
+            return reshape_replacements(view.messages, groups)
+        replacement = build_record_message(edit.text)
+        replacement.additional_properties[LINEAGE_KEY] = edit.sources.split(":")[1]
+        return [(groups[-1], replacement)]
+
+    @staticmethod
     def _record_replacement_positions(
-        self, view: ReplayView, edit: RecordEdit, groups: list[dict[str, Any]]
+        view: ReplayView, plans: list[tuple[dict[str, Any], Message]]
     ) -> bool:
         if not view.record_replacements:
             return True
-        if edit.text is None:
-            plans = reshape_replacements(view.messages, groups)
-        else:
-            replacement = build_record_message(edit.text)
-            replacement.additional_properties[LINEAGE_KEY] = edit.sources.split(":")[1]
-            plans = [(groups[-1], replacement)]
         following = {id(message): after for message, after in view.deferred}
         for group, replacement in plans:
             for message, after in view.deferred:

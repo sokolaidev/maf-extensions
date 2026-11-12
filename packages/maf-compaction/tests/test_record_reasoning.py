@@ -359,6 +359,74 @@ async def test_invalid_later_record_output_rolls_back_the_chain(
     assert cold.tool_results.records_in_conversation == records
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["reshape", "merge"])
+@pytest.mark.parametrize("position", ["before", "after"])
+@pytest.mark.parametrize("partial", [False, True])
+async def test_unrelated_pruned_record_does_not_block_replay(
+    operation: str, position: str, partial: bool
+) -> None:
+    messages = _history(2)
+    groups = reshapeable_record_groups(messages)
+    originals = (
+        {
+            message.message_id
+            for group in groups[:1]
+            if partial
+            for message in messages[group["start_index"] : group["end_index"] + 1]
+        }
+        if partial
+        else {message.message_id for message in messages}
+    )
+    strategy = _strategy(_Summarizer(), budget=100_000, cap=None)
+    if operation == "reshape":
+        assert strategy._reshape_records(messages)
+    else:
+        assert (
+            await strategy._consolidate(
+                messages,
+                groups,
+                prompt=DEFAULT_RECORD_MERGE_PROMPT,
+                transcript=_transcript(messages, groups),
+            )
+            == "accepted"
+        )
+    later = _record_pair(2) + _record_pair(3)
+    later_ids = {message.message_id for message in later}
+    insertion = 2 if position == "before" else len(messages) - 1
+    messages[insertion:insertion] = later
+    annotate_message_groups(messages)
+    groups = [
+        g
+        for g in consolidatable_record_groups(messages)
+        if messages[g["start_index"]].message_id in later_ids
+    ]
+    assert (
+        await strategy._consolidate(
+            messages,
+            groups,
+            prompt=DEFAULT_RECORD_MERGE_PROMPT,
+            transcript=_transcript(messages, groups),
+        )
+        == "accepted"
+    )
+    messages[:] = [message for message in messages if message.message_id not in later_ids]
+    _retain_later_reasoning(messages)
+    expected = _sent(messages)
+    retained = copy.deepcopy(messages)
+    for message in messages:
+        if message.message_id in originals:
+            message.additional_properties.pop(EXCLUDED_KEY, None)
+    annotate_message_groups(messages)
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    assert cold._replay_record_edits(messages)
+    assert _sent(messages) == expected
+    assert _sent(retained) == expected
+    assert len(messages) == len(retained)
+    assert not cold._replay_record_edits(messages)
+
+
 @pytest.mark.parametrize("timing", ["before", "after"])
 @pytest.mark.parametrize("tamper", ["body", "links", "metadata", "duplicate"])
 def test_edited_held_summary_outside_record_window_keeps_originals(
