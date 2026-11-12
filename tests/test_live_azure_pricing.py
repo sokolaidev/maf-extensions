@@ -1,17 +1,32 @@
-"""Retain failed live-pricing evidence without Docker or external pricing requests."""
+"""Qualify pricing trust boundaries and retain failed live evidence without Docker."""
 
 import asyncio
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 import yaml
-from agent_framework import Content
-from maf_sandbox import ExecResult, Isolation, SandboxKey, ToolCallEnded
-from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
+from agent_framework import Content, FunctionInvocationContext
+from agent_framework.security import (
+    LabelTrackingFunctionMiddleware,
+    PolicyEnforcementFunctionMiddleware,
+)
+from maf_sandbox import (
+    CallerContext,
+    Capability,
+    ExecResult,
+    Isolation,
+    IsolationScope,
+    OsFamily,
+    SandboxKey,
+    SandboxRouter,
+    ToolCallEnded,
+)
+from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InProcessSandbox, InProcessSandboxBackend
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -115,12 +130,7 @@ def pricing_host(monkeypatch):
                         )
                         if family is not None:
                             row.update(zone_family=family, zone=location)
-                    report = Content.from_text(json.dumps({"prices": [row], "truncated": False}))
-                    report.additional_properties["security_label"] = {
-                        "integrity": "trusted",
-                        "confidentiality": "public",
-                    }
-                    return [Content.from_text(pricing.COMPLETED_TEXT), report]
+                    return pricing_result(row)
                 if isinstance(result, Exception):
                     raise result
                 return result
@@ -130,6 +140,125 @@ def pricing_host(monkeypatch):
         monkeypatch.setattr(pricing, "make_azure_pricing_tools", tools)
 
     return install, cleanup
+
+
+def pricing_result(row=None):
+    row = {"priceType": "Reservation", "currencyCode": "USD", "retailPrice": 1} | (row or {})
+    row = {"row": 1, "unitPrice": row["retailPrice"], **row}
+    checked = {
+        key: row[key] for key in ("row", "unitPrice", "retailPrice", "priceType", "currencyCode")
+    }
+    items = [Content.from_text(pricing.COMPLETED_TEXT)]
+    for key, data, integrity in (
+        ("prices", row, "untrusted"),
+        ("checked_prices", checked, "trusted"),
+    ):
+        item = Content.from_text(json.dumps({key: [data], "truncated": False}))
+        item.additional_properties["security_label"] = {
+            "integrity": integrity,
+            "confidentiality": "public",
+        }
+        items.append(item)
+    return items
+
+
+@pytest.mark.parametrize("part", [1, 2])
+@pytest.mark.parametrize("field,value", [("integrity", "wrong"), ("confidentiality", "private")])
+def test_qualifier_rejects_wrong_report_labels(part, field, value):
+    items = pricing_result()
+    items[part].additional_properties["security_label"][field] = value
+    with pytest.raises(ValueError, match="label on"):
+        pricing.verified_pricing_report(items)
+
+
+@pytest.mark.parametrize("part", [1, 2])
+def test_qualifier_rejects_missing_or_duplicate_reports(part):
+    items = pricing_result()
+    missing = items[:part] + items[part + 1 :]
+    for malformed in (missing, items + [items[part]]):
+        with pytest.raises(ValueError, match="Expected one"):
+            pricing.verified_pricing_report(malformed)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing-row", "row-number", "price", "summary", "identity", "missing-price"],
+)
+def test_qualifier_rejects_mismatched_or_unchecked_prices(mutation):
+    items = pricing_result({"productName": "untrusted product"})
+    checked = json.loads(items[2].text)
+    row = checked["checked_prices"][0]
+    if mutation == "missing-row":
+        checked["checked_prices"] = []
+    elif mutation == "row-number":
+        row["row"] = 2
+    elif mutation == "price":
+        row["retailPrice"] = 9
+    elif mutation == "summary":
+        checked["truncated"] = True
+    elif mutation == "identity":
+        row["productName"] = "untrusted product"
+    else:
+        del row["retailPrice"]
+    items[2].text = json.dumps(checked)
+    with pytest.raises(ValueError):
+        pricing.verified_pricing_report(items)
+
+
+def test_qualifier_accepts_real_pricing_contract_through_framework_middleware():
+    row = {
+        "armSkuName": "Standard_D4s_v5",
+        "productName": "Untrusted product text",
+        "region": "westeurope",
+        "currencyCode": "USD",
+        "unitOfMeasure": "1 Hour",
+        "retailPrice": 1,
+        "unitPrice": 1,
+        "priceType": "Reservation",
+        "reservationTerm": "1 Year",
+    }
+    sandbox = InProcessSandbox(
+        default_stdout=json.dumps({"status": 200, "results": {"prices": [row]}})
+    )
+    backend = InProcessSandboxBackend(
+        sandbox,
+        isolation=Isolation.CONTAINER,
+        declarations=replace(
+            FAKE_BACKEND_DECLARATIONS,
+            capabilities=frozenset({Capability.EXEC, Capability.EGRESS_METHODS}),
+            egress_method_tokens=None,
+            os_families=frozenset({OsFamily.POSIX}),
+            isolation_scopes=frozenset({IsolationScope.CALL}),
+        ),
+    )
+    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+    [tool] = pricing.make_azure_pricing_tools(
+        router,
+        "agent",
+        CallerContext(lambda: "scope", lambda: "user", pricing.list_no_files),
+        outbound_max_confidentiality="public",
+    )
+    tool.additional_properties["confidentiality"] = "public"
+
+    async def exercise():
+        policy = PolicyEnforcementFunctionMiddleware(block_on_violation=True)
+        for _ in range(2):
+            tracker = LabelTrackingFunctionMiddleware(auto_hide_untrusted=False)
+            context = FunctionInvocationContext(function=tool, arguments={"region": "westeurope"})
+
+            async def invoke():
+                context.result = await tool.invoke(context=context)
+
+            async def enforce():
+                await policy.process(context, invoke)
+
+            await tracker.process(context, enforce)
+            report = pricing.verified_pricing_report(context.result)
+            assert report["prices"][0]["productName"] == row["productName"]
+            assert report["prices"][0]["retailPrice"] == 1
+
+    asyncio.run(exercise())
+    assert len(backend.disposed) == 2
 
 
 def test_network_zone_failure_retains_tool_result_and_completed_checks(

@@ -288,12 +288,27 @@ def test_pricing_requires_proxy_identity_and_enforcement_checks():
             "networksRemaining": [],
             "checks": [{"probe": p, "denied": True} for p in ("unlisted-host", "post-method")]
             + [
-                {"priceType": p, "integrity": "trusted", "rows": 2}
+                {
+                    "priceType": p,
+                    "checkedPricesIntegrity": "trusted",
+                    "reportIntegrity": "untrusted",
+                    "rows": 2,
+                }
                 for p in ("Reservation", "Consumption")
             ],
         },
     }
     consumer.validate_runtime(runtime, subject)
+    for field, value in (
+        ("checkedPricesIntegrity", "untrusted"),
+        ("checkedPricesIntegrity", None),
+        ("reportIntegrity", "trusted"),
+        ("reportIntegrity", None),
+    ):
+        mutated = copy.deepcopy(runtime)
+        mutated["azurePricing"]["checks"][2][field] = value
+        with pytest.raises(ValueError, match="pricing or enforcement checks"):
+            consumer.validate_runtime(mutated, subject)
     for field, value in (("proxyImageId", "latest"), ("checks", []), ("networksRemaining", ["n"])):
         mutated = copy.deepcopy(runtime)
         mutated["azurePricing"][field] = value

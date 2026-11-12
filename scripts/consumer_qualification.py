@@ -130,7 +130,8 @@ def validate_runtime(value: dict[str, Any], expected: dict[str, Any]) -> None:
         ) or not all(
             any(
                 c.get("priceType") == category
-                and c.get("integrity") == "trusted"
+                and c.get("checkedPricesIntegrity") == "trusted"
+                and c.get("reportIntegrity") == "untrusted"
                 and type(c.get("rows")) is int
                 and c["rows"] > 0
                 for c in checks
