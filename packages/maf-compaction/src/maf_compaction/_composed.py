@@ -82,6 +82,9 @@ from ._toolsummary import (
 from ._toolsummary import _tokens as _record_tokens  # pyright: ignore[reportPrivateUsage]
 from ._usersummary import SUMMARY_MODE_RECOMPACT, UserTurnAnchoredSummarizationCompactionStrategy
 from ._usersummary import (
+    _linked_ids as _summary_source_ids,  # pyright: ignore[reportPrivateUsage]
+)
+from ._usersummary import (
     _release_sources as _release_user_sources,  # pyright: ignore[reportPrivateUsage]
 )
 
@@ -1611,7 +1614,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     view.messages, matched[0], edit.text, replay=True
                 )
             if view is not base:
+                view.restore_later()
                 messages[:] = view.messages
+                if view.summary_preview is not None:
+                    self.user_turns.accept_replay_preview(messages, view.summary_preview)
                 restored_view = True
             base.invalidate()
             candidates.clear()
@@ -1624,6 +1630,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     def _record_replay_view(self, base: ReplayView, edit: RecordEdit) -> ReplayView:
         """Undo later owned exclusions on copies; the source certificate still authorizes edits."""
         user_exclusions = self.user_turns.replay_source_exclusions(base.messages, edit.summaries)
+        later_summaries = set(self.user_turns.replay_summary_ids(base.messages)) - set(
+            edit.summaries
+        )
         later_shed = self._shed_ids - set(edit.shed_ids)
         if self._shed_groups:
             lookup = base.shed_lookup()
@@ -1636,7 +1645,17 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             and _is_excluded(message)
             and message.additional_properties.get(EXCLUDE_REASON_KEY) == EXCLUDE_REASON
         ]
-        if not user_exclusions and not shed_indices:
+        later_indices = {
+            index
+            for index, message in enumerate(base.messages)
+            if message.message_id in later_summaries
+            or (
+                _is_marker(message)
+                and bool(sources := _summary_source_ids(message))
+                and set(sources) <= later_shed
+            )
+        }
+        if not user_exclusions and not shed_indices and not later_indices:
             return base
         messages = [copy(message) for message in base.messages]
         for message in messages:
@@ -1646,11 +1665,34 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 message.additional_properties[GROUP_ANNOTATION_KEY] = dict(
                     cast(dict[str, Any], annotation)
                 )
+        originals = [(message, dict(message.additional_properties)) for message in messages]
         _release_user_sources(messages, user_exclusions)
         for index in shed_indices:
             messages[index].additional_properties.pop(EXCLUDE_REASON_KEY, None)
             set_excluded(messages[index], excluded=False)
-        return ReplayView(messages, shed_groups=base.shed_groups)
+        exclusions = [
+            (message, properties)
+            for message, properties in originals
+            if properties.get(EXCLUDED_KEY) and not _is_excluded(message)
+        ]
+        deferred = [
+            (messages[index], messages[index + 1] if index + 1 < len(messages) else None)
+            for index in sorted(later_indices)
+        ]
+        messages[:] = [
+            message for index, message in enumerate(messages) if index not in later_indices
+        ]
+        if later_indices:
+            annotate_message_groups(messages)
+        preview = copy(self.user_turns)
+        restored = preview.replay_summaries(messages, summary_ids=edit.summaries).changed
+        return ReplayView(
+            messages,
+            shed_groups=base.shed_groups if not later_indices and not restored else None,
+            exclusions=exclusions,
+            deferred=deferred,
+            summary_preview=preview,
+        )
 
     def _keep_records(self, messages: list[Message]) -> bool:
         """Replace every run of records the chain has already replaced, as it did.

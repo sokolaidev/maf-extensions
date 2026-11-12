@@ -29,6 +29,7 @@ from test_record_budget import (
 )
 
 from maf_compaction import _toolsummary as toolsummary_module
+from maf_compaction._anchored import _is_marker
 from maf_compaction._composed import DEFAULT_RECORD_MERGE_PROMPT, _transcript, harder_record_prompt
 from maf_compaction._request import RECALL_PROMPT_KEY
 from maf_compaction._toolsummary import (
@@ -36,6 +37,7 @@ from maf_compaction._toolsummary import (
     consolidatable_record_groups,
     reshapeable_record_groups,
 )
+from maf_compaction._usersummary import _is_summary
 
 
 def _reasoned(records: int, shape: str = "preceding") -> list[Message]:
@@ -52,6 +54,22 @@ def _reasoned(records: int, shape: str = "preceding") -> list[Message]:
             messages[2 + index * 2].contents.insert(0, reasoning)
     annotate_message_groups(messages)
     return messages
+
+
+def _hold_later_user_edits(original: list[Message], messages: list[Message]) -> None:
+    held = {message.message_id for message in original}
+    for index, message in enumerate(messages):
+        if message.message_id in held or not (_is_summary(message) or _is_marker(message)):
+            continue
+        following = next(
+            (later.message_id for later in messages[index + 1 :] if later.message_id in held),
+            None,
+        )
+        insertion = next(
+            (i for i, item in enumerate(original) if item.message_id == following), len(original)
+        )
+        original.insert(insertion, message)
+        held.add(message.message_id)
 
 
 @pytest.mark.parametrize("shape", ["preceding", "co-located"])
@@ -90,7 +108,21 @@ def test_completed_reasoning_reshapes_losslessly_and_replays(
 @pytest.mark.parametrize("operation", ["reshape", "merge"])
 @pytest.mark.parametrize("later_edit", ["fold", "shed", "fold-and-shed"])
 @pytest.mark.parametrize(
-    "history_kind", ["original", "shared", "serialized-shared", "changed-shared", "held-shared"]
+    "history_kind",
+    [
+        "original",
+        "shared",
+        "serialized-shared",
+        "changed-shared",
+        "held-shared",
+        "held-later",
+        "serialized-held-later",
+        "held-later-no-summaries",
+        "changed-shared-held-later",
+        "held-shared-held-later",
+        "held-later-no-sources",
+        "changed-record-held-later-no-summaries",
+    ],
 )
 async def test_record_replay_preserves_intermediate_edit_windows(
     operation: str, later_edit: str, history_kind: str
@@ -138,20 +170,45 @@ async def test_record_replay_preserves_intermediate_edit_windows(
     if "shed" in later_edit:
         strategy._shed_ids.add("narration")
         assert strategy._keep_shedding(messages)
+    if "held-later" in history_kind:
+        _hold_later_user_edits(original, messages)
+        if history_kind.endswith("held-later-no-summaries") and "fold" in later_edit:
+            original[:] = [m for m in original if m.message_id not in {"summary_0", "summary_1"}]
+        if history_kind == "held-later-no-sources":
+            original[:] = [
+                m
+                for m in original
+                if m.message_id not in {"summary_0", "summary_1", "middle0", "middle1"}
+            ]
     for history in (messages, original):
         _retain_later_reasoning(history)
     expected = _sent(messages)
-    if history_kind == "serialized-shared":
+    if history_kind in {"serialized-shared", "serialized-held-later"}:
         original = [
             Message.from_dict(item)
             for item in json.loads(json.dumps([m.to_dict() for m in original]))
         ]
     cold = _strategy(_Summarizer(), budget=100_000, cap=None)
     cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
-    if history_kind in {"changed-shared", "held-shared"}:
+    if history_kind == "changed-record-held-later-no-summaries":
+        original = [copy.deepcopy(m) if m.message_id == "rec0_res" else m for m in original]
+        next(m for m in original if m.message_id == "rec0_res").contents[0].result += " changed"
+        before = _sent(original)
+        assert not cold._replay_record_edits(original)
+        assert cold.user_summaries_replayed == 0
+        assert _sent(original) == before
+        assert _sent(messages) == expected
+        return
+    if history_kind == "held-later-no-sources":
+        before = _sent(original)
+        assert not cold._replay_record_edits(original)
+        assert _sent(original) == before
+        assert _sent(messages) == expected
+        return
+    if history_kind.startswith(("changed-shared", "held-shared")):
         original = [copy.deepcopy(m) if m.message_id == "summary_0" else m for m in original]
         summary = next(m for m in original if m.message_id == "summary_0")
-        if history_kind == "changed-shared":
+        if history_kind.startswith("changed-shared"):
             summary.contents[0].text += " changed"
         else:
             summary.additional_properties[EXCLUDED_KEY] = True
@@ -170,10 +227,58 @@ async def test_record_replay_preserves_intermediate_edit_windows(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["reshape", "merge"])
+@pytest.mark.parametrize("serialized", [False, True])
+async def test_replay_preserves_later_held_summary_outside_record_window(
+    operation: str, serialized: bool
+) -> None:
+    messages = _history(2)
+    messages.insert(-1, Message("user", ["Later facts. " * 100], message_id="later-user"))
+    original = list(messages)
+    text = " ".join(sorted(_sent_values(messages)))
+    strategy = _strategy(_Summarizer(merge=lambda _: text), budget=100_000, cap=None)
+    if operation == "reshape":
+        assert strategy._reshape_records(messages)
+    else:
+        groups = consolidatable_record_groups(messages)
+        assert (
+            await strategy._consolidate(
+                messages,
+                groups,
+                prompt=DEFAULT_RECORD_MERGE_PROMPT,
+                transcript=_transcript(messages, groups),
+            )
+            == "accepted"
+        )
+    group = next(
+        g for g in group_messages(messages) if messages[g["start_index"]].message_id == "later-user"
+    )
+    strategy.user_turns._replace(messages, [group], "Later facts.", summary_id="later-summary")
+    summary = next(m for m in messages if m.message_id == "later-summary")
+    original.insert(
+        next(i for i, m in enumerate(original) if m.message_id == "later-user"), summary
+    )
+    for history in (messages, original):
+        _retain_later_reasoning(history)
+    expected = _sent(messages)
+    if serialized:
+        original = [
+            Message.from_dict(m) for m in json.loads(json.dumps([m.to_dict() for m in original]))
+        ]
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    assert await cold(original)
+    assert _sent(original) == expected
+    assert _sent(messages) == expected
+    assert not cold._replay_record_edits(original)
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("shed_first", [False, True])
 @pytest.mark.parametrize("durable_shed", [False, True])
+@pytest.mark.parametrize("held_later", [False, True])
 async def test_replay_keeps_chained_record_edits_between_fold_and_shed(
-    shed_first: bool, durable_shed: bool
+    shed_first: bool, durable_shed: bool, held_later: bool
 ) -> None:
     from maf_compaction._shed import unique_shed_groups
 
@@ -237,6 +342,8 @@ async def test_replay_keeps_chained_record_edits_between_fold_and_shed(
         )
     for history in (messages, original):
         _retain_later_reasoning(history)
+    if held_later:
+        _hold_later_user_edits(original, messages)
     cold_summarizer = _Summarizer()
     cold = _strategy(cold_summarizer, budget=100_000, cap=None)
     cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))

@@ -6,13 +6,23 @@ import hashlib
 import json
 from collections.abc import Collection
 from dataclasses import dataclass, field
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from agent_framework import Message
-from agent_framework._compaction import EXCLUDED_KEY
+from agent_framework._compaction import (
+    EXCLUDE_REASON_KEY,
+    EXCLUDED_KEY,
+    GROUP_ANNOTATION_KEY,
+    SUMMARIZED_BY_SUMMARY_ID_KEY,
+    SUMMARY_OF_MESSAGE_IDS_KEY,
+    annotate_message_groups,
+)
 
 from ._preserve import STANDS_IN_KEY
 from ._shed import durable_message_id, unique_shed_groups
+
+if TYPE_CHECKING:
+    from ._usersummary import UserTurnAnchoredSummarizationCompactionStrategy
 
 LINEAGE_KEY: Final[str] = "maf_compaction_record_lineage"
 
@@ -36,6 +46,13 @@ class ReplayView:
     messages: list[Message]
     message_keys: dict[int, str] = field(default_factory=dict[int, str])
     shed_groups: dict[str, set[str]] | None = None
+    exclusions: list[tuple[Message, dict[str, Any]]] = field(
+        default_factory=list[tuple[Message, dict[str, Any]]]
+    )
+    deferred: list[tuple[Message, Message | None]] = field(
+        default_factory=list[tuple[Message, Message | None]]
+    )
+    summary_preview: UserTurnAnchoredSummarizationCompactionStrategy | None = None
 
     def invalidate(self) -> None:
         self.message_keys.clear()
@@ -48,6 +65,31 @@ class ReplayView:
                 for key, members in unique_shed_groups(self.messages)
             }
         return self.shed_groups
+
+    def restore_later(self) -> None:
+        """Restore temporarily staged state without undoing the accepted record replacement."""
+        for message, properties in self.exclusions:
+            for key in (EXCLUDED_KEY, EXCLUDE_REASON_KEY):
+                message.additional_properties[key] = properties[key]
+            owner = properties.get(GROUP_ANNOTATION_KEY, {}).get(SUMMARIZED_BY_SUMMARY_ID_KEY)
+            if owner is not None:
+                message.additional_properties[GROUP_ANNOTATION_KEY][
+                    SUMMARIZED_BY_SUMMARY_ID_KEY
+                ] = owner
+        for message, following in reversed(self.deferred):
+            sources = message.additional_properties.get(GROUP_ANNOTATION_KEY, {}).get(
+                SUMMARY_OF_MESSAGE_IDS_KEY, []
+            )
+            insertion = next(
+                (
+                    index
+                    for index, item in enumerate(self.messages)
+                    if item is following or item.message_id in sources
+                ),
+                len(self.messages),
+            )
+            self.messages.insert(insertion, message)
+        annotate_message_groups(self.messages)
 
 
 def source_key(messages: list[Message], groups: list[dict[str, Any]]) -> str | None:

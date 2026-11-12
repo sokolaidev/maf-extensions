@@ -1151,6 +1151,14 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             if (owner := _excluded_for(message)) is not None and owner in later
         }
 
+    def accept_replay_preview(
+        self, messages: list[Message], preview: UserTurnAnchoredSummarizationCompactionStrategy
+    ) -> None:
+        """Commit a copied strategy's replay counters after its candidate history is accepted."""
+        self._replayed = preview._replayed
+        self._replaced = preview._replaced
+        self._observe_summaries(messages)
+
     def replay_summaries(
         self, messages: list[Message], *, summary_ids: list[str] | None = None
     ) -> _SummaryReplay:
@@ -1185,9 +1193,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 (message for message in messages if message.message_id == kept.summary_id), None
             )
             superseded = [] if summary is None else _superseded_standing(messages, summary)
-            if (summary is None and kept.summary_id in linked) or (
-                summary is not None and not superseded
-            ):
+            if summary is None and kept.summary_id in linked:
                 continue
             turns = [
                 span
@@ -1206,6 +1212,23 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 if identities[index : index + width] == kept.sources
             ]
             if summary is not None:
+                if len(matches) == 1:
+                    members = [
+                        messages[int(turns[matches[0] + offset]["start_index"])]
+                        for offset in kept.selected
+                    ]
+                    if all(
+                        _excluded_for(member) == kept.summary_id or not any_preserved([member])
+                        for member in members
+                    ):
+                        superseded.extend(
+                            member
+                            for member in members
+                            if not member.additional_properties.get(EXCLUDED_KEY)
+                            and not any(member is item for item in superseded)
+                        )
+                if not superseded:
+                    continue
                 # Held, so only its exclusions are repeated; the window says whether turns grew.
                 _supersede_again(superseded, summary_id=kept.summary_id, reason=kept.reason)
                 self._replayed += 1

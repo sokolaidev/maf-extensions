@@ -88,11 +88,13 @@ async def test_original_history_with_new_tail_replays_after_json_restore(mode, c
 @pytest.mark.parametrize(
     "change", ["edit", "remove", "reorder", "insert", "preserve", "exclude", "id"]
 )
-async def test_changed_source_window_is_not_replayed(change):
+@pytest.mark.parametrize("held_summary", [False, True])
+async def test_changed_source_window_is_not_replayed(change, held_summary):
     client = Client()
     subject = strategy(client)
     original = history()
-    assert await subject(deepcopy(original))
+    compacted = deepcopy(original)
+    assert await subject(compacted)
     if change == "edit":
         original[2].contents = Message("user", ["Edited requirement."]).contents
     elif change == "remove":
@@ -107,11 +109,33 @@ async def test_changed_source_window_is_not_replayed(change):
         set_excluded(original[2], excluded=True, reason="host")
     else:
         original[2].message_id = "different-source"
+    if held_summary:
+        original_ids = {message.message_id for message in history()}
+        original.insert(1, deepcopy(next(m for m in compacted if m.message_id not in original_ids)))
     subject.max_input_tokens = 100_000
     before = visible(original)
     assert not await subject(original)
     assert visible(original) == before
     assert subject.user_summaries_replayed == 0
+    assert len(client.requests) == 1
+
+
+@pytest.mark.parametrize("mode", ["boundary", "fold", "recompact"])
+async def test_held_summary_restores_exact_original_source_exclusions(mode):
+    client = Client()
+    subject = strategy(client, mode)
+    original = history()
+    compacted = deepcopy(original)
+    assert await subject(compacted)
+    original_ids = {message.message_id for message in original}
+    original.insert(1, deepcopy(next(m for m in compacted if m.message_id not in original_ids)))
+    restored = strategy(client, mode)
+    restored.restore_session_state(json.loads(json.dumps(subject.session_state())))
+    restored.max_input_tokens = 100_000
+    assert await restored(original)
+    assert visible(original) == visible(compacted)
+    assert restored.user_summaries_replayed == 1
+    assert not await restored(original)
     assert len(client.requests) == 1
 
 
