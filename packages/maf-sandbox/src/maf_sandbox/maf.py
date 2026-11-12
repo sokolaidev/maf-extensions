@@ -3374,7 +3374,7 @@ def sandboxed_tool(
                 else kwargs.get(context_parameter)
             )
             arguments = _argument_integrity(call_context, argument_integrity)
-            call_integrity = arguments.level if arguments.tracked else _call_integrity(call_context)
+            call_integrity = argument_integrity or _call_integrity(call_context)
             # No `_SandboxToolCall` — there is nothing to reclaim — so the id is minted here.
             # One all the same: every `ToolCallEnded` names its call, and a whole class of tool
             # would otherwise be the one that does not.
@@ -3466,7 +3466,7 @@ def sandboxed_tool(
             else kwargs.get(context_parameter)
         )
         arguments = _argument_integrity(call_context, argument_integrity)
-        call_integrity = arguments.level if arguments.tracked else _call_integrity(call_context)
+        call_integrity = argument_integrity or _call_integrity(call_context)
         call = _SandboxToolCall(owner=session)
         token = _CALL.set(call)
         files = _FileReads()
