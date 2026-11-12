@@ -566,3 +566,25 @@ async def test_pending_background_work_does_not_bypass_the_sending_budget():
     finally:
         strategy._request_budget.reset(token)
         await work.close()
+
+
+async def test_background_option_retirement_is_reused_by_later_requests():
+    options = []
+
+    class RejectingOptions(_Summarizer):
+        async def get_response(self, messages, **kwargs):
+            options.append(kwargs["options"])
+            if kwargs["options"]:
+                raise ValueError("Unsupported option")
+            return await super().get_response(messages, **kwargs)
+
+    strategy, work, messages = await prepared(RejectingOptions())
+    strategy.user_turns.summary_options = {"reasoning_effort": "minimal"}
+    strategy.user_turns.retry_without_summary_options = True
+    work.start(tool_reply())
+    await running(work)
+    assert await strategy(messages)
+    assert strategy.user_turns._summary_options_disabled
+    await strategy._ask(prompt=strategy.merge_prompt, transcript="1. VAL-001-0")
+    assert options == [{"reasoning_effort": "minimal"}, {}, {}]
+    await work.close()
