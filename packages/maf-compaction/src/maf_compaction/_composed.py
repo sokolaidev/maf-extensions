@@ -34,6 +34,7 @@ from bisect import bisect_left
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
+from copy import copy
 from dataclasses import asdict, dataclass
 from math import ceil, isfinite
 from time import monotonic
@@ -43,8 +44,10 @@ from agent_framework import Message
 from agent_framework._compaction import (
     EXCLUDE_REASON_KEY,
     EXCLUDED_KEY,
+    GROUP_ANNOTATION_KEY,
     annotate_message_groups,
     included_token_count,
+    set_excluded,
 )
 
 from ._anchored import (
@@ -54,7 +57,7 @@ from ._anchored import (
 )
 from ._media import annotate_token_counts
 from ._preserve import PRESERVE_REASON_KEY, is_preserved, pending_result_messages, set_preserved
-from ._record_replay import RecordEdit, replay_match, source_key
+from ._record_replay import RecordEdit, ReplayView, replay_match, source_key
 from ._request import RequestOverhead
 from ._shed import durable_message_id, unique_shed_groups
 from ._summary_input import bounded_prefix, bounded_prefix_extent, fits_summary_input
@@ -78,6 +81,9 @@ from ._toolsummary import (
 )
 from ._toolsummary import _tokens as _record_tokens  # pyright: ignore[reportPrivateUsage]
 from ._usersummary import SUMMARY_MODE_RECOMPACT, UserTurnAnchoredSummarizationCompactionStrategy
+from ._usersummary import (
+    _release_sources as _release_user_sources,  # pyright: ignore[reportPrivateUsage]
+)
 
 if TYPE_CHECKING:
     from agent_framework import ChatResponse, TokenizerProtocol
@@ -1512,16 +1518,21 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._decisions_kept += 1
         return changed
 
-    def _keep_shedding(self, messages: list[Message], *, edit: RecordEdit | None = None) -> bool:
+    def _keep_shedding(
+        self,
+        messages: list[Message],
+        *,
+        edit: RecordEdit | None = None,
+        group_lookup: dict[str, set[str]] | None = None,
+    ) -> bool:
         """Replay prior removals before their contents can trigger new compaction work."""
         message_ids = set(self._shed_ids if edit is None else edit.shed_ids)
         group_keys = self._shed_groups if edit is None else set(edit.shed_groups)
         if group_keys:
-            for key, members in unique_shed_groups(messages):
-                if key in group_keys:
-                    message_ids.update(
-                        message.message_id for message in members if message.message_id
-                    )
+            if group_lookup is None:
+                group_lookup = ReplayView(messages).shed_lookup()
+            for key in group_keys:
+                message_ids.update(group_lookup.get(key, set()))
         with _release_record_holds(
             [message for message in messages if message.message_id in message_ids]
         ):
@@ -1556,34 +1567,90 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     def _replay_record_edits(self, messages: list[Message], *, reshape_only: bool = False) -> bool:
         """Restore each accepted record window before applying edits that followed it."""
         changed = False
-        message_keys: dict[int, str] = {}
+        restored_view = False
+        base = ReplayView(messages)
+        candidates: dict[tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]], ReplayView] = {}
         for edit in self._record_order:
             if reshape_only and edit.text is not None:
                 continue
             restored = self.user_turns.replay_summaries(
                 messages, summary_ids=edit.summaries
             ).changed
-            restored = self._keep_shedding(messages, edit=edit) or restored
             if restored:
-                message_keys.clear()
+                base.invalidate()
+                candidates.clear()
                 changed = True
+            prerequisites = (tuple(edit.summaries), tuple(edit.shed_ids), tuple(edit.shed_groups))
+            view = candidates.get(prerequisites)
+            if view is None:
+                view = self._record_replay_view(base, edit)
+                candidates[prerequisites] = view
+            if self._keep_shedding(
+                view.messages,
+                edit=edit,
+                group_lookup=view.shed_lookup() if edit.shed_groups else None,
+            ):
+                view.invalidate()
+                if view is base:
+                    candidates.clear()
+                    changed = True
             groups = (
-                reshapeable_record_groups(messages, replay=True)
+                reshapeable_record_groups(view.messages, replay=True)
                 if edit.text is None
-                else consolidatable_record_groups(messages, replay=True)
+                else consolidatable_record_groups(view.messages, replay=True)
             )
             matched = replay_match(
-                messages, groups, {(edit.sources, edit.count)}, message_keys=message_keys
+                view.messages, groups, {(edit.sources, edit.count)}, message_keys=view.message_keys
             )
             if matched is None:
                 continue
             if edit.text is None:
-                self.tool_results.reshape_records(messages, matched[0], replay=True)
+                self.tool_results.reshape_records(view.messages, matched[0], replay=True)
             else:
-                self.tool_results.consolidate_records(messages, matched[0], edit.text, replay=True)
-            message_keys.clear()
+                self.tool_results.consolidate_records(
+                    view.messages, matched[0], edit.text, replay=True
+                )
+            if view is not base:
+                messages[:] = view.messages
+                restored_view = True
+            base.invalidate()
+            candidates.clear()
             changed = True
+        if restored_view:
+            self.user_turns.replay_summaries(messages)
+            self._keep_shedding(messages)
         return changed
+
+    def _record_replay_view(self, base: ReplayView, edit: RecordEdit) -> ReplayView:
+        """Undo later owned exclusions on copies; the source certificate still authorizes edits."""
+        user_exclusions = self.user_turns.replay_source_exclusions(base.messages, edit.summaries)
+        later_shed = self._shed_ids - set(edit.shed_ids)
+        if self._shed_groups:
+            lookup = base.shed_lookup()
+            for key in self._shed_groups - set(edit.shed_groups):
+                later_shed.update(lookup.get(key, set()))
+        shed_indices = [
+            index
+            for index, message in enumerate(base.messages)
+            if message.message_id in later_shed
+            and _is_excluded(message)
+            and message.additional_properties.get(EXCLUDE_REASON_KEY) == EXCLUDE_REASON
+        ]
+        if not user_exclusions and not shed_indices:
+            return base
+        messages = [copy(message) for message in base.messages]
+        for message in messages:
+            message.additional_properties = dict(message.additional_properties)
+            annotation = message.additional_properties.get(GROUP_ANNOTATION_KEY)
+            if isinstance(annotation, dict):
+                message.additional_properties[GROUP_ANNOTATION_KEY] = dict(
+                    cast(dict[str, Any], annotation)
+                )
+        _release_user_sources(messages, user_exclusions)
+        for index in shed_indices:
+            messages[index].additional_properties.pop(EXCLUDE_REASON_KEY, None)
+            set_excluded(messages[index], excluded=False)
+        return ReplayView(messages, shed_groups=base.shed_groups)
 
     def _keep_records(self, messages: list[Message]) -> bool:
         """Replace every run of records the chain has already replaced, as it did.

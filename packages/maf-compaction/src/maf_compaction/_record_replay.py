@@ -5,14 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Final
 
 from agent_framework import Message
 from agent_framework._compaction import EXCLUDED_KEY
 
 from ._preserve import STANDS_IN_KEY
-from ._shed import durable_message_id
+from ._shed import durable_message_id, unique_shed_groups
 
 LINEAGE_KEY: Final[str] = "maf_compaction_record_lineage"
 
@@ -27,6 +27,27 @@ class RecordEdit:
     summaries: list[str]
     shed_ids: list[str]
     shed_groups: list[str]
+
+
+@dataclass
+class ReplayView:
+    """Cache source and shed identities until this candidate history changes."""
+
+    messages: list[Message]
+    message_keys: dict[int, str] = field(default_factory=dict[int, str])
+    shed_groups: dict[str, set[str]] | None = None
+
+    def invalidate(self) -> None:
+        self.message_keys.clear()
+        self.shed_groups = None
+
+    def shed_lookup(self) -> dict[str, set[str]]:
+        if self.shed_groups is None:
+            self.shed_groups = {
+                key: {message.message_id for message in members if message.message_id}
+                for key, members in unique_shed_groups(self.messages)
+            }
+        return self.shed_groups
 
 
 def source_key(messages: list[Message], groups: list[dict[str, Any]]) -> str | None:

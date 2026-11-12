@@ -1142,6 +1142,15 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         linked = {value for message in messages for value in _linked_ids(message)}
         return [identity for identity in self._replacements if identity in held | linked]
 
+    def replay_source_exclusions(self, messages: list[Message], summary_ids: list[str]) -> set[str]:
+        """Identify owned exclusions made after a record edit's accepted user prerequisites."""
+        later = self._replacements.keys() - set(summary_ids)
+        return {
+            owner
+            for message in messages
+            if (owner := _excluded_for(message)) is not None and owner in later
+        }
+
     def replay_summaries(
         self, messages: list[Message], *, summary_ids: list[str] | None = None
     ) -> _SummaryReplay:

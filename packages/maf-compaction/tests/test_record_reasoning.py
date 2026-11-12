@@ -8,6 +8,7 @@ import json
 import pytest
 from agent_framework import Content, Message
 from agent_framework._compaction import (
+    EXCLUDE_REASON_KEY,
     EXCLUDED_KEY,
     GROUP_ANNOTATION_KEY,
     SUMMARY_OF_GROUP_IDS_KEY,
@@ -88,8 +89,11 @@ def test_completed_reasoning_reshapes_losslessly_and_replays(
 @pytest.mark.anyio
 @pytest.mark.parametrize("operation", ["reshape", "merge"])
 @pytest.mark.parametrize("later_edit", ["fold", "shed", "fold-and-shed"])
+@pytest.mark.parametrize(
+    "history_kind", ["original", "shared", "serialized-shared", "changed-shared", "held-shared"]
+)
 async def test_record_replay_preserves_intermediate_edit_windows(
-    operation: str, later_edit: str
+    operation: str, later_edit: str, history_kind: str
 ) -> None:
     messages = _history(2)
     middle = [
@@ -114,6 +118,8 @@ async def test_record_replay_preserves_intermediate_edit_windows(
             f"Summary {index}. " * 40,
             summary_id=f"summary_{index}",
         )
+    if history_kind != "original":
+        original = list(messages)
     if operation == "reshape":
         assert strategy._reshape_records(messages)
     else:
@@ -134,10 +140,33 @@ async def test_record_replay_preserves_intermediate_edit_windows(
         assert strategy._keep_shedding(messages)
     for history in (messages, original):
         _retain_later_reasoning(history)
+    expected = _sent(messages)
+    if history_kind == "serialized-shared":
+        original = [
+            Message.from_dict(item)
+            for item in json.loads(json.dumps([m.to_dict() for m in original]))
+        ]
     cold = _strategy(_Summarizer(), budget=100_000, cap=None)
     cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    if history_kind in {"changed-shared", "held-shared"}:
+        original = [copy.deepcopy(m) if m.message_id == "summary_0" else m for m in original]
+        summary = next(m for m in original if m.message_id == "summary_0")
+        if history_kind == "changed-shared":
+            summary.contents[0].text += " changed"
+        else:
+            summary.additional_properties[EXCLUDED_KEY] = True
+            summary.additional_properties[EXCLUDE_REASON_KEY] = "external-owner"
+        before = _sent(original)
+        assert not cold._replay_record_edits(original)
+        assert _sent(original) == before
+        assert _sent(messages) == expected
+        return
     assert await cold(original)
-    assert _sent(original) == _sent(messages)
+    assert _sent(original) == expected
+    assert _sent(messages) == expected
+    assert not cold._replay_record_edits(original)
+    assert _sent(original) == expected
+    assert _sent(messages) == expected
 
 
 @pytest.mark.anyio
@@ -617,7 +646,11 @@ def test_replay_miss_serializes_each_message_at_most_once(monkeypatch: pytest.Mo
     assert serializations <= len(messages)
 
 
-def test_ordered_replay_misses_share_message_fingerprints(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("shedding", [False, True])
+def test_ordered_replay_misses_share_message_fingerprints(
+    monkeypatch: pytest.MonkeyPatch, shedding: bool
+) -> None:
+    from maf_compaction._shed import unique_shed_groups
     from maf_compaction._toolsummary import build_record_message
 
     messages = [build_record_message(f"Record {index}: " + "detail " * 100) for index in range(40)]
@@ -625,11 +658,23 @@ def test_ordered_replay_misses_share_message_fingerprints(monkeypatch: pytest.Mo
         message.message_id = f"record-{index}"
     annotate_message_groups(messages)
     strategy = _strategy(_Summarizer(), budget=100_000)
+    if shedding:
+        narration = Message("assistant", ["Narration."], message_id="msg_50")
+        messages.append(narration)
+        annotate_message_groups(messages)
+        strategy._shed_groups.add(
+            next(
+                key
+                for key, members in unique_shed_groups(messages)
+                if any(message is narration for message in members)
+            )
+        )
+        assert strategy._keep_shedding(messages)
     for group in consolidatable_record_groups(messages):
         edit = strategy._record_edit(messages, [group], "replacement")
         assert edit is not None
         strategy._record_order.append(edit)
-    for message in messages:
+    for message in messages[:40]:
         message.contents[0].text += " changed"
     serializations = 0
     original = Content.to_dict
@@ -641,7 +686,7 @@ def test_ordered_replay_misses_share_message_fingerprints(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(Content, "to_dict", counted)
     assert not strategy._replay_record_edits(messages)
-    assert serializations <= len(messages)
+    assert serializations <= len(messages) * (2 if shedding else 1)
 
 
 @pytest.mark.anyio
