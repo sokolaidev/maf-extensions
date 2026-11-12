@@ -24,7 +24,7 @@ from maf_sandbox.maf import (
 from maf_sandbox.testing import InMemoryStore, InProcessSandboxBackend
 
 
-def attach(body, *, guidance=("Fixed guidance.",), contract=False):
+def attach(body, *, guidance=("Fixed guidance.",), contract=False, argument_integrity=None):
     return sandboxed_tool(
         lambda session: body,
         router=SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE),
@@ -39,7 +39,35 @@ def attach(body, *, guidance=("Fixed guidance.",), contract=False):
         source_integrity="untrusted",
         standing_guidance=guidance,
         result_contract=contract,
+        argument_integrity=argument_integrity,
     )[0]
+
+
+def test_host_argument_override_cannot_promote_expanded_hidden_content():
+    async def scenario():
+        tracker = LabelTrackingFunctionMiddleware()
+        reference = tracker.get_variable_store().store(
+            "hidden payload", ContentLabel(integrity=IntegrityLabel.UNTRUSTED)
+        )
+
+        async def body(value: str):
+            return SandboxResult(completed=True, output=(value,))
+
+        attached = attach(body, contract=True, argument_integrity="trusted")
+        context = FunctionInvocationContext(
+            function=attached, arguments={"value": f"[{reference}]"}
+        )
+
+        async def invoke():
+            context.result = await attached.invoke(arguments=context.arguments, context=context)
+            report = next(item for item in context.result if item.text == "hidden payload")
+            assert report.additional_properties["security_label"]["integrity"] == "untrusted"
+
+        await tracker.process(context, invoke)
+        assert not any("hidden payload" in (item.text or "") for item in context.result)
+        assert tracker.get_context_label().integrity is IntegrityLabel.TRUSTED
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("sync", [False, True])

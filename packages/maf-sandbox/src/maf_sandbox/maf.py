@@ -373,22 +373,25 @@ _ARGUMENT_INTEGRITY: ContextVar[_ArgumentIntegrity | None] = ContextVar(
 
 
 def _argument_integrity(context: Any, override: SourceIntegrity | None) -> _ArgumentIntegrity:
-    if override is not None:
-        return _ArgumentIntegrity(override, True)
     middleware = _reachable_middleware()
     if middleware is None:
-        level = _call_integrity(context)
+        level = override or _call_integrity(context)
         return _ArgumentIntegrity(level or SourceIntegrity.TRUSTED, level is not None)
     from agent_framework.security import ContentLabel, IntegrityLabel, rewritten_arguments
 
-    label = middleware.get_context_label()
-    level = (
-        SourceIntegrity.TRUSTED
-        if isinstance(label, ContentLabel) and label.integrity is IntegrityLabel.TRUSTED
-        else SourceIntegrity.UNTRUSTED
-    )
+    if override is not None:
+        level = override
+    else:
+        label = middleware.get_context_label()
+        level = (
+            SourceIntegrity.TRUSTED
+            if isinstance(label, ContentLabel) and label.integrity is IntegrityLabel.TRUSTED
+            else SourceIntegrity.UNTRUSTED
+        )
+        if _call_integrity(context) is SourceIntegrity.UNTRUSTED:
+            level = SourceIntegrity.UNTRUSTED
     # Expanded arguments may be weaker than the conversation that supplied their references.
-    if _call_integrity(context) is SourceIntegrity.UNTRUSTED or any(rewritten_arguments().values()):
+    if any(rewritten_arguments().values()):
         level = SourceIntegrity.UNTRUSTED
     return _ArgumentIntegrity(level, True)
 
