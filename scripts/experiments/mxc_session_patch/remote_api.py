@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
-from . import remote_scratch
+from . import freshness, remote_scratch
 from . import remote_transfer as transfer
 from .host_store import MAX_CHECKPOINT, MAX_FILES, Refused, _lock, _name, _relative
 from .private_root import check_file, prepare
@@ -137,6 +137,7 @@ class Coordinator:
         *,
         enabled: bool = False,
         initialize: bool = False,
+        freshness_root: Path | None = None,
         scratch_policy: remote_scratch.Policy | None = None,
         fencing_policy: Policy = Policy(),
         boundary: Callable[[str], None] = lambda _: None,
@@ -164,6 +165,7 @@ class Coordinator:
         self.fencing_policy = fencing_policy
         self.boundary = boundary
         self.stores: dict[str, tuple[Owner | None, SharedStore]] = {}
+        self.witness: freshness.Witness | None = None
         prepare(root)
         self.root = root.resolve()
         check_file(self.root / "service.lock")
@@ -175,12 +177,15 @@ class Coordinator:
             _lock(self.lock, True)
             if initialize and any(p.name != "service.lock" for p in self.root.iterdir()):
                 raise Refused("coordinator initialization requires an empty root")
+            if freshness_root is not None:
+                self.witness = freshness.Witness(freshness_root, self.root, initialize=initialize)
             with Authority(
                 self.root / "ownership",
                 enabled=True,
                 scratch_policy=self.scratch_policy,
                 policy=self.fencing_policy,
                 existing_only=not initialize,
+                witness=self.witness,
             ):
                 pass
             for name, config in self.sessions.items():
@@ -190,8 +195,11 @@ class Coordinator:
                     dict(config.profile),
                     config.limits,
                     existing_only=not initialize,
+                    witness=self.witness,
                 )
                 self.stores[name] = None, store
+            if self.witness is not None:
+                self.witness.ready()
             self._clear_transfer()
         except BaseException:
             self.close()
@@ -205,6 +213,7 @@ class Coordinator:
             scratch_policy=self.scratch_policy,
             policy=self.fencing_policy,
             existing_only=True,
+            witness=self.witness,
         )
 
     def fence(
@@ -230,6 +239,8 @@ class Coordinator:
                 store.close()
             self.stores.clear()
         finally:
+            if self.witness is not None:
+                self.witness.close()
             self.lock.close()
 
     def _clear_transfer(self) -> None:
@@ -267,6 +278,7 @@ class Coordinator:
             dict(config.profile),
             config.limits,
             existing_only=True,
+            witness=self.witness,
         )
         self.stores[owner.session] = owner, store
         return store

@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from . import remote_scratch
+from . import freshness, remote_scratch
 from .host_store import Refused, _check_rollback_format, _lock, _name
 from .private_root import check_file, prepare
 
@@ -91,6 +91,7 @@ class Authority:
         capacity: int = 4096,
         scratch_policy: remote_scratch.Policy | None = None,
         existing_only: bool = False,
+        witness: freshness.Witness | None = None,
     ):
         if enabled is not True:
             raise Refused("remote coordinator requires explicit opt-in")
@@ -99,6 +100,7 @@ class Authority:
         self.scratch_policy = scratch_policy
         self.policy = policy
         self.capacity = capacity
+        self.witness = witness
         try:
             self._initialize(root, existing_only=existing_only)
         except (OSError, sqlite3.Error) as error:
@@ -122,8 +124,8 @@ class Authority:
                 check_file(Path(str(path) + suffix))
             _check_rollback_format(path)
             self.db = sqlite3.connect(
-                path.as_uri() + "?mode=rw" if existing_only else path,
-                uri=existing_only,
+                path.as_uri() + ("?mode=rw" if existing_only else "?mode=rwc"),
+                uri=True,
                 timeout=0,
                 isolation_level=None,
             )
@@ -197,13 +199,8 @@ class Authority:
     @contextmanager
     def _transaction(self) -> Iterator[None]:
         try:
-            self.db.execute("BEGIN IMMEDIATE")
-            try:
+            with freshness.transaction(self.db, self.witness, "ownership"):
                 yield
-                self.db.commit()
-            except BaseException:
-                self.db.rollback()
-                raise
         except sqlite3.Error as error:
             raise Refused("coordinator storage unavailable or corrupt") from error
 
