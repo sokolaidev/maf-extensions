@@ -79,7 +79,7 @@ __all__ = [
 
 #: What :meth:`UserTurnAnchoredSummarizationCompactionStrategy.fold_if_smaller` did: collapsed the
 #: standing summaries, refused an answer that was no smaller than them, got no answer at all, or
-#: had fewer than two summaries to collapse.
+#: had no eligible fold to apply.
 FoldOutcome = Literal["folded", "rejected", "failed", "skipped"]
 
 #: Every :data:`FoldOutcome`, for a caller that wants to count them.
@@ -393,6 +393,12 @@ def _linked_ids(message: Message) -> list[str]:
     if not isinstance(ids, list):
         return []
     return [value for value in cast(list[Any], ids) if isinstance(value, str)]
+
+
+def _externally_preserved(message: Message) -> bool:
+    return any_preserved([message]) and (
+        message.additional_properties.get(PRESERVE_REASON_KEY) != PRESERVE_REASON
+    )
 
 
 def _superseded_standing(messages: list[Message], summary: Message) -> list[Message]:
@@ -1371,7 +1377,16 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             for message in messages
             if (summary_id := _excluded_for(message)) is not None and summary_id not in known
         }
-        _release_sources(messages, released)
+        released_members: dict[str, list[Message]] = {}
+
+        def release(identities: set[str]) -> bool:
+            for message in messages:
+                owner = _excluded_for(message)
+                if owner is not None and owner in identities:
+                    released_members.setdefault(owner, []).append(message)
+            return _release_sources(messages, identities)
+
+        release(released)
         changed = grew = chain_fold = False
         for kept in self._replacements.values():
             if kept.summary_id in invalid:
@@ -1391,10 +1406,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                     for message in _superseded_standing(messages, summary)
                     if cache.message_key(message)
                     in {kept.sources[index] for index in kept.selected}
-                    and (
-                        not any_preserved([message])
-                        or message.additional_properties.get(PRESERVE_REASON_KEY) == PRESERVE_REASON
-                    )
+                    and not _externally_preserved(message)
                 ]
             )
             if (summary is None and kept.summary_id in linked and not restore_held_sources) or (
@@ -1445,21 +1457,17 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 chain_fold = kept.summary_id in self._kept_folds or chain_fold
                 continue
             if len(matches) != 1:
-                if _release_sources(messages, {kept.summary_id}):
+                if release({kept.summary_id}):
                     released.add(kept.summary_id)
                 continue
             start = matches[0]
             selected = [turns[start + offset] for offset in kept.selected]
             members = [messages[int(span["start_index"])] for span in selected]
-            if any(
-                any_preserved([member])
-                and member.additional_properties.get(PRESERVE_REASON_KEY) != PRESERVE_REASON
-                for member in members
-            ):
+            if any(_externally_preserved(member) for member in members):
                 continue
             # Sources still excluded for the edit carry the decision; it was made on them.
             if any(_excluded_for(member) != kept.summary_id for member in members):
-                freed = _release_sources(messages, {kept.summary_id})
+                freed = release({kept.summary_id})
                 standing = self._observe_summaries(messages)
                 eligible = (
                     standing
@@ -1487,6 +1495,24 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             changed = True
             grew = identities[start + width :] != kept.tail
             chain_fold = kept.summary_id in self._kept_folds or chain_fold
+        if restore_held_sources:
+            roots = (
+                (held & set(self._replacements) if summary_ids is None else held & set(summary_ids))
+                - invalid
+                - (skip_summary_ids or set())
+            )
+            reconciled = self._replay_descendant_exclusions(messages, roots, invalid, cache)
+            self._replayed += len(reconciled)
+            changed = bool(reconciled) or changed
+            chain_fold = bool(reconciled & self._kept_folds.keys()) or chain_fold
+            released = {
+                identity
+                for identity in released
+                if any(
+                    not message.additional_properties.get(EXCLUDED_KEY)
+                    for message in released_members[identity]
+                )
+            }
         if released:
             logger.warning(
                 "Compaction sent whole again the user turns excluded for summaries it could not "
@@ -1497,6 +1523,50 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         if changed or released:
             cache.invalid.clear()
         return _SummaryReplay(changed or bool(released), grew or bool(released), chain_fold)
+
+    def _replay_descendant_exclusions(
+        self,
+        messages: list[Message],
+        roots: set[str],
+        invalid: set[str],
+        cache: SummaryReplayCache,
+    ) -> set[str]:
+        """Restore summary exclusions justified by a validated held ancestor."""
+        held: dict[str, list[Message]] = {}
+        for message in messages:
+            if message.message_id is not None:
+                held.setdefault(message.message_id, []).append(message)
+        identities = {
+            cache.outputs[(identity, kept.text)]: identity
+            for identity, kept in self._replacements.items()
+        }
+        changed: set[str] = set()
+        visited: set[str] = set()
+        pending = list(roots)
+        while pending:
+            owner = pending.pop()
+            if owner in visited:
+                continue
+            visited.add(owner)
+            kept = self._replacements[owner]
+            for offset in kept.selected:
+                source_key = kept.sources[offset]
+                child = identities.get(source_key)
+                if child is None or child in invalid:
+                    continue
+                members = held.get(child, [])
+                if not members:
+                    pending.append(child)
+                elif (
+                    owner not in held
+                    and len(members) == 1
+                    and not (member := members[0]).additional_properties.get(EXCLUDED_KEY)
+                    and not _externally_preserved(member)
+                    and cache.message_key(member) == source_key
+                ):
+                    _supersede_again([member], summary_id=owner, reason=kept.reason)
+                    changed.add(owner)
+        return changed
 
     def _protect_media(self, messages: list[Message]) -> None:
         for message in messages:
@@ -1868,8 +1938,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             return False
         if fresh:
             self._summary_succeeded()
-        self._apply_fold(messages, standing, remembered, replayed)
-        return True
+        return self._apply_fold(messages, standing, remembered, replayed)
 
     async def fold_if_smaller(self, messages: list[Message]) -> FoldOutcome:
         """Collapse the oldest summaries that fit, only if their replacement is smaller.
@@ -1895,7 +1964,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             ``"folded"`` when the summaries were collapsed, ``"rejected"`` when the answer was no
             smaller than them, ``"failed"`` when the summarizer gave none -- counted under
             :attr:`user_summary_failures` like any other -- and ``"skipped"`` when fewer than
-            two summaries fit, which avoids rewriting one summary on its own.
+            two summaries fit or a selected summary acquires an external preservation mark.
         """
         standing = self._bounded_summaries(messages, self._observe_summaries(messages))
         if len(standing) < 2:
@@ -1913,7 +1982,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             return "rejected"
         if fresh:
             self._summary_succeeded()
-        self._apply_fold(messages, standing, remembered, replayed)
+        if not self._apply_fold(messages, standing, remembered, replayed):
+            return "skipped"
         self._kept_folds[remembered.summary_id] = remembered
         self._kept_fold_counts[remembered.summary_id] = len(standing)
         return "folded"
@@ -1963,9 +2033,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                     [messages[span["start_index"]] for span in prefix], text=_summary_body
                 )
                 if transcript == kept.transcript:
-                    self._kept_fold_counts[kept.summary_id] = count
-                    self._apply_fold(messages, prefix, kept, True)
-                    changed = True
+                    if self._apply_fold(messages, prefix, kept, True):
+                        self._kept_fold_counts[kept.summary_id] = count
+                        changed = True
                     break
         return changed
 
@@ -1976,8 +2046,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             [
                 span
                 for span in standing
-                if not any_preserved([message := messages[int(span["start_index"])]])
-                or message.additional_properties.get(PRESERVE_REASON_KEY) == PRESERVE_REASON
+                if not _externally_preserved(messages[int(span["start_index"])])
             ],
             render=lambda spans: _format_turns(
                 [messages[span["start_index"]] for span in spans], text=_summary_body
@@ -2052,8 +2121,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         standing: list[dict[str, Any]],
         answer: _Remembered,
         replayed: bool,
-    ) -> None:
-        """Put the fold's answer in place of the standing summaries, and count it.
+    ) -> bool:
+        """Apply an eligible fold and return whether its sources changed.
 
         Counted here rather than when the answer arrived, so that an answer a caller refuses
         -- :meth:`fold_if_smaller`'s ``"rejected"`` -- is neither a fold nor a replay.
@@ -2064,11 +2133,13 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             answer: The remembered request and its answer, from :meth:`_fold_answer`.
             replayed: Whether this is the same replacement on another view of the history.
         """
+        folded: list[Message] = [messages[span["start_index"]] for span in standing]
+        if any(_externally_preserved(message) for message in folded):
+            return False
         if replayed:
             self._replayed += 1
         else:
             self._folds += 1
-        folded: list[Message] = [messages[span["start_index"]] for span in standing]
         for message in folded:
             set_preserved(message, preserved=False)
         self._replace(
@@ -2078,6 +2149,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             summary_id=answer.summary_id,
             reason=FOLD_EXCLUDE_REASON,
         )
+        return True
 
     def _recall(self, prompt: str, transcript: str, *, source_key: str = "") -> _Remembered | None:
         """Return the remembered answer to exactly this request, or None if it was never asked.

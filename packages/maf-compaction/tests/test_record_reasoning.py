@@ -736,11 +736,7 @@ async def test_pruned_first_fold_branch_retains_surviving_prefix(
     else:
         cold._replay_record_edits(original)
     if move == "unchanged":
-        sent = original
-        if branch == "nested-leaf":
-            # A missing intermediate fold can leave a redundant descendant summary standing.
-            sent = [m for m in original if m.message_id != "outside-summary-1"]
-        assert _sent(sent) == expected
+        assert _sent(original) == expected
         assert not cold._replay_record_edits(original)
     else:
         assert all(
@@ -750,8 +746,6 @@ async def test_pruned_first_fold_branch_retains_surviving_prefix(
         )
         if entrypoint == "public":
             await cold(unchanged)
-            if branch == "nested-leaf":
-                unchanged = [m for m in unchanged if m.message_id != "outside-summary-1"]
             assert _sent(unchanged) == expected
 
 
@@ -798,6 +792,79 @@ def test_distinct_summary_prerequisites_share_unchanged_fingerprints(
     monkeypatch.setattr(Content, "to_dict", counted)
     assert not strategy._replay_record_edits(messages)
     assert serializations <= len(messages) * 2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("public", [False, True])
+@pytest.mark.parametrize(
+    "protection",
+    ["summary-host", "summary-unowned", "source-host", "edited-summary", "duplicate-summary"],
+)
+async def test_pruned_fold_descendants_retain_external_changes(
+    public: bool, protection: str
+) -> None:
+    from maf_compaction._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
+
+    messages = _reasoned(2)
+    messages[-1:-1] = [
+        Message("user", [f"Original facts {index}. " * 100], message_id=f"outside-{index}")
+        for index in range(3)
+    ]
+    original = copy.deepcopy(messages)
+    strategy = _strategy(_Summarizer(), budget=100_000, cap=None)
+    _size(messages)
+    for index in range(3):
+        group = next(
+            g
+            for g in group_messages(messages)
+            if messages[g["start_index"]].message_id == f"outside-{index}"
+        )
+        strategy.user_turns._replace(
+            messages, [group], f"Saved facts {index}. " * 40, summary_id=f"outside-summary-{index}"
+        )
+        if index == 1:
+            assert strategy._reshape_records(messages)
+            assert await strategy.user_turns.fold_if_smaller(messages) == "folded"
+    assert await strategy.user_turns.fold_if_smaller(messages) == "folded"
+    _hold_later_user_edits(original, copy.deepcopy(messages))
+    original[:] = [
+        m
+        for m in original
+        if m.message_id not in {"outside-0", "outside-summary-0", "user_summary_fold_0"}
+    ]
+    source = next(m for m in original if m.message_id == "outside-1")
+    summary = next(m for m in original if m.message_id == "outside-summary-1")
+    if protection == "source-host":
+        protected = source
+    else:
+        protected = summary
+        summary.additional_properties[EXCLUDED_KEY] = False
+    reason = None if protection == "summary-unowned" else "host"
+    if protection == "edited-summary":
+        summary.contents[0].text = (summary.contents[0].text or "") + " Changed."
+    elif protection == "duplicate-summary":
+        original.insert(original.index(summary), copy.deepcopy(summary))
+    else:
+        protected.additional_properties.pop(PRESERVE_REASON_KEY, None)
+        set_preserved(protected, preserved=True, reason=reason)
+    _retain_later_reasoning(original)
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    if public:
+        cold.user_trigger_fraction = 1.0
+        cold.tool_results.trigger_fraction = 1.0
+        await cold(original)
+    else:
+        cold._replay_record_edits(original)
+    retained = next(m for m in original if m.message_id == protected.message_id)
+    assert not retained.additional_properties.get(EXCLUDED_KEY)
+    if protection in {"edited-summary", "duplicate-summary"}:
+        assert not next(
+            m for m in original if m.message_id == source.message_id
+        ).additional_properties.get(EXCLUDED_KEY)
+    else:
+        assert is_preserved(retained)
+        assert retained.additional_properties.get(PRESERVE_REASON_KEY) == reason
 
 
 def test_deep_pruned_summary_chain_retains_placement_anchor() -> None:
@@ -860,7 +927,7 @@ async def test_ordinary_fold_replay_checks_surviving_branch_placement(move: str)
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("entry", ["fresh", "held", "missing"])
+@pytest.mark.parametrize("entry", ["fresh", "held", "missing", "refold", "public"])
 @pytest.mark.parametrize("reason", [None, "host"])
 async def test_summary_replay_and_folds_keep_host_preservation(
     entry: str, reason: str | None
@@ -888,7 +955,7 @@ async def test_summary_replay_and_folds_keep_host_preservation(
         for message in messages:
             if message.message_id in {"summary-0", "summary-1"}:
                 message.additional_properties.pop(EXCLUDED_KEY, None)
-        if entry == "missing":
+        if entry in {"missing", "refold", "public"}:
             messages[:] = [
                 m for m in messages if not (m.message_id or "").startswith("user_summary_fold_")
             ]
@@ -897,11 +964,64 @@ async def test_summary_replay_and_folds_keep_host_preservation(
     set_preserved(protected, preserved=True, reason=reason)
     if entry == "fresh":
         assert await strategy.user_turns.fold_if_smaller(messages) == "skipped"
+    elif entry == "refold":
+        strategy.user_turns.refold(messages)
+    elif entry == "public":
+        strategy.user_trigger_fraction = 1.0
+        strategy.tool_results.trigger_fraction = 1.0
+        await strategy(messages)
     else:
         strategy.user_turns.replay_summaries(messages)
     assert not protected.additional_properties.get(EXCLUDED_KEY)
     assert is_preserved(protected)
     assert protected.additional_properties.get(PRESERVE_REASON_KEY) == reason
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("entry", ["manual", "automatic"])
+@pytest.mark.parametrize("reason", [None, "host"])
+async def test_fresh_fold_rechecks_preservation_after_summary(
+    entry: str, reason: str | None
+) -> None:
+    from maf_compaction._preserve import PRESERVE_REASON_KEY, is_preserved, set_preserved
+
+    messages = [
+        Message("user", [f"Facts {index}. " * 100], message_id=f"source-{index}")
+        for index in range(2)
+    ]
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=100_000, cap=None)
+    _size(messages)
+    for index in range(2):
+        group = next(
+            g
+            for g in group_messages(messages)
+            if messages[g["start_index"]].message_id == f"source-{index}"
+        )
+        strategy.user_turns._replace(
+            messages, [group], f"Saved facts {index}. " * 40, summary_id=f"summary-{index}"
+        )
+    protected = next(m for m in messages if m.message_id == "summary-0")
+
+    def hold(_body: str) -> str:
+        protected.additional_properties.pop(PRESERVE_REASON_KEY, None)
+        set_preserved(protected, preserved=True, reason=reason)
+        return "Folded facts."
+
+    summarizer.rewrite = hold
+    before = _sent(messages)
+    if entry == "manual":
+        assert await strategy.user_turns.fold_if_smaller(messages) == "skipped"
+    else:
+        strategy.user_turns.summary_mode = "fold"
+        assert not await strategy.user_turns._fold(
+            messages, strategy.user_turns._observe_summaries(messages)
+        )
+    assert len(summarizer.requests) == 1
+    assert _sent(messages) == before
+    assert is_preserved(protected)
+    assert protected.additional_properties.get(PRESERVE_REASON_KEY) == reason
+    assert not strategy.user_turns._kept_folds
 
 
 @pytest.mark.anyio
