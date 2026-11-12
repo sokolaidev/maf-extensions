@@ -302,6 +302,7 @@ def make_codeact_tools(
     program: ProgramRequirements = ProgramRequirements(),
     credential_retention_seconds: int | None = None,
     file_store_provenance: FileStoreProvenance | None = None,
+    argument_integrity: SourceIntegrity | None = None,
     requires_file_integrity: SourceIntegrity | None = None,
 ) -> list[Any]:
     """Return the ``[execute_code]`` tool list, or ``[]`` when no sandbox is available.
@@ -323,6 +324,8 @@ def make_codeact_tools(
         file_store: The agent's file store. Given one, the tool takes a ``files``
             parameter and shares those files into the sandbox; the caller's listing is the
             authority on which names exist, exactly as it is for the Bicep kind.
+        argument_integrity: Host policy for all model arguments; defaults to the FIDES call label.
+            Trusting arguments never raises file evidence or reveals hidden references.
         file_store_provenance: The store's provenance record, rechecked around each file read.
             Without one, the listing's integrity label stands.
         requires_file_integrity: Minimum integrity for file reads after the provenance fold.
@@ -577,6 +580,7 @@ def make_codeact_tools(
         # per-call report labels from file evidence and the enabled source channels.
         source_integrity=SourceIntegrity.UNTRUSTED,
         file_store_provenance=file_store_provenance,
+        argument_integrity=argument_integrity,
         requires_file_integrity=requires_file_integrity,
         # Both modes need a raised framework declaration to keep contract items readable.
         result_contract=True,

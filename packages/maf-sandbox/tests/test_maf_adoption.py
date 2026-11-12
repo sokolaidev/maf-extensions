@@ -43,6 +43,102 @@ def attach(body, *, guidance=("Fixed guidance.",), contract=False):
 
 
 @pytest.mark.parametrize("sync", [False, True])
+def test_argument_label_is_captured_before_host_work(sync):
+    async def scenario():
+        tracker = LabelTrackingFunctionMiddleware(auto_hide_untrusted=False)
+        source = FunctionTool(name="source", func=lambda: "untrusted")
+        source_context = FunctionInvocationContext(function=source, arguments={})
+
+        async def taint():
+            source_context.result = "untrusted"
+
+        await tracker.process(source_context, taint)
+        assert tracker.get_context_label().integrity is IntegrityLabel.UNTRUSTED
+
+        def body(name: str):
+            tracker.reset_context_label()
+            return SandboxResult(completed=True, output=(name,))
+
+        async def async_body(name: str):
+            return body(name)
+
+        attached = attach(body if sync else async_body, contract=True)
+        context = FunctionInvocationContext(function=attached, arguments={"name": "diagnostic"})
+
+        async def invoke():
+            context.result = await attached.invoke(arguments=context.arguments, context=context)
+
+        await tracker.process(context, invoke)
+        report = next(item for item in context.result if item.text == "diagnostic")
+        assert report.additional_properties["security_label"]["integrity"] == "untrusted"
+        assert tracker.get_context_label().integrity is IntegrityLabel.UNTRUSTED
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_argument_labels_and_expired_children_are_isolated():
+    async def scenario():
+        ready = asyncio.Event()
+        release = asyncio.Event()
+        both = 0
+        children = []
+
+        def build(session):
+            async def late():
+                await release.wait()
+                return session.argument_integrity, positions_holding_hidden_content(["name"])
+
+            async def body(name: str):
+                nonlocal both
+                level = session.argument_integrity
+                children.append(asyncio.create_task(late()))
+                both += 1
+                if both == 2:
+                    ready.set()
+                await ready.wait()
+                assert session.argument_integrity is level
+                return SandboxResult(completed=True, output=(name,))
+
+            return body
+
+        attached = sandboxed_tool(
+            build,
+            router=SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE),
+            context=CallerContext(lambda: "scope", lambda: "thread", InMemoryStore.list),
+            agent_id="agent",
+            spec=SandboxSpec(kind="probe"),
+            name="probe",
+            source_integrity="untrusted",
+            result_contract=True,
+        )[0]
+
+        async def call(tainted):
+            tracker = LabelTrackingFunctionMiddleware(auto_hide_untrusted=False)
+            if tainted:
+                source = FunctionTool(name="source", func=lambda: "untrusted")
+                source_context = FunctionInvocationContext(function=source, arguments={})
+
+                async def taint():
+                    source_context.result = "untrusted"
+
+                await tracker.process(source_context, taint)
+            context = FunctionInvocationContext(function=attached, arguments={"name": "diagnostic"})
+
+            async def invoke():
+                context.result = await attached.invoke(arguments=context.arguments, context=context)
+
+            await tracker.process(context, invoke)
+            report = next(item for item in context.result if item.text == "diagnostic")
+            return report.additional_properties["security_label"]["integrity"]
+
+        assert await asyncio.gather(call(False), call(True)) == ["trusted", "untrusted"]
+        release.set()
+        assert await asyncio.gather(*children) == [(None, {0}), (None, {0})]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("sync", [False, True])
 @pytest.mark.parametrize("outer", [False, True])
 def test_real_rewrites_are_positional_and_call_scoped(sync, outer, monkeypatch):
     from maf_sandbox import maf

@@ -249,6 +249,7 @@ def make_bicep_tools(
     egress_integrity: SourceIntegrity | None = None,
     exec_timeout_seconds: int = 120,
     file_store_provenance: FileStoreProvenance | None = None,
+    argument_integrity: SourceIntegrity | None = None,
     requires_file_integrity: SourceIntegrity | None = None,
 ) -> list[Any]:
     """Return the ``[bicep_validate]`` tool list, or ``[]`` when no sandbox is available.
@@ -287,6 +288,8 @@ def make_bicep_tools(
             even when no restore occurs.
         exec_timeout_seconds: Per-command bound. A sandbox that stops answering must not
             hold the caller's turn open.
+        argument_integrity: Host policy for all model arguments; defaults to the FIDES call label.
+            Trusting arguments never raises file evidence or reveals hidden references.
         file_store_provenance: The store's provenance record, rechecked around each file read.
             Without one, the listing's integrity label stands.
         requires_file_integrity: Minimum integrity for file reads after the provenance fold.
@@ -306,6 +309,7 @@ def make_bicep_tools(
         # Core computes per-call labels from file evidence and the enabled source channels.
         source_integrity=SourceIntegrity.UNTRUSTED,
         file_store_provenance=file_store_provenance,
+        argument_integrity=argument_integrity,
         requires_file_integrity=requires_file_integrity,
         egress_integrity=egress_integrity,
         # Completion and verdict remain readable when the compiler's text is hidden.
@@ -353,10 +357,13 @@ def _bicep_validate_tool(
         # reference into any of these, and its answer is what a refusal renders instead of the
         # value. One pass over the variable store, before either loop that can refuse.
         rewritten = positions_holding_hidden_content(files, argument=_FILES_ARGUMENT)
+        untrusted_names = session.argument_integrity is not SourceIntegrity.TRUSTED
 
         for position, name in enumerate(files):
             if not name.endswith(_ACCEPTED_SUFFIXES):
-                named = echoed_name(name, at=f"files[{position}]", hidden=position in rewritten)
+                named = echoed_name(
+                    name, at=f"files[{position}]", hidden=untrusted_names or position in rewritten
+                )
                 return SandboxResult(
                     completed=False,
                     trusted_output=(
@@ -386,7 +393,9 @@ def _bicep_validate_tool(
             sandbox_path, listing_key, rejection = resolve_listed_path(
                 name, listed_names, call_directory
             )
-            named = echoed_name(name, at=f"files[{position}]", hidden=position in rewritten)
+            named = echoed_name(
+                name, at=f"files[{position}]", hidden=untrusted_names or position in rewritten
+            )
             if rejection == "unsafe":
                 # No listing echoed back: that would invite a retry with another spelling.
                 return SandboxResult(
@@ -482,7 +491,9 @@ def _bicep_validate_tool(
             # The value at the expanded position, not this entry's listing key: `echoed_name`
             # reports the length of what it is standing in for, and the two spellings differ.
             at = f"files[{expanded if hidden else position}]"
-            named = echoed_name(files[expanded] if hidden else name, at=at, hidden=hidden)
+            named = echoed_name(
+                files[expanded] if hidden else name, at=at, hidden=hidden or untrusted_names
+            )
             item = await session.read_file(store, listed, at=at, hidden=hidden, named=named)
             if isinstance(item, str):
                 # The session logged the detail; this is the sentence the model may see.

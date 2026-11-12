@@ -88,12 +88,16 @@ def make_document_tools(
     max_image_pages: int = 20,
     formats: tuple[str, ...] = ("text", "markdown", "images"),
     file_store_provenance: FileStoreProvenance | None = None,
+    argument_integrity: SourceIntegrity | None = None,
     requires_file_integrity: SourceIntegrity | None = None,
 ) -> list[Any]:
     """Attach document_read(file, format, pages) to a store whose read returns bytes.
 
     The context supplies the authorized listing. The host selects all limits and the output
     sink; the model selects one listed document and a 1-based inclusive page/slide range.
+
+    ``argument_integrity`` overrides the FIDES label for all model arguments. It never
+    raises file evidence or reveals hidden references.
     """
     if (
         type(exec_timeout_seconds) not in (int, float)
@@ -140,6 +144,7 @@ def make_document_tools(
         verdicts=("extracted", "refused"),
         output_sink=sink,
         file_store_provenance=file_store_provenance,
+        argument_integrity=argument_integrity,
         requires_file_integrity=requires_file_integrity,
         admission_timeout=max(30, exec_timeout_seconds),
         logger=_LOGGER,

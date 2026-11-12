@@ -61,12 +61,16 @@ def make_terraform_tools(
     image_id: str | None = None,
     exec_timeout_seconds: float = 120,
     file_store_provenance: FileStoreProvenance | None = None,
+    argument_integrity: SourceIntegrity | None = None,
 ) -> list[Any]:
     """Attach validation and, with formatting=True, a tool returning changed whole files.
 
     The host chooses the engine and compatible image; the model supplies only a file manifest
     and root module. The deadline covers all guest phases together. A cancellation waits for
     the bounded execution to finish before the core disposes the call's sandbox.
+
+    ``argument_integrity`` overrides the FIDES label for all model arguments. It never
+    raises file evidence or reveals hidden references.
     """
     if (
         isinstance(exec_timeout_seconds, bool)
@@ -86,6 +90,7 @@ def make_terraform_tools(
         verdicts=VALIDATE_VERDICTS,
         standing_guidance=(STANDING_GUIDANCE,),
         file_store_provenance=file_store_provenance,
+        argument_integrity=argument_integrity,
         admission_timeout=max(30, exec_timeout_seconds),
         logger=logger,
     )
@@ -102,6 +107,7 @@ def make_terraform_tools(
             verdicts=FORMAT_VERDICTS,
             standing_guidance=(FORMAT_GUIDANCE,),
             file_store_provenance=file_store_provenance,
+            argument_integrity=argument_integrity,
             admission_timeout=max(30, exec_timeout_seconds),
             logger=logger,
         )
