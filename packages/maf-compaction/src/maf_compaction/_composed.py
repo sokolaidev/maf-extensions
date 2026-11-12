@@ -31,10 +31,10 @@ import asyncio
 import hashlib
 import logging
 from bisect import bisect_left
-from collections.abc import Generator, Mapping
+from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from copy import copy
+from copy import copy, deepcopy
 from dataclasses import asdict, dataclass
 from math import ceil, isfinite
 from time import monotonic
@@ -99,7 +99,12 @@ from ._toolsummary import (
     reshapeable_record_groups,
 )
 from ._toolsummary import _tokens as _record_tokens  # pyright: ignore[reportPrivateUsage]
-from ._usersummary import SUMMARY_MODE_RECOMPACT, UserTurnAnchoredSummarizationCompactionStrategy
+from ._usersummary import (
+    SUMMARY_MODE_RECOMPACT,
+    SummaryWorkStopped,
+    UserTurnAnchoredSummarizationCompactionStrategy,
+    summary_request_admission,
+)
 from ._usersummary import (
     _linked_ids as _summary_source_ids,  # pyright: ignore[reportPrivateUsage]
 )
@@ -129,7 +134,7 @@ class _BatchProbesSpent(Exception):
     """A record-merge sweep has rendered :data:`_MAX_BATCH_PROBES` batch prefixes."""
 
 
-class _ChainTimeSpent(Exception):
+class _ChainTimeSpent(SummaryWorkStopped):
     """The current pass has spent its summarizer deadline."""
 
 
@@ -139,6 +144,103 @@ class _RecordAnswer:
 
     text: str
     incomplete: bool = False
+
+
+@dataclass
+class _PreparedMerge:
+    sources: str
+    count: int
+    transcript: str
+    answer: _RecordAnswer
+
+
+class _RecordMergeWork:
+    """Prepare isolated record answers; only a foreground pass may accept them."""
+
+    def __init__(self) -> None:
+        self.strategy: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy | None = None
+        self.expected_state: dict[str, Any] | None = None
+        self.defer_merges = False
+        self._history: list[Message] | None = None
+        self._budget = 0
+        self._generation = 0
+        self._ready: list[_PreparedMerge] = []
+        self._task: asyncio.Task[None] | None = None
+        self._tasks: set[asyncio.Task[None]] = set()
+        self._worker: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy | None = None
+
+    def bind(
+        self,
+        strategy: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+        state: dict[str, Any] | None,
+    ) -> None:
+        if self.strategy is not strategy or (
+            self.expected_state is not None and state != self.expected_state
+        ):
+            self.cancel()
+            if self.strategy is not None:
+                self.strategy._background = None  # pyright: ignore[reportPrivateUsage]
+        self.strategy = strategy
+        strategy._background = self  # pyright: ignore[reportPrivateUsage]
+
+    def remember(self, messages: list[Message], budget: int) -> None:
+        self._history = messages
+        self._budget = budget
+
+    def cancel(self) -> None:
+        self._generation += 1
+        for task in self._tasks:
+            task.cancel()
+        self._task = None
+        self._worker = None
+        self._history = None
+        self._ready.clear()
+        self.defer_merges = False
+
+    async def close(self) -> None:
+        self.cancel()
+        if self.strategy is not None:
+            self.strategy._background = None  # pyright: ignore[reportPrivateUsage]
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+
+    def start(self, response: list[Message]) -> None:
+        if not any(c.type == "function_call" for m in response for c in m.contents):
+            self.cancel()
+            return
+        self.defer_merges = True
+        if self._history is None or self.strategy is None or self._task is not None:
+            return
+        messages = deepcopy([*self._history, *response])
+        generation = self._generation
+
+        def ready(sources: str, count: int, transcript: str, answer: _RecordAnswer) -> None:
+            if generation == self._generation:
+                self._ready.append(_PreparedMerge(sources, count, transcript, answer))
+
+        worker = self.strategy._record_worker(  # pyright: ignore[reportPrivateUsage]
+            self._budget, ready, lambda: generation == self._generation
+        )
+        self._worker = worker
+        self._task = asyncio.create_task(
+            worker._prepare_record_merges(messages)  # pyright: ignore[reportPrivateUsage]
+        )
+        self._tasks.add(self._task)
+        self._task.add_done_callback(self._tasks.discard)
+
+    async def apply_ready(self, messages: list[Message]) -> bool:
+        strategy = self.strategy
+        if strategy is None:
+            return False
+        prepared, self._ready = self._ready, []
+        changed = await strategy._apply_record_answers(  # pyright: ignore[reportPrivateUsage]
+            messages, prepared
+        )
+        if self._task is not None and self._task.done() and self._worker is not None:
+            strategy._remember_record_search(self._worker)  # pyright: ignore[reportPrivateUsage]
+            self._worker = None
+            self._task = None
+        return changed
 
 
 class CompactionBudgetExceeded(ValueError):
@@ -588,7 +690,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             ``max_summary_input_tokens`` alone.
         chain_seconds: Positive finite seconds shared by the last-resort chain's merge,
             fold and rewrite requests, including retries. Defaults to 30; ``None`` disables
-            the deadline. Earlier user-turn summaries and local fallback work are outside it.
+            the admission deadline. In-flight requests may finish after it. Earlier user-turn
+            summaries and local fallback work are outside it.
         record_merge_split_depth: Maximum recursive halvings of a lossy or truncated merge
             batch, default two. Zero disables smaller retries. Every child holds at least
             two records and shares the chain deadline.
@@ -740,6 +843,79 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._batch_resume: tuple[str, int, int, str, int] | None = None
         self._pending_merges: list[_PendingMerge] = []
         self._refused_rewrites: dict[tuple[str, int], int] = {}
+        self._background: _RecordMergeWork | None = None
+        self._record_answer_ready: Callable[[str, int, str, _RecordAnswer], None] | None = None
+        self._record_work_current: Callable[[], bool] | None = None
+
+    def _record_worker(
+        self,
+        budget: int,
+        ready: Callable[[str, int, str, _RecordAnswer], None],
+        current: Callable[[], bool],
+    ) -> ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
+        worker = copy(self)
+        worker.tool_results = copy(self.tool_results)
+        worker.user_turns = copy(self.user_turns)
+        worker._background = None
+        worker.restore_session_state(deepcopy(self.session_state()))
+        worker._request_budget = ContextVar("background_record_budget", default=budget)
+        worker._chain_deadline = ContextVar("background_record_deadline", default=None)
+        worker._record_answer_ready = ready
+        worker._record_work_current = current
+        return worker
+
+    async def _prepare_record_merges(self, messages: list[Message]) -> None:
+        deadline = None if self.chain_seconds is None else monotonic() + self.chain_seconds
+        token = self._chain_deadline.set(deadline)
+        try:
+            annotate_message_groups(messages)
+            annotate_token_counts(messages, tokenizer=self.tokenizer)
+            start = _ChainStart.take(messages) if self._over(messages) else None
+            await self._merge_records(messages, start)
+        except _ChainTimeSpent:
+            pass
+        except Exception as error:
+            logger.warning("Background record merge stopped (%s).", type(error).__name__)
+        finally:
+            self._chain_deadline.reset(token)
+
+    async def _apply_record_answers(
+        self, messages: list[Message], prepared: list[_PreparedMerge]
+    ) -> bool:
+        changed = False
+        for item in prepared:
+            groups = consolidatable_record_groups(messages)
+            for index in range(len(groups) - item.count + 1):
+                batch = groups[index : index + item.count]
+                if source_key(messages, batch) != item.sources:
+                    continue
+                outcome = await self._consolidate(
+                    messages,
+                    batch,
+                    prompt=self.merge_prompt,
+                    transcript=item.transcript,
+                    answer=item.answer,
+                )
+                if outcome == "accepted":
+                    self._records_merged += 1
+                    changed = True
+                elif outcome in {"rejected", "lossy", "incomplete"}:
+                    key = item.transcript, item.count
+                    self._record_merges_rejected += 1
+                    self._refused_merges.add(key)
+                    if outcome in {"lossy", "incomplete"}:
+                        self._split_merges.add(key)
+                break
+        return changed
+
+    def _remember_record_search(
+        self, worker: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+    ) -> None:
+        self._search_prompt = worker._search_prompt
+        self._searched.update(worker._searched)
+        self._record_input_fits.update(worker._record_input_fits)
+        self._batch_resume = worker._batch_resume
+        self._pending_merges = list(worker._pending_merges)
 
     @property
     def strategies(self) -> tuple[_Phase, ...]:
@@ -970,9 +1146,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             for entry in merges
             if not isinstance(entry, str)
         }
-        self._split_merges = {
-            (entry["transcript"], entry["source_count"]) for entry in data.get("split_merges", [])
-        } & self._refused_merges
+        self._split_merges = (
+            {(entry["transcript"], entry["source_count"]) for entry in data.get("split_merges", [])}
+            & self._refused_merges
+            if "split_merges" in data
+            else set(self._refused_merges)
+        )
         rewrites: dict[str, int] | list[dict[str, Any]] = data["refused_rewrites"]
         self._refused_rewrites = (
             {}
@@ -1282,6 +1461,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     for message in members
                 )
             )
+        if self._background is not None:
+            self._background.remember(messages, self._budget)
         return replayed or replay.changed or changed or compacted or chained or fitted
 
     def _enforce_budget(self, messages: list[Message]) -> bool:
@@ -1448,6 +1629,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             True if anything changed the outgoing messages.
         """
         changed = self._keep_decisions(messages, replayed_user_fold=replayed_user_fold)
+        if self._background is not None:
+            changed = await self._background.apply_ready(messages) or changed
         if not self._over(messages):
             return changed
         start = _ChainStart.take(messages)
@@ -1455,24 +1638,21 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         kept = len(self._kept_records), self._user_summaries_merged
         deadline = None if self.chain_seconds is None else monotonic() + self.chain_seconds
         token = self._chain_deadline.set(deadline)
-        timeout = asyncio.timeout(self.chain_seconds)
         try:
-            async with timeout:
+            if self._background is None or not self._background.defer_merges:
                 changed = await self._merge_records(messages, start) or changed
-                self._check_chain_deadline()
-                if self._short_of_target(messages, start):
-                    changed = await self._merge_user_summaries(messages) or changed
-                self._check_chain_deadline()
-                if self._short_of_target(messages, start):
-                    changed = await self._rewrite_records(messages, start) or changed
-        except (TimeoutError, _ChainTimeSpent) as error:
-            if isinstance(error, TimeoutError) and not timeout.expired():
-                raise
+            self._check_chain_deadline()
+            if self._short_of_target(messages, start):
+                changed = await self._merge_user_summaries(messages) or changed
+            self._check_chain_deadline()
+            if self._short_of_target(messages, start):
+                changed = await self._rewrite_records(messages, start) or changed
+        except _ChainTimeSpent:
             self._chain_timeouts += 1
             changed = kept != (len(self._kept_records), self._user_summaries_merged) or changed
             logger.warning(
-                "Compaction stopped last-resort summary work after %.3f seconds; "
-                "completed reductions are retained and unfinished requests remain eligible.",
+                "Compaction stopped starting last-resort summary work after %.3f seconds; "
+                "completed reductions are retained and remaining batches stay eligible.",
                 self.chain_seconds,
             )
         finally:
@@ -1488,6 +1668,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return changed
 
     def _check_chain_deadline(self) -> None:
+        if self._record_work_current is not None and not self._record_work_current():
+            raise asyncio.CancelledError
         deadline = self._chain_deadline.get()
         if deadline is not None and monotonic() >= deadline:
             raise _ChainTimeSpent
@@ -2280,7 +2462,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             key = (digests[last(groups[first])], limit)
             self._searched[key] = _Searched(covered, chain(first, covered), batch, ended)
 
-        def search(first: int) -> list[dict[str, Any]]:
+        async def search(first: int) -> list[dict[str, Any]]:
             """Return the batch from ``first``, resuming a search of the same records."""
             remaining = len(groups) - first
             checked = 1
@@ -2313,6 +2495,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 checked = 2
             # Token counts need not grow with text, so a longer run may fit where two do not.
             for count in range(checked + 1, remaining + 1):
+                if self._record_answer_ready is not None:
+                    await asyncio.sleep(0)
                 try:
                     fit = fits(groups[first : first + count])
                 except (_BatchProbesSpent, _ChainTimeSpent):
@@ -2347,6 +2531,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         groups, _, over = survey()
         resumed = False
         while over and (selected := pending_batch()) is not None:
+            if self._record_answer_ready is not None:
+                await asyncio.sleep(0)
             self._check_chain_deadline()
             pending, batch = selected
             transcript = _numbered_records([bodies[last(group)] for group in batch])
@@ -2385,6 +2571,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             cursor = self._batch_resume[4]
         self._batch_resume = None
         while over:
+            if self._record_answer_ready is not None:
+                await asyncio.sleep(0)
             while cursor < len(groups) and last(groups[cursor]) in handled:
                 cursor += 1
             if len(groups) - cursor < 2:
@@ -2405,7 +2593,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 handled.add(oldest)
                 continue
             try:
-                batch = search(cursor)
+                batch = await search(cursor)
             except _BatchProbesSpent:
                 logger.info(
                     "Compaction stopped looking for record batches after %d prefixes; "
@@ -2585,7 +2773,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
     async def _merge_user_summaries(self, messages: list[Message]) -> bool:
         """Step b: fold the oldest user summaries that fit, when at least two fit."""
-        outcome = await self.user_turns.fold_if_smaller(messages)
+        with summary_request_admission(self._check_chain_deadline):
+            outcome = await self.user_turns.fold_if_smaller(messages)
         if outcome == "folded":
             self._user_summaries_merged += 1
             return True
@@ -2672,7 +2861,13 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         )
 
     async def _consolidate(
-        self, messages: list[Message], groups: list[dict[str, Any]], *, prompt: str, transcript: str
+        self,
+        messages: list[Message],
+        groups: list[dict[str, Any]],
+        *,
+        prompt: str,
+        transcript: str,
+        answer: _RecordAnswer | None = None,
     ) -> _Consolidation:
         """Ask for one record in place of ``groups``, and put it there if it is smaller and whole.
 
@@ -2704,10 +2899,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         ]
         if any(_record_has_external_hold(message) for message in sources):
             return "skipped"
-        answer = await self._ask(prompt=prompt, transcript=transcript)
+        if answer is None:
+            answer = await self._ask(prompt=prompt, transcript=transcript)
         if answer is None:
             return "failed"
-        self._check_chain_deadline()
+        if self._record_answer_ready is not None:
+            sources_key = source_key(messages, groups)
+            if sources_key is not None:
+                self._record_answer_ready(sources_key, len(groups), transcript, answer)
         if any(_record_has_external_hold(message) for message in sources):
             return "skipped"
         text = answer.text
@@ -2825,9 +3024,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
         try:
             text = await self.user_turns._generate(  # pyright: ignore[reportPrivateUsage]
-                transcript, prompt=prompt, observe=observe, allow_empty_on_length=True
+                transcript,
+                prompt=prompt,
+                observe=observe,
+                allow_empty_on_length=True,
+                before_request=self._check_chain_deadline,
             )
             return _RecordAnswer(text, incomplete)
+        except _ChainTimeSpent:
+            raise
         except Exception as error:
             # Broad on purpose, as the user half's is: this runs inside the chat client's own
             # call path, so anything not caught here fails the user's turn.

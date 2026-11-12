@@ -6,20 +6,29 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
 from agent_framework import (
+    AgentContext,
+    AgentMiddleware,
     AgentSession,
     ChatContext,
     ChatMiddleware,
+    ChatResponse,
     CompactionProvider,
     FunctionInvocationContext,
     Message,
+    MiddlewareBundle,
+    ResponseStream,
     TokenizerProtocol,
 )
 
-from ._composed import ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+from ._composed import (
+    ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+    _RecordMergeWork,  # pyright: ignore[reportPrivateUsage]
+)
 from ._toolsummary import (
     DEFAULT_RECORD_TARGET_TOKENS,
     RecallGate,
@@ -120,6 +129,7 @@ class SessionCompactionRegistry:
         self._cache: OrderedDict[str, CompactionStack] = OrderedDict()
         self._active: dict[str, _Binding] = {}
         self._current: ContextVar[_Binding | None] = ContextVar("compaction_session", default=None)
+        self._merge_work: dict[str, tuple[AgentSession, _RecordMergeWork]] = {}
 
     @contextmanager
     def activate(self, session: AgentSession) -> Generator[CompactionStack]:
@@ -131,6 +141,7 @@ class SessionCompactionRegistry:
                     yield current.stack
                 finally:
                     session.state[self.state_key] = current.stack.to_dict()
+                    self._remember_merge_state(session)
                 return
         if session.session_id in self._active:
             raise RuntimeError("Overlapping compaction phases for one session are unsupported.")
@@ -139,6 +150,15 @@ class SessionCompactionRegistry:
         # A removed snapshot is a reset, even when this session is still cached.
         if stack is None or data is None:
             stack = self.build()
+        if entry := self._merge_work.get(session.session_id):
+            owner, work = entry
+            if owner is not session:
+                raise RuntimeError("Background record work belongs to another session object.")
+            if not isinstance(
+                stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+            ):
+                raise ValueError("Background record merging requires a composed strategy.")
+            work.bind(stack.strategy, data)
         if data is not None:
             stack.restore(data)
         stack.middleware._bind_session_id(session.session_id)  # pyright: ignore[reportPrivateUsage]
@@ -150,12 +170,17 @@ class SessionCompactionRegistry:
         finally:
             try:
                 session.state[self.state_key] = stack.to_dict()
+                self._remember_merge_state(session)
             finally:
                 self._current.reset(token)
                 del self._active[session.session_id]
             self._cache[session.session_id] = stack
             while len(self._cache) > self.max_cached_sessions:
                 self._cache.popitem(last=False)
+
+    def _remember_merge_state(self, session: AgentSession) -> None:
+        if entry := self._merge_work.get(session.session_id):
+            entry[1].expected_state = deepcopy(session.state[self.state_key])
 
     def current_stack(self) -> CompactionStack:
         """Return the active stack, refusing calls outside a session phase."""
@@ -203,6 +228,75 @@ class SessionCompactionProvider(CompactionProvider):
     ) -> None:
         with self.registry.activate(session):
             await super().after_run(agent=agent, session=session, context=context, state=state)
+
+
+class _RecordMergeRunMiddleware(AgentMiddleware):
+    def __init__(self, registry: SessionCompactionRegistry) -> None:
+        self.registry = registry
+
+    async def process(
+        self, context: AgentContext, call_next: Callable[[], Awaitable[None]]
+    ) -> None:
+        session = context.session
+        if session is None:
+            raise RuntimeError("Background record merging requires an AgentSession.")
+        if session.session_id in self.registry._merge_work:  # pyright: ignore[reportPrivateUsage]
+            raise RuntimeError("Overlapping agent runs for one compaction session are unsupported.")
+        work = _RecordMergeWork()
+        entry = session, work
+        self.registry._merge_work[session.session_id] = entry  # pyright: ignore[reportPrivateUsage]
+
+        async def close() -> None:
+            if self.registry._merge_work.get(session.session_id) is entry:  # pyright: ignore[reportPrivateUsage]
+                del self.registry._merge_work[session.session_id]  # pyright: ignore[reportPrivateUsage]
+            await work.close()
+
+        if context.stream:
+            context.stream_cleanup_hooks.append(close)
+        try:
+            await call_next()
+        except BaseException:
+            await close()
+            raise
+        if not isinstance(context.result, ResponseStream):
+            await close()
+
+
+class _RecordMergeChatMiddleware(ChatMiddleware):
+    def __init__(self, registry: SessionCompactionRegistry) -> None:
+        self.registry = registry
+
+    async def process(self, context: ChatContext, call_next: Callable[[], Awaitable[None]]) -> None:
+        session = context.session
+        if session is None or session.session_id not in self.registry._merge_work:  # pyright: ignore[reportPrivateUsage]
+            raise RuntimeError("Background record merging requires its agent-run middleware.")
+        owner, work = self.registry._merge_work[session.session_id]  # pyright: ignore[reportPrivateUsage]
+        if owner is not session:
+            raise RuntimeError("Background record work belongs to another session object.")
+        with self.registry.activate(session):
+            pass
+
+        def observed(response: ChatResponse) -> ChatResponse:
+            work.start(list(response.messages))
+            return response
+
+        await call_next()
+        if isinstance(context.result, ResponseStream):
+            context.result.with_result_hook(observed)
+        elif isinstance(context.result, ChatResponse):
+            observed(context.result)
+
+
+def make_session_record_merge_middleware(registry: SessionCompactionRegistry) -> MiddlewareBundle:
+    """Prepare record merges during tools, with cancellation scoped to one agent run.
+
+    Install on the agent alongside session compaction and recall middleware. The bundle
+    requires explicit sessions and must not be installed on a chat client alone.
+    """
+
+    return MiddlewareBundle(
+        [_RecordMergeRunMiddleware(registry), _RecordMergeChatMiddleware(registry)]
+    )
 
 
 class SessionToolResultRecallMiddleware(ChatMiddleware):
