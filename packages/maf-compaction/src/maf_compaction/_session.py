@@ -66,7 +66,7 @@ class CompactionStack:
             else self.strategy.decision_state().to_dict()
         )
         return {
-            "version": 8,
+            "version": 9,
             "kind": "composed" if composed else "record",
             "strategy": strategy,
             "gate": self.gate.session_state(),
@@ -78,7 +78,7 @@ class CompactionStack:
         composed = isinstance(
             self.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
         )
-        if data.get("version") not in (1, 2, 3, 4, 5, 6, 7, 8) or data.get("kind") != (
+        if data.get("version") not in (1, 2, 3, 4, 5, 6, 7, 8, 9) or data.get("kind") != (
             "composed" if composed else "record"
         ):
             raise ValueError("Unsupported compaction state version or stack kind.")

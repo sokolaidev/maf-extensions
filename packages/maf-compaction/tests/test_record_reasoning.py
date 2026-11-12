@@ -154,6 +154,256 @@ async def test_flagless_record_replacements_replay_before_retained_reasoning(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["reshape", "merge", "reshape-merge", "merge-rewrite"])
+@pytest.mark.parametrize(
+    ("shape", "lost"),
+    [
+        (shape, lost)
+        for shape in ("plain", "preceding", "co-located")
+        for lost in ("first", "last", "call", "result", "reasoning")
+        if shape != "plain" or lost != "reasoning"
+    ],
+)
+async def test_partial_record_exclusions_replay_complete_batches(
+    operation: str, lost: str, shape: str
+) -> None:
+    messages = _history(3) if shape == "plain" else _reasoned(3, shape)
+    groups = reshapeable_record_groups(messages)
+    selected = groups[-1] if lost == "last" else groups[0]
+    members = messages[selected["start_index"] : selected["end_index"] + 1]
+    lost_ids = {
+        message.message_id
+        for message in members
+        if lost in {"first", "last"}
+        or any(
+            content.type
+            == {
+                "call": "function_call",
+                "result": "function_result",
+                "reasoning": "text_reasoning",
+            }[lost]
+            for content in message.contents
+        )
+    }
+    text = " ".join(sorted(_sent_values(messages)))
+    answers = iter([text + " Extra details." * 30, text])
+    strategy = _strategy(_Summarizer(merge=lambda _: next(answers)), budget=100_000, cap=None)
+    if operation.startswith("reshape"):
+        assert strategy._reshape_records(messages)
+    if operation != "reshape":
+        for _ in range(2 if operation == "merge-rewrite" else 1):
+            groups = consolidatable_record_groups(messages)
+            assert (
+                await strategy._consolidate(
+                    messages,
+                    groups,
+                    prompt=DEFAULT_RECORD_MERGE_PROMPT,
+                    transcript=_transcript(messages, groups),
+                )
+                == "accepted"
+            )
+    _retain_later_reasoning(messages)
+    expected = _sent(messages)
+    rebuilt = copy.deepcopy(messages)
+    for message in rebuilt:
+        if message.message_id in lost_ids:
+            message.additional_properties.pop(EXCLUDED_KEY, None)
+    annotate_message_groups(rebuilt)
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    cold._replay_record_edits(rebuilt)
+    assert _sent(rebuilt) == expected
+    assert _sent(messages) == expected
+    assert len(rebuilt) == len(messages)
+    assert not cold._replay_record_edits(rebuilt)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["reshape", "merge"])
+@pytest.mark.parametrize("tamper", ["excluded", "preserved", "content", "identity"])
+async def test_partial_record_exclusions_respect_changed_sources(
+    operation: str, tamper: str
+) -> None:
+    from maf_compaction._preserve import set_preserved
+
+    messages = _history(2)
+    groups = reshapeable_record_groups(messages)
+    revived = {
+        m.message_id for m in messages[groups[0]["start_index"] : groups[0]["end_index"] + 1]
+    }
+    protected = messages[groups[1]["start_index"]].message_id
+    text = " ".join(sorted(_sent_values(messages)))
+    strategy = _strategy(_Summarizer(merge=lambda _: text), budget=100_000, cap=None)
+    if operation == "reshape":
+        assert strategy._reshape_records(messages)
+    else:
+        assert (
+            await strategy._consolidate(
+                messages,
+                groups,
+                prompt=DEFAULT_RECORD_MERGE_PROMPT,
+                transcript=_transcript(messages, groups),
+            )
+            == "accepted"
+        )
+    for message in messages:
+        if message.message_id in revived:
+            message.additional_properties.pop(EXCLUDED_KEY, None)
+        if message.message_id == protected:
+            if tamper == "excluded":
+                message.additional_properties[EXCLUDE_REASON_KEY] = "host"
+            elif tamper == "preserved":
+                set_preserved(message, preserved=True, reason="host")
+            elif tamper == "content":
+                message.contents[0].arguments = '{"values": "changed"}'
+            else:
+                message.message_id = "different-source"
+    _retain_later_reasoning(messages)
+    before = [m.to_dict() for m in messages]
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    assert not cold._replay_record_edits(messages)
+    assert [m.to_dict() for m in messages] == before
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("forget_reason", [False, True])
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_partial_intermediate_record_exclusions_replay_in_order(
+    forget_reason: bool, legacy: bool
+) -> None:
+    messages = _reasoned(3)
+    strategy = _strategy(
+        _Summarizer(merge=lambda _: " ".join(sorted(_sent_values(messages)))),
+        budget=100_000,
+        cap=None,
+    )
+    assert strategy._reshape_records(messages)
+    revived = next(m.message_id for m in messages if toolsummary_module._is_written_record(m))
+    groups = consolidatable_record_groups(messages)
+    assert (
+        await strategy._consolidate(
+            messages,
+            groups,
+            prompt=DEFAULT_RECORD_MERGE_PROMPT,
+            transcript=_transcript(messages, groups),
+        )
+        == "accepted"
+    )
+    _retain_later_reasoning(messages)
+    expected = _sent(messages)
+    for message in messages:
+        if message.message_id == revived:
+            message.additional_properties.pop(EXCLUDED_KEY, None)
+            if forget_reason:
+                message.additional_properties.pop(EXCLUDE_REASON_KEY, None)
+    before = [m.to_dict() for m in messages]
+    state = json.loads(json.dumps(strategy.session_state()))
+    if legacy:
+        for edit in state["record_order"]:
+            edit.pop("members", None)
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(state)
+    if legacy:
+        assert not cold._replay_record_edits(messages)
+        assert [m.to_dict() for m in messages] == before
+    else:
+        assert cold._replay_record_edits(messages)
+        assert _sent(messages) == expected
+        assert not cold._replay_record_edits(messages)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["reshape-merge", "merge-rewrite"])
+@pytest.mark.parametrize("position", ["before", "after"])
+async def test_invalid_later_record_output_rolls_back_the_chain(
+    operation: str, position: str
+) -> None:
+    messages = _reasoned(3)
+    text = " ".join(sorted(_sent_values(messages)))
+    answers = iter([text + " Extra details." * 30, text])
+    strategy = _strategy(_Summarizer(merge=lambda _: next(answers)), budget=100_000, cap=None)
+    if operation == "reshape-merge":
+        assert strategy._reshape_records(messages)
+    for _ in range(2 if operation == "merge-rewrite" else 1):
+        groups = consolidatable_record_groups(messages)
+        assert (
+            await strategy._consolidate(
+                messages,
+                groups,
+                prompt=DEFAULT_RECORD_MERGE_PROMPT,
+                transcript=_transcript(messages, groups),
+            )
+            == "accepted"
+        )
+    final = next(
+        m
+        for m in messages
+        if toolsummary_module._is_written_record(m)
+        and not m.additional_properties.get(EXCLUDED_KEY)
+    )
+    for message in messages:
+        message.additional_properties.pop(EXCLUDED_KEY, None)
+    _retain_later_reasoning(messages)
+    messages.remove(final)
+    messages.insert(2 if position == "before" else len(messages), final)
+    annotate_message_groups(messages)
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    before = [m.to_dict() for m in messages]
+    decisions = cold.tool_results.decision_state()
+    records = cold.tool_results.records_in_conversation
+    assert not cold._replay_record_edits(messages)
+    assert [m.to_dict() for m in messages] == before
+    assert cold.tool_results.decision_state() == decisions
+    assert cold.tool_results.records_in_conversation == records
+
+
+@pytest.mark.parametrize("timing", ["before", "after"])
+@pytest.mark.parametrize("tamper", ["body", "links", "metadata", "duplicate"])
+def test_edited_held_summary_outside_record_window_keeps_originals(
+    timing: str, tamper: str
+) -> None:
+    messages = _reasoned(2)
+    messages.insert(
+        -1, Message("user", ["Important original facts. " * 100], message_id="outside-user")
+    )
+    original = copy.deepcopy(messages)
+    strategy = _strategy(_Summarizer(), budget=100_000, cap=None)
+    _size(messages)
+    if timing == "after":
+        assert strategy._reshape_records(messages)
+    group = next(
+        g
+        for g in group_messages(messages)
+        if messages[g["start_index"]].message_id == "outside-user"
+    )
+    strategy.user_turns._replace(messages, [group], "Saved facts.", summary_id="outside-summary")
+    if timing == "before":
+        assert strategy._reshape_records(messages)
+    _hold_later_user_edits(original, messages)
+    held = next(m for m in original if _is_summary(m))
+    if tamper == "body":
+        held.contents[0].text = (held.contents[0].text or "").replace(
+            "Saved facts.", "Different facts."
+        )
+    elif tamper == "links":
+        held.additional_properties[GROUP_ANNOTATION_KEY][SUMMARY_OF_MESSAGE_IDS_KEY] = [
+            "other-user"
+        ]
+    elif tamper == "metadata":
+        held.contents[0].additional_properties["provider_state"] = "changed"
+    else:
+        original.insert(original.index(held), copy.deepcopy(held))
+    _retain_later_reasoning(original)
+    cold = _strategy(_Summarizer(), budget=100_000, cap=None)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+    cold._replay_record_edits(original)
+    source = next(m for m in original if m.message_id == "outside-user")
+    assert not source.additional_properties.get(EXCLUDED_KEY)
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("operation", ["reshape", "merge", "rewrite"])
 @pytest.mark.parametrize(
     "tamper", ["body", "metadata", "identity", "duplicate", "moved", "excluded", "preserved"]

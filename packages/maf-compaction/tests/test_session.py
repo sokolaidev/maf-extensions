@@ -249,7 +249,7 @@ def test_stack_writes_v8_snapshots_and_restores_older_versions(composed, version
     stack.gate.arm()
     stack.middleware._force_next = True
     snapshot = round_trip(stack.to_dict())
-    assert snapshot["version"] == 8
+    assert snapshot["version"] == 9
     legacy = snapshot | {"version": version}
     if composed:
         legacy = deepcopy(legacy)
@@ -304,7 +304,7 @@ async def test_stack_restores_fold_keys_and_replays_without_a_request(version):
     ]
     assert not restored_users.refold(stored)
     assert len(summarizer.requests) == 1
-    assert restored.to_dict()["version"] == 8
+    assert restored.to_dict()["version"] == 9
 
 
 def test_cache_is_bounded_and_session_state_wins_on_hits_and_resets():

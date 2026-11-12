@@ -1202,13 +1202,32 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             summary = next(
                 (message for message in messages if message.message_id == kept.summary_id), None
             )
+            if summary is not None:
+                expected = Message(
+                    "user", [f"{USER_SUMMARY_MARKER}\n{kept.text}"], message_id=kept.summary_id
+                )
+                if (
+                    sum(message.message_id == kept.summary_id for message in messages) != 1
+                    or summary.role != expected.role
+                    or summary.author_name != expected.author_name
+                    or media_identity(summary) != media_identity(expected)
+                ):
+                    continue
             if (
                 summary is not None
                 and summary.additional_properties.get(EXCLUDED_KEY)
                 and _excluded_for(summary) not in self._replacements
             ):
                 continue
-            superseded = [] if summary is None else _superseded_standing(messages, summary)
+            superseded = (
+                []
+                if summary is None
+                else [
+                    message
+                    for message in _superseded_standing(messages, summary)
+                    if media_identity(message) in {kept.sources[index] for index in kept.selected}
+                ]
+            )
             if (summary is None and kept.summary_id in linked and not restore_held_sources) or (
                 summary is not None and not superseded and not restore_held_sources
             ):
@@ -1235,7 +1254,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                         messages[int(turns[matches[0] + offset]["start_index"])]
                         for offset in kept.selected
                     ]
-                    if all(
+                    if _linked_ids(summary) == [
+                        member.message_id for member in members if member.message_id
+                    ] and all(
                         _excluded_for(member) == kept.summary_id or not any_preserved([member])
                         for member in members
                     ):

@@ -6,8 +6,8 @@ import hashlib
 import json
 from collections.abc import Collection
 from copy import copy
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Final
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from agent_framework import Message
 from agent_framework._compaction import (
@@ -38,6 +38,7 @@ class RecordEdit:
     summaries: list[str]
     shed_ids: list[str]
     shed_groups: list[str]
+    members: list[str] = field(default_factory=list[str])
 
 
 @dataclass
@@ -59,6 +60,33 @@ class ReplayView:
     replacement_keys: dict[tuple[tuple[str, str] | None, str | None, bool], str] = field(
         default_factory=dict[tuple[tuple[str, str] | None, str | None, bool], str]
     )
+
+    def fork(self) -> ReplayView:
+        """Copy mutable history annotations while retaining deferred-message relationships."""
+        originals = self.messages + [message for message, _ in self.deferred]
+        copies = {id(message): copy(message) for message in originals}
+        for message in copies.values():
+            message.additional_properties = dict(message.additional_properties)
+            annotation = message.additional_properties.get(GROUP_ANNOTATION_KEY)
+            if isinstance(annotation, dict):
+                message.additional_properties[GROUP_ANNOTATION_KEY] = dict(
+                    cast(dict[str, Any], annotation)
+                )
+        return replace(
+            self,
+            messages=[copies[id(message)] for message in self.messages],
+            message_keys=dict(self.message_keys),
+            replacement_keys=dict(self.replacement_keys),
+            exclusions=[
+                (copies[id(message)], properties) for message, properties in self.exclusions
+            ],
+            deferred=[
+                (copies[id(message)], copies.get(id(after), after))
+                for message, after in self.deferred
+            ],
+            record_replacements={id(copies[identity]) for identity in self.record_replacements},
+            summary_preview=copy(self.summary_preview),
+        )
 
     def invalidate(self) -> None:
         self.message_keys.clear()
@@ -161,6 +189,16 @@ def source_key(messages: list[Message], groups: list[dict[str, Any]]) -> str | N
         # Content cannot identify old reasoning once unrelated metadata changes.
         return None
     return "v2:" + key + ":" + ",".join(sorted(value for value in excluded_reasoning if value))
+
+
+def source_members(messages: list[Message], groups: list[dict[str, Any]]) -> list[str]:
+    """Fingerprint included batch members whose owned exclusions can be reconstructed."""
+    return [
+        _message_key(message)
+        for group in groups
+        for message in messages[group["start_index"] : group["end_index"] + 1]
+        if not message.additional_properties.get(EXCLUDED_KEY)
+    ]
 
 
 def source_lineage(messages: list[Message], groups: list[dict[str, Any]]) -> str | None:
