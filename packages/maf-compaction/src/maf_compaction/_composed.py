@@ -74,7 +74,7 @@ from ._record_replay import (
 )
 from ._request import RequestOverhead
 from ._shed import durable_message_id, unique_shed_groups
-from ._summary_input import bounded_prefix, bounded_prefix_extent, fits_summary_input
+from ._summary_input import async_bounded_prefix_extent, bounded_prefix, fits_summary_input
 from ._toolsummary import (
     CONSOLIDATE_EXCLUDE_REASON,
     PRESERVE_REASON_UNCOVERED,
@@ -236,8 +236,9 @@ class _RecordMergeWork:
         changed = await strategy._apply_record_answers(  # pyright: ignore[reportPrivateUsage]
             messages, prepared
         )
-        if self._task is not None and self._task.done() and self._worker is not None:
+        if self._worker is not None:
             strategy._remember_record_search(self._worker)  # pyright: ignore[reportPrivateUsage]
+        if self._task is not None and self._task.done():
             self._worker = None
             self._task = None
         return changed
@@ -871,8 +872,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             annotate_message_groups(messages)
             annotate_token_counts(messages, tokenizer=self.tokenizer)
             start = _ChainStart.take(messages) if self._over(messages) else None
+            if start is None and self.record_budget_share is None:
+                return
             await self._merge_records(messages, start)
         except _ChainTimeSpent:
+            # Ready answers remain available to the next foreground pass.
             pass
         except Exception as error:
             logger.warning("Background record merge stopped (%s).", type(error).__name__)
@@ -2481,13 +2485,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if checked < 2:
                 if fits(groups[first : first + 2]):
                     remember(first, 2, 2)
-                    batch, extent = bounded_prefix_extent(
+                    batch, extent = await async_bounded_prefix_extent(
                         groups[first:],
                         render=render,
                         prompt=self.merge_prompt,
                         tokenizer=self.tokenizer,
                         limit=limit,
                         min_items=2,
+                        cooperative=self._record_answer_ready is not None,
                     )
                     if extent is None:
                         remember(first, remaining, len(batch), ended=True)
@@ -2560,7 +2565,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if share is None:
             if not over:
                 return False
-            groups = self._bounded_records(messages, self.merge_prompt, min_items=2)
+            groups, _ = await async_bounded_prefix_extent(
+                groups,
+                render=lambda prefix: _numbered_records([bodies[last(group)] for group in prefix]),
+                prompt=self.merge_prompt,
+                tokenizer=self.tokenizer,
+                limit=limit,
+                min_items=2,
+                cooperative=self._record_answer_ready is not None,
+            )
             if len(groups) < 2:
                 return False
             changed, _ = await self._merge_batch(

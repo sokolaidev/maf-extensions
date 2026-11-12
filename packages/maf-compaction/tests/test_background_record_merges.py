@@ -184,6 +184,66 @@ async def test_completed_child_can_apply_while_its_sibling_is_running():
     await work.close()
 
 
+async def test_running_split_sibling_survives_run_end_and_restore():
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Waiting(_Summarizer):
+        async def get_response(self, messages, **kwargs):
+            if len(self.requests) == 2:
+                entered.set()
+                await release.wait()
+            return await super().get_response(messages, **kwargs)
+
+    model = Waiting(
+        merge=lambda body: (
+            _VALUE.findall(body)[0]
+            if _batch_size(body) > 2
+            else " ".join(sorted(set(_VALUE.findall(body))))
+        )
+    )
+    strategy, work, messages = await prepared(model)
+    work.start(tool_reply())
+    await entered.wait()
+    assert await strategy(messages)
+    assert strategy.records_merged == 1
+    state = deepcopy(strategy.session_state())
+    assert work._worker is not None
+    worker_state = work._worker.session_state()
+    await work.close()
+    assert state["pending_merges"] == worker_state["pending_merges"]
+    assert len(state["pending_merges"]) == 1
+    assert state["pending_merges"][0][2] == 1
+    assert state["searched_records"] == worker_state["searched_records"]
+
+    restored = _strategy(model, budget=100_000, share=0.001, cap=None)
+    restored.restore_session_state(state)
+    resumed = _RecordMergeWork()
+    resumed.bind(restored, None)
+    await restored(messages)
+    release.set()
+    resumed.start(tool_reply())
+    await running(resumed)
+    assert await restored(messages)
+    assert restored.records_merged == 1
+    assert [_batch_size(body) for body in model.merges] == [4, 2, 2]
+    assert _sent_values(messages) == {v for i in range(4) for v in _values(i)}
+    await resumed.close()
+
+
+@pytest.mark.parametrize("budget", [50, 100_000])
+async def test_disabled_share_only_merges_background_records_over_budget(budget):
+    model = _Summarizer()
+    strategy, work, messages = await prepared(model)
+    strategy.record_budget_share = None
+    work.remember(messages, budget)
+    work.start(tool_reply())
+    await running(work)
+    assert bool(model.requests) == (budget == 50)
+    await strategy(messages)
+    assert strategy.records_merged == int(budget == 50)
+    await work.close()
+
+
 async def test_cancelled_lossy_answer_cannot_start_child_requests():
     entered = asyncio.Event()
 
@@ -193,6 +253,7 @@ async def test_cancelled_lossy_answer_cannot_start_child_requests():
             try:
                 await asyncio.Future()
             except asyncio.CancelledError:
+                # Ignoring cancellation must not allow child requests to start.
                 pass
             return await super().get_response(messages, **kwargs)
 
@@ -517,10 +578,12 @@ async def test_background_deadline_keeps_search_and_unfinished_sibling_across_re
     await resumed.close()
 
 
-async def test_background_batch_search_yields_to_the_next_pass():
+@pytest.mark.parametrize("batch_fits", [False, True])
+@pytest.mark.parametrize("share", [None, 0.001])
+async def test_background_batch_search_yields_to_the_next_pass(batch_fits, share):
     entered = asyncio.Event()
 
-    class NoBatchFits(CharacterEstimatorTokenizer):
+    class BatchTokenizer(CharacterEstimatorTokenizer):
         probes = 0
 
         def count_tokens(self, text):
@@ -528,16 +591,18 @@ async def test_background_batch_search_yields_to_the_next_pass():
                 self.probes += 1
                 if self.probes == 3:
                     entered.set()
-                return 100_000
+                return 100 if batch_fits else 100_000
             return super().count_tokens(text)
 
-    tokenizer = NoBatchFits()
+    tokenizer = BatchTokenizer()
     model = _Summarizer()
-    strategy = _strategy(model, budget=100_000, share=0.001, cap=None, tokenizer=tokenizer)
+    strategy = _strategy(model, budget=100_000, share=share, cap=None, tokenizer=tokenizer)
     work = _RecordMergeWork()
     work.bind(strategy, None)
     messages = _history(30)
     await strategy(messages)
+    if share is None:
+        work.remember(messages, 50)
     work.start(tool_reply())
     await asyncio.wait_for(entered.wait(), 2)
     assert not await strategy(messages)
