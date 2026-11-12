@@ -603,7 +603,7 @@ async def test_invalid_owning_fold_keeps_flagless_original_facts(
         m for m in original if _is_summary(m) and not m.additional_properties.get(EXCLUDED_KEY)
     )
     if tamper == "body":
-        fold.contents[0].text += " Changed."
+        fold.contents[0].text = (fold.contents[0].text or "") + " Changed."
     elif tamper in {"links", "same-size-links"}:
         fold.additional_properties[GROUP_ANNOTATION_KEY][SUMMARY_OF_MESSAGE_IDS_KEY] = (
             ["other"] if tamper == "links" else ["other-0", "other-1"]
