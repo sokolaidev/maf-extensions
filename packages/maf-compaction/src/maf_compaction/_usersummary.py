@@ -22,6 +22,8 @@ import asyncio
 import logging
 import math
 from collections import OrderedDict
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from time import time
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, cast
@@ -42,12 +44,13 @@ from agent_framework._compaction import (
 
 from ._media import MEDIA_TYPES, annotate_token_counts, media_identity
 from ._preserve import PRESERVE_REASON_KEY, any_preserved, set_preserved
+from ._record_replay import SummaryReplayCache
 from ._request import RECALL_PROMPT_KEY
 from ._summary_input import bounded_prefix, fits_summary_input, summary_request
 from ._summary_links import has_summary_links
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Generator
 
     from agent_framework import ChatResponse, TokenizerProtocol
     from agent_framework._clients import SupportsChatGetResponse
@@ -76,7 +79,7 @@ __all__ = [
 
 #: What :meth:`UserTurnAnchoredSummarizationCompactionStrategy.fold_if_smaller` did: collapsed the
 #: standing summaries, refused an answer that was no smaller than them, got no answer at all, or
-#: had fewer than two summaries to collapse.
+#: had no eligible fold to apply.
 FoldOutcome = Literal["folded", "rejected", "failed", "skipped"]
 
 #: Every :data:`FoldOutcome`, for a caller that wants to count them.
@@ -390,6 +393,12 @@ def _linked_ids(message: Message) -> list[str]:
     if not isinstance(ids, list):
         return []
     return [value for value in cast(list[Any], ids) if isinstance(value, str)]
+
+
+def _externally_preserved(message: Message) -> bool:
+    return any_preserved([message]) and (
+        message.additional_properties.get(PRESERVE_REASON_KEY) != PRESERVE_REASON
+    )
 
 
 def _superseded_standing(messages: list[Message], summary: Message) -> list[Message]:
@@ -723,6 +732,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self.remembered_requests = remembered_requests
         self._remembered: list[_Remembered] = []
         self._replacements: dict[str, _Replacement] = {}
+        self._replay_refusals: ContextVar[frozenset[str]] = ContextVar(
+            "user_summary_replay_refusals", default=frozenset()
+        )
         # Kept fold outputs identify how far a history has already replayed.
         self._kept_folds: dict[str, _Remembered] = {}
         self._kept_fold_counts: dict[str, int] = {}
@@ -1121,6 +1133,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             for span in band
             for message in messages[span["start_index"] : span["end_index"] + 1]
         ]
+        if any_preserved(replaced):
+            return restored
         if not self._smaller(replaced, band, summary, summary_id=summary_id):
             # Remembered all the same, so the other list replays the refusal instead of asking.
             if remembered is None:
@@ -1136,11 +1150,213 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self._replaced = len(band)
         return True
 
-    def replay_summaries(self, messages: list[Message]) -> _SummaryReplay:
+    def replay_summary_ids(self, messages: list[Message]) -> list[str]:
+        """Identify accepted user edits represented in this history, including superseded ones."""
+        held = {message.message_id for message in messages}
+        linked = {value for message in messages for value in _linked_ids(message)}
+        return [identity for identity in self._replacements if identity in held | linked]
+
+    def replay_source_exclusions(self, messages: list[Message], summary_ids: list[str]) -> set[str]:
+        """Identify owned exclusions made after a record edit's accepted user prerequisites."""
+        later = self._replacements.keys() - set(summary_ids)
+        return {
+            owner
+            for message in messages
+            if (owner := _excluded_for(message)) is not None and owner in later
+        }
+
+    def accept_replay_preview(
+        self, messages: list[Message], preview: UserTurnAnchoredSummarizationCompactionStrategy
+    ) -> None:
+        """Commit a copied strategy's replay counters after its candidate history is accepted."""
+        self._replayed = preview._replayed
+        self._replaced = preview._replaced
+        self._observe_summaries(messages)
+
+    @contextmanager
+    def replay_scope(self, messages: list[Message]) -> Generator[None]:
+        """Retain entry-history refusals through a composed compaction pass."""
+        token = self._replay_refusals.set(frozenset(self.invalid_replay_summaries(messages)))
+        try:
+            yield
+        finally:
+            self._replay_refusals.reset(token)
+
+    def invalid_replay_summaries(
+        self,
+        messages: list[Message],
+        *,
+        cache: SummaryReplayCache | None = None,
+        restore_held_sources: bool = True,
+    ) -> set[str]:
+        """Reject changed held replacements and the summaries whose facts they now own."""
+        if cache is None:
+            cache = SummaryReplayCache()
+        if restore_held_sources in cache.invalid:
+            return cache.invalid[restore_held_sources] | self._replay_refusals.get()
+        if not self._replacements:
+            return set()
+        held: dict[str, list[int]] = {}
+        for index, message in enumerate(messages):
+            if message.message_id:
+                held.setdefault(message.message_id, []).append(index)
+        expected: dict[str, str] = {}
+        for identity, kept in self._replacements.items():
+            key = (identity, kept.text)
+            if key not in cache.outputs:
+                cache.outputs[key] = media_identity(
+                    Message("user", [f"{USER_SUMMARY_MARKER}\n{kept.text}"], message_id=identity)
+                )
+            expected[identity] = cache.outputs[key]
+        identities = {fingerprint: identity for identity, fingerprint in expected.items()}
+        fingerprints: dict[int, str] = {}
+
+        def fingerprint(index: int) -> str:
+            if index not in fingerprints:
+                fingerprints[index] = cache.message_key(messages[index])
+            return fingerprints[index]
+
+        anchors: dict[str, int | None] = {}
+        user_positions: dict[str, list[int]] | None = None
+
+        def anchor(source_key: str) -> int | None:
+            nonlocal user_positions
+            pending = [(source_key, False)]
+            visiting: set[str] = set()
+            while pending:
+                current, expanded = pending.pop()
+                if current in anchors:
+                    continue
+                source_id = identities.get(current)
+                if source_id is not None:
+                    positions = held.get(source_id, [])
+                    if len(positions) == 1:
+                        result = positions[0]
+                    else:
+                        source = self._replacements[source_id]
+                        children = [source.sources[offset] for offset in source.selected]
+                        if not expanded:
+                            visiting.add(current)
+                            pending.append((current, True))
+                            pending.extend((key, False) for key in children if key not in visiting)
+                            continue
+                        result = min(
+                            (
+                                position
+                                for key in children
+                                if (position := anchors.get(key)) is not None
+                            ),
+                            default=None,
+                        )
+                        visiting.discard(current)
+                else:
+                    if user_positions is None:
+                        user_positions = {}
+                        for position, message in enumerate(messages):
+                            if message.role == "user":
+                                user_positions.setdefault(fingerprint(position), []).append(
+                                    position
+                                )
+                    positions = user_positions.get(current, [])
+                    result = positions[0] if len(positions) == 1 else None
+                anchors[current] = result
+            return anchors[source_key]
+
+        invalid: set[str] = set()
+        for identity, kept in self._replacements.items():
+            positions = held.get(identity, [])
+            if not positions:
+                continue
+            index = positions[0]
+            summary = messages[index]
+            links = _linked_ids(summary)
+            selected = [kept.sources[offset] for offset in kept.selected]
+            owner = _excluded_for(summary)
+            if (
+                len(positions) != 1
+                or summary.role != "user"
+                or summary.author_name is not None
+                or fingerprint(index) != expected[identity]
+                or len(links) != len(selected)
+                or len(set(links)) != len(links)
+                or any(
+                    source_key in identities and source != identities[source_key]
+                    for source, source_key in zip(links, selected, strict=False)
+                )
+                or (summary.additional_properties.get(EXCLUDED_KEY) and owner not in expected)
+                or (
+                    owner in self._replacements
+                    and expected[identity]
+                    not in {
+                        self._replacements[owner].sources[offset]
+                        for offset in self._replacements[owner].selected
+                    }
+                )
+                or any(
+                    len(held[source]) != 1
+                    or (
+                        (source in expected or _excluded_for(messages[held[source][0]]) != identity)
+                        and fingerprint(held[source][0]) != source_key
+                    )
+                    for source, source_key in zip(links, selected, strict=False)
+                    if source in held
+                )
+                or (owner in held and identity not in _linked_ids(messages[held[owner][0]]))
+            ):
+                invalid.add(identity)
+                continue
+            first = min(
+                (
+                    position
+                    for source_id, source_key in zip(links, selected, strict=True)
+                    if (position := held[source_id][0] if source_id in held else anchor(source_key))
+                    is not None
+                ),
+                default=None,
+            )
+            if (
+                first is None
+                or index >= first
+                or any(
+                    not message.additional_properties.get(EXCLUDED_KEY)
+                    and (
+                        restore_held_sources
+                        or any(content.type == "text_reasoning" for content in message.contents)
+                    )
+                    for message in messages[index + 1 : first]
+                )
+            ):
+                invalid.add(identity)
+        pending = list(invalid)
+        while pending:
+            kept = self._replacements[pending.pop()]
+            for offset in kept.selected:
+                child = identities.get(kept.sources[offset])
+                if child is not None and child not in invalid:
+                    invalid.add(child)
+                    pending.append(child)
+        cache.invalid[restore_held_sources] = invalid
+        return invalid | self._replay_refusals.get()
+
+    def replay_summaries(
+        self,
+        messages: list[Message],
+        *,
+        summary_ids: list[str] | None = None,
+        restore_held_sources: bool = False,
+        skip_summary_ids: set[str] | None = None,
+        invalid_summary_ids: set[str] | None = None,
+        cache: SummaryReplayCache | None = None,
+    ) -> _SummaryReplay:
         """Restore accepted edits on unchanged sources; report replay and trailing-turn changes.
 
         The caller supplies grouped, token-annotated history. Source windows must match
         uniquely and in order, and replay respects current anchors and preservation marks.
+        ``summary_ids`` limits restoration to prerequisites of an accepted record edit.
+        ``restore_held_sources`` is for isolated candidates whose record certificate must
+        still authorize restoring the original inclusion state.
+        ``skip_summary_ids`` leaves staged replacements for their existing message objects.
+        ``invalid_summary_ids`` retains refusals from before later edits were staged away.
 
         Message objects outlive the list an edit was inserted into, so a list can hold an edit's
         sources still excluded for it without the edit: the edit is put back on them. Sources
@@ -1149,7 +1365,12 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         recompaction superseded while it keeps the summary that superseded them, so those are
         excluded again, found by the held summary's links whatever became of its other sources.
         """
+        if cache is None:
+            cache = SummaryReplayCache()
         self._protect_media(messages)
+        invalid = self.invalid_replay_summaries(
+            messages, cache=cache, restore_held_sources=restore_held_sources
+        ) | (invalid_summary_ids or set())
         held = {message.message_id for message in messages if message.message_id}
         linked = {value for message in messages for value in _linked_ids(message)}
         known = held | linked | set(self._replacements)
@@ -1158,15 +1379,40 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             for message in messages
             if (summary_id := _excluded_for(message)) is not None and summary_id not in known
         }
-        _release_sources(messages, released)
+        released_members: dict[str, list[Message]] = {}
+
+        def release(identities: set[str]) -> bool:
+            for message in messages:
+                owner = _excluded_for(message)
+                if owner is not None and owner in identities:
+                    released_members.setdefault(owner, []).append(message)
+            return _release_sources(messages, identities)
+
+        release(released)
         changed = grew = chain_fold = False
         for kept in self._replacements.values():
+            if kept.summary_id in invalid:
+                continue
+            if summary_ids is not None and kept.summary_id not in summary_ids:
+                continue
+            if skip_summary_ids is not None and kept.summary_id in skip_summary_ids:
+                continue
             summary = next(
                 (message for message in messages if message.message_id == kept.summary_id), None
             )
-            superseded = [] if summary is None else _superseded_standing(messages, summary)
-            if (summary is None and kept.summary_id in linked) or (
-                summary is not None and not superseded
+            superseded = (
+                []
+                if summary is None
+                else [
+                    message
+                    for message in _superseded_standing(messages, summary)
+                    if cache.message_key(message)
+                    in {kept.sources[index] for index in kept.selected}
+                    and not _externally_preserved(message)
+                ]
+            )
+            if (summary is None and kept.summary_id in linked and not restore_held_sources) or (
+                summary is not None and not superseded and not restore_held_sources
             ):
                 continue
             turns = [
@@ -1178,7 +1424,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                     or _excluded_for(messages[int(span["start_index"])]) == kept.summary_id
                 )
             ]
-            identities = [media_identity(messages[int(span["start_index"])]) for span in turns]
+            identities = [cache.message_key(messages[int(span["start_index"])]) for span in turns]
             width = len(kept.sources)
             matches = [
                 index
@@ -1186,6 +1432,25 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 if identities[index : index + width] == kept.sources
             ]
             if summary is not None:
+                if restore_held_sources and len(matches) == 1:
+                    members = [
+                        messages[int(turns[matches[0] + offset]["start_index"])]
+                        for offset in kept.selected
+                    ]
+                    if _linked_ids(summary) == [
+                        member.message_id for member in members if member.message_id
+                    ] and all(
+                        _excluded_for(member) == kept.summary_id or not any_preserved([member])
+                        for member in members
+                    ):
+                        superseded.extend(
+                            member
+                            for member in members
+                            if not member.additional_properties.get(EXCLUDED_KEY)
+                            and not any(member is item for item in superseded)
+                        )
+                if not superseded:
+                    continue
                 # Held, so only its exclusions are repeated; the window says whether turns grew.
                 _supersede_again(superseded, summary_id=kept.summary_id, reason=kept.reason)
                 self._replayed += 1
@@ -1194,15 +1459,17 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 chain_fold = kept.summary_id in self._kept_folds or chain_fold
                 continue
             if len(matches) != 1:
-                if _release_sources(messages, {kept.summary_id}):
+                if release({kept.summary_id}):
                     released.add(kept.summary_id)
                 continue
             start = matches[0]
             selected = [turns[start + offset] for offset in kept.selected]
             members = [messages[int(span["start_index"])] for span in selected]
+            if any(_externally_preserved(member) for member in members):
+                continue
             # Sources still excluded for the edit carry the decision; it was made on them.
             if any(_excluded_for(member) != kept.summary_id for member in members):
-                freed = _release_sources(messages, {kept.summary_id})
+                freed = release({kept.summary_id})
                 standing = self._observe_summaries(messages)
                 eligible = (
                     standing
@@ -1230,6 +1497,24 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             changed = True
             grew = identities[start + width :] != kept.tail
             chain_fold = kept.summary_id in self._kept_folds or chain_fold
+        if restore_held_sources:
+            roots = (
+                (held & set(self._replacements) if summary_ids is None else held & set(summary_ids))
+                - invalid
+                - (skip_summary_ids or set())
+            )
+            reconciled = self._replay_descendant_exclusions(messages, roots, invalid, cache)
+            self._replayed += len(reconciled)
+            changed = bool(reconciled) or changed
+            chain_fold = bool(reconciled & self._kept_folds.keys()) or chain_fold
+            released = {
+                identity
+                for identity in released
+                if any(
+                    not message.additional_properties.get(EXCLUDED_KEY)
+                    for message in released_members[identity]
+                )
+            }
         if released:
             logger.warning(
                 "Compaction sent whole again the user turns excluded for summaries it could not "
@@ -1237,7 +1522,53 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 sorted(released),
             )
         # Released turns are new material to the caller, as turns that arrived since are.
+        if changed or released:
+            cache.invalid.clear()
         return _SummaryReplay(changed or bool(released), grew or bool(released), chain_fold)
+
+    def _replay_descendant_exclusions(
+        self,
+        messages: list[Message],
+        roots: set[str],
+        invalid: set[str],
+        cache: SummaryReplayCache,
+    ) -> set[str]:
+        """Restore summary exclusions justified by a validated held ancestor."""
+        held: dict[str, list[Message]] = {}
+        for message in messages:
+            if message.message_id is not None:
+                held.setdefault(message.message_id, []).append(message)
+        identities = {
+            cache.outputs[(identity, kept.text)]: identity
+            for identity, kept in self._replacements.items()
+        }
+        changed: set[str] = set()
+        visited: set[str] = set()
+        pending = list(roots)
+        while pending:
+            owner = pending.pop()
+            if owner in visited:
+                continue
+            visited.add(owner)
+            kept = self._replacements[owner]
+            for offset in kept.selected:
+                source_key = kept.sources[offset]
+                child = identities.get(source_key)
+                if child is None or child in invalid:
+                    continue
+                members = held.get(child, [])
+                if not members:
+                    pending.append(child)
+                elif (
+                    owner not in held
+                    and len(members) == 1
+                    and not (member := members[0]).additional_properties.get(EXCLUDED_KEY)
+                    and not _externally_preserved(member)
+                    and cache.message_key(member) == source_key
+                ):
+                    _supersede_again([member], summary_id=owner, reason=kept.reason)
+                    changed.add(owner)
+        return changed
 
     def _protect_media(self, messages: list[Message]) -> None:
         for message in messages:
@@ -1502,7 +1833,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         summaries = [messages[int(span["start_index"])] for span in standing]
         if not self.recompacts_summaries:
             for message in summaries:
-                set_preserved(message, preserved=True, reason=PRESERVE_REASON)
+                if not any_preserved([message]):
+                    set_preserved(message, preserved=True, reason=PRESERVE_REASON)
         self._summaries_in_conversation = len(summaries)
         self._summary_tokens = included_token_count(summaries)
         return standing
@@ -1608,8 +1940,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             return False
         if fresh:
             self._summary_succeeded()
-        self._apply_fold(messages, standing, remembered, replayed)
-        return True
+        return self._apply_fold(messages, standing, remembered, replayed)
 
     async def fold_if_smaller(self, messages: list[Message]) -> FoldOutcome:
         """Collapse the oldest summaries that fit, only if their replacement is smaller.
@@ -1635,7 +1966,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             ``"folded"`` when the summaries were collapsed, ``"rejected"`` when the answer was no
             smaller than them, ``"failed"`` when the summarizer gave none -- counted under
             :attr:`user_summary_failures` like any other -- and ``"skipped"`` when fewer than
-            two summaries fit, which avoids rewriting one summary on its own.
+            two summaries fit or a selected summary acquires an external preservation mark.
         """
         standing = self._bounded_summaries(messages, self._observe_summaries(messages))
         if len(standing) < 2:
@@ -1653,7 +1984,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             return "rejected"
         if fresh:
             self._summary_succeeded()
-        self._apply_fold(messages, standing, remembered, replayed)
+        if not self._apply_fold(messages, standing, remembered, replayed):
+            return "skipped"
         self._kept_folds[remembered.summary_id] = remembered
         self._kept_fold_counts[remembered.summary_id] = len(standing)
         return "folded"
@@ -1691,7 +2023,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         )
         changed = False
         for kept in kept_folds[applied + 1 :]:
-            standing = self._observe_summaries(messages)
+            standing = self._fold_candidates(messages, self._observe_summaries(messages))
             source_count = self._kept_fold_counts.get(kept.summary_id)
             # Snapshots without source counts learn them when their transcript first matches.
             counts = [source_count] if source_count is not None else range(len(standing), 1, -1)
@@ -1703,17 +2035,26 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                     [messages[span["start_index"]] for span in prefix], text=_summary_body
                 )
                 if transcript == kept.transcript:
-                    self._kept_fold_counts[kept.summary_id] = count
-                    self._apply_fold(messages, prefix, kept, True)
-                    changed = True
+                    if self._apply_fold(messages, prefix, kept, True):
+                        self._kept_fold_counts[kept.summary_id] = count
+                        changed = True
                     break
         return changed
+
+    def _fold_candidates(
+        self, messages: list[Message], standing: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        return [
+            span
+            for span in standing
+            if not _externally_preserved(messages[int(span["start_index"])])
+        ]
 
     def _bounded_summaries(
         self, messages: list[Message], standing: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         return bounded_prefix(
-            standing,
+            self._fold_candidates(messages, standing),
             render=lambda spans: _format_turns(
                 [messages[span["start_index"]] for span in spans], text=_summary_body
             ),
@@ -1787,8 +2128,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         standing: list[dict[str, Any]],
         answer: _Remembered,
         replayed: bool,
-    ) -> None:
-        """Put the fold's answer in place of the standing summaries, and count it.
+    ) -> bool:
+        """Apply an eligible fold and return whether its sources changed.
 
         Counted here rather than when the answer arrived, so that an answer a caller refuses
         -- :meth:`fold_if_smaller`'s ``"rejected"`` -- is neither a fold nor a replay.
@@ -1799,11 +2140,13 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             answer: The remembered request and its answer, from :meth:`_fold_answer`.
             replayed: Whether this is the same replacement on another view of the history.
         """
+        folded: list[Message] = [messages[span["start_index"]] for span in standing]
+        if any(_externally_preserved(message) for message in folded):
+            return False
         if replayed:
             self._replayed += 1
         else:
             self._folds += 1
-        folded: list[Message] = [messages[span["start_index"]] for span in standing]
         for message in folded:
             set_preserved(message, preserved=False)
         self._replace(
@@ -1813,6 +2156,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             summary_id=answer.summary_id,
             reason=FOLD_EXCLUDE_REASON,
         )
+        return True
 
     def _recall(self, prompt: str, transcript: str, *, source_key: str = "") -> _Remembered | None:
         """Return the remembered answer to exactly this request, or None if it was never asked.

@@ -2689,6 +2689,7 @@ async def test_a_merge_through_the_live_path_sends_the_model_no_call_it_never_ma
         record_padding=8_000,
         later_lookups=("d", "e"),
         later_filler_turns=10,
+        reply="a reply " * 200,
     )
     strategy = run.strategy
 
@@ -2754,6 +2755,7 @@ async def test_a_merge_through_the_live_path_leaves_no_call_without_its_output()
         record_padding=8_000,
         later_lookups=("d", "e"),
         later_filler_turns=10,
+        reply="a reply " * 200,
     )
 
     assert run.strategy.records_merged >= 1, "the premise: the chain reached step a"

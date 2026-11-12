@@ -34,7 +34,8 @@ from bisect import bisect_left
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from copy import copy
+from dataclasses import asdict, dataclass
 from math import ceil, isfinite
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
@@ -43,8 +44,10 @@ from agent_framework import Message
 from agent_framework._compaction import (
     EXCLUDE_REASON_KEY,
     EXCLUDED_KEY,
+    GROUP_ANNOTATION_KEY,
     annotate_message_groups,
     included_token_count,
+    set_excluded,
 )
 
 from ._anchored import (
@@ -53,18 +56,38 @@ from ._anchored import (
     _is_marker,  # pyright: ignore[reportPrivateUsage]
 )
 from ._media import annotate_token_counts
-from ._preserve import PRESERVE_REASON_KEY, is_preserved, pending_result_messages, set_preserved
+from ._preserve import (
+    PRESERVE_REASON_KEY,
+    STANDS_IN_KEY,
+    is_preserved,
+    pending_result_messages,
+    set_preserved,
+)
+from ._record_replay import (
+    LINEAGE_KEY,
+    RecordEdit,
+    ReplayView,
+    replacement_identity,
+    replay_match,
+    source_key,
+    source_members,
+)
 from ._request import RequestOverhead
 from ._shed import durable_message_id, unique_shed_groups
 from ._summary_input import bounded_prefix, bounded_prefix_extent, fits_summary_input
 from ._toolsummary import (
+    CONSOLIDATE_EXCLUDE_REASON,
     PRESERVE_REASON_UNCOVERED,
     PRESERVE_REASON_UNRECORDED,
+    RECALL_TOOL_NAME,
     RecordDecisions,
     ToolResultAnchoredSummarizationCompactionStrategy,
+    _call_identity,  # pyright: ignore[reportPrivateUsage]
     _distinctive_tokens,  # pyright: ignore[reportPrivateUsage]
     _is_written_record,  # pyright: ignore[reportPrivateUsage]
+    _last_reasoning_index,  # pyright: ignore[reportPrivateUsage]
     _newest_record_identity,  # pyright: ignore[reportPrivateUsage]
+    _record_has_external_hold,  # pyright: ignore[reportPrivateUsage]
     active_record_groups,
     build_record_message,
     consolidatable_record_groups,
@@ -72,10 +95,17 @@ from ._toolsummary import (
     record_anchor_position,
     record_bodies,
     reshape_payloads,
+    reshape_replacements,
     reshapeable_record_groups,
 )
 from ._toolsummary import _tokens as _record_tokens  # pyright: ignore[reportPrivateUsage]
 from ._usersummary import SUMMARY_MODE_RECOMPACT, UserTurnAnchoredSummarizationCompactionStrategy
+from ._usersummary import (
+    _linked_ids as _summary_source_ids,  # pyright: ignore[reportPrivateUsage]
+)
+from ._usersummary import (
+    _release_sources as _release_user_sources,  # pyright: ignore[reportPrivateUsage]
+)
 
 if TYPE_CHECKING:
     from agent_framework import ChatResponse, TokenizerProtocol
@@ -160,7 +190,7 @@ _Phase = (
 )
 
 #: What one attempt to replace the records ended as.
-_Consolidation = Literal["accepted", "rejected", "lossy", "incomplete", "failed"]
+_Consolidation = Literal["accepted", "rejected", "lossy", "incomplete", "failed", "skipped"]
 
 #: Shared time allowance for the chain's merges, user fold and record rewrites.
 DEFAULT_CHAIN_SECONDS: Final[float] = 30.0
@@ -693,8 +723,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # transcript and source count, with their replacement text; and the ids of the messages
         # its fallback shed. See ``_keep_decisions``. The user half keeps its fold decisions.
         self._kept_records: dict[tuple[str, int | None], str] = {}
-        # Digests of the record bodies the chain reshaped, which every list reshapes alike.
+        # Content caches can be reused only where current reasoning guards permit edits.
         self._reshaped: set[str] = set()
+        # Only source-bound decisions may replay across retained reasoning.
+        self._record_order: list[RecordEdit] = []
         self._shed_ids: set[str] = set()
         self._shed_groups: set[str] = set()
         # Shrink acceptance depends on the source count as well as the request's transcript.
@@ -866,6 +898,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 for (transcript, count), text in self._kept_records.items()
             ],
             "reshaped_records": sorted(self._reshaped),
+            "record_order": [asdict(edit) for edit in self._record_order],
             "searched_records": [
                 [start, limit, found.covered, found.records, found.batch, found.ended]
                 for (start, limit), found in sorted(self._searched.items())
@@ -913,6 +946,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 for entry in kept_records
             }
         self._reshaped = set(data.get("reshaped_records", []))
+        self._record_order = [RecordEdit(**edit) for edit in data.get("record_order", [])]
         # Earlier snapshots of this schema kept only searches that found nothing.
         searched = data.get("searched_records", data.get("unpaired_records", []))
         self._searched = {
@@ -1183,10 +1217,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return False
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
-        replayed_shed = self._keep_shedding(messages)
+        with self.user_turns.replay_scope(messages):
+            return await self._compact(messages)
+
+    async def _compact(self, messages: list[Message]) -> bool:
+        """Apply all phases within the caller's replay-refusal scope."""
+        replayed = (
+            self._replay_record_edits(messages) if _last_reasoning_index(messages) >= 0 else False
+        )
+        replayed = self._keep_shedding(messages) or replayed
         # Before the record phase counts records, so a stand-in and the pair it replaced are
         # never both counted.
-        replayed = self._reshape_records(messages, replay=True) or replayed_shed
+        replayed = self._reshape_records(messages, replay=True) or replayed
         decisions_kept = self._decisions_kept
         shed_sources = (
             [
@@ -1466,11 +1508,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         **What.** Whatever the chain changes on one list is put on every list that holds what it
         changed, whatever that list's size, before the chain decides anything new:
 
-        - a reshape, by a digest of the record's payload, put back by :meth:`__call__` before the
-          record phase so no record is counted in both forms;
+        - a reshape, by its complete accepted batch of identified sources, put back by
+          :meth:`__call__` before the record phase so no record is counted in both forms;
         - a record merge or rewrite, by the transcript of the records it replaced -- the one
           thing both lists present identically -- replacing any run of the records that
-          matches one, as often as one does, since a merge followed by a rewrite is two;
+          matches one, as often as one does, since a merge followed by a rewrite is two.
+          Bypassing a retained-reasoning guard additionally requires exact source identities
+          and the accepted source window, including written-record lineage. Record edits
+          replay in acceptance order with their prerequisite user edits and shedding;
         - a user fold, through
           :meth:`~._usersummary.UserTurnAnchoredSummarizationCompactionStrategy.refold`;
         - narration the chain's fallback shed, by message id, through
@@ -1489,29 +1534,496 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
-        changed = self._keep_records(messages) or replayed_user_fold
+        changed = self._replay_record_edits(messages) or replayed_user_fold
+        changed = self._keep_shedding(messages) or changed
+        changed = self._keep_records(messages) or changed
         if changed:
             annotate_message_groups(messages)
             annotate_token_counts(messages, tokenizer=self.tokenizer)
         changed = self.user_turns.refold(messages) or changed
-        changed = self._keep_shedding(messages) or changed
         if changed:
             self._decisions_kept += 1
         return changed
 
-    def _keep_shedding(self, messages: list[Message]) -> bool:
+    def _keep_shedding(
+        self,
+        messages: list[Message],
+        *,
+        edit: RecordEdit | None = None,
+        group_lookup: dict[str, set[str]] | None = None,
+    ) -> bool:
         """Replay prior removals before their contents can trigger new compaction work."""
-        message_ids = set(self._shed_ids)
-        if self._shed_groups:
-            for key, members in unique_shed_groups(messages):
-                if key in self._shed_groups:
-                    message_ids.update(
-                        message.message_id for message in members if message.message_id
-                    )
+        message_ids = set(self._shed_ids if edit is None else edit.shed_ids)
+        group_keys = self._shed_groups if edit is None else set(edit.shed_groups)
+        if group_keys:
+            if group_lookup is None:
+                group_lookup = ReplayView(messages).shed_lookup()
+            for key in group_keys:
+                message_ids.update(group_lookup.get(key, set()))
         with _release_record_holds(
             [message for message in messages if message.message_id in message_ids]
         ):
             return self.tool_results.shed_again_after_record(messages, message_ids)
+
+    def _record_edit(
+        self, messages: list[Message], groups: list[dict[str, Any]], text: str | None
+    ) -> RecordEdit | None:
+        """Capture the accepted window's replay prerequisites without copying their contents."""
+        sources = source_key(messages, groups)
+        if sources is None:
+            return None
+        excluded = {message.message_id for message in messages if _is_excluded(message)}
+        shed_groups = (
+            [
+                key
+                for key, members in unique_shed_groups(messages)
+                if key in self._shed_groups and all(_is_excluded(message) for message in members)
+            ]
+            if self._shed_groups
+            else []
+        )
+        return RecordEdit(
+            sources,
+            len(groups),
+            text,
+            self.user_turns.replay_summary_ids(messages),
+            sorted(self._shed_ids & excluded),
+            shed_groups,
+            source_members(messages, groups),
+        )
+
+    def _replay_record_edits(self, messages: list[Message], *, reshape_only: bool = False) -> bool:
+        """Restore each accepted record window before applying edits that followed it."""
+        if self._record_order and any(replacement_identity(message) for message in messages):
+            preview = copy(self)
+            preview.user_turns = copy(self.user_turns)
+            preview.tool_results = copy(self.tool_results)
+            preview.tool_results.restore_decisions(self.tool_results.decision_state())
+            candidate = ReplayView(messages).fork().messages
+            if not preview._replay_record_candidates(
+                candidate, reshape_only=reshape_only, required_outputs=set()
+            ):
+                return False
+        return bool(self._replay_record_candidates(messages, reshape_only=reshape_only))
+
+    def _replay_record_candidates(
+        self,
+        messages: list[Message],
+        *,
+        reshape_only: bool,
+        required_outputs: set[tuple[str, str]] | None = None,
+    ) -> bool | None:
+        changed = False
+        restored_view = False
+        base = ReplayView(messages)
+        base.invalid_summary_ids = self.user_turns.invalid_replay_summaries(
+            messages, cache=base.summary_cache
+        )
+        candidates: dict[
+            tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[int, ...]], ReplayView
+        ] = {}
+        restored_summaries: set[tuple[str, ...]] = set()
+        for edit_index, edit in enumerate(self._record_order):
+            if reshape_only and edit.text is not None:
+                continue
+            summaries = tuple(edit.summaries)
+            if summaries not in restored_summaries:
+                restored = self.user_turns.replay_summaries(
+                    messages,
+                    summary_ids=edit.summaries,
+                    cache=base.summary_cache,
+                    invalid_summary_ids=base.invalid_summary_ids,
+                ).changed
+                if restored:
+                    base.invalidate()
+                    candidates.clear()
+                    restored_summaries.clear()
+                    changed = True
+                restored_summaries.add(summaries)
+            record_indices = self._held_record_replacements(base, edit_index)
+            if record_indices is None:
+                continue
+            prerequisites = (
+                tuple(edit.summaries),
+                tuple(edit.shed_ids),
+                tuple(edit.shed_groups),
+                tuple(sorted(record_indices)),
+            )
+            view = candidates.get(prerequisites)
+            if view is None:
+                view = self._record_replay_view(base, edit, record_indices)
+                candidates[prerequisites] = view
+            if self._keep_shedding(
+                view.messages,
+                edit=edit,
+                group_lookup=view.shed_lookup() if edit.shed_groups else None,
+            ):
+                view.invalidate()
+                if view is base:
+                    candidates.clear()
+                    restored_summaries.clear()
+                    changed = True
+            matched = self._match_record_edit(view, edit)
+            if matched is None:
+                continue
+            view, groups = matched
+            plans = self._record_replacement_plans(view, edit, groups)
+            if not self._record_replacement_positions(view, plans):
+                if required_outputs is not None:
+                    return None
+                continue
+            if required_outputs is not None:
+                outputs = {
+                    identity
+                    for _, replacement in plans
+                    if (identity := replacement_identity(replacement)) is not None
+                }
+                affected = set(outputs)
+                fingerprints = {
+                    ReplayView([replacement]).message_key(0) for _, replacement in plans
+                }
+                # Unrelated held outputs can outlive their pruned source windows.
+                for later in self._record_order[edit_index + 1 :]:
+                    if (
+                        later.text is None
+                        or not later.sources.startswith("v2:")
+                        or (later.members and not fingerprints.intersection(later.members))
+                    ):
+                        continue
+                    replacement = build_record_message(later.text)
+                    identity = (LINEAGE_KEY, later.sources.split(":")[1])
+                    replacement.additional_properties[LINEAGE_KEY] = identity[1]
+                    affected.add(identity)
+                    fingerprints.add(ReplayView([replacement]).message_key(0))
+                required_outputs.update(
+                    identity
+                    for message, _ in view.deferred
+                    if id(message) in view.record_replacements
+                    and (identity := replacement_identity(message)) is not None
+                    and identity in affected
+                )
+                required_outputs.difference_update(outputs)
+            if edit.text is None:
+                self.tool_results.reshape_records(view.messages, groups, replay=True)
+            else:
+                self.tool_results.consolidate_records(view.messages, groups, edit.text, replay=True)
+            view.invalidate()
+            if view is not base:
+                if view.summary_preview is not None:
+                    view.summary_preview.replay_summaries(
+                        view.messages,
+                        restore_held_sources=True,
+                        invalid_summary_ids=view.invalid_summary_ids,
+                        cache=view.summary_cache,
+                        skip_summary_ids={
+                            message.message_id
+                            for message, _ in view.deferred
+                            if message.message_id is not None
+                        },
+                    )
+                view.restore_later()
+                if view.summary_preview is not None:
+                    view.summary_preview.replay_summaries(
+                        view.messages,
+                        restore_held_sources=True,
+                        invalid_summary_ids=view.invalid_summary_ids,
+                        cache=view.summary_cache,
+                    )
+                messages[:] = view.messages
+                if view.summary_preview is not None:
+                    self.user_turns.accept_replay_preview(messages, view.summary_preview)
+                restored_view = True
+            base.invalidate()
+            candidates.clear()
+            restored_summaries.clear()
+            changed = True
+        if restored_view:
+            self.user_turns.replay_summaries(messages, invalid_summary_ids=base.invalid_summary_ids)
+            self._keep_shedding(messages)
+        return None if required_outputs else changed
+
+    @staticmethod
+    def _owned_record_exclusions(messages: list[Message]) -> set[int]:
+        return {
+            index
+            for index, message in enumerate(messages)
+            if _is_excluded(message)
+            and message.additional_properties.get(EXCLUDE_REASON_KEY) == CONSOLIDATE_EXCLUDE_REASON
+            and not _record_has_external_hold(message)
+        }
+
+    def _match_record_edit(
+        self, view: ReplayView, edit: RecordEdit
+    ) -> tuple[ReplayView, list[dict[str, Any]]] | None:
+        groups_for = (
+            reshapeable_record_groups if edit.text is None else consolidatable_record_groups
+        )
+        matched = replay_match(
+            view.messages,
+            groups_for(view.messages, replay=True),
+            {(edit.sources, edit.count)},
+            message_keys=view.message_keys,
+        )
+        if matched is not None:
+            return view, matched[0]
+        owned = self._owned_record_exclusions(view.messages)
+        if not owned or not edit.members:
+            return None
+        members = set(edit.members)
+        if view.record_replacements and not any(
+            not _is_excluded(message) and view.message_key(index) in members
+            for index, message in enumerate(view.messages)
+        ):
+            return None
+        candidate = view.fork()
+        released = False
+        for index in owned:
+            message = candidate.messages[index]
+            set_excluded(message, excluded=False)
+            candidate.message_keys.pop(index, None)
+            if candidate.message_key(index) in members:
+                released = True
+            else:
+                set_excluded(message, excluded=True)
+                candidate.message_keys.pop(index, None)
+        if not released:
+            return None
+        annotate_message_groups(candidate.messages)
+        matched = replay_match(
+            candidate.messages,
+            groups_for(candidate.messages, replay=True),
+            {(edit.sources, edit.count)},
+            message_keys=candidate.message_keys,
+        )
+        return None if matched is None else (candidate, matched[0])
+
+    def _held_record_replacements(self, base: ReplayView, edit_index: int) -> set[int] | None:
+        messages = base.messages
+        held = [
+            (index, message)
+            for index, message in enumerate(messages)
+            if replacement_identity(message) is not None
+        ]
+        if not held:
+            return set()
+        known = {
+            (LINEAGE_KEY, edit.sources.split(":")[1])
+            for edit in self._record_order
+            if edit.text is not None and edit.sources.startswith("v2:")
+        } | {
+            (STANDS_IN_KEY, _call_identity(message, position))
+            for message in messages
+            for position, content in enumerate(message.contents)
+            if content.type == "function_call" and content.name == RECALL_TOOL_NAME
+        }
+        remaining = self._record_order[edit_index:]
+        expected: dict[tuple[str, str], Message] = {}
+        if any(edit.text is None for edit in remaining):
+            source_view = base
+            owned = self._owned_record_exclusions(messages)
+            if owned:
+                source_view = base.fork()
+                for index in owned:
+                    set_excluded(source_view.messages[index], excluded=False)
+                annotate_message_groups(source_view.messages)
+            for _, replacement in reshape_replacements(
+                source_view.messages, reshapeable_record_groups(source_view.messages, replay=True)
+            ):
+                identity = replacement_identity(replacement)
+                if identity is not None:
+                    expected[identity] = replacement
+        for edit in remaining:
+            if edit.text is not None and edit.sources.startswith("v2:"):
+                replacement = build_record_message(edit.text)
+                replacement.additional_properties[LINEAGE_KEY] = edit.sources.split(":")[1]
+                identity = replacement_identity(replacement)
+                assert identity is not None
+                expected[identity] = replacement
+        indices: set[int] = set()
+        seen: set[tuple[str, str]] = set()
+        for index, message in held:
+            identity = replacement_identity(message)
+            replacement = expected.get(identity) if identity is not None else None
+            if replacement is None:
+                if identity not in known and any(
+                    message.text == item.text for item in expected.values()
+                ):
+                    return None
+                continue
+            if (
+                identity in seen
+                or not _is_written_record(message)
+                or _record_has_external_hold(message)
+                or not base.matches_replacement(index, replacement)
+                or (
+                    _is_excluded(message)
+                    and message.additional_properties.get(EXCLUDE_REASON_KEY)
+                    != CONSOLIDATE_EXCLUDE_REASON
+                )
+            ):
+                return None
+            assert identity is not None
+            seen.add(identity)
+            indices.add(index)
+        return indices
+
+    @staticmethod
+    def _record_replacement_plans(
+        view: ReplayView, edit: RecordEdit, groups: list[dict[str, Any]]
+    ) -> list[tuple[dict[str, Any], Message]]:
+        if edit.text is None:
+            return reshape_replacements(view.messages, groups)
+        replacement = build_record_message(edit.text)
+        replacement.additional_properties[LINEAGE_KEY] = edit.sources.split(":")[1]
+        return [(groups[-1], replacement)]
+
+    @staticmethod
+    def _record_replacement_positions(
+        view: ReplayView, plans: list[tuple[dict[str, Any], Message]]
+    ) -> bool:
+        if not view.record_replacements:
+            return True
+        following = {id(message): after for message, after in view.deferred}
+        for group, replacement in plans:
+            for message, after in view.deferred:
+                if id(message) not in view.record_replacements or (
+                    replacement_identity(message) != replacement_identity(replacement)
+                ):
+                    continue
+                while after is not None and id(after) in following:
+                    after = following[id(after)]
+                end = int(group["end_index"]) + 1
+                while end < len(view.messages) and (
+                    view.messages[end].message_id in view.restored_summary_ids
+                    and (after is None or view.messages[end].message_id != after.message_id)
+                ):
+                    end += 1
+                next_message = view.messages[end] if end < len(view.messages) else None
+                if after is not next_message and (
+                    after is None
+                    or next_message is None
+                    or not after.message_id
+                    or after.message_id != next_message.message_id
+                ):
+                    return False
+        return True
+
+    def _record_replay_view(
+        self, base: ReplayView, edit: RecordEdit, record_indices: set[int]
+    ) -> ReplayView:
+        """Undo later owned exclusions on copies; the source certificate still authorizes edits."""
+        user_exclusions = self.user_turns.replay_source_exclusions(base.messages, edit.summaries)
+        later_summaries = set(self.user_turns.replay_summary_ids(base.messages)) - set(
+            edit.summaries
+        )
+        later_shed = self._shed_ids - set(edit.shed_ids)
+        if self._shed_groups:
+            lookup = base.shed_lookup()
+            for key in self._shed_groups - set(edit.shed_groups):
+                later_shed.update(lookup.get(key, set()))
+        shed_indices = [
+            index
+            for index, message in enumerate(base.messages)
+            if message.message_id in later_shed
+            and _is_excluded(message)
+            and message.additional_properties.get(EXCLUDE_REASON_KEY) == EXCLUDE_REASON
+        ]
+        later_indices = {
+            index
+            for index, message in enumerate(base.messages)
+            if message.message_id in later_summaries
+            or (
+                _is_marker(message)
+                and bool(sources := _summary_source_ids(message))
+                and set(sources) <= later_shed
+            )
+        }
+        prerequisite_sources = {
+            source
+            for message in base.messages
+            if message.message_id in edit.summaries
+            for source in _summary_source_ids(message)
+        }
+        missing_exclusions = any(
+            message.message_id in prerequisite_sources and not _is_excluded(message)
+            for message in base.messages
+        )
+        missing_summaries = set(edit.summaries) - {message.message_id for message in base.messages}
+        if (
+            not user_exclusions
+            and not shed_indices
+            and not later_indices
+            and not missing_exclusions
+            and not missing_summaries
+            and not record_indices
+        ):
+            return base
+        invalid_summaries = (
+            self.user_turns.invalid_replay_summaries(base.messages, cache=base.summary_cache)
+            | base.invalid_summary_ids
+        )
+        messages = [copy(message) for message in base.messages]
+        original_indices = {id(message): index for index, message in enumerate(messages)}
+        for message in messages:
+            message.additional_properties = dict(message.additional_properties)
+            annotation = message.additional_properties.get(GROUP_ANNOTATION_KEY)
+            if isinstance(annotation, dict):
+                message.additional_properties[GROUP_ANNOTATION_KEY] = dict(
+                    cast(dict[str, Any], annotation)
+                )
+        originals = [(message, dict(message.additional_properties)) for message in messages]
+        _release_user_sources(messages, user_exclusions)
+        for index in shed_indices:
+            messages[index].additional_properties.pop(EXCLUDE_REASON_KEY, None)
+            set_excluded(messages[index], excluded=False)
+        exclusions = [
+            (message, properties)
+            for message, properties in originals
+            if properties.get(EXCLUDED_KEY) and not _is_excluded(message)
+        ]
+        staged_indices = later_indices | record_indices
+        staged_record_ids = {id(messages[index]) for index in record_indices}
+        deferred = [
+            (messages[index], messages[index + 1] if index + 1 < len(messages) else None)
+            for index in sorted(staged_indices)
+        ]
+        messages[:] = [
+            message for index, message in enumerate(messages) if index not in staged_indices
+        ]
+        if staged_indices:
+            annotate_message_groups(messages)
+        preview = copy(self.user_turns)
+        held_summary_ids = {message.message_id for message in messages}
+        summary_cache = base.summary_cache.fork()
+        restored = preview.replay_summaries(
+            messages,
+            summary_ids=edit.summaries,
+            restore_held_sources=True,
+            invalid_summary_ids=invalid_summaries,
+            cache=summary_cache,
+        ).changed
+        return ReplayView(
+            messages,
+            summary_cache=summary_cache,
+            message_keys={
+                index: base.message_key(original_indices[id(message)])
+                for index, message in enumerate(messages)
+                if id(message) in original_indices
+                and _is_excluded(message)
+                == _is_excluded(base.messages[original_indices[id(message)]])
+            },
+            shed_groups=base.shed_groups if not staged_indices and not restored else None,
+            exclusions=exclusions,
+            deferred=deferred,
+            summary_preview=preview,
+            invalid_summary_ids=invalid_summaries,
+            record_replacements=staged_record_ids,
+            restored_summary_ids={
+                message.message_id
+                for message in messages
+                if message.message_id is not None and message.message_id not in held_summary_ids
+            },
+        )
 
     def _keep_records(self, messages: list[Message]) -> bool:
         """Replace every run of records the chain has already replaced, as it did.
@@ -1520,7 +2032,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         oldest record, so any start is tried; an entry from a legacy snapshot, which has no
         source count, only at the oldest, as it was taken.
         """
-        changed = False
+        changed = self._replay_record_edits(messages)
         while self._kept_records:
             groups = consolidatable_record_groups(messages)
             source_counts = {count for _, count in self._kept_records}
@@ -1553,7 +2065,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     break
             if found is None:
                 break
+            edit = self._record_edit(messages, found[0], found[1])
             self.tool_results.consolidate_records(messages, *found)
+            if edit is not None and edit not in self._record_order:
+                self._record_order.append(edit)
             changed = True
         return changed
 
@@ -1618,19 +2133,20 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         once, and is the form a merge would write anyway. No summarizer is asked and no value
         can be lost: the payload after the record's framing moves byte for byte, whitespace
         included (:func:`~._toolsummary.reshapeable_record_groups`). A record whose
-        span holds anything else -- a reasoning item the framework grouped with the call, an
-        extra output under its call id -- whose result carries metadata or non-text items, or
-        whose result this model call carried in is left exactly as it is. A merge spares the
-        same spans, except a result carrying metadata, which it still flattens into its text.
+        span holds unrelated content or active-turn reasoning, whose result carries metadata
+        or non-text items, or whose result this model call carried in is left as it is.
+        Reasoning attached only to completed-turn records leaves with their whole groups in one
+        batch, so later retained reasoning never sees its prefix edited. Merges spare the same
+        protected spans.
 
         **Only when the chain fires, not whenever the written form is cheaper.** A reshape
         rewrites the prompt from the record it replaces. Inside a firing it is one more edit the
         firing's target is measured from, so the firing goes on until it has removed its share of
         what that edit re-bills -- the rule every other step answers to -- and the merge it
         precedes edits at the same record. Reshaping each record as soon as it could be would
-        break the cache once per record, on prompts that fit. The decision is kept by a digest of
-        the payload and, with ``replay``, put back on every list that holds the record, whatever
-        its size, so the copies a call sends and the store agree.
+        break the cache once per record, on prompts that fit. Replay across retained reasoning
+        requires the complete accepted batch and its exact identified source window. Legacy
+        payload-only decisions remain subject to the current reasoning guards.
 
         Args:
             messages: The conversation, mutated in place.
@@ -1641,6 +2157,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             True if any record was reshaped.
         """
+        changed = self._replay_record_edits(messages, reshape_only=True) if replay else False
         groups = reshapeable_record_groups(messages)
         digests = [_digest(payload) for payload in reshape_payloads(messages, groups)]
         chosen = [
@@ -1649,8 +2166,17 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if not replay or digest in self._reshaped
         ]
         if not chosen:
-            return False
-        self.tool_results.reshape_records(messages, [group for group, _ in chosen])
+            return changed
+        selected = [group for group, _ in chosen]
+        edit = self._record_edit(messages, selected, None)
+        try:
+            self.tool_results.reshape_records(messages, selected)
+        except ValueError:
+            if not replay:
+                raise
+            return changed
+        if edit is not None and edit not in self._record_order:
+            self._record_order.append(edit)
         if not replay:
             self._records_reshaped += len(chosen)
             self._reshaped.update(digest for _, digest in chosen)
@@ -1931,6 +2457,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             )
             if outcome == "failed":
                 return False, True
+            if outcome == "skipped":
+                return False, False
             if outcome == "accepted":
                 self._records_merged += 1
                 return True, False
@@ -2167,12 +2695,21 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             transcript: ``groups`` as :func:`_transcript` numbers them.
 
         Returns:
-            Whether the replacement was kept, refused as no smaller or as lossy, or never arrived.
+            Whether it was kept, refused, unavailable, or its sources became ineligible.
         """
+        sources = [
+            message
+            for group in groups
+            for message in messages[group["start_index"] : group["end_index"] + 1]
+        ]
+        if any(_record_has_external_hold(message) for message in sources):
+            return "skipped"
         answer = await self._ask(prompt=prompt, transcript=transcript)
         if answer is None:
             return "failed"
         self._check_chain_deadline()
+        if any(_record_has_external_hold(message) for message in sources):
+            return "skipped"
         text = answer.text
         bodies = record_bodies(messages, groups)
         total, kept, required = self._value_coverage(bodies, text)
@@ -2202,8 +2739,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 required,
             )
             return outcome
+        edit = self._record_edit(messages, groups, text)
         self.tool_results.consolidate_records(messages, groups, text)
         self._kept_records[(transcript, len(groups))] = text
+        if edit is not None and edit not in self._record_order:
+            self._record_order.append(edit)
         # The new record may read exactly as one an earlier pass went on to replace -- a merge of
         # new material can come back as the record an earlier rewrite started from -- and that
         # replacement is already decided, so it is taken here rather than asked for again.
