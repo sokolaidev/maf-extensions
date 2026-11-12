@@ -1573,16 +1573,21 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         restored_view = False
         base = ReplayView(messages)
         candidates: dict[tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]], ReplayView] = {}
+        restored_summaries: set[tuple[str, ...]] = set()
         for edit in self._record_order:
             if reshape_only and edit.text is not None:
                 continue
-            restored = self.user_turns.replay_summaries(
-                messages, summary_ids=edit.summaries
-            ).changed
-            if restored:
-                base.invalidate()
-                candidates.clear()
-                changed = True
+            summaries = tuple(edit.summaries)
+            if summaries not in restored_summaries:
+                restored = self.user_turns.replay_summaries(
+                    messages, summary_ids=edit.summaries
+                ).changed
+                if restored:
+                    base.invalidate()
+                    candidates.clear()
+                    restored_summaries.clear()
+                    changed = True
+                restored_summaries.add(summaries)
             prerequisites = (tuple(edit.summaries), tuple(edit.shed_ids), tuple(edit.shed_groups))
             view = candidates.get(prerequisites)
             if view is None:
@@ -1596,6 +1601,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 view.invalidate()
                 if view is base:
                     candidates.clear()
+                    restored_summaries.clear()
                     changed = True
             groups = (
                 reshapeable_record_groups(view.messages, replay=True)
@@ -1621,6 +1627,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 restored_view = True
             base.invalidate()
             candidates.clear()
+            restored_summaries.clear()
             changed = True
         if restored_view:
             self.user_turns.replay_summaries(messages)
@@ -1685,7 +1692,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if later_indices:
             annotate_message_groups(messages)
         preview = copy(self.user_turns)
-        restored = preview.replay_summaries(messages, summary_ids=edit.summaries).changed
+        restored = preview.replay_summaries(
+            messages, summary_ids=edit.summaries, restore_held_sources=True
+        ).changed
         return ReplayView(
             messages,
             shed_groups=base.shed_groups if not later_indices and not restored else None,

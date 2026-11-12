@@ -754,8 +754,9 @@ def test_replay_miss_serializes_each_message_at_most_once(monkeypatch: pytest.Mo
 
 
 @pytest.mark.parametrize("shedding", [False, True])
+@pytest.mark.parametrize("user_summary", [False, True])
 def test_ordered_replay_misses_share_message_fingerprints(
-    monkeypatch: pytest.MonkeyPatch, shedding: bool
+    monkeypatch: pytest.MonkeyPatch, shedding: bool, user_summary: bool
 ) -> None:
     from maf_compaction._shed import unique_shed_groups
     from maf_compaction._toolsummary import build_record_message
@@ -765,6 +766,15 @@ def test_ordered_replay_misses_share_message_fingerprints(
         message.message_id = f"record-{index}"
     annotate_message_groups(messages)
     strategy = _strategy(_Summarizer(), budget=100_000)
+    if user_summary:
+        messages.append(Message("user", ["Facts. " * 1000], message_id="source-user"))
+        annotate_message_groups(messages)
+        group = next(
+            g
+            for g in group_messages(messages)
+            if messages[g["start_index"]].message_id == "source-user"
+        )
+        strategy.user_turns._replace(messages, [group], "Facts.", summary_id="held-summary")
     if shedding:
         narration = Message("assistant", ["Narration."], message_id="msg_50")
         messages.append(narration)
@@ -784,7 +794,14 @@ def test_ordered_replay_misses_share_message_fingerprints(
     for message in messages[:40]:
         message.contents[0].text += " changed"
     serializations = 0
+    restorations = 0
     original = Content.to_dict
+    replay_summaries = type(strategy.user_turns).replay_summaries
+
+    def restore(self, *args, **kwargs):
+        nonlocal restorations
+        restorations += 1
+        return replay_summaries(self, *args, **kwargs)
 
     def counted(self, *args, **kwargs):
         nonlocal serializations
@@ -792,8 +809,49 @@ def test_ordered_replay_misses_share_message_fingerprints(
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(Content, "to_dict", counted)
+    monkeypatch.setattr(type(strategy.user_turns), "replay_summaries", restore)
     assert not strategy._replay_record_edits(messages)
+    assert restorations <= 1
     assert serializations <= len(messages) * (2 if shedding else 1)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["reshape", "merge", "rewrite"])
+@pytest.mark.parametrize("kind", ["text", "uri", "data", "hosted_file"])
+async def test_user_media_only_turn_completes_recall_reasoning(operation: str, kind: str) -> None:
+    messages = _reasoned(1)
+    if operation == "merge":
+        messages[-1:-1] = _record_pair(1)
+    contents = {
+        "text": Content.from_text("Next request."),
+        "uri": Content.from_uri("https://example.org/image.png", media_type="image/png"),
+        "data": Content.from_data(b"image", media_type="image/png"),
+        "hosted_file": Content.from_hosted_file("file-a", media_type="image/png"),
+    }
+    messages[-1].contents = [contents[kind]]
+    annotate_message_groups(messages)
+    text = " ".join(sorted(_sent_values(messages)))
+    strategy = _strategy(_Summarizer(merge=lambda _: text), budget=100_000)
+    if operation == "reshape":
+        assert strategy._reshape_records(messages)
+    else:
+        groups = consolidatable_record_groups(messages)
+        assert len(groups) == (2 if operation == "merge" else 1)
+        assert (
+            await strategy._consolidate(
+                messages,
+                groups,
+                prompt=DEFAULT_RECORD_MERGE_PROMPT,
+                transcript=_transcript(messages, groups),
+            )
+            == "accepted"
+        )
+    assert not any(
+        part.type == "text_reasoning"
+        for m in project_included_messages(messages)
+        for part in m.contents
+    )
+    assert messages[-1].contents == [contents[kind]]
 
 
 @pytest.mark.anyio

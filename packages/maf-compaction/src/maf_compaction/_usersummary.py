@@ -1160,13 +1160,19 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self._observe_summaries(messages)
 
     def replay_summaries(
-        self, messages: list[Message], *, summary_ids: list[str] | None = None
+        self,
+        messages: list[Message],
+        *,
+        summary_ids: list[str] | None = None,
+        restore_held_sources: bool = False,
     ) -> _SummaryReplay:
         """Restore accepted edits on unchanged sources; report replay and trailing-turn changes.
 
         The caller supplies grouped, token-annotated history. Source windows must match
         uniquely and in order, and replay respects current anchors and preservation marks.
         ``summary_ids`` limits restoration to prerequisites of an accepted record edit.
+        ``restore_held_sources`` is for isolated candidates whose record certificate must
+        still authorize restoring the original inclusion state.
 
         Message objects outlive the list an edit was inserted into, so a list can hold an edit's
         sources still excluded for it without the edit: the edit is put back on them. Sources
@@ -1192,8 +1198,16 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             summary = next(
                 (message for message in messages if message.message_id == kept.summary_id), None
             )
+            if (
+                summary is not None
+                and summary.additional_properties.get(EXCLUDED_KEY)
+                and _excluded_for(summary) not in self._replacements
+            ):
+                continue
             superseded = [] if summary is None else _superseded_standing(messages, summary)
-            if summary is None and kept.summary_id in linked:
+            if (summary is None and kept.summary_id in linked) or (
+                summary is not None and not superseded and not restore_held_sources
+            ):
                 continue
             turns = [
                 span
@@ -1212,7 +1226,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 if identities[index : index + width] == kept.sources
             ]
             if summary is not None:
-                if len(matches) == 1:
+                if restore_held_sources and len(matches) == 1:
                     members = [
                         messages[int(turns[matches[0] + offset]["start_index"])]
                         for offset in kept.selected

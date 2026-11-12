@@ -114,14 +114,17 @@ async def test_changed_source_window_is_not_replayed(change, held_summary):
         original.insert(1, deepcopy(next(m for m in compacted if m.message_id not in original_ids)))
     subject.max_input_tokens = 100_000
     before = visible(original)
-    assert not await subject(original)
+    if held_summary:
+        assert not subject.replay_summaries(original, restore_held_sources=True).changed
+    else:
+        assert not await subject(original)
     assert visible(original) == before
     assert subject.user_summaries_replayed == 0
     assert len(client.requests) == 1
 
 
 @pytest.mark.parametrize("mode", ["boundary", "fold", "recompact"])
-async def test_held_summary_restores_exact_original_source_exclusions(mode):
+async def test_isolated_held_summary_restores_exact_original_source_exclusions(mode):
     client = Client()
     subject = strategy(client, mode)
     original = history()
@@ -132,11 +135,31 @@ async def test_held_summary_restores_exact_original_source_exclusions(mode):
     restored = strategy(client, mode)
     restored.restore_session_state(json.loads(json.dumps(subject.session_state())))
     restored.max_input_tokens = 100_000
-    assert await restored(original)
+    assert restored.replay_summaries(original, restore_held_sources=True).changed
     assert visible(original) == visible(compacted)
     assert restored.user_summaries_replayed == 1
-    assert not await restored(original)
+    assert not restored.replay_summaries(original, restore_held_sources=True).changed
     assert len(client.requests) == 1
+
+
+@pytest.mark.parametrize("mode", ["boundary", "fold", "recompact"])
+@pytest.mark.parametrize("isolated", [False, True])
+async def test_externally_excluded_held_summary_does_not_hide_original_turns(mode, isolated):
+    client = Client()
+    subject = strategy(client, mode)
+    original = history()
+    compacted = deepcopy(original)
+    assert await subject(compacted)
+    original_ids = {message.message_id for message in original}
+    summary = deepcopy(next(m for m in compacted if m.message_id not in original_ids))
+    set_excluded(summary, excluded=True, reason="host")
+    original.insert(1, summary)
+    before = visible(original)
+    restored = strategy(client, mode)
+    restored.restore_session_state(json.loads(json.dumps(subject.session_state())))
+    assert not restored.replay_summaries(original, restore_held_sources=isolated).changed
+    assert visible(original) == before
+    assert restored.user_summaries_replayed == 0
 
 
 async def test_replay_below_trigger_during_cooldown_is_idempotent():

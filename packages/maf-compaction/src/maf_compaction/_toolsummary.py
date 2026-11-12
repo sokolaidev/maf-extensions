@@ -68,7 +68,7 @@ from agent_framework._sessions import (
 from agent_framework.exceptions import ChatClientException
 
 from ._anchored import AnchoredCompactionStrategy
-from ._media import annotate_token_counts
+from ._media import MEDIA_TYPES, annotate_token_counts
 from ._occurrences import ContentPosition, function_result_candidates
 from ._preserve import (
     PRESERVE_REASON_KEY,
@@ -1074,7 +1074,10 @@ def _completed_user_boundary(messages: Sequence[Message]) -> int:
             and not message.additional_properties.get(EXCLUDED_KEY)
             and not message.additional_properties.get(RECALL_PROMPT_KEY)
             and not has_summary_links(message)
-            and any(content.type in {"text", "uri", "data"} for content in message.contents)
+            and any(
+                content.type == "text" or content.type in MEDIA_TYPES
+                for content in message.contents
+            )
             and not any(
                 content.type in {"function_call", "function_result"} for content in message.contents
             )
