@@ -38,6 +38,34 @@ _BAD_REQUEST = re.compile(
 )
 
 
+_FIXED_SENTENCES = (
+    "Pricing lookup incomplete: bounded execution is required.",
+    "Pricing lookup incomplete: caller context is unavailable.",
+    (
+        "Pricing lookup incomplete: execution timed out, exceeded its byte limit, or returned "
+        "an invalid response."
+    ),
+    "Pricing lookup incomplete: the CLI did not return a clean result.",
+    "Pricing lookup incomplete: the response exceeds the byte limit.",
+    "Pricing lookup incomplete: the sandbox could not be acquired.",
+    (
+        "Pricing query refused: provide bounded nonempty filters, a three-letter uppercase "
+        "currency and a valid price type."
+    ),
+    (
+        "Pricing query refused: the CLI requires sku with service. For meters without an ARM "
+        "SKU, omit service and sku and use filter on serviceName, productName or meterName "
+        "instead. Do not invent a SKU."
+    ),
+    (
+        "Pricing query refused: the Retail Prices API rejected the filter (HTTP 400). Check "
+        "the documented filter fields and predicate syntax; there is no osType field. Correct "
+        "the query before retrying."
+    ),
+    "Pricing results may be incomplete; narrow the filters.",
+)
+
+
 def _filter_rejected(result: ExecResult) -> bool:
     if _BAD_REQUEST.search(result.stderr_bytes):
         return True
@@ -293,5 +321,6 @@ def make_azure_pricing_tools(
         egress_integrity=egress_integrity,
         outbound_max_confidentiality=outbound_max_confidentiality,
         result_contract=True,
+        fixed_sentences=_FIXED_SENTENCES,
         standing_guidance=(_DATA_GUIDANCE, _CHECKED_GUIDANCE, _GUIDANCE),
     )

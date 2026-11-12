@@ -210,6 +210,17 @@ _SANDBOX_BUSY = (
     "Error: another call is using the sandbox for this conversation and did not finish in "
     "time, so this call was not admitted to it. Retrying is reasonable."
 )
+_FILE_LIST_UNAVAILABLE = "Error: could not list the file store"
+_NO_THREAD_CONTEXT = "Error: no active thread context — {tool} must be called from within a thread"
+_SESSION_FIXED_SENTENCES = (
+    _SDK_NOT_INSTALLED,
+    _NO_BACKEND_CONFIGURED,
+    _SANDBOX_UNAVAILABLE,
+    _SANDBOX_REFUSED,
+    _SANDBOX_UNCLEAN,
+    _SANDBOX_BUSY,
+    _FILE_LIST_UNAVAILABLE,
+)
 
 #: What the removal gets when the body was cancelled, instead of the full ``reclaim_timeout``.
 #:
@@ -1555,10 +1566,7 @@ class SandboxToolSession:
         """
         thread_id = self._context.current_thread_id()
         if thread_id is None:
-            return (
-                f"Error: no active thread context — {self._name} must be called from "
-                "within a thread"
-            )
+            return _NO_THREAD_CONTEXT.format(tool=self._name)
         return SandboxKey(
             scope=self._context.current_scope(),
             thread_id=thread_id,
@@ -1638,7 +1646,7 @@ class SandboxToolSession:
             self._logger.warning(
                 f"{self._log_prefix}: could not list the file store: %s", error_detail(exc)
             )
-            return "Error: could not list the file store"
+            return _FILE_LIST_UNAVAILABLE
 
     async def read_file(
         self,
@@ -2662,6 +2670,39 @@ def _needs_call_id(committed: tuple[str, ...]) -> bool:
     return any(CALL_ID_PLACEHOLDER in _guidance_placeholders(s) for s in committed)
 
 
+def _fixed_sentences(
+    sentences: Iterable[str],
+    committed: tuple[str, ...],
+    verdicts: tuple[str | int | bool, ...],
+    *,
+    tool: str,
+    contract: bool,
+) -> tuple[str, ...]:
+    """Snapshot exact static result text without granting it any integrity label."""
+    if isinstance(sentences, str):
+        raise TypeError(f"{tool}: fixed_sentences must be an iterable of strings, not a string")
+    declared = tuple(sentences)
+    for index, sentence in enumerate(cast("tuple[object, ...]", declared)):
+        if not isinstance(sentence, str):
+            raise TypeError(f"{tool}: fixed_sentences[{index}] must be a string")
+        if not sentence.strip():
+            raise ValueError(f"{tool}: fixed_sentences[{index}] must not be empty")
+    status = (COMPLETED_TEXT, NOT_COMPLETED_TEXT) if contract else ()
+    guidance = tuple(s.format() for s in committed if not _guidance_placeholders(s))
+    return tuple(
+        dict.fromkeys(
+            (
+                *status,
+                *(f"Result: {v}" for v in verdicts),
+                *guidance,
+                *declared,
+                *_SESSION_FIXED_SENTENCES,
+                _NO_THREAD_CONTEXT.format(tool=tool),
+            )
+        )
+    )
+
+
 def _call_integrity(context: Any) -> SourceIntegrity | None:
     """Read the framework's combined conversation and argument evidence for this call."""
     from agent_framework.security import ContentLabel, IntegrityLabel
@@ -2987,6 +3028,7 @@ def sandboxed_tool(
     also_carries_out: bool = False,
     nothing_survives_from: Iterable[SourceChannel] = (),
     standing_guidance: Iterable[str] = (),
+    fixed_sentences: Iterable[str] = (),
     result_contract: bool = False,
     verdicts: Iterable[str | int | bool] = (),
     on_reclaim_failure: Callable[[ReclaimFailure], Awaitable[None]] | None = None,
@@ -3170,6 +3212,12 @@ def sandboxed_tool(
             sitting above what every other item is labelled, and an undeclared tool has nothing
             for it to sit above; committing one without is refused at attach. Empty commits no
             guidance; body-supplied labels are still refused.
+        fixed_sentences: Exact static result text declared by the kind, exposed as a tuple in
+            the attached tool's ``additional_properties["fixed_sentences"]``. The wrapper adds
+            session failure messages, contract status and verdict lines, and guidance without
+            call-id substitutions. Entries may be whole messages or fixed parts; they are not format
+            templates. Empty or non-string entries are refused. This metadata changes no
+            result text or label and does not establish the provenance of matching text.
         on_reclaim_failure: Called with a :class:`~maf_sandbox.ReclaimFailure` when the call
             left its sandbox unclean — its guest path could not be removed, or a program it
             stopped may have left something running — **after** the framework has acted on it.
@@ -3355,17 +3403,20 @@ def sandboxed_tool(
     # a host may do to reach `make_caller_context` alone — does not pull the framework in.
     from agent_framework import tool
 
-    decorate = tool(
-        name=name,
-        approval_mode=approval_mode,
-        additional_properties=properties,
-    )
     body = build(session)
     context_parameter, injected_context, call_signature = _context_parameter(body)
     # Validated here rather than at first use: a sentence that cannot render is a wiring
     # mistake in a kind, and finding it at attach costs a reviewer nothing.
     committed = _committed_guidance(promised, tool=name, awaits=_awaits(body))
     declared_verdicts = _declared_verdicts(verdicts, tool=name, contract=result_contract)
+    properties["fixed_sentences"] = _fixed_sentences(
+        fixed_sentences, committed, declared_verdicts, tool=name, contract=result_contract
+    )
+    decorate = tool(
+        name=name,
+        approval_mode=approval_mode,
+        additional_properties=properties,
+    )
     if not _awaits(body):
         # Keep the wrapper synchronous so MAF runs the body and result labelling off
         # the event loop, as it does for other synchronous tools.

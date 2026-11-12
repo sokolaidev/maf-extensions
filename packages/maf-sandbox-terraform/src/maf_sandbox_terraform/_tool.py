@@ -49,6 +49,32 @@ FORMAT_GUIDANCE = (
 )
 
 
+_FIXED_SENTENCES = (
+    "Formatting INCOMPLETE: formatter failed; no formatted files returned.",
+    (
+        "Formatting INCOMPLETE: the launcher failed or exceeded its time/output bound. No "
+        "formatted files returned; try a smaller complete manifest."
+    ),
+    "Formatting complete; text and locations withheld because argument names are hidden.",
+    "Guest diagnostic text and locations withheld because argument names are hidden.",
+    "Validation INCOMPLETE: initialization failed; dependencies were not loaded.",
+    "Validation INCOMPLETE: the guest launcher could not complete its bounded execution.",
+) + tuple(
+    f"{operation} INCOMPLETE: {reason}"
+    for operation in ("Validation", "Formatting")
+    for reason in (
+        "the manifest is empty or exceeds the file-count limit.",
+        "the file store could not be listed.",
+        "every manifest file must contain text.",
+        "every manifest file must be valid UTF-8 text.",
+        "the manifest exceeds the transfer byte limits.",
+        "the sandbox could not be acquired.",
+        "the fixed launcher did not return a complete report.",
+        "staging, execution, or report verification failed.",
+    )
+)
+
+
 def make_terraform_tools(
     router: SandboxRouter | None,
     file_store: AgentFileStore,
@@ -87,6 +113,7 @@ def make_terraform_tools(
         name=f"{engine}_validate",
         source_integrity=SourceIntegrity.UNTRUSTED,
         result_contract=True,
+        fixed_sentences=_FIXED_SENTENCES,
         verdicts=VALIDATE_VERDICTS,
         standing_guidance=(STANDING_GUIDANCE,),
         file_store_provenance=file_store_provenance,
@@ -104,6 +131,7 @@ def make_terraform_tools(
             name=f"{engine}_format",
             source_integrity=SourceIntegrity.UNTRUSTED,
             result_contract=True,
+            fixed_sentences=_FIXED_SENTENCES,
             verdicts=FORMAT_VERDICTS,
             standing_guidance=(FORMAT_GUIDANCE,),
             file_store_provenance=file_store_provenance,

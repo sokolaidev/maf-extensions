@@ -968,6 +968,13 @@ class TestAttachGate:
         assert len(tools) == 1
 
 
+def _policy_properties(tool):
+    """Policy declarations without the descriptive result vocabulary."""
+    return {
+        key: value for key, value in tool.additional_properties.items() if key != "fixed_sentences"
+    }
+
+
 class TestAttachedToolShape:
     def _tool(self, **kw):
         (tool,) = _attach(_router(InProcessSandboxBackend()), **kw)
@@ -986,22 +993,22 @@ class TestAttachedToolShape:
     def test_approval_mode_is_overridable(self):
         assert self._tool(approval_mode="always_require").approval_mode == "always_require"
 
-    def test_a_tool_that_was_told_nothing_declares_nothing(self):
+    def test_a_tool_that_was_told_nothing_declares_no_policy(self):
         """The whole point of the default: forgetting the keyword claims no integrity."""
-        assert self._tool().additional_properties == {}
+        assert _policy_properties(self._tool()) == {}
 
     def test_an_integrity_label_reaches_the_tool_when_one_is_passed(self):
-        assert self._tool(
-            spec=_NO_CHANNEL_SPEC, source_integrity="trusted"
-        ).additional_properties == {"source_integrity": "trusted"}
+        assert _policy_properties(
+            self._tool(spec=_NO_CHANNEL_SPEC, source_integrity="trusted")
+        ) == {"source_integrity": "trusted"}
 
     def test_explicit_declarations_win_over_the_derivation(self):
-        assert self._tool(declarations={"source_integrity": "untrusted"}).additional_properties == {
+        assert _policy_properties(self._tool(declarations={"source_integrity": "untrusted"})) == {
             "source_integrity": "untrusted"
         }
 
     def test_an_outbound_cap_reaches_the_tool_when_the_host_asks_for_one(self):
-        assert self._tool(outbound_max_confidentiality="private").additional_properties == {
+        assert _policy_properties(self._tool(outbound_max_confidentiality="private")) == {
             "max_allowed_confidentiality": "private"
         }
 
@@ -1013,7 +1020,7 @@ class TestAttachedToolShape:
             outbound_max_confidentiality="private",
             output_sink=_SINK,
         )
-        assert tool.additional_properties == {"max_allowed_confidentiality": "private"}
+        assert _policy_properties(tool) == {"max_allowed_confidentiality": "private"}
 
     def test_source_integrity_reaches_the_derivation_without_the_declarations_escape_hatch(self):
         """A label *and* a sink: `declarations=` is refused alongside a sink, so this parameter
@@ -1028,15 +1035,15 @@ class TestAttachedToolShape:
             outbound_max_confidentiality="private",
             output_sink=_SINK,
         )
-        assert tool.additional_properties == {
+        assert _policy_properties(tool) == {
             "source_integrity": "trusted",
             "max_allowed_confidentiality": "private",
         }
 
     def test_an_explicit_mapping_still_wins_over_it(self):
-        assert self._tool(
-            source_integrity="trusted", declarations={"source_integrity": "untrusted"}
-        ).additional_properties == {"source_integrity": "untrusted"}
+        assert _policy_properties(
+            self._tool(source_integrity="trusted", declarations={"source_integrity": "untrusted"})
+        ) == {"source_integrity": "untrusted"}
 
     def test_a_trusted_claim_in_an_explicit_mapping_is_refused_too(self):
         """The mapping is written verbatim and is still read for this one key. A check the
@@ -1053,14 +1060,14 @@ class TestAttachedToolShape:
 
     def test_an_untrusted_mapping_is_written_over_any_spec(self):
         """Only the trusted claim is read out of the mapping; nothing else in it is inspected."""
-        assert self._tool(
-            declarations={"source_integrity": "untrusted", "house_key": "kept"}
-        ).additional_properties == {"source_integrity": "untrusted", "house_key": "kept"}
+        assert _policy_properties(
+            self._tool(declarations={"source_integrity": "untrusted", "house_key": "kept"})
+        ) == {"source_integrity": "untrusted", "house_key": "kept"}
 
     def test_an_unknown_spelling_in_a_mapping_passes_through(self):
         """FIDES believes two spellings and logs the rest away, so an unrecognised value is not
         a claim to refuse — and the mapping's vocabulary is the host's, not this library's."""
-        assert self._tool(declarations={"source_integrity": "Trusted"}).additional_properties == {
+        assert _policy_properties(self._tool(declarations={"source_integrity": "Trusted"})) == {
             "source_integrity": "Trusted"
         }
 
@@ -1068,7 +1075,7 @@ class TestAttachedToolShape:
         declarations = {"source_integrity": "trusted"}
         tool = self._tool(spec=_NO_CHANNEL_SPEC, declarations=declarations)
         declarations["source_integrity"] = "tampered"
-        assert tool.additional_properties == {"source_integrity": "trusted"}
+        assert _policy_properties(tool) == {"source_integrity": "trusted"}
 
 
 class _MutableClaim:
@@ -1127,15 +1134,15 @@ class TestACommittingToolDeclaresTrustedAndLabelsItsOwnItems:
         return tool
 
     def test_the_kinds_claim_moves_to_a_key_of_this_packages_own(self):
-        assert self._tool(source_integrity="untrusted").additional_properties == {
+        assert _policy_properties(self._tool(source_integrity="untrusted")) == {
             "source_integrity": "trusted",
             DERIVED_INTEGRITY_PROPERTY: "untrusted",
         }
 
     def test_a_mapping_is_raised_the_same_way_and_keeps_its_other_keys(self):
-        assert self._tool(
-            declarations={"source_integrity": "untrusted", "house_key": "kept"}
-        ).additional_properties == {
+        assert _policy_properties(
+            self._tool(declarations={"source_integrity": "untrusted", "house_key": "kept"})
+        ) == {
             "source_integrity": "trusted",
             DERIVED_INTEGRITY_PROPERTY: "untrusted",
             "house_key": "kept",

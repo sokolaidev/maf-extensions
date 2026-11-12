@@ -517,7 +517,9 @@ def test_report_integrity_follows_host_file_provenance(
 def test_unlabelled_files_keep_compiler_output_untrusted():
     """Unknown file evidence leaves the report untrusted and guidance trusted."""
     tool, _, _ = attach()
-    assert tool.additional_properties == {
+    assert {
+        key: value for key, value in tool.additional_properties.items() if key != "fixed_sentences"
+    } == {
         "source_integrity": "trusted",
         DERIVED_INTEGRITY_PROPERTY: "untrusted",
         "sandbox_isolation_scope": "call",

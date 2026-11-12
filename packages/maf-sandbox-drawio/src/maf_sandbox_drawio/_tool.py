@@ -47,6 +47,22 @@ _LOGGER = logging.getLogger(__name__)
 DRAWIO_VERDICTS = ("created", "refused")
 
 
+_FIXED_SENTENCES = (
+    "Error: XML exceeds the 1 MiB input limit",
+    "Error: XML must be valid UTF-8 text",
+    "Error: collection or delivery of draw.io exports failed",
+    "Error: could not run the draw.io converter in the sandbox",
+    "Error: delivery of diagram.drawio failed",
+    "Error: file must be text",
+    "Error: file must name exactly one visible stored diagram",
+    "Error: the converter produced no diagram.drawio file",
+    "Error: the stored diagram has no XML text",
+    "Error: xml must be a string",
+    "The converter could not complete the diagram.",
+    "The converter rejected the diagram. Its diagnostic follows.",
+)
+
+
 def drawio_sandbox_spec(
     image: str | None = None, *, export: DrawioExport | None = None
 ) -> SandboxSpec:
@@ -119,6 +135,7 @@ def make_drawio_tools(
         source_integrity=SourceIntegrity.UNTRUSTED,
         argument_integrity=argument_integrity,
         result_contract=True,
+        fixed_sentences=_FIXED_SENTENCES,
         verdicts=DRAWIO_VERDICTS,
         output_sink=sink,
         logger=_LOGGER,
@@ -382,6 +399,7 @@ def make_drawio_export_tools(
         approval_mode="never_require",
         source_integrity=SourceIntegrity.UNTRUSTED,
         result_contract=True,
+        fixed_sentences=_FIXED_SENTENCES,
         verdicts=DRAWIO_VERDICTS,
         output_sink=sink,
         logger=_LOGGER,

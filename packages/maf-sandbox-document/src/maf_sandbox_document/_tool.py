@@ -45,6 +45,21 @@ DOCUMENT_READ_TOOL_NAME = "document_read"
 _LOGGER = logging.getLogger(__name__)
 
 
+_FIXED_SENTENCES = (
+    "Error: choose one listed file and an enabled output format",
+    "Error: could not run the document converter",
+    "Error: document conversion did not complete",
+    "Error: document output verification or delivery failed",
+    "Error: file must name exactly one visible stored document",
+    "Error: max_input_bytes exceeded",
+    "Error: not every document output was delivered",
+    "Error: pages must be a positive 1-based inclusive range",
+    "Error: pages must be an ascending range",
+    "Error: the document store must return binary bytes",
+    "Error: the document store returned invalid binary content",
+)
+
+
 def document_sandbox_spec(image: str | None = None) -> SandboxSpec:
     """Require a disposable, isolated POSIX guest with closed egress for every document."""
     return SandboxSpec(
@@ -141,6 +156,7 @@ def make_document_tools(
         approval_mode="never_require",
         source_integrity=SourceIntegrity.UNTRUSTED,
         result_contract=True,
+        fixed_sentences=_FIXED_SENTENCES,
         verdicts=("extracted", "refused"),
         output_sink=sink,
         file_store_provenance=file_store_provenance,

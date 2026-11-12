@@ -194,6 +194,27 @@ class CodeactOutputs(StrEnum):
     MANIFEST = "manifest"
 
 
+_FIXED_SENTENCES = (
+    _NO_OUTPUT,
+    _WITHHELD_ROUTE,
+    "Error: an input file could not be read or staged.",
+    "Error: an input file could not be written into the sandbox.",
+    "Error: could not run the program in the sandbox",
+    "Error: the call's inputs could not be staged.",
+    "Error: the deadline expired while queued; the program never started. Retry unchanged.",
+    "Error: the outputs argument is invalid.",
+    "Error: the program could not be staged.",
+    "Error: the program did not reach a result before the timeout.",
+    "Error: the program exceeds its declared byte limit.",
+    "Error: the program is not valid UTF-8.",
+    "Error: the requested input files could not be resolved.",
+    "Error: the sandbox could not be acquired.",
+    "Saved:",
+    "The program exited with a non-zero status.",
+    "The program exited with status 0.",
+)
+
+
 def codeact_sandbox_spec(
     image: str | None = None,
     image_id: str | None = None,
@@ -584,6 +605,7 @@ def make_codeact_tools(
         requires_file_integrity=requires_file_integrity,
         # Both modes need a raised framework declaration to keep contract items readable.
         result_contract=True,
+        fixed_sentences=_FIXED_SENTENCES,
         verdicts=CODEACT_VERDICTS,
         # The wrapper validates and stamps this suffix so the body cannot choose which
         # guidance becomes trusted.

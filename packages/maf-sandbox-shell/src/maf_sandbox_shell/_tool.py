@@ -37,6 +37,25 @@ STANDING_GUIDANCE = (
 )
 
 
+_FIXED_SENTENCES = (
+    "Additional analyzer findings are available in the untrusted report.",
+    "Host rule exclusions are active.",
+    "Inline suppressions are present; see the untrusted audit report.",
+    "No unsuppressed diagnostic meets the configured threshold.",
+    "Validation incomplete: every manifest file must contain text.",
+    "Validation incomplete: invalid text or conflicting shell declarations.",
+    "Validation incomplete: staging, execution or report verification failed.",
+    "Validation incomplete: syntax, lint or suppression auditing could not complete.",
+    "Validation incomplete: the bounded analyzer did not finish.",
+    "Validation incomplete: the file store could not be listed.",
+    "Validation incomplete: the launcher did not return a complete report.",
+    "Validation incomplete: the manifest exceeds the transfer byte limits.",
+    "Validation incomplete: the manifest is empty or exceeds the file limit.",
+    "Validation incomplete: the sandbox could not be acquired.",
+    "Validation incomplete: the source bundle exceeds the transfer limit.",
+)
+
+
 def make_shell_tools(
     router: SandboxRouter | None,
     file_store: AgentFileStore,
@@ -79,6 +98,7 @@ def make_shell_tools(
         name=f"{flavor}_validate",
         source_integrity=SourceIntegrity.UNTRUSTED,
         result_contract=True,
+        fixed_sentences=_FIXED_SENTENCES,
         verdicts=VERDICTS,
         standing_guidance=(STANDING_GUIDANCE,),
         file_store_provenance=file_store_provenance,

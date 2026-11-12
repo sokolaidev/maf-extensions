@@ -56,6 +56,13 @@ logger = logging.getLogger(__name__)
 _LISTING_HINT_MAX = 20
 
 
+_FIXED_SENTENCES = (
+    "Error: could not stage the Bicep configuration.",
+    "Error: the validation manifest exceeds the file-count limit.",
+    "No files validated.",
+)
+
+
 def _listing_hint(name: str, listing: list[str]) -> str:
     """The listing, or its near misses — what resolves a typo without another round trip."""
     if not listing:
@@ -314,6 +321,7 @@ def make_bicep_tools(
         egress_integrity=egress_integrity,
         # Completion and verdict remain readable when the compiler's text is hidden.
         result_contract=True,
+        fixed_sentences=_FIXED_SENTENCES,
         verdicts=BICEP_VERDICTS,
         standing_guidance=(_UNREAD_IS_NOT_A_PASS,),
         # No confidentiality key on purpose — a host's confidentiality tiers are the host's
