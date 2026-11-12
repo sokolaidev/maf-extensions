@@ -260,6 +260,41 @@ async def test_caller_cancellation_propagates_without_retiring_options() -> None
     assert not strategy.user_turns._summary_options_disabled
 
 
+async def test_inflight_merge_outlives_the_admission_window(monkeypatch):
+    entered, release, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    now = 0.0
+    monkeypatch.setattr(composed_module, "monotonic", lambda: now)
+
+    class Waiting(_Summarizer):
+        async def get_response(self, messages, **kwargs):
+            entered.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return await super().get_response(messages, **kwargs)
+
+    model = Waiting()
+    messages = _history(4)
+    strategy = _strategy(model, budget=_record_size(messages) - 200, share=0.01, cap=None)
+    strategy.chain_seconds = 0.02
+    task = asyncio.create_task(strategy(messages))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        now = 1.0
+        await asyncio.sleep(0.05)
+        assert not cancelled.is_set()
+        assert not task.done()
+        release.set()
+        await asyncio.wait_for(task, 2)
+        assert strategy.records_merged == 1
+        assert len(model.requests) == 1
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 async def test_timeout_before_a_child_resumes_halves_after_restore(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
