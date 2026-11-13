@@ -328,6 +328,62 @@ class HTTPSRefreshProfile(RefreshProfile):
         self.configure_refresh(client)
         self.rotate(client)
 
+    def update_path(self, client, path, record):
+        """Persist one conditional path edit; read-back proves storage, not guest enforcement."""
+        query = client.pb.GetProviderProfileRequest(
+            workspace_scope=client.scope, id=self.profile_id
+        )
+        before = client.rpc("GetProviderProfile", query).profile
+        if (
+            before.id != self.profile_id
+            or not before.resource_version
+            or len(before.endpoints) != 1
+            or len(before.endpoints[0].rules) != 1
+            or before.endpoints[0].path != self.endpoint_path
+            or before.endpoints[0].rules[0].allow.path != self.endpoint_path
+        ):
+            raise RuntimeError("profile edit baseline mismatch")
+        edited = type(before)()
+        edited.CopyFrom(before)
+        edited.endpoints[0].path = path
+        edited.endpoints[0].rules[0].allow.path = path
+        request = client.pb.UpdateProviderProfilesRequest(
+            workspace_scope=client.scope,
+            id=self.profile_id,
+            expected_resource_version=before.resource_version,
+            profile=client.pb.ProviderProfileImportItem(profile=edited),
+            request_id=str(uuid.uuid4()),
+        )
+        row = {
+            "method": "UpdateProviderProfiles",
+            "request_hex": request.SerializeToString().hex(),
+            "started_ns": time.monotonic_ns(),
+            "state": "pending",
+        }
+        record("mutations", row)
+        response = client.rpc("UpdateProviderProfiles", request)
+        row.update(
+            state="acknowledged",
+            acknowledged_ns=time.monotonic_ns(),
+            response_hex=response.SerializeToString().hex(),
+        )
+        record("barriers", {"profile_update_acknowledged": dict(row)})
+        if not response.updated or response.profile.resource_version <= before.resource_version:
+            raise RuntimeError("profile edit was not stored at a newer revision")
+        edited.resource_version = response.profile.resource_version
+        current = client.rpc("GetProviderProfile", query).profile
+        if response.profile != edited or current != edited:
+            raise RuntimeError("stored profile differs from the exact path edit")
+        self.endpoint_path = path
+        record(
+            "barriers",
+            {
+                "stored_profile_revision": current.resource_version,
+                "profile_hex": current.SerializeToString().hex(),
+                "guest_installation_confirmed": False,
+            },
+        )
+
 
 async def measure_credentials(fixture, ip, ca_file):
     """Retain propagation attempts and exact detach barriers without declaring attached identity."""
@@ -344,7 +400,7 @@ async def measure_credentials(fixture, ip, ca_file):
         "provider_and_profile_cleanup_verified": False,
         "unqualified": [
             "persistent connections and in-flight mutations",
-            "provider profile edits",
+            "profile credential declarations, refresh settings, methods and hosts",
             "concurrent controllers",
             "gateway/supervisor disconnect and restart",
             "refresh-token reauthorization",
@@ -444,6 +500,7 @@ async def measure_credentials(fixture, ip, ca_file):
                 path="/provider/ok",
                 converge=False,
                 revoked=None,
+                prior_refusal=None,
             ):
                 assert guest is not None
                 row = {"case": label, "attempts": [], "passed": False}
@@ -456,6 +513,7 @@ async def measure_credentials(fixture, ip, ca_file):
                     marker = uuid.uuid4().hex
                     target = path + "?case=" + marker
                     await reconcile(expected=[])
+                    started = time.monotonic_ns()
                     observed = await guest.request(f"https://{host}:8443{target}", source)
                     events = await reconcile()
                     if revoked is not None:
@@ -469,14 +527,26 @@ async def measure_credentials(fixture, ip, ca_file):
                     }
                     passed = credential_observation(observed["guest"], events, expected, request)
                     row["attempts"].append(
-                        {"observation": observed, "origin_events": events, "matched": passed}
+                        {
+                            "observation": observed,
+                            "origin_events": events,
+                            "matched": passed,
+                            "started_ns": started,
+                            "ended_ns": time.monotonic_ns(),
+                        }
                     )
                     row["passed"] = passed
                     fixture.save()
                     if passed:
                         return
-                    if not propagation_observation(
-                        observed["guest"], events, request, issuer.journal()
+                    if not (
+                        propagation_observation(
+                            observed["guest"], events, request, issuer.journal()
+                        )
+                        or prior_refusal is not None
+                        and credential_observation(
+                            observed["guest"], events, prior_refusal, request
+                        )
                     ):
                         raise RuntimeError(
                             "unattributed credential propagation observation: " + label
@@ -572,6 +642,45 @@ async def measure_credentials(fixture, ip, ca_file):
                 reconfigured,
                 source="current",
                 converge=True,
+            )
+            unexpired(reconfigured)
+            await asyncio.to_thread(profile.update_path, fixture.client, "/provider/other", record)
+            await check(
+                "profile_narrowing_revokes_removed_path",
+                source="current",
+                expected="credential_endpoint_mismatch",
+                converge=True,
+                revoked=reconfigured,
+            )
+            await check(
+                "profile_narrowing_preserves_retained_path",
+                reconfigured,
+                source="current",
+                path="/provider/other",
+                revoked=reconfigured,
+            )
+            await check("base_route_remains_after_profile_narrowing", source="none")
+            unexpired(reconfigured)
+            await asyncio.to_thread(profile.update_path, fixture.client, "/provider/**", record)
+            await check(
+                "profile_restoration_revives_same_current_reference",
+                reconfigured,
+                source="current",
+                converge=True,
+                revoked=reconfigured,
+                prior_refusal="credential_endpoint_mismatch",
+            )
+            await check(
+                "profile_restoration_keeps_outside_path_confined",
+                source="current",
+                path="/outside",
+                expected="credential_endpoint_mismatch",
+                revoked=reconfigured,
+            )
+            await check(
+                "profile_restoration_does_not_revive_original_epoch",
+                expected="credential_unavailable",
+                revoked=recovered,
             )
             await guest.close()
             guest = None
