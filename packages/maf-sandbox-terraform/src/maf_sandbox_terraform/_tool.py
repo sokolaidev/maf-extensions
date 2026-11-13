@@ -49,6 +49,40 @@ FORMAT_GUIDANCE = (
 )
 
 
+_FIXED_SENTENCES = (
+    "Formatting INCOMPLETE: formatter failed; no formatted files returned.",
+    (
+        "Formatting INCOMPLETE: the launcher failed or exceeded its time/output bound. No "
+        "formatted files returned; try a smaller complete manifest."
+    ),
+    "Formatting complete; text and locations withheld because argument names are hidden.",
+    "Guest diagnostic text and locations withheld because argument names are hidden.",
+    "Validation INCOMPLETE: initialization failed; dependencies were not loaded.",
+    "Validation INCOMPLETE: the guest launcher could not complete its bounded execution.",
+) + tuple(
+    f"{operation} INCOMPLETE: {reason}"
+    for operation in ("Validation", "Formatting")
+    for reason in (
+        "the manifest is empty or exceeds the file-count limit.",
+        "the file store could not be listed.",
+        "every manifest file must contain text.",
+        "every manifest file must be valid UTF-8 text.",
+        "the manifest exceeds the transfer byte limits.",
+        "the sandbox could not be acquired.",
+        "the fixed launcher did not return a complete report.",
+        "staging, execution, or report verification failed.",
+        "Paths must be relative, use [A-Za-z0-9._/-], and contain no '..'.",
+        "A file path must name a file.",
+        "The file manifest contains duplicate destinations.",
+        "The manifest contains an unsupported engine file or a reserved path.",
+        "The file listing contains ambiguous normalized paths.",
+        "A manifest file is absent from this tool's file listing.",
+        "Include every configuration sibling in each selected module directory.",
+        "root_module must contain at least one configuration file for this engine.",
+    )
+)
+
+
 def make_terraform_tools(
     router: SandboxRouter | None,
     file_store: AgentFileStore,
@@ -87,6 +121,7 @@ def make_terraform_tools(
         name=f"{engine}_validate",
         source_integrity=SourceIntegrity.UNTRUSTED,
         result_contract=True,
+        fixed_sentences=_FIXED_SENTENCES,
         verdicts=VALIDATE_VERDICTS,
         standing_guidance=(STANDING_GUIDANCE,),
         file_store_provenance=file_store_provenance,
@@ -104,6 +139,7 @@ def make_terraform_tools(
             name=f"{engine}_format",
             source_integrity=SourceIntegrity.UNTRUSTED,
             result_contract=True,
+            fixed_sentences=_FIXED_SENTENCES,
             verdicts=FORMAT_VERDICTS,
             standing_guidance=(FORMAT_GUIDANCE,),
             file_store_provenance=file_store_provenance,

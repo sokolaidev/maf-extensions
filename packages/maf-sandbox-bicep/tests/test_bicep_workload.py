@@ -1439,9 +1439,14 @@ class TestFidesDeclarations:
 
     def _properties(self):
         store = InMemoryStore({})
-        return dict(_tool(store, _fake_backend()).additional_properties or {})
+        tool = _tool(store, _fake_backend())
+        return {
+            key: value
+            for key, value in tool.additional_properties.items()
+            if key != "fixed_sentences"
+        }
 
-    def test_the_tool_declares_its_integrity_and_nothing_else(self):
+    def test_the_tool_declares_only_its_integrity_policy(self):
         assert self._properties() == {
             "source_integrity": "trusted",
             DERIVED_INTEGRITY_PROPERTY: "untrusted",

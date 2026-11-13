@@ -169,7 +169,11 @@ class TestTheToolDeclaresItsResultUntrusted:
     def _properties(self, out_dir: Path) -> dict[str, object]:
         tools = _tools(_Renderer(), out_dir)
         assert len(tools) == 1, tools
-        return dict(tools[0].additional_properties or {})
+        return {
+            key: value
+            for key, value in tools[0].additional_properties.items()
+            if key != "fixed_sentences"
+        }
 
     def test_it_declares_untrusted(self, out_dir: Path):
         """The library default is `None`, so the key is here because it was passed."""

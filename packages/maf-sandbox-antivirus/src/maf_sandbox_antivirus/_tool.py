@@ -46,6 +46,19 @@ _LOGGER = logging.getLogger(__name__)
 _MAX_RESPONSE = 32 * 1024
 
 
+_FIXED_SENTENCES = (
+    "Database preparation did not admit the scan",
+    "Error: antivirus preparation or scan did not complete",
+    "Error: antivirus update or scan timed out",
+    "Error: choose one listed file",
+    "Error: file must name exactly one visible stored upload",
+    "Error: invalid binary upload",
+    "Error: max_bytes exceeded",
+    "Error: the upload store must return binary bytes",
+    "Guest diagnostic text withheld.",
+)
+
+
 def antivirus_sandbox_spec(
     image: str | None = None, *, max_bytes: int = 32 * 1024 * 1024
 ) -> SandboxSpec:
@@ -137,6 +150,7 @@ def make_antivirus_tools(
         approval_mode="never_require",
         source_integrity=SourceIntegrity.UNTRUSTED,
         result_contract=True,
+        fixed_sentences=_FIXED_SENTENCES,
         verdicts=("clean", "infected", "refused"),
         file_store_provenance=file_store_provenance,
         requires_file_integrity=requires_file_integrity,
