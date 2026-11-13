@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from . import accounting, idle, physical
+from . import accounting, freshness, idle, physical
 from .accounting import CALL_METADATA, MAX_INTEGER, SESSION_METADATA, STORE_METADATA
 from .host_store import (
     CHUNK,
@@ -155,6 +155,7 @@ class SharedStore:
         physical_policy: physical.Policy | None = None,
         prelaunch_recovery: bool = False,
         existing_only: bool = False,
+        witness: freshness.Witness | None = None,
     ):
         if (
             limits.session_quota < SESSION_METADATA
@@ -164,6 +165,7 @@ class SharedStore:
         if type(prelaunch_recovery) is not bool or (prelaunch_recovery and physical_policy is None):
             raise Refused("pre-launch recovery requires an explicit physical policy")
         self.prelaunch_recovery = prelaunch_recovery
+        self.witness = witness
         self.session = _name(session)
         self.limits = limits
         self.physical_policy = physical_policy
@@ -214,8 +216,8 @@ class SharedStore:
                 raise Refused("legacy store requires explicit migration")
             _check_rollback_format(path)
             self.db = sqlite3.connect(
-                path.as_uri() + "?mode=rw" if existing_only else path,
-                uri=existing_only,
+                path.as_uri() + ("?mode=rw" if existing_only else "?mode=rwc"),
+                uri=True,
                 timeout=0,
                 isolation_level=None,
             )
@@ -355,6 +357,8 @@ class SharedStore:
 
     def _validate_schema(self, version: int) -> None:
         expected: set[str] = set(_SCHEMA)
+        if self.witness is not None:
+            expected.add(freshness.MARKER)
         expected.add(PRELAUNCH_SCHEMA if version == PRELAUNCH_VERSION else LAUNCH_SCHEMA)
         if version >= VERSION:
             expected.update(accounting.schema())
@@ -374,14 +378,12 @@ class SharedStore:
 
     @contextmanager
     def _transaction(self) -> Iterator[None]:
-        self.db.execute("BEGIN IMMEDIATE")
         grants = self.grants.copy()
         idle_grant = self.idle_grant
         try:
-            yield
-            self.db.commit()
+            with freshness.transaction(self.db, self.witness, "publication"):
+                yield
         except BaseException:
-            self.db.rollback()
             self.grants = grants
             self.idle_grant = idle_grant
             raise

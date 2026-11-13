@@ -382,6 +382,7 @@ class Service:
             {s: config for s in SESSIONS},
             enabled=True,
             initialize=initialize,
+            freshness_root=root / "freshness",
             scratch_policy=scratch,
         )
         self.grants = {**grants, self.admin: None}
