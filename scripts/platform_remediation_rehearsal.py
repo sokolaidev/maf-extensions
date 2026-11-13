@@ -1,4 +1,4 @@
-"""Exercise platform qualification and App delivery without proposing a production source fix."""
+"""Qualify platform updates and exercise isolated draft delivery without enabling automation."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from plan_platform_remediation import RUNTIME_RECIPES, acquire_plan
 MANIFEST = "scripts/platform_rehearsal_cases.json"
 WORKFLOW = "platform-image-remediation-rehearsal.yml"
 CASES = ("current-rebuild", "bicep-update", "apk-pinned", "apk-unpinned", history.CASE)
+UPDATE_CASES = {"bicep-update", "apk-pinned"}
 
 
 class InterruptedDelivery(RuntimeError):
@@ -31,15 +32,28 @@ class InterruptedDelivery(RuntimeError):
 
 
 class RehearsalGitHub(publication.BotGitHub):
-    """Reserve one isolated receipt branch for this manual workflow run."""
+    """Reserve one isolated draft branch for this manual workflow run."""
 
     title = publication.REHEARSAL_TITLE
 
-    def __init__(self, run_id: int) -> None:
-        self.branch = publication.REHEARSAL_BRANCH + str(positive_id(run_id))
+    def __init__(self, run_id: int, paths: set[str] | None = None) -> None:
+        self.paths = paths
+        prefix = publication.REHEARSAL_BRANCH
+        if paths is not None:
+            prefix = publication.UPDATE_REHEARSAL_BRANCH
+            self.title = publication.UPDATE_REHEARSAL_TITLE
+        self.branch = prefix + str(positive_id(run_id))
         self.interrupt = False
 
     def request(self, endpoint: str, **kwargs: Any) -> bytes:
+        if (
+            self.paths is not None
+            and kwargs.get("method", "GET") != "GET"
+            and (endpoint == "graphql" or "/pulls" in endpoint)
+        ):
+            conflicts = platform.competing_pulls(self, self.paths)
+            if conflicts:
+                raise ValueError(f"Competing source PR appeared before delivery: {conflicts}")
         if (
             self.interrupt
             and endpoint == f"repos/{REPOSITORY}/pulls"
@@ -203,9 +217,25 @@ def qualify(root: Path, work: Path, results: Path) -> dict[str, Any]:
 
 
 def delivery_payload(
-    root: Path, qualified: dict[str, Any], evidence_url: str
+    root: Path, qualified: dict[str, Any], evidence_url: str, *, work: Path | None = None
 ) -> tuple[dict[str, Any], dict[str, bytes]]:
-    """Write only a tracked test receipt, never the qualified dependency proposal."""
+    """Recompute qualified update bytes; rebuild cases deliver only a tracked test receipt."""
+    if qualified["case"] in UPDATE_CASES:
+        if work is None or qualified.get("evidenceMode") != "current":
+            raise ValueError("Dependency delivery requires current authenticated update evidence")
+        expected, files = validator(root, work)(root, work)
+        case_rows(root, expected, qualified["case"])
+        report = qualified["qualification"]
+        hashes = {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()}
+        if (
+            qualified.get("status") != "qualified"
+            or report["status"] != "ready"
+            or report["source"] != qualified["source"]
+            or not hashes
+            or hashes != report["files"]
+        ):
+            raise ValueError("Dependency proposal differs from qualified update files")
+        return {**report, "kind": "platform-update-rehearsal", "evidenceMode": "current"}, files
     git(root, "cat-file", "-e", f"{qualified['source']}:{publication.REHEARSAL_PATH}")
     record = {
         "schemaVersion": 1,
@@ -248,6 +278,10 @@ def lifecycle(
         "scope": "rehearsal",
         "bot": bot,
         "source": receipt["source"],
+        "payload": "dependency-diff"
+        if report.get("kind") == "platform-update-rehearsal"
+        else "receipt",
+        "files": report["files"],
         "initialHead": publication.branch_head(client),
     }
     output = work / "rehearsal-delivery.json"
@@ -351,9 +385,11 @@ def main() -> None:
                 f"https://github.com/{REPOSITORY}/actions/runs/{request['runId']}"
                 f"/artifacts/{positive_id(args.artifact_id)}"
             )
-            report, files = delivery_payload(ROOT, qualified, url)
+            report, files = delivery_payload(ROOT, qualified, url, work=args.work)
             lifecycle(
-                RehearsalGitHub(request["runId"]),
+                RehearsalGitHub(
+                    request["runId"], set(files) if request["case"] in UPDATE_CASES else None
+                ),
                 authority(args.work, request["case"]),
                 report,
                 files,
