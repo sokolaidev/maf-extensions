@@ -139,7 +139,7 @@ class ConfiguredClient:
         await _close_resource(self.inner)
         return None
 
-    async def get_response(self, *args: Any, **kwargs: Any) -> Any:
+    def get_response(self, *args: Any, **kwargs: Any) -> Any:
         options = deepcopy(self.options)
         overrides = dict(kwargs.pop("options", None) or {})
         if "extra_body" in options and "extra_body" in overrides:
@@ -148,7 +148,7 @@ class ConfiguredClient:
                 **overrides["extra_body"],
             }
         options.update(overrides)
-        return await self.inner.get_response(*args, options=options, **kwargs)
+        return self.inner.get_response(*args, options=options, **kwargs)
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,4 +1,10 @@
-# Agent Framework Python 1.24.0 assessment
+# Agent Framework Python release assessments
+
+> Historical release assessments and adoption plans. Current implementation and qualification evidence is recorded in [release compatibility](../../release-compatibility.md).
+
+Latest assessment: [MAF 1.25 and adoption plan](#maf-125-assessment-and-adoption-plan). The 1.24 record below preserves its original scope and evidence.
+
+## MAF 1.24 original assessment
 
 > Assessment and proposed adoption plan, completed on 2026-10-30. This record evaluates the tagged release against a pinned maf-extensions main snapshot; implementation and current validation are tracked in [#2342](https://github.com/sokolaidev/maf-extensions/issues/2342) and [release compatibility](../../release-compatibility.md#maf-124-adoption). The Proposed statuses below preserve the original assessment.
 
@@ -234,3 +240,293 @@ All entries below are assessed. Numbers refer to the 46 bullets in order in the 
 | 45 | #9502, #9717 |
 | 46 | #9672, #9437 |
 
+
+## MAF 1.25 assessment and adoption plan
+
+> Completed source assessment on 2026-11-10 against the pinned revisions below. Adoption is proposed, not implemented. The earlier 1.24 assessment above remains historical evidence. This section extends the existing research record as required by this directory's AGENTS.md.
+
+### 1.25 decision
+
+Proceed with a coordinated adoption of **Core 1.25.0, OpenAI 1.18.1, Foundry 1.16.1, Mistral 1.0.0b261106 and Ollama 1.0.0b261106**, after the qualification work below. The implementation tracked by [#2641](https://github.com/sokolaidev/maf-extensions/issues/2641) moves the measured band to `>=1.25.0,<1.26`; its [qualification and release sequence](../../release-compatibility.md#maf-125-adoption) supersede the assessment-only state below. Do not widen to `<2` based on upstream metadata.
+
+The selected 3,496-test suite passed on both the locked 1.24 cohort and the published 1.25 cohort without changing product code. This supports proceeding, but does not qualify every shipped package or a normal consumer installation. The highest-priority work is FIDES policy/materialization and middleware ordering (#9875), followed by MCP discovery/concurrency (#10042/#10147/#10136), response metadata and middleware termination (#9403/#9681), and provider replay/aggregation (#9931/#9094/#9803/#9763). The private compaction and session modules are unchanged byte-for-byte between the installed Core wheels; callers around them still changed.
+
+Seven upstream breaking-change groups have been reviewed. Python 3.10 removal needs no local interpreter migration. Sample 21 already sets `request_timeout=60`, so it does not inherit the new 30-second default. The upstream AG-UI, declarative, Foundry Local and Hyperlight/Monty migrations do not directly apply to our independently implemented adapters. No new optional provider, workflow host, memory service or provider-native shell is proposed.
+
+### 1.25 scope, completeness and source identity
+
+- Upstream release: [python-1.25.0](https://github.com/microsoft/agent-framework/releases/tag/python-1.25.0), published 2026-11-07, tagged commit `7bca1df23ea97b778dd5cd7a50d9db8d1ef832db`. The [tagged changelog](https://github.com/microsoft/agent-framework/blob/7bca1df23ea97b778dd5cd7a50d9db8d1ef832db/python/CHANGELOG.md) dates the version 2026-11-06.
+- Baseline upstream tag: `python-1.24.0`, commit `43d767c55050480e470ebf0a89caa4141d325ebf`. The [tag comparison](https://github.com/microsoft/agent-framework/compare/python-1.24.0...python-1.25.0) contains 118 commits, retrieved across both API pages. The aggregate changed-file response stops at 300 files, so it was not used as a complete file inventory; per-PR inventories were retrieved separately, including all 302 files for #9948.
+- Release inventory: **46 bullets, 77 distinct referenced PRs, three unlinked dependency bullets**. The PR ledger below covers all 77 separately. Release preparation #10151 and the source-present documentation change associated with #9617 are assessed separately, and another 43 tag-range PRs are explicitly excluded by scope. This reconciles **122 distinct PR references** across the notes and tag history, plus M1-M3. Assessed does not mean adopted or runtime-tested.
+- Four referenced Dependabot PRs (#10115, #10140, #10129, #10128) are closed unmerged; their updates were incorporated by [release preparation #10151](https://github.com/microsoft/agent-framework/pull/10151). They are not four additional merged commits.
+- Release manifest: [44 independently versioned distributions](https://github.com/microsoft/agent-framework/blob/7bca1df23ea97b778dd5cd7a50d9db8d1ef832db/python/.github/release-python-1.25.0.json). Standalone Lab is excluded. Publication and installation were checked for the five used distributions, not all 44.
+- Repository baseline: [main at ea3c22d4](https://github.com/sokolaidev/maf-extensions/tree/ea3c22d4a37a8cda56f609d5d57463c609bd9413), verified against GitHub during this assessment. Work used an isolated detached worktree; the older active feature checkout was preserved.
+- Published artifacts: [Core 1.25.0](https://pypi.org/project/agent-framework-core/1.25.0/), [OpenAI 1.18.1](https://pypi.org/project/agent-framework-openai/1.18.1/), [Foundry 1.16.1](https://pypi.org/project/agent-framework-foundry/1.16.1/), [Mistral 1.0.0b261106](https://pypi.org/project/agent-framework-mistral/1.0.0b261106/) and [Ollama 1.0.0b261106](https://pypi.org/project/agent-framework-ollama/1.0.0b261106/). Installed wheel metadata and actual import location were inspected.
+
+Context7 was consulted for MCP documentation, but its returned constructor example still showed the old unlimited default and omitted discovery-limit arguments. Tagged source and installed-wheel signatures determine this assessment, not that unversioned excerpt.
+
+### 1.25 dependency and consumer map
+
+This table records the pre-adoption baseline and proposed changes. The implementation record above describes the resulting declarations.
+
+| Surface | Verified current main / lock | Proposed adoption |
+|---|---|---|
+| Twelve direct Core consumers | All declare `>=1.24.0,<1.25`; lock is 1.24.0 | Qualify and move all twelve to `>=1.25.0,<1.26` together |
+| OpenAI adapter, root development group and Cachebench extra | `>=1.18.0,<2`; locked 1.18.0 | Floor at 1.18.1 and lock it; its published metadata requires Core >=1.25 |
+| Foundry adapter, same locations | `>=1.16.0,<2`; locked 1.16.0 | Floor at 1.16.1 to guarantee its replay fix; published Core floor remains 1.24 and OpenAI floor remains 1.18.0 |
+| Mistral adapter, same locations | `>=1.0.0b261030,<2`; locked that beta | Qualify/lock 1.0.0b261106; no Mistral-specific runtime fix in the 1.25 notes. Raising this provider floor is a cohort policy choice, not a new Core API requirement |
+| Ollama adapter, same locations | `>=1.0.0b261030,<2`; locked that beta | Floor/lock at 1.0.0b261106 for streaming finish-reason fix |
+| SDK dependencies | OpenAI 3.29.0, azure-ai-projects 2.7.0, Ollama 0.5.3 in lock | All are admitted by the candidate provider requirements. Foundry widens projects to <2.10; Ollama's provider still requires >=0.5.3,<0.5.4. Avoid unrelated SDK upgrades |
+| Python | All 21 packages require `>=3.12,<3.15` | Preserve; upstream's >=3.11 baseline and Redis 3.15 eligibility do not change our promise |
+| MCP | Direct `mcp==2.2.0` | Preserve; candidate Core's optional MCP requirement admits it. No second MCP major upgrade |
+| Nine remaining packages | Receive framework transitively; no direct Core declaration | Test through suite and install gates; do not add direct dependencies merely to equalize metadata |
+
+The twelve direct consumers are `maf-sandbox`, `maf-compaction`, `maf-cachebench`, `maf-sandbox-bicep`, `maf-sandbox-codeact`, `maf-sandbox-terraform`, `maf-sandbox-drawio`, `maf-sandbox-shell`, `maf-sandbox-document`, `maf-sandbox-mcp`, `maf-sandbox-azure-pricing` and `maf-sandbox-antivirus`.
+
+Source anchors for the impact judgments:
+
+- [Sandbox framework glue](https://github.com/sokolaidev/maf-extensions/blob/ea3c22d4a37a8cda56f609d5d57463c609bd9413/packages/maf-sandbox/src/maf_sandbox/maf.py): `sandbox_tool_declarations`, `argument_provenance_middleware`, `sandbox_label_tracking_middleware`, `file_store_provenance_middleware` and the public `rewritten_arguments` adapter. The argument observer shares the live context; the file observer reads its path after the downstream call, which matters when hidden arguments materialize later.
+- [Recall middleware](https://github.com/sokolaidev/maf-extensions/blob/ea3c22d4a37a8cda56f609d5d57463c609bd9413/packages/maf-compaction/src/maf_compaction/_toolsummary.py) and [session persistence](https://github.com/sokolaidev/maf-extensions/blob/ea3c22d4a37a8cda56f609d5d57463c609bd9413/packages/maf-compaction/src/maf_compaction/_persistence.py): private compaction/run-persistence hooks, termination handling and save/restore boundaries.
+- [Cachebench provider factories/wrapper](https://github.com/sokolaidev/maf-extensions/blob/ea3c22d4a37a8cda56f609d5d57463c609bd9413/packages/maf-cachebench/src/maf_cachebench/_providers.py): explicit model selection, owned/borrowed client lifetime and `ConfiguredClient`. Azure, Azure Responses, Foundry, Mistral, Ollama and OpenRouter routes use the five framework distributions above; SDK presence alone does not add an Anthropic/Gemini MAF provider.
+- [Sample 21](https://github.com/sokolaidev/maf-extensions/blob/ea3c22d4a37a8cda56f609d5d57463c609bd9413/samples/21_shell_storage/agent.py): Microsoft Learn MCP client with an explicit 60-second timeout. [Installed-worker qualification](https://github.com/sokolaidev/maf-extensions/blob/ea3c22d4a37a8cda56f609d5d57463c609bd9413/tests/fixtures/openclaw_installed_worker_check.py) and [Bicep ownership qualification](https://github.com/sokolaidev/maf-extensions/blob/ea3c22d4a37a8cda56f609d5d57463c609bd9413/tests/fixtures/openclaw_bicep_ownership_check.py) explicitly use 240 seconds.
+- [MCP HTTP service tests](https://github.com/sokolaidev/maf-extensions/blob/ea3c22d4a37a8cda56f609d5d57463c609bd9413/tests/test_mcp_workload_service.py), [framework compatibility tests](https://github.com/sokolaidev/maf-extensions/blob/ea3c22d4a37a8cda56f609d5d57463c609bd9413/tests/test_maf_124_compatibility.py), [approval contracts](https://github.com/sokolaidev/maf-extensions/blob/ea3c22d4a37a8cda56f609d5d57463c609bd9413/tests/test_framework_approval_contract.py) and [host file integrity](https://github.com/sokolaidev/maf-extensions/blob/ea3c22d4a37a8cda56f609d5d57463c609bd9413/tests/test_host_file_integrity.py) provide existing regression seams.
+
+“No direct migration” means no declared framework adapter or production/sample API consumer was identified at this revision; it does not cover arbitrary downstream hosts. In particular, `maf-sandbox-hyperlight` is not `agent-framework-hyperlight`, `maf-sandbox-codeact` is not Monty, `maf-sandbox-mcp` is not `agent-framework-hosting-mcp`, and our shell kind is not `agent-framework-tools`.
+
+### 1.25 PR-by-PR assessment
+
+Every row is assessed. “Qualify” names implementation-phase evidence still required; the existing-suite results below do not automatically satisfy all proposed new assertions. P0-P6 refer to the ordered plan.
+
+| Upstream PR | Change | Disposition | Repository impact and action |
+|---|---|---|---|
+| [#10136](https://github.com/microsoft/agent-framework/pull/10136) | Callable MCP discovery approval policies | Qualify | MCP consumers can choose approvals from tool/prompt metadata. No FoundryToolbox consumer exists here; do not infer approval or trust from our server annotations. P2: test valid decisions, invalid/raising callbacks, retained-tool refresh and atomic rollback. Keep the current explicit/static policy unless a host needs the callback. |
+| [#9948](https://github.com/microsoft/agent-framework/pull/9948) | Python 3.10 eligibility removed | No migration | All 21 workspace packages already require >=3.12,<3.15. Python 3.11 upstream support does not expand our support promise. P1/P5: preserve our bounds and test 3.12, 3.13 and 3.14; do not adopt 3.15 because Redis now permits it. |
+| [#10042](https://github.com/microsoft/agent-framework/pull/10042) | Bounded MCP discovery and finite request timeout | Qualify | Sample 21 already sets 60 seconds; ownership fixtures also set explicit timeouts. Default-created clients elsewhere now have a 30-second read timeout and 100-page/1,000-item tool and prompt catalog limits. P2: preserve explicit limits; test boundary pages/items, opaque/empty cursors, refresh rollback and borrowed-client ownership. These limits do not cap encoded response bytes. |
+| [#10035](https://github.com/microsoft/agent-framework/pull/10035) | Authorization ownership for workflow executors and sessions | No direct migration | No AG-UI/hosting WorkflowAgent integration is declared. Core adds wrapped-agent ownership metadata, so generic Agent.as_tool paths still belong in compatibility coverage. P3/P5: retain ordinary agent-tool tests; do not claim this isolates our own stores or arbitrary host workflow functions. Future AG-UI use needs fresh workflow/executor/session instances per authorization scope. |
+| [#9900](https://github.com/microsoft/agent-framework/pull/9900) | Workflow trace operation/name changes | No direct migration | maf-sandbox-otel observes sandbox events; no exact workflow.run/workflow.name filter was found in runtime code. Upstream workflow telemetry is a separate surface. Keep sandbox span names. Document downstream migration to gen_ai.operation.name=invoke_workflow and gen_ai.workflow.name only for hosts consuming MAF workflow spans. |
+| [#8662](https://github.com/microsoft/agent-framework/pull/8662) | Fresh declarative MCP session per handler call | No direct migration | Our MCPServer and workload service do not use DefaultMCPToolHandler. Its removed async lifetime and implicit cross-call state are therefore not our server lifecycle. Do not change server pooling. Future declarative consumers must manage borrowed HTTP clients themselves; cache_max_size is only a deprecated no-op after #10151. |
+| [#9322](https://github.com/microsoft/agent-framework/pull/9322) | Foundry Local SDK 2.3.1 migration | Defer | Cachebench's foundry route uses the cloud FoundryChatClient, not FoundryLocalClient; the Ollama route is also distinct. No SDK or bootstrap change. A future local route needs independent platform, model-preparation, shared-manager and cleanup qualification. |
+| [#9971](https://github.com/microsoft/agent-framework/pull/9971) | Redact host exceptions in upstream CodeAct | No direct migration | maf-sandbox-codeact and maf-sandbox-hyperlight do not import the upstream Hyperlight/Monty providers. Their host-tool transport and error contracts are independent. Retain our error/redaction tests; do not add include_detailed_errors or claim upstream redaction covers this backend. |
+| [#10096](https://github.com/microsoft/agent-framework/pull/10096) | Dependency updates and Monty runtime bridge | Adopt cohort | Foundry widens azure-ai-projects from <2.8 to <2.10 without raising >=2.2. The locked SDK 2.7.0 remains admitted. FastAPI/Monty changes target unused adapters. P1: lock the chosen cohort and record actual transitive versions; no automatic SDK or tooling upgrade is necessary solely because upstream widened a range. |
+| [#10143](https://github.com/microsoft/agent-framework/pull/10143) | Redis permits Python 3.15 and RedisVL 0.31 | No direct migration | No framework Redis integration is installed; our Python ceiling remains <3.15. No Redis dependency or interpreter change. |
+| [#10103](https://github.com/microsoft/agent-framework/pull/10103) | Clarify Purview binary classification | No direct migration | No Purview adapter; documentation does not alter our sandbox provenance or content labels. No local change. |
+| [#9783](https://github.com/microsoft/agent-framework/pull/9783) | Document optional usage counters | Qualify | Cachebench distinguishes absent cache counters from measured zero. The change is documentation, not new accounting behavior. P3: preserve missing-versus-zero reporting; do not backfill unsupported counters. |
+| [#9897](https://github.com/microsoft/agent-framework/pull/9897) | Document OTel logging-handler ownership | No migration | Clarifies configuration behavior; no runtime change in the PR. No logging-handler rewiring; keep our observer's ownership semantics. |
+| [#10105](https://github.com/microsoft/agent-framework/pull/10105) | Remove unused URI regex and fix cycle documentation | No migration | No private URI_PATTERN import or workflow-builder consumer found. No copied compatibility shim. |
+| [#9735](https://github.com/microsoft/agent-framework/pull/9735) | Correct multimodal sample settings | No migration | Upstream sample documentation only; local factories pass explicit model settings. Keep our provider-specific environment names. |
+| [#9740](https://github.com/microsoft/agent-framework/pull/9740) | Use FOUNDRY_MODEL in Content Understanding examples | No migration | No Content Understanding integration; our cloud Foundry route already reads FOUNDRY_MODEL. No local rename. |
+| [#9758](https://github.com/microsoft/agent-framework/pull/9758) | Correct ChatKit setup variables | No migration | No ChatKit consumer. No local change. |
+| [#9781](https://github.com/microsoft/agent-framework/pull/9781) | Correct red-team sample settings | No migration | No upstream red-team sample is embedded in this repo. No local change. |
+| [#9906](https://github.com/microsoft/agent-framework/pull/9906) | Repair evaluator documentation link | No migration | No Rubric evaluator code change. No local change. |
+| [#10032](https://github.com/microsoft/agent-framework/pull/10032) | Add Bhived community project | No migration | Upstream community listing only. No local dependency. |
+| [#10086](https://github.com/microsoft/agent-framework/pull/10086) | Add Donkey Development Kit community project | No migration | Upstream community listing only. No local dependency. |
+| [#10038](https://github.com/microsoft/agent-framework/pull/10038) | Strengthen upstream API/review guidance | No migration | Contributor guidance, not a library behavior change. Keep this repository's AGENTS.md/CONTRIBUTING.md authoritative. |
+| [#9937](https://github.com/microsoft/agent-framework/pull/9937) | Expand optional MCP tests | Qualify | The optional MCP route is used by sample 21 and ownership tests; this PR itself changes only upstream tests. P2: keep optional-task discovery and approval-default tests; no new task support claim. |
+| [#10117](https://github.com/microsoft/agent-framework/pull/10117) | Lab pytest update | No migration | Standalone Lab tooling is outside the upstream publication batch and our dependencies. No local pytest bump. |
+| [#10118](https://github.com/microsoft/agent-framework/pull/10118) | Lab mypy update | No migration | Standalone Lab tooling only. No local checker change. |
+| [#10119](https://github.com/microsoft/agent-framework/pull/10119) | Upstream ty update | No migration | Repository checker pin, superseded in the release cohort by 0.0.95. No local checker change. |
+| [#10120](https://github.com/microsoft/agent-framework/pull/10120) | Upstream mypy update | No migration | Repository checker pin only; this repo uses its own validation configuration. No local checker change. |
+| [#9947](https://github.com/microsoft/agent-framework/pull/9947) | Fix changed-package path routing | No migration | Upstream CI selection script, not a shipped API. No port into our independent gate_tasks.py. |
+| [#10115](https://github.com/microsoft/agent-framework/pull/10115) | pytest 9.2.0 update, incorporated by release prep | No migration | Original PR was closed unmerged; #10151 carries the update and aligned extras. Our pytest pin is independent. No automatic pytest upgrade; retain normal test gates. |
+| [#10140](https://github.com/microsoft/agent-framework/pull/10140) | ty/Zuban updates, incorporated by release prep | No migration | Original PR was closed unmerged; final pins are delivered in #10151. No local checker change. |
+| [#10129](https://github.com/microsoft/agent-framework/pull/10129) | Lab OAuthlib lock update, incorporated by release prep | No migration | Closed unmerged; #10151 incorporates the standalone lock change. It is not a suite runtime fix. No local dependency change. |
+| [#10128](https://github.com/microsoft/agent-framework/pull/10128) | Telegram sample OAuthlib lock update, incorporated by release prep | No migration | Closed unmerged; #10151 incorporates the sample lock change. No Telegram hosting consumer here. No local dependency change. |
+| [#10147](https://github.com/microsoft/agent-framework/pull/10147) | Request-owned MCP headers and concurrent same-identity requests | Qualify | Real HTTP ownership tests construct MAF clients against our service. Matching headers can overlap; identity transitions and recovery drain active attempts. Shared protocol state remains shared. P2: real-HTTP overlap, identity isolation, cancellation, retry metadata and no resurrection after close. Treat admission, RPC and recovery timing separately; preserve outer call deadlines. |
+| [#9403](https://github.com/microsoft/agent-framework/pull/9403) | Capture run-specific tools for evaluation | Qualify | This is broader than its title: responses gain schema snapshots and a final metadata-only streaming update. Cachebench ConfiguredClient is a duck wrapper, not a BaseChatClient, so BaseChatClient-specific capture/aggregation must be tested explicitly. P3: dynamic tools, stream/final-response parity, early close, JSON round trips and wrapper behavior. Do not claim all provider tools were previously absent at execution time. |
+| [#9679](https://github.com/microsoft/agent-framework/pull/9679) | Accept tuples in function results | Qualify | Our tools return rich Content sequences and compaction rewrites canonical result items; upstream now handles tuples like lists. P3: mixed tuple Content/text, nested tuple serialization and preservation of labels/annotations; preserve existing list contract. |
+| [#9681](https://github.com/microsoft/agent-framework/pull/9681) | Preserve middleware termination results | Qualify | Recall middleware catches MiddlewareTermination/MiddlewareFailure to discard refused persistence. A carried result now survives agent/chat middleware if context.result is absent. P3: test carried and preassigned results, both streaming modes, and no persistence of rejected/partial recall state. |
+| [#8960](https://github.com/microsoft/agent-framework/pull/8960) | Deterministic recursive tool-schema ordering | Adopt with measurement | Every sandbox FunctionTool schema and Cachebench tool request can change serialized ordering. Equivalent dictionaries are not evidence of identical prompt bytes. P3: deterministic nested object keys while list order is preserved. Start fresh cache benchmarks after upgrade; do not attribute cache changes solely to strategy quality. |
+| [#9852](https://github.com/microsoft/agent-framework/pull/9852) | Normalize whole-number floats for integer schemas | Qualify | Schema-backed tools accept 3.0 as integer and normalize it when number is not also allowed; bool/fractional inputs remain distinct. This is not a blanket change to every Pydantic argument model. P3: test integer-only versus integer/number union inputs at actual tool boundaries; retain validation and post-approval authority checks. |
+| [#9943](https://github.com/microsoft/agent-framework/pull/9943) | Respect chat-client serialization exclusions | Qualify | ConfiguredClient forwards ordinary methods; exclusions now apply to flattened additional_properties, including None values. P3: verify explicit exclusions and saved response/client metadata are not conflated; no claim this alone sanitizes all credentials. |
+| [#9942](https://github.com/microsoft/agent-framework/pull/9942) | Deferred executor discovery returns an empty list | No direct migration | No framework Executor subclass/output_types consumer found. No adapter shim. |
+| [#9998](https://github.com/microsoft/agent-framework/pull/9998) | Deserialize NoneType workflow request-info values | No direct migration | Our session persistence uses AgentSession, not workflow RequestInfoEvent rehydration. No store migration; keep general session round-trip tests. |
+| [#9294](https://github.com/microsoft/agent-framework/pull/9294) | Retain uncovered sessions after memory consolidation | No direct migration | Upstream harness memory consolidation is separate from maf-compaction's coverage-based recall records. Do not replace our coverage gate or enable upstream memory consolidation. |
+| [#9547](https://github.com/microsoft/agent-framework/pull/9547) | Quarantine unreadable harness memory state | No direct migration | Our compaction persistence does not use the harness memory state file. No automatic deletion/quarantine of host stores; preserve our failure behavior. |
+| [#9387](https://github.com/microsoft/agent-framework/pull/9387) | Retain completed background-task results | No direct migration | No BackgroundAgentsProvider consumer identified; sandbox process cleanup has separate ownership. No new task retention or cleanup policy. |
+| [#9875](https://github.com/microsoft/agent-framework/pull/9875) | Fail-closed FIDES policy and execution authority | Adoption gate | Directly intersects sandbox declarations, public rewritten_arguments, file provenance, hidden values and middleware ordering. Materialization moves to terminal execution; invalid metadata and post-approval argument/policy/session changes now refuse. P0: run real-middleware labels and every kind; add blocked-validator, mutation/retry, both-order provenance, USER_IDENTITY and surrogate persistence regressions. Keep policy validation before hidden-value execution. |
+| [#9094](https://github.com/microsoft/agent-framework/pull/9094) | Preserve AG-UI citations through aggregation | Qualify shared Core path | AG-UI is unused, but Core now delegates agent finalization to BaseChatClient and function-loop finalization to the client hook. Compaction and Cachebench reconstruct streams. P3: preserve message identity, annotation ownership, replacement updates, tool-loop aggregation and wrappers; do not add AG-UI just to test our used providers. |
+| [#9770](https://github.com/microsoft/agent-framework/pull/9770) | Emit one replayed AG-UI tool-start event | No direct migration | No AG-UI endpoint or event converter consumer. No event handling change. |
+| [#9859](https://github.com/microsoft/agent-framework/pull/9859) | Include Anthropic cache tokens in input usage | No direct migration | The Anthropic SDK is transitive; agent-framework-anthropic is not one of our provider adapters. OpenRouter uses the OpenAI adapter. Do not alter Cachebench counters for all providers based on this fix. |
+| [#9898](https://github.com/microsoft/agent-framework/pull/9898) | Stream Anthropic citation metadata | No direct migration | No Anthropic MAF adapter; common annotation preservation remains covered under #9094. No provider added. |
+| [#9972](https://github.com/microsoft/agent-framework/pull/9972) | Replay Anthropic hosted MCP results | No direct migration | Neither that adapter nor its hosted MCP replay route is used. No transcript migration. |
+| [#10106](https://github.com/microsoft/agent-framework/pull/10106) | Replay Anthropic redacted reasoning blocks | No direct migration | No Anthropic MAF tool-loop adapter; do not decode opaque provider data. No new replay route. |
+| [#9996](https://github.com/microsoft/agent-framework/pull/9996) | Prefer injected Cosmos vector clients | No direct migration | No framework Cosmos vector-store consumer. No storage-client or credential changes. |
+| [#9982](https://github.com/microsoft/agent-framework/pull/9982) | Prefer injected MongoDB clients | No direct migration | No framework MongoDB vector-store consumer. No storage-client or credential changes. |
+| [#9985](https://github.com/microsoft/agent-framework/pull/9985) | Prefer injected Oracle clients | No direct migration | No framework Oracle vector-store consumer. No storage-client or credential changes. |
+| [#9983](https://github.com/microsoft/agent-framework/pull/9983) | Prefer injected Postgres clients | No direct migration | No framework Postgres adapter; our persisted sessions use different stores. No storage-client or credential changes. |
+| [#9993](https://github.com/microsoft/agent-framework/pull/9993) | Prefer injected Qdrant clients | No direct migration | No framework Qdrant vector-store consumer. No storage-client or credential changes. |
+| [#9977](https://github.com/microsoft/agent-framework/pull/9977) | Prefer injected Redis history client | No direct migration | No framework Redis history provider; do not apply old Redis migrations to this repo by association. No storage-client or credential changes. |
+| [#9796](https://github.com/microsoft/agent-framework/pull/9796) | Preserve parallel Bedrock tool results | No direct migration | No MAF Bedrock provider in Cachebench. No provider added; keep generic multi-result history checks. |
+| [#9967](https://github.com/microsoft/agent-framework/pull/9967) | Prefer explicit Bedrock client/session region | No direct migration | No Bedrock provider construction. No environment changes. |
+| [#9984](https://github.com/microsoft/agent-framework/pull/9984) | Skip Claude settings for an injected SDK client | No direct migration | No framework Claude adapter. No provider or SDK added. |
+| [#9969](https://github.com/microsoft/agent-framework/pull/9969) | Skip Gemini settings for an injected SDK client | No direct migration | google-genai is transitive; agent-framework-gemini is not used. No change to cloud settings. |
+| [#10005](https://github.com/microsoft/agent-framework/pull/10005) | Forward declarative extra model options normally | No direct migration | No declarative loader; ConfiguredClient has its own tested option-merging behavior. Do not copy declarative option wiring. |
+| [#9712](https://github.com/microsoft/agent-framework/pull/9712) | Allow IPv6 loopback Host in DevUI | No direct migration | Our MCP HTTP service is not upstream DevUI. No host-header policy changes. |
+| [#9931](https://github.com/microsoft/agent-framework/pull/9931) | Attach Foundry reasoning replay data to its owner | Qualify | Cachebench uses FoundryChatClient; multi-message responses can carry reasoning on a later message. Summary and session replay must keep that association. P3: later/trailing reasoning, no duplication, stream/nonstream parity, save/restore and outgoing serialized payload checks. |
+| [#9789](https://github.com/microsoft/agent-framework/pull/9789) | Normalize nested SDK models in Foundry hosted tools | Qualify optional route | Foundry adapter is used; current factories do not themselves configure hosted tools. Rich payloads may come from host use. P3: synthetic nested-model serialization and refusal of malformed tool payloads; do not enable hosted tools. |
+| [#9981](https://github.com/microsoft/agent-framework/pull/9981) | Honor FOUNDRY_MODEL in FoundryEvals | No direct migration | Our foundry factory already reads FOUNDRY_MODEL; no FoundryEvals consumer. No local environment rename or evaluator dependency. |
+| [#9991](https://github.com/microsoft/agent-framework/pull/9991) | Allow injected Foundry embedding clients without endpoint | No direct migration | Cachebench constructs chat clients, not Foundry embedding clients. No endpoint/ownership rewrite. |
+| [#9745](https://github.com/microsoft/agent-framework/pull/9745) | Preserve hosted-response request metadata | No direct migration | Foundry hosting is distinct from FoundryChatClient and is not installed. No host transport change. |
+| [#10090](https://github.com/microsoft/agent-framework/pull/10090) | Reject unsupported Copilot function middleware | No direct migration | No agent-framework-github-copilot consumer; our sandbox FunctionMiddleware is used with standard Core agents. Do not advertise Copilot compatibility. |
+| [#10088](https://github.com/microsoft/agent-framework/pull/10088) | Sum Copilot usage over model calls | No direct migration | No Copilot adapter; Cachebench's own usage aggregation remains provider-specific. No global accounting change. |
+| [#10149](https://github.com/microsoft/agent-framework/pull/10149) | Narrow unscoped URL session approvals | No direct migration | No Copilot permission handler. Our egress allowlist and destination policy remain independent. No URL approval policy weakening or new domain inference. |
+| [#10036](https://github.com/microsoft/agent-framework/pull/10036) | Validate arguments for hosted MCP agent tools | No direct migration | maf-sandbox-mcp uses MCPServer and its own validation, not agent-framework-hosting-mcp. P2/P5: preserve server rejection tests; no hosting adapter migration. |
+| [#9788](https://github.com/microsoft/agent-framework/pull/9788) | Deduplicate upstream CodeAct FIDES warnings | No direct migration | Upstream Hyperlight/Monty warning state is not our CodeAct bridge. No warning suppression added. |
+| [#9763](https://github.com/microsoft/agent-framework/pull/9763) | Correct Ollama streaming tool-call finish reason | Adopt and qualify | Cachebench's Ollama route is used. The terminal chunk may lack tool calls even when earlier chunks contain them. P3: chunk sequence with earlier tool calls, terminal stop, explicit length reason and early-close ownership. |
+| [#9987](https://github.com/microsoft/agent-framework/pull/9987) | Prefer injected Azure OpenAI deployment over ambient alias | Qualify | Current factories pass model explicitly, which still wins. Hosts injecting an Azure SDK client without model get the corrected deployment precedence. P3: explicit model, injected deployment and environment fallback across Chat Completions/Responses; retain caller-owned SDK cleanup behavior. |
+| [#9803](https://github.com/microsoft/agent-framework/pull/9803) | Pair empty local shell calls and replay local output | Qualify history boundary | Our shell kind is a regular FunctionTool, not the upstream local shell executor. However the generic Core continuation helper changes and compaction can encounter shell content. P3: paired shell call/result, local-result marker serialization, mixed tool batches and service continuation without duplicate or orphaned outputs; no automatic adoption of provider-native shell. |
+| [#9483](https://github.com/microsoft/agent-framework/pull/9483) | Kill stateless shell process groups on timeout | No direct migration | agent-framework-tools is not used. Our shell kind, router and backends own sandbox process cleanup. Retain backend timeout/cleanup evidence; do not claim this fixes native sandbox process trees. |
+
+### 1.25 release preparation and reconciliation
+
+| Item | Assessment and action |
+|---|---|
+| [#10151](https://github.com/microsoft/agent-framework/pull/10151) | Release preparation sets the 44-package batch, records seven breaking migrations, aligns pins and incorporates four unmerged dependency updates. It also restores declarative `cache_max_size` as an ignored deprecated keyword; that does not restore shared protocol sessions or handler `aclose()`. The SQL Server assertion fix is upstream test-only. Use the final tagged state for P1. |
+| M1: root/Core standard cohort | The umbrella now exactly pins Core 1.25.0 and Core's `all` extra advances its adapter cohort. This repo installs bare Core and selected providers. Do not replace that with the umbrella or install every optional integration. |
+| M2: new Core floors | AG-UI, declarative, Foundry hosting and OpenAI require Core >=1.25 for actual new APIs. Only OpenAI is in our selected provider set. Foundry/Mistral/Ollama retain >=1.24; distinguish their new versions from a mandatory new Core floor. |
+| M3: exact hosting pins | Hosting A2A/MCP/Responses/Telegram pin their co-released hosting artifact. None is declared here; no local hosting pin change. |
+| [#9617](https://github.com/microsoft/agent-framework/pull/9617) / source commit `cf734bc4` | PR metadata says closed unmerged, and #10151's narrative excludes it from the changelog. Nevertheless, the tag-range commit and tagged/published `_types.py` contain its concrete response-overview examples, unlike 1.24. Record the source-present documentation change without calling the PR merged. No runtime/API migration. |
+
+The following 43 tag-range PRs are also accounted for. They are outside Python runtime adoption; exclusions are based on changed paths, not just title prefixes.
+
+| PR | Tag-range subject | Reason / disposition |
+|---|---|---|
+| [#9648](https://github.com/microsoft/agent-framework/pull/9648) | .NET: Pin the documentation pages of the RAG Step02 sample to a commit | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#9845](https://github.com/microsoft/agent-framework/pull/9845) | .NET: fix(dotnet): handle parse-value conversion failures consistently | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#9894](https://github.com/microsoft/agent-framework/pull/9894) | .NET: ci: adds a script to bump the release version | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#9893](https://github.com/microsoft/agent-framework/pull/9893) | chore: bumps release version for dotnet | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#8756](https://github.com/microsoft/agent-framework/pull/8756) | .NET: Add GA computer tool support to Foundry and Foundry hosting | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#9935](https://github.com/microsoft/agent-framework/pull/9935) | chore(deps): bump github/codeql-action/autobuild in / | Upstream repository automation/tooling; not shipped Python behavior and no local workflow change required. |
+| [#9936](https://github.com/microsoft/agent-framework/pull/9936) | chore(deps): bump github/codeql-action/analyze in / | Upstream repository automation/tooling; not shipped Python behavior and no local workflow change required. |
+| [#9934](https://github.com/microsoft/agent-framework/pull/9934) | chore(deps): bump github/codeql-action/init in / | Upstream repository automation/tooling; not shipped Python behavior and no local workflow change required. |
+| [#9933](https://github.com/microsoft/agent-framework/pull/9933) | chore(deps): bump astral-sh/setup-uv in / | Upstream repository automation/tooling; not shipped Python behavior and no local workflow change required. |
+| [#9932](https://github.com/microsoft/agent-framework/pull/9932) | chore(deps): bump actions/setup-python in / | Upstream repository automation/tooling; not shipped Python behavior and no local workflow change required. |
+| [#9873](https://github.com/microsoft/agent-framework/pull/9873) | .NET: fall back when a restored agent mode is no longer configured | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#9773](https://github.com/microsoft/agent-framework/pull/9773) | fix: preserve GitHub Copilot reasoning token usage | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#9899](https://github.com/microsoft/agent-framework/pull/9899) | .NET: [BREAKING] align workflow span name with OpenTelemetry conventions | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#9901](https://github.com/microsoft/agent-framework/pull/9901) | ci: adds a skill for the release notes | Upstream repository automation/tooling; not shipped Python behavior and no local workflow change required. |
+| [#9995](https://github.com/microsoft/agent-framework/pull/9995) | .NET: Update A2A SDK to 1.0.0-preview4 | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#9738](https://github.com/microsoft/agent-framework/pull/9738) | .NET: Preserve conversation continuity after OAuth consent | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#9883](https://github.com/microsoft/agent-framework/pull/9883) | Stale PR closure workflow/script | Upstream repository automation/tooling; not shipped Python behavior and no local workflow change required. |
+| [#9813](https://github.com/microsoft/agent-framework/pull/9813) | .NET: Preserve citations in OpenAI Responses hosting | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#10037](https://github.com/microsoft/agent-framework/pull/10037) | .NET: [BREAKING] Postpone task support in A2A hosting | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#9973](https://github.com/microsoft/agent-framework/pull/9973) | .NET: [BREAKING] CodeAct: redact host-tool diagnostics by default | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#10046](https://github.com/microsoft/agent-framework/pull/10046) | chore: promote shipped .NET APIs | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#10048](https://github.com/microsoft/agent-framework/pull/10048) | Fix Issue Planning workflow by recompiling with gh-aw v1.0.1 | Upstream repository automation/tooling; not shipped Python behavior and no local workflow change required. |
+| [#10064](https://github.com/microsoft/agent-framework/pull/10064) | chore(deps): bump j178/prek-action in / | Upstream repository automation/tooling; not shipped Python behavior and no local workflow change required. |
+| [#10063](https://github.com/microsoft/agent-framework/pull/10063) | chore(deps): bump actions/create-github-app-token in / | Upstream repository automation/tooling; not shipped Python behavior and no local workflow change required. |
+| [#10062](https://github.com/microsoft/agent-framework/pull/10062) | chore(deps): bump danielpalme/ReportGenerator-GitHub-Action in / | Upstream repository automation/tooling; not shipped Python behavior and no local workflow change required. |
+| [#10070](https://github.com/microsoft/agent-framework/pull/10070) | docs: fix spelling typos in decision records | Shared design-record spelling only; includes the compaction ADR but changes no contract. |
+| [#10095](https://github.com/microsoft/agent-framework/pull/10095) | Update approval samples to include reason | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#9722](https://github.com/microsoft/agent-framework/pull/9722) | .NET: [BREAKING] fix: scope workflow MCP clients to invocations | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#10100](https://github.com/microsoft/agent-framework/pull/10100) | Allow configuring Foundry toolbox token scope | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#10099](https://github.com/microsoft/agent-framework/pull/10099) | .NET: Fix per message user mapping in purview | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#10098](https://github.com/microsoft/agent-framework/pull/10098) | fix: renames azure agent to foundry agent | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#9841](https://github.com/microsoft/agent-framework/pull/9841) | .NET: [BREAKING] fix(dotnet): require allowed HTTP hosts | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#10065](https://github.com/microsoft/agent-framework/pull/10065) | .NET: Preserve non-ASCII text in hosting tool payloads | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#10109](https://github.com/microsoft/agent-framework/pull/10109) | Reject unscoped Mem0 memory deletion | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#9994](https://github.com/microsoft/agent-framework/pull/9994) | .NET: remove nonstandard workflow payload telemetry | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#10108](https://github.com/microsoft/agent-framework/pull/10108) | docs: fix dont typos in ChatCompletions comments | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#10113](https://github.com/microsoft/agent-framework/pull/10113) | .NET: [BREAKING] Simplify A2A agent creation and payload handling | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#10121](https://github.com/microsoft/agent-framework/pull/10121) | Ensure enable file hooks defaults to false | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#10122](https://github.com/microsoft/agent-framework/pull/10122) | .NET: Use source-generated logging in Foundry Hosting | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#10124](https://github.com/microsoft/agent-framework/pull/10124) | .NET: Clarify Foundry toolbox startup and readiness XML documentation | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+| [#10045](https://github.com/microsoft/agent-framework/pull/10045) | Add manual agentic issue triage workflow | Upstream repository automation/tooling; not shipped Python behavior and no local workflow change required. |
+| [#10144](https://github.com/microsoft/agent-framework/pull/10144) | Enable automatic issue routing | Upstream repository automation/tooling; not shipped Python behavior and no local workflow change required. |
+| [#10069](https://github.com/microsoft/agent-framework/pull/10069) | .NET: fix(dotnet): parse declarative workflow formulas and values with InvariantCulture | .NET-only implementation, tests or samples; this Python suite does not consume these assemblies. |
+
+### 1.25 verification completed
+
+This section records the original assessment before implementation. See the linked adoption record for subsequent source changes and validation.
+
+The baseline environment came from `uv sync --locked` at the pinned repository revision. Candidate wheels were installed into a separate directory with `--no-deps` and placed first on `PYTHONPATH`; actual Core import location and all five distribution versions were checked. Other dependencies stayed at the locked baseline. This intentionally bypasses the repository's current `<1.25` metadata and is **not a supported resolution or clean consumer install**.
+
+| Check | Result | Boundary |
+|---|---|---|
+| Baseline focused suite, Windows CPython 3.13.12 | 3,496 passed, 7 warnings; 235.36 seconds | All compaction and Cachebench tests, sandbox file provenance/framework glue, MAF 1.24 compatibility and framework approval contracts |
+| Candidate cohort, identical selection | 3,496 passed, 7 warnings; 225.63 seconds | Same source and selected tests with the five candidate wheels; no product adaptation needed by this selection |
+| Additional host-file integrity, CodeAct FIDES refusal and result-integrity suites, both cohorts | 286 passed each; 10 warnings each; baseline 2.99 seconds, candidate 2.93 seconds | Existing real-middleware/in-process coverage; combined with the focused selection, 3,782 tests passed per cohort |
+| Published Core `_sessions.py` and `_compaction.py` | Both byte-identical to the 1.24.0 wheel | Private implementations unchanged; callers and middleware still require qualification |
+| Core tagged `_sessions.py` comparison | Identical across 1.24/1.25 | Independent source check of session implementation |
+| Release reconciliation | 77/77 note PRs, 118/118 tag commits, all 122 distinct references accounted for, M1-M3 covered | Complete inventory/classification, not complete runtime qualification |
+| Candidate wheel metadata | Core 1.25.0; OpenAI 1.18.1; Foundry 1.16.1; Mistral/Ollama 1.0.0b261106; MCP stays 2.2.0 | Publication/install evidence for the used cohort only |
+| Assessment validation | Documentation references hold; diff whitespace check passes; automated ledger check confirms all 77 release rows and 122 total PR rows | Document integrity only; not an implementation gate |
+
+The first baseline attempt used importlib test collection, which broke two existing sibling-test imports, and sandboxed execution could not fetch tiktoken encoding data. Two sandboxed integrity-suite processes stalled before producing results and were stopped; their completed replacements are the 286-test runs above. These setup failures are not framework regression evidence. The completed baseline/candidate pair uses normal repository collection and permitted encoding download. Elapsed times are not a performance comparison.
+
+Retained local evidence is in `.artifacts/maf-1.25-assessment/` in the assessment worktree: `upstream-inventory.json`, `assessment-verification.json`, `verify_assessment.py`, `baseline-focused.log`, `candidate-focused.log`, `baseline-labels.log`, `candidate-labels.log`, `candidate-metadata.log` and the isolated candidate wheel contents. Raw logs contain local execution paths and are not suitable for public publication unchanged.
+
+Not verified by this assessment: the complete repository gate; new adversarial FIDES/approval regressions proposed below; the full real-HTTP MCP ownership suite; fresh strict typing on all packages; Python 3.12/3.14; Linux; a changed lockfile or clean resolver installation; all optional extras; built-wheel compatibility and release gates; hosted CI; real model calls; native Docker/AKS/Hyperlight/WSLC qualification; live cache economics or recall quality; production stores; publication of this suite; or production readiness. No dependency declaration, generated release file or product source was changed.
+
+### 1.25 ordered adoption plan
+
+Original plan at assessment time. Delivery is tracked by [#2641](https://github.com/sokolaidev/maf-extensions/issues/2641), with implemented coverage and remaining qualification boundaries in the adoption record. The proposed state in this historical table is not a claim about the implementation PR.
+
+| Order | Work and concrete scope | Acceptance criterion | State |
+|---|---|---|---|
+| P0 | Qualify FIDES #9875 first at real FunctionMiddlewarePipeline/Agent boundaries. Cover every sandbox kind's emitted policy, supported confidentiality values, hidden string/list/object arguments, exact rewritten positions and both provenance middleware orders. Exercise invalid/miscased policy, a blocked hidden value with a side-effecting validator, changed tool/policy/session/runtime identity, approved normalization, retry, cancellation and lone-surrogate JSON/MessagePack persistence. Review the now-stale source rationale that invalid upstream policy values are silently treated as absent. | Invalid declarations refuse before validators or tool bodies; benign suite metadata remains valid; approved authority cannot be swapped; guidance remains readable, derived content restricted, confidentiality never lowered, no trust promotion from missing provenance. Failed/refused writes preserve bytes and conservative records. Keep strict refusal; fix our assumptions if necessary. | Proposed; existing provenance/approval selection passed |
+| P1 | Coordinate all twelve Core declarations to `>=1.25.0,<1.26`, root development provider constraints, Cachebench extras and `uv.lock`. Guarantee OpenAI 1.18.1, Foundry 1.16.1 and the Ollama beta containing their fixes. Decide whether to retain Mistral's older admitted floor with a separate floor run or raise it for one measured cohort. Update release compatibility documentation after evidence. Preserve Python/MCP bounds and unrelated dependencies. | Fresh solve including all Cachebench provider extras; actual versions recorded; framework ceiling and locked-framework checks consistent. No silently impossible dependent ranges. | Proposed |
+| P2 | Add installed-Core MCP regressions for #10042/#10147/#10136 alongside existing service/ownership coverage. Test exact discovery boundaries and failed-refresh retention of tools, parameters, annotations and approvals; callable-policy refresh; explicit timeouts; same-identity overlap; different-identity isolation; redirects, cancellation, shared recovery and explicit close. Keep sample 21's 60 seconds and qualification fixtures' 240 seconds. | A real HTTP test proves overlap and identity isolation; failed discovery leaves the whole previous snapshot; old recovery cannot reopen an explicitly closed client; borrowed resources remain usable. Neither discovery item limits nor admission/recovery timers are described as an outer payload cap or end-to-end deadline. | Proposed |
+| P3 | Add provider/Core regressions for #9403/#9679/#9681/#8960/#9852/#9943/#9094/#9931/#9789/#9763/#9987/#9803. Use installed adapter parsers and synthetic SDK events/transports; test ConfiguredClient and direct BaseChatClient paths. Include metadata-only stream updates, dynamic schemas, cancellation/finalization, termination-carried results, rich tuples, integer normalization, citation/reasoning ownership, empty shell pairs and service continuation. | Correct final messages/metadata and actual outgoing payloads; no orphaned or duplicated results; rejected recall turns do not persist; annotated results refuse lossy rewriting; client ownership remains intact. Fresh cache benchmark baselines distinguish schema-order changes from strategy effects. | Proposed |
+| P4 | Turn the qualified scope into a repository adoption issue/implementation PR if delivery is requested. Derive prepared sandbox/compaction and any required dependent floors from the actual final release scope; move floor and ceiling together where required. Update every tracking row for issues the PR closes and cite its eventual PR number. | One coherent installable change; honest Conventional Commit title covering every touched package; incidental changes split out; PR template and exact validation limitations recorded. No manual versions, changelogs or release manifest edits. | Proposed; no issue/PR published by this assessment |
+| P5 | Run `uv sync` and `uv run poe gate`; documentation checks; `poe md-blocks`; `poe sample-floors` if samples change; tracker checker where applicable. Build all 21 wheels, check metadata/source correspondence, clean-install each and the combined suite with provider extras, then run declared/published-core compatibility checks. Run supported Python versions/platforms in hosted CI against the exact PR head. | Full candidate offline suite and required checks green, or a clearly retained/reproduced baseline issue addressed before claiming green. Branch-core overrides prove branch compatibility only; publication resolves real wheel requirements from the index. | Proposed |
+| P6 | Perform bounded live qualification on Azure Chat Completions, Azure Responses, cloud Foundry, Mistral, Ollama and OpenRouter where configured. Include streaming, multi-tool turn, recall/compaction, save/restore, cancellation and a representative sandbox tool; run Microsoft Learn MCP and OpenClaw ownership paths. Then hand release sequencing to the maintainer. | Retained model/config/source/version identities and cleanup evidence; publish sandbox/compaction prerequisites before dependent uploads, Bicep before MCP when its bound requires the new artifact, and Cachebench after its compaction requirement is available. Merge the samples floor update only after every referenced dependent is published. | Proposed; live and publication unqualified |
+
+Use one measured framework band rather than claiming untested cross-minor support. If supporting 1.24 and 1.25 simultaneously becomes a requirement, that is a separate compatibility matrix with assertions for both middleware contracts; it is not satisfied by widening a version string.
+
+Do not infer a store migration from unchanged `_sessions.py`. FIDES durable encoding and response schema metadata changed, so retain original serialized fixtures and test old-to-new restore, new-to-new restore and the intended rollback shape before touching retained host data. No destructive Redis or memory-store migration is proposed.
+
+The existing repo approval boundary remains: prepare and review the adoption PR, then stop. Merging, tagging, deployment approval and publishing remain maintainer actions.
+
+### 1.25 release-bullet crosswalk
+
+Numbers refer to the 46 bullets in the tagged 1.25 changelog. Each PR is assessed once in the ledger; this table makes grouped bullets auditable.
+
+| Bullet | Assessed items |
+|---|---|
+| 1 | #10136 |
+| 2 | #9948 |
+| 3 | #10042 |
+| 4 | #10035 |
+| 5 | #9900 |
+| 6 | #8662 |
+| 7 | #9322 |
+| 8 | #9971 |
+| 9 | #10096 |
+| 10 | #10143 |
+| 11 | M1 |
+| 12 | M2 |
+| 13 | M3 |
+| 14 | #10103 |
+| 15 | #9783, #9897, #10105 |
+| 16 | #9735, #9740, #9758, #9781, #9906 |
+| 17 | #10032, #10086, #10038 |
+| 18 | #9937, #10117, #10118, #10119, #10120 |
+| 19 | #9947 |
+| 20 | #10115, #10140 |
+| 21 | #10129, #10128 |
+| 22 | #10147 |
+| 23 | #9403, #9679 |
+| 24 | #9681, #8960, #9852 |
+| 25 | #9943, #9942, #9998 |
+| 26 | #9294, #9547, #9387 |
+| 27 | #9875 |
+| 28 | #9094 |
+| 29 | #9770 |
+| 30 | #9859, #9898 |
+| 31 | #9972, #10106 |
+| 32 | #9996, #9982, #9985, #9983, #9993, #9977 |
+| 33 | #9796, #9967 |
+| 34 | #9984, #9969 |
+| 35 | #10005 |
+| 36 | #9712 |
+| 37 | #9931, #9789, #9981, #9991 |
+| 38 | #9745 |
+| 39 | #10090, #10088 |
+| 40 | #10149 |
+| 41 | #10036 |
+| 42 | #9788 |
+| 43 | #9763 |
+| 44 | #9987 |
+| 45 | #9803 |
+| 46 | #9483 |

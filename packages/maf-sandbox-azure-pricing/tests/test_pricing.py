@@ -277,6 +277,8 @@ def test_price_text_cannot_turn_success_into_filter_refusal():
     "confidentiality", [ConfidentialityLabel.PUBLIC, ConfidentialityLabel.PRIVATE]
 )
 def test_public_outbound_cap_blocks_private_arguments_before_acquisition(egress, confidentiality):
+    from agent_framework._middleware import FunctionMiddlewarePipeline
+
     tool, backend, sandbox = attach(egress_integrity=egress, outbound_max_confidentiality="public")
 
     async def exercise():
@@ -288,19 +290,18 @@ def test_public_outbound_cap_blocks_private_arguments_before_acquisition(egress,
         )
         context = FunctionInvocationContext(function=tool, arguments={"sku": f"[{variable}]"})
 
-        async def invoke():
-            context.result = await tool.invoke(context=context)
+        async def invoke(current):
+            return await tool.invoke(arguments=current.arguments, context=current)
 
-        async def enforce():
-            await policy.process(context, invoke)
+        pipeline = FunctionMiddlewarePipeline(tracking, policy)
 
         if confidentiality == ConfidentialityLabel.PRIVATE:
             with pytest.raises(MiddlewareTermination):
-                await tracking.process(context, enforce)
+                await pipeline.execute(context, invoke)
             assert context.result["violation_type"] == "max_allowed_confidentiality"
             assert not backend.keys and not sandbox.commands
         else:
-            await tracking.process(context, enforce)
+            await pipeline.execute(context, invoke)
             assert context.result[0].text == COMPLETED_TEXT
             assert len(sandbox.commands) == 1 and len(backend.disposed) == 1
 
