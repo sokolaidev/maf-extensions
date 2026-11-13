@@ -337,6 +337,7 @@ class HTTPSRefreshProfile(RefreshProfile):
         if (
             before.id != self.profile_id
             or not before.resource_version
+            or (before.source, before.scope) != ("user", "workspace")
             or len(before.endpoints) != 1
             or len(before.endpoints[0].rules) != 1
             or before.endpoints[0].path != self.endpoint_path
@@ -345,6 +346,8 @@ class HTTPSRefreshProfile(RefreshProfile):
             raise RuntimeError("profile edit baseline mismatch")
         edited = type(before)()
         edited.CopyFrom(before)
+        # Catalogue attribution is read-only and absent from mutation responses.
+        edited.source = edited.scope = ""
         edited.endpoints[0].path = path
         edited.endpoints[0].rules[0].allow.path = path
         request = client.pb.UpdateProviderProfilesRequest(
@@ -371,8 +374,11 @@ class HTTPSRefreshProfile(RefreshProfile):
         if not response.updated or response.profile.resource_version <= before.resource_version:
             raise RuntimeError("profile edit was not stored at a newer revision")
         edited.resource_version = response.profile.resource_version
+        if response.profile != edited:
+            raise RuntimeError("profile update response differs from the exact path edit")
+        edited.source, edited.scope = before.source, before.scope
         current = client.rpc("GetProviderProfile", query).profile
-        if response.profile != edited or current != edited:
+        if current != edited:
             raise RuntimeError("stored profile differs from the exact path edit")
         self.endpoint_path = path
         record(

@@ -28,7 +28,18 @@ def identity():
 
 
 @pytest.mark.parametrize(
-    "fault", [None, "baseline", "rejected", "version", "changed", "readback", "lost_ack"]
+    "fault",
+    [
+        None,
+        "baseline",
+        "scope",
+        "rejected",
+        "version",
+        "changed",
+        "readback",
+        "readback_scope",
+        "lost_ack",
+    ],
 )
 def test_profile_path_edit_is_conditional_exact_and_never_replayed(probe, fault):
     from copy import deepcopy
@@ -43,25 +54,34 @@ def test_profile_path_edit_is_conditional_exact_and_never_replayed(probe, fault)
     before = Message(
         id="profile",
         resource_version=7,
+        source="user",
+        scope="workspace",
         endpoints=[NS(path="/provider/**", rules=[NS(allow=NS(path="/provider/**"))])],
         credentials=[NS(name="synthetic", auth_style="bearer")],
     )
     state = NS(stored=deepcopy(before), calls=[], records=[])
     if fault == "baseline":
         state.stored.endpoints[0].path = "/replacement"
+    if fault == "scope":
+        state.stored.scope = "platform"
 
     def rpc(method, request):
         state.calls.append((method, request))
         if method == "GetProviderProfile":
             result = deepcopy(state.stored)
+            result.source = "user"
+            result.scope = "platform" if fault == "scope" else "workspace"
             if fault == "readback" and len(state.calls) > 1:
                 result.resource_version += 1
+            if fault == "readback_scope" and len(state.calls) > 1:
+                result.scope = "platform"
             return NS(profile=result)
         assert method == "UpdateProviderProfiles"
         assert request.expected_resource_version == 7
         assert request.id == request.profile.profile.id == "profile"
         assert request.request_id
         assert request.workspace_scope == "owned"
+        assert request.profile.profile.source == request.profile.profile.scope == ""
         state.stored = deepcopy(request.profile.profile)
         state.stored.resource_version = 7 if fault == "version" else 8
         if fault == "changed":
@@ -100,7 +120,7 @@ def test_profile_path_edit_is_conditional_exact_and_never_replayed(probe, fault)
         assert profile.endpoint_path == "/provider/**"
         assert not any("stored_profile_revision" in row for _, row in state.records)
     assert sum(method == "UpdateProviderProfiles" for method, _ in state.calls) == (
-        0 if fault == "baseline" else 1
+        0 if fault in ("baseline", "scope") else 1
     )
 
 
