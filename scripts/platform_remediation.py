@@ -65,7 +65,7 @@ def competing_pulls(client: GitHub, paths: set[str]) -> list[int]:
     conflicts = []
     for pull in client.pages(f"repos/{REPOSITORY}/pulls?state=open&base=main"):
         if (
-            pull["head"]["ref"] == PlatformGitHub.branch
+            pull["head"]["ref"] == getattr(client, "branch", PlatformGitHub.branch)
             and pull["head"]["repo"]["full_name"] == REPOSITORY
         ):
             continue

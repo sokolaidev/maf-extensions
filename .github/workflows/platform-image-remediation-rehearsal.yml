@@ -10,7 +10,7 @@ on:
         default: current-rebuild
         required: true
       exercise_delivery:
-        description: Exercise App signing and recovery with an isolated draft receipt PR
+        description: Deliver qualified updates (or a rebuild receipt) on an isolated draft PR
         type: boolean
         default: false
         required: true

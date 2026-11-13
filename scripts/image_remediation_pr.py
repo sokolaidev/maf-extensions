@@ -19,6 +19,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from image_remediation import proposal_files, qualify
 from image_remediation_evidence import EvidenceChanging, current, deferred
+from plan_platform_remediation import NUGET, RUNTIME_RECIPES
 
 BRANCH = "bot/go-image-remediation"
 MARKER = "maf-image-remediation-v1"
@@ -28,6 +29,8 @@ TITLE = "build: rebuild Go image dependencies with verified security fixes"
 REHEARSAL_BRANCH = "bot/platform-remediation-rehearsal-"
 REHEARSAL_PATH = "tests/fixtures/image_dependencies/platform-rehearsal-receipt.json"
 REHEARSAL_TITLE = "test: retain platform remediation rehearsal evidence"
+UPDATE_REHEARSAL_BRANCH = "bot/platform-remediation-update-rehearsal-"
+UPDATE_REHEARSAL_TITLE = "build: rehearse qualified Bicep and OS dependency updates"
 PENDING_NOTICE = (
     "## Refresh incomplete\n\nThe qualification below is from the last completed refresh "
     "and does not qualify the current branch. Do not merge until the refresh completes.\n\n"
@@ -160,8 +163,10 @@ def require_pull(client: GitHub, pull: dict[str, Any] | None) -> None:
     if pull is None:
         return
     latest = request(client, f"pulls/{pull['number']}")
-    if getattr(client, "branch", BRANCH).startswith(REHEARSAL_BRANCH) and (
-        latest.get("draft") is not True or latest.get("title") != REHEARSAL_TITLE
+    if getattr(client, "branch", BRANCH).startswith(
+        (REHEARSAL_BRANCH, UPDATE_REHEARSAL_BRANCH)
+    ) and (
+        latest.get("draft") is not True or latest.get("title") != getattr(client, "title", TITLE)
     ):
         raise ValueError("Rehearsal pull request is no longer a draft with its expected title")
     if latest.get("body") != pull.get("body"):
@@ -220,7 +225,8 @@ def body(state: dict[str, Any], report: dict[str, Any], evidence_url: str) -> st
         f"- {row['profile']}: `{row['imageId']}`; assessment `{row['assessment']['outcome']}`."
         for row in scans
     )
-    platform = report.get("kind") == "platform"
+    update_rehearsal = report.get("kind") == "platform-update-rehearsal"
+    platform = report.get("kind") == "platform" or update_rehearsal
     description = (
         "Update build-consumed Bicep or OS package pins to install verified security fixes."
         if platform
@@ -238,6 +244,11 @@ def body(state: dict[str, Any], report: dict[str, Any], evidence_url: str) -> st
         if any(row.get("vendorResolvedFindings") for row in scans)
         else ""
     )
+    review = (
+        "Review the source diff and residual findings when evaluating this rehearsal."
+        if update_rehearsal
+        else "Review the source diff and residual findings before merging."
+    )
     text = (
         f"## Summary\n\n{description} All affected profiles passed ordinary builds, runtime checks, "
         f"inventory checks and rescans.\n\n## Related issue\n\nRefs #2514, #{issue}.\n\n"
@@ -246,9 +257,17 @@ def body(state: dict[str, Any], report: dict[str, Any], evidence_url: str) -> st
         f"Base: `{report['source']}`. [Retained qualification]({evidence_url}).\n\n"
         f"{summary}\n\n## Notes\n\nUnrelated findings remain in the retained assessments.{vendor_note} "
         "No image was published; deployed images and release-needed issues remain unchanged. "
-        "Review the source diff and residual findings before merging.\n\n"
+        f"{review}\n\n"
         f"<!-- {MARKER} {{}} -->\n"
     )
+    if update_rehearsal:
+        text = (
+            "## Rehearsal only: do not merge\n\n"
+            "This draft delivers the qualified dependency diff to exercise signed App recovery "
+            "and idempotent delivery. Normal platform automation remains disabled. "
+            "PR CI must be checked separately at the delivered head; qualification does not "
+            "assert that it passed.\n\n" + text
+        )
     return with_marker(text, state)
 
 
@@ -385,16 +404,29 @@ def publish(
     hashes = {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()}
     if hashes != report["files"] or not hashes or len(hashes) > 20:
         raise ValueError("Qualified files differ from the proposed commit")
-    rehearsal = report.get("kind") == "platform-rehearsal"
+    receipt_rehearsal = report.get("kind") == "platform-rehearsal"
+    update_rehearsal = report.get("kind") == "platform-update-rehearsal"
+    rehearsal = receipt_rehearsal or update_rehearsal
     branch = getattr(client, "branch", BRANCH)
-    if rehearsal or branch.startswith(REHEARSAL_BRANCH):
+    if receipt_rehearsal or branch.startswith(REHEARSAL_BRANCH):
         if (
-            not rehearsal
+            not receipt_rehearsal
             or not re.fullmatch(REHEARSAL_BRANCH + r"[1-9][0-9]*", branch)
             or getattr(client, "title", TITLE) != REHEARSAL_TITLE
             or set(files) != {REHEARSAL_PATH}
         ):
             raise ValueError("Rehearsal delivery requires its isolated branch and receipt file")
+    if update_rehearsal or branch.startswith(UPDATE_REHEARSAL_BRANCH):
+        if (
+            not update_rehearsal
+            or not re.fullmatch(UPDATE_REHEARSAL_BRANCH + r"[1-9][0-9]*", branch)
+            or getattr(client, "title", TITLE) != UPDATE_REHEARSAL_TITLE
+            or not set(files) <= {NUGET, *RUNTIME_RECIPES.values()}
+            or report.get("evidenceMode") != "current"
+        ):
+            raise ValueError(
+                "Update rehearsal requires its isolated branch and qualified package inputs"
+            )
     current(client, receipt)
     pull = latest_pull(client)
     ownership_pull = pull
@@ -402,7 +434,9 @@ def publish(
     head = branch_head(client)
     previous = None
     if pull is not None:
-        if rehearsal and (pull.get("draft") is not True or pull.get("title") != REHEARSAL_TITLE):
+        if rehearsal and (
+            pull.get("draft") is not True or pull.get("title") != getattr(client, "title", TITLE)
+        ):
             raise ValueError("Rehearsal pull request is no longer a draft with its expected title")
         if (
             pull.get("user", {}).get("login") != bot

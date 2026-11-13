@@ -196,9 +196,9 @@ def test_changed_current_evidence_never_admits_rehearsal(qualified, context, mon
 
 
 class FakeRehearsal(rehearsal.RehearsalGitHub, FakeGitHub):
-    def __init__(self):
+    def __init__(self, paths=None):
         FakeGitHub.__init__(self)
-        rehearsal.RehearsalGitHub.__init__(self, 123)
+        rehearsal.RehearsalGitHub.__init__(self, 123, paths)
 
 
 @pytest.fixture
@@ -247,6 +247,162 @@ def test_signed_orphan_recovery_and_refresh_only_write_draft_receipt(delivery):
     assert "interruption" not in repeated
 
 
+@pytest.fixture
+def update_delivery(qualified, context, monkeypatch):
+    root, work, results = qualified
+    monkeypatch.setenv("IMAGE_REMEDIATION_TOKEN", "fixture-token")
+    monkeypatch.setattr(rehearsal, "current", lambda *_: None)
+    monkeypatch.setattr(publication, "current", lambda *_: None)
+    write(work / "rehearsal-request.json", rehearsal.request_record(root))
+    qualification = rehearsal.qualify(root, work, results)
+    report, files = rehearsal.delivery_payload(root, qualification, URL, work=work)
+    return FakeRehearsal(set(files)), report, files, work
+
+
+def test_qualified_dependency_bytes_survive_signed_recovery_and_repeat(update_delivery):
+    client, report, files, work = update_delivery
+    assert set(files) == {planner.NUGET}
+    assert b'Version="3.1.13"' in files[planner.NUGET]
+    result = rehearsal.lifecycle(client, {"source": SOURCE}, report, files, BOT, URL, work)
+    assert result["status"] == "delivery-passed"
+    assert result["payload"] == "dependency-diff"
+    assert result["files"] == report["files"]
+    assert result["ci"] == "not-verified"
+    assert result["repeated"]["status"] == "unchanged"
+    assert result["interruption"]["ownership"]["files"] == report["files"]
+    assert {row["mode"] for row in result["ownershipRefusals"]} == {"unsigned", "altered"}
+    assert len(client.pulls) == 1 and client.pulls[0]["draft"] is True
+    assert client.pulls[0]["title"] == publication.UPDATE_REHEARSAL_TITLE
+    assert "do not merge" in client.pulls[0]["body"]
+    assert "qualified dependency diff" in client.pulls[0]["body"]
+    assert "not a proposed dependency fix" not in client.pulls[0]["body"]
+    for path, data in client.writes:
+        if path == "git/trees":
+            assert {item["path"] for item in data["tree"]} == set(files)
+        if path == "graphql":
+            update = data["variables"]["input"]["refUpdates"][0]
+            assert update["name"] == "refs/heads/bot/platform-remediation-update-rehearsal-123"
+            assert update["force"] is False
+
+
+def test_pinned_apk_delivery_preserves_the_generated_recipe_change(context, tmp_path, monkeypatch):
+    monkeypatch.setenv("REHEARSAL_CASE", "apk-pinned")
+    monkeypatch.setattr(rehearsal.platform, "git", lambda *_: SOURCE)
+    work = tmp_path / "apk-work"
+    match = apk("clamav-scanner", "1.4.6-r0", "1.4.6-r1", "alpine")
+    directory = retained(work / "evidence", [match], profile="antivirus")
+    expected = planner.plan(context, [directory])
+    files = planner.proposal(context, expected)
+    write(work / "plan.json", expected)
+    write(work / "receipt.json", {"source": SOURCE, "directories": [directory.name]})
+    request = rehearsal.request_record(context)
+    write(work / "rehearsal-request.json", request)
+    qualified = {
+        **request,
+        "status": "qualified",
+        "evidenceMode": "current",
+        "qualification": {"status": "ready", "source": SOURCE, "files": planner.file_hashes(files)},
+    }
+    report, delivered = rehearsal.delivery_payload(context, qualified, URL, work=work)
+    assert report["kind"] == "platform-update-rehearsal"
+    recipe = planner.RUNTIME_RECIPES["antivirus"]
+    assert delivered == {
+        recipe: (context / recipe)
+        .read_bytes()
+        .replace(b"clamav-scanner=1.4.6-r0", b"clamav-scanner=1.4.6-r1")
+    }
+
+
+def test_update_conflicts_include_production_and_other_rehearsals():
+    class Client(rehearsal.RehearsalGitHub):
+        def pages(self, endpoint):
+            if endpoint.endswith("/files"):
+                return [{"filename": planner.NUGET}]
+            return [
+                {"number": number, "head": {"ref": branch, "repo": {"full_name": repository}}}
+                for number, branch, repository in [
+                    (1, self.branch, REPOSITORY),
+                    (2, rehearsal.platform.PlatformGitHub.branch, REPOSITORY),
+                    (3, publication.UPDATE_REHEARSAL_BRANCH + "456", REPOSITORY),
+                    (4, self.branch, "another/repository"),
+                    (5, "dependabot/nuget/bicep", REPOSITORY),
+                ]
+            ]
+
+    client = Client(123, {planner.NUGET})
+    assert rehearsal.platform.competing_pulls(client, {planner.NUGET}) == [2, 3, 4, 5]
+
+
+@pytest.mark.parametrize("mutation", ["branch", "file", "kind", "title", "evidence", "bytes"])
+def test_update_delivery_cannot_escape_qualified_inputs(update_delivery, mutation):
+    client, report, files, _ = update_delivery
+    if mutation == "branch":
+        client.branch = "bot/platform-image-remediation"
+    elif mutation == "file":
+        files = {publication.REHEARSAL_PATH: b"{}"}
+        report["files"] = planner.file_hashes(files)
+    elif mutation == "kind":
+        report["kind"] = "platform"
+    elif mutation == "title":
+        client.title = publication.REHEARSAL_TITLE
+    elif mutation == "evidence":
+        report["evidenceMode"] = "historical-replay"
+    else:
+        files[planner.NUGET] += b"changed"
+    with pytest.raises(ValueError):
+        publication.publish(client, {"source": SOURCE}, report, files, BOT, URL)
+    assert not client.writes
+
+
+@pytest.mark.parametrize("mutation", ["hash", "empty", "source", "status", "historical", "plan"])
+def test_update_payload_recomputes_the_qualified_proposal(
+    qualified, context, monkeypatch, mutation
+):
+    root, work, results = qualified
+    monkeypatch.setattr(rehearsal, "current", lambda *_: None)
+    write(work / "rehearsal-request.json", rehearsal.request_record(root))
+    qualification = rehearsal.qualify(root, work, results)
+    report = qualification["qualification"]
+    if mutation == "hash":
+        report["files"][planner.NUGET] = "f" * 64
+    elif mutation == "empty":
+        report["files"] = {}
+    elif mutation == "source":
+        report["source"] = "f" * 40
+    elif mutation == "status":
+        report["status"] = "release-needed"
+    elif mutation == "historical":
+        qualification["evidenceMode"] = "historical-replay"
+    else:
+        expected = read(work / "plan.json")
+        expected["updates"] = []
+        write(work / "plan.json", expected)
+    with pytest.raises(ValueError):
+        rehearsal.delivery_payload(root, qualification, URL, work=work)
+
+
+@pytest.mark.parametrize("stage", ["before-write", "after-orphan"])
+def test_update_delivery_refuses_new_competing_source_pr(update_delivery, monkeypatch, stage):
+    client, report, files, work = update_delivery
+    original = rehearsal.platform.competing_pulls
+
+    def conflicts(client, paths):
+        if stage == "before-write" or client.head is not None:
+            return [999]
+        return original(client, paths)
+
+    monkeypatch.setattr(rehearsal.platform, "competing_pulls", conflicts)
+    with pytest.raises(ValueError, match="Competing source PR"):
+        rehearsal.lifecycle(client, {"source": SOURCE}, report, files, BOT, URL, work)
+    assert not client.pulls
+    assert (client.head is None) == (stage == "before-write")
+    monkeypatch.setattr(rehearsal.platform, "competing_pulls", original)
+    assert (
+        rehearsal.lifecycle(client, {"source": SOURCE}, report, files, BOT, URL, work)["status"]
+        == "delivery-passed"
+    )
+
+
 @pytest.mark.parametrize("mutation", ["branch", "file", "kind", "title"])
 def test_rehearsal_cannot_escape_its_destination(delivery, mutation):
     client, report, files, _ = delivery
@@ -265,8 +421,9 @@ def test_rehearsal_cannot_escape_its_destination(delivery, mutation):
 
 
 @pytest.mark.parametrize("mutation", ["draft", "title", "body", "head", "closed"])
-def test_rehearsal_respects_human_changes(delivery, mutation):
-    client, report, files, work = delivery
+@pytest.mark.parametrize("fixture", ["delivery", "update_delivery"])
+def test_rehearsal_respects_human_changes(request, fixture, mutation):
+    client, report, files, work = request.getfixturevalue(fixture)
     rehearsal.lifecycle(client, {"source": SOURCE}, report, files, BOT, URL, work)
     if mutation == "draft":
         client.pulls[0]["draft"] = False
@@ -285,8 +442,9 @@ def test_rehearsal_respects_human_changes(delivery, mutation):
 
 
 @pytest.mark.parametrize("field,value", [("draft", False), ("title", "Human title")])
-def test_draft_change_between_read_and_write_is_refused(delivery, field, value):
-    client, report, files, work = delivery
+@pytest.mark.parametrize("fixture", ["delivery", "update_delivery"])
+def test_draft_change_between_read_and_write_is_refused(request, fixture, field, value):
+    client, report, files, work = request.getfixturevalue(fixture)
     rehearsal.lifecycle(client, {"source": SOURCE}, report, files, BOT, URL, work)
     pull = copy.deepcopy(client.pulls[0])
     client.pulls[0][field] = value
@@ -333,8 +491,11 @@ def test_delivery_cli_refuses_missing_consent_or_changed_qualification(
     assert failure["status"] == "failed" and failure["source"] == SOURCE
 
 
-def test_freshness_change_after_branch_write_preserves_a_recoverable_orphan(delivery, monkeypatch):
-    client, report, files, work = delivery
+@pytest.mark.parametrize("fixture", ["delivery", "update_delivery"])
+def test_freshness_change_after_branch_write_preserves_a_recoverable_orphan(
+    request, fixture, monkeypatch
+):
+    client, report, files, work = request.getfixturevalue(fixture)
 
     def current(*_):
         if client.head is not None:
