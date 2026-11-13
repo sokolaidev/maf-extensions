@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.13.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.12.4...maf-compaction-v0.13.0) (2026-11-13)
+
+
+### Features
+
+* **compaction:** merge records during tools and retain late responses ([#2682](https://github.com/sokolaidev/maf-extensions/issues/2682)) ([f14487f](https://github.com/sokolaidev/maf-extensions/commit/f14487f9186a7a95e8131596c83f297002f49485))
+
+
+### Fixes
+
+* **compaction:** compact completed recall groups with their reasoning ([#2652](https://github.com/sokolaidev/maf-extensions/issues/2652)) ([69ed24e](https://github.com/sokolaidev/maf-extensions/commit/69ed24ea27be64cef041d5b7f644680e3db336ea))
+
 ## [0.12.4](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.12.3...maf-compaction-v0.12.4) (2026-11-11)
 
 
