@@ -244,14 +244,27 @@ def test_real_guest_keeps_launch_reference_across_new_launches(probe, tmp_path, 
             assert first["reference_sha256"] == second["reference_sha256"] != fresh
             assert explicit["reference_sha256"] == fresh
             assert events[0] == events[1] != events[2]
-            assert len(processes) == 2
-            assert len(events) == 3
+            launch["QUALIFICATION_TOKEN"] = "openshell:resolve:third"
+            edited = await guest.capture_current("edited")
+            preserved = await guest.request(url, "current")
+            narrowed = await guest.request(url, "edited")
+            original = await guest.request(url)
+            assert preserved["reference_sha256"] == fresh != edited
+            assert narrowed["reference_sha256"] == edited
+            assert original["reference_sha256"] == first["reference_sha256"]
+            assert all(
+                row["identity"] == ready["identity"] for row in (preserved, narrowed, original)
+            )
+            assert events[2] == events[3] != events[4]
+            assert events[0] == events[5]
+            assert len(processes) == 3
+            assert len(events) == 6
             assert retries == (
                 [{"operation": "write", "sequence": 1, "error": "EOFError"}]
                 if uncertain_write
                 else []
             )
-            evidence = json.dumps([ready, first, second, explicit])
+            evidence = json.dumps([ready, first, second, explicit, preserved, narrowed, original])
             assert "openshell:resolve:" not in evidence
         finally:
             await guest.close()
@@ -539,7 +552,10 @@ def test_persistent_control_session_requires_finite_budget(probe, seconds):
         "profile_transport",
         "profile_expiry_before",
         "profile_expiry_after",
+        "profile_retained_old_reference",
+        "profile_same_reference",
         "restore_no_revive",
+        "restore_narrowed_reference",
     ],
 )
 def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
@@ -693,8 +709,8 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
         async def start(self):
             return self.ready
 
-        async def capture_current(self):
-            return "current"
+        async def capture_current(self, slot="current"):
+            return "current" if fault == "profile_same_reference" else slot
 
         async def request(self, url, source):
             state.requests += 1
@@ -707,8 +723,15 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
                 state.now = state.issuer.latest["expires_at"] - 34
             if narrowing and fault == "profile_transport":
                 return dict(guest={"error": "URLError", "errno": -5})
-            if (narrowing and fault == "profile_no_revocation") or (
-                restoring and fault == "restore_no_revive"
+            if (
+                (narrowing and fault == "profile_no_revocation")
+                or (restoring and fault == "restore_no_revive")
+                or (
+                    fault == "profile_retained_old_reference"
+                    and state.path == "/provider/other"
+                    and target.path == "/provider/other"
+                    and source == "current"
+                )
             ):
                 state.clock += 31
             if source != "none" and (
@@ -727,6 +750,15 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
                 and (delayed or fault == "restore_no_revive")
             ):
                 response = dict(status=403, body='{"error":"credential_endpoint_mismatch"}')
+            elif (
+                source == "current"
+                and state.path == "/provider/other"
+                and fault not in ("profile_no_revocation", "profile_retained_old_reference")
+                or source == "edited"
+                and restoring
+                and fault != "restore_narrowed_reference"
+            ):
+                response = dict(status=500, body='{"error":"credential_unavailable"}')
             else:
                 row = dict(
                     method="GET",
@@ -777,7 +809,7 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
     )
     if fault is None:
         asyncio.run(probe.measure_credentials(fixture, "10.23.45.67", tmp_path / "ca.pem"))
-        assert state.requests == 21
+        assert state.requests == 24
         assert fixture.report["credentials"]["characterization_completed"]
         cases = {row["case"]: row for row in fixture.report["credentials"]["cases"]}
         for name in (
@@ -789,8 +821,16 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
         match = (
             "expiry"
             if "expiry" in fault
+            else "did not change the reference"
+            if fault == "profile_same_reference"
             else "unexpected continuous"
-            if fault in ("profile_no_revocation", "restore_no_revive")
+            if fault
+            in (
+                "profile_no_revocation",
+                "profile_retained_old_reference",
+                "restore_no_revive",
+                "restore_narrowed_reference",
+            )
             else "continuity|unattributed"
         )
         with pytest.raises(RuntimeError, match=match):
