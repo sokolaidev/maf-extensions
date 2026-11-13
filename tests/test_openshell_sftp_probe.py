@@ -15,6 +15,41 @@ def probe(monkeypatch):
     return importlib.import_module("openshell_sftp_probe")
 
 
+def test_idle_relay_keeps_session_open_until_bytes_or_peer_close(probe):
+    import threading
+
+    events = iter([TimeoutError(), TimeoutError(), b"after-refresh", b""])
+
+    def receive(limit):
+        assert limit == 65536
+        event = next(events)
+        if isinstance(event, Exception):
+            raise event
+        return event
+
+    assert list(probe.relay_chunks(SimpleNamespace(recv=receive), threading.Event())) == [
+        b"after-refresh"
+    ]
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_relay_stops_on_transport_loss_or_cancellation(probe, cancelled):
+    import threading
+
+    stopped = threading.Event()
+    calls = []
+
+    def receive(limit):
+        calls.append(limit)
+        if cancelled:
+            stopped.set()
+            raise TimeoutError()
+        raise OSError("peer closed")
+
+    assert list(probe.relay_chunks(SimpleNamespace(recv=receive), stopped)) == []
+    assert calls == [65536]
+
+
 def test_wrong_session_identity_refuses_before_opening_tunnel(probe, monkeypatch):
     monkeypatch.setattr(probe, "import_module", lambda _: None)
     client = SimpleNamespace(

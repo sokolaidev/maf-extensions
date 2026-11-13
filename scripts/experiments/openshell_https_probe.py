@@ -289,7 +289,9 @@ def prepare_native_tls(directory, ip):
         (directory / (label + ".key")).chmod(0o600)
 
 
-def native_tls_servers(directory, *, bind="127.0.0.1", ports=(8443, 8444, 8445, 8446)):
+def native_tls_servers(
+    directory, *, bind="127.0.0.1", ports=(8443, 8444, 8445, 8446), record_authorization=False
+):
     """Serve four independently identified TLS endpoints with one bounded journal."""
     events = []
     lock = threading.Lock()
@@ -308,6 +310,13 @@ def native_tls_servers(directory, *, bind="127.0.0.1", ports=(8443, 8444, 8445, 
                 "host": self.headers.get("Host"),
                 "port": cast(ThreadingHTTPServer, self.server).server_port,
             }
+            if record_authorization:
+                authorization = self.headers.get("Authorization")
+                row["authorization_sha256"] = (
+                    hashlib.sha256(authorization.encode()).hexdigest()
+                    if authorization is not None
+                    else None
+                )
             record(row)
             body = json.dumps(row).encode()
             self.send_response(200)
@@ -565,6 +574,7 @@ def main():
     parser.add_argument("--serve-origin", action="store_true")
     parser.add_argument("--prepare-native-tls", type=Path)
     parser.add_argument("--serve-native-tls", type=Path)
+    parser.add_argument("--record-authorization", action="store_true")
     parser.add_argument("--cert", type=Path)
     parser.add_argument("--key", type=Path)
     parser.add_argument("--execute", action="store_true")
@@ -579,6 +589,7 @@ def main():
         servers, events = native_tls_servers(
             args.serve_native_tls,
             bind="0.0.0.0",  # nosec B104 - isolated Docker origin network
+            record_authorization=args.record_authorization,
         )
         try:
             serve_origin(tls_events=events)
