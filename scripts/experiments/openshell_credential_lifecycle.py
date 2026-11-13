@@ -53,7 +53,8 @@ while sequence <= 256 and time.monotonic() < deadline:
     if command['operation'] == 'stop':
         break
     token = original if command['source'] == 'original' else (
-        (directory / 'current-reference').read_text() if command['source'] == 'current' else '')
+        (directory / (command['source'] + '-reference')).read_text()
+        if command['source'] in ('current', 'edited') else '')
     if token and not token.startswith('openshell:resolve:'):
         raise RuntimeError('expected opaque credential reference')
     headers = {{'Authorization': 'Bearer ' + token}} if token else {{}}
@@ -202,7 +203,7 @@ class ContinuousGuest:
         self.sequence = 0
         self.task = None
         self.ready = {}
-        self.current_reference = None
+        self.references = {}
 
     async def control_io(self, operation, action):
         """Retry identical sequenced file operations, never guest execution or provider mutations."""
@@ -258,26 +259,30 @@ class ContinuousGuest:
         )
 
     async def request(self, url, source="original"):
-        await self.command(operation="request", url=url, source=source)
-        result = await self.read(f"result-{self.sequence}.json")
+        if source not in ("original", "current", "edited", "none"):
+            raise ValueError("unknown credential reference source")
         reference = (
             self.ready["reference_sha256"]
             if source == "original"
-            else self.current_reference
-            if source == "current"
+            else self.references[source]
+            if source in ("current", "edited")
             else hashlib.sha256(b"").hexdigest()
         )
+        await self.command(operation="request", url=url, source=source)
+        result = await self.read(f"result-{self.sequence}.json")
         if not continuous_result(self.ready, result, self.sequence, reference):
             raise RuntimeError("continuous process/reference identity mismatch")
         return result
 
-    async def capture_current(self):
+    async def capture_current(self, slot="current"):
         # Exec launch observes the new epoch; the original process retains its old reference.
+        if slot not in ("current", "edited"):
+            raise ValueError("unknown credential reference slot")
         code = (
             "import os,json,hashlib; from pathlib import Path; v=os.environ.get("
             + repr(self.key)
             + ",''); assert v.startswith('openshell:resolve:'); Path("
-            + repr(self.directory + "/current-reference")
+            + repr(self.directory + "/" + slot + "-reference")
             + ").write_text(v); print(json.dumps({'reference_sha256':hashlib.sha256(v.encode()).hexdigest()}))"
         )
         result = await self.sandbox.exec(
@@ -285,8 +290,8 @@ class ContinuousGuest:
         )
         if result.exit_code or result.stderr:
             raise RuntimeError("fresh launch reference observation failed")
-        self.current_reference = json.loads(result.stdout)["reference_sha256"]
-        return self.current_reference
+        self.references[slot] = json.loads(result.stdout)["reference_sha256"]
+        return self.references[slot]
 
     async def close(self):
         if self.task is None:
@@ -642,7 +647,7 @@ async def measure_credentials(fixture, ip, ca_file):
                 expected="credential_unavailable",
                 revoked=recovered,
             )
-            await guest.capture_current()
+            current = await guest.capture_current()
             await check(
                 "reattach_new_reference_reaches_origin",
                 reconfigured,
@@ -659,10 +664,29 @@ async def measure_credentials(fixture, ip, ca_file):
                 revoked=reconfigured,
             )
             await check(
-                "profile_narrowing_preserves_retained_path",
-                reconfigured,
+                "profile_narrowing_revokes_prior_reference_on_retained_path",
                 source="current",
+                expected="credential_unavailable",
                 path="/provider/other",
+                converge=True,
+                revoked=reconfigured,
+            )
+            edited = await guest.capture_current("edited")
+            if edited == current:
+                raise RuntimeError("narrowed profile did not change the reference")
+            record("barriers", {"pre_edit_reference": current, "narrowed_reference": edited})
+            await check(
+                "profile_narrowing_new_reference_reaches_retained_path",
+                reconfigured,
+                source="edited",
+                path="/provider/other",
+                converge=True,
+                revoked=reconfigured,
+            )
+            await check(
+                "profile_narrowing_new_reference_excludes_removed_path",
+                source="edited",
+                expected="credential_endpoint_mismatch",
                 revoked=reconfigured,
             )
             await check("base_route_remains_after_profile_narrowing", source="none")
@@ -675,6 +699,13 @@ async def measure_credentials(fixture, ip, ca_file):
                 converge=True,
                 revoked=reconfigured,
                 prior_refusal="credential_endpoint_mismatch",
+            )
+            await check(
+                "profile_restoration_revokes_narrowed_reference",
+                source="edited",
+                expected="credential_unavailable",
+                path="/provider/other",
+                revoked=reconfigured,
             )
             await check(
                 "profile_restoration_keeps_outside_path_confined",
