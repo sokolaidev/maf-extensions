@@ -4085,11 +4085,22 @@ class TestWhatAFidesHostSeesOfAWithheldResult:
         ]
         return seen, context.metadata["result_label"], middleware.get_context_label()
 
-    def test_trusted_inputs_allow_the_declared_promotion(self):
-        tool = _withholding_tool(_ScriptedSandbox(ExecResult(stdout="42")))
-        seen, result, conversation = self._processed(tool, trusted_input=True, files=[], outputs=[])
+    def test_explicit_trusted_arguments_allow_the_declared_promotion(self):
+        tool = _withholding_tool(
+            _ScriptedSandbox(ExecResult(stdout="42")), argument_integrity=SourceIntegrity.TRUSTED
+        )
+        seen, result, conversation = self._processed(tool, trusted_input=True, outputs=[])
         assert "hidden" not in seen
         assert str(result.integrity) == str(conversation.integrity) == "trusted"
+
+    def test_discarded_arguments_prevent_declared_promotion(self):
+        tool = _withholding_tool(
+            _ScriptedSandbox(ExecResult(stdout="42")), argument_integrity=SourceIntegrity.TRUSTED
+        )
+        seen, result, conversation = self._processed(tool, trusted_input=True, files=[], outputs=[])
+        assert "hidden" in seen
+        assert str(result.integrity) == "untrusted"
+        assert str(conversation.integrity) == "trusted"
 
     def test_completion_verdict_and_route_stay_readable_while_the_report_is_hidden(self):
         tool = _withholding_tool(_ScriptedSandbox(ExecResult(stdout="42")))
