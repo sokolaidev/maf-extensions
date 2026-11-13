@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.53.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.53.1...maf-sandbox-v0.53.2) (2026-11-13)
+
+
+### Fixes
+
+* preserve sandbox diagnostics with FIDES quarantine disabled ([#2668](https://github.com/sokolaidev/maf-extensions/issues/2668)) ([ed3cede](https://github.com/sokolaidev/maf-extensions/commit/ed3ceded1c2de309ed4d707f396f90906cec20a7))
+
 ## [0.53.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.53.0...maf-sandbox-v0.53.1) (2026-11-04)
 
 
