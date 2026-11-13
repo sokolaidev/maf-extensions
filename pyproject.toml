@@ -10,7 +10,7 @@ members = ["packages/*"]
 [dependency-groups]
 dev = [
     # Fixed guest converters are exercised in subprocesses by document regression tests.
-    "pypdfium2==5.14.0",
+    "pypdfium2==5.15.2",
     "mammoth==1.13.0",
     "python-pptx==1.0.2",
     "striprtf==0.0.35",
