@@ -607,34 +607,26 @@ class TestReleasePullRequestsKeepThemselvesCurrent:
         assert CONFIG["always-update"] is True
 
 
-class TestDependentsPinMafSandboxInAShapeTheRangeScriptCanRead:
-    """`scripts/set_dependents_range.py` moves both ends of the range after a release, by pattern.
+class TestDependentsPinCoresInAShapeTheRangeScriptCanRead:
+    """Every automated dependency range must be readable by the release-time helper."""
 
-    Editing by pattern silently no-ops when the string drifts, so a dependent that reformats
-    its maf-sandbox constraint would quietly stop being bumped while the release step still
-    reported success. This pins every dependent's constraint to the `maf-sandbox>=X,<Y` shape
-    the script parses, so the workflow and the files cannot drift apart unnoticed.
-    """
-
-    _MAF_SANDBOX = re.compile(r"maf-sandbox>=\d+(?:\.\d+)*,<\d+(?:\.\d+)*")
-    # The base package exactly — the lookahead keeps `maf-sandbox-acas` from being read as it.
-    _IS_BASE = re.compile(r"maf-sandbox(?![-\w])")
-
-    def _base_constraint(self, package_path: str) -> str | None:
-        if declared_name(package_path) == "maf-sandbox":
+    def _base_constraint(self, package_path: str, core: str) -> str | None:
+        if declared_name(package_path) == core:
             return None
         deps = pyproject(package_path)["project"].get("dependencies", [])
-        return next((d for d in deps if self._IS_BASE.match(d)), None)
+        return next((d for d in deps if re.match(rf"{re.escape(core)}(?![-\w])", d)), None)
 
-    def test_every_dependent_is_pinned_in_the_readable_shape(self):
+    @pytest.mark.parametrize("core", ["maf-sandbox", "maf-compaction"])
+    def test_every_dependent_is_pinned_in_the_readable_shape(self, core: str):
         constraints = {
-            package_path: self._base_constraint(package_path) for package_path in PACKAGE_PATHS
+            package_path: self._base_constraint(package_path, core)
+            for package_path in PACKAGE_PATHS
         }
         dependents = {p: c for p, c in constraints.items() if c is not None}
-        assert dependents, "expected at least one package to depend on maf-sandbox"
+        assert dependents, f"expected at least one package to depend on {core}"
         for package_path, constraint in dependents.items():
-            assert self._MAF_SANDBOX.fullmatch(constraint), (
-                f"{package_path}: {constraint!r} is not the maf-sandbox>=X,<Y shape "
+            assert re.fullmatch(rf"{re.escape(core)}>=\d+(?:\.\d+)*,<\d+(?:\.\d+)*", constraint), (
+                f"{package_path}: {constraint!r} is not the {core}>=X,<Y shape "
                 "scripts/set_dependents_range.py edits by pattern"
             )
 
@@ -848,6 +840,17 @@ class TestTheProposalBodyIsWrittenIntact:
         [
             ("Propose the dependents' range", "range-body.md", _RANGE_EXPECTED),
             ("Propose the samples' floor", "samples-body.md", _SAMPLES_EXPECTED),
+            (
+                "Propose the compaction dependents' range",
+                "compaction-range-body.md",
+                (
+                    "`maf-compaction` 1.2.3",
+                    "`maf-cachebench`'s compaction dependency to admit the 1.2 line",
+                    "moving the floor and ceiling together",
+                    "Merging this `fix:` PR makes release-please open or refresh",
+                    "Review compatibility before merging",
+                ),
+            ),
         ],
     )
     def test_the_body_is_written_intact(
@@ -898,6 +901,33 @@ class TestTheReleaseWorkflowProposesSeparateSamplesFloor:
     def test_the_range_step_does_not_move_samples(self):
         block = run_block(RELEASE_WORKFLOW, "Propose the dependents' range")
         assert 'scripts/set_dependents_range.py --samples "$VERSION"' not in block
+
+
+class TestCompactionRangeProposal:
+    def test_release_condition_and_version_select_compaction(self):
+        workflow = yaml.safe_load(RELEASE_WORKFLOW.read_text("utf-8"))
+        step = next(
+            step
+            for step in workflow["jobs"]["prepare"]["steps"]
+            if step.get("name") == "Propose the compaction dependents' range"
+        )
+        assert step["if"].strip() == (
+            "steps.release.outputs.releases_created == 'true' "
+            "&& contains(steps.release.outputs.paths_released, '\"packages/maf-compaction\"')"
+        )
+        assert step["env"]["VERSION"] == (
+            "${{ steps.release.outputs['packages/maf-compaction--version'] }}"
+        )
+
+    def test_proposal_is_independent_and_skips_existing_prs_and_unchanged_ranges(self):
+        block = run_block(RELEASE_WORKFLOW, "Propose the compaction dependents' range")
+        assert 'git switch --detach "$GITHUB_SHA"' in block
+        assert 'set_dependents_range.py --core maf-compaction --print-title "$VERSION"' in block
+        assert 'set_dependents_range.py --core maf-compaction "$VERSION"' in block
+        assert 'branch="chore/maf-compaction-range-${VERSION}"' in block
+        assert 'gh pr list --head "$branch" --state open' in block
+        assert "if git diff --quiet; then" in block
+        assert "--samples" not in block
 
 
 class TestTheConstraintCommentsDoNotNameAVersion:

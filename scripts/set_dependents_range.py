@@ -1,8 +1,9 @@
-"""Set the dependents' maf-sandbox range after a core release — both bounds, one edit.
+"""Set dependents' ranges after a core release — both bounds, one edit.
 
     python scripts/set_dependents_range.py <released-version>
     python scripts/set_dependents_range.py --print-title <released-version>
     python scripts/set_dependents_range.py --samples <released-version>
+    python scripts/set_dependents_range.py --core maf-compaction <released-version>
 
 Two bounds move after a core release, and they live in one string. This used to be two
 scripts run by two steps opening two pull requests that rewrote the same line in the same five
@@ -33,12 +34,12 @@ that stops.
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 import tomllib
 from pathlib import Path
 
-_CONSTRAINT = re.compile(r"maf-sandbox>=(\d+(?:\.\d+)*),<(\d+(?:\.\d+)*)")
 #: The distribution name at the head of a dependency string, before any version operator.
 _DIST_NAME = re.compile(r"[A-Za-z0-9._-]+")
 
@@ -68,9 +69,15 @@ def _admits(version: tuple[int, ...], ceiling: tuple[int, ...]) -> bool:
     return version + (0,) * (width - len(version)) < ceiling + (0,) * (width - len(ceiling))
 
 
-def parse_constraint(constraint: str) -> tuple[tuple[int, ...], tuple[int, ...]] | None:
-    """The ``(floor, ceiling)`` of a ``maf-sandbox>=X,<Y`` constraint, or ``None`` if not that."""
-    match = _CONSTRAINT.search(constraint)
+def _constraint(core: str) -> re.Pattern[str]:
+    return re.compile(rf"(?<![A-Za-z0-9._-]){re.escape(core)}>=(\d+(?:\.\d+)*),<(\d+(?:\.\d+)*)")
+
+
+def parse_constraint(
+    constraint: str, *, core: str = "maf-sandbox"
+) -> tuple[tuple[int, ...], tuple[int, ...]] | None:
+    """The ``(floor, ceiling)`` of a ``core>=X,<Y`` constraint, or ``None`` if not that."""
+    match = _constraint(core).search(constraint)
     if match is None:
         return None
     return _version(match.group(1)), _version(match.group(2))
@@ -106,13 +113,16 @@ def set_sample_floor(text: str, released: tuple[int, ...]) -> tuple[str, frozens
     return new_text, frozenset({SAMPLE_FLOOR})
 
 
-def set_range(text: str, released: tuple[int, ...]) -> tuple[str, frozenset[str]]:
-    """Rewrite a pyproject's maf-sandbox range; return the text and which bounds moved.
+def set_range(
+    text: str, released: tuple[int, ...], *, core: str = "maf-sandbox"
+) -> tuple[str, frozenset[str]]:
+    """Rewrite a pyproject's core range; return the text and which bounds moved.
 
     Each bound keeps its original spelling when it does not move, so widening a ceiling never
     reformats the floor beside it.
     """
-    match = _CONSTRAINT.search(text)
+    constraint = _constraint(core)
+    match = constraint.search(text)
     if match is None:
         return text, frozenset()
     floor, ceiling = _version(match.group(1)), _version(match.group(2))
@@ -131,12 +141,12 @@ def set_range(text: str, released: tuple[int, ...]) -> tuple[str, frozenset[str]
 
     if not moved:
         return text, frozenset()
-    new_text = _CONSTRAINT.sub(f"maf-sandbox>={floor_text},<{ceiling_text}", text, count=1)
+    new_text = constraint.sub(f"{core}>={floor_text},<{ceiling_text}", text, count=1)
     return new_text, frozenset(moved)
 
 
-def _base_dependency(dependencies: list[str]) -> str | None:
-    """The dependency on the base ``maf-sandbox`` distribution exactly, or ``None``.
+def _base_dependency(dependencies: list[str], *, core: str = "maf-sandbox") -> str | None:
+    """The dependency on the selected core distribution exactly, or ``None``.
 
     Read from the parsed dependency string, not the file text, so it does not matter whether
     the pyproject quotes with ``"`` or ``'`` — and the exact name match keeps a dependency on
@@ -144,13 +154,13 @@ def _base_dependency(dependencies: list[str]) -> str | None:
     """
     for dep in dependencies:
         name = _DIST_NAME.match(dep.strip())
-        if name is not None and name.group(0) == "maf-sandbox":
+        if name is not None and name.group(0) == core:
             return dep
     return None
 
 
 def plan(
-    released_text: str, repo_root: Path, *, samples: bool = False
+    released_text: str, repo_root: Path, *, samples: bool = False, core: str = "maf-sandbox"
 ) -> list[tuple[Path, str, frozenset[str]]]:
     """What this would write, without writing it: ``(path, new text, bounds moved)``.
 
@@ -161,6 +171,8 @@ def plan(
     released = _version(released_text)
     planned: list[tuple[Path, str, frozenset[str]]] = []
     if samples:
+        if core != "maf-sandbox":
+            raise SystemExit("sample floors are supported only for maf-sandbox")
         paths = [*repo_root.glob("samples/*/agent.py"), *repo_root.glob("scripts/**/*.py")]
         for path in sorted(paths):
             text = path.read_text("utf-8")
@@ -181,32 +193,34 @@ def plan(
     for path in sorted(repo_root.glob("packages/*/pyproject.toml")):
         text = path.read_text("utf-8")
         project = tomllib.loads(text).get("project", {})
-        if project.get("name") == "maf-sandbox":
+        if project.get("name") == core:
             continue
-        base = _base_dependency(project.get("dependencies", []))
+        base = _base_dependency(project.get("dependencies", []), core=core)
         if base is None:
             continue
-        if parse_constraint(base) is None:
+        if _constraint(core).fullmatch(base) is None:
             raise SystemExit(
-                f"{path}: depends on maf-sandbox but not as 'maf-sandbox>=X,<Y'; this script "
+                f"{path}: depends on {core} but not as '{core}>=X,<Y'; this script "
                 "cannot edit it, and failing beats silently skipping a release-time step."
             )
-        new_text, moved = set_range(text, released)
+        new_text, moved = set_range(text, released, core=core)
         if moved:
             planned.append((path, new_text, moved))
     return planned
 
 
-def run(released_text: str, repo_root: Path, *, samples: bool = False) -> list[Path]:
+def run(
+    released_text: str, repo_root: Path, *, samples: bool = False, core: str = "maf-sandbox"
+) -> list[Path]:
     """Apply :func:`plan` under ``repo_root``; return the files changed. May exit."""
     changed: list[Path] = []
-    for path, new_text, _ in plan(released_text, repo_root, samples=samples):
+    for path, new_text, _ in plan(released_text, repo_root, samples=samples, core=core):
         path.write_text(new_text, "utf-8")
         changed.append(path)
     return changed
 
 
-def title(released_text: str, moved: frozenset[str]) -> str:
+def title(released_text: str, moved: frozenset[str], *, core: str = "maf-sandbox") -> str:
     """The commit subject for the bounds that moved, or ``""`` when none did.
 
     `fix:` is load-bearing: `chore:` and `ci:` release nothing, and an unpublished range is
@@ -219,36 +233,32 @@ def title(released_text: str, moved: frozenset[str]) -> str:
         samples = _text(target_sample_floor(released))
         return f"chore: require maf-sandbox {samples} in sample and qualification floors"
     if moved == frozenset({FLOOR, CEILING}):
-        return (
-            f"fix: require maf-sandbox {released_text} in the dependents, and admit the {line} line"
-        )
+        return f"fix: require {core} {released_text} in the dependents, and admit the {line} line"
     if moved == frozenset({CEILING}):
-        return f"fix: admit the maf-sandbox {line} line in the dependents' range"
+        return f"fix: admit the {core} {line} line in the dependents' range"
     if moved == frozenset({FLOOR}):
-        return f"fix: require maf-sandbox {released_text} in the packages that use it"
+        return f"fix: require {core} {released_text} in the packages that use it"
     return ""
 
 
 def main(argv: list[str]) -> int:
     """CLI entry: rewrite the dependents' ranges, or with ``--samples`` the samples' floors."""
     repo_root = Path(__file__).resolve().parent.parent
-    rest = [argument for argument in argv[1:] if argument != "--samples"]
-    samples = "--samples" in argv[1:]
-    if len(rest) == 2 and rest[0] == "--print-title":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--core", choices=("maf-sandbox", "maf-compaction"), default="maf-sandbox")
+    parser.add_argument("--samples", action="store_true")
+    parser.add_argument("--print-title", action="store_true")
+    parser.add_argument("released_version")
+    args = parser.parse_args(argv[1:])
+    planned = plan(args.released_version, repo_root, samples=args.samples, core=args.core)
+    if args.print_title:
         moved: set[str] = set()
-        for _, _, bounds in plan(rest[1], repo_root, samples=samples):
+        for _, _, bounds in planned:
             moved |= bounds
-        print(title(rest[1], frozenset(moved)))
+        print(title(args.released_version, frozenset(moved), core=args.core))
         return 0
-    if len(rest) != 1:
-        print(
-            f"usage: {argv[0]} [--print-title] [--samples] <released-version>",
-            file=sys.stderr,
-        )
-        return 2
-    planned = plan(rest[0], repo_root, samples=samples)
     if not planned:
-        subject = "every sample's floor" if samples else "every dependent's range"
+        subject = "every sample's floor" if args.samples else "every dependent's range"
         print(f"{subject} already covers this release; nothing to set")
         return 0
     for path, new_text, bounds in planned:

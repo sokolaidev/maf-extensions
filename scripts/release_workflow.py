@@ -146,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="mode", required=True)
     body = commands.add_parser("proposal")
-    body.add_argument("kind", choices=("range", "samples"))
+    body.add_argument("kind", choices=("range", "samples", "compaction-range"))
     body.add_argument("version")
     body.add_argument("output", type=Path)
     extract = commands.add_parser("notes")

@@ -536,3 +536,71 @@ class TestOverATree:
         text = path.read_text("utf-8")
         assert "maf-sandbox>=0.8.0,<0.9" in text
         assert "maf-sandbox-acas>=0.1.0,<0.3" in text  # the sibling, exactly as it was
+
+
+class TestCompactionDependents:
+    def _tree(self, tmp_path: Path, constraint: str = "maf-compaction>=0.12.0,<0.13") -> Path:
+        for name, dependency in (
+            ("maf-compaction", "agent-framework-core>=1.24.0,<1.25"),
+            ("maf-cachebench", constraint),
+            ("maf-sandbox-acas", "maf-sandbox>=0.51.0,<0.52"),
+            ("unrelated", "maf-compaction-helper>=0.1,<0.2"),
+        ):
+            directory = tmp_path / "packages" / name
+            directory.mkdir(parents=True)
+            (directory / "pyproject.toml").write_text(_pyproject(dependency, name), "utf-8")
+        return tmp_path / "packages/maf-cachebench/pyproject.toml"
+
+    def test_minor_release_updates_only_compaction_dependents(self, tmp_path: Path):
+        cachebench = self._tree(tmp_path)
+        before = {path: path.read_text("utf-8") for path in tmp_path.rglob("pyproject.toml")}
+
+        assert ranges.run("0.13.0", tmp_path, core="maf-compaction") == [cachebench]
+
+        project = tomllib.loads(cachebench.read_text("utf-8"))["project"]
+        assert project["dependencies"] == ["maf-compaction>=0.13.0,<0.14"]
+        assert project["version"] == "0.1.0"
+        for path, text in before.items():
+            if path != cachebench:
+                assert path.read_text("utf-8") == text
+        assert ranges.run("0.13.0", tmp_path, core="maf-compaction") == []
+        assert ranges.run("0.13.1", tmp_path, core="maf-compaction") == []
+        assert ranges.run("0.12.0", tmp_path, core="maf-compaction") == []
+
+    def test_cli_title_and_update_agree(self, tmp_path: Path, monkeypatch, capsys):
+        cachebench = self._tree(tmp_path)
+        monkeypatch.setattr(ranges, "__file__", str(tmp_path / "scripts/set_dependents_range.py"))
+        before = cachebench.read_text("utf-8")
+        arguments = ["set_dependents_range.py", "--core", "maf-compaction", "0.13.0"]
+
+        assert ranges.main([*arguments, "--print-title"]) == 0
+        assert capsys.readouterr().out.strip() == (
+            "fix: require maf-compaction 0.13.0 in the dependents, and admit the 0.13 line"
+        )
+        assert cachebench.read_text("utf-8") == before
+        assert ranges.main(arguments) == 0
+        assert "maf-compaction>=0.13.0,<0.14" in cachebench.read_text("utf-8")
+        capsys.readouterr()
+        assert ranges.main([*arguments, "--print-title"]) == 0
+        assert not capsys.readouterr().out.strip()
+
+    @pytest.mark.parametrize(
+        "constraint",
+        ["maf-compaction>=0.12", "maf-compaction>=0.12,<0.13,!=0.12.1"],
+    )
+    def test_uneditable_constraint_fails_before_writing(self, tmp_path: Path, constraint: str):
+        cachebench = self._tree(tmp_path, constraint)
+        before = cachebench.read_text("utf-8")
+        with pytest.raises(SystemExit, match="depends on maf-compaction"):
+            ranges.run("0.13.0", tmp_path, core="maf-compaction")
+        assert cachebench.read_text("utf-8") == before
+
+    def test_samples_mode_cannot_accidentally_move_sandbox_floors(self, tmp_path: Path):
+        with pytest.raises(SystemExit, match="only for maf-sandbox"):
+            ranges.plan("0.13.0", tmp_path, core="maf-compaction", samples=True)
+
+    def test_repository_plan_selects_cachebench_only(self):
+        planned = ranges.plan("9.9.0", REPO_ROOT, core="maf-compaction")
+        assert [path.relative_to(REPO_ROOT).as_posix() for path, _, _ in planned] == [
+            "packages/maf-cachebench/pyproject.toml"
+        ]
