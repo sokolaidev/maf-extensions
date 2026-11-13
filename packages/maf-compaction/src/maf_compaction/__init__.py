@@ -77,6 +77,7 @@ from ._session import (
     SessionCompactionRegistry,
     SessionToolResultRecallMiddleware,
     make_session_recall_tool,
+    make_session_record_merge_middleware,
 )
 from ._tool_result import ResultTextRewriter
 from ._toolsummary import (
@@ -178,6 +179,7 @@ __all__ = [
     "is_preserved",
     "make_recall_tool",
     "make_session_recall_tool",
+    "make_session_record_merge_middleware",
     "record_text",
     "set_preserved",
 ]

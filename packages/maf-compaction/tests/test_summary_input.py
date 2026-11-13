@@ -22,7 +22,11 @@ from maf_compaction import (
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     UserTurnAnchoredSummarizationCompactionStrategy,
 )
-from maf_compaction._summary_input import bounded_prefix, bounded_prefix_extent
+from maf_compaction._summary_input import (
+    async_bounded_prefix_extent,
+    bounded_prefix,
+    bounded_prefix_extent,
+)
 from maf_compaction._toolsummary import active_record_groups, build_record_message
 
 pytestmark = pytest.mark.anyio
@@ -894,3 +898,38 @@ def test_a_prefix_is_the_same_on_any_list_that_keeps_the_items_its_extent_names(
                 for rest in itertools.product((False, True), repeat=longer - extent):
                     assert len(select(fitting[:extent] + rest)[0]) == len(prefix), (fitting, rest)
     assert decided > ended > 0, "the premise: most prefixes are decided short of the end"
+
+
+@pytest.mark.parametrize("cooperative", [False, True])
+@pytest.mark.parametrize("min_items", [1, 2])
+async def test_async_prefix_search_keeps_the_same_prefix_and_extent(cooperative, min_items):
+    for length in range(7):
+        for fitting in itertools.product((False, True), repeat=length):
+
+            class PatternTokenizer:
+                def count_tokens(self, text):
+                    body = json.loads(text)["contents"][0]["text"]
+                    return 1 if body == "instructions" or fitting[int(body) - 1] else 100
+
+            items = list(range(length))
+            tokenizer = PatternTokenizer()
+            expected = bounded_prefix_extent(
+                items,
+                render=lambda prefix: str(len(prefix)),
+                prompt="instructions",
+                tokenizer=tokenizer,
+                limit=10,
+                min_items=min_items,
+            )
+            assert (
+                await async_bounded_prefix_extent(
+                    items,
+                    render=lambda prefix: str(len(prefix)),
+                    prompt="instructions",
+                    tokenizer=tokenizer,
+                    limit=10,
+                    min_items=min_items,
+                    cooperative=cooperative,
+                )
+                == expected
+            )

@@ -77,6 +77,26 @@ __all__ = [
     "UserTurnAnchoredSummarizationCompactionStrategy",
 ]
 
+
+class SummaryWorkStopped(Exception):
+    """The caller stopped admitting new summary requests."""
+
+
+_REQUEST_ADMISSION: ContextVar[Callable[[], None] | None] = ContextVar(
+    "summary_request_admission", default=None
+)
+
+
+@contextmanager
+def summary_request_admission(check: Callable[[], None]) -> Generator[None]:
+    """Apply a caller's admission check to initial requests and option retries."""
+    token = _REQUEST_ADMISSION.set(check)
+    try:
+        yield
+    finally:
+        _REQUEST_ADMISSION.reset(token)
+
+
 #: What :meth:`UserTurnAnchoredSummarizationCompactionStrategy.fold_if_smaller` did: collapsed the
 #: standing summaries, refused an answer that was no smaller than them, got no answer at all, or
 #: had no eligible fold to apply.
@@ -2245,6 +2265,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         prompt: str,
         observe: Callable[[ChatResponse], None] | None = None,
         allow_empty_on_length: bool = False,
+        before_request: Callable[[], None] | None = None,
     ) -> str:
         """Ask once, optionally retiring incompatible options after one failed attempt.
 
@@ -2263,11 +2284,16 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 raise ValueError("The summarizer returned no text.")
             return summary
 
+        before_request = before_request or _REQUEST_ADMISSION.get()
+        if before_request is not None:
+            before_request()
         try:
             return await ask(options)
         except Exception:
             if not options or not self.retry_without_summary_options:
                 raise
+            if before_request is not None:
+                before_request()
             self._summary_options_disabled = True
             return await ask({})
 
@@ -2326,6 +2352,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 if units is not None and not fits:
                     return await self._chunked_summary(units, prompt=prompt)
                 return await self._generate(transcript, prompt=prompt)
+        except SummaryWorkStopped:
+            raise
         except Exception as error:
             logger.warning("Skipping user-turn compaction: summary generation failed (%s).", error)
             self._summary_failed()

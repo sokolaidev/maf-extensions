@@ -13,6 +13,7 @@ import pytest
 from agent_framework import ChatResponse, Content, Message, UsageDetails
 from test_record_budget import (
     _VALUE,
+    _body,
     _history,
     _record_size,
     _sent,
@@ -22,10 +23,14 @@ from test_record_budget import (
     _Summarizer,
     _values,
 )
+from test_summary_input import summaries
 
 from maf_compaction import DEFAULT_CHAIN_SECONDS, CompactionBudgetExceeded
 from maf_compaction import _composed as composed_module
-from maf_compaction._composed import ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+from maf_compaction._composed import (
+    ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+    _numbered_records,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -205,26 +210,15 @@ async def test_refusal_reports_exact_distinct_value_counts(
 async def test_deadline_retains_accepted_merge_and_never_starts_fold_or_rewrite(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    real_timeout = asyncio.timeout
-    scopes: list[asyncio.Timeout] = []
-
-    def controlled_timeout(seconds: float | None) -> asyncio.Timeout:
-        scope = real_timeout(None)
-        scopes.append(scope)
-        return scope
-
-    monkeypatch.setattr(asyncio, "timeout", controlled_timeout)
-    cancelled = asyncio.Event()
+    now = 0.0
+    monkeypatch.setattr(composed_module, "monotonic", lambda: now)
 
     class Waiting(_Summarizer):
         async def get_response(self, messages: list[Message], **kwargs: Any) -> ChatResponse:
-            if len(self.requests) == 1:
-                scopes[-1].reschedule(asyncio.get_running_loop().time())
-                try:
-                    await asyncio.Event().wait()
-                finally:
-                    cancelled.set()
-            return await super().get_response(messages, **kwargs)
+            nonlocal now
+            answer = await super().get_response(messages, **kwargs)
+            now = 31.0
+            return answer
 
     summarizer = Waiting()
     messages = _history(16)
@@ -234,7 +228,7 @@ async def test_deadline_retains_accepted_merge_and_never_starts_fold_or_rewrite(
 
     await strategy(messages)
 
-    assert cancelled.is_set()
+    assert len(summarizer.requests) == 1
     assert strategy.chain_timeouts == 1
     assert strategy.records_merged == 1
     assert strategy.user_summaries_merged == strategy.record_rewrites == 0
@@ -266,25 +260,53 @@ async def test_caller_cancellation_propagates_without_retiring_options() -> None
     assert not strategy.user_turns._summary_options_disabled
 
 
+async def test_inflight_merge_outlives_the_admission_window(monkeypatch):
+    entered, release, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    now = 0.0
+    monkeypatch.setattr(composed_module, "monotonic", lambda: now)
+
+    class Waiting(_Summarizer):
+        async def get_response(self, messages, **kwargs):
+            entered.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return await super().get_response(messages, **kwargs)
+
+    model = Waiting()
+    messages = _history(4)
+    strategy = _strategy(model, budget=_record_size(messages) - 200, share=0.01, cap=None)
+    strategy.chain_seconds = 0.02
+    task = asyncio.create_task(strategy(messages))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        now = 1.0
+        await asyncio.sleep(0.05)
+        assert not cancelled.is_set()
+        assert not task.done()
+        release.set()
+        await asyncio.wait_for(task, 2)
+        assert strategy.records_merged == 1
+        assert len(model.requests) == 1
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 async def test_timeout_before_a_child_resumes_halves_after_restore(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    real_timeout = asyncio.timeout
-    scopes: list[asyncio.Timeout] = []
-
-    def controlled_timeout(seconds: float | None) -> asyncio.Timeout:
-        scope = real_timeout(None)
-        scopes.append(scope)
-        return scope
-
-    monkeypatch.setattr(asyncio, "timeout", controlled_timeout)
+    now = 0.0
+    monkeypatch.setattr(composed_module, "monotonic", lambda: now)
 
     class Waiting(_Summarizer):
         async def get_response(self, messages: list[Message], **kwargs: Any) -> ChatResponse:
-            if self.requests:
-                scopes[-1].reschedule(asyncio.get_running_loop().time())
-                await asyncio.Event().wait()
-            return await super().get_response(messages, **kwargs)
+            nonlocal now
+            answer = await super().get_response(messages, **kwargs)
+            now = 31.0
+            return answer
 
     summarizer = Waiting(merge=lambda body: _VALUE.findall(body)[0])
     messages = _history(4)
@@ -314,7 +336,7 @@ async def test_pending_sibling_resumes_after_an_accepted_child(
         async def get_response(self, messages: list[Message], **kwargs: Any) -> ChatResponse:
             nonlocal now
             response = await super().get_response(messages, **kwargs)
-            if len(self.requests) == (3 if records == 4 else 4):
+            if len(self.requests) == (2 if records == 4 else 3):
                 now = 31.0
             return response
 
@@ -335,7 +357,7 @@ async def test_pending_sibling_resumes_after_an_accepted_child(
     finally:
         strategy._chain_deadline.reset(token)
     assert strategy.records_merged == 1
-    pending = summarizer.merges[-1]
+    pending = _numbered_records([_body(2).strip(), _body(3).strip()])
 
     resumed = _Summarizer(
         merge=lambda body: (
@@ -375,7 +397,7 @@ async def test_resumed_batch_retains_partial_success_when_a_later_child_fails(
         async def get_response(self, messages: list[Message], **kwargs: Any) -> ChatResponse:
             nonlocal now
             response = await super().get_response(messages, **kwargs)
-            if len(self.requests) == 3:
+            if len(self.requests) == 2:
                 now = 31.0
             return response
 
@@ -454,3 +476,86 @@ async def test_missing_split_state_loads_as_no_pending_children() -> None:
     state.pop("split_merges")
     strategy.restore_session_state(state)
     assert strategy._split_merges == set()
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("lossy", [False, True])
+async def test_legacy_refused_batch_retries_halves_but_explicit_empty_state_does_not(legacy, lossy):
+    original = _strategy(
+        _Summarizer(merge=lambda body: _VALUE.findall(body)[0] if lossy else body * 3),
+        budget=100_000,
+        share=0.001,
+        cap=None,
+    )
+    original.record_merge_split_depth = 0
+    await original._merge_batches(_history(4), None, 0.001)
+    state = json.loads(json.dumps(original.session_state()))
+    assert len(state["refused_merges"]) == 1
+    if legacy:
+        state.pop("split_merges")
+        state.pop("pending_merges")
+    else:
+        state["split_merges"] = []
+    model = _Summarizer()
+    restored = _strategy(model, budget=100_000, share=0.001, cap=None)
+    restored.restore_session_state(state)
+    messages = _history(4)
+    await restored._merge_batches(messages, None, 0.001)
+    assert [_batch_size(body) for body in model.merges] == ([2, 2] if legacy else [])
+    assert restored.records_merged == (2 if legacy else 0)
+    assert _sent_values(messages) == {value for i in range(4) for value in _values(i)}
+
+
+async def test_expired_chain_does_not_start_an_option_retry(monkeypatch):
+    now = 0.0
+    monkeypatch.setattr(composed_module, "monotonic", lambda: now)
+
+    class Failing(_Summarizer):
+        async def get_response(self, messages, **kwargs):
+            nonlocal now
+            await super().get_response(messages, **kwargs)
+            now = 31.0
+            raise ValueError("Unsupported option")
+
+    model = Failing()
+    messages = _history(16)
+    strategy = _strategy(model, budget=_record_size(messages) - 200, share=0.01)
+    strategy.user_turns.retry_without_summary_options = True
+    await strategy(messages)
+    assert len(model.requests) == 1
+    assert strategy.chain_timeouts == 1
+    assert not strategy.user_turns._summary_options_disabled
+
+
+@pytest.mark.parametrize("fail", [False, True])
+async def test_fold_finishes_after_deadline_without_starting_option_retry(monkeypatch, fail):
+    now = 0.0
+    monkeypatch.setattr(composed_module, "monotonic", lambda: now)
+
+    class Late(_Summarizer):
+        async def get_response(self, messages, **kwargs):
+            nonlocal now
+            answer = await super().get_response(messages, **kwargs)
+            now = 31.0
+            if fail:
+                raise ValueError("Unsupported option")
+            return answer
+
+    model = Late()
+    strategy = _strategy(model, budget=100_000, cap=10_000)
+    strategy.user_turns.retry_without_summary_options = True
+    messages = summaries(2)
+    _size(messages)
+    token = strategy._chain_deadline.set(30.0)
+    try:
+        if fail:
+            with pytest.raises(composed_module._ChainTimeSpent):
+                await strategy._merge_user_summaries(messages)
+        else:
+            assert await strategy._merge_user_summaries(messages)
+    finally:
+        strategy._chain_deadline.reset(token)
+    assert len(model.requests) == 1
+    assert strategy.user_summaries_merged == int(not fail)
+    assert strategy.user_summary_failures == 0
+    assert not strategy.user_turns._summary_options_disabled
