@@ -26,18 +26,12 @@ ceilings, with `Release-As:` in the commit footer, so the
 break is out of reach of everything already installed and each dependent adopts on its own
 schedule. See `docs/release-compatibility.md`.
 
-A sibling comes from this checkout in both halves. Two suites import one, and a published
-sibling would drag its own bound on the core into the resolution — which is a constraint about
-that sibling's release, not about the core under test.
+Sibling packages stay installed so optional cross-package tests can run. The branch half uses
+checkout wheels; the published half resolves published siblings within the tested wheel's
+declared ranges. Siblings without a non-yanked release are absent from the published half.
 
-The core is forced with `--overrides` in both halves, never resolved, and that is the same
-sentence one step further: a branch sibling carries a bound too. Every wheel in the environment
-declares a `maf-sandbox` range, and a range says which cores that package is *published*
-against rather than whether its tests pass beside this one. Resolved instead, an in-tree
-ceiling still a cycle behind refuses to build the environment at all, and this reports that in
-the shape of a failing suite — over a version RELEASING.md permits a core to be released at,
-and for a breaking release intends it to be. `tests.yml`, `check_suite_installs_together.py`
-and `check_dependent_works_with_published_cores.py` force it for the same reason.
+Only the core is forced with `--overrides` in both halves: sibling core bounds must not replace
+the candidate being tested. All other dependency constraints remain enforced by the resolver.
 
 An index still unreachable after `pypi_index`'s retries is fatal rather than skipped, the same
 stance as the admit and import checks.
@@ -285,7 +279,7 @@ def assess_published(
         except (OSError, ValueError) as error:
             results.append(Result("published", distribution, released_version, False, str(error)))
             continue
-        siblings = [str(other) for name, other in wheels.items() if name != distribution]
+        siblings = [name for name in wheels if name != distribution and published.get(name)]
         passed, summary = run_suite(
             [f"{distribution}=={released_version}", *siblings],
             core_wheel,
