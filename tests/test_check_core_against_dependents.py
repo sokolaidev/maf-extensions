@@ -350,7 +350,7 @@ class TestFailureDiagnostics:
 
 
 class TestBothHalvesForceIt:
-    """The published half needs it too: its siblings are branch wheels carrying branch bounds."""
+    """Both halves test the candidate core regardless of sibling core bounds."""
 
     @staticmethod
     def _capture(monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[str], Path]]:
@@ -368,13 +368,15 @@ class TestBothHalvesForceIt:
     ):
         core = _wheel(tmp_path, "maf_sandbox-0.33.0-py3-none-any.whl")
         wheel = _wheel(tmp_path, "maf_sandbox_bicep-0.13.0-py3-none-any.whl")
+        sibling = _wheel(tmp_path, "maf_sandbox_docker-0.15.0-py3-none-any.whl")
         seen = self._capture(monkeypatch)
 
-        check.assess_branch(core, {"maf-sandbox-bicep": wheel})
+        check.assess_branch(core, {"maf-sandbox-bicep": wheel, "maf-sandbox-docker": sibling})
 
         (requirements, passed_core) = seen[0]
         assert passed_core == core
         assert str(core) not in requirements, "as a requirement it would be resolved, not forced"
+        assert requirements == [str(wheel), str(sibling)]
 
     def test_the_published_half_hands_the_core_over_to_be_forced(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -394,6 +396,44 @@ class TestBothHalvesForceIt:
         (requirements, passed_core) = seen[0]
         assert passed_core == core
         assert str(core) not in requirements
+
+
+@pytest.mark.parametrize("unavailable", [None, {}])
+def test_published_siblings_resolve_with_each_historical_dependent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unavailable
+):
+    core = _wheel(tmp_path, "maf_sandbox-0.53.2-py3-none-any.whl")
+    wheels = {
+        name: _wheel(tmp_path, f"{name.replace('-', '_')}-{version}-py3-none-any.whl")
+        for name, version in [
+            ("maf-sandbox-mcp", "0.3.2"),
+            ("maf-sandbox-bicep", "0.26.1"),
+            ("maf-sandbox-docker", "0.30.10"),
+            ("maf-sandbox-new", "0.0.0"),
+        ]
+    }
+    published = {
+        "maf-sandbox-mcp": {
+            "0.3.1": ["maf-sandbox>=0.53.0,<0.54", "maf-sandbox-bicep>=0.25.0,<0.26"],
+            "0.3.2": ["maf-sandbox>=0.53.0,<0.54", "maf-sandbox-bicep>=0.25.0,<0.27"],
+        },
+        "maf-sandbox-bicep": {"0.25.1": ["maf-sandbox>=0.52.0,<0.53"]},
+        "maf-sandbox-docker": {"0.30.10": ["maf-sandbox>=0.52.0,<0.53"]},
+        "maf-sandbox-new": unavailable,
+    }
+    monkeypatch.setattr(check, "dependent_distributions", lambda root: list(published))
+    monkeypatch.setattr(check, "fetch_version_requirements", published.get)
+    monkeypatch.setattr(check, "recover_tests", lambda tag, name, into: into / "tests")
+    seen = TestBothHalvesForceIt._capture(monkeypatch)
+
+    results = check.assess_published((0, 53, 2), core, wheels, tmp_path)
+
+    assert [result.against for result in results] == ["0.3.1", "0.3.2"]
+    assert all(result.passed for result in results)
+    assert seen == [
+        ([f"maf-sandbox-mcp=={version}", "maf-sandbox-bicep", "maf-sandbox-docker"], core)
+        for version in ("0.3.1", "0.3.2")
+    ]
 
 
 class TestTheCli:
