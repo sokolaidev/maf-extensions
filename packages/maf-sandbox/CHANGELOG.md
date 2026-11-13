@@ -2,7 +2,16 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.53.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.53.2...maf-sandbox-v0.53.3) (2026-11-13)
+
+
+### Miscellaneous
+
+* **sandbox:** prepare 0.53.3 to replace unpublished 0.53.2 ([28789ae](https://github.com/sokolaidev/maf-extensions/commit/28789aef23c809452c1b497ea913c55f9a38b23b))
+
 ## [0.53.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.53.1...maf-sandbox-v0.53.2) (2026-11-13)
+
+> **Publication correction.** This version has an immutable GitHub Release and tag but did not reach PyPI. The [publish run](https://github.com/sokolaidev/maf-extensions/actions/runs/43342965388/job/131621172358) failed before upload because the historical MCP 0.3.1 suite was paired with checkout Bicep 0.26.1, outside its declared `<0.26` range. [#2686](https://github.com/sokolaidev/maf-extensions/pull/2686) corrects sibling resolution on `main`; rerunning the frozen tag still uses the old checker. The replacement is planned as `maf-sandbox` 0.53.3 through release-please; publication remains pending.
 
 
 ### Fixes
