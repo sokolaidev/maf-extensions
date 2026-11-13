@@ -53,6 +53,12 @@ _FIXED_SENTENCES = (
     "Validation incomplete: the manifest is empty or exceeds the file limit.",
     "Validation incomplete: the sandbox could not be acquired.",
     "Validation incomplete: the source bundle exceeds the transfer limit.",
+    "Validation incomplete: The manifest contains an unsupported or reserved path.",
+    "Validation incomplete: Every manifest entry must name a file.",
+    "Validation incomplete: The manifest contains duplicate destinations.",
+    "Validation incomplete: The file listing contains ambiguous normalized paths.",
+    "Validation incomplete: The manifest contains a file unsupported by this shell flavor.",
+    "Validation incomplete: A manifest file is absent from this tool's file listing.",
 )
 
 

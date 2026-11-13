@@ -63,6 +63,18 @@ _FIXED_SENTENCES = (
         "the query before retrying."
     ),
     "Pricing results may be incomplete; narrow the filters.",
+    "Unknown region: billing zones were not selected; use an explicit armRegionName filter.",
+    "ExpressRoute zone rows omitted: select the circuit peering location explicitly.",
+    "Unrecognized service/product zone rows omitted; use an explicit armRegionName filter.",
+    "No billing-zone mapping for a returned family; use an explicit armRegionName filter.",
+    (
+        "Network zone is estimated from the nearest listed region, "
+        "not a published assignment for the requested region."
+    ),
+    (
+        "Edge zone uses the requested geography; actual CDN/Front Door billing "
+        "follows the serving edge, not the origin."
+    ),
 )
 
 

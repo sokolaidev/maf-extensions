@@ -60,6 +60,7 @@ _FIXED_SENTENCES = (
     "Error: could not stage the Bicep configuration.",
     "Error: the validation manifest exceeds the file-count limit.",
     "No files validated.",
+    "This tool's listing is empty — no files were shared with it.",
 )
 
 

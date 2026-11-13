@@ -197,6 +197,23 @@ class CodeactOutputs(StrEnum):
 _FIXED_SENTENCES = (
     _NO_OUTPUT,
     _WITHHELD_ROUTE,
+    _MAY_HAVE_LANDED,
+    "This tool's listing is empty — no files were shared with it.",
+    "Error: this tool's file listing could not be read, so nothing was shared.",
+    "Error: no output sink is configured, so nothing could be saved.",
+    f"{_MANIFEST_FILENAME} listed no files, so nothing was saved.",
+    f"Error: the program ran but its files could not be saved. {_MAY_HAVE_LANDED}",
+    f"No {_MANIFEST_FILENAME} was written, so no files were saved.",
+    f"Error: {_MANIFEST_FILENAME} could not be read, so no files were saved.",
+    f"Error: {_MANIFEST_FILENAME} is nested too deeply to parse, so no files were saved.",
+    (
+        f"Error: {_MANIFEST_FILENAME} must be an object with an "
+        f"{_MANIFEST_OUTPUTS_KEY!r} array, so no files were saved."
+    ),
+    (
+        f"Error: every {_MANIFEST_OUTPUTS_KEY!r} entry needs a "
+        f"{_MANIFEST_PATH_KEY!r} string, so no files were saved."
+    ),
     "Error: an input file could not be read or staged.",
     "Error: an input file could not be written into the sandbox.",
     "Error: could not run the program in the sandbox",
