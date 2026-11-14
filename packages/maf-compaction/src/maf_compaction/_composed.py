@@ -65,6 +65,7 @@ from ._preserve import (
 )
 from ._record_replay import (
     LINEAGE_KEY,
+    MessageKeyCache,
     RecordEdit,
     ReplayView,
     replacement_identity,
@@ -1799,6 +1800,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
     def _replay_record_edits(self, messages: list[Message], *, reshape_only: bool = False) -> bool:
         """Restore each accepted record window before applying edits that followed it."""
+        # The preview's copies share their contents with the history, and so its fingerprints.
+        key_cache = MessageKeyCache()
         if self._record_order and any(replacement_identity(message) for message in messages):
             preview = copy(self)
             preview.user_turns = copy(self.user_turns)
@@ -1806,10 +1809,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             preview.tool_results.restore_decisions(self.tool_results.decision_state())
             candidate = ReplayView(messages).fork().messages
             if not preview._replay_record_candidates(
-                candidate, reshape_only=reshape_only, required_outputs=set()
+                candidate, reshape_only=reshape_only, required_outputs=set(), key_cache=key_cache
             ):
                 return False
-        return bool(self._replay_record_candidates(messages, reshape_only=reshape_only))
+        return bool(
+            self._replay_record_candidates(messages, reshape_only=reshape_only, key_cache=key_cache)
+        )
 
     def _replay_record_candidates(
         self,
@@ -1817,10 +1822,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         *,
         reshape_only: bool,
         required_outputs: set[tuple[str, str]] | None = None,
+        key_cache: MessageKeyCache | None = None,
     ) -> bool | None:
         changed = False
         restored_view = False
-        base = ReplayView(messages)
+        base = ReplayView(messages, key_cache=MessageKeyCache() if key_cache is None else key_cache)
         base.invalid_summary_ids = self.user_turns.invalid_replay_summaries(
             messages, cache=base.summary_cache
         )
@@ -1968,6 +1974,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             groups_for(view.messages, replay=True),
             {(edit.sources, edit.count)},
             message_keys=view.message_keys,
+            key_cache=view.key_cache,
         )
         if matched is not None:
             return view, matched[0]
@@ -1999,6 +2006,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             groups_for(candidate.messages, replay=True),
             {(edit.sources, edit.count)},
             message_keys=candidate.message_keys,
+            key_cache=candidate.key_cache,
         )
         return None if matched is None else (candidate, matched[0])
 
@@ -2228,6 +2236,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 for message in messages
                 if message.message_id is not None and message.message_id not in held_summary_ids
             },
+            key_cache=base.key_cache,
         )
 
     def _keep_records(self, messages: list[Message]) -> bool:
@@ -2236,8 +2245,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         The earliest run first, and at one start the longest. A batch merge need not start at the
         oldest record, so any start is tried; an entry from a legacy snapshot, which has no
         source count, only at the oldest, as it was taken.
+
+        By transcript only. Replaying accepted windows exactly is the entry points' work:
+        :meth:`_keep_decisions` does it before calling this, and one replay is a fixpoint, so
+        another here would walk every accepted edit to change nothing. After a merge the chain
+        has just accepted, a kept replacement of the new record is found here by its transcript,
+        under the reasoning-prefix guard the merge itself was accepted under.
         """
-        changed = self._replay_record_edits(messages)
+        changed = False
         while self._kept_records:
             groups = consolidatable_record_groups(messages)
             source_counts = {count for _, count in self._kept_records}

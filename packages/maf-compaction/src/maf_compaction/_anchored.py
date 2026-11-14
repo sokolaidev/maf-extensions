@@ -185,6 +185,16 @@ _SHORT_REPLY_TOKENS: Final[int] = 64
 DEFAULT_MIN_GAIN_FRACTION: Final[float] = 0.29
 
 
+def _shares_exclusion_state(messages: list[Message]) -> bool:
+    """Return whether two entries of ``messages`` would be excluded by one flag.
+
+    The flag lives in a message's ``additional_properties``, so the same message listed twice,
+    or two messages sharing one properties mapping, leave the included total by more than
+    their own tokens when either is excluded.
+    """
+    return len({id(message.additional_properties) for message in messages}) != len(messages)
+
+
 def _is_marker(message: Message) -> bool:
     """Return whether ``message`` is a note this strategy left in place of a dropped group.
 
@@ -659,12 +669,17 @@ class AnchoredCompactionStrategy:
         band = self._middle_band(messages, spans)
         removable = removable_spans(messages, spans)
         dropped: list[dict[str, Any]] = []
+        # Nothing in this loop changes a token annotation or adds a message, so the total is
+        # counted once and each drop subtracts what it took out. That holds only while one
+        # exclusion flag belongs to one list entry; a list that shares a message or its
+        # properties between two entries is recounted at every step instead.
+        aliased = _shares_exclusion_state(messages)
+        included = included_token_count(messages)
         for group in band:
             if group.get("kind") != kind:
                 continue
-            if included_token_count(messages) <= ceiling:
-                break
             members = messages[group["start_index"] : group["end_index"] + 1]
+            # These two skips change nothing the stop test reads, so they come before it.
             if all(message.additional_properties.get(EXCLUDED_KEY, False) for message in members):
                 continue
             # A note left by an earlier phase is an assistant message, so the assistant-text
@@ -673,6 +688,10 @@ class AnchoredCompactionStrategy:
             # model has that something was removed.
             if all(_is_marker(message) for message in members):
                 continue
+            if aliased:
+                included = included_token_count(messages)
+            if included <= ceiling:
+                break
             if (
                 self._note_for(messages, group) == _ANSWERED_NOTE
                 and all(c.type == "text" for m in members for c in m.contents)
@@ -692,6 +711,8 @@ class AnchoredCompactionStrategy:
             # :func:`~._preserve.removable_whole`.
             if (group["start_index"], group["end_index"]) not in removable:
                 continue
+            # A group can be partly excluded already: only its included members leave the total.
+            included -= included_token_count(members)
             for message in members:
                 set_excluded(message, excluded=True, reason=EXCLUDE_REASON)
             dropped.append(group)
