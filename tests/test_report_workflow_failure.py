@@ -216,6 +216,7 @@ def test_failure_opens_or_comments_on_its_own_tracker_across_all_pages(monkeypat
             "terraform-live.yml": {"maf-sandbox", "maf-sandbox-docker", "maf-sandbox-terraform"},
             "image-remediation.yml": {"maf-sandbox", "maf-sandbox-docker", "maf-sandbox-terraform"},
             "platform-image-remediation.yml": {"maf-sandbox", "maf-sandbox-bicep"},
+            "chrome-image-update.yml": {"maf-sandbox", "maf-sandbox-document"},
             "image-security.yml": {
                 "maf-sandbox",
                 "maf-sandbox-docker",

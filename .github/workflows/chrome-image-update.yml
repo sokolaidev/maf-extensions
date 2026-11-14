@@ -1,0 +1,120 @@
+name: Chrome image updates
+
+on:
+  schedule:
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+    inputs:
+      deliver:
+        description: Open or refresh the qualified Chrome source PR
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chrome-image-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: >-
+      github.repository == 'sokolaidev/maf-extensions' && github.ref == 'refs/heads/main' &&
+      (vars.IMAGE_REMEDIATION_ENABLED == 'true' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest-m
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Install repository signature tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gnupg gpgv
+      - name: Discover and authenticate a stable Chrome update
+        id: acquire
+        run: uv run --locked python scripts/chrome_update.py acquire --work "$RUNNER_TEMP/chrome-update"
+      - uses: ./.github/actions/setup-classic-docker
+        if: steps.acquire.outputs.updates == 'true'
+      - name: Install pinned scanners
+        if: steps.acquire.outputs.updates == 'true'
+        run: python3 scripts/install_container_scanners.py --directory "$RUNNER_TEMP/scan-tools"
+      - name: Build and qualify the proposed browser
+        if: steps.acquire.outputs.updates == 'true'
+        run: uv run --locked python scripts/chrome_update.py build --work "$RUNNER_TEMP/chrome-update"
+      - name: Check the proposed source
+        if: steps.acquire.outputs.updates == 'true'
+        run: uv run --locked poe gate
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: retain
+        if: always()
+        with:
+          name: chrome-update-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/chrome-update/
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 30
+
+      - name: Mint the dedicated remediation identity
+        id: app
+        if: >-
+          success() && steps.acquire.outputs.updates == 'true' &&
+          vars.IMAGE_REMEDIATION_ENABLED == 'true' && vars.IMAGE_REMEDIATION_APP_CLIENT_ID != '' &&
+          (github.event_name != 'workflow_dispatch' || inputs.deliver)
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.IMAGE_REMEDIATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.IMAGE_REMEDIATION_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: maf-extensions
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Open or refresh the owned Chrome PR
+        id: deliver
+        if: steps.app.outcome == 'success' && steps.app.outputs.token != ''
+        env:
+          IMAGE_REMEDIATION_TOKEN: ${{ steps.app.outputs.token }}
+          IMAGE_REMEDIATION_APP_PRIVATE_KEY: ${{ secrets.IMAGE_REMEDIATION_APP_PRIVATE_KEY }}
+          BOT: ${{ steps.app.outputs.app-slug }}[bot]
+          ARTIFACT_ID: ${{ steps.retain.outputs.artifact-id }}
+        run: uv run --locked python scripts/chrome_update.py publish --work "$RUNNER_TEMP/chrome-update" --bot "$BOT" --artifact-id "$ARTIFACT_ID"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && steps.deliver.outcome != 'skipped'
+        with:
+          name: chrome-update-delivery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/chrome-update/publication.json
+            ${{ runner.temp }}/chrome-update/deferral.json
+          if-no-files-found: error
+          retention-days: 30
+
+  report-failure:
+    needs: update
+    if: always() && needs.update.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Report Chrome updater failures
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/report_workflow_failure.py
+          --marker '<!-- chrome-image-update-failure-tracker -->'
+          --title 'Automatic Chrome image updates need attention'
+          --reproduce 'Inspect the retained Chrome upstream and candidate evidence, then dispatch chrome-image-update.yml from current main; leave deliver disabled for qualification only.'
+          --expected 'A newer authenticated stable Chrome package passes rendering, inventory, security and source checks before an owned source PR is created or refreshed.'
+          --context 'Signature failures, unavailable packages and failed qualification require investigation. Source updates do not publish replacement images. Main changes and competing PRs defer delivery until fresh evidence can be acquired.'
+          --packages maf-sandbox maf-sandbox-document
