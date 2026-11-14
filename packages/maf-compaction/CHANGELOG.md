@@ -2,6 +2,8 @@
 
 ## [0.13.1](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.0...maf-compaction-v0.13.1) (2026-11-14)
 
+> **Publication correction.** This version has an immutable GitHub Release and tag but did not reach PyPI. [The publication attempt](https://github.com/sokolaidev/maf-extensions/actions/runs/43542108083/job/132288463816) stopped at the whole-set check: the tag's tree holds sandbox dependents whose `maf-sandbox` ranges no longer overlap, left by #2683 and repaired by #2713, and the publish job builds the siblings from the tag, so this tag cannot pass. The replacement is planned as 0.13.2 through release-please, with the same changes; this note does not establish that the replacement has published.
+
 
 ### Fixes
 
