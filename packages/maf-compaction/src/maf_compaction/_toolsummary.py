@@ -30,7 +30,9 @@ import logging
 import re
 import string
 from collections import Counter
-from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Generator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import copy, deepcopy
 from dataclasses import dataclass, replace
 from math import ceil, isfinite
@@ -886,7 +888,9 @@ def consolidatable_record_groups(
     everything else -- preserved, counted, and the anchor if it is the newest. Spans containing
     content outside the matched records also stay intact, since the summarizer never sees it;
     except reasoning attached to a record in a completed user turn. Reasoning in the active
-    tool loop remains intact, as does the record prefix before any later retained reasoning.
+    tool loop remains intact, as does the record prefix before any later retained reasoning,
+    except while the composed strategy, under its default ``"shed"`` overflow policy, fits a
+    prompt over its budget, in its chain or in a background merge and the pass that applies it.
     So does
     a record whose call id another output answers too, which excluding the call would orphan.
     Results carrying metadata, provider state or non-text items also stay whole.
@@ -1093,8 +1097,26 @@ def _span_indices(groups: list[dict[str, Any]]) -> set[int]:
     }
 
 
+#: Whether retained reasoning bars record edits before it. Off while the composed strategy, under
+#: its ``"shed"`` overflow policy, fits a prompt over its budget (its chain, or a background merge
+#: and the pass applying it), where the shed edits that prefix anyway and loses values.
+_REASONING_PREFIX_GUARD: ContextVar[bool] = ContextVar("reasoning_prefix_guard", default=True)
+
+
+@contextmanager
+def _reasoning_prefix_yields_to_budget() -> Generator[None]:
+    """Let record edits change the prefix of retained reasoning within this scope."""
+    token = _REASONING_PREFIX_GUARD.set(False)
+    try:
+        yield
+    finally:
+        _REASONING_PREFIX_GUARD.reset(token)
+
+
 def _last_reasoning_index(messages: Sequence[Message], *, excluding: Collection[int] = ()) -> int:
     """Locate the last retained reasoning block, whose prefix must remain unchanged."""
+    if not _REASONING_PREFIX_GUARD.get():
+        return -1
     return next(
         (
             index

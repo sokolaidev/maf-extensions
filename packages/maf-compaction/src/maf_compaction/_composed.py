@@ -32,7 +32,7 @@ import hashlib
 import logging
 from bisect import bisect_left
 from collections.abc import Callable, Generator, Mapping
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar
 from copy import copy, deepcopy
 from dataclasses import asdict, dataclass
@@ -87,6 +87,7 @@ from ._toolsummary import (
     _is_written_record,  # pyright: ignore[reportPrivateUsage]
     _last_reasoning_index,  # pyright: ignore[reportPrivateUsage]
     _newest_record_identity,  # pyright: ignore[reportPrivateUsage]
+    _reasoning_prefix_yields_to_budget,  # pyright: ignore[reportPrivateUsage]
     _record_has_external_hold,  # pyright: ignore[reportPrivateUsage]
     active_record_groups,
     build_record_message,
@@ -522,6 +523,16 @@ def _is_excluded(message: Message) -> bool:
     return bool(message.additional_properties.get(EXCLUDED_KEY, False))
 
 
+def _yielding_when(*, over_budget: bool, policy: str) -> AbstractContextManager[None]:
+    """The reasoning-prefix guard yields only over budget under the ``"shed"`` policy.
+
+    That shed edits the prefix anyway. Under ``"raise"`` the host keeps its local refusal.
+    """
+    return (
+        _reasoning_prefix_yields_to_budget() if over_budget and policy == "shed" else nullcontext()
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _Searched:
     """How far a batch search from one start record got, and what it found there."""
@@ -874,7 +885,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             start = _ChainStart.take(messages) if self._over(messages) else None
             if start is None and self.record_budget_share is None:
                 return
-            await self._merge_records(messages, start)
+            with _yielding_when(over_budget=start is not None, policy=self.overflow_policy):
+                await self._merge_records(messages, start)
         except _ChainTimeSpent:
             # Ready answers remain available to the next foreground pass.
             pass
@@ -1636,33 +1648,38 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """
         changed = self._keep_decisions(messages, replayed_user_fold=replayed_user_fold)
         if self._background is not None:
-            changed = await self._background.apply_ready(messages) or changed
+            # Answers prepared over budget are checked under the same guard they were made with.
+            with _yielding_when(over_budget=self._over(messages), policy=self.overflow_policy):
+                changed = await self._background.apply_ready(messages) or changed
         if not self._over(messages):
             return changed
         start = _ChainStart.take(messages)
-        changed = self._reshape_records(messages) or changed
-        kept = len(self._kept_records), self._user_summaries_merged
-        deadline = None if self.chain_seconds is None else monotonic() + self.chain_seconds
-        token = self._chain_deadline.set(deadline)
-        try:
-            if self._background is None or not self._background.defer_merges:
-                changed = await self._merge_records(messages, start) or changed
-            self._check_chain_deadline()
-            if self._short_of_target(messages, start):
-                changed = await self._merge_user_summaries(messages) or changed
-            self._check_chain_deadline()
-            if self._short_of_target(messages, start):
-                changed = await self._rewrite_records(messages, start) or changed
-        except _ChainTimeSpent:
-            self._chain_timeouts += 1
-            changed = kept != (len(self._kept_records), self._user_summaries_merged) or changed
-            logger.warning(
-                "Compaction stopped starting last-resort summary work after %.3f seconds; "
-                "completed reductions are retained and remaining batches stay eligible.",
-                self.chain_seconds,
-            )
-        finally:
-            self._chain_deadline.reset(token)
+        # A run's later calls carry its loop's reasoning after every record; under "shed" the
+        # shed below edits that prefix anyway, so the record steps are not barred from it here.
+        with _yielding_when(over_budget=True, policy=self.overflow_policy):
+            changed = self._reshape_records(messages) or changed
+            kept = len(self._kept_records), self._user_summaries_merged
+            deadline = None if self.chain_seconds is None else monotonic() + self.chain_seconds
+            token = self._chain_deadline.set(deadline)
+            try:
+                if self._background is None or not self._background.defer_merges:
+                    changed = await self._merge_records(messages, start) or changed
+                self._check_chain_deadline()
+                if self._short_of_target(messages, start):
+                    changed = await self._merge_user_summaries(messages) or changed
+                self._check_chain_deadline()
+                if self._short_of_target(messages, start):
+                    changed = await self._rewrite_records(messages, start) or changed
+            except _ChainTimeSpent:
+                self._chain_timeouts += 1
+                changed = kept != (len(self._kept_records), self._user_summaries_merged) or changed
+                logger.warning(
+                    "Compaction stopped starting last-resort summary work after %.3f seconds; "
+                    "completed reductions are retained and remaining batches stay eligible.",
+                    self.chain_seconds,
+                )
+            finally:
+                self._chain_deadline.reset(token)
         if self._short_of_target(messages, start) and find_record_index(messages) is not None:
             # With no record, budget enforcement owns unrecorded shedding and its headroom.
             self._last_resort_fallbacks += 1

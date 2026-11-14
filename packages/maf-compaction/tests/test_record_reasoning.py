@@ -21,14 +21,17 @@ from agent_framework._compaction import (
 from test_record_budget import (
     _history,
     _record_pair,
+    _record_size,
     _sent,
     _sent_values,
     _size,
     _strategy,
     _Summarizer,
     _tool_group,
+    _values,
 )
 
+from maf_compaction import CompactionBudgetExceeded
 from maf_compaction import _toolsummary as toolsummary_module
 from maf_compaction._anchored import _is_marker
 from maf_compaction._composed import DEFAULT_RECORD_MERGE_PROMPT, _transcript, harder_record_prompt
@@ -1802,6 +1805,76 @@ def test_later_retained_reasoning_protects_its_entire_record_prefix() -> None:
     with pytest.raises(ValueError):
         strategy.tool_results.consolidate_records(messages, active_record_groups(messages), "short")
     assert _sent(messages) == before
+
+
+@pytest.mark.anyio
+async def test_an_over_budget_chain_merges_records_behind_the_active_loops_reasoning() -> None:
+    """A run's later model calls carry the loop's reasoning; past the budget the chain still merges.
+
+    A host that rebuilds each run's history without reasoning hands the first call none, and
+    every later call of the run the reasoning of the call before it, after every record. The
+    shed edits that prefix anyway, so the chain must not leave it the only reduction.
+    """
+    messages = _history(16)
+    messages += [
+        Message(
+            role="assistant",
+            contents=[
+                Content.from_text_reasoning(text="Compare the lookups."),
+                Content.from_function_call("run1", "lookup_run", arguments="{}"),
+            ],
+            message_id="run_call",
+        ),
+        Message(
+            role="tool",
+            contents=[Content.from_function_result("run1", result="code=RUN-0001 compared")],
+            message_id="run_result",
+        ),
+    ]
+    budget = _record_size(messages) - 200
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=budget, share=0.25, policy="shed")
+    loop = copy.deepcopy(messages[-2:])
+
+    await strategy(messages)
+
+    assert summarizer.merges, "the chain asked for record merges"
+    assert _record_size(messages) <= budget // 4, "the records fit their share"
+    assert _sent_values(messages) == {value for index in range(16) for value in _values(index)}
+    assert _sent(messages)[-2:] == _sent(loop), "the active loop and its reasoning stay intact"
+    assert _size(messages) <= budget
+
+
+@pytest.mark.anyio
+async def test_under_the_raise_policy_records_behind_retained_reasoning_stay_whole() -> None:
+    """A host that refuses an over-budget prompt locally never sends a record edit a provider
+    binding the reasoning's prefix would reject: the guard holds and the refusal stands."""
+    messages = _history(16)
+    messages += [
+        Message(
+            role="assistant",
+            contents=[
+                Content.from_text_reasoning(text="Compare the lookups."),
+                Content.from_function_call("run1", "lookup_run", arguments="{}"),
+            ],
+            message_id="run_call",
+        ),
+        Message(
+            role="tool",
+            contents=[Content.from_function_result("run1", result="code=RUN-0001 compared")],
+            message_id="run_result",
+        ),
+    ]
+    budget = _record_size(messages) - 200
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=budget, share=0.25, policy="raise")
+    before = _sent(copy.deepcopy(messages))
+
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
+
+    assert summarizer.merges == [], "no record behind the reasoning was merged"
+    assert _sent(messages) == before, "nothing was edited before the reasoning"
 
 
 def test_a_partial_reshape_cannot_edit_reasoning_left_out_of_its_plan() -> None:
