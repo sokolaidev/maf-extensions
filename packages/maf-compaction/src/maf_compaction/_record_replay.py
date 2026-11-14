@@ -9,7 +9,7 @@ from copy import copy
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final, cast
 
-from agent_framework import Message
+from agent_framework import Content, Message
 from agent_framework._compaction import (
     EXCLUDE_REASON_KEY,
     EXCLUDED_KEY,
@@ -63,6 +63,50 @@ class SummaryReplayCache:
 
 
 @dataclass
+class MessageKeyCache:
+    """Share message fingerprints across the candidate views of one replay call.
+
+    A view's own cache is keyed by position, so a fork, a staged copy and the history they came
+    from each fingerprint the same message again. This one is keyed by everything
+    :func:`_message_key` reads besides the contents, and by the contents' identity, which a
+    copied message shares with its original. Each entry holds the contents it was taken from,
+    so that identity cannot pass to another list while the entry lives.
+
+    It must not outlive one replay call. The compaction around a replay rewrites a result or a
+    call's arguments in place, which no identity shows; nothing a replay itself calls does.
+    """
+
+    entries: dict[tuple[Any, ...], tuple[list[Content], tuple[Content, ...], str]] = field(
+        default_factory=dict[tuple[Any, ...], tuple[list[Content], tuple[Content, ...], str]]
+    )
+
+    def key(self, message: Message) -> str:
+        properties = message.additional_properties
+        contents = message.contents
+        fields = (
+            message.role,
+            message.author_name,
+            message.message_id,
+            properties.get(STANDS_IN_KEY),
+            properties.get(LINEAGE_KEY),
+        )
+        # Equal values of different types serialize differently; those are fingerprinted afresh.
+        if not all(value is None or isinstance(value, str) for value in fields):
+            return _message_key(message)
+        slot = (*fields, bool(properties.get(EXCLUDED_KEY, False)), id(contents))
+        entry = self.entries.get(slot)
+        if (
+            entry is not None
+            and len(entry[1]) == len(contents)
+            and all(held is content for held, content in zip(entry[1], contents, strict=True))
+        ):
+            return entry[2]
+        fingerprint = _message_key(message)
+        self.entries[slot] = (contents, tuple(contents), fingerprint)
+        return fingerprint
+
+
+@dataclass
 class ReplayView:
     """Cache source and shed identities until this candidate history changes."""
 
@@ -83,6 +127,7 @@ class ReplayView:
     replacement_keys: dict[tuple[tuple[str, str] | None, str | None, bool], str] = field(
         default_factory=dict[tuple[tuple[str, str] | None, str | None, bool], str]
     )
+    key_cache: MessageKeyCache | None = None
 
     def fork(self) -> ReplayView:
         """Copy mutable history annotations while retaining deferred-message relationships."""
@@ -120,7 +165,10 @@ class ReplayView:
 
     def message_key(self, index: int) -> str:
         if index not in self.message_keys:
-            self.message_keys[index] = _message_key(self.messages[index])
+            message = self.messages[index]
+            self.message_keys[index] = (
+                _message_key(message) if self.key_cache is None else self.key_cache.key(message)
+            )
         return self.message_keys[index]
 
     def matches_replacement(self, index: int, expected: Message) -> bool:
@@ -256,7 +304,10 @@ def _reasoning_key(message: Message) -> str | None:
 
 
 def _source_key(
-    messages: list[Message], groups: list[dict[str, Any]], message_keys: dict[int, str]
+    messages: list[Message],
+    groups: list[dict[str, Any]],
+    message_keys: dict[int, str],
+    key_cache: MessageKeyCache | None = None,
 ) -> str | None:
     for group in groups:
         members = messages[group["start_index"] : group["end_index"] + 1]
@@ -273,7 +324,11 @@ def _source_key(
     start, end = groups[0]["start_index"], groups[-1]["end_index"]
     for index in range(start, end + 1):
         if index not in message_keys:
-            message_keys[index] = _message_key(messages[index])
+            message_keys[index] = (
+                _message_key(messages[index])
+                if key_cache is None
+                else key_cache.key(messages[index])
+            )
     payload = [
         [[group["start_index"] - start, group["end_index"] - start] for group in groups],
         [message_keys[index] for index in range(start, end + 1)],
@@ -287,6 +342,7 @@ def replay_match(
     accepted: Collection[tuple[str, int]],
     *,
     message_keys: dict[int, str] | None = None,
+    key_cache: MessageKeyCache | None = None,
 ) -> tuple[list[dict[str, Any]], tuple[str, int]] | None:
     """Find an unambiguous accepted batch; shared fingerprints require an unchanged history."""
     matches: dict[tuple[str, int], list[list[dict[str, Any]]]] = {}
@@ -309,7 +365,7 @@ def replay_match(
     for count in sorted({count for _, count in certificates}, reverse=True):
         for start in range(len(groups) - count + 1):
             run = groups[start : start + count]
-            key = _source_key(messages, run, message_keys)
+            key = _source_key(messages, run, message_keys, key_cache)
             if key is None:
                 continue
             for certificate, excluded in certificates.get((key, count), []):
