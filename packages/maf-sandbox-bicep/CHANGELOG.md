@@ -2,6 +2,18 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.27.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.26.1...maf-sandbox-bicep-v0.27.0) (2026-11-14)
+
+
+### Features
+
+* **sandbox:** expose fixed result sentences on attached tools ([#2683](https://github.com/sokolaidev/maf-extensions/issues/2683)) ([822f8bf](https://github.com/sokolaidev/maf-extensions/commit/822f8bf4efdd3c7fbcb050db8a1b82c57fd4258a))
+
+
+### Fixes
+
+* preserve sandbox diagnostics with FIDES quarantine disabled ([#2668](https://github.com/sokolaidev/maf-extensions/issues/2668)) ([ed3cede](https://github.com/sokolaidev/maf-extensions/commit/ed3ceded1c2de309ed4d707f396f90906cec20a7))
+
 ## [0.26.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.26.0...maf-sandbox-bicep-v0.26.1) (2026-11-08)
 
 
