@@ -889,7 +889,8 @@ def consolidatable_record_groups(
     content outside the matched records also stay intact, since the summarizer never sees it;
     except reasoning attached to a record in a completed user turn. Reasoning in the active
     tool loop remains intact, as does the record prefix before any later retained reasoning,
-    except while the composed chain fits a prompt over its budget. So does
+    except while the composed strategy fits a prompt over its budget, in its chain or in a
+    background merge and the pass that applies it. So does
     a record whose call id another output answers too, which excluding the call would orphan.
     Results carrying metadata, provider state or non-text items also stay whole.
 
@@ -1095,8 +1096,9 @@ def _span_indices(groups: list[dict[str, Any]]) -> set[int]:
     }
 
 
-#: Whether retained reasoning bars record edits before it. Off while the composed chain fits a
-#: prompt over its budget, where the shed edits that prefix anyway and loses values.
+#: Whether retained reasoning bars record edits before it. Off while the composed strategy fits
+#: a prompt over its budget (its chain, or a background merge and the pass applying it), where
+#: the shed edits that prefix anyway and loses values.
 _REASONING_PREFIX_GUARD: ContextVar[bool] = ContextVar("reasoning_prefix_guard", default=True)
 
 

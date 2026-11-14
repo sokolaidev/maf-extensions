@@ -1,6 +1,7 @@
 """Background answers must wait for foreground validation and stay inside their run."""
 
 import asyncio
+from contextlib import suppress
 from copy import deepcopy
 
 import pytest
@@ -241,6 +242,52 @@ async def test_disabled_share_only_merges_background_records_over_budget(budget)
     assert bool(model.requests) == (budget == 50)
     await strategy(messages)
     assert strategy.records_merged == int(budget == 50)
+    await work.close()
+
+
+OVER_BUDGET = 50
+
+
+async def test_an_over_budget_background_merge_reaches_records_behind_the_loops_reasoning():
+    """#2706: a tool-calling reply carries its reasoning after every record.
+
+    Over budget, the worker still prepares the merge, and the next pass, whose history now holds
+    that reasoning too, still applies it.
+    """
+    model = _Summarizer()
+    strategy, work, messages = await prepared(model)
+    strategy.record_budget_share = None
+    reply = [
+        Message(
+            "assistant",
+            [
+                Content.from_text_reasoning(text="Compare the lookups."),
+                Content.from_function_call(call_id="lookup", name="lookup", arguments={}),
+            ],
+            message_id="lookup-call",
+        )
+    ]
+    work.remember(messages, OVER_BUDGET)
+    work.start(reply)
+    await running(work)
+    assert model.merges, "the worker prepared a merge behind the reasoning"
+
+    live = [
+        *messages,
+        *deepcopy(reply),
+        Message(
+            "tool",
+            [Content.from_function_result(call_id="lookup", result="done")],
+            message_id="lookup-result",
+        ),
+    ]
+    token = strategy._request_budget.set(OVER_BUDGET)
+    try:
+        with suppress(CompactionBudgetExceeded):
+            await strategy(live)
+    finally:
+        strategy._request_budget.reset(token)
+    assert strategy.records_merged >= 1, "the next pass applied it"
     await work.close()
 
 

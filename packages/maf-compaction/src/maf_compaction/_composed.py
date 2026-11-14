@@ -32,7 +32,7 @@ import hashlib
 import logging
 from bisect import bisect_left
 from collections.abc import Callable, Generator, Mapping
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar
 from copy import copy, deepcopy
 from dataclasses import asdict, dataclass
@@ -523,6 +523,11 @@ def _is_excluded(message: Message) -> bool:
     return bool(message.additional_properties.get(EXCLUDED_KEY, False))
 
 
+def _yielding_when(*, over_budget: bool) -> AbstractContextManager[None]:
+    """The reasoning-prefix guard yields over budget only, as in the foreground chain."""
+    return _reasoning_prefix_yields_to_budget() if over_budget else nullcontext()
+
+
 @dataclass(frozen=True, slots=True)
 class _Searched:
     """How far a batch search from one start record got, and what it found there."""
@@ -875,7 +880,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             start = _ChainStart.take(messages) if self._over(messages) else None
             if start is None and self.record_budget_share is None:
                 return
-            await self._merge_records(messages, start)
+            with _yielding_when(over_budget=start is not None):
+                await self._merge_records(messages, start)
         except _ChainTimeSpent:
             # Ready answers remain available to the next foreground pass.
             pass
@@ -1637,7 +1643,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """
         changed = self._keep_decisions(messages, replayed_user_fold=replayed_user_fold)
         if self._background is not None:
-            changed = await self._background.apply_ready(messages) or changed
+            # Answers prepared over budget are checked under the same guard they were made with.
+            with _yielding_when(over_budget=self._over(messages)):
+                changed = await self._background.apply_ready(messages) or changed
         if not self._over(messages):
             return changed
         start = _ChainStart.take(messages)
