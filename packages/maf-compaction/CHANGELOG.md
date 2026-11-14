@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.4](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.3...maf-compaction-v0.13.4) (2026-11-14)
+
+
+### Performance
+
+* **compaction:** avoid rebuilding applied record edits on every pass ([#2735](https://github.com/sokolaidev/maf-extensions/issues/2735)) ([bf38bb8](https://github.com/sokolaidev/maf-extensions/commit/bf38bb8b6d360140ffaf405171cd70c823319a1a))
+
 ## [0.13.3](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.2...maf-compaction-v0.13.3) (2026-11-14)
 
 
