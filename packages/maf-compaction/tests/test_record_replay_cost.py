@@ -1,0 +1,176 @@
+"""Applied record edits must not rebuild a full-history candidate for every edit."""
+
+from __future__ import annotations
+
+import copy
+import json
+from collections import Counter
+
+import pytest
+from agent_framework import Message
+from agent_framework._compaction import (
+    EXCLUDE_REASON_KEY,
+    EXCLUDED_KEY,
+    annotate_message_groups,
+    set_excluded,
+)
+from test_pass_cost import _applied, _counting, _state
+from test_record_budget import _sent, _size, _strategy, _Summarizer, _tool_group
+
+from maf_compaction._composed import ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+from maf_compaction._record_replay import ReplayView, replacement_identity
+from maf_compaction._toolsummary import CONSOLIDATE_EXCLUDE_REASON
+
+pytestmark = pytest.mark.anyio
+
+
+@pytest.mark.parametrize("records", [12, 30])
+@pytest.mark.parametrize("reload", [False, True])
+async def test_applied_edits_do_not_rebuild_candidates_as_history_grows(
+    monkeypatch: pytest.MonkeyPatch, records: int, reload: bool
+) -> None:
+    strategy, summarizer, messages, _ = await _applied(records=records, narration=20)
+    asked = len(summarizer.requests)
+    calls: Counter[str] = Counter()
+    composed = ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+    for name in ("_record_replay_view", "_match_record_edit"):
+        _counting(monkeypatch, composed, name, calls)
+
+    for turn in range(3):
+        if reload:
+            messages = [Message.from_dict(message.to_dict()) for message in messages]
+        messages.extend(_tool_group(turn))
+        _size(messages)
+        before = _state(strategy, messages)
+
+        assert not strategy._replay_record_edits(messages)
+        assert _state(strategy, messages) == before
+
+    assert len(summarizer.requests) == asked
+    assert calls["_record_replay_view"] == 0
+    assert calls["_match_record_edit"] == 0
+
+
+@pytest.mark.parametrize("records", [12, 30])
+async def test_held_record_sources_are_indexed_once_per_replay(
+    monkeypatch: pytest.MonkeyPatch, records: int
+) -> None:
+    from maf_compaction import _composed as composed_module
+
+    strategy, _, messages, _ = await _applied(records=records, narration=20)
+    calls: Counter[str] = Counter()
+    _counting(monkeypatch, composed_module, "reshapeable_record_groups", calls)
+    _counting(monkeypatch, composed_module, "_call_identity", calls)
+
+    assert not strategy._replay_record_edits(messages)
+
+    assert calls["reshapeable_record_groups"] <= 1
+    assert calls["_call_identity"] <= records
+
+
+async def test_a_history_without_held_outputs_builds_no_expected_replacements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maf_compaction import _composed as composed_module
+
+    strategy, _, messages, _ = await _applied(records=12, narration=8)
+    messages[:] = [message for message in messages if replacement_identity(message) is None]
+    base = ReplayView(messages)
+    calls: Counter[str] = Counter()
+    for name in ("build_record_message", "reshapeable_record_groups", "_call_identity"):
+        _counting(monkeypatch, composed_module, name, calls)
+
+    assert all(
+        strategy._held_record_replacements(base, edit_index) == set()
+        for edit_index in range(len(strategy._record_order))
+    )
+    assert not calls
+
+
+@pytest.mark.parametrize("change", ["one-source", "all-sources", "lost-outputs", "rebuilt"])
+async def test_applied_replay_rechecks_sources_and_outputs_on_the_next_history(change: str) -> None:
+    strategy, summarizer, messages, handed = await _applied(records=12, narration=8)
+    expected = _sent(messages)
+    asked = len(summarizer.requests)
+    assert not strategy._replay_record_edits(messages)
+    if change == "rebuilt":
+        messages = copy.deepcopy(handed)
+    elif change == "lost-outputs":
+        messages[:] = [message for message in messages if not replacement_identity(message)]
+    else:
+        for message in messages:
+            if message.message_id == "rec0_call" or (
+                change == "all-sources" and (message.message_id or "").startswith("rec")
+            ):
+                set_excluded(message, excluded=False)
+    _size(messages)
+
+    assert strategy._replay_record_edits(messages)
+    strategy._keep_shedding(messages)
+
+    assert _sent(messages) == expected
+    assert len(summarizer.requests) == asked
+    assert not strategy._replay_record_edits(messages)
+
+
+async def test_restored_decisions_replay_after_a_noop_with_different_decisions() -> None:
+    strategy, _, messages, handed = await _applied(records=12, narration=8)
+    cold = _strategy(_Summarizer(), budget=1_000_000, cap=None)
+    _size(handed)
+    assert not cold._replay_record_edits(handed)
+    cold.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+
+    assert cold._replay_record_edits(handed)
+    cold._keep_shedding(handed)
+
+    assert _sent(handed) == _sent(messages)
+
+
+async def test_replay_without_member_certificates_keeps_the_full_matching_path() -> None:
+    strategy, _, messages, handed = await _applied(records=12, narration=8)
+    for edit in strategy._record_order:
+        edit.members.clear()
+    assert not strategy._replay_record_edits(messages)
+    annotate_message_groups(handed)
+
+    assert strategy._replay_record_edits(handed)
+    strategy._keep_shedding(handed)
+
+    assert _sent(handed) == _sent(messages)
+    assert any(message.additional_properties.get(EXCLUDED_KEY) for message in handed)
+
+
+@pytest.mark.parametrize("history", ["applied", "lost-merged-output"])
+async def test_member_skip_agrees_with_the_full_matching_path(
+    monkeypatch: pytest.MonkeyPatch, history: str
+) -> None:
+    """Every merged source is record-excluded while the last output is held, so both refuse."""
+    composed = ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+    runs: list[tuple[bool, tuple[str, str], int]] = []
+    for skip in (True, False):
+        strategy, _, messages, _ = await _applied(records=12, narration=8)
+        if history == "lost-merged-output":
+            lost = next(
+                message
+                for message in messages
+                if replacement_identity(message) is not None
+                and message.additional_properties.get(EXCLUDE_REASON_KEY)
+                == CONSOLIDATE_EXCLUDE_REASON
+            )
+            messages.remove(lost)
+        _size(messages)
+        members = {member for edit in strategy._record_order for member in edit.members}
+        calls: Counter[str] = Counter()
+        with monkeypatch.context() as patch:
+            if not skip:
+                patch.setattr(
+                    composed, "_available_record_members", staticmethod(lambda _: members)
+                )
+            _counting(patch, composed, "_match_record_edit", calls)
+            changed = strategy._replay_record_edits(messages)
+        runs.append((changed, _state(strategy, messages), calls["_match_record_edit"]))
+
+    (skipped, skipped_state, skipped_matches), (full, full_state, full_matches) = runs
+    assert not full
+    assert (skipped, skipped_state) == (full, full_state)
+    assert skipped_matches < full_matches
