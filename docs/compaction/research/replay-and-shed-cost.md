@@ -1,6 +1,6 @@
 # Why the composed pass got slower in 0.13 (#2724)
 
-> Exploration record for [#2724](https://github.com/sokolaidev/maf-extensions/issues/2724): where the per-call cost of the composed strategy's pass comes from in 0.13, which review findings each slow path answers, and which fixes keep what those findings protect. Sections 1 to 9 are the analysis as written before any change; [section 10](#10-what-the-first-change-implemented) records the change made from it and what it measured.
+> Exploration record for [#2724](https://github.com/sokolaidev/maf-extensions/issues/2724): where the per-call cost of the composed strategy's pass comes from in 0.13, which review findings each slow path answers, and which fixes keep what those findings protect. Sections 1 to 9 are the analysis as written before any change; [section 10](#10-what-the-first-change-implemented) and [section 11](#11-what-the-second-change-implemented) record the changes made from it and what they measured.
 
 A steady per-call pass on a long conversation (about 5,000 messages, 1,890 included, 120 records) took 2.5 s on 0.12.4, 17.4 s on 0.13.0 and 17.0 s on 0.13.1. This note records why each slow path exists, which review findings shaped it, and which fixes keep the invariants those findings protect.
 
@@ -236,6 +236,50 @@ A profiling harness drove the composed strategy through its session middleware o
 A group whose message or properties are listed twice is not removable today, because its two spans carry one group id, so the shared-flag test lifts that rule to reach the recount.
 
 ### Not done
-- **The replay memo.** What remains of a steady pass is each edit's window being rebuilt and matched at every entry point: `_record_replay_view`, `_match_record_edit` and `_held_record_replacements` are 8.5 of the 9.0 s of replay on the larger history. A memo with the coverage in section 2 is the fix for that, and is separate work.
-- **Hoisting the per-edit scans.** `_held_record_replacements` is about 1 s of that, and part of `_record_replay_view` is scans; most of the latter is the copy each differing window needs. It was left for the memo to make moot.
+- **The replay memo.** What remains of a steady pass is each edit's window being rebuilt and matched at every entry point: `_record_replay_view`, `_match_record_edit` and `_held_record_replacements` are 8.5 of the 9.0 s of replay on the larger history. A memo with the coverage in section 2 is the fix for that, and is separate work. [Section 11](#11-what-the-second-change-implemented) removes the rebuilds on an applied history without one.
+- **Hoisting the per-edit scans.** `_held_record_replacements` is about 1 s of that, and part of `_record_replay_view` is scans; most of the latter is the copy each differing window needs. It was left for the memo to make moot. Section 11 hoists the scans of `_held_record_replacements`.
 - **Everything section 8 calls unsafe,** the preview skip, `_insert_note`, and any snapshot change.
+
+## 11. What the second change implemented
+
+The second change ([#2735](https://github.com/sokolaidev/maf-extensions/pull/2735)) took the hoisting candidate of section 8 and, in place of the memo, a skip for an edit whose window cannot match. Outputs are unchanged.
+
+### Implemented
+- **Held outputs are indexed once per unchanged history.** `RecordReplayIndex` holds the held outputs, the known lineage identities, the reshape replacements, and each merge's replacement with its position in `_record_order`. `_held_record_replacements` reads an edit's suffix from it: reshapes count while the edit is at or before the last accepted reshape, and a merge counts from its own position on, which is the set the per-edit scan of `_record_order[edit_index:]` built. `ReplayView.invalidate()` drops the index and `fork()` does not carry it, so no view reads an index built for another history.
+- **An edit none of whose sources can be included is skipped before its window is built.** `_available_record_members` collects, once per history, the fingerprint of every included message, and of every excluded one except a record-excluded one, keyed as if included: candidate staging can release shed and user-summary exclusions, but never record exclusions. When an edit's held outputs validate and none of its members is in that set, `_replay_record_candidates` moves to the next edit without calling `_record_replay_view` or `_match_record_edit`.
+
+### Why the skip is not output identity
+Section 8 calls skipping applied edits by output identity unsafe, and this skip is not that. It does not conclude that an edit is applied; it concludes that the full path would refuse the edit, and gives that refusal's answer. **[read]**
+- With the held outputs validated, `_record_replay_view` stages them, so the view carries `record_replacements`.
+- On that view, `_match_record_edit`'s first match fails, because no source is included, and its recovery path refuses, because replacements are staged and no member is included.
+- The available set is a superset of what any view can include, so the skip fires only where that refusal does.
+- A revived source, missing held outputs, and a legacy certificate without member fingerprints all take the full path.
+
+**What it rests on:** that refusal in `_match_record_edit`. Without it, the full path releases the record exclusions and matches the edit again, and the skip hides the difference. **[measured]** With the refusal removed, all 2,338 earlier tests still pass; only `test_member_skip_agrees_with_the_full_matching_path`, added for this, fails, in both its cases: an applied history, and the same history with its earliest record-excluded output dropped. That test runs replay with the skip and with it forced off and requires the same result, and comments at both sites name the dependency.
+
+### Measured
+Section 10's harness and shapes, with this change and 0.13.3 run side by side, two processes at a time rather than section 10's three; figures are medians of calls 3 to 6. 0.13.3's figures here are lower than section 10's for the same code, so compare rows within this table, not across the two.
+
+| History | Version | Steady pass | Replay in it | Windows rebuilt per pass | First call of the run |
+|---|---|---|---|---|---|
+| 2,020 messages | 0.13.3 | 3.33 s | 2.30 s in 3 calls | 31 | 6.13 s |
+| 2,020 messages | this change | 1.55 s | 0.54 s in 3 calls | 0 | 6.18 s |
+| 4,950 messages | 0.13.3 | 8.04 s | 5.77 s in 3 calls | 33 | 25.96 s |
+| 4,950 messages | this change | 3.80 s | 1.40 s in 3 calls | 0 | 25.24 s |
+
+- **What replay still spends** is `_held_record_replacements`, called once per edit and reading the index, and fingerprinting, the two overlapping: 0.53 s and 0.57 s of the 1.40 s on the larger history.
+- **Fingerprints per steady pass rose** from 5,538 to 5,748 on the smaller history and from 11,337 to 14,547 on the larger. **[inferred]** `_available_record_members` fingerprints every shed or user-summary-excluded message as if included, once per replay, which is more than the window views it replaces took.
+- **The first call is unchanged.** It starts with no accepted edits, so replay is not what it spends. On the larger history, 14.8 of its 25.2 s are the last-resort shed (`shed_to`), and 12.6 s of that is `_insert_note`: 1,309 calls, with 5.7 million `_is_marker` checks under them. On the smaller history the shed is 1.8 of 6.2 s and the merges 2.7 s.
+
+### Outputs
+- **Call for call, the same.** On both histories, every call's sent messages, stored exclusion flags, record texts and accepted edits were identical between 0.13.3 and this change, with the chain deadline in place; on the larger history both first calls made the same 16 record requests. With the deadline removed from both, all six calls were identical as well.
+- **Differential replay over the package suite**, reported on the PR **[read]**: 1,577 comparisons across 731 record-reasoning tests gave identical return values, histories and persisted decisions.
+
+### Pinned by tests, of section 9
+- Item 1, further than section 10: an applied history replays without rebuilding a window, as the history grows and across reloads, and held sources are indexed once per replay.
+- Item 4 stays pinned only in part, and items 7 and 9 not at all.
+- Outside section 9's list: replay with the skip and with it forced off agree, which pins the refusal the skip rests on.
+
+### Not done
+- **The memo of section 2.** An edit whose sources can be included, or whose held outputs are missing, still rebuilds its window. **[inferred]** So the pass that re-applies edits to a history the host rebuilt without them costs about what it did in section 10, and the passes after it skip.
+- **`_insert_note`,** now the largest cost of a run's first call on a long history, as measured above. Section 8's candidate for it, reusing the sets and splicing once, is safe if the suffix choice sees notes inserted earlier in the same batch.
