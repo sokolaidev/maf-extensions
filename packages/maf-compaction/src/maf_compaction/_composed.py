@@ -523,9 +523,14 @@ def _is_excluded(message: Message) -> bool:
     return bool(message.additional_properties.get(EXCLUDED_KEY, False))
 
 
-def _yielding_when(*, over_budget: bool) -> AbstractContextManager[None]:
-    """The reasoning-prefix guard yields over budget only, as in the foreground chain."""
-    return _reasoning_prefix_yields_to_budget() if over_budget else nullcontext()
+def _yielding_when(*, over_budget: bool, policy: str) -> AbstractContextManager[None]:
+    """The reasoning-prefix guard yields only over budget under the ``"shed"`` policy.
+
+    That shed edits the prefix anyway. Under ``"raise"`` the host keeps its local refusal.
+    """
+    return (
+        _reasoning_prefix_yields_to_budget() if over_budget and policy == "shed" else nullcontext()
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -880,7 +885,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             start = _ChainStart.take(messages) if self._over(messages) else None
             if start is None and self.record_budget_share is None:
                 return
-            with _yielding_when(over_budget=start is not None):
+            with _yielding_when(over_budget=start is not None, policy=self.overflow_policy):
                 await self._merge_records(messages, start)
         except _ChainTimeSpent:
             # Ready answers remain available to the next foreground pass.
@@ -1644,14 +1649,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         changed = self._keep_decisions(messages, replayed_user_fold=replayed_user_fold)
         if self._background is not None:
             # Answers prepared over budget are checked under the same guard they were made with.
-            with _yielding_when(over_budget=self._over(messages)):
+            with _yielding_when(over_budget=self._over(messages), policy=self.overflow_policy):
                 changed = await self._background.apply_ready(messages) or changed
         if not self._over(messages):
             return changed
         start = _ChainStart.take(messages)
-        # A run's later calls carry its loop's reasoning after every record; the shed below
-        # edits that prefix anyway, so the record steps are not barred from it here.
-        with _reasoning_prefix_yields_to_budget():
+        # A run's later calls carry its loop's reasoning after every record; under "shed" the
+        # shed below edits that prefix anyway, so the record steps are not barred from it here.
+        with _yielding_when(over_budget=True, policy=self.overflow_policy):
             changed = self._reshape_records(messages) or changed
             kept = len(self._kept_records), self._user_summaries_merged
             deadline = None if self.chain_seconds is None else monotonic() + self.chain_seconds

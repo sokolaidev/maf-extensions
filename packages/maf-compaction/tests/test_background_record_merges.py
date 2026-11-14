@@ -257,6 +257,7 @@ async def test_an_over_budget_background_merge_reaches_records_behind_the_loops_
     model = _Summarizer()
     strategy, work, messages = await prepared(model)
     strategy.record_budget_share = None
+    strategy.overflow_policy = "shed"
     reply = [
         Message(
             "assistant",

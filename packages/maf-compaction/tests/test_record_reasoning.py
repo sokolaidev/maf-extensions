@@ -31,6 +31,7 @@ from test_record_budget import (
     _values,
 )
 
+from maf_compaction import CompactionBudgetExceeded
 from maf_compaction import _toolsummary as toolsummary_module
 from maf_compaction._anchored import _is_marker
 from maf_compaction._composed import DEFAULT_RECORD_MERGE_PROMPT, _transcript, harder_record_prompt
@@ -1832,7 +1833,7 @@ async def test_an_over_budget_chain_merges_records_behind_the_active_loops_reaso
     ]
     budget = _record_size(messages) - 200
     summarizer = _Summarizer()
-    strategy = _strategy(summarizer, budget=budget, share=0.25)
+    strategy = _strategy(summarizer, budget=budget, share=0.25, policy="shed")
     loop = copy.deepcopy(messages[-2:])
 
     await strategy(messages)
@@ -1842,6 +1843,38 @@ async def test_an_over_budget_chain_merges_records_behind_the_active_loops_reaso
     assert _sent_values(messages) == {value for index in range(16) for value in _values(index)}
     assert _sent(messages)[-2:] == _sent(loop), "the active loop and its reasoning stay intact"
     assert _size(messages) <= budget
+
+
+@pytest.mark.anyio
+async def test_under_the_raise_policy_records_behind_retained_reasoning_stay_whole() -> None:
+    """A host that refuses an over-budget prompt locally never sends a record edit a provider
+    binding the reasoning's prefix would reject: the guard holds and the refusal stands."""
+    messages = _history(16)
+    messages += [
+        Message(
+            role="assistant",
+            contents=[
+                Content.from_text_reasoning(text="Compare the lookups."),
+                Content.from_function_call("run1", "lookup_run", arguments="{}"),
+            ],
+            message_id="run_call",
+        ),
+        Message(
+            role="tool",
+            contents=[Content.from_function_result("run1", result="code=RUN-0001 compared")],
+            message_id="run_result",
+        ),
+    ]
+    budget = _record_size(messages) - 200
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=budget, share=0.25, policy="raise")
+    before = _sent(copy.deepcopy(messages))
+
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(messages)
+
+    assert summarizer.merges == [], "no record behind the reasoning was merged"
+    assert _sent(messages) == before, "nothing was edited before the reasoning"
 
 
 def test_a_partial_reshape_cannot_edit_reasoning_left_out_of_its_plan() -> None:
