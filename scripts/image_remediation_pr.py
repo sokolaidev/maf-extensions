@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -203,6 +204,21 @@ def pending_body(text: str, state: dict[str, Any]) -> str:
 
 def body(state: dict[str, Any], report: dict[str, Any], evidence_url: str) -> str:
     """Report residual findings without implying publication or closing release requests."""
+    if report.get("kind") == "chrome":
+        return with_marker(
+            "## Summary\n\n"
+            f"Update document-export Chrome from {report['before']} to {report['after']} "
+            "using Google's signed stable repository and verified archive checksum.\n\n"
+            "## Related issue\n\nRefs #2701.\n\n"
+            "## Verification\n\n"
+            f"Qualified commit: `{state['current']['head']}`. Base: `{report['source']}`. "
+            f"[Retained qualification]({evidence_url}).\n\n"
+            "The candidate passed offline PDF rendering, resource denial, cleanup, browser "
+            "inventory and the High/Critical security gate. Normal PR CI is a separate result. "
+            "No image was published.\n\n"
+            f"<!-- {MARKER} {{}} -->\n",
+            state,
+        )
     if report.get("kind") == "platform-rehearsal":
         text = (
             "## Rehearsal only: do not merge\n\n"
@@ -390,6 +406,8 @@ def publish(
     files: dict[str, bytes],
     bot: str,
     evidence_url: str,
+    *,
+    freshness: Callable[[GitHub, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Reconcile uncertain writes on retry; never force a ref or reopen a human-closed PR."""
     if not re.fullmatch(r"[a-z0-9-]+\[bot\]", bot):
@@ -427,7 +445,18 @@ def publish(
             raise ValueError(
                 "Update rehearsal requires its isolated branch and qualified package inputs"
             )
-    current(client, receipt)
+    check_current = freshness or current
+    if report.get("kind") == "chrome" or branch == "bot/chrome-image-update":
+        if (
+            report.get("kind") != "chrome"
+            or branch != "bot/chrome-image-update"
+            or set(files) != {"images/document-export/Dockerfile"}
+            or freshness is None
+        ):
+            raise ValueError(
+                "Chrome delivery requires its isolated branch, recipe and freshness check"
+            )
+    check_current(client, receipt)
     pull = latest_pull(client)
     ownership_pull = pull
     ownership_state = None
@@ -495,7 +524,7 @@ def publish(
         ),
     )
     if previous is not None and previous["base"] == base and previous["files"] == hashes and pull:
-        current(client, receipt)
+        check_current(client, receipt)
         state = {"schemaVersion": 1, "current": previous, "pending": None}
         update_body(client, pull, body(state, report, evidence_url), head)
         return {"status": "unchanged", "url": pull["html_url"]}
@@ -532,7 +561,7 @@ def publish(
     if previous is not None and previous["base"] == base and previous["files"] == hashes:
         proposed = previous
     state = {"schemaVersion": 1, "current": previous, "pending": proposed}
-    current(client, receipt)
+    check_current(client, receipt)
     if pull:
         update_body(client, pull, pending_body(pull["body"], state), head)
     elif ownership_pull and ownership_state:
@@ -545,7 +574,7 @@ def publish(
         require_pull(client, ownership_pull)
         update_branch(client, head, proposed["head"])
     state = {"schemaVersion": 1, "current": proposed, "pending": None}
-    current(client, receipt)
+    check_current(client, receipt)
     if pull:
         result = update_body(client, pull, body(state, report, evidence_url), proposed["head"])
     else:
