@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.33.18
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.10
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.51.0
-	github.com/aws/aws-sdk-go-v2/service/ssm v1.82.1
+	github.com/aws/aws-sdk-go-v2/service/ssm v1.83.0
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/hashicorp/vault/api v1.23.0
