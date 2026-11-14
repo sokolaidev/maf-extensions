@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-antivirus-v0.1.1...maf-sandbox-antivirus-v0.2.0) (2026-11-14)
+
+
+### Features
+
+* **sandbox:** expose fixed result sentences on attached tools ([#2683](https://github.com/sokolaidev/maf-extensions/issues/2683)) ([822f8bf](https://github.com/sokolaidev/maf-extensions/commit/822f8bf4efdd3c7fbcb050db8a1b82c57fd4258a))
+
 ## [0.1.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-antivirus-v0.1.0...maf-sandbox-antivirus-v0.1.1) (2026-11-04)
 
 
