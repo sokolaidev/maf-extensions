@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-tui-v0.6.2...maf-sandbox-tui-v0.6.3) (2026-11-14)
+
+
+### Fixes
+
+* admit the maf-sandbox 0.54 line in the ten dependents still capped below it ([#2713](https://github.com/sokolaidev/maf-extensions/issues/2713)) ([2d461f6](https://github.com/sokolaidev/maf-extensions/commit/2d461f6cee586245d98d6ebe6e714023680ab1fe))
+
 ## [0.6.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-tui-v0.6.1...maf-sandbox-tui-v0.6.2) (2026-11-06)
 
 
