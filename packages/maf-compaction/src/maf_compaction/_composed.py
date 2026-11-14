@@ -67,6 +67,7 @@ from ._record_replay import (
     LINEAGE_KEY,
     MessageKeyCache,
     RecordEdit,
+    RecordReplayIndex,
     ReplayView,
     replacement_identity,
     replay_match,
@@ -1854,6 +1855,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             record_indices = self._held_record_replacements(base, edit_index)
             if record_indices is None:
                 continue
+            if (
+                record_indices
+                and edit.members
+                and not self._available_record_members(base).intersection(edit.members)
+            ):
+                continue
             prerequisites = (
                 tuple(edit.summaries),
                 tuple(edit.shed_ids),
@@ -2010,15 +2017,34 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         )
         return None if matched is None else (candidate, matched[0])
 
-    def _held_record_replacements(self, base: ReplayView, edit_index: int) -> set[int] | None:
+    @staticmethod
+    def _available_record_members(base: ReplayView) -> set[str]:
+        """Bound members a candidate can include before partial record-exclusion recovery.
+
+        Candidate staging can release shed and user-summary exclusions, but never record
+        exclusions. Newly inserted user summaries and shed notes cannot be record members.
+        """
+        if base.available_members is None:
+            base.available_members = set()
+            for index, message in enumerate(base.messages):
+                if not _is_excluded(message):
+                    base.available_members.add(base.message_key(index))
+                elif message.additional_properties.get(EXCLUDE_REASON_KEY) != (
+                    CONSOLIDATE_EXCLUDE_REASON
+                ):
+                    candidate = copy(message)
+                    candidate.additional_properties = dict(message.additional_properties)
+                    set_excluded(candidate, excluded=False)
+                    base.available_members.add(ReplayView([candidate]).message_key(0))
+        return base.available_members
+
+    def _index_record_replacements(self, base: ReplayView) -> RecordReplayIndex:
         messages = base.messages
         held = [
             (index, message)
             for index, message in enumerate(messages)
             if replacement_identity(message) is not None
         ]
-        if not held:
-            return set()
         known = {
             (LINEAGE_KEY, edit.sources.split(":")[1])
             for edit in self._record_order
@@ -2029,9 +2055,13 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             for position, content in enumerate(message.contents)
             if content.type == "function_call" and content.name == RECALL_TOOL_NAME
         }
-        remaining = self._record_order[edit_index:]
-        expected: dict[tuple[str, str], Message] = {}
-        if any(edit.text is None for edit in remaining):
+        reshapes: dict[tuple[str, str], Message] = {}
+        merges: dict[tuple[str, str], tuple[int, Message]] = {}
+        last_reshape = max(
+            (index for index, edit in enumerate(self._record_order) if edit.text is None),
+            default=-1,
+        )
+        if held and last_reshape >= 0:
             source_view = base
             owned = self._owned_record_exclusions(messages)
             if owned:
@@ -2044,23 +2074,34 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             ):
                 identity = replacement_identity(replacement)
                 if identity is not None:
-                    expected[identity] = replacement
-        for edit in remaining:
+                    reshapes[identity] = replacement
+        for index, edit in enumerate(self._record_order):
             if edit.text is not None and edit.sources.startswith("v2:"):
                 replacement = build_record_message(edit.text)
                 replacement.additional_properties[LINEAGE_KEY] = edit.sources.split(":")[1]
                 identity = replacement_identity(replacement)
                 assert identity is not None
-                expected[identity] = replacement
+                merges[identity] = (index, replacement)
+        return RecordReplayIndex(held, known, reshapes, merges, last_reshape)
+
+    def _held_record_replacements(self, base: ReplayView, edit_index: int) -> set[int] | None:
+        if base.record_index is None:
+            base.record_index = self._index_record_replacements(base)
+        indexed = base.record_index
+        expected = dict(indexed.reshapes) if edit_index <= indexed.last_reshape else {}
+        expected.update(
+            (identity, replacement)
+            for identity, (index, replacement) in indexed.merges.items()
+            if index >= edit_index
+        )
+        expected_texts = {message.text for message in expected.values()}
         indices: set[int] = set()
         seen: set[tuple[str, str]] = set()
-        for index, message in held:
+        for index, message in indexed.held:
             identity = replacement_identity(message)
             replacement = expected.get(identity) if identity is not None else None
             if replacement is None:
-                if identity not in known and any(
-                    message.text == item.text for item in expected.values()
-                ):
+                if identity not in indexed.known and message.text in expected_texts:
                     return None
                 continue
             if (

@@ -107,6 +107,17 @@ class MessageKeyCache:
 
 
 @dataclass
+class RecordReplayIndex:
+    """Index held outputs and their last accepted edit in one unchanged replay history."""
+
+    held: list[tuple[int, Message]]
+    known: set[tuple[str, str]]
+    reshapes: dict[tuple[str, str], Message]
+    merges: dict[tuple[str, str], tuple[int, Message]]
+    last_reshape: int
+
+
+@dataclass
 class ReplayView:
     """Cache source and shed identities until this candidate history changes."""
 
@@ -128,6 +139,8 @@ class ReplayView:
         default_factory=dict[tuple[tuple[str, str] | None, str | None, bool], str]
     )
     key_cache: MessageKeyCache | None = None
+    record_index: RecordReplayIndex | None = None
+    available_members: set[str] | None = None
 
     def fork(self) -> ReplayView:
         """Copy mutable history annotations while retaining deferred-message relationships."""
@@ -155,6 +168,8 @@ class ReplayView:
             record_replacements={id(copies[identity]) for identity in self.record_replacements},
             summary_preview=copy(self.summary_preview),
             summary_cache=self.summary_cache.fork(),
+            record_index=None,
+            available_members=None,
         )
 
     def invalidate(self) -> None:
@@ -162,6 +177,8 @@ class ReplayView:
         self.shed_groups = None
         self.replacement_keys.clear()
         self.summary_cache = SummaryReplayCache()
+        self.record_index = None
+        self.available_members = None
 
     def message_key(self, index: int) -> str:
         if index not in self.message_keys:
