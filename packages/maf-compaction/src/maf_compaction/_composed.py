@@ -1855,6 +1855,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             record_indices = self._held_record_replacements(base, edit_index)
             if record_indices is None:
                 continue
+            # Answers what _match_record_edit's staged-replacement refusal would, without the view.
             if (
                 record_indices
                 and edit.members
@@ -1989,6 +1990,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if not owned or not edit.members:
             return None
         members = set(edit.members)
+        # The member skip in _replay_record_candidates is sound only while this refusal holds.
         if view.record_replacements and not any(
             not _is_excluded(message) and view.message_key(index) in members
             for index, message in enumerate(view.messages)

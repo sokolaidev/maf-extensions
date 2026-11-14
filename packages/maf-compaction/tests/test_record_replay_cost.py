@@ -8,12 +8,18 @@ from collections import Counter
 
 import pytest
 from agent_framework import Message
-from agent_framework._compaction import EXCLUDED_KEY, annotate_message_groups, set_excluded
+from agent_framework._compaction import (
+    EXCLUDE_REASON_KEY,
+    EXCLUDED_KEY,
+    annotate_message_groups,
+    set_excluded,
+)
 from test_pass_cost import _applied, _counting, _state
 from test_record_budget import _sent, _size, _strategy, _Summarizer, _tool_group
 
 from maf_compaction._composed import ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
 from maf_compaction._record_replay import replacement_identity
+from maf_compaction._toolsummary import CONSOLIDATE_EXCLUDE_REASON
 
 pytestmark = pytest.mark.anyio
 
@@ -113,3 +119,39 @@ async def test_replay_without_member_certificates_keeps_the_full_matching_path()
 
     assert _sent(handed) == _sent(messages)
     assert any(message.additional_properties.get(EXCLUDED_KEY) for message in handed)
+
+
+@pytest.mark.parametrize("history", ["applied", "lost-merged-output"])
+async def test_member_skip_agrees_with_the_full_matching_path(
+    monkeypatch: pytest.MonkeyPatch, history: str
+) -> None:
+    """Every merged source is record-excluded while the last output is held, so both refuse."""
+    composed = ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+    runs: list[tuple[bool, tuple[str, str], int]] = []
+    for skip in (True, False):
+        strategy, _, messages, _ = await _applied(records=12, narration=8)
+        if history == "lost-merged-output":
+            lost = next(
+                message
+                for message in messages
+                if replacement_identity(message) is not None
+                and message.additional_properties.get(EXCLUDE_REASON_KEY)
+                == CONSOLIDATE_EXCLUDE_REASON
+            )
+            messages.remove(lost)
+        _size(messages)
+        members = {member for edit in strategy._record_order for member in edit.members}
+        calls: Counter[str] = Counter()
+        with monkeypatch.context() as patch:
+            if not skip:
+                patch.setattr(
+                    composed, "_available_record_members", staticmethod(lambda _: members)
+                )
+            _counting(patch, composed, "_match_record_edit", calls)
+            changed = strategy._replay_record_edits(messages)
+        runs.append((changed, _state(strategy, messages), calls["_match_record_edit"]))
+
+    (skipped, skipped_state, skipped_matches), (full, full_state, full_matches) = runs
+    assert not full
+    assert (skipped, skipped_state) == (full, full_state)
+    assert skipped_matches < full_matches
