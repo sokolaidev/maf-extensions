@@ -2047,6 +2047,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             for index, message in enumerate(messages)
             if replacement_identity(message) is not None
         ]
+        if not held:
+            return RecordReplayIndex(held, set(), {}, {}, -1)
         known = {
             (LINEAGE_KEY, edit.sources.split(":")[1])
             for edit in self._record_order
@@ -2063,7 +2065,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             (index for index, edit in enumerate(self._record_order) if edit.text is None),
             default=-1,
         )
-        if held and last_reshape >= 0:
+        if last_reshape >= 0:
             source_view = base
             owned = self._owned_record_exclusions(messages)
             if owned:
@@ -2090,6 +2092,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if base.record_index is None:
             base.record_index = self._index_record_replacements(base)
         indexed = base.record_index
+        if not indexed.held:
+            return set()
         expected = dict(indexed.reshapes) if edit_index <= indexed.last_reshape else {}
         expected.update(
             (identity, replacement)

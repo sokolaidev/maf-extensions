@@ -18,7 +18,7 @@ from test_pass_cost import _applied, _counting, _state
 from test_record_budget import _sent, _size, _strategy, _Summarizer, _tool_group
 
 from maf_compaction._composed import ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
-from maf_compaction._record_replay import replacement_identity
+from maf_compaction._record_replay import ReplayView, replacement_identity
 from maf_compaction._toolsummary import CONSOLIDATE_EXCLUDE_REASON
 
 pytestmark = pytest.mark.anyio
@@ -66,6 +66,25 @@ async def test_held_record_sources_are_indexed_once_per_replay(
 
     assert calls["reshapeable_record_groups"] <= 1
     assert calls["_call_identity"] <= records
+
+
+async def test_a_history_without_held_outputs_builds_no_expected_replacements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maf_compaction import _composed as composed_module
+
+    strategy, _, messages, _ = await _applied(records=12, narration=8)
+    messages[:] = [message for message in messages if replacement_identity(message) is None]
+    base = ReplayView(messages)
+    calls: Counter[str] = Counter()
+    for name in ("build_record_message", "reshapeable_record_groups", "_call_identity"):
+        _counting(monkeypatch, composed_module, name, calls)
+
+    assert all(
+        strategy._held_record_replacements(base, edit_index) == set()
+        for edit_index in range(len(strategy._record_order))
+    )
+    assert not calls
 
 
 @pytest.mark.parametrize("change", ["one-source", "all-sources", "lost-outputs", "rebuilt"])
