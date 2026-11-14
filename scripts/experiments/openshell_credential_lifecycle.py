@@ -53,7 +53,8 @@ while sequence <= 256 and time.monotonic() < deadline:
     if command['operation'] == 'stop':
         break
     token = original if command['source'] == 'original' else (
-        (directory / 'current-reference').read_text() if command['source'] == 'current' else '')
+        (directory / (command['source'] + '-reference')).read_text()
+        if command['source'] in ('current', 'edited') else '')
     if token and not token.startswith('openshell:resolve:'):
         raise RuntimeError('expected opaque credential reference')
     headers = {{'Authorization': 'Bearer ' + token}} if token else {{}}
@@ -202,7 +203,7 @@ class ContinuousGuest:
         self.sequence = 0
         self.task = None
         self.ready = {}
-        self.current_reference = None
+        self.references = {}
 
     async def control_io(self, operation, action):
         """Retry identical sequenced file operations, never guest execution or provider mutations."""
@@ -258,26 +259,30 @@ class ContinuousGuest:
         )
 
     async def request(self, url, source="original"):
-        await self.command(operation="request", url=url, source=source)
-        result = await self.read(f"result-{self.sequence}.json")
+        if source not in ("original", "current", "edited", "none"):
+            raise ValueError("unknown credential reference source")
         reference = (
             self.ready["reference_sha256"]
             if source == "original"
-            else self.current_reference
-            if source == "current"
+            else self.references[source]
+            if source in ("current", "edited")
             else hashlib.sha256(b"").hexdigest()
         )
+        await self.command(operation="request", url=url, source=source)
+        result = await self.read(f"result-{self.sequence}.json")
         if not continuous_result(self.ready, result, self.sequence, reference):
             raise RuntimeError("continuous process/reference identity mismatch")
         return result
 
-    async def capture_current(self):
+    async def capture_current(self, slot="current"):
         # Exec launch observes the new epoch; the original process retains its old reference.
+        if slot not in ("current", "edited"):
+            raise ValueError("unknown credential reference slot")
         code = (
             "import os,json,hashlib; from pathlib import Path; v=os.environ.get("
             + repr(self.key)
             + ",''); assert v.startswith('openshell:resolve:'); Path("
-            + repr(self.directory + "/current-reference")
+            + repr(self.directory + "/" + slot + "-reference")
             + ").write_text(v); print(json.dumps({'reference_sha256':hashlib.sha256(v.encode()).hexdigest()}))"
         )
         result = await self.sandbox.exec(
@@ -285,8 +290,8 @@ class ContinuousGuest:
         )
         if result.exit_code or result.stderr:
             raise RuntimeError("fresh launch reference observation failed")
-        self.current_reference = json.loads(result.stdout)["reference_sha256"]
-        return self.current_reference
+        self.references[slot] = json.loads(result.stdout)["reference_sha256"]
+        return self.references[slot]
 
     async def close(self):
         if self.task is None:
@@ -328,6 +333,68 @@ class HTTPSRefreshProfile(RefreshProfile):
         self.configure_refresh(client)
         self.rotate(client)
 
+    def update_path(self, client, path, record):
+        """Persist one conditional path edit; read-back proves storage, not guest enforcement."""
+        query = client.pb.GetProviderProfileRequest(
+            workspace_scope=client.scope, id=self.profile_id
+        )
+        before = client.rpc("GetProviderProfile", query).profile
+        if (
+            before.id != self.profile_id
+            or not before.resource_version
+            or (before.source, before.scope) != ("user", "workspace")
+            or len(before.endpoints) != 1
+            or len(before.endpoints[0].rules) != 1
+            or before.endpoints[0].path != self.endpoint_path
+            or before.endpoints[0].rules[0].allow.path != self.endpoint_path
+        ):
+            raise RuntimeError("profile edit baseline mismatch")
+        edited = type(before)()
+        edited.CopyFrom(before)
+        # Catalogue attribution is read-only and absent from mutation responses.
+        edited.source = edited.scope = ""
+        edited.endpoints[0].path = path
+        edited.endpoints[0].rules[0].allow.path = path
+        request = client.pb.UpdateProviderProfilesRequest(
+            workspace_scope=client.scope,
+            id=self.profile_id,
+            expected_resource_version=before.resource_version,
+            profile=client.pb.ProviderProfileImportItem(profile=edited),
+            request_id=str(uuid.uuid4()),
+        )
+        row = {
+            "method": "UpdateProviderProfiles",
+            "request_hex": request.SerializeToString().hex(),
+            "started_ns": time.monotonic_ns(),
+            "state": "pending",
+        }
+        record("mutations", row)
+        response = client.rpc("UpdateProviderProfiles", request)
+        row.update(
+            state="acknowledged",
+            acknowledged_ns=time.monotonic_ns(),
+            response_hex=response.SerializeToString().hex(),
+        )
+        record("barriers", {"profile_update_acknowledged": dict(row)})
+        if not response.updated or response.profile.resource_version <= before.resource_version:
+            raise RuntimeError("profile edit was not stored at a newer revision")
+        edited.resource_version = response.profile.resource_version
+        if response.profile != edited:
+            raise RuntimeError("profile update response differs from the exact path edit")
+        edited.source, edited.scope = before.source, before.scope
+        current = client.rpc("GetProviderProfile", query).profile
+        if current != edited:
+            raise RuntimeError("stored profile differs from the exact path edit")
+        self.endpoint_path = path
+        record(
+            "barriers",
+            {
+                "stored_profile_revision": current.resource_version,
+                "profile_hex": current.SerializeToString().hex(),
+                "guest_installation_confirmed": False,
+            },
+        )
+
 
 async def measure_credentials(fixture, ip, ca_file):
     """Retain propagation attempts and exact detach barriers without declaring attached identity."""
@@ -344,7 +411,7 @@ async def measure_credentials(fixture, ip, ca_file):
         "provider_and_profile_cleanup_verified": False,
         "unqualified": [
             "persistent connections and in-flight mutations",
-            "provider profile edits",
+            "profile credential declarations, refresh settings, methods and hosts",
             "concurrent controllers",
             "gateway/supervisor disconnect and restart",
             "refresh-token reauthorization",
@@ -444,6 +511,7 @@ async def measure_credentials(fixture, ip, ca_file):
                 path="/provider/ok",
                 converge=False,
                 revoked=None,
+                prior_refusal=None,
             ):
                 assert guest is not None
                 row = {"case": label, "attempts": [], "passed": False}
@@ -456,6 +524,7 @@ async def measure_credentials(fixture, ip, ca_file):
                     marker = uuid.uuid4().hex
                     target = path + "?case=" + marker
                     await reconcile(expected=[])
+                    started = time.monotonic_ns()
                     observed = await guest.request(f"https://{host}:8443{target}", source)
                     events = await reconcile()
                     if revoked is not None:
@@ -469,14 +538,26 @@ async def measure_credentials(fixture, ip, ca_file):
                     }
                     passed = credential_observation(observed["guest"], events, expected, request)
                     row["attempts"].append(
-                        {"observation": observed, "origin_events": events, "matched": passed}
+                        {
+                            "observation": observed,
+                            "origin_events": events,
+                            "matched": passed,
+                            "started_ns": started,
+                            "ended_ns": time.monotonic_ns(),
+                        }
                     )
                     row["passed"] = passed
                     fixture.save()
                     if passed:
                         return
-                    if not propagation_observation(
-                        observed["guest"], events, request, issuer.journal()
+                    if not (
+                        propagation_observation(
+                            observed["guest"], events, request, issuer.journal()
+                        )
+                        or prior_refusal is not None
+                        and credential_observation(
+                            observed["guest"], events, prior_refusal, request
+                        )
                     ):
                         raise RuntimeError(
                             "unattributed credential propagation observation: " + label
@@ -566,12 +647,77 @@ async def measure_credentials(fixture, ip, ca_file):
                 expected="credential_unavailable",
                 revoked=recovered,
             )
-            await guest.capture_current()
+            current = await guest.capture_current()
             await check(
                 "reattach_new_reference_reaches_origin",
                 reconfigured,
                 source="current",
                 converge=True,
+            )
+            unexpired(reconfigured)
+            await asyncio.to_thread(profile.update_path, fixture.client, "/provider/other", record)
+            await check(
+                "profile_narrowing_revokes_removed_path",
+                source="current",
+                expected="credential_endpoint_mismatch",
+                converge=True,
+                revoked=reconfigured,
+            )
+            await check(
+                "profile_narrowing_revokes_prior_reference_on_retained_path",
+                source="current",
+                expected="credential_unavailable",
+                path="/provider/other",
+                converge=True,
+                revoked=reconfigured,
+            )
+            edited = await guest.capture_current("edited")
+            if edited == current:
+                raise RuntimeError("narrowed profile did not change the reference")
+            record("barriers", {"pre_edit_reference": current, "narrowed_reference": edited})
+            await check(
+                "profile_narrowing_new_reference_reaches_retained_path",
+                reconfigured,
+                source="edited",
+                path="/provider/other",
+                converge=True,
+                revoked=reconfigured,
+            )
+            await check(
+                "profile_narrowing_new_reference_excludes_removed_path",
+                source="edited",
+                expected="credential_endpoint_mismatch",
+                revoked=reconfigured,
+            )
+            await check("base_route_remains_after_profile_narrowing", source="none")
+            unexpired(reconfigured)
+            await asyncio.to_thread(profile.update_path, fixture.client, "/provider/**", record)
+            await check(
+                "profile_restoration_revives_same_current_reference",
+                reconfigured,
+                source="current",
+                converge=True,
+                revoked=reconfigured,
+                prior_refusal="credential_endpoint_mismatch",
+            )
+            await check(
+                "profile_restoration_revokes_narrowed_reference",
+                source="edited",
+                expected="credential_unavailable",
+                path="/provider/other",
+                revoked=reconfigured,
+            )
+            await check(
+                "profile_restoration_keeps_outside_path_confined",
+                source="current",
+                path="/outside",
+                expected="credential_endpoint_mismatch",
+                revoked=reconfigured,
+            )
+            await check(
+                "profile_restoration_does_not_revive_original_epoch",
+                expected="credential_unavailable",
+                revoked=recovered,
             )
             await guest.close()
             guest = None
