@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.30.11](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.30.10...maf-sandbox-docker-v0.30.11) (2026-11-14)
+
+
+### Fixes
+
+* admit the maf-sandbox 0.54 line in the ten dependents still capped below it ([#2713](https://github.com/sokolaidev/maf-extensions/issues/2713)) ([2d461f6](https://github.com/sokolaidev/maf-extensions/commit/2d461f6cee586245d98d6ebe6e714023680ab1fe))
+* bump the proxy-modules group across 2 directories with 1 update ([#2669](https://github.com/sokolaidev/maf-extensions/issues/2669)) ([1d42ede](https://github.com/sokolaidev/maf-extensions/commit/1d42edec3399000122fade366c25138e3bd1cc09))
+* bump the proxy-modules group across 2 directories with 1 update ([#2688](https://github.com/sokolaidev/maf-extensions/issues/2688)) ([d5e52e3](https://github.com/sokolaidev/maf-extensions/commit/d5e52e35ffb29e78ee811a41bc2b7877cac3f9dd))
+* bump the proxy-modules group across 2 directories with 1 update ([#2725](https://github.com/sokolaidev/maf-extensions/issues/2725)) ([286753b](https://github.com/sokolaidev/maf-extensions/commit/286753b0251c4817c95045a8ed9effcf4aa1ab68))
+
 ## [0.30.10](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.30.9...maf-sandbox-docker-v0.30.10) (2026-11-11)
 
 
