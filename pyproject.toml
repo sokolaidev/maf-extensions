@@ -28,6 +28,8 @@ dev = [
     "bandit[toml]>=1.9.4,<1.10",
     # Release checks (metadata validation of built sdists/wheels).
     "twine>=6,<7",
+    # Exact core-range satisfiability without requiring a published core.
+    "packaging>=26.1,<27",
     # Task runner for the local gate (`uv run poe gate`): poe detects uv.lock and runs every
     # task through `uv run` itself, so the tasks below name bare commands. Root-only — the
     # packages stay self-contained and ship no tasks of their own.

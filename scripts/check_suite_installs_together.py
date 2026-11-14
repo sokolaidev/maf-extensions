@@ -13,12 +13,11 @@ The dependents are installed together, not one at a time: `samples/03` takes
 fine on its own, and two dependents whose constraints stop overlapping are not — nothing can
 put them in one environment.
 
-Intersecting the ranges by hand would answer a narrower question than the one that matters.
-These packages also carry `agent-framework-core` and the Azure libraries, and two of them can
-become mutually uninstallable over those while their core ranges overlap perfectly. So the
-resolver is asked instead, and asked to *install* rather than merely resolve: resolution is
-metadata, installation is artifacts, and a set can resolve cleanly and still fail on a wheel
-that is not there.
+The separate `check_core_range_overlap.py` check rejects disjoint declared core ranges before
+the PR gate applies its override. These packages also carry `agent-framework-core` and the
+Azure libraries, and can become mutually uninstallable over those while their core ranges
+overlap. The resolver must still *install* the set: resolution is metadata, installation is
+artifacts, and a set can resolve cleanly and still fail on a wheel that is not there.
 
 Two modes, because a release has two shapes:
 
