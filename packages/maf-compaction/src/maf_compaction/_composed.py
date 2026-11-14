@@ -87,6 +87,7 @@ from ._toolsummary import (
     _is_written_record,  # pyright: ignore[reportPrivateUsage]
     _last_reasoning_index,  # pyright: ignore[reportPrivateUsage]
     _newest_record_identity,  # pyright: ignore[reportPrivateUsage]
+    _reasoning_prefix_yields_to_budget,  # pyright: ignore[reportPrivateUsage]
     _record_has_external_hold,  # pyright: ignore[reportPrivateUsage]
     active_record_groups,
     build_record_message,
@@ -1640,29 +1641,32 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if not self._over(messages):
             return changed
         start = _ChainStart.take(messages)
-        changed = self._reshape_records(messages) or changed
-        kept = len(self._kept_records), self._user_summaries_merged
-        deadline = None if self.chain_seconds is None else monotonic() + self.chain_seconds
-        token = self._chain_deadline.set(deadline)
-        try:
-            if self._background is None or not self._background.defer_merges:
-                changed = await self._merge_records(messages, start) or changed
-            self._check_chain_deadline()
-            if self._short_of_target(messages, start):
-                changed = await self._merge_user_summaries(messages) or changed
-            self._check_chain_deadline()
-            if self._short_of_target(messages, start):
-                changed = await self._rewrite_records(messages, start) or changed
-        except _ChainTimeSpent:
-            self._chain_timeouts += 1
-            changed = kept != (len(self._kept_records), self._user_summaries_merged) or changed
-            logger.warning(
-                "Compaction stopped starting last-resort summary work after %.3f seconds; "
-                "completed reductions are retained and remaining batches stay eligible.",
-                self.chain_seconds,
-            )
-        finally:
-            self._chain_deadline.reset(token)
+        # A run's later calls carry its loop's reasoning after every record; the shed below
+        # edits that prefix anyway, so the record steps are not barred from it here.
+        with _reasoning_prefix_yields_to_budget():
+            changed = self._reshape_records(messages) or changed
+            kept = len(self._kept_records), self._user_summaries_merged
+            deadline = None if self.chain_seconds is None else monotonic() + self.chain_seconds
+            token = self._chain_deadline.set(deadline)
+            try:
+                if self._background is None or not self._background.defer_merges:
+                    changed = await self._merge_records(messages, start) or changed
+                self._check_chain_deadline()
+                if self._short_of_target(messages, start):
+                    changed = await self._merge_user_summaries(messages) or changed
+                self._check_chain_deadline()
+                if self._short_of_target(messages, start):
+                    changed = await self._rewrite_records(messages, start) or changed
+            except _ChainTimeSpent:
+                self._chain_timeouts += 1
+                changed = kept != (len(self._kept_records), self._user_summaries_merged) or changed
+                logger.warning(
+                    "Compaction stopped starting last-resort summary work after %.3f seconds; "
+                    "completed reductions are retained and remaining batches stay eligible.",
+                    self.chain_seconds,
+                )
+            finally:
+                self._chain_deadline.reset(token)
         if self._short_of_target(messages, start) and find_record_index(messages) is not None:
             # With no record, budget enforcement owns unrecorded shedding and its headroom.
             self._last_resort_fallbacks += 1
