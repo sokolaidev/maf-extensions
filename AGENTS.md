@@ -42,7 +42,7 @@ release-please owns all four. Adding a changelog entry or bumping a version by h
    uv sync && uv run poe gate
    # gate = pytest -q → ruff check . → ruff format --check . → Bandit → every package's strict
    # pyright (enumerated from packages/*/, not listed) → the bare pyright over scripts/,
-   # tests/ and samples/, which no per-package pass sees
+   # tests/ and samples/, which no per-package pass sees → doc-paths → implicit-concat
    ```
    CI runs these **and more**: it builds every wheel, checks their metadata, and installs each one into a clean environment and uses it. Green locally is not the full gate — do not report it as one. Checks outside `gate` include `poe md-blocks` and `poe sample-floors` if you touched `samples/` — the latter type-checks each sample against the core its own PEP 723 block names, which the workspace pyright pass cannot see.
 2. Title it as above.
