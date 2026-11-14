@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.3](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.2...maf-compaction-v0.13.3) (2026-11-14)
+
+
+### Fixes
+
+* **compaction:** cut the per-call pass cost on long conversations: count once per shed, replay at three points, share fingerprints within a replay ([#2733](https://github.com/sokolaidev/maf-extensions/issues/2733)) ([f19d01c](https://github.com/sokolaidev/maf-extensions/commit/f19d01c4f5fc184e63b66d3167c4830cdbc6c561))
+
 ## [0.13.2](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.1...maf-compaction-v0.13.2) (2026-11-14)
 
 
