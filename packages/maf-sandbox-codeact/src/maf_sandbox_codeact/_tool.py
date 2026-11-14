@@ -194,6 +194,44 @@ class CodeactOutputs(StrEnum):
     MANIFEST = "manifest"
 
 
+_FIXED_SENTENCES = (
+    _NO_OUTPUT,
+    _WITHHELD_ROUTE,
+    _MAY_HAVE_LANDED,
+    "This tool's listing is empty — no files were shared with it.",
+    "Error: this tool's file listing could not be read, so nothing was shared.",
+    "Error: no output sink is configured, so nothing could be saved.",
+    f"{_MANIFEST_FILENAME} listed no files, so nothing was saved.",
+    f"Error: the program ran but its files could not be saved. {_MAY_HAVE_LANDED}",
+    f"No {_MANIFEST_FILENAME} was written, so no files were saved.",
+    f"Error: {_MANIFEST_FILENAME} could not be read, so no files were saved.",
+    f"Error: {_MANIFEST_FILENAME} is nested too deeply to parse, so no files were saved.",
+    (
+        f"Error: {_MANIFEST_FILENAME} must be an object with an "
+        f"{_MANIFEST_OUTPUTS_KEY!r} array, so no files were saved."
+    ),
+    (
+        f"Error: every {_MANIFEST_OUTPUTS_KEY!r} entry needs a "
+        f"{_MANIFEST_PATH_KEY!r} string, so no files were saved."
+    ),
+    "Error: an input file could not be read or staged.",
+    "Error: an input file could not be written into the sandbox.",
+    "Error: could not run the program in the sandbox",
+    "Error: the call's inputs could not be staged.",
+    "Error: the deadline expired while queued; the program never started. Retry unchanged.",
+    "Error: the outputs argument is invalid.",
+    "Error: the program could not be staged.",
+    "Error: the program did not reach a result before the timeout.",
+    "Error: the program exceeds its declared byte limit.",
+    "Error: the program is not valid UTF-8.",
+    "Error: the requested input files could not be resolved.",
+    "Error: the sandbox could not be acquired.",
+    "Saved:",
+    "The program exited with a non-zero status.",
+    "The program exited with status 0.",
+)
+
+
 def codeact_sandbox_spec(
     image: str | None = None,
     image_id: str | None = None,
@@ -584,6 +622,7 @@ def make_codeact_tools(
         requires_file_integrity=requires_file_integrity,
         # Both modes need a raised framework declaration to keep contract items readable.
         result_contract=True,
+        fixed_sentences=_FIXED_SENTENCES,
         verdicts=CODEACT_VERDICTS,
         # The wrapper validates and stamps this suffix so the body cannot choose which
         # guidance becomes trusted.

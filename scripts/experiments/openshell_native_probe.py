@@ -510,7 +510,17 @@ def main() -> int:
     parser.add_argument("--egress-composition", action="store_true")
     parser.add_argument("--egress-transitions", action="store_true")
     parser.add_argument("--egress-restart", action="store_true")
+    parser.add_argument("--credential-lifecycle", action="store_true")
     args = parser.parse_args()
+    if args.credential_lifecycle and (
+        not args.https_ca
+        or not args.egress_origin_ip
+        or args.egress_restart
+        or args.egress_transitions
+        or args.egress_composition
+        or args.egress_routes
+    ):
+        parser.error("--credential-lifecycle requires only --https-ca and --egress-origin-ip")
     if args.egress_restart and (
         not args.egress_origin_ip
         or args.https_ca
@@ -544,7 +554,7 @@ def main() -> int:
         raise ValueError("requires the unprivileged pinned /sandbox workload recipe")
     report = {
         "format": 1,
-        "issue": 1834 if args.egress_origin_ip else 1833,
+        "issue": 1835 if args.credential_lifecycle else 1834 if args.egress_origin_ip else 1833,
         "upstream_commit": PIN,
         "gateway_version": "0.1.7",
         "python": sys.version,
@@ -615,7 +625,11 @@ def main() -> int:
             created = True
             report["workspace_create"]["state"] = "confirmed"
             fixture.save()
-            if args.egress_restart:
+            if args.credential_lifecycle:
+                from openshell_credential_lifecycle import measure_credentials
+
+                asyncio.run(measure_credentials(fixture, args.egress_origin_ip, args.https_ca))
+            elif args.egress_restart:
                 from openshell_restart_probe import measure_restart_authority
 
                 asyncio.run(

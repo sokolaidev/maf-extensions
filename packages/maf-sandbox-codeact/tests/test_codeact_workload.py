@@ -488,6 +488,12 @@ def _context(*, thread_id: str | None = "thread-1") -> CallerContext:
     )
 
 
+def _policy_properties(tool):
+    return {
+        key: value for key, value in tool.additional_properties.items() if key != "fixed_sentences"
+    }
+
+
 def _tool(
     backend: InProcessSandboxBackend,
     *,
@@ -1625,7 +1631,7 @@ class TestWithholdingDeclaresUntrustedToo:
 
     def test_a_withholding_tool_declares_that_and_nothing_else(self):
         tool = _withholding_tool(_ScriptedSandbox())
-        assert dict(tool.additional_properties or {}) == {
+        assert _policy_properties(tool) == {
             "source_integrity": "trusted",
             DERIVED_INTEGRITY_PROPERTY: "untrusted",
         }
@@ -1640,7 +1646,7 @@ class TestWithholdingDeclaresUntrustedToo:
         line and the verdict have to stay readable, and on 1.19 only the tool's own declaration
         can keep an item there."""
         tool = _tool(_backend(capabilities=_PULLS), **_landing(CodeactOutputs.DECLARED))
-        assert dict(tool.additional_properties or {}) == {
+        assert _policy_properties(tool) == {
             "source_integrity": "trusted",
             DERIVED_INTEGRITY_PROPERTY: "untrusted",
         }
@@ -2014,7 +2020,7 @@ class TestFidesDeclarations:
 
     def test_it_declares_untrusted(self):
         tool = _tool(_backend())
-        assert dict(tool.additional_properties or {}) == {
+        assert _policy_properties(tool) == {
             "source_integrity": "trusted",
             DERIVED_INTEGRITY_PROPERTY: "untrusted",
         }
@@ -2023,7 +2029,7 @@ class TestFidesDeclarations:
         """Nothing callable is no *cap* carried, whatever the host holds — the integrity
         declaration is about this tool's own result and does not depend on a registry."""
         tool = _host_tool_calling_tool(_registry(), outbound_max_confidentiality="private")
-        assert dict(tool.additional_properties or {}) == {
+        assert _policy_properties(tool) == {
             "source_integrity": "trusted",
             DERIVED_INTEGRITY_PROPERTY: "untrusted",
         }
@@ -2040,7 +2046,7 @@ class TestFidesDeclarations:
             egress_allow=("index.example",),
             outbound_max_confidentiality="private",
         )
-        assert dict(tool.additional_properties or {}) == {
+        assert _policy_properties(tool) == {
             "source_integrity": "trusted",
             DERIVED_INTEGRITY_PROPERTY: "untrusted",
             "max_allowed_confidentiality": "private",
@@ -2049,7 +2055,7 @@ class TestFidesDeclarations:
     def test_a_closed_allowlist_leaves_the_cap_unwritten(self):
         """The other side of the same bound: the default must not start declaring a flow."""
         tool = _tool(_backend(capabilities=_PULLS), outbound_max_confidentiality="private")
-        assert dict(tool.additional_properties or {}) == {
+        assert _policy_properties(tool) == {
             "source_integrity": "trusted",
             DERIVED_INTEGRITY_PROPERTY: "untrusted",
         }
@@ -2060,7 +2066,7 @@ class TestFidesDeclarations:
         calls for nothing."""
         registry = _registry(_exchange_rate, _round_half_up)
         tool = _host_tool_calling_tool(registry, outbound_max_confidentiality="private")
-        assert dict(tool.additional_properties or {}) == {
+        assert _policy_properties(tool) == {
             "source_integrity": "trusted",
             DERIVED_INTEGRITY_PROPERTY: "untrusted",
         }
@@ -2073,7 +2079,7 @@ class TestFidesDeclarations:
         tool = _host_tool_calling_tool(
             _registry(_log_to_crm), outbound_max_confidentiality="private"
         )
-        assert dict(tool.additional_properties or {}) == {
+        assert _policy_properties(tool) == {
             "source_integrity": "trusted",
             DERIVED_INTEGRITY_PROPERTY: "untrusted",
             "max_allowed_confidentiality": "private",
@@ -2089,7 +2095,7 @@ class TestFidesDeclarations:
             outbound_max_confidentiality="private",
             **_landing(CodeactOutputs.DECLARED),
         )
-        assert dict(tool.additional_properties or {}) == {
+        assert _policy_properties(tool) == {
             "source_integrity": "trusted",
             DERIVED_INTEGRITY_PROPERTY: "untrusted",
             "max_allowed_confidentiality": "private",
@@ -2104,7 +2110,7 @@ class TestFidesDeclarations:
         tool = _host_tool_calling_tool(
             _registry(_unstamped_lookup), outbound_max_confidentiality="private"
         )
-        assert dict(tool.additional_properties or {}) == {
+        assert _policy_properties(tool) == {
             "source_integrity": "trusted",
             DERIVED_INTEGRITY_PROPERTY: "untrusted",
             "max_allowed_confidentiality": "private",
@@ -3545,7 +3551,7 @@ class TestTheSinkIsTheHostsChoice:
             **_landing(CodeactOutputs.DECLARED),
             outbound_max_confidentiality="private",
         )
-        assert dict(tool.additional_properties or {}) == {
+        assert _policy_properties(tool) == {
             "source_integrity": "trusted",
             DERIVED_INTEGRITY_PROPERTY: "untrusted",
             "max_allowed_confidentiality": "private",

@@ -101,6 +101,19 @@ def report(items):
     return next(item for item in items if item.text and item.text.startswith('{"prices":'))
 
 
+def test_fixed_sentences_cover_truncation_without_absorbing_report_data():
+    prices = [row() | {"productName": "outside product text"}, row()]
+    tool, _, _ = attach(InProcessSandbox(default_stdout=envelope(prices)), max_rows=1)
+    declared = tool.additional_properties["fixed_sentences"]
+    items = asyncio.run(tool.invoke(arguments={"sku": "Standard_D4s_v5"}))
+    note = "Pricing results may be incomplete; narrow the filters."
+    assert note in declared and any(item.text == note for item in items)
+    assert "outside product text" in report(items).text
+    assert not any("outside product text" in sentence for sentence in declared)
+    assert report(items).text not in declared
+    assert tool.additional_properties["fixed_sentences"] == declared
+
+
 def checked(items):
     return next(item for item in items if item.text and item.text.startswith('{"checked_prices":'))
 
@@ -236,6 +249,7 @@ def test_upstream_bad_request_returns_fixed_filter_guidance_and_disposes(result)
     assert "HTTP 400" in guidance.text and "Correct the query before retrying" in guidance.text
     assert "secret predicate" not in str(items)
     assert not any((item.text or "").startswith('{"prices":') for item in items)
+    assert all(item.text in tool.additional_properties["fixed_sentences"] for item in items)
     assert len(backend.disposed) == 1
 
 

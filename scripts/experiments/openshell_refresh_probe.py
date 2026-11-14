@@ -70,6 +70,9 @@ class TokenIssuer:
                     "client_secret": [issuer.client_secret],
                 }
                 with issuer.lock:
+                    if len(issuer.events) >= 512:
+                        self.send_error(503)
+                        return
                     mode = issuer.mode if valid else "invalid_client"
                     event = {"mode": mode, "valid_material": valid, "at": time.time()}
                     if mode == "ok":
@@ -123,6 +126,11 @@ class TokenIssuer:
     def snapshot(self):
         with self.lock:
             return dict(self.latest)
+
+    def journal(self):
+        """Copy issuer evidence without exposing live mutable records or token material."""
+        with self.lock:
+            return [dict(event) for event in self.events]
 
 
 class RefreshProfile(CredentialProfile):

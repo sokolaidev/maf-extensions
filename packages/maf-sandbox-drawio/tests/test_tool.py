@@ -160,7 +160,9 @@ def test_complete_tool_call_lands_native_xml_and_disposes(tmp_path: Path):
     assert tool.name == "create_drawio"
     # The contract raises the declaration so the verdict stays readable; the kind's own
     # claim about the converter's text moves to its own key.
-    assert tool.additional_properties == {
+    assert {
+        key: value for key, value in tool.additional_properties.items() if key != "fixed_sentences"
+    } == {
         "source_integrity": "trusted",
         DERIVED_INTEGRITY_PROPERTY: "untrusted",
     }

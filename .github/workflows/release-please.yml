@@ -170,6 +170,45 @@ jobs:
             --body-file "${RUNNER_TEMP}/samples-body.md"
           echo "opened ${branch}" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Propose the compaction dependents' range
+        if: >-
+          steps.release.outputs.releases_created == 'true'
+          && contains(steps.release.outputs.paths_released, '"packages/maf-compaction"')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs['packages/maf-compaction--version'] }}
+        run: |
+          set -euo pipefail
+          # Keep this proposal independent of sandbox range and sample changes.
+          git switch --detach "$GITHUB_SHA"
+          title="$(python3 scripts/set_dependents_range.py --core maf-compaction --print-title "$VERSION")"
+          branch="chore/maf-compaction-range-${VERSION}"
+          if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            echo "a PR for ${branch} is already open; leaving it" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 scripts/set_dependents_range.py --core maf-compaction "$VERSION"
+          if git diff --quiet; then
+            echo "every dependent's range already covers maf-compaction ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ -z "$title" ]; then
+            echo "the range changed but --print-title named nothing; refusing to commit an" \
+                 "unlabelled release-type change" >&2
+            exit 1
+          fi
+          git push origin --delete "$branch" 2>/dev/null || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "$title"
+          git push -u origin "$branch"
+          python3 scripts/release_workflow.py proposal compaction-range "$VERSION" "${RUNNER_TEMP}/compaction-range-body.md"
+          gh pr create --base main --head "$branch" \
+            --title "$title" \
+            --body-file "${RUNNER_TEMP}/compaction-range-body.md"
+          echo "opened ${branch}" >> "$GITHUB_STEP_SUMMARY"
+
       # Not skipping releases with this: the call above has already created them and flipped
       # their labels, and release-please refuses to open a Release PR while a merged one is
       # still `autorelease: pending`. Runs whatever failed above, since a red proposal step is

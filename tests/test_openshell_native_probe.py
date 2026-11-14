@@ -133,8 +133,9 @@ def test_leaf_metadata_retains_link_kind(modules):
     "failure",
     ["overflow", "terminal", "missing_exit", "deadline", "cancel", "cleanup_cancel_failure"],
 )
+@pytest.mark.parametrize("credentials", [False, True])
 def test_exec_failure_disposes_and_does_not_return_success(
-    candidate, modules, monkeypatch, failure
+    candidate, modules, monkeypatch, failure, credentials
 ):
     module = modules[1]
     events = []
@@ -184,6 +185,14 @@ def test_exec_failure_disposes_and_does_not_return_success(
         await asyncio.sleep(0)
 
     candidate.dispose = dispose
+    if credentials:
+        lifecycle = importlib.import_module("openshell_credential_lifecycle")
+
+        def detach(attached):
+            assert attached is False
+            events.append("detach")
+
+        lifecycle.ProviderCleanup(candidate, SimpleNamespace(provider=detach))
 
     async def run():
         task = asyncio.create_task(
@@ -212,7 +221,9 @@ def test_exec_failure_disposes_and_does_not_return_success(
         expected, match="cleanup failed" if failure == "cleanup_cancel_failure" else None
     ):
         asyncio.run(run())
-    assert events == ["cancel-stream", "close-channel", "dispose"]
+    assert events == ["cancel-stream", "close-channel"] + (["detach"] if credentials else []) + [
+        "dispose"
+    ]
 
 
 def test_disposal_failure_retains_physical_ownership(modules, monkeypatch, tmp_path):
@@ -387,6 +398,17 @@ def test_workflow_retains_evidence_on_failure():
     assert "active-ca.pem" in https["run"]
     assert "update-ca-certificates" not in https["run"]
     assert "trust_image" not in https["run"]
+    selection = workflow[True]["workflow_dispatch"]["inputs"]["profile"]
+    assert selection["default"] == "all"
+    assert selection["options"] == ["all", "credentials"]
+    credentials = next(s for s in job["steps"] if "--credential-lifecycle" in s.get("run", ""))
+    assert "inputs.profile" not in credentials["if"]
+    assert "steps.prepare.outcome == 'success'" in credentials["if"]
+    assert "--record-authorization" in credentials["run"]
+    assert "credentials.json" in credentials["run"]
+    assert "trap cleanup_credentials EXIT" in credentials["run"]
+    for step in (measure, composition, https):
+        assert "inputs.profile != 'credentials'" in step["if"]
 
 
 @pytest.mark.parametrize(

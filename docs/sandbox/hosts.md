@@ -10,6 +10,14 @@ Source tools return content to the model. Destination tools accept data from it.
 
 The [information-flow guide](information-flow.md) defines those labels and the four result items. This page covers the host wiring that gives them meaning.
 
+## Fixed result text
+
+Read `tool.additional_properties["fixed_sentences"]` for the exact static text a sandbox kind declares for its results. The value is a tuple, captured when the tool is attached. A content classifier can use this vocabulary to exclude the kind's own wording from its analysis, including imperative guidance and refusal messages. Older tools without this metadata have no declared vocabulary; use an empty tuple as the fallback.
+
+`sandboxed_tool(fixed_sentences=...)` accepts the kind's body messages and adds core's fixed session failure messages, the result contract's two status lines, its rendered verdict lines, and standing guidance that has no call-id substitution. Entries preserve whitespace, duplicates are removed, and literal braces in body messages remain literal. Guidance uses its rendered spelling, so doubled braces become single braces. A sentence with a per-call value is omitted unless the kind separately declares its fixed parts; entries are never templates or patterns. Azure pricing, Bicep, Terraform/OpenTofu validation and formatting, CodeAct, draw.io creation and export, shell validation, document reading, and antivirus scanning publish this metadata.
+
+The declaration changes no output or integrity label. Matching text alone cannot prove where an occurrence came from: guest or network data can repeat a declared sentence. The host owns classifier exclusions and must retain its existing provenance and policy checks. Checked report fields, diagnostics, file names and other per-call values are not fixed sentences merely because a tool returns them as trusted output.
+
 ## Where artifacts land
 
 A `LAND` output leaves the sandbox through an `OutputSink`. A `CONSUME` output goes back into the kind, which performs its own bounded read. Both roles undergo the [file and transfer checks](capabilities.md#declaring-outputs).
@@ -293,6 +301,7 @@ For exec and file workloads, acquisition prepares the base through the backend's
 
 | Decision | State | Tracking |
 |---|---|---|
+| Fixed result text on attached tools | Implemented | [#2681](https://github.com/sokolaidev/maf-extensions/issues/2681) (closed) by [#2683](https://github.com/sokolaidev/maf-extensions/pull/2683) (merged) |
 | Artifact collection, sinks and names | Implemented; delivery remains per artifact | [#113](https://github.com/sokolaidev/maf-extensions/pull/113) (merged); [#156](https://github.com/sokolaidev/maf-extensions/pull/156) (merged) |
 | File-store output sink and read tools | Implemented | [#902](https://github.com/sokolaidev/maf-extensions/pull/902) (merged); [#1457](https://github.com/sokolaidev/maf-extensions/issues/1457) (closed) by [#1468](https://github.com/sokolaidev/maf-extensions/pull/1468) (merged) |
 | Atomic batch delivery | Unimplemented | untracked |
