@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.0...maf-compaction-v0.13.1) (2026-11-14)
+
+
+### Fixes
+
+* **compaction:** let the over-budget chain merge records that precede retained reasoning, so a run's later model calls compact again ([#2707](https://github.com/sokolaidev/maf-extensions/issues/2707)) ([2fcabfc](https://github.com/sokolaidev/maf-extensions/commit/2fcabfcce9ef7aa0dd3d58582843f801456d520a))
+
 ## [0.13.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.12.4...maf-compaction-v0.13.0) (2026-11-13)
 
 
