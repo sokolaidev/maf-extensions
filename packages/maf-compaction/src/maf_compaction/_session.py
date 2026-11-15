@@ -54,7 +54,7 @@ class CompactionStack:
     strategy: _Strategy
     gate: RecallGate
     middleware: ToolResultRecallMiddleware
-    #: The snapshot a registry last wrote for this stack; another one is someone else's state.
+    #: A copy of the snapshot a registry last wrote for this stack; any other is someone else's.
     persisted: dict[str, Any] | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -173,7 +173,7 @@ class SessionCompactionRegistry:
                 raise ValueError("Background record merging requires a composed strategy.")
             work.bind(stack.strategy, data)
         if data is not None:
-            if data is not stack.persisted and data != stack.persisted:
+            if data != stack.persisted:
                 # Decisions restored from elsewhere did not make the list this stack kept.
                 self._forget(stack)
             stack.restore(data)
@@ -214,8 +214,10 @@ class SessionCompactionRegistry:
             self._forget(stack)
 
     def _persist(self, session: AgentSession, stack: CompactionStack) -> None:
-        stack.persisted = stack.to_dict()
-        session.state[self.state_key] = stack.persisted
+        snapshot = stack.to_dict()
+        # A host can restore other decisions into the dictionary it holds.
+        stack.persisted = deepcopy(snapshot)
+        session.state[self.state_key] = snapshot
 
     @staticmethod
     def _forget(stack: CompactionStack) -> None:

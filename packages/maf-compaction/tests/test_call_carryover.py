@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import copy
 from collections import Counter
-from typing import Any
+from typing import Any, Final
 
 import pytest
 from agent_framework import (
@@ -368,6 +368,75 @@ def test_a_kept_message_keeps_standing_for_one_handed_under_new_lists() -> None:
         assert messages == [kept]
         assert GROUP_TOKEN_COUNT_KEY not in kept.additional_properties[GROUP_ANNOTATION_KEY]
         view = CarriedView(current, messages)
+
+
+def _rewrite(contents: list[Content], edit: str) -> None:
+    if edit == "an-item-replaced":
+        contents[0] = Content.from_text("an edited turn")
+    elif edit == "an-item-added":
+        contents.append(Content.from_text("and more"))
+    elif edit == "an-item-removed":
+        contents.clear()
+    else:
+        contents[0].text = "an edited turn"
+
+
+@pytest.mark.parametrize("edit", ["an-item-replaced", "an-item-added", "an-item-removed"])
+def test_a_stored_list_edited_in_place_gets_a_full_pass(edit: str) -> None:
+    """The list is the same object, so only the items it held when handed show the edit."""
+    stored = Message("user", ["an earlier turn"], message_id="turn")
+    kept = copy.copy(stored)
+    kept.additional_properties = {EXCLUDED_KEY: True}
+    view = CarriedView(Handed.take([stored]), [kept])
+    _rewrite(stored.contents, edit)
+    loaded = copy.copy(stored)
+    loaded.additional_properties = {}
+    messages = [loaded]
+
+    assert view.resume(messages, Handed.take(messages)) is None
+
+    assert messages == [loaded]
+
+
+@pytest.mark.parametrize("edit", ["an-item-replaced", "an-item-rewritten"])
+def test_a_message_reloaded_under_a_new_list_and_then_edited_gets_a_full_pass(edit: str) -> None:
+    """A kept copy still holding the first list must not stand for the edited message."""
+    stored = Message("user", ["an earlier turn"], message_id="turn")
+    kept = copy.copy(stored)
+    kept.additional_properties = {
+        GROUP_ANNOTATION_KEY: {SUMMARIZED_BY_SUMMARY_ID_KEY: "user_summary_0"}
+    }
+    view = CarriedView(Handed.take([stored]), [kept])
+    reloaded = Message("user", ["an earlier turn"], message_id="turn")
+    messages = [reloaded]
+    current = Handed.take(messages)
+    assert view.resume(messages, current) is not None
+    assert messages == [kept]
+    view = CarriedView(current, messages)
+    _rewrite(reloaded.contents, edit)
+    edited = copy.copy(reloaded)
+    edited.additional_properties = {}
+    messages = [edited]
+
+    assert view.resume(messages, Handed.take(messages)) is None
+
+    assert messages == [edited] and edited.text == "an edited turn"
+
+
+def test_an_item_rewritten_in_place_is_sent_as_rewritten() -> None:
+    """Nothing tells a rewritten content object from itself; the kept copy shares it."""
+    stored = Message("user", ["an earlier turn"], message_id="turn")
+    kept = copy.copy(stored)
+    kept.additional_properties = {EXCLUDED_KEY: True}
+    view = CarriedView(Handed.take([stored]), [kept])
+    _rewrite(stored.contents, "an-item-rewritten")
+    loaded = copy.copy(stored)
+    loaded.additional_properties = {}
+    messages = [loaded]
+
+    assert view.resume(messages, Handed.take(messages)) is not None
+
+    assert messages == [kept] and kept.text == "an edited turn"
 
 
 async def test_a_lost_list_costs_one_pass_and_no_pair() -> None:
@@ -929,25 +998,47 @@ async def test_a_registry_can_keep_no_list() -> None:
         _registry(1, [], max_carried_views=-1)
 
 
-@pytest.mark.parametrize("restored", ["the-same", "an-equal-copy", "from-elsewhere"])
+_SAME_DECISIONS: Final = ("the-same", "an-equal-copy")
+
+
+@pytest.mark.parametrize(
+    "restored",
+    [*_SAME_DECISIONS, "from-elsewhere", "into-the-same-dictionary", "into-its-nested-state"],
+)
 async def test_decisions_restored_from_elsewhere_drop_the_list(restored: str) -> None:
-    """The kept list belongs to the decisions that made it."""
+    """The kept list belongs to the decisions that made it, wherever a host puts others."""
     registry = _registry(_budget(_transcript(14, 10, 6), 0.33), [])
     session = AgentSession()
     strategy = await _pass(registry, session)
     assert strategy.carries_view
+    key = registry.state_key
     if restored == "an-equal-copy":
-        session.state[registry.state_key] = copy.deepcopy(session.state[registry.state_key])
-    elif restored == "from-elsewhere":
+        session.state[key] = copy.deepcopy(session.state[key])
+    elif restored not in _SAME_DECISIONS:
         other = AgentSession()
         with registry.activate(other) as stack:
             assert isinstance(stack.strategy, _Composed)
             await _compact(stack.strategy, _transcript(8, 4, 20))
-        session.state[registry.state_key] = copy.deepcopy(other.state[registry.state_key])
+        elsewhere = copy.deepcopy(other.state[key])
+        held = session.state[key]
+        assert held != elsewhere
+        if restored == "from-elsewhere":
+            session.state[key] = elsewhere
+        elif restored == "into-the-same-dictionary":
+            held.clear()
+            held.update(elsewhere)
+        else:
+            nested = [name for name, value in held.items() if isinstance(value, dict)]
+            assert nested
+            for name in nested:
+                held[name].clear()
+                held[name].update(elsewhere[name])
+            held.update({name: elsewhere[name] for name in elsewhere if name not in nested})
+            assert session.state[key] is held and held == elsewhere
 
     with registry.activate(session) as stack:
         assert stack.strategy is strategy
-        assert strategy.carries_view is (restored != "from-elsewhere")
+        assert strategy.carries_view is (restored in _SAME_DECISIONS)
 
 
 @pytest.mark.parametrize("ending", [None, "stored-history-phase", "record-merge-middleware"])

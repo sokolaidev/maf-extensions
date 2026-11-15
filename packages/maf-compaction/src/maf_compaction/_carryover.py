@@ -19,7 +19,7 @@ a session snapshot, and losing it costs one pass that puts its decisions back th
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, cast
 
@@ -121,12 +121,12 @@ def _drop_token_count(message: Message) -> None:
         annotation.pop(GROUP_TOKEN_COUNT_KEY, None)
 
 
-def _same_contents(handed: list[Content], stored: list[Content]) -> bool:
+def _same_contents(handed: Sequence[Content], stored: Sequence[Content]) -> bool:
     """Return whether a handed message carries the contents a stored one was handed with.
 
-    Usually the very list: a loaded copy shares it. A host can hand a stored message under a new
-    list on every load -- the framework rebuilds one that mixes a resolved approval with other
-    content -- and then the items are the same objects, or equal ones the host wrote in.
+    Usually the very items: a loaded copy shares its list. A host can hand a stored message under
+    a new list on every load -- the framework rebuilds one that mixes a resolved approval with
+    other content -- and then the items are the same objects, or equal ones the host wrote in.
     """
     if handed is stored:
         return True
@@ -161,7 +161,8 @@ class Handed:
     """A list as a call handed it, before its pass changed anything."""
 
     messages: list[Message]
-    contents: list[list[Content]]
+    #: Each message's items as handed: a list edited in place afterwards no longer matches.
+    contents: list[tuple[Content, ...]]
     states: list[tuple[Any, ...]]
     links: list[Any]
     #: The message put in the list for each one handed: itself, unless a kept one stood in.
@@ -171,7 +172,7 @@ class Handed:
     def take(cls, messages: list[Message]) -> Handed:
         return cls(
             list(messages),
-            [message.contents for message in messages],
+            [tuple(message.contents) for message in messages],
             [_host_state(message) for message in messages],
             [_links(message) for message in messages],
             list(messages),
@@ -208,7 +209,7 @@ class CarriedView:
         # A pass puts a shallow copy in a message's place and never rebinds a contents list, so
         # the copy is found by the list it shares.
         by_contents = {id(message.contents): message for message in self.view}
-        self._contents: list[list[Content]] = []
+        self._contents: list[tuple[Content, ...]] = []
         self._states: list[tuple[Any, ...]] = []
         self._standing: list[Message | None] = []
         # A handed message the pass replaced is not in the view, so nothing shows what a host
@@ -288,6 +289,11 @@ class CarriedView:
                     )
                 standing = self._standing[position]
                 if standing is not None:
+                    # A copy kept under an earlier list shows nothing a host wrote into this one.
+                    if not _same_contents(message.contents, standing.contents):
+                        return self._departed(
+                            f"stored message {position} of {stored} was rewritten after it was kept"
+                        )
                     paired.append((standing, message, index))
                 position += 1
             elif position == stored:
