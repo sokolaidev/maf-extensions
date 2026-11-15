@@ -158,9 +158,31 @@ class Fixture:
         )
         owner["processes"].update(current["processes"])
         self.save()
+        await asyncio.to_thread(self.retain_diagnostics, owner)
         await asyncio.to_thread(dispose_fixture, self.client, owner)
         self.disposed.add(identity)
         self.report["disposed_ids"] = sorted(self.disposed)
+        self.save()
+
+    def retain_diagnostics(self, owner: dict) -> None:
+        """Retain owned container logs before deletion makes them unavailable."""
+        rows = owner.setdefault("diagnostics", [])
+        for identity in owner["containers"]:
+            path = self.report_path.with_name(f"{self.report_path.stem}.{identity}.log")
+            row: dict = {"container": identity, "file": path.name}
+            rows.append(row)
+            try:
+                with path.open("wb") as stream:
+                    result = subprocess.run(
+                        ["docker", "logs", "--timestamps", "--tail", "5000", identity],
+                        stdout=stream,
+                        stderr=subprocess.STDOUT,
+                        timeout=10,
+                        check=False,
+                    )
+                row["returncode"] = result.returncode
+            except Exception as exc:
+                row["error"] = str(exc)
         self.save()
 
     def subject(self, sandbox: Candidate, path: str) -> Subject:

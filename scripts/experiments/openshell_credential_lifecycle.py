@@ -64,7 +64,7 @@ while sequence <= 256 and time.monotonic() < deadline:
     except urllib.error.HTTPError as exc:
         observed = {{'status': exc.code, 'body': exc.read(4096).decode()}}
     except Exception as exc:
-        observed = {{'error': type(exc).__name__, 'errno': getattr(getattr(exc, 'reason', exc), 'errno', None)}}
+        observed = {{'error': type(exc).__name__, 'errno': getattr(getattr(exc, 'reason', exc), 'errno', None), 'detail': str(exc)}}
     emit(f'result-{{sequence}}.json', {{'identity': identity, 'sequence': sequence,
          'reference_sha256': digest(token), 'guest': observed}})
     sequence += 1
@@ -525,6 +525,7 @@ async def measure_credentials(fixture, ip, ca_file):
                     target = path + "?case=" + marker
                     await reconcile(expected=[])
                     started = time.monotonic_ns()
+                    started_unix_ns = time.time_ns()
                     observed = await guest.request(f"https://{host}:8443{target}", source)
                     events = await reconcile()
                     if revoked is not None:
@@ -543,6 +544,8 @@ async def measure_credentials(fixture, ip, ca_file):
                             "origin_events": events,
                             "matched": passed,
                             "started_ns": started,
+                            "started_unix_ns": started_unix_ns,
+                            "ended_unix_ns": time.time_ns(),
                             "ended_ns": time.monotonic_ns(),
                         }
                     )

@@ -106,6 +106,7 @@ def fixture_state(monkeypatch, tmp_path):
     ticks_ca = iter(range(0, 1000, 20))
     monkeypatch.setattr(ca, "time", NS(monotonic=lambda: next(ticks_ca)))
     monkeypatch.setattr(ca, "wait_gateway", lambda _: None)
+    monkeypatch.setattr(native.subprocess, "run", lambda *args, **kwargs: NS(returncode=0))
     return fixture, owner, state, ca, owned
 
 
@@ -174,3 +175,20 @@ def test_disposal_still_captures_running_processes(fixture_state):
     assert state.tops == ["ready"]
     assert owner["processes"] == {"100": "old-start", "200": "new-start"}
     assert fixture.disposed == {"owned-id"}
+
+
+def test_unavailable_diagnostics_do_not_prevent_owned_cleanup(fixture_state, monkeypatch):
+    fixture, owner, state, _, _ = fixture_state
+    native = importlib.import_module("openshell_native_probe")
+    commands = []
+
+    def unavailable(command, **kwargs):
+        commands.append(command)
+        raise TimeoutError("log capture unavailable")
+
+    monkeypatch.setattr(native.subprocess, "run", unavailable)
+    assert fixture.cleanup(workspace_created=True) == []
+    assert {command[-1] for command in commands} == {"old", "sandbox", "supervisor"}
+    assert all(row["error"] == "log capture unavailable" for row in owner["diagnostics"])
+    assert state.calls[-2:] == ["DeleteWorkspace", "GetWorkspace"]
+    assert fixture.report["workspace_cleanup_verified"] is True

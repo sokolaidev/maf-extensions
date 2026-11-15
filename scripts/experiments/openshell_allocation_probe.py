@@ -93,12 +93,25 @@ class Client:
             raise
 
     def delete(self, name, request_id):
-        return self.rpc(
+        response = self.rpc(
             "DeleteSandbox",
             self.pb.DeleteSandboxRequest(
                 name=name, request_id=request_id, workspace_scope=self.scope, allow_missing=True
             ),
-        ).sandbox_id
+        )
+        print(
+            json.dumps(
+                {
+                    "delete_response": {
+                        "name": name,
+                        "sandbox_id": response.sandbox_id,
+                        "outcome": response.outcome,
+                    }
+                }
+            ),
+            flush=True,
+        )
+        return response.sandbox_id
 
     def close(self):
         self.channel.close()
