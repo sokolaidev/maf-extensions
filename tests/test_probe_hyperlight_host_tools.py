@@ -101,8 +101,10 @@ def test_initialization_failure_is_not_a_negative_case_pass(name: str) -> None:
     assert probe.validate_reports([report]) == [name]
 
 
-@pytest.mark.parametrize("size", [16200, 16300, 20000, 64000, 256000, 400000])
-def test_large_request_eof_is_an_observation_only_after_initialization(size: int) -> None:
+@pytest.mark.parametrize(
+    "size", [8000, 12000, 16000, 16100, 16200, 16300, 20000, 64000, 256000, 400000]
+)
+def test_request_eof_is_not_qualified_by_the_previous_runtime_boundary(size: int) -> None:
     name = f"native-request-{size}"
     report = {
         "case": name,
@@ -111,7 +113,7 @@ def test_large_request_eof_is_an_observation_only_after_initialization(size: int
         "error": "EOFError",
         "events": [],
     }
-    assert probe.validate_reports([report]) == []
+    assert probe.validate_reports([report]) == [name]
     report["events"] = [{"stage": "policy_enter"}]
     assert probe.validate_reports([report]) == [name]
     report["events"] = []
@@ -119,13 +121,6 @@ def test_large_request_eof_is_an_observation_only_after_initialization(size: int
     assert probe.validate_reports([report]) == [name]
     report["initialized"] = True
     report["reaped"] = False
-    assert probe.validate_reports([report]) == [name]
-
-
-@pytest.mark.parametrize("size", [8000, 12000, 16000, 16100, 16199])
-def test_eof_below_observed_failure_boundary_is_a_regression(size: int) -> None:
-    name = f"native-request-{size}"
-    report = {"case": name, "initialized": True, "reaped": True, "error": "EOFError", "events": []}
     assert probe.validate_reports([report]) == [name]
 
 
@@ -145,7 +140,7 @@ def test_cli_saves_failed_evidence_and_exits_nonzero_for_request_regression(
 
     output = tmp_path / "probe.json"
     monkeypatch.setattr(probe, "run_probes", reports)
-    monkeypatch.setattr(probe, "version", lambda name: "0.7.0")
+    monkeypatch.setattr(probe, "version", lambda name: probe.SDK_VERSION)
     monkeypatch.setattr(probe.subprocess, "check_output", lambda *args, **kwargs: "baseline")
     monkeypatch.setattr(probe.sys, "argv", [str(_SCRIPT), "--live", "--output", str(output)])
     with pytest.raises(SystemExit, match="unexpected probe results: native-request-16100"):

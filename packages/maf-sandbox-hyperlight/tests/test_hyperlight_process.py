@@ -25,9 +25,32 @@ from maf_sandbox_hyperlight import (
     _windows,
 )
 from maf_sandbox_hyperlight._wire import decode, encode
+from maf_sandbox_hyperlight._worker import SDK_VERSION
 
 KEY = SandboxKey("process-test", "conversation", "agent")
 SPEC = SandboxSpec(kind="python", work_dir=None, requires=frozenset({Capability.RUN_CODE}))
+
+
+@pytest.mark.parametrize(
+    "package",
+    ["hyperlight-sandbox", "hyperlight-sandbox-backend-wasm", "hyperlight-sandbox-python-guest"],
+)
+def test_worker_refuses_a_mismatched_stack_before_native_initialization(package):
+    script = f"""from maf_sandbox_hyperlight import _worker
+_worker.version = lambda name: '0.7.0' if name == {package!r} else _worker.SDK_VERSION
+_worker.main()
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-u", "-c", script],
+        input=encode({"op": "init", "targets": [], "output_limit": 1024}),
+        capture_output=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    assert decode(result.stdout) == {
+        "error": "native",
+        "detail": f"{package} must be exactly {SDK_VERSION}",
+    }
 
 
 def test_native_base_exception_is_reported_before_worker_exit():
@@ -41,7 +64,7 @@ class NativePanic(BaseException):
     pass
 def fail(**kwargs):
     raise NativePanic('native failure')
-_worker.version = lambda package: '0.7.0'
+_worker.version = lambda package: _worker.SDK_VERSION
 _worker.ctypes.WinDLL = lambda name: None
 _worker.importlib.import_module = lambda name: SimpleNamespace(Sandbox=fail)
 _worker.main()
@@ -286,7 +309,7 @@ class Native:
         return SimpleNamespace(stdout='', stderr='', exit_code=0)
     def snapshot(self):
         return object()
-_worker.version = lambda package: '0.7.0'
+_worker.version = lambda package: _worker.SDK_VERSION
 _worker.ctypes.WinDLL = lambda name: None
 _worker.importlib.import_module = lambda name: SimpleNamespace(Sandbox=Native)
 _worker.main()

@@ -10,7 +10,7 @@ Use the [package README](../../../packages/maf-sandbox-hyperlight/README.md) for
 |---|---|
 | Host | x86-64 Windows with WHP, or x86-64 Linux with KVM, including suitable WSL2 hosts |
 | Isolation | `MICROVM` |
-| Runtime | SDK, Wasm backend and Python guest pinned together at 0.7.0 |
+| Runtime | SDK, Wasm backend and Python guest pinned together at 0.10.0 |
 | Capabilities | `RUN_CODE`, `SNAPSHOT`, `EGRESS_METHODS`; `FILES_OUT`, `FILES_LIST` when `file_outputs=True` |
 | Network | `CLOSED`, exact-host `ALLOWLIST`; HTTP 80 and HTTPS 443; GET, HEAD, POST, PUT, PATCH, DELETE and OPTIONS method rules |
 | Guest OS | None declared; this is a language runtime |
@@ -68,7 +68,7 @@ Collection accepts flat relative names and bounded raw bytes. It rejects travers
 
 `list_dir(".", working_directory=".")` enumerates the prepared base through a verified host directory descriptor or Windows handle. It returns sorted direct child names and trusted metadata, including links and special entries that collection refuses. Listing a child directory or following a link is unsupported. Enumeration allows at most 64 entries and 64 KiB of UTF-8 filenames; overflow, replacement or inspection failure refuses the whole result. Admission prevents execution and reset during listing, and storage deletion waits for enumeration to finish.
 
-Execution and restore clear previous outputs. Collection and delivery must finish before either operation. Reset keeps the directory root; disposal removes it only after the worker stops. Direct file access requires the backend's `call_admission` scope. See the [output examples](../../../packages/maf-sandbox-hyperlight/README.md#output-files).
+Outputs persist between executions on the same sandbox. Snapshot restore clears them, so collection and delivery must finish before reset. Reset keeps the directory root; disposal removes it only after the worker stops. Direct file access requires the backend's `call_admission` scope. See the [output examples](../../../packages/maf-sandbox-hyperlight/README.md#output-files).
 
 ## Network boundary
 
