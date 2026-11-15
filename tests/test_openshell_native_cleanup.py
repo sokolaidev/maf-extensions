@@ -205,7 +205,7 @@ def test_diagnostic_signals_exclude_credentials_and_arbitrary_output(fixture_sta
         "host:internal.example Authorization:private-token\n"
     )
     events = native.diagnostic_signals(raw)
-    assert len(events) == 2
+    assert len(events) == 3
     assert all(row["time"] == "2026-11-15T11:40:48.123456789Z" for row in events)
     assert all(row["captured_generation"] == 4 and row["current_generation"] == 5 for row in events)
     assert "private-token" not in str(events)

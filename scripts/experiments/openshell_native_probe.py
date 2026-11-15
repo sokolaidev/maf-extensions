@@ -50,6 +50,8 @@ def diagnostic_signals(log: str) -> list[dict]:
     """Extract fixed failure signals without retaining arbitrary container output."""
     signals = (
         "L7 tunnel closed after policy reload",
+        "L7 tunnel closed before inspection because policy changed",
+        "policy generation is stale",
         "L7 tunnel policy generation is stale",
         "provider credential generation changed before upstream write",
         "Forward proxy rejected request because policy generation changed after L4 decision",
