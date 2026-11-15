@@ -36,12 +36,12 @@ from agent_framework._compaction import (
     GROUP_TOKEN_COUNT_KEY,
 )
 
+from ._preserve import _ATTRIBUTION_KEY  # pyright: ignore[reportPrivateUsage]
 from ._shed import durable_message_id
 
 logger = logging.getLogger(__name__)
 
 #: Written anew on every list a call is handed, so no evidence that a stored message changed.
-_ATTRIBUTION_KEY: Final[str] = "_attribution"
 _PER_CALL_PROPERTIES: Final[frozenset[str]] = frozenset({GROUP_ANNOTATION_KEY, _ATTRIBUTION_KEY})
 _PER_CALL_ANNOTATIONS: Final[frozenset[str]] = frozenset(
     {
