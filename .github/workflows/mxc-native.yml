@@ -400,8 +400,13 @@ jobs:
             ${{ runner.temp }}/mxc-v11/storage_probe/result.json
             ${{ runner.temp }}/mxc-v11/aggregate-storage/*.json
             ${{ runner.temp }}/mxc-v11/aggregate-storage/*.log
+            ${{ runner.temp }}/mxc-v11/aggregate-storage/*/native.json
+            ${{ runner.temp }}/mxc-v11/aggregate-storage/*/native.stdout
+            ${{ runner.temp }}/mxc-v11/aggregate-storage/*/native.stderr
             ${{ runner.temp }}/mxc-v11/runtime-contract/result.json
             ${{ runner.temp }}/mxc-v11/runtime-contract/*/*.json
             ${{ runner.temp }}/mxc-v11/runtime-contract/*/*.log
+            ${{ runner.temp }}/mxc-v11/runtime-contract/*/native.stdout
+            ${{ runner.temp }}/mxc-v11/runtime-contract/*/native.stderr
           if-no-files-found: error
           retention-days: 14

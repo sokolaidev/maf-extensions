@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
+import shutil
 from pathlib import Path
 
-from scripts.experiments.mxc_session_patch.host_store import MAX_CHECKPOINT, MAX_FILES
+from scripts.experiments.mxc_session_patch.host_call import execute as native_execute
+from scripts.experiments.mxc_session_patch.host_store import MAX_CHECKPOINT, MAX_FILES, Refused
 
 
 def measure(root: Path) -> tuple[int, int]:
@@ -19,42 +20,32 @@ def measure(root: Path) -> tuple[int, int]:
 def qualify(helper: Path, startup: Path, root: Path) -> dict:
     """Require exact export limits to pass and one-byte/file deficits to refuse."""
     root.mkdir(parents=True, exist_ok=False)
-    code = root / "code.py"
-    code.write_text("pass\n", encoding="utf-8")
 
     def execute(name: str, bounds: tuple[int, int], success: bool) -> tuple[int, int]:
-        checkpoint = root / name
-        report = root / f"{name}.json"
-        with (root / f"{name}.log").open("wb") as log:
-            child = subprocess.run(
-                [
-                    str(helper),
-                    "call-stored",
-                    str(startup),
-                    str(checkpoint),
-                    str(code),
-                    str(report),
-                    "0",
-                    str(bounds[0]),
-                    str(bounds[1]),
-                ],
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                timeout=180,
+        case = root / name
+        case.mkdir()
+        checkpoint, report = case / "candidate", case / "native.json"
+        refused = False
+        try:
+            native_execute(
+                helper, startup, case, b"pass\n", output_limit=0, checkpoint_limits=bounds
             )
+        except Refused:
+            refused = True
         actual = measure(checkpoint)
         if actual[0] > bounds[0] or actual[1] > bounds[1]:
             raise RuntimeError(f"{name}: export exceeded reserved bounds")
         if success:
-            if child.returncode != 0 or not report.is_file():
+            if refused or not report.is_file():
                 raise RuntimeError(f"{name}: exact export failed")
         elif (
-            child.returncode == 0
+            not refused
             or report.exists()
             or "snapshot export exceeds reserved bounds"
-            not in (root / f"{name}.log").read_text(encoding="utf-8")
+            not in (case / "native.stderr").read_text(encoding="utf-8")
         ):
             raise RuntimeError(f"{name}: missing bounded-export refusal")
+        shutil.rmtree(checkpoint)
         return actual
 
     budget = execute("measured", (MAX_CHECKPOINT, MAX_FILES), True)

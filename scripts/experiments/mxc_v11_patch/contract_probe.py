@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import shutil
-import subprocess
 from pathlib import Path
+
+from scripts.experiments.mxc_session_patch.host_call import execute
 
 CASES = {
     "stdout-no-newline": ("print('flushed', end='')", b"flushed"),
@@ -40,28 +42,10 @@ def qualify(helper: Path, startup: Path, root: Path) -> dict:
     for name, (code, expected) in CASES.items():
         case = root / name
         case.mkdir()
-        source, report, checkpoint = case / "code.py", case / "result.json", case / "checkpoint"
-        source.write_text(code, encoding="utf-8")
-        with (case / "stdout.log").open("wb") as stdout, (case / "stderr.log").open("wb") as stderr:
-            child = subprocess.run(
-                [
-                    str(helper),
-                    "call-bounded",
-                    str(startup),
-                    str(checkpoint),
-                    str(source),
-                    str(report),
-                    "64",
-                ],
-                stdout=stdout,
-                stderr=stderr,
-                timeout=180,
-            )
-        if child.returncode != 0:
-            raise RuntimeError(f"{name}: native contract check failed")
-        payload = report.with_suffix(".output").read_bytes()
-        metadata = json.loads(report.read_text(encoding="utf-8"))["output"]
-        if payload != expected or (case / "stdout.log").read_bytes():
+        result = json.loads(execute(helper, startup, case, code.encode(), output_limit=64))
+        payload = base64.b64decode(result["console_base64"], validate=True)
+        metadata = result["output"]
+        if payload != expected or (case / "native.stdout").read_bytes():
             raise RuntimeError(f"{name}: capture or echo contract differs")
         if metadata != {
             "limit_bytes": 64,
@@ -72,7 +56,7 @@ def qualify(helper: Path, startup: Path, root: Path) -> dict:
         }:
             raise RuntimeError(f"{name}: output metadata differs")
         results[name] = metadata
-        shutil.rmtree(checkpoint)
+        shutil.rmtree(case / "candidate")
     (root / "result.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     return results
 
