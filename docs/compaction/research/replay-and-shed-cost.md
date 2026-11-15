@@ -286,7 +286,7 @@ Section 10's harness and shapes, with this change and 0.13.3 run side by side, t
 
 ## 12. What the third change implemented
 
-Sections 10 and 11 timed a harness that hands every model call the list the previous pass left. A deployed host showed that 0.13.4 changed nothing for it ([#2743](https://github.com/sokolaidev/maf-extensions/issues/2743)): three consecutive model calls of one run held its event loop for 46 s, 79 s and 84 s, every stack sample in the per-call pass. The third change is for the hosts that hand a rebuilt list.
+Sections 10 and 11 timed a harness that hands every model call the list the previous pass left. A deployed host showed that 0.13.4 changed nothing for it ([#2743](https://github.com/sokolaidev/maf-extensions/issues/2743)): three consecutive model calls of one run held its event loop for 46 s, 79 s and 84 s, every stack sample in the per-call pass. The third change ([#2745](https://github.com/sokolaidev/maf-extensions/pull/2745)) is for the hosts that hand a rebuilt list.
 
 ### What a rebuilding host hands a pass
 - **Per-service-call history persistence,** which the framework's harness agent turns on. **[read]** `PerServiceCallHistoryPersistingMiddleware` rebuilds each call's list from the history provider, and `SessionContext.extend_messages` makes a shallow copy of every stored message with its own `additional_properties`. **[measured]** in a harness agent run, no message object of one call was in the next call's list, and every stored message's `contents` list was. A message the call carries in is the object the store keeps, so a flag a pass sets on it is stored and a flag on a copy is not; nothing a pass inserts reaches the store.
