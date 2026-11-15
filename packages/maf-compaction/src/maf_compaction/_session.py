@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 from agent_framework import (
     AgentContext,
@@ -37,6 +37,9 @@ from ._toolsummary import (
     ToolResultRecallMiddleware,
     make_recall_tool,
 )
+
+#: Sessions whose strategy may keep the list its last per-call pass left.
+DEFAULT_MAX_CARRIED_VIEWS: Final[int] = 16
 
 _Strategy = (
     ToolResultAnchoredSummarizationCompactionStrategy
@@ -110,6 +113,10 @@ class SessionCompactionRegistry:
 
     ``build`` must return fresh, identically configured components. Serialize requests for
     each session at the host, including across replicas; distinct sessions may run concurrently.
+
+    A composed strategy keeps the list its last per-call pass left, so the next call need not
+    put every decision back. That list holds a conversation's messages, so only the
+    ``max_carried_views`` most recently used sessions keep one; zero keeps none.
     """
 
     def __init__(
@@ -118,14 +125,18 @@ class SessionCompactionRegistry:
         *,
         state_key: str = "maf_compaction",
         max_cached_sessions: int = 128,
+        max_carried_views: int = DEFAULT_MAX_CARRIED_VIEWS,
     ) -> None:
         if max_cached_sessions < 0:
             raise ValueError("max_cached_sessions must be non-negative.")
+        if max_carried_views < 0:
+            raise ValueError("max_carried_views must be non-negative.")
         if not state_key:
             raise ValueError("state_key must not be empty.")
         self.build = build
         self.state_key = state_key
         self.max_cached_sessions = max_cached_sessions
+        self.max_carried_views = max_carried_views
         self._cache: OrderedDict[str, CompactionStack] = OrderedDict()
         self._active: dict[str, _Binding] = {}
         self._current: ContextVar[_Binding | None] = ContextVar("compaction_session", default=None)
@@ -177,6 +188,30 @@ class SessionCompactionRegistry:
             self._cache[session.session_id] = stack
             while len(self._cache) > self.max_cached_sessions:
                 self._cache.popitem(last=False)
+            self._release_carried_views()
+
+    def _release_carried_views(self) -> None:
+        carried = 0
+        for stack in reversed(self._cache.values()):
+            strategy = stack.strategy
+            if (
+                isinstance(strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy)
+                and strategy.carries_view
+            ):
+                carried += 1
+                if carried > self.max_carried_views:
+                    strategy.forget_carried_view()
+
+    def release_carried_view(self, session_id: str) -> None:
+        """Release a session's kept list once its run is over and no call will resume from it."""
+        stack = self._cache.get(session_id)
+        if stack is not None:
+            self._forget(stack)
+
+    @staticmethod
+    def _forget(stack: CompactionStack) -> None:
+        if isinstance(stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy):
+            stack.strategy.forget_carried_view()
 
     def _remember_merge_state(self, session: AgentSession) -> None:
         if entry := self._merge_work.get(session.session_id):
@@ -228,6 +263,8 @@ class SessionCompactionProvider(CompactionProvider):
     ) -> None:
         with self.registry.activate(session):
             await super().after_run(agent=agent, session=session, context=context, state=state)
+        # The turn is over, so no later call of it will start from the kept list.
+        self.registry.release_carried_view(session.session_id)
 
 
 class _RecordMergeRunMiddleware(AgentMiddleware):
@@ -249,6 +286,7 @@ class _RecordMergeRunMiddleware(AgentMiddleware):
         async def close() -> None:
             if self.registry._merge_work.get(session.session_id) is entry:  # pyright: ignore[reportPrivateUsage]
                 del self.registry._merge_work[session.session_id]  # pyright: ignore[reportPrivateUsage]
+            self.registry.release_carried_view(session.session_id)
             await work.close()
 
         if context.stream:

@@ -63,8 +63,8 @@ __all__ = [
 ]
 
 #: The key ``SessionContext.extend_messages`` stamps on the copy of every message a history
-#: provider loads. Read here, and only here, to tell a message loaded for this call from one the
-#: call itself carries; see :func:`removable_whole`.
+#: provider loads. Read here to tell a message loaded for this call from one the call itself
+#: carries; see :func:`removable_whole`. :mod:`._carryover` keeps it true of a list it resumes.
 _ATTRIBUTION_KEY: Final[str] = "_attribution"
 
 #: Marks a message no strategy may shorten, drop or shed. Named after ``EXCLUDED_KEY``, and
