@@ -1142,20 +1142,12 @@ def test_every_selection_value_the_kind_writes_is_one_it_checks():
     assert {name for name, _ in written} == set(_SELECTION_FIELDS)
 
 
-def _price_type_argument(**arguments):
+def _price_type_argument(
+    *, sku: str | None = None, price_type: PriceType | None = None, filter: str | None = None
+) -> str | None:
     from maf_sandbox_azure_pricing._tool import _argv
 
-    defaults = dict(
-        sku=None,
-        service=None,
-        region=None,
-        service_family=None,
-        price_type=None,
-        currency="USD",
-        include_savings_plan=False,
-        filter=None,
-    )
-    args = _argv(**(defaults | arguments))
+    args = _argv(sku, None, None, None, price_type, "USD", False, filter)
     return next((arg for arg in args if arg.startswith("--price-type=")), None)
 
 
@@ -1167,8 +1159,10 @@ def test_an_omitted_price_type_asks_for_consumption_prices():
 
 
 @pytest.mark.parametrize("price_type", list(PriceType))
-def test_a_named_price_type_is_kept(price_type):
-    assert _price_type_argument(sku="x", price_type=price_type) == f"--price-type={price_type}"
+def test_a_named_price_type_is_kept(price_type: PriceType):
+    assert _price_type_argument(sku="x", price_type=price_type) == (
+        f"--price-type={price_type.value}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1179,9 +1173,9 @@ def test_a_named_price_type_is_kept(price_type):
         "(priceType eq 'Consumption' or priceType eq 'Reservation')",
     ],
 )
-def test_a_filter_selecting_price_type_gets_no_default(predicate):
+def test_a_filter_selecting_price_type_gets_no_default(predicate: str):
     assert _price_type_argument(filter=predicate) is None
-    assert _price_type_argument(filter=predicate, price_type="Reservation") == (
+    assert _price_type_argument(filter=predicate, price_type=PriceType.RESERVATION) == (
         "--price-type=Reservation"
     )
 
