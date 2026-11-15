@@ -187,6 +187,22 @@ def qualify(root: Path, report: dict, mode: str) -> None:
         str(root / "native"),
     )
     startup = root / "images/agent/snapshot"
+    run(
+        root,
+        "aggregate-storage",
+        sys.executable,
+        "-m",
+        "scripts.experiments.mxc_v11_patch.storage_probe",
+        "--helper",
+        str(helper(root)),
+        "--startup",
+        str(startup),
+        "--root",
+        str(root / "aggregate-storage"),
+    )
+    report["aggregate_storage"] = json.loads(
+        (root / "aggregate-storage/result.json").read_text(encoding="utf-8")
+    )
     for module in ("bounded_probe", "storage_probe", "durability_probe"):
         entry = (
             [str(BASELINE / "bounded_probe.py")]

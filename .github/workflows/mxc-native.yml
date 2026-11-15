@@ -398,5 +398,7 @@ jobs:
             ${{ runner.temp }}/mxc-v11/durability_probe/quota-*/*.log
             ${{ runner.temp }}/mxc-v11/durability_probe/result.json
             ${{ runner.temp }}/mxc-v11/storage_probe/result.json
+            ${{ runner.temp }}/mxc-v11/aggregate-storage/*.json
+            ${{ runner.temp }}/mxc-v11/aggregate-storage/*.log
           if-no-files-found: error
           retention-days: 14
