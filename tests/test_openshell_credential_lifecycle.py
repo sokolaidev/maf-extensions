@@ -27,6 +27,15 @@ def identity():
     return {"pid": 123, "start": "456", "nonce": "owned-process"}
 
 
+def test_protobuf_evidence_keeps_only_digest_and_byte_length(probe):
+    payload = b"synthetic-secret-material\x00\xff"
+    result = probe.protobuf_evidence(NS(SerializeToString=lambda: payload), "profile")
+    assert result == {
+        "profile_sha256": hashlib.sha256(payload).hexdigest(),
+        "profile_size": len(payload),
+    }
+
+
 @pytest.mark.parametrize(
     "fault",
     [None, "old", "late", "owner", "host", "port", "generation", "message", "malformed"],
@@ -135,6 +144,7 @@ def test_profile_path_edit_is_conditional_exact_and_never_replayed(probe, fault)
 
     before = Message(
         id="profile",
+        description="synthetic-secret-material",
         resource_version=7,
         source="user",
         scope="workspace",
@@ -148,7 +158,7 @@ def test_profile_path_edit_is_conditional_exact_and_never_replayed(probe, fault)
         state.stored.scope = "platform"
 
     def rpc(method, request):
-        state.calls.append((method, request))
+        state.calls.append((method, deepcopy(request)))
         if method == "GetProviderProfile":
             result = deepcopy(state.stored)
             result.source = "user"
@@ -204,6 +214,19 @@ def test_profile_path_edit_is_conditional_exact_and_never_replayed(probe, fault)
     assert sum(method == "UpdateProviderProfiles" for method, _ in state.calls) == (
         0 if fault in ("baseline", "scope") else 1
     )
+    retained = json.dumps(state.records)
+    assert "synthetic-secret-material" not in retained
+    assert b"synthetic-secret-material".hex() not in retained
+    assert "_hex" not in retained
+    if fault is None:
+        pending, acknowledged, stored = (row for _, row in state.records)
+        request = state.calls[1][1].SerializeToString()
+        assert pending["request_sha256"] == hashlib.sha256(request).hexdigest()
+        assert pending["request_size"] == len(request)
+        assert len(acknowledged["profile_update_acknowledged"]["response_sha256"]) == 64
+        assert acknowledged["profile_update_acknowledged"]["response_size"] > 0
+        assert len(stored["profile_sha256"]) == 64
+        assert stored["profile_size"] > 0
 
 
 @pytest.mark.parametrize("change", ["pid", "start", "nonce", "sequence", "reference_sha256"])
@@ -777,7 +800,7 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
                 expiration_time=NS(seconds=state.issuer.latest["expires_at"], nanos=0),
                 failure_code="oauth_token_endpoint_retryable",
                 HasField=lambda name: True,
-                SerializeToString=lambda: b"status",
+                SerializeToString=lambda: b"synthetic-refresh-error-material",
             )
 
         def cleanup_workspace(self, client):
@@ -921,6 +944,19 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
         asyncio.run(probe.measure_credentials(fixture, "10.23.45.67", tmp_path / "ca.pem"))
         assert state.requests == (23 if fault == "generation" else 24)
         assert fixture.report["credentials"]["characterization_completed"]
+        retained = json.dumps(fixture.report["credentials"])
+        assert "synthetic-refresh-error-material" not in retained
+        assert b"synthetic-refresh-error-material".hex() not in retained
+        statuses = [
+            row for row in fixture.report["credentials"]["barriers"] if "status_sha256" in row
+        ]
+        assert len(statuses) >= 5
+        assert all(
+            row["status_sha256"] == hashlib.sha256(b"synthetic-refresh-error-material").hexdigest()
+            and row["status_size"] == len(b"synthetic-refresh-error-material")
+            for row in statuses
+        )
+        assert any("retryable_failure" in row for row in statuses)
         cases = {row["case"]: row for row in fixture.report["credentials"]["cases"]}
         for name in (
             "profile_narrowing_revokes_removed_path",

@@ -145,6 +145,12 @@ def unexpired(mint, *, now=None):
         raise RuntimeError("revocation observation is too close to token expiry")
 
 
+def protobuf_evidence(message, label):
+    """Retain payload identity and size without retaining serialized field values."""
+    payload = message.SerializeToString()
+    return {label + "_sha256": hashlib.sha256(payload).hexdigest(), label + "_size": len(payload)}
+
+
 def propagation_observation(observed, events, request, minted):
     """Only an attributed earlier token or an explicit credential refusal may converge later."""
     return credential_observation(observed, events, "credential_unavailable", request) or any(
@@ -435,7 +441,7 @@ class HTTPSRefreshProfile(RefreshProfile):
         )
         row = {
             "method": "UpdateProviderProfiles",
-            "request_hex": request.SerializeToString().hex(),
+            **protobuf_evidence(request, "request"),
             "started_ns": time.monotonic_ns(),
             "state": "pending",
         }
@@ -444,7 +450,7 @@ class HTTPSRefreshProfile(RefreshProfile):
         row.update(
             state="acknowledged",
             acknowledged_ns=time.monotonic_ns(),
-            response_hex=response.SerializeToString().hex(),
+            **protobuf_evidence(response, "response"),
         )
         record("barriers", {"profile_update_acknowledged": dict(row)})
         if not response.updated or response.profile.resource_version <= before.resource_version:
@@ -461,7 +467,7 @@ class HTTPSRefreshProfile(RefreshProfile):
             "barriers",
             {
                 "stored_profile_revision": current.resource_version,
-                "profile_hex": current.SerializeToString().hex(),
+                **protobuf_evidence(current, "profile"),
                 "guest_installation_confirmed": False,
             },
         )
@@ -567,7 +573,7 @@ async def measure_credentials(fixture, ip, ca_file):
                     ):
                         record(
                             "barriers",
-                            {"mint": latest, "status_hex": status.SerializeToString().hex()},
+                            {"mint": latest, **protobuf_evidence(status, "status")},
                         )
                         return latest
                     await asyncio.sleep(0.2)
@@ -694,7 +700,7 @@ async def measure_credentials(fixture, ip, ca_file):
                 raise RuntimeError("retryable failure and retry schedule were not observed")
             record(
                 "barriers",
-                {"retryable_failure": failed[-1], "status_hex": status.SerializeToString().hex()},
+                {"retryable_failure": failed[-1], **protobuf_evidence(status, "status")},
             )
             await check("current_value_survives_retryable_failure", worker)
             issuer.configure()
