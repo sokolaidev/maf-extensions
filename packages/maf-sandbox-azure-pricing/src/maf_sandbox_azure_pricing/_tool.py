@@ -11,7 +11,7 @@ from maf_sandbox import CallerContext, ExecResult, SandboxRouter, SourceIntegrit
 from maf_sandbox.bounded_exec import BoundedExec
 from maf_sandbox.maf import SandboxResult, SandboxToolSession, sandboxed_tool
 
-from ._regions import expanded_region, region_predicate
+from ._regions import expanded_region, names_field, region_predicate
 from ._report import parse_report
 from ._spec import AZURE_PRICING_TOOL_NAME, PriceType, azure_pricing_sandbox_spec
 
@@ -31,6 +31,9 @@ _GUIDANCE = (
     "monthly hours. Savings-plan terms are separate. Azure MCP omits tierMinimumUnits, so "
     "these rows cannot establish usage-tier thresholds. A truncated result is not exhaustive."
 )
+#: The price type a lookup applies when the caller names none and its filter selects none.
+DEFAULT_PRICE_TYPE = PriceType.CONSUMPTION
+_PRICE_TYPE_FIELD = "priceType"
 _BAD_REQUEST = re.compile(
     rb"\b(?:HTTP(?:/[0-9.]+)?[ \t]+|Status(?:[ \t]+code)?[ \t]*:[ \t]*)400\b"
     rb"|\b400[ \t]*\(Bad Request\)|\bInvalid OData parameters supplied\b",
@@ -109,6 +112,21 @@ def _text(value: str | None, limit: int = 1024) -> str | None:
     return value
 
 
+def effective_price_type(
+    price_type: PriceType | str | None, predicate: str | None
+) -> PriceType | None:
+    """The price type a lookup applies: the caller's, else Consumption.
+
+    A raw filter that selects priceType itself gets no default, so a caller asking for
+    reservations through the filter is not narrowed back to Consumption.
+    """
+    if price_type is not None:
+        return PriceType(price_type)
+    if names_field(predicate, _PRICE_TYPE_FIELD):
+        return None
+    return DEFAULT_PRICE_TYPE
+
+
 def _argv(
     sku: str | None,
     service: str | None,
@@ -124,11 +142,14 @@ def _argv(
         "service": _text(service),
         "region": _text(region),
         "service-family": _text(service_family),
-        "price-type": PriceType(price_type).value if price_type is not None else None,
+        "price-type": None,
         "filter": _text(filter, 4096),
     }
+    # A price type does not bound a lookup, and every lookup now has one.
     if not any(fields.values()) or (service is not None and sku is None):
-        raise ValueError("A filter is required; service also requires SKU")
+        raise ValueError("A filter other than price_type is required; service also requires SKU")
+    if (applied := effective_price_type(price_type, filter)) is not None:
+        fields["price-type"] = applied.value
     if type(currency) is not str or not re.fullmatch("[A-Z]{3}", currency):
         raise ValueError("Invalid currency")
     if type(include_savings_plan) is not bool:
@@ -193,7 +214,9 @@ def _build_tool(
             PriceType | None,
             (
                 "Exact, case-sensitive priceType: Consumption, Reservation or DevTestConsumption. "
-                "For savings plans, use include_savings_plan instead."
+                "When omitted, Consumption, unless filter has its own priceType predicate; pass "
+                "Reservation or DevTestConsumption for those prices. For savings plans, use "
+                "include_savings_plan instead."
             ),
         ] = None,
         currency: Annotated[str, "Three-letter uppercase currencyCode; defaults to USD."] = "USD",
@@ -216,8 +239,10 @@ def _build_tool(
     ) -> SandboxResult:
         """Look up current Azure public retail prices for explicit filters.
 
-        At least one filter is required; service also requires an ARM SKU. SavingsPlan is
-        not a price type: set include_savings_plan instead. Named filters match exact,
+        At least one filter other than price_type is required; service also requires an ARM
+        SKU. price_type defaults to Consumption: ask for Reservation or DevTestConsumption
+        explicitly. SavingsPlan is not a price type: set include_savings_plan instead.
+        Named filters match exact,
         case-sensitive price-list values; filter accepts OData over the listed fields.
         Many network and platform meters have an empty armSkuName: do not invent a SKU.
         Omit service and sku for those meters; use filter on serviceName, productName or meterName.

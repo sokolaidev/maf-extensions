@@ -18,7 +18,7 @@ For public-only queries, pass `outbound_max_confidentiality="public"` and run th
 
 ## Arguments and results
 
-Arguments are `sku`, `service`, `region`, `service_family`, `price_type`, `currency` (default `USD`), `include_savings_plan` (default false), and `filter` (raw OData). At least one filter is required; `currency` and `include_savings_plan` do not count. A `service` query also requires `sku`. `PriceType` accepts `Consumption`, `Reservation` and `DevTestConsumption`. Raw filters are parenthesized before the CLI combines them with the typed filters. Empty, oversized and control-bearing arguments are refused before sandbox acquisition.
+Arguments are `sku`, `service`, `region`, `service_family`, `price_type`, `currency` (default `USD`), `include_savings_plan` (default false), and `filter` (raw OData). At least one filter is required; `price_type`, `currency` and `include_savings_plan` do not count. A `service` query also requires `sku`. `PriceType` accepts `Consumption`, `Reservation` and `DevTestConsumption`. An omitted `price_type` is `Consumption`, unless `filter` has its own `priceType` predicate: a lookup returns pay-as-you-go prices unless it asks for another type, so reservations, two rows per size, do not crowd them out of a truncated result. Raw filters are parenthesized before the CLI combines them with the typed filters. Empty, oversized and control-bearing arguments are refused before sandbox acquisition.
 
 The tool's parameter schema describes the price-list fields and their exact, case-sensitive values:
 
