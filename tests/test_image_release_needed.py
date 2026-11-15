@@ -48,9 +48,17 @@ def candidate(version="2", outcome="clean", **updates):
     } | updates
 
 
-def optional_desired(*, record=None, released=None, changed=None, observed=None, previous=None):
+def optional_desired(
+    *, record=None, released=None, changed=None, observed=None, previous=None, requirements=None
+):
     return tracker.desired(
-        record or RECORD, released or RELEASED, changed or [], SOURCE, observed, previous
+        record or RECORD,
+        released or RELEASED,
+        changed or [],
+        SOURCE,
+        observed,
+        previous,
+        requirements,
     )
 
 
@@ -72,225 +80,186 @@ def test_no_reason_means_no_issue():
     assert optional_desired() is None
 
 
-def test_component_changes_create_request_with_reviewable_delta():
-    result = desired(observed=candidate())
-    assert result["reasons"]["components"]["added"][0][2] == "2"
-    assert result["reasons"]["components"]["removed"][0][2] == "1"
+def vulnerable_record(**updates):
+    return (
+        RECORD
+        | {
+            "latestAttempt": {
+                "outcome": "vulnerable",
+                "findings": [FINDING],
+                "evidenceRelease": "image-monitor-1-1",
+            }
+        }
+        | updates
+    )
+
+
+def legacy_request(*reasons):
+    return {
+        "baseline": RECORD["registryDigest"],
+        "currentDigest": RECORD["registryDigest"],
+        "currentVersion": RECORD["version"],
+        "releaseEvidence": "release",
+        "reasons": {reason: {} for reason in reasons},
+        "status": "Refresh available for maintainer review",
+        "resolved": False,
+    }
+
+
+REQUIREMENT = {
+    "package": "maf-sandbox-drawio",
+    "minimumVersion": "0.1.1",
+    "reason": "The renderer requires the updated image command contract",
+}
+
+
+@pytest.mark.parametrize("outcome", ["clean", "vulnerable"])
+@pytest.mark.parametrize("changed", [[], ["images/graphviz-sandbox/Dockerfile"]])
+def test_drift_and_candidate_findings_alone_do_not_request_release(outcome, changed):
+    assert optional_desired(changed=changed, observed=candidate(outcome=outcome)) is None
+
+
+@pytest.mark.parametrize("reasons", [("components",), ("source",), ("components", "source")])
+@pytest.mark.parametrize("observed", [None, candidate(), candidate(outcome="vulnerable")])
+def test_legacy_drift_requests_close_without_claiming_replacement(reasons, observed):
+    result = desired(previous=legacy_request(*reasons), observed=observed)
+    assert result["resolved"]
+    assert result["reasons"] == {}
+    assert result["resolution"] == "policy-reconciled"
+    assert result["currentDigest"] == RECORD["registryDigest"]
+    assert "candidateEvidence" not in result
+    assert "candidateFindings" not in result
+    assert "No replacement release is claimed" in tracker.body("graphviz", result)
+
+
+@pytest.mark.parametrize("outcome", ["clean", "unavailable"])
+def test_legacy_drift_with_known_security_need_remains_open(outcome):
+    previous = legacy_request("components", "source")
+    previous["reasons"]["vulnerabilities"] = {
+        "baselineDigest": RECORD["registryDigest"],
+        "findings": [FINDING],
+        "evidence": "monitor",
+    }
+    result = desired(record=RECORD | {"latestAttempt": {"outcome": outcome}}, previous=previous)
+    assert not result["resolved"]
+    assert set(result["reasons"]) == {"vulnerabilities"}
+
+
+@pytest.mark.parametrize("profile", tuple(tracker.BICEP_ROUTES))
+def test_route_security_policy_requires_replacement(profile):
+    result = desired(
+        record=RECORD | {"profile": profile}, released=RELEASED | {"bicepRoute": "upstream"}
+    )
+    assert result["reasons"] == {"route": {"published": "upstream", "replacement": "source"}}
     assert not result["resolved"]
 
 
-@pytest.fixture(params=tuple(tracker.BICEP_ROUTES))
-def bicep_request(request):
-    record = RECORD | {"profile": request.param}
+def test_diagnostic_candidate_does_not_clear_or_refresh_security_request():
+    record = vulnerable_record(profile="bicep-avm")
     released = RELEASED | {"bicepRoute": "source"}
-    observed = candidate(
-        outcome="vulnerable",
-        bicepRoute="upstream",
-        evidence=f"https://github.com/{tracker.REPOSITORY}/actions/runs/123/attempts/1",
-    )
-    previous = desired(observed=observed)
-    return record, released, observed, previous
+    result = desired(record=record, released=released, observed=candidate(bicepRoute="upstream"))
+    assert not result["resolved"]
+    assert "candidateEvidence" not in result
 
 
-def test_diagnostic_route_cannot_request_a_replacement(bicep_request):
-    record, released, observed, _ = bicep_request
-    assert optional_desired(record=record, released=released, observed=observed) is None
-    result = desired(record=record, released=released, observed=observed | {"bicepRoute": "source"})
-    reason = result["reasons"]["components"]
-    assert reason["bicepRoute"] == "source"
-    assert reason["evidence"] == observed["evidence"]
-    assert reason["observedAt"] == observed["observedAt"]
+@pytest.mark.parametrize("outcome", ["clean", "vulnerable"])
+def test_security_request_preserves_candidate_status_across_monitor_reconciliation(outcome):
+    previous = desired(record=vulnerable_record(), observed=candidate(outcome=outcome))
+    result = desired(record=vulnerable_record(), previous=previous)
+    assert result == previous
+    assert result["candidateFindings"] == ([FINDING] if outcome == "vulnerable" else [])
 
 
-def test_explicit_policy_migration_requires_replacement(bicep_request):
-    record, released, _, _ = bicep_request
-    result = desired(record=record, released=released | {"bicepRoute": "upstream"})
-    assert result["reasons"] == {"route": {"published": "upstream", "replacement": "source"}}
-    assert "Bicep replacement route policy" in tracker.body(record["profile"], result)
-    cleared = desired(record=record, released=released, previous=result)
-    assert cleared["resolved"]
-
-
-@pytest.mark.parametrize("remaining", [None, "source", "vulnerabilities"])
-def test_verified_diagnostic_requirement_is_removed_without_losing_other_reasons(
-    bicep_request, monkeypatch, tmp_path, remaining
-):
-    record, released, observed, previous = bicep_request
-    if remaining == "vulnerabilities":
-        previous["reasons"]["vulnerabilities"] = {
-            "baselineDigest": record["registryDigest"],
-            "findings": [FINDING],
-            "evidence": "monitor",
-        }
-    monkeypatch.setattr(tracker, "candidates", lambda *_, **__: {record["profile"]: observed})
-    repaired = tracker.reconcile_component_route(GitHub(), record, released, previous, tmp_path)
-    assert repaired is not None
-    assert "components" in previous["reasons"]
+def test_clean_replacement_closes_security_request_despite_routine_drift():
+    previous = desired(record=vulnerable_record(), observed=candidate())
     result = desired(
-        record=record,
-        released=released,
-        previous=repaired,
-        changed=["images/bicep-sandbox/source.json"] if remaining == "source" else [],
+        record=replacement(),
+        previous=previous,
+        changed=["images/graphviz-sandbox/Dockerfile"],
+        observed=candidate(version="3", observedAt="2026-01-04T00:00:00Z"),
     )
-    assert set(result["reasons"]) == ({remaining} if remaining else set())
-    assert result["resolved"] == (remaining is None)
-    assert "candidateFindings" not in result
-    if remaining is None:
-        assert result["resolution"] == "route-reconciled"
-        assert result["currentDigest"] == record["registryDigest"]
-        assert "No replacement release is required" in tracker.body(record["profile"], result)
-        client = Issues()
-        tracker.reconcile(client, record["profile"], previous, None)
-        tracker.reconcile(client, record["profile"], result, client.items[0])
-        tracker.reconcile(client, record["profile"], result, client.items[0])
-        assert len(client.calls) == 2
-        assert client.items[0]["state_reason"] == "not_planned"
+    assert result["resolved"]
+    assert "resolution" not in result
+    assert "completed, verified replacement" in result["status"]
+
+
+def test_new_security_finding_on_replacement_requires_another_release():
+    previous = desired(record=vulnerable_record())
+    current = vulnerable_record(**replacement())
+    previous = desired(record=current, previous=previous)
+    result = desired(record=current | {"latestAttempt": {"outcome": "clean"}}, previous=previous)
+    assert not result["resolved"]
+    assert result["reasons"]["vulnerabilities"]["baselineDigest"] == current["registryDigest"]
+
+
+@pytest.mark.parametrize("current,needed", [("0.1.0", True), ("0.1.1", False), ("0.1.10", False)])
+def test_package_minimum_is_compared_with_completed_release(current, needed):
+    result = optional_desired(record=RECORD | {"version": current}, requirements=[REQUIREMENT])
+    assert (result is not None) == needed
+    if result:
+        assert result["reasons"] == {"requirements": {"packages": [REQUIREMENT]}}
+        assert REQUIREMENT["reason"] in tracker.body("graphviz", result)
+
+
+def test_candidate_cannot_satisfy_package_minimum():
+    result = desired(requirements=[REQUIREMENT], observed=candidate())
+    assert not result["resolved"]
+    assert "requirements" in result["reasons"]
+    closed = desired(record=replacement(), previous=result, requirements=[REQUIREMENT])
+    assert closed["resolved"]
+    assert "completed, verified replacement" in closed["status"]
+
+
+@pytest.mark.parametrize("record", [RECORD, replacement()])
+def test_withdrawn_package_minimum_closes_as_not_planned(record):
+    previous = desired(requirements=[REQUIREMENT | {"minimumVersion": "0.1.2"}])
+    result = desired(record=record, previous=previous)
+    assert result["resolved"]
+    assert result["resolution"] == "policy-reconciled"
+
+
+def test_package_minimum_does_not_clear_security_findings():
+    previous = desired(requirements=[REQUIREMENT])
+    result = desired(
+        record=vulnerable_record(**replacement()), previous=previous, requirements=[REQUIREMENT]
+    )
+    assert set(result["reasons"]) == {"vulnerabilities"}
+    assert not result["resolved"]
+
+
+def test_repository_package_requirement_policy_is_valid():
+    tracker.package_requirements(ROOT)
 
 
 @pytest.mark.parametrize(
-    "mutation",
-    [
-        "missing",
-        "unavailable",
-        "attempt",
-        "time",
-        "hash",
-        "added",
-        "removed",
-        "baseline",
-        "url",
-    ],
+    "damage", [None, "profile", "package", "version", "reason", "duplicate", "schema"]
 )
-def test_unproven_component_requirement_is_preserved(
-    bicep_request, monkeypatch, tmp_path, mutation
-):
-    record, released, observed, previous = bicep_request
-    if mutation == "attempt":
-        observed["evidence"] = observed["evidence"].removesuffix("1") + "2"
-    elif mutation == "time":
-        observed["observedAt"] = "2026-01-03T00:00:00Z"
-    elif mutation == "hash":
-        previous["reasons"]["components"]["inventorySha256"] = "wrong"
-    elif mutation in {"added", "removed"}:
-        previous["reasons"]["components"][mutation] = []
-    elif mutation == "baseline":
-        record = replacement() | {"profile": record["profile"]}
-    elif mutation == "url":
-        previous["candidateEvidence"] = "https://example.com/actions/runs/123/attempts/1"
-
-    def fetch(*_, **__):
-        if mutation == "unavailable":
-            raise ValueError("Expired evidence")
-        return {} if mutation == "missing" else {record["profile"]: observed}
-
-    monkeypatch.setattr(tracker, "candidates", fetch)
-    assert (
-        tracker.reconcile_component_route(GitHub(), record, released, previous, tmp_path)
-        == previous
-    )
-
-
-def test_matching_scan_after_invalid_candidate_does_not_hide_original_requirement(
-    bicep_request, monkeypatch, tmp_path
-):
-    record, released, observed, previous = bicep_request
-    previous["candidateEvidence"] = "https://example.com/later"
-    previous["candidateObservedAt"] = "2026-01-03T00:00:00Z"
-    previous["reasons"]["components"].update(
-        bicepRoute="upstream", evidence=observed["evidence"], observedAt=observed["observedAt"]
-    )
-    monkeypatch.setattr(tracker, "candidates", lambda *_, **__: {record["profile"]: observed})
-    repaired = tracker.reconcile_component_route(GitHub(), record, released, previous, tmp_path)
-    assert repaired is not None and "components" not in repaired["reasons"]
-    assert repaired["candidateEvidence"] == previous["candidateEvidence"]
-
-
-def test_legacy_valid_requirement_gains_route_provenance_and_remains_pending(
-    bicep_request, monkeypatch, tmp_path
-):
-    record, released, observed, previous = bicep_request
-    observed["bicepRoute"] = "source"
-    monkeypatch.setattr(tracker, "candidates", lambda *_, **__: {record["profile"]: observed})
-    repaired = tracker.reconcile_component_route(GitHub(), record, released, previous, tmp_path)
-    assert repaired is not None
-    assert repaired["reasons"]["components"]["bicepRoute"] == "source"
-    result = desired(
-        record=record,
-        released=released,
-        previous=repaired,
-        observed=observed
-        | {"components": released["components"], "observedAt": "2026-01-03T00:00:00Z"},
-    )
-    assert not result["resolved"]
-    assert result["reasons"]["components"] == repaired["reasons"]["components"]
-
-
-@pytest.mark.parametrize("update", ["candidate", "release"])
-def test_legacy_provenance_survives_outage_and_metadata_updates(
-    bicep_request, monkeypatch, tmp_path, update
-):
-    record, released, observed, previous = bicep_request
-
-    def unavailable(*_, **__):
-        raise OSError("Temporary download failure")
-
-    monkeypatch.setattr(tracker, "candidates", unavailable)
-    retained = tracker.reconcile_component_route(GitHub(), record, released, previous, tmp_path)
-    assert retained == previous
-    if update == "release":
-        previous["baseline"] = "sha256:" + "e" * 64
-        previous["currentDigest"] = previous["baseline"]
-    latest = candidate(
-        components=released["components"],
-        bicepRoute="source",
-        evidence=f"https://github.com/{tracker.REPOSITORY}/actions/runs/124/attempts/1",
-        observedAt="2026-01-03T00:00:00Z",
-    )
-    result = desired(
-        record=record,
-        released=released,
-        previous=retained,
-        observed=latest if update == "candidate" else None,
-    )
-    reason = result["reasons"]["components"]
-    assert reason["evidence"] == observed["evidence"]
-    assert reason["observedAt"] == observed["observedAt"]
-    assert "bicepRoute" not in reason
-    assert "evidence" not in previous["reasons"]["components"]
-    assert result.get("candidateEvidence") == (
-        latest["evidence"] if update == "candidate" else None
-    )
-
-    def recovered(_client, run_id, *_args, **_kwargs):
-        assert run_id == "123"
-        return {record["profile"]: observed}
-
-    monkeypatch.setattr(tracker, "candidates", recovered)
-    repaired = tracker.reconcile_component_route(GitHub(), record, released, result, tmp_path)
-    assert repaired is not None and "components" not in repaired["reasons"]
-    assert desired(record=record, released=released, previous=repaired)["resolved"]
-
-
-def test_route_withdrawal_after_release_uses_current_digest_proof(
-    bicep_request, monkeypatch, tmp_path
-):
-    record, released, observed, previous = bicep_request
-    previous["baseline"] = "sha256:" + "e" * 64
-    monkeypatch.setattr(tracker, "candidates", lambda *_, **__: {record["profile"]: observed})
-    repaired = tracker.reconcile_component_route(GitHub(), record, released, previous, tmp_path)
-    assert repaired is not None and "components" not in repaired["reasons"]
-    result = desired(record=record, released=released, previous=repaired)
-    assert result["resolution"] == "route-reconciled"
-    assert "No replacement release is required" in tracker.body(record["profile"], result)
-    assert "Resolved by the completed" not in tracker.body(record["profile"], result)
-    client = Issues()
-    tracker.reconcile(client, record["profile"], previous, None)
-    tracker.reconcile(client, record["profile"], result, client.items[0])
-    assert client.items[0]["state_reason"] == "not_planned"
-    later = replacement() | {"profile": record["profile"]}
-    stale = desired(record=later, released=released, previous=repaired)
-    assert "resolution" not in stale
-    assert stale["status"] == "Resolved by the completed, verified replacement release"
+def test_package_requirement_policy_validation(tmp_path, damage):
+    policy = {"schemaVersion": 1, "profiles": {"graphviz": [copy.deepcopy(REQUIREMENT)]}}
+    entry = policy["profiles"]["graphviz"][0]
+    if damage == "profile":
+        policy["profiles"]["unknown"] = policy["profiles"].pop("graphviz")
+    elif damage == "package":
+        entry["package"] = "../outside"
+    elif damage == "version":
+        entry["minimumVersion"] = "latest"
+    elif damage == "reason":
+        entry["reason"] = " "
+    elif damage == "duplicate":
+        policy["profiles"]["graphviz"].append(copy.deepcopy(entry))
+    elif damage == "schema":
+        policy["schemaVersion"] = 2
+    package = tmp_path / "packages/maf-sandbox-drawio/pyproject.toml"
+    package.parent.mkdir(parents=True)
+    package.write_text('[project]\nname = "maf-sandbox-drawio"\n', encoding="utf-8")
+    path = tmp_path / "images/package-requirements.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps(policy), encoding="utf-8")
+    if damage:
+        with pytest.raises(ValueError):
+            tracker.package_requirements(tmp_path)
+    else:
+        assert tracker.package_requirements(tmp_path) == policy["profiles"]
 
 
 def test_scan_timestamps_and_catalogue_ids_do_not_change_component_identity():
@@ -314,177 +283,6 @@ def test_scan_timestamps_and_catalogue_ids_do_not_change_component_identity():
     assert optional_desired(observed=candidate(version="1")) is None
 
 
-@pytest.mark.parametrize("route", ["upstream", "source"])
-@pytest.mark.parametrize("damage", [None, "missing", "ambiguous", "unverified", "delta", "time"])
-def test_old_component_route_is_reconciled_against_authenticated_original_release(
-    bicep_request, monkeypatch, tmp_path, route, damage
-):
-    original, released, observed, previous = bicep_request
-    observed["bicepRoute"] = route
-    current = replacement() | {"profile": original["profile"]}
-    releases = {"original": original, "current": current}
-    if damage == "missing":
-        del releases["original"]
-    elif damage == "ambiguous":
-        releases["duplicate"] = original
-    elif damage == "delta":
-        observed["components"] = []
-    elif damage == "time":
-        observed["observedAt"] = original["completedAt"]
-    fetched = []
-
-    def verified(_client, record, _directory):
-        fetched.append(record)
-        if damage == "unverified":
-            raise ValueError("Unverified historical release")
-        return released
-
-    monkeypatch.setattr(tracker, "baseline", verified)
-    monkeypatch.setattr(tracker, "action_listing", lambda *_: [])
-    monkeypatch.setattr(tracker, "candidates", lambda *_, **__: {original["profile"]: observed})
-    latest = released | {"components": [["apk", "graphviz", "3", "pkg:apk/graphviz@3"]]}
-    repaired = tracker.reconcile_component_route(
-        GitHub(), current, latest, previous, tmp_path, releases=releases
-    )
-    assert repaired is not None
-    if damage:
-        assert repaired == previous
-    elif route == "source":
-        assert repaired["reasons"]["components"]["bicepRoute"] == "source"
-        assert not desired(record=current, released=latest, previous=repaired)["resolved"]
-    else:
-        assert fetched == [original]
-        assert "components" not in repaired["reasons"]
-        assert repaired["routeReconciliation"]["comparisonDigest"] == original["registryDigest"]
-        result = desired(record=current, released=latest, previous=repaired)
-        assert result["resolved"]
-        assert result["resolution"] == "route-reconciled"
-
-
-@pytest.mark.parametrize(
-    "damage", [None, "missing", "duplicate", "hash", "time", "untrusted", "incomplete"]
-)
-def test_legacy_scan_link_recovery_requires_unique_exact_evidence(
-    bicep_request, monkeypatch, tmp_path, damage
-):
-    original, released, observed, previous = bicep_request
-    current = replacement() | {"profile": original["profile"]}
-    previous["reasons"]["components"].update(
-        evidence=f"https://github.com/{tracker.REPOSITORY}/actions/runs/999/attempts/1",
-        observedAt=observed["observedAt"],
-    )
-    run = {
-        "id": 123,
-        "head_repository": {"full_name": tracker.REPOSITORY},
-        "head_branch": "main",
-        "path": ".github/workflows/image-security.yml",
-        "event": "schedule",
-        "status": "completed",
-        "created_at": "2026-01-01T23:00:00Z",
-        "updated_at": "2026-01-02T01:00:00Z",
-    }
-    if damage == "hash":
-        observed["components"] = []
-    elif damage == "time":
-        observed["observedAt"] = "2026-01-02T00:00:01Z"
-    elif damage == "untrusted":
-        run["head_branch"] = "untrusted"
-
-    def history(*_):
-        if damage == "incomplete":
-            raise ValueError("Incomplete scan history")
-        return (
-            []
-            if damage == "missing"
-            else [run, run | {"id": 124}]
-            if damage == "duplicate"
-            else [run]
-        )
-
-    def scans(_client, run_id, *_args, **_kwargs):
-        return {
-            original["profile"]: observed
-            | {
-                "bicepRoute": "source",
-                "observedAt": "2026-01-04T00:00:00Z",
-                "evidence": previous["reasons"]["components"]["evidence"],
-            }
-            if run_id == "999"
-            else observed
-        }
-
-    monkeypatch.setattr(tracker, "baseline", lambda *_: released)
-    monkeypatch.setattr(tracker, "action_listing", history)
-    monkeypatch.setattr(tracker, "candidates", scans)
-    repaired = tracker.reconcile_component_route(
-        GitHub(), current, released, previous, tmp_path, releases={"original": original}
-    )
-    assert repaired is not None
-    if damage:
-        assert repaired == previous
-    else:
-        assert "components" not in repaired["reasons"]
-        assert repaired["routeReconciliation"]["evidence"] == observed["evidence"]
-        assert desired(record=current, released=released, previous=repaired)["resolved"]
-
-
-@pytest.mark.parametrize("saved_link", ["original", "recovered", "unrelated"])
-@pytest.mark.parametrize("newer", [False, True])
-def test_same_digest_recovery_clears_only_matching_candidate_assessment(
-    bicep_request, monkeypatch, tmp_path, saved_link, newer
-):
-    record, released, observed, previous = bicep_request
-    original_link = f"https://github.com/{tracker.REPOSITORY}/actions/runs/999/attempts/1"
-    previous["reasons"]["components"].update(
-        evidence=original_link, observedAt=observed["observedAt"]
-    )
-    previous["candidateEvidence"] = {
-        "original": original_link,
-        "recovered": observed["evidence"],
-        "unrelated": f"https://github.com/{tracker.REPOSITORY}/actions/runs/456/attempts/1",
-    }[saved_link]
-    if newer:
-        previous["candidateObservedAt"] = "2026-01-03T00:00:00Z"
-    run = {
-        "id": 123,
-        "head_repository": {"full_name": tracker.REPOSITORY},
-        "head_branch": "main",
-        "path": ".github/workflows/image-security.yml",
-        "event": "schedule",
-        "status": "completed",
-        "created_at": "2026-01-01T23:00:00Z",
-        "updated_at": "2026-01-02T01:00:00Z",
-    }
-    monkeypatch.setattr(tracker, "action_listing", lambda *_: [run])
-    monkeypatch.setattr(
-        tracker,
-        "candidates",
-        lambda _client, run_id, *_, **__: {record["profile"]: observed} if run_id == "123" else {},
-    )
-    repaired = tracker.reconcile_component_route(
-        GitHub(), record, released, previous, tmp_path, releases={}
-    )
-    assert repaired is not None
-    assert "components" not in repaired["reasons"]
-    result = desired(
-        record=record,
-        released=released,
-        previous=repaired,
-        changed=["images/bicep-sandbox/source.json"],
-    )
-    assert set(result["reasons"]) == {"source"}
-    assert result["currentDigest"] == record["registryDigest"]
-    assert not result["resolved"]
-    if newer or saved_link == "unrelated":
-        for field in ("candidateEvidence", "candidateFindings", "candidateObservedAt"):
-            assert result[field] == previous[field]
-        assert result["status"] == "Refresh blocked on candidate remediation"
-    else:
-        for field in ("candidateEvidence", "candidateFindings", "candidateObservedAt"):
-            assert field not in result
-        assert result["status"] == "Refresh available for maintainer review"
-
-
 def test_inventory_must_identify_the_assessed_image():
     with pytest.raises(ValueError, match="identify"):
         tracker.components(
@@ -505,49 +303,6 @@ def test_unfixed_published_vulnerability_opens_request_without_candidate():
     result = desired(record=RECORD | {"latestAttempt": observation})
     assert result["reasons"]["vulnerabilities"]["findings"] == [FINDING]
     assert result["status"] == "Blocked on remediation; no passing replacement assessed"
-
-
-def test_vulnerable_candidate_marks_release_request_blocked():
-    result = desired(observed=candidate(outcome="vulnerable"))
-    assert result["status"] == "Refresh blocked on candidate remediation"
-    assert "CVE-2026-1234" in tracker.body("graphviz", result)
-
-
-@pytest.mark.parametrize("outcome", ["clean", "vulnerable"])
-@pytest.mark.parametrize("repeat_candidate", [False, True])
-@pytest.mark.parametrize("previously_escalated", [False, True])
-def test_refresh_escalation_preserves_candidate_assessment(
-    outcome, repeat_candidate, previously_escalated
-):
-    observed = candidate(outcome=outcome)
-    previous = desired(observed=observed)
-    record = RECORD | {
-        "latestAttempt": {
-            "outcome": "vulnerable",
-            "findings": [FINDING],
-            "evidenceRelease": "image-monitor-1-1",
-        }
-    }
-    if previously_escalated:
-        previous["status"] = "Awaiting release preparation"
-    expected = (
-        "Blocked on candidate remediation"
-        if outcome == "vulnerable"
-        else "Last candidate scan passed; release gate still required"
-    )
-    for _ in range(2):
-        result = desired(
-            record=record,
-            previous=previous,
-            observed=observed if repeat_candidate else None,
-        )
-        assert tracker.required(result)
-        assert result["status"] == expected
-        assert result["candidateEvidence"] == observed["evidence"]
-        assert result["candidateObservedAt"] == observed["observedAt"]
-        assert result["candidateFindings"] == observed["assessment"]["findings"]
-        assert expected in tracker.body("graphviz", result)
-        previous = result
 
 
 @pytest.mark.parametrize("outcome", ["unavailable", "running"])
@@ -579,412 +334,6 @@ def test_clean_monitor_does_not_reopen_resolved_historical_finding():
     assert optional_desired(record=record) is None
 
 
-def test_passing_scan_cannot_close_issue_without_replacement():
-    previous = desired(changed=["images/graphviz-sandbox/Dockerfile"])
-    result = desired(
-        changed=["images/graphviz-sandbox/Dockerfile"],
-        observed=candidate(version="1"),
-        previous=previous,
-    )
-    assert not result["resolved"]
-    assert "source" in result["reasons"]
-
-
-def test_disproven_source_only_reason_closes_without_claiming_a_release():
-    previous = desired(changed=["scripts/build_scan_image.sh"])
-    result = desired(previous=previous)
-    assert result["resolved"]
-    assert result["resolution"] == "source-reconciled"
-    assert result["currentDigest"] == RECORD["registryDigest"]
-    assert result["reasons"] == {}
-    assert "No replacement release is required" in tracker.body("graphviz", result)
-    assert "Resolved by the completed" not in tracker.body("graphviz", result)
-    client = Issues()
-    tracker.reconcile(client, "graphviz", previous, None)
-    tracker.reconcile(client, "graphviz", result, client.items[0])
-    tracker.reconcile(client, "graphviz", result, client.items[0])
-    assert len(client.calls) == 2
-    assert client.items[0]["state_reason"] == "not_planned"
-
-
-@pytest.mark.parametrize("reason", ["components", "vulnerabilities"])
-def test_disproven_source_keeps_independent_replacement_requirements(reason):
-    record = (
-        RECORD
-        | {
-            "latestAttempt": {
-                "outcome": "vulnerable",
-                "findings": [FINDING],
-                "evidenceRelease": "monitor",
-            }
-        }
-        if reason == "vulnerabilities"
-        else RECORD
-    )
-    previous = desired(
-        record=record,
-        changed=["scripts/build_scan_image.sh"],
-        observed=candidate() if reason == "components" else None,
-    )
-    result = desired(
-        previous=previous,
-        observed=candidate(version="1"),
-        record=RECORD | {"latestAttempt": {"outcome": "unavailable"}},
-    )
-    assert not result["resolved"]
-    assert "source" not in result["reasons"]
-    assert reason in result["reasons"]
-
-
-def test_replacement_must_address_component_and_source_reasons():
-    previous = desired(changed=["images/graphviz-sandbox/Dockerfile"], observed=candidate())
-    unresolved = desired(record=replacement(), previous=previous)
-    assert not unresolved["resolved"]
-    assert "components" in unresolved["reasons"]
-    resolved = desired(
-        record=replacement(),
-        released=RELEASED | {"components": candidate()["components"]},
-        previous=previous,
-    )
-    assert resolved["resolved"]
-    assert resolved["reasons"] == {}
-
-
-@pytest.mark.parametrize("delta", ["upgrade", "addition", "removal"])
-def test_replacement_satisfies_component_delta_with_other_inventory_changes(delta):
-    unrelated = ["dotnet", "library", "1", "pkg:nuget/library@1"]
-    released = RELEASED | {"components": RELEASED["components"] + [unrelated]}
-    observed = candidate()
-    if delta == "addition":
-        observed["components"] += RELEASED["components"]
-    elif delta == "removal":
-        observed["components"] = []
-    observed["components"].append(unrelated)
-    previous = desired(released=released, observed=observed)
-    replacement_components = [row for row in observed["components"] if row != unrelated]
-    replacement_components.append(["dotnet", "library", "2", "pkg:nuget/library@2"])
-    result = desired(
-        record=replacement(),
-        released=RELEASED | {"components": replacement_components},
-        previous=previous,
-    )
-    assert result["resolved"]
-    assert result["reasons"] == {}
-
-
-@pytest.mark.parametrize("field", [0, 1, 2, 3])
-def test_replacement_requires_full_identity_of_each_added_component(field):
-    previous = desired(observed=candidate())
-    inventory = candidate()["components"]
-    inventory[0][field] += "-different"
-    result = desired(
-        record=replacement(), released=RELEASED | {"components": inventory}, previous=previous
-    )
-    assert not result["resolved"]
-    assert result["reasons"]["components"] == previous["reasons"]["components"]
-
-
-def test_replacement_with_added_component_cannot_retain_removed_component():
-    previous = desired(observed=candidate())
-    inventory = candidate()["components"] + RELEASED["components"]
-    result = desired(
-        record=replacement(), released=RELEASED | {"components": inventory}, previous=previous
-    )
-    assert not result["resolved"]
-    assert "components" in result["reasons"]
-
-
-def apk_component(version):
-    return [
-        "apk",
-        "harfbuzz",
-        version,
-        f"pkg:apk/wolfi/harfbuzz@{version}?arch=x86_64&distro=wolfi-20230201",
-    ]
-
-
-@pytest.mark.parametrize("legacy", [False, True])
-@pytest.mark.parametrize("revision", ["15.0.0-r1", "15.0.0-r10"])
-def test_replacement_satisfies_superseded_apk_revision(legacy, revision):
-    previous = desired(observed=candidate(components=[apk_component("15.0.0-r0")]))
-    if legacy:
-        previous["reasons"]["components"].pop("baselineDigest")
-    previous["currentDigest"] = replacement()["registryDigest"]
-    result = desired(
-        record=replacement(),
-        released=RELEASED | {"components": [apk_component(revision)]},
-        previous=previous,
-    )
-    assert result["resolved"]
-    assert result["reasons"] == {}
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    ["kind", "name", "namespace", "arch", "distro", "subpath", "missing-purl", "bad-purl"],
-)
-def test_apk_revision_requires_matching_package_identity(mutation):
-    wanted = apk_component("15.0.0-r0")
-    actual = apk_component("15.0.0-r1")
-    if mutation == "kind":
-        actual[0] = "deb"
-    elif mutation == "name":
-        actual[1] = "other"
-    elif mutation == "namespace":
-        actual[3] = actual[3].replace("wolfi/", "alpine/")
-    elif mutation == "arch":
-        actual[3] = actual[3].replace("x86_64", "aarch64")
-    elif mutation == "distro":
-        actual[3] = actual[3].replace("wolfi-20230201", "other")
-    elif mutation == "subpath":
-        actual[3] += "#other"
-    elif mutation == "missing-purl":
-        wanted[3] = actual[3] = ""
-    else:
-        wanted[3] = wanted[3].replace("-r0?", "-r0invalid?")
-        actual[3] = actual[3].replace("-r1?", "-r1invalid?")
-    assert not tracker.component_satisfied(wanted, {tuple(actual)})
-
-
-@pytest.mark.parametrize(
-    "version", ["15.0.0-r1", "14.6.0-r9", "15.0.1-r0", "15.0.0-r03", "15.0.0-rx"]
-)
-def test_apk_revision_does_not_infer_other_version_ordering(version):
-    assert not tracker.component_satisfied(
-        apk_component("15.0.0-r2"), {tuple(apk_component(version))}
-    )
-
-
-@pytest.mark.parametrize(
-    "blocker", ["same-digest", "source", "vulnerability", "removed", "addition"]
-)
-def test_superseded_apk_revision_preserves_other_requirements(blocker):
-    previous = desired(observed=candidate(components=[apk_component("15.0.0-r0")]))
-    record = replacement()
-    inventory = [apk_component("15.0.0-r1")]
-    changed = []
-    if blocker == "same-digest":
-        record = RECORD
-    elif blocker == "source":
-        changed = ["images/graphviz-sandbox/Dockerfile"]
-    elif blocker == "vulnerability":
-        record["latestAttempt"] = {
-            "outcome": "vulnerable",
-            "findings": [FINDING],
-            "evidenceRelease": "monitor",
-        }
-    elif blocker == "removed":
-        inventory += RELEASED["components"]
-    else:
-        previous["reasons"]["components"]["added"].append(["deb", "other", "1", ""])
-    result = desired(
-        record=record,
-        released=RELEASED | {"components": inventory},
-        changed=changed,
-        previous=previous,
-    )
-    assert not result["resolved"]
-    reason = {"source": "source", "vulnerability": "vulnerabilities"}.get(blocker, "components")
-    assert set(result["reasons"]) == {reason}
-
-
-@pytest.mark.parametrize("blocker", ["same-digest", "source", "vulnerability", "newer-candidate"])
-def test_satisfied_component_delta_preserves_independent_release_requirements(blocker):
-    previous = desired(observed=candidate())
-    record = replacement()
-    changed = []
-    observed = None
-    if blocker == "same-digest":
-        record = RECORD
-    elif blocker == "source":
-        changed = ["images/graphviz-sandbox/Dockerfile"]
-    elif blocker == "vulnerability":
-        record["latestAttempt"] = {
-            "outcome": "vulnerable",
-            "findings": [FINDING],
-            "evidenceRelease": "monitor",
-        }
-    else:
-        observed = candidate(version="3", observedAt="2026-01-04T00:00:00Z")
-    inventory = candidate()["components"] + [["dotnet", "library", "2", "pkg:nuget/library@2"]]
-    result = desired(
-        record=record,
-        released=RELEASED | {"components": inventory},
-        changed=changed,
-        observed=observed,
-        previous=previous,
-    )
-    assert not result["resolved"]
-    reason = {"source": "source", "vulnerability": "vulnerabilities"}.get(blocker, "components")
-    assert set(result["reasons"]) == {reason}
-
-
-@pytest.mark.parametrize("observed_at", ["2026-01-02T00:00:00Z", "2026-01-03T00:00:00Z"])
-def test_older_or_tied_candidate_cannot_undo_replacement_resolution(observed_at):
-    previous = desired(observed=candidate())
-    result = desired(
-        record=replacement(),
-        released=RELEASED | {"components": candidate()["components"]},
-        observed=candidate(version="3", observedAt=observed_at),
-        previous=previous,
-    )
-    assert result["resolved"]
-
-
-def test_delayed_candidate_cannot_rewind_newer_inventory_or_findings():
-    newer = candidate(version="3", outcome="vulnerable", observedAt="2026-01-04T00:00:00Z")
-    previous = desired(observed=newer)
-    result = desired(observed=candidate(), previous=previous)
-    assert result == previous
-
-
-@pytest.mark.parametrize("first,second", [("clean", "vulnerable"), ("vulnerable", "clean")])
-def test_equal_timestamp_candidate_cannot_replace_persisted_state(first, second):
-    client = Issues()
-    previous = desired(observed=candidate(outcome=first))
-    tracker.reconcile(client, "graphviz", previous, None)
-    match = tracker.STATE.search(client.items[0]["body"])
-    assert match is not None
-    saved = json.loads(match[1])
-    result = desired(observed=candidate(version="3", outcome=second), previous=saved)
-    tracker.reconcile(client, "graphviz", result, client.items[0])
-    assert result == saved
-    assert len(client.calls) == 1
-
-
-def test_new_vulnerability_prevents_closure_after_replacement():
-    previous = desired(changed=["images/graphviz-sandbox/Dockerfile"])
-    record = replacement() | {
-        "latestAttempt": {
-            "outcome": "vulnerable",
-            "findings": [FINDING],
-            "evidenceRelease": "image-monitor-2-1",
-        }
-    }
-    assert not desired(record=record, previous=previous)["resolved"]
-
-
-@pytest.mark.parametrize("legacy", [False, True])
-@pytest.mark.parametrize("reason", ["components", "vulnerabilities"])
-def test_requirements_on_replacement_need_another_release(reason, legacy):
-    previous = desired(observed=candidate())
-    record = replacement()
-    released = RELEASED | {"components": candidate()["components"]}
-    observed = None
-    if reason == "components":
-        observed = candidate(version="3", observedAt="2026-01-04T00:00:00Z")
-    else:
-        record = record | {
-            "latestAttempt": {
-                "outcome": "vulnerable",
-                "findings": [FINDING],
-                "evidenceRelease": "monitor/2",
-            }
-        }
-    pending = desired(record=record, released=released, observed=observed, previous=previous)
-    if legacy:
-        pending["reasons"][reason].pop("baselineDigest", None)
-    client = Issues()
-    tracker.reconcile(client, "graphviz", pending, None)
-    clean = record | {"latestAttempt": {"outcome": "clean"}}
-    unchanged = desired(
-        record=clean,
-        released=released,
-        observed=candidate(version="2", observedAt="2026-01-05T00:00:00Z"),
-        previous=pending,
-    )
-    assert not unchanged["resolved"]
-    if not legacy:
-        assert pending["reasons"][reason]["baselineDigest"] == record["registryDigest"]
-    assert unchanged["reasons"] == pending["reasons"]
-    tracker.reconcile(client, "graphviz", unchanged, client.items[0])
-    assert client.items[0]["state"] == "open"
-    assert desired(record=clean, released=released, previous=unchanged) == unchanged
-    next_record = clean | {
-        "version": "0.1.2",
-        "registryDigest": "sha256:" + "e" * 64,
-        "completedAt": "2026-01-06T00:00:00Z",
-    }
-    resolved = desired(
-        record=next_record,
-        released=RELEASED | {"components": candidate(version="3")["components"]},
-        previous=unchanged,
-    )
-    assert resolved["resolved"]
-    tracker.reconcile(client, "graphviz", resolved, client.items[0])
-    assert client.items[0]["state"] == "closed"
-    assert client.items[0]["state_reason"] == "completed"
-
-
-def test_matching_candidate_cannot_dismiss_unfulfilled_exact_component_requirement():
-    previous = desired(observed=candidate())
-    released = RELEASED | {"components": candidate(version="3")["components"]}
-    pending = desired(record=replacement(), released=released, previous=previous)
-    result = desired(
-        record=replacement(),
-        released=released,
-        observed=candidate(version="3", observedAt="2026-01-04T00:00:00Z"),
-        previous=pending,
-    )
-    assert not result["resolved"]
-    assert result["reasons"]["components"] == previous["reasons"]["components"]
-
-
-def test_legacy_component_requirement_can_close_after_inventory_already_advanced():
-    previous = desired(observed=candidate())
-    previous["reasons"]["components"].pop("baselineDigest")
-    previous["currentDigest"] = replacement()["registryDigest"]
-    result = desired(
-        record=replacement(),
-        released=RELEASED | {"components": candidate()["components"]},
-        previous=previous,
-    )
-    assert result["resolved"]
-
-
-@pytest.mark.parametrize("replacement_release", [False, True])
-@pytest.mark.parametrize("outcome", ["clean", "vulnerable"])
-def test_resolved_status_and_body_discard_pending_candidate_details(replacement_release, outcome):
-    previous = desired(
-        changed=["images/graphviz-sandbox/Dockerfile"],
-        observed=candidate(version="1", outcome=outcome),
-    )
-    result = desired(record=replacement() if replacement_release else RECORD, previous=previous)
-    expected = (
-        "Resolved by the completed, verified replacement release"
-        if replacement_release
-        else "No relevant build-input differences; no replacement required"
-    )
-    assert result["resolved"]
-    assert result["status"] == expected
-    assert "candidateEvidence" not in result
-    assert "candidateFindings" not in result
-    assert result["candidateObservedAt"] == previous["candidateObservedAt"]
-    text = tracker.body("graphviz", result)
-    assert expected in text
-    assert "Candidate blockers" not in text
-    assert "Candidate evidence" not in text
-    assert "release gate still required" not in text
-
-
-def test_monitor_reconciliation_keeps_unchanged_last_candidate_evidence():
-    observation = {
-        "outcome": "vulnerable",
-        "findings": [FINDING],
-        "evidenceRelease": "image-monitor-1-1",
-    }
-    record = RECORD | {"latestAttempt": observation}
-    state = desired(record=record, observed=candidate())
-    assert tracker.stable(desired(record=record, previous=state)) == tracker.stable(state)
-    newer = replacement()
-    pending = desired(
-        record=newer,
-        previous=state,
-        observed=candidate(version="3", observedAt="2026-01-04T00:00:00Z"),
-    )
-    assert tracker.stable(desired(record=newer, previous=pending)) == tracker.stable(pending)
-
-
 class Issues(GitHub):
     def __init__(self):
         self.items = []
@@ -1006,120 +355,6 @@ class Issues(GitHub):
             number = int(endpoint.rsplit("/", 1)[1])
             next(item for item in self.items if item["number"] == number).update(payload)
         return b"{}"
-
-
-def test_retries_and_unchanged_daily_scans_do_not_duplicate_issues_or_comments():
-    client = Issues()
-    state = desired(observed=candidate())
-    tracker.reconcile(client, "graphviz", state, None)
-    again = desired(observed=candidate(evidence="run/2"), previous=state)
-    tracker.reconcile(client, "graphviz", again, client.items[0])
-    assert len(client.items) == len(client.calls) == 1
-    changed = desired(
-        observed=candidate(version="3", observedAt="2026-01-02T00:00:01Z"), previous=again
-    )
-    tracker.reconcile(client, "graphviz", changed, client.items[0])
-    assert len(client.calls) == 2
-    assert client.calls[-1][1] == "PATCH"
-
-
-@pytest.mark.parametrize("profile", ["graphviz", "bicep", "bicep-avm"])
-def test_refresh_title_identifies_the_published_version(profile):
-    client = Issues()
-    state = desired(observed=candidate())
-    tracker.reconcile(client, profile, state, None)
-    assert client.items[0]["title"] == f"Image refresh available: {profile} (current 0.1.0)"
-    assert "next planned image release" in client.items[0]["body"]
-
-
-@pytest.mark.parametrize("resolved", [False, True])
-@pytest.mark.parametrize(
-    "old_title",
-    ["Image release needed: graphviz", "Image release needed: graphviz (replace 0.0.9)"],
-)
-def test_existing_issue_title_is_repaired_once_without_state_changes(resolved, old_title):
-    client = Issues()
-    state = desired(changed=["images/graphviz-sandbox/Dockerfile"])
-    tracker.reconcile(client, "graphviz", state, None)
-    if resolved:
-        state = desired(previous=state)
-        tracker.reconcile(client, "graphviz", state, client.items[0])
-    calls_before = len(client.calls)
-    issue = client.items[0]
-    issue["title"] = old_title
-    before = {key: value for key, value in issue.items() if key != "title"}
-    tracker.reconcile(client, "graphviz", state, issue)
-    tracker.reconcile(client, "graphviz", state, issue)
-    expected = (
-        "Image release needed: graphviz (resolved at 0.1.0)"
-        if resolved
-        else "Image refresh available: graphviz (current 0.1.0)"
-    )
-    assert issue["title"] == expected
-    assert {key: value for key, value in issue.items() if key != "title"} == before
-    assert len(client.calls) == calls_before + 1
-    assert client.calls[-1][1] == "PATCH"
-
-
-@pytest.mark.parametrize("reason", ["vulnerabilities", "route"])
-def test_refresh_escalates_to_required_replacement_without_duplicate_issue(reason):
-    client = Issues()
-    refresh = desired(observed=candidate())
-    tracker.reconcile(client, "graphviz", refresh, None)
-    state = copy.deepcopy(refresh)
-    state["reasons"][reason] = (
-        {"findings": [FINDING], "evidence": "monitor"}
-        if reason == "vulnerabilities"
-        else {"published": "upstream", "replacement": "source"}
-    )
-    tracker.reconcile(client, "graphviz", state, client.items[0])
-    assert len(client.items) == 1
-    assert client.items[0]["title"] == "Image release needed: graphviz (replace 0.1.0)"
-    assert "Prepare a replacement image release" in client.items[0]["body"]
-    assert "next planned image release" not in client.items[0]["body"]
-    tracker.reconcile(client, "graphviz", refresh, client.items[0])
-    assert client.items[0]["title"] == "Image refresh available: graphviz (current 0.1.0)"
-
-
-def test_closure_and_new_issue_after_closure_are_idempotent():
-    client = Issues()
-    state = desired(changed=["images/graphviz-sandbox/Dockerfile"])
-    tracker.reconcile(client, "graphviz", state, None)
-    resolved = desired(record=replacement(), previous=state)
-    tracker.reconcile(client, "graphviz", resolved, client.items[0])
-    tracker.reconcile(client, "graphviz", resolved, client.items[0])
-    assert len(client.calls) == 2
-    assert client.items[0]["state"] == "closed"
-    assert client.items[0]["state_reason"] == "completed"
-    assert client.items[0]["title"] == "Image release needed: graphviz (resolved at 0.1.1)"
-    newer = desired(
-        record=replacement(), observed=candidate(version="3", observedAt="2026-01-04T00:00:00Z")
-    )
-    tracker.reconcile(client, "graphviz", newer, client.items[0])
-    tracker.reconcile(client, "graphviz", newer, client.items[1])
-    assert client.items[0]["state"] == "closed"
-    assert client.items[1]["state"] == "open"
-    assert client.items[1]["title"] == "Image refresh available: graphviz (current 0.1.1)"
-    assert len(client.items) == 2
-    assert len(client.calls) == 3
-
-
-def test_missing_issue_state_refuses_mutation():
-    client = Issues()
-    with pytest.raises(ValueError, match="recoverable"):
-        tracker.reconcile(
-            client, "graphviz", desired(observed=candidate()), {"body": "edited", "number": 1}
-        )
-    assert not client.calls
-
-
-@pytest.mark.parametrize("ending", ["-->", "--!>"])
-def test_issue_state_cannot_break_its_html_comment(ending):
-    result = desired(changed=[f"images/graphviz-sandbox/{ending}file"])
-    match = tracker.STATE.search(tracker.body("graphviz", result))
-    assert match is not None
-    assert ending not in match[1]
-    assert json.loads(match[1]) == result
 
 
 @pytest.mark.parametrize(
@@ -1355,7 +590,7 @@ def test_consumer_guide_alone_does_not_request_a_replacement(tmp_path, change):
     mixed = commit(tmp_path, {payload: "FROM newer\n"})
     changed = tracker.changed_inputs(tmp_path, base, mixed, "graphviz")
     assert changed == [payload]
-    assert desired(changed=changed)["reasons"]["source"]["paths"] == [payload]
+    assert optional_desired(changed=changed) is None
 
 
 @pytest.mark.parametrize("change", ["added", "modified", "deleted"])
@@ -1376,37 +611,13 @@ def test_gitignore_changes_only_request_workspace_image_refresh(tmp_path, change
         assert changed == ([".gitignore"] if profile == "hyperlight-aks-probe" else [])
     assert tracker.changed_profiles(tmp_path, base, head, ".gitignore") == tracker.PROFILES
     record = RECORD | {"profile": "drawio-export"}
-    previous = desired(record=record, changed=[".gitignore"])
+    previous = legacy_request("source")
     changed = tracker.changed_inputs(tmp_path, base, head, "drawio-export")
     result = desired(record=record, changed=changed, previous=previous)
     assert result["resolved"]
-    assert result["resolution"] == "source-reconciled"
+    assert result["resolution"] == "policy-reconciled"
     mixed = commit(tmp_path, {payload: "pillow==13.0.0\n"})
     assert tracker.changed_inputs(tmp_path, base, mixed, "drawio-export") == [payload]
-    for observed, monitored in (
-        (candidate(), record),
-        (candidate(outcome="vulnerable"), record),
-        (
-            None,
-            record
-            | {
-                "latestAttempt": {
-                    "outcome": "vulnerable",
-                    "findings": [FINDING],
-                    "evidenceRelease": "image-monitor-1-1",
-                }
-            },
-        ),
-    ):
-        previous = desired(record=monitored, changed=[".gitignore"], observed=observed)
-        result = desired(record=monitored, changed=changed, previous=previous)
-        assert not result["resolved"]
-        assert "source" not in result["reasons"]
-        assert result["reasons"] == {
-            key: value for key, value in previous["reasons"].items() if key != "source"
-        }
-        if observed:
-            assert result["candidateFindings"] == previous["candidateFindings"]
 
 
 @pytest.mark.parametrize("path", [".dockerignore", ".gitattributes", ".gitmodules"])
@@ -1455,19 +666,17 @@ def test_bicep_profile_rename_reconciles_avm_source_request(tmp_path):
     head = commit(tmp_path, {path: builder})
     record = RECORD | {"profile": "bicep-avm", "sourceCommit": base}
     released = RELEASED | {"bicepRoute": "source"}
-    previous = desired(record=record, released=released, changed=[path])
+    previous = legacy_request("source")
     changed = tracker.changed_inputs(tmp_path, base, head, "bicep-avm")
     assert changed == []
     result = desired(record=record, released=released, changed=changed, previous=previous)
     assert result["resolved"]
-    assert result["resolution"] == "source-reconciled"
+    assert result["resolution"] == "policy-reconciled"
     assert tracker.changed_inputs(tmp_path, base, head, "bicep-docker-sbx") == [path]
     mixed = commit(tmp_path, {path: builder.replace('"--pull", ', "")})
     changed = tracker.changed_inputs(tmp_path, base, mixed, "bicep-avm")
     assert changed == [path]
-    assert not desired(record=record, released=released, changed=changed, previous=previous)[
-        "resolved"
-    ]
+    assert desired(record=record, released=released, changed=changed, previous=previous)["resolved"]
 
 
 def test_bicep_diagnostic_changes_do_not_hide_build_or_guard_changes(tmp_path):
@@ -1541,19 +750,17 @@ def test_terraform_profile_addition_reconciles_bicep_source_request(tmp_path):
     head = commit(tmp_path, {paths[0]: json.dumps(catalogue), paths[1]: builder})
     record = RECORD | {"profile": "bicep-avm", "sourceCommit": base}
     released = RELEASED | {"bicepRoute": "source"}
-    previous = desired(record=record, released=released, changed=paths)
+    previous = legacy_request("source")
     changed = tracker.changed_inputs(tmp_path, base, head, "bicep-avm")
     assert changed == []
     result = desired(record=record, released=released, changed=changed, previous=previous)
-    assert result["resolution"] == "source-reconciled"
+    assert result["resolution"] == "policy-reconciled"
     assert tracker.changed_inputs(tmp_path, base, head, "terraform-avm") == paths
     payload = "images/bicep-sandbox/Dockerfile"
     mixed = commit(tmp_path, {payload: "FROM newer\n"})
     changed = tracker.changed_inputs(tmp_path, base, mixed, "bicep-avm")
     assert changed == [payload]
-    assert not desired(record=record, released=released, changed=changed, previous=previous)[
-        "resolved"
-    ]
+    assert desired(record=record, released=released, changed=changed, previous=previous)["resolved"]
 
 
 @pytest.mark.parametrize(
@@ -1587,9 +794,7 @@ def test_changed_inputs_preserve_git_quoted_filenames_and_prevent_closure(tmp_pa
     path = f"images/graphviz-sandbox/{filename}"
     changed = tracker.changed_inputs(tmp_path, base, head, "graphviz")
     assert changed == [path]
-    previous = desired(changed=[path])
-    result = desired(record=replacement(), changed=changed, previous=previous)
-    assert not result["resolved"]
+    assert optional_desired(record=replacement(), changed=changed) is None
 
 
 def test_core_python_source_remains_an_image_release_input(tmp_path):
@@ -1617,8 +822,7 @@ def test_unclassifiable_metadata_remains_a_release_input(tmp_path, path, change)
     changed = tracker.changed_inputs(tmp_path, base, head, "hyperlight-aks-probe")
     assert changed == [path]
     assert tracker.changed_inputs(tmp_path, base, head, "graphviz") == []
-    previous = desired(changed=changed)
-    assert not desired(record=replacement(), changed=changed, previous=previous)["resolved"]
+    assert optional_desired(record=replacement(), changed=changed) is None
 
 
 def test_missing_comparison_history_still_refuses_reconciliation(tmp_path):
@@ -1682,7 +886,7 @@ def test_manual_scan_selects_one_profile(monkeypatch, tmp_path):
 def reporter(monkeypatch):
     client = Issues()
     current = {
-        "record": copy.deepcopy(RECORD),
+        "record": vulnerable_record(),
         "released": copy.deepcopy(RELEASED),
         "observed": candidate(),
     }
@@ -1696,6 +900,7 @@ def reporter(monkeypatch):
             },
         )
 
+    monkeypatch.setattr(tracker, "package_requirements", lambda _: {})
     monkeypatch.setattr(tracker.History, "head", head)
     monkeypatch.setattr(tracker, "GitHub", lambda: client)
     monkeypatch.setattr(client, "pages", lambda _: copy.deepcopy(client.items))
@@ -1714,73 +919,71 @@ def reporter(monkeypatch):
     return client, current
 
 
-def test_reporter_clears_source_only_request_and_creates_new_issue_for_changes(
-    reporter, monkeypatch
-):
+@pytest.mark.parametrize("closed", [False, True])
+def test_reporter_retires_drift_without_reopening_or_creating_successor(reporter, closed):
     client, current = reporter
-    current["observed"] = None
-    state = desired(changed=["scripts/build_scan_image.sh"])
-    tracker.reconcile(client, "graphviz", state, None)
-    tracker.main()
-    tracker.main()
-    assert len(client.calls) == 2
-    assert client.items[0]["state"] == "closed"
-    assert client.items[0]["state_reason"] == "not_planned"
-    monkeypatch.setattr(
-        tracker, "changed_inputs", lambda *_: ["images/graphviz-sandbox/Dockerfile"]
+    current["record"] = copy.deepcopy(RECORD)
+    state = legacy_request("components", "source")
+    client.items.append(
+        {
+            "number": 1,
+            "state": "closed" if closed else "open",
+            "user": {"login": "github-actions[bot]", "type": "Bot"},
+            "title": "Image refresh available: graphviz (current 0.1.0)",
+            "body": tracker.body("graphviz", state),
+        }
     )
     tracker.main()
     tracker.main()
-    assert len(client.items) == 2
+    current["observed"] = candidate(version="3", observedAt="2026-01-04T00:00:00Z")
+    tracker.main()
+    assert len(client.items) == len(client.calls) == 1
     assert client.items[0]["state"] == "closed"
-    assert client.items[1]["state"] == "open"
-    assert len(client.calls) == 3
+    assert client.items[0]["state_reason"] == "not_planned"
+    assert "No replacement release is claimed" in client.items[0]["body"]
+    current["record"] = vulnerable_record()
+    tracker.main()
+    tracker.main()
+    assert len(client.items) == len(client.calls) == 2
+    assert client.items[0]["state"] == "closed"
+    assert client.items[1]["title"] == "Image release needed: graphviz (replace 0.1.0)"
 
 
-@pytest.mark.parametrize("replacement_release", [False, True])
-def test_reporter_repairs_closed_request_and_creates_new_issue_with_current_baseline(
-    reporter, replacement_release
-):
+def test_reporter_does_not_open_drift_only_request(reporter):
     client, current = reporter
-    previous = desired(changed=["images/graphviz-sandbox/Dockerfile"])
-    if replacement_release:
-        current["record"] = replacement()
-    resolved = desired(record=current["record"], previous=previous)
-    expected = resolved["status"]
-    resolved["status"] = "Awaiting release preparation"
-    resolved["candidateEvidence"] = "run/old"
-    resolved["candidateFindings"] = [FINDING]
-    tracker.reconcile(client, "graphviz", resolved, None)
+    current["record"] = copy.deepcopy(RECORD)
+    tracker.main()
+    tracker.main()
+    assert client.calls == []
+
+
+def test_reporter_keeps_manual_closure_and_creates_one_security_successor(reporter):
+    client, current = reporter
+    tracker.main()
     client.items[0]["state"] = "closed"
-    current["record"] = replacement() | {
-        "version": "0.1.2",
-        "registryDigest": "sha256:" + "e" * 64,
-    }
+    historical = copy.deepcopy(client.items[0])
     current["observed"] = None
     tracker.main()
     tracker.main()
+    assert client.items[0] == historical
+    assert len(client.items) == len(client.calls) == 2
+    assert client.items[1]["state"] == "open"
+
+
+def test_reporter_opens_and_satisfies_package_requirement(reporter, monkeypatch):
+    client, current = reporter
+    current["record"] = copy.deepcopy(RECORD)
+    monkeypatch.setattr(tracker, "package_requirements", lambda _: {"graphviz": [REQUIREMENT]})
+    tracker.main()
+    tracker.main()
+    assert len(client.calls) == 1
+    assert REQUIREMENT["package"] in client.items[0]["body"]
+    current["record"] = replacement()
+    tracker.main()
+    tracker.main()
     assert len(client.calls) == 2
-    match = tracker.STATE.search(client.items[0]["body"])
-    assert match is not None
-    repaired = json.loads(match[1])
-    assert repaired["status"] == expected
-    assert repaired["currentDigest"] == resolved["currentDigest"]
-    assert repaired.get("resolution") == resolved.get("resolution")
-    assert "candidateEvidence" not in repaired
-    assert "candidateFindings" not in repaired
     assert client.items[0]["state"] == "closed"
-    current["observed"] = candidate(version="3", observedAt="2026-01-04T00:00:00Z")
-    closed = copy.deepcopy(client.items[0])
-    tracker.main()
-    tracker.main()
-    assert client.items[0] == closed
-    assert len(client.items) == 2
-    assert len(client.calls) == 3
-    match = tracker.STATE.search(client.items[1]["body"])
-    assert match is not None
-    new = json.loads(match[1])
-    assert new["baseline"] == current["record"]["registryDigest"]
-    assert not new["resolved"]
+    assert client.items[0]["state_reason"] == "completed"
 
 
 @pytest.mark.parametrize("failure", ["baseline", "changed_inputs"])
@@ -1789,7 +992,7 @@ def test_source_reconciliation_requires_verified_evidence_and_comparison(
 ):
     client, current = reporter
     current["observed"] = None
-    tracker.reconcile(client, "graphviz", desired(changed=["scripts/build_scan_image.sh"]), None)
+    tracker.reconcile(client, "graphviz", desired(record=vulnerable_record()), None)
 
     def unavailable(*_):
         raise ValueError("Evidence unavailable")
@@ -1820,6 +1023,7 @@ def test_reporter_creates_updates_closes_and_starts_new_issue(reporter, extra_co
     assert client.items[0]["state"] == "closed"
     tracker.main()
     assert len(client.calls) == 3
+    current["record"] = vulnerable_record(**replacement())
     current["observed"] = candidate(version="4", observedAt="2026-01-04T00:00:00Z")
     closed = copy.deepcopy(client.items[0])
     tracker.main()
@@ -1842,61 +1046,6 @@ def test_unchanged_newer_observation_prevents_delayed_intermediate_scan(reporter
     tracker.main()
     assert client.items == saved
     assert len(client.items) == 1
-
-
-@pytest.mark.parametrize("reason", ["components", "vulnerabilities", "route"])
-def test_manual_closure_creates_one_successor_preserving_requirements(reporter, reason):
-    client, current = reporter
-    tracker.main()
-    if reason != "components":
-        state = desired(observed=current["observed"])
-        state["reasons"][reason] = (
-            {
-                "findings": [FINDING],
-                "evidence": "monitor",
-                "baselineDigest": RECORD["registryDigest"],
-            }
-            if reason == "vulnerabilities"
-            else {"published": "upstream", "replacement": "source"}
-        )
-        client.items[0]["body"] = tracker.body("graphviz", state)
-    client.items[0].update(state="closed", state_reason="not_planned")
-    closed = copy.deepcopy(client.items[0])
-    current["observed"] = None
-    tracker.main()
-    tracker.main()
-    assert client.items[0] == closed
-    assert len(client.items) == len(client.calls) == 2
-    assert client.items[1]["number"] != closed["number"]
-    assert client.items[1]["state"] == "open"
-    match = tracker.STATE.search(client.items[1]["body"])
-    assert match is not None
-    successor = json.loads(match[1])
-    assert reason in successor["reasons"]
-    assert successor["candidateObservedAt"] == candidate()["observedAt"]
-    current["observed"] = candidate(version="4", observedAt="2026-01-04T00:00:00Z")
-    tracker.main()
-    assert len(client.items) == 2
-    assert client.calls[-1][0].endswith("/2")
-    assert client.items[0] == closed
-
-
-@pytest.mark.parametrize("closed", [False, True])
-def test_reporter_resolves_superseded_revision_without_successor(reporter, closed):
-    client, current = reporter
-    current["observed"] = candidate(components=[apk_component("15.0.0-r0")])
-    tracker.main()
-    if closed:
-        client.items[0]["state"] = "closed"
-    current["record"] = replacement()
-    current["released"] = RELEASED | {"components": [apk_component("15.0.0-r1")]}
-    current["observed"] = None
-    tracker.main()
-    tracker.main()
-    assert len(client.items) == 1
-    assert len(client.calls) == 2
-    assert client.items[0]["state"] == "closed"
-    assert "resolved at 0.1.1" in client.items[0]["title"]
 
 
 def test_issue_created_between_pages_does_not_duplicate_a_release_request(reporter, monkeypatch):
@@ -1970,13 +1119,13 @@ def test_source_commit_uses_literal_changed_filenames(reporter, monkeypatch, tmp
     tracker.main()
     match = tracker.STATE.search(client.items[0]["body"])
     assert match is not None
-    assert json.loads(match[1])["reasons"]["source"]["commit"] == revisions[1]
+    assert json.loads(match[1])["changedInputs"]["commit"] == revisions[1]
 
 
 @pytest.mark.parametrize("author", ["outside-contributor", "other-bot[bot]"])
 def test_unowned_marker_issue_is_never_used_or_modified(reporter, author):
     client, _ = reporter
-    state = desired(observed=candidate())
+    state = desired(record=vulnerable_record(), observed=candidate())
     forged = {
         "number": 100,
         "state": "open",
@@ -2043,6 +1192,7 @@ def test_concurrent_release_completion_refuses_issue_mutation(reporter, monkeypa
             },
         )
 
+    monkeypatch.setattr(tracker, "package_requirements", lambda _: {})
     monkeypatch.setattr(tracker.History, "head", head)
     with pytest.raises(ValueError, match="changed during"):
         tracker.main()
@@ -2307,13 +1457,12 @@ def test_partial_rerun_does_not_refresh_retained_profile_evidence(
         assert result["graphviz"]["evidence"].endswith("/attempts/1")
 
 
-def test_paths_and_component_names_cannot_escape_issue_code_spans():
+def test_paths_and_package_reasons_cannot_escape_issue_code_spans():
     path = "images/graphviz-sandbox/a` @unexpected **bold**.txt"
-    observed = candidate()
-    observed["components"][0][1] = "a` @unexpected **bold**"
-    text = tracker.body("graphviz", desired(changed=[path], observed=observed))
+    requirement = REQUIREMENT | {"reason": "a` @unexpected **bold**"}
+    text = tracker.body("graphviz", desired(changed=[path], requirements=[requirement]))
     assert f"`` {path} ``" in text
-    assert "`` a` @unexpected **bold** 2 ``" in text
+    assert "`` a` @unexpected **bold** ``" in text
 
 
 @pytest.mark.parametrize(
@@ -2568,3 +1717,76 @@ def test_profile_job_history_is_complete_across_all_attempts(scan_artifact, monk
     else:
         with pytest.raises(ValueError, match="history"):
             tracker.newer_profiles(GitHub(), run, {p: run["updated_at"] for p in tracker.PROFILES})
+
+
+@pytest.mark.parametrize("observed_at", ["2026-01-02T00:00:00Z", "2026-01-03T00:00:00Z"])
+def test_older_or_tied_candidate_cannot_undo_replacement_resolution(observed_at):
+    previous = desired(record=vulnerable_record(), observed=candidate())
+    result = desired(
+        record=replacement(),
+        released=RELEASED | {"components": candidate()["components"]},
+        observed=candidate(version="3", observedAt=observed_at),
+        previous=previous,
+    )
+    assert result["resolved"]
+
+
+def test_delayed_candidate_cannot_rewind_newer_inventory_or_findings():
+    newer = candidate(version="3", outcome="vulnerable", observedAt="2026-01-04T00:00:00Z")
+    previous = desired(record=vulnerable_record(), observed=newer)
+    result = desired(record=vulnerable_record(), observed=candidate(), previous=previous)
+    assert result == previous
+
+
+@pytest.mark.parametrize("first,second", [("clean", "vulnerable"), ("vulnerable", "clean")])
+def test_equal_timestamp_candidate_cannot_replace_persisted_state(first, second):
+    client = Issues()
+    previous = desired(record=vulnerable_record(), observed=candidate(outcome=first))
+    tracker.reconcile(client, "graphviz", previous, None)
+    match = tracker.STATE.search(client.items[0]["body"])
+    assert match is not None
+    saved = json.loads(match[1])
+    result = desired(
+        record=vulnerable_record(), observed=candidate(version="3", outcome=second), previous=saved
+    )
+    tracker.reconcile(client, "graphviz", result, client.items[0])
+    assert result == saved
+    assert len(client.calls) == 1
+
+
+def test_retries_and_unchanged_daily_scans_do_not_duplicate_issues_or_comments():
+    client = Issues()
+    state = desired(record=vulnerable_record(), observed=candidate())
+    tracker.reconcile(client, "graphviz", state, None)
+    again = desired(
+        record=vulnerable_record(), observed=candidate(evidence="run/2"), previous=state
+    )
+    tracker.reconcile(client, "graphviz", again, client.items[0])
+    assert len(client.items) == len(client.calls) == 1
+    changed = desired(
+        observed=candidate(version="3", observedAt="2026-01-02T00:00:01Z"), previous=again
+    )
+    tracker.reconcile(client, "graphviz", changed, client.items[0])
+    assert len(client.calls) == 2
+    assert client.calls[-1][1] == "PATCH"
+
+
+def test_missing_issue_state_refuses_mutation():
+    client = Issues()
+    with pytest.raises(ValueError, match="recoverable"):
+        tracker.reconcile(
+            client,
+            "graphviz",
+            desired(record=vulnerable_record(), observed=candidate()),
+            {"body": "edited", "number": 1},
+        )
+    assert not client.calls
+
+
+@pytest.mark.parametrize("ending", ["-->", "--!>"])
+def test_issue_state_cannot_break_its_html_comment(ending):
+    result = desired(record=vulnerable_record(), changed=[f"images/graphviz-sandbox/{ending}file"])
+    match = tracker.STATE.search(tracker.body("graphviz", result))
+    assert match is not None
+    assert ending not in match[1]
+    assert json.loads(match[1]) == result
