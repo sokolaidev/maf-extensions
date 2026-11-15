@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.6](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.5...maf-compaction-v0.13.6) (2026-11-15)
+
+
+### Fixes
+
+* **maf-compaction:** refuse a harder rewrite that removes under a tenth of its records, so a prompt that stays over the budget no longer asks for both attempts on every pass ([#2762](https://github.com/sokolaidev/maf-extensions/issues/2762)) ([8e7b1f4](https://github.com/sokolaidev/maf-extensions/commit/8e7b1f4bf5922f3d89bef0a6784adc505c56b46d))
+
 ## [0.13.5](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.4...maf-compaction-v0.13.5) (2026-11-15)
 
 
