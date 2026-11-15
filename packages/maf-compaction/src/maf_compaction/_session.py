@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Final
 
 from agent_framework import (
@@ -54,8 +54,6 @@ class CompactionStack:
     strategy: _Strategy
     gate: RecallGate
     middleware: ToolResultRecallMiddleware
-    #: A copy of the snapshot a registry last wrote for this stack; any other is someone else's.
-    persisted: dict[str, Any] | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         records = (
@@ -153,7 +151,7 @@ class SessionCompactionRegistry:
                 try:
                     yield current.stack
                 finally:
-                    self._persist(session, current.stack)
+                    session.state[self.state_key] = current.stack.to_dict()
                     self._remember_merge_state(session)
                 return
         if session.session_id in self._active:
@@ -173,9 +171,6 @@ class SessionCompactionRegistry:
                 raise ValueError("Background record merging requires a composed strategy.")
             work.bind(stack.strategy, data)
         if data is not None:
-            if data != stack.persisted:
-                # Decisions restored from elsewhere did not make the list this stack kept.
-                self._forget(stack)
             stack.restore(data)
         stack.middleware._bind_session_id(session.session_id)  # pyright: ignore[reportPrivateUsage]
         binding = _Binding(session, stack)
@@ -185,7 +180,7 @@ class SessionCompactionRegistry:
             yield stack
         finally:
             try:
-                self._persist(session, stack)
+                session.state[self.state_key] = stack.to_dict()
                 self._remember_merge_state(session)
             finally:
                 self._current.reset(token)
@@ -212,12 +207,6 @@ class SessionCompactionRegistry:
         stack = self._cache.get(session_id)
         if stack is not None:
             self._forget(stack)
-
-    def _persist(self, session: AgentSession, stack: CompactionStack) -> None:
-        snapshot = stack.to_dict()
-        # A host can restore other decisions into the dictionary it holds.
-        stack.persisted = deepcopy(snapshot)
-        session.state[self.state_key] = snapshot
 
     @staticmethod
     def _forget(stack: CompactionStack) -> None:

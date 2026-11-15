@@ -1085,7 +1085,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         )
 
     def restore_decisions(self, decisions: ChainDecisions) -> None:
-        """Put back decisions taken with :meth:`decision_state`, chain and record half alike."""
+        """Put back decisions taken with :meth:`decision_state`, chain and record half alike.
+
+        Decisions other than the ones in force let go of the list the last per-call pass left.
+        """
+        if self._carried is not None and decisions != self.decision_state():
+            self._carried = None
+        self._put_decisions(decisions)
+
+    def _put_decisions(self, decisions: ChainDecisions) -> None:
         self._wait_since = decisions.wait_since
         self._anchor = decisions.anchor
         self._quiet_through = decisions.quiet_through
@@ -1134,8 +1142,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         }
 
     def restore_session_state(self, data: dict[str, Any]) -> None:
-        """Replace behavioral state with a snapshot from :meth:`session_state`."""
-        self.restore_decisions(ChainDecisions.from_dict(data["decisions"]))
+        """Replace behavioral state with a snapshot from :meth:`session_state`.
+
+        A snapshot other than the one the strategy would write now lets go of the list the last
+        per-call pass left: that list belongs to the decisions that made it.
+        """
+        if self._carried is not None and data != self.session_state():
+            self._carried = None
+        self._put_decisions(ChainDecisions.from_dict(data["decisions"]))
         self.user_turns.restore_session_state(data["user_turns"])
         kept_records = data["kept_records"]
         if isinstance(kept_records, dict):
@@ -1389,7 +1403,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return self._carried is not None
 
     def forget_carried_view(self) -> None:
-        """Release the list kept for the next call; the next pass puts its decisions back."""
+        """Release the list kept for the next call; the next pass puts its decisions back.
+
+        The strategy's own restore methods do this for a state other than the one it holds. A
+        host that restores one half on its own, through ``tool_results`` or ``user_turns``,
+        calls this itself.
+        """
         self._carried = None
 
     @property

@@ -1066,6 +1066,43 @@ async def test_the_list_is_released_when_the_turn_ends(ending: str | None) -> No
     assert built[0].carries_view is (ending is None)
 
 
+@pytest.mark.parametrize("through", ["session-state", "decisions"])
+@pytest.mark.parametrize("state", ["an-earlier-one", "the-one-it-holds"])
+async def test_a_direct_restore_keeps_the_list_only_for_the_state_it_holds(
+    through: str, state: str
+) -> None:
+    """The strategy's own restore methods are public, so a host can roll it back without a registry."""
+    transcript = _transcript(14, 10, 6)
+    strategy = _strategy(_Summarizer(), budget=_budget(transcript, 0.33), policy="shed")
+    earlier = copy.deepcopy(strategy.session_state()), strategy.decision_state()
+    await _compact(strategy, _Rebuilding(transcript).hand())
+    held = copy.deepcopy(strategy.session_state()), strategy.decision_state()
+    assert strategy.carries_view and held[0] != earlier[0] and held[1] != earlier[1]
+    snapshot, decisions = earlier if state == "an-earlier-one" else held
+
+    if through == "session-state":
+        strategy.restore_session_state(snapshot)
+    else:
+        strategy.restore_decisions(decisions)
+
+    assert strategy.carries_view is (state == "the-one-it-holds")
+
+
+async def test_a_retry_from_an_earlier_snapshot_does_not_start_from_the_failed_attempt() -> None:
+    """Rolled back on the same instance, a retry over the same rebuilt history is a pass of its own."""
+    transcript = _transcript(14, 10, 6)
+    strategy = _strategy(_Summarizer(), budget=_budget(transcript, 0.33), policy="shed")
+    earlier = copy.deepcopy(strategy.session_state())
+    first = await _compact(strategy, _Rebuilding(copy.deepcopy(transcript)).hand())
+    assert strategy.carries_view
+
+    strategy.restore_session_state(earlier)
+    retry = await _compact(strategy, _Rebuilding(copy.deepcopy(transcript)).hand())
+
+    assert strategy.calls_resumed == 0
+    assert retry == first
+
+
 async def test_the_kept_list_is_no_part_of_a_session_snapshot() -> None:
     transcript = _transcript(14, 10, 6)
     budget = _budget(transcript, 0.33)
