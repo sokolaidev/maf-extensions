@@ -380,6 +380,7 @@ def test_chrome_delivery_recovers_and_preserves_human_changes(candidate):
     client.branch = update.ChromeGitHub.branch
     client.title = update.ChromeGitHub.title
     report = update.qualify(ROOT, work)
+    report["requirement"] = {"kind": "security", "reason": "CVE-test affects the pinned Chrome"}
     checks = []
 
     def publish():
@@ -395,6 +396,7 @@ def test_chrome_delivery_recovers_and_preserves_human_changes(candidate):
     assert publish()["status"] == "unchanged"
     assert len(checks) >= 6
     assert VERSION in client.pulls[0]["body"]
+    assert "CVE-test affects the pinned Chrome" in client.pulls[0]["body"]
     client.pulls[0]["body"] += "\nHuman note"
     with pytest.raises(ValueError, match="modified"):
         publish()
@@ -405,6 +407,7 @@ def test_human_closed_chrome_proposal_stays_closed(candidate):
     client: Any = FakeGitHub()
     client.branch = update.ChromeGitHub.branch
     report = update.qualify(ROOT, work)
+    report["requirement"] = {"kind": "package", "reason": "maf-sandbox-document needs browser API"}
 
     def publish():
         return publication.publish(
@@ -414,6 +417,85 @@ def test_human_closed_chrome_proposal_stays_closed(candidate):
     publish()
     client.pulls[0]["state"] = "closed"
     assert publish()["status"] == "dismissed"
+
+
+@pytest.mark.parametrize("requirement", [None, {}, {"kind": "refresh", "reason": "New version"}])
+def test_chrome_publisher_refuses_routine_refreshes(candidate, requirement):
+    work, receipt, files = candidate
+    client: Any = FakeGitHub()
+    client.branch = update.ChromeGitHub.branch
+    report = update.qualify(ROOT, work)
+    report["requirement"] = requirement
+    with pytest.raises(ValueError, match="declared security or package requirement"):
+        publication.publish(client, receipt, report, files, BOT, URL, freshness=lambda *_: None)
+    assert not client.pulls and not client.head
+
+
+@pytest.mark.parametrize(
+    "event,reason,justification",
+    [
+        ("schedule", "security", "CVE-test"),
+        ("workflow_dispatch", None, "CVE-test"),
+        ("workflow_dispatch", "security", " "),
+    ],
+)
+def test_chrome_command_refuses_unrequested_delivery(
+    tmp_path, monkeypatch, event, reason, justification
+):
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event)
+    args = [
+        "chrome_update.py",
+        "publish",
+        "--work",
+        str(tmp_path),
+        "--justification",
+        justification,
+    ]
+    if reason:
+        args += ["--reason", reason]
+    monkeypatch.setattr(sys, "argv", args)
+    with pytest.raises(ValueError, match="manual security or package requirement"):
+        update.main()
+
+
+@pytest.mark.parametrize("reason", ["security", "package"])
+def test_manual_chrome_delivery_retains_requirement(candidate, monkeypatch, reason):
+    work, receipt, _ = candidate
+    report = update.qualify(ROOT, work)
+    write(work / "qualified.json", report)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    justification = "CVE-test" if reason == "security" else "maf-sandbox-document needs browser API"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "chrome_update.py",
+            "publish",
+            "--work",
+            str(work),
+            "--bot",
+            BOT,
+            "--artifact-id",
+            "1",
+            "--reason",
+            reason,
+            "--justification",
+            justification,
+        ],
+    )
+    delivered = []
+
+    def publish(_client, actual_receipt, actual_report, *_args, **_kwargs):
+        assert actual_receipt == receipt
+        delivered.append(actual_report)
+        return {"status": "created"}
+
+    monkeypatch.setattr(update, "publish", publish)
+    update.main()
+    expected = {"kind": reason, "reason": justification}
+    assert delivered[0]["requirement"] == expected
+    assert read(work / "delivery-requirement.json") == expected
 
 
 def test_workflow_qualifies_and_retains_before_minting_write_identity():
@@ -429,5 +511,8 @@ def test_workflow_qualifies_and_retains_before_minting_write_identity():
     assert "chrome_update.py build" in before and "poe gate" in before
     assert next(i for i, step in enumerate(steps) if step.get("id") == "retain") < app
     assert "inputs.deliver" in steps[app]["if"]
+    assert "github.event_name == 'workflow_dispatch'" in steps[app]["if"]
+    assert "inputs.reason == 'security' || inputs.reason == 'package'" in steps[app]["if"]
+    assert "inputs.justification != ''" in steps[app]["if"]
     assert "refs/heads/main" in job["if"]
     assert "contents: write" not in json.dumps(job["permissions"])

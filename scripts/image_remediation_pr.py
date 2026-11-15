@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from image_remediation import proposal_files, qualify
 from image_remediation_evidence import EvidenceChanging, current, deferred
 from plan_platform_remediation import NUGET, RUNTIME_RECIPES
+from report_stuck_releases import as_code
 
 BRANCH = "bot/go-image-remediation"
 MARKER = "maf-image-remediation-v1"
@@ -209,6 +210,8 @@ def body(state: dict[str, Any], report: dict[str, Any], evidence_url: str) -> st
             "## Summary\n\n"
             f"Update document-export Chrome from {report['before']} to {report['after']} "
             "using Google's signed stable repository and verified archive checksum.\n\n"
+            f"Maintainer-declared {report['requirement']['kind']} requirement: "
+            f"{as_code(report['requirement']['reason'])}.\n\n"
             "## Related issue\n\nRefs #2701.\n\n"
             "## Verification\n\n"
             f"Qualified commit: `{state['current']['head']}`. Base: `{report['source']}`. "
@@ -447,6 +450,15 @@ def publish(
             )
     check_current = freshness or current
     if report.get("kind") == "chrome" or branch == "bot/chrome-image-update":
+        requirement = report.get("requirement")
+        if (
+            not isinstance(requirement, dict)
+            or set(requirement) != {"kind", "reason"}
+            or requirement["kind"] not in {"security", "package"}
+            or not isinstance(requirement["reason"], str)
+            or not requirement["reason"].strip()
+        ):
+            raise ValueError("Chrome delivery requires a declared security or package requirement")
         if (
             report.get("kind") != "chrome"
             or branch != "bot/chrome-image-update"
