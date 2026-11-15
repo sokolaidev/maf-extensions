@@ -27,6 +27,208 @@ def identity():
     return {"pid": 123, "start": "456", "nonce": "owned-process"}
 
 
+def test_protobuf_evidence_keeps_only_digest_and_byte_length(probe):
+    payload = b"synthetic-secret-material\x00\xff"
+    result = probe.protobuf_evidence(NS(SerializeToString=lambda: payload), "profile")
+    assert result == {
+        "profile_sha256": hashlib.sha256(payload).hexdigest(),
+        "profile_size": len(payload),
+    }
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [None, "old", "late", "owner", "host", "port", "generation", "message", "malformed"],
+)
+def test_generation_evidence_is_exact_scoped_and_secret_free(probe, fault):
+    from datetime import datetime
+
+    stamp = int(datetime.fromisoformat("2026-11-15T13:38:46+00:00").timestamp()) * 10**9
+    event = {
+        "container": {"uid": "owned"},
+        "dst_endpoint": {"domain": "owned.test", "port": 8443},
+        "message": "L7 tunnel closed before inspection because policy changed: "
+        "policy generation is stale [captured_generation:2 current_generation:3]",
+        "unmapped": {"authorization": "Bearer private-token", "hostname": "internal.example"},
+    }
+    if fault == "owner":
+        event["container"]["uid"] = "replacement"
+    elif fault == "host":
+        event["dst_endpoint"]["domain"] = "other.test"
+    elif fault == "port":
+        event["dst_endpoint"]["port"] = 443
+    elif fault == "generation":
+        event["message"] = event["message"].replace("current_generation:3", "current_generation:2")
+    elif fault == "message":
+        event["message"] += " private-token"
+    elif fault == "malformed":
+        event["container"] = None
+    log = "2026-11-15T13:38:46.662804935Z 2026-11-15T13:38:46.662Z OCSF-JSON " + json.dumps(event)
+    started = stamp + (700_000_000 if fault == "old" else 600_000_000)
+    ended = stamp + (650_000_000 if fault == "late" else 800_000_000)
+    signals = probe.generation_closures(log, "owned", "owned.test", started, ended)
+    assert bool(signals) is (fault is None)
+    if fault is None:
+        assert signals == [
+            {
+                "signal": "relay_closed_for_policy_generation_change",
+                "time_unix_ns": stamp + 662_804_935,
+                "captured_generation": 2,
+                "current_generation": 3,
+            }
+        ]
+    assert "private-token" not in json.dumps(signals)
+    assert "internal.example" not in json.dumps(signals)
+    assert probe.generation_closures("OCSF-JSON {bad}", "owned", "owned.test", started, ended) == []
+
+
+@pytest.mark.parametrize("fault", [None, "replacement", "missing", "duplicate", "exit", "timeout"])
+def test_generation_capture_requires_owned_supervisor_and_redacts_failures(
+    probe, monkeypatch, fault
+):
+    owner = {"sandbox_id": "owned", "containers": ["supervisor"]}
+    container = {
+        "Id": "replacement" if fault == "replacement" else "supervisor",
+        "Labels": {"openshell.ai/isolation-role": "supervisor"},
+    }
+    monkeypatch.setattr(
+        probe,
+        "snapshot",
+        lambda identity: {
+            "containers": []
+            if fault == "missing"
+            else [container] * (2 if fault == "duplicate" else 1)
+        },
+    )
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if fault == "timeout":
+            raise subprocess.TimeoutExpired(command, 10, output="private-token")
+        return NS(returncode=1 if fault == "exit" else 0, stdout="private-token", stderr="")
+
+    monkeypatch.setattr(probe.subprocess, "run", run)
+    if fault is None:
+        assert probe.generation_interruption(owner, "owned.test", 0, 1) == []
+    else:
+        with pytest.raises(RuntimeError) as caught:
+            probe.generation_interruption(owner, "owned.test", 0, 1)
+        assert "private-token" not in str(caught.value)
+    assert len(calls) == (0 if fault in ("replacement", "missing", "duplicate") else 1)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "baseline",
+        "scope",
+        "rejected",
+        "version",
+        "changed",
+        "readback",
+        "readback_scope",
+        "lost_ack",
+    ],
+)
+def test_profile_path_edit_is_conditional_exact_and_never_replayed(probe, fault):
+    from copy import deepcopy
+
+    class Message(NS):
+        def CopyFrom(self, other):
+            vars(self).update(deepcopy(vars(other)))
+
+        def SerializeToString(self):
+            return repr(self).encode()
+
+    before = Message(
+        id="profile",
+        description="synthetic-secret-material",
+        resource_version=7,
+        source="user",
+        scope="workspace",
+        endpoints=[NS(path="/provider/**", rules=[NS(allow=NS(path="/provider/**"))])],
+        credentials=[NS(name="synthetic", auth_style="bearer")],
+    )
+    state = NS(stored=deepcopy(before), calls=[], records=[])
+    if fault == "baseline":
+        state.stored.endpoints[0].path = "/replacement"
+    if fault == "scope":
+        state.stored.scope = "platform"
+
+    def rpc(method, request):
+        state.calls.append((method, deepcopy(request)))
+        if method == "GetProviderProfile":
+            result = deepcopy(state.stored)
+            result.source = "user"
+            result.scope = "platform" if fault == "scope" else "workspace"
+            if fault == "readback" and len(state.calls) > 1:
+                result.resource_version += 1
+            if fault == "readback_scope" and len(state.calls) > 1:
+                result.scope = "platform"
+            return NS(profile=result)
+        assert method == "UpdateProviderProfiles"
+        assert request.expected_resource_version == 7
+        assert request.id == request.profile.profile.id == "profile"
+        assert request.request_id
+        assert request.workspace_scope == "owned"
+        assert request.profile.profile.source == request.profile.profile.scope == ""
+        state.stored = deepcopy(request.profile.profile)
+        state.stored.resource_version = 7 if fault == "version" else 8
+        if fault == "changed":
+            state.stored.credentials[0].auth_style = "basic"
+        if fault == "lost_ack":
+            raise ConnectionError("committed edit acknowledgement lost")
+        return Message(updated=fault != "rejected", profile=deepcopy(state.stored))
+
+    client = NS(
+        pb=NS(
+            GetProviderProfileRequest=Message,
+            UpdateProviderProfilesRequest=Message,
+            ProviderProfileImportItem=Message,
+        ),
+        scope="owned",
+        rpc=rpc,
+    )
+    profile = object.__new__(probe.HTTPSRefreshProfile)
+    profile.profile_id, profile.endpoint_path = "profile", "/provider/**"
+
+    def record(kind, row):
+        state.records.append((kind, deepcopy(row)))
+
+    if fault is None:
+        profile.update_path(client, "/provider/other", record)
+        assert state.stored.endpoints[0].path == "/provider/other"
+        assert state.stored.endpoints[0].rules[0].allow.path == "/provider/other"
+        assert state.stored.credentials == before.credentials
+        assert before.endpoints[0].path == "/provider/**"
+        assert profile.endpoint_path == "/provider/other"
+        assert state.records[-1][1]["stored_profile_revision"] == 8
+        assert not state.records[-1][1]["guest_installation_confirmed"]
+    else:
+        with pytest.raises((RuntimeError, ConnectionError)):
+            profile.update_path(client, "/provider/other", record)
+        assert profile.endpoint_path == "/provider/**"
+        assert not any("stored_profile_revision" in row for _, row in state.records)
+    assert sum(method == "UpdateProviderProfiles" for method, _ in state.calls) == (
+        0 if fault in ("baseline", "scope") else 1
+    )
+    retained = json.dumps(state.records)
+    assert "synthetic-secret-material" not in retained
+    assert b"synthetic-secret-material".hex() not in retained
+    assert "_hex" not in retained
+    if fault is None:
+        pending, acknowledged, stored = (row for _, row in state.records)
+        request = state.calls[1][1].SerializeToString()
+        assert pending["request_sha256"] == hashlib.sha256(request).hexdigest()
+        assert pending["request_size"] == len(request)
+        assert len(acknowledged["profile_update_acknowledged"]["response_sha256"]) == 64
+        assert acknowledged["profile_update_acknowledged"]["response_size"] > 0
+        assert len(stored["profile_sha256"]) == 64
+        assert stored["profile_size"] > 0
+
+
 @pytest.mark.parametrize("change", ["pid", "start", "nonce", "sequence", "reference_sha256"])
 def test_replacement_replay_or_reference_change_cannot_prove_continuity(probe, change):
     ready = {"identity": identity(), "reference_sha256": "old-reference"}
@@ -147,14 +349,27 @@ def test_real_guest_keeps_launch_reference_across_new_launches(probe, tmp_path, 
             assert first["reference_sha256"] == second["reference_sha256"] != fresh
             assert explicit["reference_sha256"] == fresh
             assert events[0] == events[1] != events[2]
-            assert len(processes) == 2
-            assert len(events) == 3
+            launch["QUALIFICATION_TOKEN"] = "openshell:resolve:third"
+            edited = await guest.capture_current("edited")
+            preserved = await guest.request(url, "current")
+            narrowed = await guest.request(url, "edited")
+            original = await guest.request(url)
+            assert preserved["reference_sha256"] == fresh != edited
+            assert narrowed["reference_sha256"] == edited
+            assert original["reference_sha256"] == first["reference_sha256"]
+            assert all(
+                row["identity"] == ready["identity"] for row in (preserved, narrowed, original)
+            )
+            assert events[2] == events[3] != events[4]
+            assert events[0] == events[5]
+            assert len(processes) == 3
+            assert len(events) == 6
             assert retries == (
                 [{"operation": "write", "sequence": 1, "error": "EOFError"}]
                 if uncertain_write
                 else []
             )
-            evidence = json.dumps([ready, first, second, explicit])
+            evidence = json.dumps([ready, first, second, explicit, preserved, narrowed, original])
             assert "openshell:resolve:" not in evidence
         finally:
             await guest.close()
@@ -430,7 +645,30 @@ def test_persistent_control_session_requires_finite_budget(probe, seconds):
 
 
 @pytest.mark.parametrize(
-    "fault", [None, "reset", "unattributed", "final", "expiry_before", "expiry_after"]
+    "fault",
+    [
+        None,
+        "reset",
+        "unattributed",
+        "final",
+        "expiry_before",
+        "expiry_after",
+        "profile_no_revocation",
+        "profile_transport",
+        "profile_expiry_before",
+        "profile_expiry_after",
+        "profile_retained_old_reference",
+        "profile_same_reference",
+        "restore_no_revive",
+        "restore_narrowed_reference",
+        "generation",
+        "generation_missing",
+        "generation_multiple",
+        "generation_origin",
+        "generation_timeout",
+        "generation_late_success",
+        "generation_expiry",
+    ],
 )
 def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
     probe, monkeypatch, tmp_path, fault
@@ -439,13 +677,40 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
     from urllib.parse import urlsplit
 
     origin, cleanup = [], []
-    state = NS(now=1000, attached=False, attaches=0, epoch=1, requests=0)
+    state = NS(
+        now=1000,
+        clock=0,
+        attached=False,
+        attaches=0,
+        epoch=1,
+        requests=0,
+        path="/provider/**",
+        pending=False,
+        restoring=False,
+    )
     monkeypatch.setattr(probe.time, "time", lambda: state.now)
+    monotonic = probe.time.monotonic
+    monkeypatch.setattr(probe.time, "monotonic", lambda: monotonic() + state.clock)
     monkeypatch.setattr(
         probe.socket, "getaddrinfo", lambda *a: [(0, 0, 0, 0, ("10.23.45.67", 8443))]
     )
     monkeypatch.setattr(probe.ssl, "create_default_context", lambda **kw: object())
     monkeypatch.setattr(probe, "origin_get", lambda *a: list(origin))
+    evidence_reads = []
+
+    def generation_interruption(owner, host, started, ended):
+        evidence_reads.append((started, ended))
+        if fault == "generation_timeout":
+            state.clock += 31
+        if fault == "generation_expiry":
+            state.now = state.issuer.latest["expires_at"] - 34
+        return (
+            []
+            if fault == "generation_missing"
+            else [{"signal": "closure"}] * (2 if fault == "generation_multiple" else 1)
+        )
+
+    monkeypatch.setattr(probe, "generation_interruption", generation_interruption)
 
     def control(host, path, **kwargs):
         row = dict(
@@ -535,11 +800,18 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
                 expiration_time=NS(seconds=state.issuer.latest["expires_at"], nanos=0),
                 failure_code="oauth_token_endpoint_retryable",
                 HasField=lambda name: True,
-                SerializeToString=lambda: b"status",
+                SerializeToString=lambda: b"synthetic-refresh-error-material",
             )
 
         def cleanup_workspace(self, client):
             cleanup.append("profile")
+
+        def update_path(self, client, path, record):
+            state.path = path
+            state.pending = fault is None
+            state.restoring = path == "/provider/**"
+            if fault == "profile_expiry_before":
+                state.now = state.issuer.latest["expires_at"] - 34
 
     class Transition:
         def __init__(self, *args):
@@ -564,12 +836,37 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
         async def start(self):
             return self.ready
 
-        async def capture_current(self):
-            return "current"
+        async def capture_current(self, slot="current"):
+            return "current" if fault == "profile_same_reference" else slot
 
         async def request(self, url, source):
             state.requests += 1
             target = urlsplit(url)
+            narrowing = state.path == "/provider/other" and target.path == "/provider/ok"
+            restoring = state.restoring
+            delayed = state.pending
+            state.pending = False
+            if narrowing and fault == "profile_expiry_after":
+                state.now = state.issuer.latest["expires_at"] - 34
+            if narrowing and fault == "profile_transport":
+                return dict(guest={"error": "URLError", "errno": -5})
+            if narrowing and str(fault).startswith("generation") and not evidence_reads:
+                if fault == "generation_origin":
+                    origin.append({"path": "/unexpected"})
+                return dict(guest={"error": "RemoteDisconnected", "errno": None})
+            if narrowing and fault == "generation_late_success" and evidence_reads:
+                state.clock += 31
+            if (
+                (narrowing and fault == "profile_no_revocation")
+                or (restoring and fault == "restore_no_revive")
+                or (
+                    fault == "profile_retained_old_reference"
+                    and state.path == "/provider/other"
+                    and target.path == "/provider/other"
+                    and source == "current"
+                )
+            ):
+                state.clock += 31
             if source != "none" and (
                 not state.attached or source == "original" and state.epoch > 1
             ):
@@ -578,6 +875,23 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
                 response = dict(status=500, body='{"error":"credential_unavailable"}')
             elif target.path == "/outside":
                 response = dict(status=403, body='{"error":"credential_endpoint_mismatch"}')
+            elif source != "none" and (
+                narrowing
+                and not delayed
+                and fault != "profile_no_revocation"
+                or restoring
+                and (delayed or fault == "restore_no_revive")
+            ):
+                response = dict(status=403, body='{"error":"credential_endpoint_mismatch"}')
+            elif (
+                source == "current"
+                and state.path == "/provider/other"
+                and fault not in ("profile_no_revocation", "profile_retained_old_reference")
+                or source == "edited"
+                and restoring
+                and fault != "restore_narrowed_reference"
+            ):
+                response = dict(status=500, body='{"error":"credential_unavailable"}')
             else:
                 row = dict(
                     method="GET",
@@ -626,12 +940,58 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
         acquire=acquire,
         dispose=dispose,
     )
-    if fault is None:
+    if fault is None or fault == "generation":
         asyncio.run(probe.measure_credentials(fixture, "10.23.45.67", tmp_path / "ca.pem"))
-        assert state.requests == 13
+        assert state.requests == (23 if fault == "generation" else 24)
         assert fixture.report["credentials"]["characterization_completed"]
+        retained = json.dumps(fixture.report["credentials"])
+        assert "synthetic-refresh-error-material" not in retained
+        assert b"synthetic-refresh-error-material".hex() not in retained
+        statuses = [
+            row for row in fixture.report["credentials"]["barriers"] if "status_sha256" in row
+        ]
+        assert len(statuses) >= 5
+        assert all(
+            row["status_sha256"] == hashlib.sha256(b"synthetic-refresh-error-material").hexdigest()
+            and row["status_size"] == len(b"synthetic-refresh-error-material")
+            for row in statuses
+        )
+        assert any("retryable_failure" in row for row in statuses)
+        cases = {row["case"]: row for row in fixture.report["credentials"]["cases"]}
+        for name in (
+            "profile_narrowing_revokes_removed_path",
+            "profile_restoration_revives_same_current_reference",
+        ):
+            expected = (
+                [True]
+                if fault == "generation"
+                and name == "profile_restoration_revives_same_current_reference"
+                else [False, True]
+            )
+            assert [attempt["matched"] for attempt in cases[name]["attempts"]] == expected
+        if fault == "generation":
+            assert len(evidence_reads) == 1
+            assert cases["profile_narrowing_revokes_removed_path"]["attempts"][0][
+                "generation_interruptions"
+            ] == [{"signal": "closure"}]
     else:
-        match = "expiry" if fault.startswith("expiry") else "continuity|unattributed"
+        match = (
+            "expiry"
+            if "expiry" in fault
+            else "did not change the reference"
+            if fault == "profile_same_reference"
+            else "unexpected continuous"
+            if fault
+            in (
+                "profile_no_revocation",
+                "profile_retained_old_reference",
+                "restore_no_revive",
+                "restore_narrowed_reference",
+                "generation_timeout",
+                "generation_late_success",
+            )
+            else "continuity|unattributed"
+        )
         with pytest.raises(RuntimeError, match=match):
             asyncio.run(probe.measure_credentials(fixture, "10.23.45.67", tmp_path / "ca.pem"))
         assert not fixture.report["credentials"]["characterization_completed"]

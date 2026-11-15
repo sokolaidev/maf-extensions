@@ -143,11 +143,14 @@ def test_fixture_disposal_preserves_guards_under_optimization(optimized, mode):
 
         def current(name):
             calls.append("lookup")
+            if mode == "owned" and calls.count("lookup") > 1:
+                return None
             return "replacement" if mode == "replacement" else "original"
 
         def delete(name, request_id):
             calls.append(["delete", name, request_id])
-            return "replacement" if mode == "wrong_delete" else "original"
+            return SimpleNamespace(
+                sandbox_id="replacement" if mode == "wrong_delete" else "original", outcome=2)
 
         def absent(record):
             calls.append(["observe", record])
@@ -156,7 +159,8 @@ def test_fixture_disposal_preserves_guards_under_optimization(optimized, mode):
         probe.verify_absent = absent
         error = None
         try:
-            probe.dispose_fixture(SimpleNamespace(current_id=current, delete=delete), owner)
+            probe.dispose_fixture(SimpleNamespace(current_id=current, delete_response=delete,
+                                                 expected_version="0.1.7"), owner)
         except RuntimeError as exc:
             error = str(exc)
         print(json.dumps({"calls": calls, "error": error}))
@@ -189,6 +193,8 @@ def test_fixture_disposal_preserves_guards_under_optimization(optimized, mode):
                 },
             ]
         )
+    if mode == "owned":
+        expected.append("lookup")
     assert receipt["calls"] == expected
     assert (
         receipt["error"]
