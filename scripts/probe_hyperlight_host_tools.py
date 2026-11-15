@@ -37,6 +37,7 @@ from maf_sandbox import (
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 from maf_sandbox_hyperlight import HyperlightSandboxConfig
 from maf_sandbox_hyperlight._process import Worker
+from maf_sandbox_hyperlight._worker import SDK_VERSION
 
 PACKAGES = (
     "hyperlight-sandbox",
@@ -45,7 +46,6 @@ PACKAGES = (
 )
 WIRE_LIMIT = 512 * 1024
 APPLICATION_LIMIT = 8 * 1024
-FIRST_EOF_REQUEST_VALUE_BYTES = 16_200
 CONTEXT = contextvars.ContextVar("probe_run", default="unbound")
 SHARED_PROGRAM = """import maf_host_tools as h
 print(h.echo(value={"nested": [1, True, None, "é"]}))
@@ -133,7 +133,7 @@ def worker_main() -> None:
 
         initial = receive()
         assert initial["op"] == "init"
-        assert all(version(package) == "0.7.0" for package in PACKAGES)
+        assert all(version(package) == SDK_VERSION for package in PACKAGES)
         sdk = importlib.import_module("hyperlight_sandbox")
         sandbox = sdk.Sandbox(
             backend="wasm", module="python_guest.path", heap_size="400Mi", stack_size="200Mi"
@@ -294,7 +294,7 @@ def validate_terminal(request: dict[str, Any], message: dict[str, Any]) -> None:
         valid = (
             op == "ready"
             and set(message) == {"op", "versions"}
-            and message["versions"] == {package: "0.7.0" for package in PACKAGES}
+            and message["versions"] == {package: SDK_VERSION for package in PACKAGES}
         ) or (
             op == "failed_init"
             and set(message) == {"op", "stderr"}
@@ -808,9 +808,6 @@ def validate_reports(reports: list[dict[str, Any]]) -> list[str]:
             valid &= any(e.get("outcome") == "delivery_uncertain" for e in events)
             valid &= not any(e.get("outcome") == "delivered" for e in events)
             valid &= any(e.get("stage") == "worker_prepared" for e in events)
-        elif name.startswith("native-request-") and report.get("error") == "EOFError":
-            valid &= report.get("initialized") is True and not events
-            valid &= int(name.removeprefix("native-request-")) >= FIRST_EOF_REQUEST_VALUE_BYTES
         else:
             valid &= "error" not in report and result.get("exit_code") == 0
             expected = expected_stdout.get(name)
@@ -867,8 +864,8 @@ def main() -> None:
     if args.output.exists():
         parser.error("output already exists; choose a fresh evidence file")
     versions = {name: version(name) for name in PACKAGES}
-    if set(versions.values()) != {"0.7.0"}:
-        parser.error("the prototype requires the exactly matched 0.7.0 trio")
+    if set(versions.values()) != {SDK_VERSION}:
+        parser.error(f"the prototype requires the exactly matched {SDK_VERSION} trio")
     report = {
         "recorded_at": datetime.now(UTC).isoformat(),
         "platform": platform.platform(),

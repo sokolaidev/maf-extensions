@@ -18,7 +18,7 @@ pip install maf-sandbox-hyperlight
 | Linux x86-64 | glibc 2.28 or newer, KVM, host CPython 3.12–3.14 and a delegated cgroup v2 subtree. |
 | WSL2 | The Linux requirements, plus KVM and nested virtualization exposed by the Windows host. |
 
-The package pins the SDK, Wasm backend and Python guest together at 0.7.0. The guest is CPython 3.14 compiled to WebAssembly. ARM64, Linux MSHV, custom guests and custom images are refused.
+The package pins the SDK, Wasm backend and Python guest together at 0.10.0. The guest is CPython 3.14 compiled to WebAssembly. ARM64, Linux MSHV, custom guests and custom images are refused.
 
 `json`, `math` and `re` are available. `datetime`, `statistics`, `pickle` and `__future__` are absent. Programs run statements and must print results; final expressions are not echoed. There is no shell or package installation.
 
@@ -114,7 +114,7 @@ Programs write files such as `/output/result.bin`. Collection uses flat relative
 
 The native write limits are 8 MiB per file, 32 MiB total and 64 files. `read_file(max_bytes=...)` also enforces the requested cap and refuses overflow without returning a prefix. Core applies its own collection limits.
 
-Collect and deliver files before the next execution or reset; both clear previous outputs. Reset keeps the directory. Disposal removes it after confirmed worker termination. Failed termination retains it for retry, and abrupt host exit can leave storage for deployment cleanup.
+Outputs persist between executions on the same sandbox. Collect and deliver them before reset, which clears the files and keeps the directory. Disposal removes it after confirmed worker termination. Failed termination retains it for retry, and abrupt host exit can leave storage for deployment cleanup.
 
 The router holds exclusive admission through execution, collection, delivery and cleanup. Direct file-enabled callers must hold `backend.call_admission(key, spec, owner=unique_call_id, timeout=30)` around acquire, execution, listing, reads and cleanup. File access outside that scope refuses.
 

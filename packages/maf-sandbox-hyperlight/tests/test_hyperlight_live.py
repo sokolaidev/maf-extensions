@@ -114,7 +114,7 @@ def test_no_environment_or_filesystem_channel(live_backend, monkeypatch: pytest.
 
 
 @pytest.mark.parametrize("work_dir", [None, "/output"])
-def test_real_flat_outputs_are_binary_and_reset_before_reuse(work_dir):
+def test_real_flat_outputs_persist_between_executions_and_reset_before_reuse(work_dir):
     from maf_sandbox import SandboxTransferCapExceeded
 
     backend = HyperlightSandboxBackend(
@@ -150,6 +150,18 @@ def test_real_flat_outputs_are_binary_and_reset_before_reuse(work_dir):
                 assert await sandbox.read_file(
                     "result.bin", working_directory=".", max_bytes=256
                 ) == bytes(range(256))
+                result = await sandbox.run_code(
+                    "with open('/output/result.bin', 'rb') as f:\n"
+                    "    assert f.read() == bytes(range(256))\n"
+                    "with open('/output/result.bin', 'ab') as f:\n"
+                    "    f.write(b'\\xff\\x00')",
+                    timeout=5,
+                )
+                assert result.exit_code == 0, result.stderr
+                assert (
+                    await sandbox.read_file("result.bin", working_directory=".", max_bytes=258)
+                    == bytes(range(256)) + b"\xff\x00"
+                )
                 await sandbox.reset(timeout=5)
                 assert await sandbox.stat_file("result.bin", working_directory=".") is None
                 assert await sandbox.list_dir(".", working_directory=".") == ()
