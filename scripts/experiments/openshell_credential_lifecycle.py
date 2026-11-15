@@ -27,6 +27,12 @@ def guest_program(directory, env_key):
     """Keep the launch reference in memory; control files contain only bounded probe commands."""
     return f"""
 import hashlib, json, os, time, uuid, urllib.request, urllib.error
+import http.client
+https_connect = http.client.HTTPSConnection.connect
+def diagnostic_connect(self):
+    https_connect(self)
+    time.sleep(1)
+http.client.HTTPSConnection.connect = diagnostic_connect
 from pathlib import Path
 directory = Path({directory!r})
 directory.mkdir(exist_ok=True)
