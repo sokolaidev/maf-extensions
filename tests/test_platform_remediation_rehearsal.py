@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import image_remediation_evidence as acquisition  # noqa: E402
 import image_remediation_pr as publication  # noqa: E402
+import platform_positive_replay as replay  # noqa: E402
 import platform_rehearsal_history as history  # noqa: E402
 import platform_remediation_rehearsal as rehearsal  # noqa: E402
 from container_release import REPOSITORY, digest, read, scan_result, write  # noqa: E402
@@ -32,10 +33,206 @@ pytestmark = pytest.mark.workflow
 
 
 @pytest.fixture
+def positive(qualified, context, monkeypatch):
+    root, work, results = qualified
+    case = "replay-bicep-update"
+    fixture = root / replay.CASES[case][planner.NUGET]
+    fixture.write_bytes((root / planner.NUGET).read_bytes())
+    for native, fixture_name in replay.SUPPORT[case].items():
+        (root / fixture_name).write_bytes((root / native).read_bytes())
+    path = root / planner.NUGET
+    path.write_bytes(path.read_bytes().replace(b'Version="3.1.12"', b'Version="3.1.13"'))
+    old = read(work / "receipt.json")["directories"][0]
+    (work / "evidence" / old).rename(work / "evidence/bicep-docker-sbx-0.2.2")
+    target = work / "evidence/bicep-docker-sbx-0.2.2"
+    write(target / "assessment.json", read(target / "observation.json")["assessment"])
+    write(work / "evidence/monitor-index.json", {"historical": True})
+    manifest = read(root / rehearsal.MANIFEST)
+    pinned = manifest["cases"][case]["fixture"]
+    pinned["files"] = {name: digest(work / "evidence" / name) for name in pinned["files"]}
+    write(root / rehearsal.MANIFEST, manifest)
+    monkeypatch.setattr(replay, "git", lambda *_: SOURCE)
+    monkeypatch.setenv("REHEARSAL_CASE", case)
+    with replay.overlay(root, case):
+        expected = planner.plan(root, [target])
+        write(work / "plan.json", expected)
+        write(work / "receipt.json", replay.receipt(root, case, SOURCE))
+        write(
+            work / "current/receipt.json",
+            {
+                "source": SOURCE,
+                "images": dict.fromkeys(expected["affectedProfiles"]),
+            },
+        )
+        for variant in ("baseline", "candidate"):
+            for profile in expected["affectedProfiles"]:
+                path = results / f"{variant}-{profile}" / "qualification.json"
+                identity = read(path)
+                identity["plan"] = planner.digest(work / "plan.json")
+                write(path, identity)
+        write(work / "rehearsal-request.json", rehearsal.request_record(root))
+    return root, work, results
+
+
+def test_positive_replay_delivers_tested_pins_and_restores_production(positive, monkeypatch):
+    root, work, results = positive
+    case = "replay-bicep-update"
+    original = (root / planner.NUGET).read_bytes()
+    observed = []
+    monkeypatch.setattr(rehearsal, "current", lambda client, receipt: observed.append(receipt))
+    monkeypatch.setattr(publication, "current", lambda client, receipt: observed.append(receipt))
+    monkeypatch.setenv("IMAGE_REMEDIATION_TOKEN", "fixture-token")
+    with replay.overlay(root, case):
+        qualification = rehearsal.qualify(root, work, results)
+        report, files = rehearsal.delivery_payload(root, qualification, URL, work=work)
+        assert qualification["evidenceMode"] == "controlled-positive-replay"
+        assert qualification["caseMatches"] == {"baseline": 3, "candidate": 0}
+        assert report["nativeFiles"] == qualification["qualification"]["files"]
+        assert files == {replay.CASES[case][planner.NUGET]: original}
+        client = FakeRehearsal(set(files))
+        result = rehearsal.lifecycle(client, replay.authority(work), report, files, BOT, URL, work)
+        assert result["status"] == "delivery-passed"
+        assert result["payload"] == "dependency-diff"
+        assert result["repeated"]["status"] == "unchanged"
+        assert client.pulls[0]["draft"] is True
+        assert "production package inputs remain unchanged" in client.pulls[0]["body"]
+        for endpoint, data in client.writes:
+            if endpoint == "git/trees":
+                assert {entry["path"] for entry in data["tree"]} == set(files)
+    assert (root / planner.NUGET).read_bytes() == original
+    assert observed and all(value == replay.authority(work) for value in observed)
+
+
+@pytest.mark.parametrize("mutation", ["source", "fixture", "evidence", "scope", "plan"])
+def test_positive_replay_rejects_substituted_evidence(positive, mutation):
+    root, work, _ = positive
+    case = "replay-bicep-update"
+    if mutation == "source":
+        value = read(work / "current/receipt.json")
+        value["source"] = "d" * 40
+        write(work / "current/receipt.json", value)
+    elif mutation == "fixture":
+        path = root / replay.CASES[case][planner.NUGET]
+        path.write_bytes(path.read_bytes() + b"\n")
+    elif mutation == "evidence":
+        write(work / "evidence/bicep-docker-sbx-0.2.2/grype.json", {})
+    elif mutation == "scope":
+        value = read(work / "current/receipt.json")
+        value["images"].pop("bicep-avm")
+        write(work / "current/receipt.json", value)
+    else:
+        value = read(work / "plan.json")
+        value["updates"][0]["after"] = "3.1.99"
+        write(work / "plan.json", value)
+    with replay.overlay(root, case), pytest.raises(ValueError):
+        replay.validate(root, work)
+
+
+def test_positive_fixture_failure_restores_native_inputs(context):
+    case = "replay-bicep-update"
+    path = context / planner.NUGET
+    original = path.read_bytes()
+    with pytest.raises(RuntimeError), replay.overlay(context, case):
+        assert path.read_bytes() != original
+        path.write_bytes(b"partial candidate")
+        raise RuntimeError("build failed")
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("outcome", ["ready", "deferred", "producer"])
+def test_positive_acquisition_authenticates_history_and_current_scope(
+    positive, monkeypatch, outcome
+):
+    root, old_work, _ = positive
+    case = "replay-bicep-update"
+    work = old_work.parent / "new-acquisition"
+    fixture = replay.rule(root, case)["fixture"]
+    monkeypatch.setattr(
+        replay,
+        "monitor_source",
+        lambda *_: "d" * 40 if outcome == "producer" else fixture["producer"],
+    )
+
+    def restore(client, monitor, producer, targets, destination):
+        assert monitor == fixture["monitor"] and producer == fixture["producer"]
+        assert targets == set(fixture["directories"])
+        shutil.copytree(old_work / "evidence", destination)
+
+    def acquire(client, source, directory, **kwargs):
+        assert kwargs["selected_profiles"] == ["bicep", "bicep-avm", "bicep-docker-sbx"]
+        scope = kwargs["planner"](source, [])
+        assert scope["affectedProfiles"] == kwargs["selected_profiles"]
+        if outcome == "deferred":
+            return None
+        write(directory / "receipt.json", replay.authority(old_work))
+        return scope
+
+    observed = []
+    monkeypatch.setattr(replay, "restore_monitor", restore)
+    monkeypatch.setattr(replay, "acquire_with_retry", acquire)
+    monkeypatch.setattr(replay, "current", lambda client, authority: observed.append(authority))
+    with replay.overlay(root, case):
+        if outcome == "ready":
+            expected = replay.acquire(root, work, case)
+            assert expected == read(old_work / "plan.json")
+            assert observed == [replay.authority(old_work)]
+        else:
+            with pytest.raises(ValueError, match="deferred|producer"):
+                replay.acquire(root, work, case)
+            assert not observed
+
+
+def test_positive_source_gate_checks_candidate_and_restores_after_failure(positive, monkeypatch):
+    root, work, _ = positive
+    case = "replay-bicep-update"
+    original = {name: (root / name).read_bytes() for name in replay.overlays(case)}
+    monkeypatch.setattr(rehearsal, "ROOT", root)
+    monkeypatch.setattr(sys, "argv", ["rehearsal", "checks", "--work", str(work)])
+
+    def fail(command, **kwargs):
+        assert command == ["uv", "run", "--locked", "poe", "gate"]
+        assert b'Version="3.1.13"' in (root / planner.NUGET).read_bytes()
+        raise RuntimeError("source gate failed")
+
+    monkeypatch.setattr(rehearsal.subprocess, "run", fail)
+    with pytest.raises(RuntimeError, match="source gate failed"):
+        rehearsal.main()
+    assert {name: (root / name).read_bytes() for name in original} == original
+
+
+@pytest.mark.parametrize("case", list(replay.CASES))
+@pytest.mark.parametrize("mutation", [None, "production", "other-case", "hash", "mode"])
+def test_positive_publisher_admits_only_bound_fixture_bytes(case, mutation):
+    native = next(iter(replay.CASES[case]))
+    files = replay.delivery_files(case, {native: b"tested bytes"})
+    report = {
+        "evidenceMode": "controlled-positive-replay",
+        "fixtureCase": case,
+        "files": planner.file_hashes(files),
+        "nativeFiles": planner.file_hashes({native: b"tested bytes"}),
+    }
+    if mutation == "production":
+        files = {native: b"tested bytes"}
+        report["files"] = planner.file_hashes(files)
+    elif mutation == "other-case":
+        report["fixtureCase"] = next(name for name in replay.CASES if name != case)
+    elif mutation == "hash":
+        report["nativeFiles"][native] = "a" * 64
+    elif mutation == "mode":
+        report["evidenceMode"] = "current"
+    assert publication.valid_update_rehearsal(report, files) is (mutation is None)
+
+
+@pytest.fixture
 def context(checkout, monkeypatch):
     path = checkout / rehearsal.MANIFEST
     path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ROOT / rehearsal.MANIFEST, path)
+    for case in replay.CASES:
+        for name in replay.overlays(case).values():
+            path = checkout / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, path)
     monkeypatch.setattr(rehearsal, "git", lambda *_: SOURCE)
     for name, value in {
         "GITHUB_REPOSITORY": REPOSITORY,
@@ -75,7 +272,7 @@ def test_case_selection_requires_real_matching_planner_rows(context, tmp_path, c
     match, profile = dotnet(), "bicep"
     if case in {"current-rebuild", history.CASE}:
         match["vulnerability"]["fix"]["versions"] = ["3.1.12"]
-    elif case == "apk-pinned":
+    elif case in {"apk-pinned", "replay-apk-pinned"}:
         match, profile = apk("clamav-scanner", "1.4.6-r0", "1.4.6-r1", "alpine"), "antivirus"
     elif case == "apk-unpinned":
         match, profile = apk(), "graphviz"

@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from image_remediation import proposal_files, qualify
 from image_remediation_evidence import EvidenceChanging, current, deferred
 from plan_platform_remediation import NUGET, RUNTIME_RECIPES
+from platform_positive_replay import CASES as REPLAY_CASES
 from report_stuck_releases import as_code
 
 BRANCH = "bot/go-image-remediation"
@@ -246,8 +247,15 @@ def body(state: dict[str, Any], report: dict[str, Any], evidence_url: str) -> st
     )
     update_rehearsal = report.get("kind") == "platform-update-rehearsal"
     platform = report.get("kind") == "platform" or update_rehearsal
+    positive_replay = (
+        update_rehearsal and report.get("evidenceMode") == "controlled-positive-replay"
+    )
     description = (
-        "Update build-consumed Bicep or OS package pins to install verified security fixes."
+        "Update isolated test fixture package pins using authenticated historical findings. "
+        "These exact bytes were overlaid on native build inputs for qualification; "
+        "production package inputs remain unchanged."
+        if positive_replay
+        else "Update build-consumed Bicep or OS package pins to install verified security fixes."
         if platform
         else "Rebuild Go module overlays and provider locks to remove the targeted image findings."
     )
@@ -402,6 +410,24 @@ def orphan(client: GitHub, head: str, bot: str) -> dict[str, Any]:
     return previous
 
 
+def valid_update_rehearsal(report: dict[str, Any], files: dict[str, bytes]) -> bool:
+    """Historical update bytes can reach only the reviewed test fixture destinations."""
+    if report.get("evidenceMode") == "current":
+        return set(files) <= {NUGET, *RUNTIME_RECIPES.values()}
+    if report.get("evidenceMode") != "controlled-positive-replay":
+        return False
+    case = report.get("fixtureCase")
+    if not isinstance(case, str):
+        return False
+    mapping = REPLAY_CASES.get(case, {})
+    native = report.get("nativeFiles", {})
+    return (
+        bool(native)
+        and set(native) <= mapping.keys()
+        and report["files"] == {mapping[name]: value for name, value in native.items()}
+    )
+
+
 def publish(
     client: GitHub,
     receipt: dict[str, Any],
@@ -442,8 +468,7 @@ def publish(
             not update_rehearsal
             or not re.fullmatch(UPDATE_REHEARSAL_BRANCH + r"[1-9][0-9]*", branch)
             or getattr(client, "title", TITLE) != UPDATE_REHEARSAL_TITLE
-            or not set(files) <= {NUGET, *RUNTIME_RECIPES.values()}
-            or report.get("evidenceMode") != "current"
+            or not valid_update_rehearsal(report, files)
         ):
             raise ValueError(
                 "Update rehearsal requires its isolated branch and qualified package inputs"
