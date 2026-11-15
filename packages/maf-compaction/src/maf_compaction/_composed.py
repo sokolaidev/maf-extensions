@@ -127,6 +127,7 @@ __all__ = [
     "DEFAULT_HARDER_ATTEMPTS",
     "DEFAULT_RECORD_BUDGET_SHARE",
     "DEFAULT_RECORD_MERGE_PROMPT",
+    "DEFAULT_REWRITE_GAIN_FRACTION",
     "ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy",
     "harder_record_prompt",
 ]
@@ -325,6 +326,17 @@ DEFAULT_HARDER_ATTEMPTS: Final[int] = 2
 #: failure the instruction beside it is there to forbid.
 _HARDER_RATIO: Final[float] = 0.6
 
+#: Share of the records a harder rewrite replaces that it must remove to be kept.
+#:
+#: **A tenth, a quarter of what the mildest attempt asks for.** A kept rewrite is a new record
+#: with every attempt open again, so on a prompt that stays over the budget an answer that
+#: trims a hundredth buys ``harder_attempts`` more requests on the next pass, and on the one
+#: after. When each kept rewrite removes a tenth, the first attempt's aim is met in five
+#: requests; when each removes a hundredth, it takes fifty. An answer under the floor is refused
+#: like one that is no smaller, and the record stands until it changes. Zero keeps any smaller
+#: answer.
+DEFAULT_REWRITE_GAIN_FRACTION: Final[float] = 0.1
+
 #: Share of the tokens behind the chain's earliest edit that a firing of the chain must remove.
 #:
 #: **The chain's hysteresis, and derived from the break-even every other threshold here comes
@@ -457,6 +469,15 @@ def harder_record_prompt(attempt: int) -> str:
         "several numbered records are given, write one record that carries the values of all of "
         "them. Reply with the record text only."
     )
+
+
+def _meets_gain_floor(saved: int, replaced: int, fraction: float) -> bool:
+    """Return whether ``saved`` of ``replaced`` tokens is at least ``fraction`` of them.
+
+    Compared as a ratio. The product ``fraction * replaced`` can round up past a saving that
+    meets the floor exactly, as ``0.14 * 100`` does, and would refuse it.
+    """
+    return saved / replaced >= fraction
 
 
 def _responses(messages: list[Message]) -> int:
@@ -682,6 +703,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         harder_attempts: Rewrites of the record the chain may try on one pass once merging has
             not brought the prompt under the budget. See :data:`DEFAULT_HARDER_ATTEMPTS`; zero
             switches the step off.
+        rewrite_gain_fraction: Share of the records a harder rewrite replaces that it must
+            remove to be kept, in ``[0.0, 1.0)``. See :data:`DEFAULT_REWRITE_GAIN_FRACTION`;
+            zero keeps any smaller answer.
         merge_prompt: What the summarizer is asked when the records are merged. See
             :data:`DEFAULT_RECORD_MERGE_PROMPT`.
         overflow_policy: ``"shed"`` (default) releases the record phase's holds as a last
@@ -715,7 +739,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         ValueError: If the two phases measure against different ceilings or with different
             tokenizer objects, if an explicit
             ``user_trigger_fraction`` is outside ``(0.0, 1.0]``, or if ``harder_attempts`` is
-            negative, or if ``chain_gain_fraction`` is outside ``[0.0, 1.0)``, or
+            negative, or if ``chain_gain_fraction`` or ``rewrite_gain_fraction`` is outside
+            ``[0.0, 1.0)``, or
             ``record_budget_share`` outside ``(0.0, 1.0]``, or if a user half
             outside the recompacting mode remembers fewer than two requests. Each phase's
             trigger is a fraction of its own ``max_input_tokens``, and one shared line is a line
@@ -741,6 +766,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         record_budget_share: float | None = DEFAULT_RECORD_BUDGET_SHARE,
         chain_seconds: float | None = DEFAULT_CHAIN_SECONDS,
         record_merge_split_depth: int = 2,
+        rewrite_gain_fraction: float = DEFAULT_REWRITE_GAIN_FRACTION,
     ) -> None:
         """Validate the pair and store it."""
         if tool_results.max_input_tokens != user_turns.max_input_tokens:
@@ -770,6 +796,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # its earliest edit would be asked to empty the prompt from there on.
         if not 0.0 <= chain_gain_fraction < 1.0:
             raise ValueError("chain_gain_fraction must be in [0.0, 1.0).")
+        if isinstance(rewrite_gain_fraction, bool) or not 0.0 <= rewrite_gain_fraction < 1.0:
+            raise ValueError("rewrite_gain_fraction must be in [0.0, 1.0).")
         if overflow_policy not in {"shed", "raise"}:
             raise ValueError("overflow_policy must be 'shed' or 'raise'.")
         if isinstance(estimate_margin, bool) or not 0.0 <= estimate_margin < 1.0:
@@ -805,6 +833,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             else user_trigger_fraction
         )
         self.harder_attempts = harder_attempts
+        self.rewrite_gain_fraction = rewrite_gain_fraction
         self.merge_prompt = merge_prompt or DEFAULT_RECORD_MERGE_PROMPT
         self.chain_gain_fraction = chain_gain_fraction
         self._removed_by_record = 0
@@ -1296,7 +1325,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
     @property
     def record_rewrites_rejected(self) -> int:
-        """Of :attr:`record_rewrites`, those refused as no smaller or lossy. ``RECHARDERREJ``.
+        """Of :attr:`record_rewrites`, those refused as no smaller, as saving too little, or lossy.
+
+        ``RECHARDERREJ`` in the flags.
 
         Counted once per refusal, as :attr:`record_merges_rejected` is: the attempt met again on
         the same record is skipped, under :attr:`record_rewrites_skipped`.
@@ -2961,8 +2992,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
           written off on its milder refusal alone. It leaves a pass with one refused and two
           unanswered only when the summarizer failed on two, and a failure is not remembered: two
           is asked on the next pass, one is skipped.
-        - *Harsher refused, milder foreclosed.* A refusal means the answer was not smaller at all:
-          told to keep every value and cut the rest to about a third, the summarizer cut nothing.
+        - *Harsher refused, milder foreclosed.* A refusal means the answer was not smaller, or
+          smaller by less than :attr:`rewrite_gain_fraction` of what it replaced: told to keep
+          every value and cut the rest to about a third, the summarizer cut next to nothing.
           Asking it to cut less is weaker pressure towards the same outcome. The case is common --
           attempt one kept, attempt two refused on the kept record -- and without this every such
           record would buy one more refusal on the next pass. A rewrite refused as lossy
@@ -2990,7 +3022,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 continue
             self._record_rewrites += 1
             outcome = await self._consolidate(
-                messages, groups, prompt=prompt, transcript=transcript
+                messages,
+                groups,
+                prompt=prompt,
+                transcript=transcript,
+                min_gain_fraction=self.rewrite_gain_fraction,
             )
             if outcome == "accepted":
                 changed = True
@@ -3027,6 +3063,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         prompt: str,
         transcript: str,
         answer: _RecordAnswer | None = None,
+        min_gain_fraction: float = 0.0,
     ) -> _Consolidation:
         """Ask for one record in place of ``groups``, and put it there if it is smaller and whole.
 
@@ -3047,6 +3084,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Keyword Args:
             prompt: What the summarizer is asked.
             transcript: ``groups`` as :func:`_transcript` numbers them.
+            min_gain_fraction: Share of the replaced records' tokens the replacement must
+                remove; an answer that keeps the values and removes less is refused though
+                it is smaller. One that drops values is refused as lossy first, and counted.
 
         Returns:
             Whether it was kept, refused, unavailable, or its sources became ineligible.
@@ -3075,15 +3115,19 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         replaced = [build_record_message(body) for body in bodies]
         annotate_token_counts(candidate, tokenizer=self.tokenizer, force_retokenize=True)
         annotate_token_counts(replaced, tokenizer=self.tokenizer, force_retokenize=True)
+        replaced_tokens = included_token_count(replaced)
+        saved = replaced_tokens - included_token_count(candidate)
         outcome: _Consolidation = "accepted"
         reason = ""
         if answer.incomplete:
             outcome, reason = "incomplete", "output limit"
-        elif included_token_count(candidate) >= included_token_count(replaced):
+        elif saved <= 0:
             outcome, reason = "rejected", "no smaller"
         elif kept < required:
             self._record_consolidations_lossy += 1
             outcome, reason = "lossy", "dropping values"
+        elif not _meets_gain_floor(saved, replaced_tokens, min_gain_fraction):
+            outcome, reason = "rejected", "saving too little"
         if outcome != "accepted":
             logger.warning(
                 "Compaction kept a batch of %d records unmerged: the %s was refused as %s; "
