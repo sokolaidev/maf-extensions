@@ -30,6 +30,7 @@ def test_cleanup_attempts_every_owner_and_client(monkeypatch, tmp_path, probe_na
     boundary = next(n for n in function.body if isinstance(n, ast.Try) and n.finalbody)
     code = compile(ast.Module(body=boundary.finalbody, type_ignores=[]), str(source_path), "exec")
     events = []
+    deleted = set()
     owners = [
         dict(name=n, sandbox_id=n, id=n, delete_request_id=n, containers=[], processes={})
         for n in ("first", "middle", "last")
@@ -44,12 +45,13 @@ def test_cleanup_attempts_every_owner_and_client(monkeypatch, tmp_path, probe_na
         events.append(("lookup", name))
         if failure == "lookup" and name in failing:
             raise RuntimeError("lookup failed")
-        return name
+        return None if name in deleted else name
 
     def delete(name, request_id):
         events.append(("delete", name))
         if failure == "delete" and name in failing:
             raise RuntimeError("delete failed")
+        deleted.add(name)
         return name
 
     def absent(owner):
@@ -83,7 +85,16 @@ def test_cleanup_attempts_every_owner_and_client(monkeypatch, tmp_path, probe_na
     )
     grpc = SimpleNamespace(RpcError=RpcError, StatusCode=SimpleNamespace(NOT_FOUND="missing"))
     admin = SimpleNamespace(
-        current_id=current, delete=delete, rpc=rpc, pb=pb, grpc=grpc, close=lambda: close("admin")
+        current_id=current,
+        delete=delete,
+        delete_response=lambda name, request_id: SimpleNamespace(
+            sandbox_id=delete(name, request_id)
+        ),
+        expected_version="0.1.2",
+        rpc=rpc,
+        pb=pb,
+        grpc=grpc,
+        close=lambda: close("admin"),
     )
     fixture = SimpleNamespace(
         current_id=current, delete=delete, verify_absent=absent, close=lambda: close("adapter")

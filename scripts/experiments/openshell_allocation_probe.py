@@ -93,12 +93,15 @@ class Client:
             raise
 
     def delete(self, name, request_id):
+        return self.delete_response(name, request_id).sandbox_id
+
+    def delete_response(self, name, request_id):
         return self.rpc(
             "DeleteSandbox",
             self.pb.DeleteSandboxRequest(
                 name=name, request_id=request_id, workspace_scope=self.scope, allow_missing=True
             ),
-        ).sandbox_id
+        )
 
     def close(self):
         self.channel.close()
@@ -129,14 +132,31 @@ def observed(owner):
 
 
 def dispose_fixture(client, owner):
-    """Delete one exclusively owned fixture and independently verify its physical absence."""
+    """Require both physical absence and removal of the exclusively owned gateway record."""
     if client.current_id(owner["name"]) != owner["sandbox_id"]:
         raise RuntimeError("fixture identity changed before deletion")
-    deleted_id = client.delete(owner["name"], owner["delete_request_id"])
-    if deleted_id != owner["sandbox_id"]:
+    response = client.delete_response(owner["name"], owner["delete_request_id"])
+    owner["delete_response"] = {
+        "sandbox_id": response.sandbox_id,
+        "outcome": getattr(response, "outcome", None),
+    }
+    if response.sandbox_id != owner["sandbox_id"]:
         raise RuntimeError("fixture delete targeted another instance")
+    if client.expected_version == "0.1.7" and owner["delete_response"]["outcome"] not in (1, 2, 3):
+        raise RuntimeError("fixture delete outcome is unknown")
     if not verify_absent(observed(owner)):
         raise RuntimeError("fixture cleanup incomplete; retain identities")
+    owner["physical_cleanup_verified"] = True
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        identity = client.current_id(owner["name"])
+        if identity is None:
+            owner["gateway_cleanup_verified"] = True
+            return
+        if identity != owner["sandbox_id"]:
+            raise RuntimeError("fixture identity changed during deletion")
+        time.sleep(0.1)
+    raise RuntimeError("fixture gateway cleanup incomplete; retain identities")
 
 
 def verify_workspace_absent(client, workspace):

@@ -619,6 +619,13 @@ def main() -> int:
         created = False
         try:
             wait_gateway(client)
+            if args.credential_lifecycle:
+                setting = client.pb.UpdateConfigRequest(
+                    **{"global": True, "setting_key": "ocsf_json_enabled"}
+                )
+                setting.setting_value.bool_value = True
+                client.rpc("UpdateConfig", setting)
+                report["structured_diagnostics"] = True
             report["workspace_create"] = {"name": workspace, "state": "pending"}
             fixture.save()
             client.rpc("CreateWorkspace", client.pb.CreateWorkspaceRequest(name=workspace))
