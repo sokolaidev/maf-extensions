@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -146,6 +147,8 @@ def test_positive_fixture_failure_restores_native_inputs(context):
 @pytest.fixture
 def positive_apk(context, tmp_path, monkeypatch):
     root, case = context, "replay-apk-pinned"
+    path = root / replay.CASES[case]["images/graphviz-sandbox/Dockerfile"]
+    path.write_text(re.sub(r"glibc-2\.44=[^\s]+", "glibc-2.44=2.44-r14", path.read_text()))
     monkeypatch.setenv("REHEARSAL_CASE", case)
     monkeypatch.setattr(replay, "git", lambda *_: SOURCE)
     match = apk("glibc-2.44", "2.44-r14", "2.44-r16")
@@ -310,6 +313,17 @@ def test_positive_apk_acquisition_qualification_delivery_and_refusal(
                     assert {entry["path"] for entry in data["tree"]} == set(files)
         assert observed and all(value == replay.authority(work) for value in observed)
     assert (root / native).read_bytes() == original
+
+
+def test_positive_apk_fixture_remains_an_update_on_delivery_draft(context, request, monkeypatch):
+    case = "replay-apk-pinned"
+    path = context / replay.CASES[case]["images/graphviz-sandbox/Dockerfile"]
+    path.write_text(re.sub(r"glibc-2\.44=[^\s]+", "glibc-2.44=2.44-r16", path.read_text()))
+    root, work, results = request.getfixturevalue("positive_apk")
+    monkeypatch.setattr(rehearsal, "current", lambda *_: None)
+    with replay.overlay(root, case):
+        result = rehearsal.qualify(root, work, results)
+    assert result["caseMatches"] == {"baseline": 1, "candidate": 0}
 
 
 @pytest.mark.parametrize("outcome", ["ready", "deferred", "producer"])
