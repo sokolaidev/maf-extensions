@@ -459,6 +459,8 @@ def publish(
             or not requirement["reason"].strip()
         ):
             raise ValueError("Chrome delivery requires a declared security or package requirement")
+        if re.search(MARKER_PATTERN, as_code(requirement["reason"])):
+            raise ValueError("Chrome requirement must not contain an ownership marker")
         if (
             report.get("kind") != "chrome"
             or branch != "bot/chrome-image-update"

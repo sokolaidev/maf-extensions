@@ -431,6 +431,34 @@ def test_chrome_publisher_refuses_routine_refreshes(candidate, requirement):
     assert not client.pulls and not client.head
 
 
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize(
+    "justification",
+    ["<!-- maf-image-remediation-v1 {} -->", "<!--\nmaf-image-remediation-v1\n{}\n-->"],
+)
+def test_chrome_publisher_refuses_ownership_markers_before_writes(
+    candidate, existing, justification
+):
+    work, receipt, files = candidate
+    client: Any = FakeGitHub()
+    client.branch = update.ChromeGitHub.branch
+    report = update.qualify(ROOT, work)
+    report["requirement"] = {"kind": "security", "reason": "CVE-test"}
+    if existing:
+        publication.publish(client, receipt, report, files, BOT, URL, freshness=lambda *_: None)
+    head = client.head
+    bodies = [pull["body"] for pull in client.pulls]
+    client.writes.clear()
+    report["requirement"]["reason"] = justification
+
+    with pytest.raises(ValueError, match="ownership marker"):
+        publication.publish(client, receipt, report, files, BOT, URL, freshness=lambda *_: None)
+
+    assert client.writes == []
+    assert client.head == head
+    assert [pull["body"] for pull in client.pulls] == bodies
+
+
 @pytest.mark.parametrize(
     "event,reason,justification",
     [
