@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Final
 
 from agent_framework import (
@@ -54,6 +54,8 @@ class CompactionStack:
     strategy: _Strategy
     gate: RecallGate
     middleware: ToolResultRecallMiddleware
+    #: The snapshot a registry last wrote for this stack; another one is someone else's state.
+    persisted: dict[str, Any] | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         records = (
@@ -151,7 +153,7 @@ class SessionCompactionRegistry:
                 try:
                     yield current.stack
                 finally:
-                    session.state[self.state_key] = current.stack.to_dict()
+                    self._persist(session, current.stack)
                     self._remember_merge_state(session)
                 return
         if session.session_id in self._active:
@@ -171,6 +173,9 @@ class SessionCompactionRegistry:
                 raise ValueError("Background record merging requires a composed strategy.")
             work.bind(stack.strategy, data)
         if data is not None:
+            if data is not stack.persisted and data != stack.persisted:
+                # Decisions restored from elsewhere did not make the list this stack kept.
+                self._forget(stack)
             stack.restore(data)
         stack.middleware._bind_session_id(session.session_id)  # pyright: ignore[reportPrivateUsage]
         binding = _Binding(session, stack)
@@ -180,7 +185,7 @@ class SessionCompactionRegistry:
             yield stack
         finally:
             try:
-                session.state[self.state_key] = stack.to_dict()
+                self._persist(session, stack)
                 self._remember_merge_state(session)
             finally:
                 self._current.reset(token)
@@ -205,9 +210,16 @@ class SessionCompactionRegistry:
     def release_carried_view(self, session_id: str) -> None:
         """Release a session's kept list once its run is over and no call will resume from it."""
         stack = self._cache.get(session_id)
-        if stack is not None and isinstance(
-            stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
-        ):
+        if stack is not None:
+            self._forget(stack)
+
+    def _persist(self, session: AgentSession, stack: CompactionStack) -> None:
+        stack.persisted = stack.to_dict()
+        session.state[self.state_key] = stack.persisted
+
+    @staticmethod
+    def _forget(stack: CompactionStack) -> None:
+        if isinstance(stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy):
             stack.strategy.forget_carried_view()
 
     def _remember_merge_state(self, session: AgentSession) -> None:

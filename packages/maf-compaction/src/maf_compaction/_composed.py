@@ -1420,6 +1420,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         resumed = carried.resume(messages, handed) if carried is not None else None
         if resumed is not None and resumed.restored:
             self._calls_resumed += 1
+        # Handed back as the last pass left it, the list is no account of the stored messages.
+        continuing = carried if resumed is not None and not resumed.restored else None
         self._settled = False
         token = self._request_budget.set(budget)
         try:
@@ -1427,12 +1429,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         except CompactionBudgetExceeded:
             # The closing budget check refuses a list every phase has already worked on.
             if self._settled:
-                self._carried = CarriedView(handed, list(messages))
+                self._carried = CarriedView(handed, messages, continuing=continuing)
             raise
         finally:
             self._request_budget.reset(token)
         if changed or resumed is not None:
-            self._carried = CarriedView(handed, list(messages))
+            self._carried = CarriedView(handed, messages, continuing=continuing)
         return changed or (resumed is not None and resumed.changed)
 
     async def __call__(self, messages: list[Message]) -> bool:
