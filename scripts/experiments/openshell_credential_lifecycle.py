@@ -26,11 +26,11 @@ def guest_program(directory, env_key):
     return f"""
 import hashlib, http.client, json, os, time, uuid, urllib.request, urllib.error
 from pathlib import Path
-class DiagnosticHTTPSConnection(http.client.HTTPSConnection):
-    def connect(self):
-        super().connect()
-        time.sleep(1)
-http.client.HTTPSConnection = DiagnosticHTTPSConnection
+https_connect = http.client.HTTPSConnection.connect
+def diagnostic_connect(self):
+    https_connect(self)
+    time.sleep(1)
+http.client.HTTPSConnection.connect = diagnostic_connect
 directory = Path({directory!r})
 directory.mkdir(exist_ok=True)
 original = os.environ.get({env_key!r}, '')

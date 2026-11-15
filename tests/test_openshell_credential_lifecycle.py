@@ -27,6 +27,21 @@ def identity():
     return {"pid": 123, "start": "456", "nonce": "owned-process"}
 
 
+def test_diagnostic_delay_preserves_https_constructor_and_connect(probe):
+    prefix = probe.guest_program("/sandbox/diagnostic", "TOKEN").split("directory = Path", 1)[0]
+    harness = (
+        "import http.client, time\n"
+        "calls = []\n"
+        "http.client.HTTPSConnection.connect = lambda self: calls.append('connect')\n"
+        "time.sleep = lambda seconds: calls.append(seconds)\n"
+        + prefix
+        + "\nhttp.client.HTTPSConnection('example.test').connect()\n"
+        "assert calls == ['connect', 1], calls\n"
+    )
+    result = subprocess.run([sys.executable, "-c", harness], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.parametrize(
     "fault",
     [
