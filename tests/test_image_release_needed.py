@@ -594,7 +594,7 @@ def test_consumer_guide_alone_does_not_request_a_replacement(tmp_path, change):
 
 
 @pytest.mark.parametrize("change", ["added", "modified", "deleted"])
-def test_gitignore_changes_only_request_workspace_image_refresh(tmp_path, change):
+def test_gitignore_changes_only_affect_workspace_image_inputs(tmp_path, change):
     tracker.git(tmp_path, "init")
     payload = "images/drawio-export/requirements.txt"
     files = {payload: "pillow==12.3.0\n"}
@@ -767,7 +767,7 @@ def test_terraform_profile_addition_reconciles_bicep_source_request(tmp_path):
     "filename",
     ["caf\u00e9.txt", "line\nbreak", "cr\rname", "crlf\r\nname", "tab\tname", "trailing "],
 )
-def test_changed_inputs_preserve_git_quoted_filenames_and_prevent_closure(tmp_path, filename):
+def test_changed_inputs_preserve_git_quoted_filenames_for_candidate_matching(tmp_path, filename):
     tracker.git(tmp_path, "init")
     base = commit(tmp_path, {"README.md": "baseline"})
 
