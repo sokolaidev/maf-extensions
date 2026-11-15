@@ -58,7 +58,9 @@ _NARRATION = 40
 class _Noteless(AnchoredCompactionStrategy):
     """Sheds without leaving notes, so a count after the call is the count the loop ended on."""
 
-    def _insert_note(self, messages: list[Message], group: dict[str, Any], note: str) -> None:
+    def _insert_notes(
+        self, messages: list[Message], notes: list[tuple[dict[str, Any], str]]
+    ) -> None:
         return None
 
 
