@@ -58,7 +58,7 @@ jobs:
         with:
           go-version: ${{ steps.go.outputs.version }}
           cache: false
-      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
@@ -67,7 +67,7 @@ jobs:
       - name: Build the patched proxies and standalone Go tools
         if: matrix.language == 'go'
         run: python3 scripts/codeql_go.py build
-      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           category: /language:${{ matrix.language }}
           output: codeql-results
@@ -77,7 +77,7 @@ jobs:
         run: python3 scripts/codeql_go.py coverage --archive "$RUNNER_TEMP/codeql_databases/go/src.zip"
       - name: Upload code scanning results after cutover
         if: vars.CODEQL_ADVANCED_UPLOAD == 'true'
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: codeql-results
           category: /language:${{ matrix.language }}
