@@ -21,6 +21,23 @@ finally:
     sys.path.remove(str(Path(__file__).parents[1]))
 
 
+@pytest.fixture(autouse=True, params=("v1", "v11"))
+def variant(request, monkeypatch):
+    name = request.param
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1]))
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "patch",
+        importlib.import_module(f"scripts.experiments.mxc_{name}_patch.patch"),
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "runner",
+        importlib.import_module(f"scripts.experiments.mxc_{name}_patch.qualification_runner"),
+    )
+    return name
+
+
 @pytest.fixture
 def layers(tmp_path, monkeypatch):
     assets = tmp_path / "assets"
@@ -134,15 +151,15 @@ def test_dependency_resolution_cannot_be_reported_as_native_qualification(tmp_pa
 
 
 @pytest.mark.workflow
-def test_migration_workflow_is_opt_in_and_retains_lock_and_reports():
+def test_migration_workflow_is_opt_in_and_retains_lock_and_reports(variant):
     workflow = yaml.safe_load(
         (Path(__file__).parents[1] / ".github/workflows/mxc-native.yml").read_text(encoding="utf-8")
     )
-    job = workflow["jobs"]["mxc-v1"]
-    assert job["if"] == "inputs.mxc_v1 != 'off'"
+    job = workflow["jobs"][f"mxc-{variant}"]
+    assert job["if"] == f"inputs.mxc_{variant} != 'off'"
     assert job["strategy"]["fail-fast"] is False
     assert set(job["strategy"]["matrix"]["os"]) == {"ubuntu-24.04", "windows-latest"}
-    assert all("inputs.mxc_v1 != 'off'" in step["if"] for step in job["steps"])
+    assert all(f"inputs.mxc_{variant} != 'off'" in step["if"] for step in job["steps"])
     upload = next(step for step in job["steps"] if "upload-artifact" in step.get("uses", ""))
     assert "always()" in upload["if"]
     assert "build/Cargo.lock" in upload["with"]["path"]

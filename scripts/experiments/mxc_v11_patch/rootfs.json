@@ -1,0 +1,8 @@
+{
+  "tag": "initrd-v0.21.0",
+  "index_sha256": "b9c1a2e3dd171f4902a622bcb5538b7c16fedfa4ab76525745b9e4f7ebacd3c6",
+  "manifest_sha256": "0a6c0ad88c29652f08c8e7345bb6afec8985dfe62c461c01c0106e5fc495702d",
+  "layer_sha256": "82e503cfa0676e33a23269d28478956515885ddbb123c20e0088b915d9093e54",
+  "initrd_sha256": "8d7f9d72512e6736e1febb7b02fb7ae3da3bee8a8e2918dfa6da1458a5fb3995",
+  "initrd_bytes": 425325568
+}

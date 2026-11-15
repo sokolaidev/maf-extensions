@@ -1,0 +1,23 @@
+[package]
+name = "mxc-session-state-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "mxc-session-state-probe"
+path = "main.rs"
+
+[dependencies]
+mxc-sdk = { path = @SDK@, default-features = false, features = ["maf-output-preview"] }
+serde_json = "1"
+
+[features]
+default = ["bounded-output", "bounded-storage"]
+bounded-output = []
+bounded-storage = []
+
+[patch.crates-io]
+hyperlight-unikraft = { path = @RUNTIME@ }
+hyperlight-host = { path = @HOST@ }
+hyperlight-common = { path = @COMMON@ }
