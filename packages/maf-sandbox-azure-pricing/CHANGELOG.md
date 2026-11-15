@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-azure-pricing-v0.2.2...maf-sandbox-azure-pricing-v0.3.0) (2026-11-15)
+
+
+### Features
+
+* **sandbox:** expose fixed result sentences on attached tools ([#2683](https://github.com/sokolaidev/maf-extensions/issues/2683)) ([822f8bf](https://github.com/sokolaidev/maf-extensions/commit/822f8bf4efdd3c7fbcb050db8a1b82c57fd4258a))
+
+
+### Fixes
+
+* **azure-pricing:** default an omitted price_type to Consumption ([#2759](https://github.com/sokolaidev/maf-extensions/issues/2759)) ([5ce3815](https://github.com/sokolaidev/maf-extensions/commit/5ce3815ea98b0216a03c2878cf4e0eaaaa0faafc))
+
 ## [0.2.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-azure-pricing-v0.2.1...maf-sandbox-azure-pricing-v0.2.2) (2026-11-10)
 
 
