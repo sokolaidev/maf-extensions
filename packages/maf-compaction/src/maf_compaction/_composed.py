@@ -55,6 +55,7 @@ from ._anchored import (
     EXCLUDE_REASON,
     _is_marker,  # pyright: ignore[reportPrivateUsage]
 )
+from ._carryover import CarriedView, Handed
 from ._media import annotate_token_counts
 from ._preserve import (
     PRESERVE_REASON_KEY,
@@ -860,6 +861,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._background: _RecordMergeWork | None = None
         self._record_answer_ready: Callable[[str, int, str, _RecordAnswer], None] | None = None
         self._record_work_current: Callable[[], bool] | None = None
+        # The list the last per-call pass left, for the next call to start from; see
+        # ``_carryover``. Process-local, and never part of ``session_state``.
+        self._carried: CarriedView | None = None
+        self._calls_resumed = 0
+        # Every phase of the pass in hand has run, and only the budget verdict is left.
+        self._settled = False
 
     def _record_worker(
         self,
@@ -871,6 +878,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         worker.tool_results = copy(self.tool_results)
         worker.user_turns = copy(self.user_turns)
         worker._background = None
+        worker._carried = None
         worker.restore_session_state(deepcopy(self.session_state()))
         worker._request_budget = ContextVar("background_record_budget", default=budget)
         worker._chain_deadline = ContextVar("background_record_deadline", default=None)
@@ -1364,6 +1372,27 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return self._decisions_kept
 
     @property
+    def calls_resumed(self) -> int:
+        """Per-call passes that started from the list the previous call's pass left.
+
+        A host that hands every model call a rebuilt list -- copies of its stored messages, or
+        the tool loop's list without what a pass inserted -- would otherwise have every
+        decision put back on every call; see :mod:`._carryover`. A pass that resumes finds its
+        records, notes and exclusions standing, so it does not add to
+        :attr:`chain_decisions_kept`.
+        """
+        return self._calls_resumed
+
+    @property
+    def carries_view(self) -> bool:
+        """Whether the list the last per-call pass left is being kept for the next call."""
+        return self._carried is not None
+
+    def forget_carried_view(self) -> None:
+        """Release the list kept for the next call; the next pass puts its decisions back."""
+        self._carried = None
+
+    @property
     def _budget(self) -> int:
         budget = self._request_budget.get()
         return self.max_input_tokens if budget is None else budget
@@ -1386,11 +1415,25 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     exc.tokens, exc.budget, pending
                 ) from exc
             raise
+        handed = Handed.take(messages)
+        carried, self._carried = self._carried, None
+        resumed = carried.resume(messages, handed) if carried is not None else None
+        if resumed is not None and resumed.restored:
+            self._calls_resumed += 1
+        self._settled = False
         token = self._request_budget.set(budget)
         try:
-            return await self(messages)
+            changed = await self(messages)
+        except CompactionBudgetExceeded:
+            # The closing budget check refuses a list every phase has already worked on.
+            if self._settled:
+                self._carried = CarriedView(handed, list(messages))
+            raise
         finally:
             self._request_budget.reset(token)
+        if changed or resumed is not None:
+            self._carried = CarriedView(handed, list(messages))
+        return changed or (resumed is not None and resumed.changed)
 
     async def __call__(self, messages: list[Message]) -> bool:
         """Run the record phase, then the user phase on what it left, then the chain if still over.
@@ -1469,6 +1512,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         chained = await self._last_resort(messages, replayed_user_fold=replay.chain_fold)
         if replayed and self._decisions_kept == decisions_kept:
             self._decisions_kept += 1
+        self._settled = True
         try:
             fitted = self._enforce_budget(messages)
         finally:

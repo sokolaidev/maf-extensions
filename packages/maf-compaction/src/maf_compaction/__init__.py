@@ -72,6 +72,7 @@ from ._preserve import (
     set_preserved,
 )
 from ._session import (
+    DEFAULT_MAX_CARRIED_VIEWS,
     CompactionStack,
     SessionCompactionProvider,
     SessionCompactionRegistry,
@@ -127,6 +128,7 @@ __all__ = [
     "DEFAULT_KEEP_HEAD_USER_TURNS",
     "DEFAULT_KEEP_TAIL_USER_TURNS",
     "DEFAULT_KEEP_TOKENS",
+    "DEFAULT_MAX_CARRIED_VIEWS",
     "DEFAULT_MIN_BAND_SHARE",
     "DEFAULT_MIN_GAIN_FRACTION",
     "DEFAULT_RECORD_INSTRUCTION",
