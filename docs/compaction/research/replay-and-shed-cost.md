@@ -1,6 +1,6 @@
 # Why the composed pass got slower in 0.13 (#2724)
 
-> Exploration record for [#2724](https://github.com/sokolaidev/maf-extensions/issues/2724): where the per-call cost of the composed strategy's pass comes from in 0.13, which review findings each slow path answers, and which fixes keep what those findings protect. Sections 1 to 9 are the analysis as written before any change; [section 10](#10-what-the-first-change-implemented) and [section 11](#11-what-the-second-change-implemented) record the changes made from it and what they measured.
+> Exploration record for [#2724](https://github.com/sokolaidev/maf-extensions/issues/2724): where the per-call cost of the composed strategy's pass comes from in 0.13, which review findings each slow path answers, and which fixes keep what those findings protect. Sections 1 to 9 are the analysis as written before any change; [section 10](#10-what-the-first-change-implemented), [section 11](#11-what-the-second-change-implemented) and [section 12](#12-what-the-third-change-implemented) record the changes made from it and what they measured. Sections 10 and 11 measured a host that keeps its list between calls; section 12 is about the hosts that do not.
 
 A steady per-call pass on a long conversation (about 5,000 messages, 1,890 included, 120 records) took 2.5 s on 0.12.4, 17.4 s on 0.13.0 and 17.0 s on 0.13.1. This note records why each slow path exists, which review findings shaped it, and which fixes keep the invariants those findings protect.
 
@@ -283,3 +283,59 @@ Section 10's harness and shapes, with this change and 0.13.3 run side by side, t
 ### Not done
 - **The memo of section 2.** An edit whose sources can be included, or whose held outputs are missing, still rebuilds its window. **[inferred]** So the pass that re-applies edits to a history the host rebuilt without them costs about what it did in section 10, and the passes after it skip.
 - **`_insert_note`,** now the largest cost of a run's first call on a long history, as measured above. Section 8's candidate for it, reusing the sets and splicing once, is safe if the suffix choice sees notes inserted earlier in the same batch.
+
+## 12. What the third change implemented
+
+Sections 10 and 11 timed a harness that hands every model call the list the previous pass left. A deployed host showed that 0.13.4 changed nothing for it ([#2743](https://github.com/sokolaidev/maf-extensions/issues/2743)): three consecutive model calls of one run held its event loop for 46 s, 79 s and 84 s, every stack sample in the per-call pass. The third change is for the hosts that hand a rebuilt list.
+
+### What a rebuilding host hands a pass
+- **Per-service-call history persistence,** which the framework's harness agent turns on. **[read]** `PerServiceCallHistoryPersistingMiddleware` rebuilds each call's list from the history provider, and `SessionContext.extend_messages` makes a shallow copy of every stored message with its own `additional_properties`. **[measured]** in a harness agent run, no message object of one call was in the next call's list, and every stored message's `contents` list was. A message the call carries in is the object the store keeps, so a flag a pass sets on it is stored and a flag on a copy is not; nothing a pass inserts reaches the store.
+- **The framework's reconciliation does nothing on that path.** **[measured]** the message-injection middleware returns a stream that runs the rest of the pipeline when it is consumed, so `_reconcile_compaction_summaries` runs before the pass, over a list with nothing inserted.
+- **A chat client with middleware and no per-call history** hands the pass a copy of the tool loop's list, sharing its message objects. **[measured]** the reconciliation then carries back what has summary links rooted in that list, the shed notes and user summaries, and not the records, which carry none. A record's sources stay included there, because the pass excludes copies of them.
+- **Either way every call put back every decision.** **[measured]** on this note's profiling harness, with the list rebuilt as the harness rebuilds it, a steady pass took 5.4 s at about 2,020 messages and 18.8 s at about 4,950, against 1.3 s and 3.8 s for a kept list, and re-applied 14 and 15 merges on every call.
+
+### Implemented
+- **A per-call pass keeps the list it leaves.** `compact_before` records what it was handed, each message's `contents` list and host-visible state, and the list as the pass left it (`_carryover`). `__call__`, which the stored-history phase uses, neither keeps nor resumes.
+- **The next call resumes from it** when it is handed those messages again, in order and unchanged, with new ones after them. A stored message is recognized by its `contents` list, which a shallow copy shares and the package never rebinds. Its state is everything in `additional_properties` except the group annotation and the attribution mark, with its role, author and durable id. A message the host kept from the view, as the reconciliation keeps a note, is skipped. Anything else gets the pass as it was.
+- **The kept list is brought to what this call was handed.** The package reads the attribution mark to know where an exclusion lasts (`removable_whole`), and a view carried from an earlier call holds that call's marks, and for a carried-in message the stored object itself. So where the store holds a message exactly as the view does, this call's own message takes its place, under the id the view used; every other kept message takes this call's mark, and loses its token count if the host dropped this call's.
+- **Positional ids.** `msg_N` ids are assigned to each handed list without the view's, so a new message whose id the view already uses has it assigned again.
+- **A refused budget keeps the list.** The closing budget check raises on a list every phase has already worked on, which is every call of a conversation that cannot fit. A phase that raises leaves nothing kept.
+- **Bounded and local.** The list is held by one strategy instance, never serialized, and released at the end of a turn by the stored-history phase and by the record-merge middleware. A registry keeps one for its `max_carried_views` most recently used sessions.
+
+### What it rests on
+1. **A stored message's `contents` list is one object across calls.** **[read]** `extend_messages` copies with `copy.copy`; no site in the package assigns `message.contents` on a message of the list.
+2. **Flags are per copy and summary links are not.** **[measured]** a loaded copy shares its group annotation with the stored message, so a summary link a pass writes on a copy shows on the store while its exclusion flag does not. Links are therefore compared only to decide whether two messages are interchangeable, never as evidence that a host changed one.
+3. **A handed message the pass replaced can still change.** The pass holds a record pair in place before swapping in copies, so the state it left on the handed message is kept and accepted; any other state on a message the view does not hold ends the resume.
+
+If the framework stops sharing `contents` lists, no call resumes and every pass puts its decisions back: the cost returns and the output does not change. The harness test below fails then.
+
+### Outputs
+- **What a kept list sends.** **[measured]** over five conversation shapes and eight calls each, a host handing fresh copies was sent exactly what a host keeping its list was, content for content, and so was a chat client with middleware.
+- **Not always what a rebuilt pass sent.** **[measured]** in three of those shapes the two agree on every call. In the two with the tightest budgets they differ from the second call: on one, a rebuilt pass sends 40 messages and a resumed pass 31, having folded ten user turns into a summary that a rebuilt pass never writes in eight calls, at five summarizer requests against four. **[read]** the user phase refuses a band worth less than `min_band_share` of the included prompt, and **[measured]** it is offered 6,494 tokens on a rebuilt list, before the closing shed is redone, and 3,059 on a kept one. The difference is the one that already stood between a host that keeps its list and one that does not.
+- **The store.** **[measured]** a resumed pass changes the host-visible state of no stored message; a flag reaches the store only on a message the call carried in, as before.
+- **On the profiling harness** every call sent the same tokens with and without the change, at both sizes.
+
+### Measured
+This note's harness, with the list rebuilt for every call as per-service-call persistence rebuilds it. Medians of the calls after the second: three calls in one process at the smaller size, four calls in two processes side by side at the larger.
+
+| History | Version | Steady pass | Second call | Merges re-applied per call | First call |
+|---|---|---|---|---|---|
+| 2,020 messages | 0.13.4 | 5.44 s | 7.50 s | 14 | 5.32 s |
+| 2,020 messages | this change | 1.41 s | 4.29 s | 0 | 5.26 s |
+| 4,950 messages | 0.13.4 | 18.80 s | 20.82 s | 15 | 18.90 s |
+| 4,950 messages | this change | 3.84 s | 6.47 s | 0 | 18.96 s |
+
+The first call has nothing to resume from, and the second resumes and then makes the one user-summary request both versions make there.
+
+### Pinned by tests
+- A rebuilt list sends what a kept list sends and rebuilds no record's window after the first call, over the five shapes, and behind a chat middleware.
+- A harness agent run, streaming with per-service-call persistence, resumes on every later call. With the resume disabled it rebuilds windows on each.
+- The store's messages are unchanged by a resumed pass, and the resumed list carries the marks the call was handed.
+- A list that drops, moves or changes a stored message, or holds another conversation's, is compacted as it is today, and a host's exclusion is kept.
+- Ids stay unique, a count the host dropped is taken again, a refused budget keeps the list, a failed pass keeps none, and nothing is kept or reported below every trigger.
+- The registry's bound, its release at the end of a turn, and the snapshot being the same with and without a kept list.
+
+### Not done
+- **The first call of a run whose host hands new objects.** A host that rebuilds its transcript for every run hands nothing a kept list can be matched to by identity. Matching by content fingerprint would cover it and was not attempted.
+- **The stored-history phase** at the end of a turn still puts every decision back, once per turn.
+- **`_insert_note`** remains what the first call of a long run spends most on ([#2736](https://github.com/sokolaidev/maf-extensions/issues/2736)).
