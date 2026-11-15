@@ -132,11 +132,181 @@ def test_positive_fixture_failure_restores_native_inputs(context):
     case = "replay-bicep-update"
     path = context / planner.NUGET
     original = path.read_bytes()
-    with pytest.raises(RuntimeError), replay.overlay(context, case):
-        assert path.read_bytes() != original
-        path.write_bytes(b"partial candidate")
-        raise RuntimeError("build failed")
+    with pytest.raises(RuntimeError):
+        with replay.overlay(context, case):
+            assert path.read_bytes() != original
+            path.write_bytes(b"partial candidate")
+            raise RuntimeError("build failed")
     assert path.read_bytes() == original
+
+
+@pytest.fixture
+def positive_apk(context, tmp_path, monkeypatch):
+    root, case = context, "replay-apk-pinned"
+    monkeypatch.setenv("REHEARSAL_CASE", case)
+    monkeypatch.setattr(replay, "git", lambda *_: SOURCE)
+    match = apk("glibc-2.44", "2.44-r14", "2.44-r16")
+    match["artifact"]["metadata"] = {"originPackage": "glibc", "architecture": "x86_64"}
+    match["vulnerability"].update(namespace="nvd:cpe", fix={"state": "unknown", "versions": []})
+    seed = tmp_path / "historical"
+    target = retained(seed, [match], profile="graphviz", name="graphviz-0.2.6")
+    write(target / "assessment.json", read(target / "observation.json")["assessment"])
+    write(seed / "monitor-index.json", {"historical": True})
+    manifest = read(root / rehearsal.MANIFEST)
+    fixture = manifest["cases"][case]["fixture"]
+    fixture["files"] = {name: digest(seed / name) for name in fixture["files"]}
+    write(root / rehearsal.MANIFEST, manifest)
+    monkeypatch.setattr(replay, "monitor_source", lambda *_: fixture["producer"])
+
+    def restore(client, monitor, producer, targets, destination):
+        assert (monitor, producer, targets) == (
+            fixture["monitor"],
+            fixture["producer"],
+            {"graphviz-0.2.6"},
+        )
+        shutil.copytree(seed, destination)
+
+    def current_scope(client, source, directory, **kwargs):
+        assert source == root and kwargs["selected_profiles"] == ["graphviz"]
+        scope = kwargs["planner"](source, [])
+        assert scope["affectedProfiles"] == ["graphviz"]
+        write(directory / "receipt.json", {"source": SOURCE, "images": {"graphviz": {}}})
+        return scope
+
+    downloads = []
+
+    def download(url):
+        vendor = replay.vendor_fix_evidence
+        name = next(name for name, (_, endpoint) in vendor.SOURCES.items() if endpoint == url)
+        downloads.append(url)
+        return json.dumps(
+            {
+                "reponame": "wolfi" if name == "wolfi" else name.removeprefix("alpine-"),
+                "distroversion": "v3.24",
+                "archs": ["x86_64"],
+                "packages": [{"pkg": {"name": "glibc", "secfixes": {"2.44-r16": ["CVE-apk"]}}}],
+            }
+        ).encode()
+
+    monkeypatch.setattr(replay, "restore_monitor", restore)
+    monkeypatch.setattr(replay, "acquire_with_retry", current_scope)
+    monkeypatch.setattr(replay.vendor_fix_evidence, "download", download)
+    monkeypatch.setattr(replay, "current", lambda *_: None)
+    work, results = tmp_path / "apk-work", tmp_path / "apk-results"
+    with replay.overlay(root, case):
+        expected = rehearsal.acquire(root, work)
+        files = planner.proposal(root, expected)
+        assert expected["affectedProfiles"] == ["graphviz"]
+        assert b"glibc-2.44=2.44-r16" in files["images/graphviz-sandbox/Dockerfile"]
+        assert expected["vendorEvidence"] == read(work / "vendor-security/receipt.json")
+        assert set(downloads) == {
+            endpoint for _, endpoint in replay.vendor_fix_evidence.SOURCES.values()
+        }
+        for variant in ("baseline", "candidate"):
+            directory = results / f"{variant}-graphviz"
+            installed = "2.44-r14" if variant == "baseline" else "2.44-r16"
+            observed = copy.deepcopy(match)
+            observed["artifact"].update(
+                version=installed, purl=f"pkg:apk/wolfi/glibc-2.44@{installed}?arch=x86_64"
+            )
+            sbom = {
+                "source": {"type": "image", "metadata": {"imageID": IMAGE}},
+                "artifacts": [observed["artifact"]],
+            }
+            report = read(target / "grype.json")
+            report["matches"] = [observed]
+            write(directory / "sbom.syft.json", sbom)
+            write(directory / "grype.json", report)
+            write(directory / "assessment.json", scan_result(report, IMAGE, AT, sbom=sbom))
+            write(
+                directory / "runtime.json",
+                {
+                    "profile": "graphviz",
+                    "imageId": IMAGE,
+                    "passed": True,
+                    "containersRemaining": [],
+                },
+            )
+            write(
+                directory / "build.json",
+                {"source_commit": SOURCE, "profile": "graphviz", "local_image_id": IMAGE},
+            )
+            write(
+                directory / "qualification.json",
+                {
+                    "schemaVersion": 1,
+                    "source": SOURCE,
+                    "profile": "graphviz",
+                    "variant": variant,
+                    "route": rehearsal.platform.scan_route("graphviz", "policy"),
+                    "plan": planner.digest(work / "plan.json"),
+                    "inputs": expected["inputs"]
+                    | (planner.file_hashes(files) if variant == "candidate" else {}),
+                },
+            )
+            write(
+                directory / "vendor.json",
+                [
+                    {
+                        "base": base,
+                        "component": component,
+                        "version": version,
+                        "stdout": f"verified:{component}={version}",
+                    }
+                    for base, component, version in rehearsal.platform.vendor_requests(
+                        expected, "graphviz"
+                    )
+                ],
+            )
+    return root, work, results
+
+
+@pytest.mark.parametrize("mutation", [None, "vendor-bytes", "vendor-receipt"])
+def test_positive_apk_acquisition_qualification_delivery_and_refusal(
+    positive_apk, monkeypatch, mutation
+):
+    root, work, results = positive_apk
+    case = "replay-apk-pinned"
+    native = "images/graphviz-sandbox/Dockerfile"
+    original = (root / native).read_bytes()
+    observed = []
+    monkeypatch.setattr(rehearsal, "current", lambda client, receipt: observed.append(receipt))
+    monkeypatch.setattr(publication, "current", lambda client, receipt: observed.append(receipt))
+    monkeypatch.setenv("IMAGE_REMEDIATION_TOKEN", "fixture-token")
+    if mutation:
+        feed = work / "vendor-security/wolfi.json"
+        data = read(feed)
+        data["packages"][0]["pkg"]["secfixes"] = {"2.44-r17": ["CVE-apk"]}
+        write(feed, data)
+        if mutation == "vendor-receipt":
+            receipt = read(work / "vendor-security/receipt.json")
+            receipt["sources"]["wolfi"]["sha256"] = planner.digest(feed)
+            write(work / "vendor-security/receipt.json", receipt)
+        with pytest.raises(ValueError, match="identity changed|plan differs"):
+            with replay.overlay(root, case):
+                rehearsal.qualify(root, work, results)
+        assert not observed
+    else:
+        with replay.overlay(root, case):
+            qualified = rehearsal.qualify(root, work, results)
+            assert qualified["caseMatches"] == {"baseline": 1, "candidate": 0}
+            assert qualified["rawCaseMatches"] == {"baseline": 1, "candidate": 1}
+            report, files = rehearsal.delivery_payload(root, qualified, URL, work=work)
+            assert set(files) == {replay.CASES[case][native]}
+            assert b"glibc-2.44=2.44-r16" in files[replay.CASES[case][native]]
+            client = FakeRehearsal(set(files))
+            result = rehearsal.lifecycle(
+                client, replay.authority(work), report, files, BOT, URL, work
+            )
+            assert result["status"] == "delivery-passed"
+            assert result["payload"] == "dependency-diff"
+            assert result["repeated"]["status"] == "unchanged"
+            assert client.pulls[0]["draft"] is True
+            for endpoint, data in client.writes:
+                if endpoint == "git/trees":
+                    assert {entry["path"] for entry in data["tree"]} == set(files)
+        assert observed and all(value == replay.authority(work) for value in observed)
+    assert (root / native).read_bytes() == original
 
 
 @pytest.mark.parametrize("outcome", ["ready", "deferred", "producer"])
@@ -182,16 +352,24 @@ def test_positive_acquisition_authenticates_history_and_current_scope(
             assert not observed
 
 
-def test_positive_source_gate_checks_candidate_and_restores_after_failure(positive, monkeypatch):
-    root, work, _ = positive
-    case = "replay-bicep-update"
+@pytest.mark.parametrize("fixture_name", ["positive", "positive_apk"])
+def test_positive_source_gate_checks_candidate_and_restores_after_failure(
+    request, monkeypatch, fixture_name
+):
+    root, work, _ = request.getfixturevalue(fixture_name)
+    case = read(work / "receipt.json")["case"]
     original = {name: (root / name).read_bytes() for name in replay.overlays(case)}
     monkeypatch.setattr(rehearsal, "ROOT", root)
     monkeypatch.setattr(sys, "argv", ["rehearsal", "checks", "--work", str(work)])
 
     def fail(command, **kwargs):
         assert command == ["uv", "run", "--locked", "poe", "gate"]
-        assert b'Version="3.1.13"' in (root / planner.NUGET).read_bytes()
+        if case == "replay-bicep-update":
+            assert b'Version="3.1.13"' in (root / planner.NUGET).read_bytes()
+        else:
+            assert (
+                b"glibc-2.44=2.44-r16" in (root / "images/graphviz-sandbox/Dockerfile").read_bytes()
+            )
         raise RuntimeError("source gate failed")
 
     monkeypatch.setattr(rehearsal.subprocess, "run", fail)
