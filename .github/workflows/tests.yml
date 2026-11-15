@@ -453,6 +453,10 @@ jobs:
           done
           uv run twine check dist/*
 
+      - name: The dependent core ranges overlap
+        if: needs.changes.outputs.code == 'true'
+        run: uv run python scripts/check_core_range_overlap.py
+
       # `--find-links dist/` resolves intra-family deps against the wheels just built, not
       # PyPI â€” deliberately opposite of publish-packages.yml's copy of this gate.
       # Built cores are named once. A dependent floored on the release this branch cuts

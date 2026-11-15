@@ -54,6 +54,7 @@ dev = [
     { name = "mcp", specifier = "==2.2.0" },
     { name = "ollama", specifier = ">=0.5.3,<0.6" },
     { name = "opentelemetry-sdk", specifier = ">=1.44,<2" },
+    { name = "packaging", specifier = ">=26.1,<27" },
     { name = "pillow", specifier = ">=13,<14" },
     { name = "playwright", specifier = "==1.64.1" },
     { name = "poethepoet", specifier = ">=0.34,<1" },
