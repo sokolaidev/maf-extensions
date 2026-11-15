@@ -231,6 +231,8 @@ def main() -> None:
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--bot")
     parser.add_argument("--artifact-id", type=int)
+    parser.add_argument("--reason", choices=("security", "package"))
+    parser.add_argument("--justification", default="")
     args = parser.parse_args()
     client = ChromeGitHub()
     try:
@@ -239,11 +241,21 @@ def main() -> None:
         elif args.command == "build":
             build(ROOT, args.work)
         else:
+            if (
+                os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+                or not args.reason
+                or not args.justification.strip()
+            ):
+                raise ValueError(
+                    "Chrome delivery requires a manual security or package requirement"
+                )
             if not args.bot or not args.artifact_id:
                 raise ValueError("Chrome delivery requires a bot and retained artifact")
             report = qualify(ROOT, args.work)
             if report != read(args.work / "qualified.json"):
                 raise ValueError("Chrome qualified report changed")
+            report["requirement"] = {"kind": args.reason, "reason": args.justification.strip()}
+            write(args.work / "delivery-requirement.json", report["requirement"])
             receipt, files = validate(ROOT, args.work)
             result = publish(
                 client,
