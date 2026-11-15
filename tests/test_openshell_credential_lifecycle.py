@@ -29,6 +29,88 @@ def identity():
 
 @pytest.mark.parametrize(
     "fault",
+    [None, "old", "late", "owner", "host", "port", "generation", "message", "malformed"],
+)
+def test_generation_evidence_is_exact_scoped_and_secret_free(probe, fault):
+    from datetime import datetime
+
+    stamp = int(datetime.fromisoformat("2026-11-15T13:38:46+00:00").timestamp()) * 10**9
+    event = {
+        "container": {"uid": "owned"},
+        "dst_endpoint": {"domain": "owned.test", "port": 8443},
+        "message": "L7 tunnel closed before inspection because policy changed: "
+        "policy generation is stale [captured_generation:2 current_generation:3]",
+        "unmapped": {"authorization": "Bearer private-token", "hostname": "internal.example"},
+    }
+    if fault == "owner":
+        event["container"]["uid"] = "replacement"
+    elif fault == "host":
+        event["dst_endpoint"]["domain"] = "other.test"
+    elif fault == "port":
+        event["dst_endpoint"]["port"] = 443
+    elif fault == "generation":
+        event["message"] = event["message"].replace("current_generation:3", "current_generation:2")
+    elif fault == "message":
+        event["message"] += " private-token"
+    elif fault == "malformed":
+        event["container"] = None
+    log = "2026-11-15T13:38:46.662804935Z 2026-11-15T13:38:46.662Z OCSF-JSON " + json.dumps(event)
+    started = stamp + (700_000_000 if fault == "old" else 600_000_000)
+    ended = stamp + (650_000_000 if fault == "late" else 800_000_000)
+    signals = probe.generation_closures(log, "owned", "owned.test", started, ended)
+    assert bool(signals) is (fault is None)
+    if fault is None:
+        assert signals == [
+            {
+                "signal": "relay_closed_for_policy_generation_change",
+                "time_unix_ns": stamp + 662_804_935,
+                "captured_generation": 2,
+                "current_generation": 3,
+            }
+        ]
+    assert "private-token" not in json.dumps(signals)
+    assert "internal.example" not in json.dumps(signals)
+    assert probe.generation_closures("OCSF-JSON {bad}", "owned", "owned.test", started, ended) == []
+
+
+@pytest.mark.parametrize("fault", [None, "replacement", "missing", "duplicate", "exit", "timeout"])
+def test_generation_capture_requires_owned_supervisor_and_redacts_failures(
+    probe, monkeypatch, fault
+):
+    owner = {"sandbox_id": "owned", "containers": ["supervisor"]}
+    container = {
+        "Id": "replacement" if fault == "replacement" else "supervisor",
+        "Labels": {"openshell.ai/isolation-role": "supervisor"},
+    }
+    monkeypatch.setattr(
+        probe,
+        "snapshot",
+        lambda identity: {
+            "containers": []
+            if fault == "missing"
+            else [container] * (2 if fault == "duplicate" else 1)
+        },
+    )
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if fault == "timeout":
+            raise subprocess.TimeoutExpired(command, 10, output="private-token")
+        return NS(returncode=1 if fault == "exit" else 0, stdout="private-token", stderr="")
+
+    monkeypatch.setattr(probe.subprocess, "run", run)
+    if fault is None:
+        assert probe.generation_interruption(owner, "owned.test", 0, 1) == []
+    else:
+        with pytest.raises(RuntimeError) as caught:
+            probe.generation_interruption(owner, "owned.test", 0, 1)
+        assert "private-token" not in str(caught.value)
+    assert len(calls) == (0 if fault in ("replacement", "missing", "duplicate") else 1)
+
+
+@pytest.mark.parametrize(
+    "fault",
     [
         None,
         "baseline",
@@ -556,6 +638,13 @@ def test_persistent_control_session_requires_finite_budget(probe, seconds):
         "profile_same_reference",
         "restore_no_revive",
         "restore_narrowed_reference",
+        "generation",
+        "generation_missing",
+        "generation_multiple",
+        "generation_origin",
+        "generation_timeout",
+        "generation_late_success",
+        "generation_expiry",
     ],
 )
 def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
@@ -584,6 +673,21 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
     )
     monkeypatch.setattr(probe.ssl, "create_default_context", lambda **kw: object())
     monkeypatch.setattr(probe, "origin_get", lambda *a: list(origin))
+    evidence_reads = []
+
+    def generation_interruption(owner, host, started, ended):
+        evidence_reads.append((started, ended))
+        if fault == "generation_timeout":
+            state.clock += 31
+        if fault == "generation_expiry":
+            state.now = state.issuer.latest["expires_at"] - 34
+        return (
+            []
+            if fault == "generation_missing"
+            else [{"signal": "closure"}] * (2 if fault == "generation_multiple" else 1)
+        )
+
+    monkeypatch.setattr(probe, "generation_interruption", generation_interruption)
 
     def control(host, path, **kwargs):
         row = dict(
@@ -723,6 +827,12 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
                 state.now = state.issuer.latest["expires_at"] - 34
             if narrowing and fault == "profile_transport":
                 return dict(guest={"error": "URLError", "errno": -5})
+            if narrowing and str(fault).startswith("generation") and not evidence_reads:
+                if fault == "generation_origin":
+                    origin.append({"path": "/unexpected"})
+                return dict(guest={"error": "RemoteDisconnected", "errno": None})
+            if narrowing and fault == "generation_late_success" and evidence_reads:
+                state.clock += 31
             if (
                 (narrowing and fault == "profile_no_revocation")
                 or (restoring and fault == "restore_no_revive")
@@ -807,16 +917,27 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
         acquire=acquire,
         dispose=dispose,
     )
-    if fault is None:
+    if fault is None or fault == "generation":
         asyncio.run(probe.measure_credentials(fixture, "10.23.45.67", tmp_path / "ca.pem"))
-        assert state.requests == 24
+        assert state.requests == (23 if fault == "generation" else 24)
         assert fixture.report["credentials"]["characterization_completed"]
         cases = {row["case"]: row for row in fixture.report["credentials"]["cases"]}
         for name in (
             "profile_narrowing_revokes_removed_path",
             "profile_restoration_revives_same_current_reference",
         ):
-            assert [attempt["matched"] for attempt in cases[name]["attempts"]] == [False, True]
+            expected = (
+                [True]
+                if fault == "generation"
+                and name == "profile_restoration_revives_same_current_reference"
+                else [False, True]
+            )
+            assert [attempt["matched"] for attempt in cases[name]["attempts"]] == expected
+        if fault == "generation":
+            assert len(evidence_reads) == 1
+            assert cases["profile_narrowing_revokes_removed_path"]["attempts"][0][
+                "generation_interruptions"
+            ] == [{"signal": "closure"}]
     else:
         match = (
             "expiry"
@@ -830,6 +951,8 @@ def test_measurement_reconciles_idle_intervals_and_brackets_old_epoch_expiry(
                 "profile_retained_old_reference",
                 "restore_no_revive",
                 "restore_narrowed_reference",
+                "generation_timeout",
+                "generation_late_success",
             )
             else "continuity|unattributed"
         )

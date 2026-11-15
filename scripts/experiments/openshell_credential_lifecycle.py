@@ -8,14 +8,16 @@ import json
 import re
 import socket
 import ssl
+import subprocess
 import time
 import uuid
+from datetime import datetime
 
 from openshell_composition_probe import CompositionProfile
 from openshell_credentials_probe import credential_observation
 from openshell_egress_probe import origin_get
 from openshell_https_probe import control_https
-from openshell_owned_probe import fixture_spec
+from openshell_owned_probe import fixture_spec, snapshot
 from openshell_refresh_probe import RefreshProfile, TokenIssuer
 from openshell_sftp_probe import native_sftp
 from openshell_transition_probe import Transitions
@@ -154,6 +156,75 @@ def propagation_observation(observed, events, request, minted):
         )
         for event in minted
         if event.get("mode") == "ok"
+    )
+
+
+def generation_closures(log, sandbox_id, host, started, ended):
+    """Extract only exact, owned OCSF relay closures within one serial request interval."""
+    signals = []
+    for line in log.splitlines():
+        match = re.fullmatch(
+            r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d{1,9})Z .*?OCSF-JSON (\{.*\})",
+            line,
+        )
+        if not match:
+            continue
+        try:
+            stamp = int(datetime.fromisoformat(match[1] + "+00:00").timestamp()) * 10**9
+            stamp += int(match[2].ljust(9, "0"))
+            event = json.loads(match[3])
+            if not started <= stamp <= ended or not isinstance(event, dict):
+                continue
+            if (
+                event.get("container", {}).get("uid") != sandbox_id
+                or event.get("dst_endpoint", {}).get("domain") != host
+                or event.get("dst_endpoint", {}).get("port") != 8443
+            ):
+                continue
+            generation = re.fullmatch(
+                r"L7 tunnel closed before inspection because policy changed: "
+                r"policy generation is stale \[captured_generation:([0-9]{1,20}) "
+                r"current_generation:([0-9]{1,20})\]",
+                event.get("message", ""),
+            )
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if generation and int(generation[2]) > int(generation[1]):
+            signals.append(
+                {
+                    "signal": "relay_closed_for_policy_generation_change",
+                    "time_unix_ns": stamp,
+                    "captured_generation": int(generation[1]),
+                    "current_generation": int(generation[2]),
+                }
+            )
+    return signals
+
+
+def generation_interruption(owner, host, started, ended):
+    """Read one owned supervisor; raw logs never enter retained evidence or exception text."""
+    current = snapshot(owner["sandbox_id"])
+    supervisors = [
+        c["Id"]
+        for c in current["containers"]
+        if c["Labels"].get("openshell.ai/isolation-role") == "supervisor"
+    ]
+    if len(supervisors) != 1 or supervisors[0] not in owner["containers"]:
+        raise RuntimeError("supervisor identity changed during credential observation")
+    try:
+        result = subprocess.run(
+            ["docker", "logs", "--timestamps", "--tail", "5000", supervisors[0]],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception as exc:
+        raise RuntimeError("supervisor evidence unavailable: " + type(exc).__name__) from None
+    if result.returncode:
+        raise RuntimeError("supervisor evidence unavailable")
+    return generation_closures(
+        result.stdout + "\n" + result.stderr, owner["sandbox_id"], host, started, ended
     )
 
 
@@ -525,8 +596,23 @@ async def measure_credentials(fixture, ip, ca_file):
                     target = path + "?case=" + marker
                     await reconcile(expected=[])
                     started = time.monotonic_ns()
+                    started_unix = time.time_ns()
                     observed = await guest.request(f"https://{host}:8443{target}", source)
+                    ended_unix = time.time_ns()
                     events = await reconcile()
+                    interruptions = []
+                    if (
+                        converge
+                        and not events
+                        and observed["guest"] == {"error": "RemoteDisconnected", "errno": None}
+                    ):
+                        interruptions = await asyncio.to_thread(
+                            generation_interruption,
+                            sandbox.owner,
+                            host,
+                            started_unix,
+                            ended_unix,
+                        )
                     if revoked is not None:
                         unexpired(revoked)
                     request = {
@@ -544,16 +630,23 @@ async def measure_credentials(fixture, ip, ca_file):
                             "matched": passed,
                             "started_ns": started,
                             "ended_ns": time.monotonic_ns(),
+                            "started_unix_ns": started_unix,
+                            "ended_unix_ns": ended_unix,
+                            "generation_interruptions": interruptions,
                         }
                     )
-                    row["passed"] = passed
+                    timely = not converge or time.monotonic() < deadline
+                    row["passed"] = passed and timely
                     fixture.save()
+                    if not timely:
+                        raise RuntimeError("unexpected continuous credential observation: " + label)
                     if passed:
                         return
                     if not (
                         propagation_observation(
                             observed["guest"], events, request, issuer.journal()
                         )
+                        or len(interruptions) == 1
                         or prior_refusal is not None
                         and credential_observation(
                             observed["guest"], events, prior_refusal, request
