@@ -20,8 +20,9 @@ a session snapshot, and losing it costs one pass that puts its decisions back th
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from agent_framework import Content, Message
 from agent_framework._compaction import (
@@ -57,13 +58,19 @@ _PER_CALL_ANNOTATIONS: Final[frozenset[str]] = frozenset(
 def _frozen(value: Any) -> Any:
     """Return a value that later in-place edits of ``value`` cannot change."""
     if isinstance(value, dict):
-        pairs = [(str(key), _frozen(item)) for key, item in value.items()]  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+        mapping = cast(dict[Any, Any], value)
+        pairs = [(str(key), _frozen(item)) for key, item in mapping.items()]
         return tuple(sorted(pairs, key=lambda pair: pair[0]))
     if isinstance(value, (list, tuple, set, frozenset)):
-        return tuple(_frozen(item) for item in value)  # pyright: ignore[reportUnknownVariableType]
+        return tuple(_frozen(item) for item in cast(Iterable[Any], value))
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return repr(value)
+
+
+def _annotation(message: Message) -> dict[str, Any] | None:
+    annotation = message.additional_properties.get(GROUP_ANNOTATION_KEY)
+    return cast(dict[str, Any], annotation) if isinstance(annotation, dict) else None
 
 
 def _host_state(message: Message) -> tuple[Any, ...]:
@@ -89,26 +96,24 @@ def _links(message: Message) -> Any:
     copy can show on the store. Links are therefore no evidence of a host's change, and are
     compared only to tell whether two messages are interchangeable.
     """
-    annotation = message.additional_properties.get(GROUP_ANNOTATION_KEY)
-    if not isinstance(annotation, dict):
+    annotation = _annotation(message)
+    if annotation is None:
         return ()
     return _frozen(
         {key: item for key, item in annotation.items() if key not in _PER_CALL_ANNOTATIONS}
-    )  # pyright: ignore[reportUnknownVariableType]
+    )
 
 
 def _token_count(message: Message) -> int | None:
-    annotation = message.additional_properties.get(GROUP_ANNOTATION_KEY)
-    if not isinstance(annotation, dict):
-        return None
-    count = annotation.get(GROUP_TOKEN_COUNT_KEY)  # pyright: ignore[reportUnknownVariableType]
+    annotation = _annotation(message)
+    count = None if annotation is None else annotation.get(GROUP_TOKEN_COUNT_KEY)
     return count if isinstance(count, int) else None
 
 
 def _drop_token_count(message: Message) -> None:
-    annotation = message.additional_properties.get(GROUP_ANNOTATION_KEY)
-    if isinstance(annotation, dict):
-        annotation.pop(GROUP_TOKEN_COUNT_KEY, None)  # pyright: ignore[reportUnknownMemberType]
+    annotation = _annotation(message)
+    if annotation is not None:
+        annotation.pop(GROUP_TOKEN_COUNT_KEY, None)
 
 
 def _sent(messages: list[Message]) -> list[int]:
