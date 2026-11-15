@@ -210,7 +210,10 @@ class Fixture:
                     check=False,
                 )
                 row["returncode"] = result.returncode
-                row["events"] = diagnostic_signals(result.stdout + "\n" + result.stderr)
+                output = result.stdout + "\n" + result.stderr
+                row["lines"] = len(output.splitlines())
+                row["structured_records"] = sum("OCSF-JSON" in line for line in output.splitlines())
+                row["events"] = diagnostic_signals(output)
             except Exception as exc:
                 row["error"] = type(exc).__name__
         self.save()
@@ -671,6 +674,12 @@ def main() -> int:
         created = False
         try:
             wait_gateway(client)
+            diagnostic_setting = client.pb.UpdateConfigRequest(
+                **{"global": True, "setting_key": "ocsf_json_enabled"}
+            )
+            diagnostic_setting.setting_value.bool_value = True
+            client.rpc("UpdateConfig", diagnostic_setting)
+            report["structured_diagnostics"] = True
             report["workspace_create"] = {"name": workspace, "state": "pending"}
             fixture.save()
             client.rpc("CreateWorkspace", client.pb.CreateWorkspaceRequest(name=workspace))

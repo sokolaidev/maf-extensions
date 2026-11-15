@@ -24,8 +24,13 @@ from openshell_transition_probe import Transitions
 def guest_program(directory, env_key):
     """Keep the launch reference in memory; control files contain only bounded probe commands."""
     return f"""
-import hashlib, json, os, time, uuid, urllib.request, urllib.error
+import hashlib, http.client, json, os, time, uuid, urllib.request, urllib.error
 from pathlib import Path
+class DiagnosticHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self):
+        super().connect()
+        time.sleep(1)
+http.client.HTTPSConnection = DiagnosticHTTPSConnection
 directory = Path({directory!r})
 directory.mkdir(exist_ok=True)
 original = os.environ.get({env_key!r}, '')
