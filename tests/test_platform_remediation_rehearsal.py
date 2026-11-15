@@ -9,6 +9,7 @@ import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import yaml
@@ -132,11 +133,13 @@ def test_positive_fixture_failure_restores_native_inputs(context):
     case = "replay-bicep-update"
     path = context / planner.NUGET
     original = path.read_bytes()
-    with pytest.raises(RuntimeError):
+    build = Mock(side_effect=RuntimeError("build failed"))
+    with pytest.raises(RuntimeError, match="build failed"):
         with replay.overlay(context, case):
             assert path.read_bytes() != original
             path.write_bytes(b"partial candidate")
-            raise RuntimeError("build failed")
+            build()
+    build.assert_called_once_with()
     assert path.read_bytes() == original
 
 

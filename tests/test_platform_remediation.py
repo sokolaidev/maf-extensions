@@ -33,6 +33,9 @@ pytestmark = pytest.mark.workflow
 def checkout(tmp_path):
     root = tmp_path / "source"
     copy_checkout(ROOT, root)
+    (root / "images/graphviz-sandbox/Dockerfile").write_text(
+        f"FROM cgr.dev/chainguard/wolfi-base:latest@sha256:{'a' * 64}\nRUN apk upgrade --no-cache\n"
+    )
     return root
 
 
