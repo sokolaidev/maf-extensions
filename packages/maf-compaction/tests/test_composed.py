@@ -69,6 +69,7 @@ from maf_compaction._composed import (
     ChainDecisions,
     CompactionBudgetExceeded,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+    _meets_gain_floor,
     _responses,
     harder_record_prompt,
 )
@@ -2665,6 +2666,41 @@ async def test_a_rewrite_that_saves_almost_nothing_is_refused_and_not_asked_agai
         r.getMessage() for r in caplog.records if "the rewrite was refused" in r.getMessage()
     ]
     assert len(refusals) == 2 and all("saving too little" in line for line in refusals)
+
+
+@pytest.mark.parametrize(
+    ("saved", "replaced", "fraction", "meets"),
+    [(14, 100, 0.14, True), (13, 100, 0.14, False), (10, 100, 0.1, True), (1, 100, 0.0, True)],
+)
+def test_a_saving_exactly_at_the_gain_floor_meets_it(
+    saved: int, replaced: int, fraction: float, meets: bool
+) -> None:
+    """``0.14 * 100`` is ``14.000000000000002``, so a product would refuse the 14 it promises."""
+    assert _meets_gain_floor(saved, replaced, fraction) is meets
+
+
+def _barely_shorter_and_lossy(attempt: int, body: str) -> str:
+    """Answer as :func:`_barely_shorter` does, and drop one of the values the records hold."""
+    return _barely_shorter(attempt, body).replace("CODE-2", "")
+
+
+async def test_a_lossy_rewrite_under_the_gain_floor_is_refused_and_counted_as_lossy(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An answer that drops values is lossy whatever it saves, so the floor does not hide it."""
+    summarizer = _RoutingSummarizer(harder=_barely_shorter_and_lossy)
+    strategy = _chain_composed(summarizer, harder_attempts=1)
+
+    with caplog.at_level(logging.WARNING, logger="maf_compaction._composed"):
+        with pytest.raises(CompactionBudgetExceeded):
+            await strategy(_chain_conversation(trailing=True))
+
+    assert (strategy.record_rewrites, strategy.record_rewrites_rejected) == (1, 1)
+    assert strategy.record_consolidations_lossy == 1
+    (refusal,) = [
+        r.getMessage() for r in caplog.records if "the rewrite was refused" in r.getMessage()
+    ]
+    assert "dropping values" in refusal
 
 
 async def test_without_a_gain_floor_a_barely_smaller_rewrite_is_kept_and_asked_again() -> None:

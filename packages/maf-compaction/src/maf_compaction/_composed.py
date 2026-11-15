@@ -471,6 +471,15 @@ def harder_record_prompt(attempt: int) -> str:
     )
 
 
+def _meets_gain_floor(saved: int, replaced: int, fraction: float) -> bool:
+    """Return whether ``saved`` of ``replaced`` tokens is at least ``fraction`` of them.
+
+    Compared as a ratio. The product ``fraction * replaced`` can round up past a saving that
+    meets the floor exactly, as ``0.14 * 100`` does, and would refuse it.
+    """
+    return saved / replaced >= fraction
+
+
 def _responses(messages: list[Message]) -> int:
     """Count the model's responses in the conversation: the clock the user half's wait runs on.
 
@@ -3076,7 +3085,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             prompt: What the summarizer is asked.
             transcript: ``groups`` as :func:`_transcript` numbers them.
             min_gain_fraction: Share of the replaced records' tokens the replacement must
-                remove; an answer that removes less is refused though it is smaller.
+                remove; an answer that keeps the values and removes less is refused though
+                it is smaller. One that drops values is refused as lossy first, and counted.
 
         Returns:
             Whether it was kept, refused, unavailable, or its sources became ineligible.
@@ -3113,11 +3123,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             outcome, reason = "incomplete", "output limit"
         elif saved <= 0:
             outcome, reason = "rejected", "no smaller"
-        elif saved < min_gain_fraction * replaced_tokens:
-            outcome, reason = "rejected", "saving too little"
         elif kept < required:
             self._record_consolidations_lossy += 1
             outcome, reason = "lossy", "dropping values"
+        elif not _meets_gain_floor(saved, replaced_tokens, min_gain_fraction):
+            outcome, reason = "rejected", "saving too little"
         if outcome != "accepted":
             logger.warning(
                 "Compaction kept a batch of %d records unmerged: the %s was refused as %s; "
