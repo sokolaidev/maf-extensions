@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.5](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.4...maf-compaction-v0.13.5) (2026-11-15)
+
+
+### Fixes
+
+* **compaction:** resume a per-call pass from the list the previous call's pass left ([#2745](https://github.com/sokolaidev/maf-extensions/issues/2745)) ([2015d20](https://github.com/sokolaidev/maf-extensions/commit/2015d20289836cab669213513742afa343864fca))
+
 ## [0.13.4](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.3...maf-compaction-v0.13.4) (2026-11-14)
 
 
