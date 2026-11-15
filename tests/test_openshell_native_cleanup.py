@@ -70,11 +70,14 @@ def fixture_state(monkeypatch, tmp_path):
         assert name == "owned" and request_id == owner["delete_request_id"]
         state.calls.append("DeleteSandbox")
         state.deleted = True
-        return "other" if state.fault == "delete_identity" else "owned-id"
+        return NS(sandbox_id="other" if state.fault == "delete_identity" else "owned-id", outcome=2)
 
     client = NS(
-        current_id=lambda name: "other" if state.fault == "identity" else "owned-id",
-        delete=delete,
+        current_id=lambda name: (
+            "other" if state.fault == "identity" else None if state.deleted else "owned-id"
+        ),
+        delete_response=delete,
+        expected_version="0.1.7",
         rpc=rpc,
         scope=NS(workspace="workspace"),
         grpc=NS(RpcError=NotFound, StatusCode=NS(NOT_FOUND="not_found")),
@@ -174,3 +177,45 @@ def test_disposal_still_captures_running_processes(fixture_state):
     assert state.tops == ["ready"]
     assert owner["processes"] == {"100": "old-start", "200": "new-start"}
     assert fixture.disposed == {"owned-id"}
+
+
+@pytest.mark.parametrize("fault", [None, "replacement", "timeout", "lookup", "unknown_outcome"])
+def test_workspace_waits_for_accepted_gateway_deletion(fixture_state, monkeypatch, fault):
+    fixture, owner, state, _, _ = fixture_state
+    allocation = importlib.import_module("openshell_allocation_probe")
+    observations = []
+    ticks = iter(range(100))
+    monkeypatch.setattr(allocation, "time", NS(monotonic=lambda: next(ticks), sleep=lambda _: None))
+    original = fixture.client.delete_response
+
+    def delete(name, request_id):
+        response = original(name, request_id)
+        if fault == "unknown_outcome":
+            response.outcome = 0
+        return response
+
+    def current(name):
+        if not state.deleted:
+            return "owned-id"
+        observations.append(name)
+        assert "DeleteWorkspace" not in state.calls
+        if fault == "lookup":
+            raise ConnectionError("gateway unavailable")
+        if fault == "replacement":
+            return "replacement"
+        return "owned-id" if len(observations) < 3 or fault == "timeout" else None
+
+    fixture.client.current_id = current
+    fixture.client.delete_response = delete
+    errors = fixture.cleanup(workspace_created=True)
+    assert bool(errors) is (fault is not None)
+    assert state.calls.count("DeleteSandbox") == 1
+    assert owner["delete_response"]["outcome"] == (0 if fault == "unknown_outcome" else 2)
+    assert fixture.report["workspace_cleanup_verified"] is (fault is None)
+    assert owner.get("gateway_cleanup_verified", False) is (fault is None)
+    if fault is None:
+        assert observations == ["owned"] * 3
+        assert owner["physical_cleanup_verified"]
+    else:
+        assert "DeleteWorkspace" not in state.calls
+        assert not fixture.disposed
