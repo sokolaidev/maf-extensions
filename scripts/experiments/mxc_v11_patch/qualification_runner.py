@@ -127,7 +127,6 @@ def qualify(root: Path, report: dict, mode: str) -> None:
             "cargo",
             "+1.98.0",
             "update",
-            "--workspace",
             "--manifest-path",
             str(root / "build/Cargo.toml"),
         )
