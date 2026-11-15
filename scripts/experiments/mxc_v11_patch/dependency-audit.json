@@ -1,0 +1,8 @@
+{
+  "checked_at": "2026-11-15T22:34:09.706367+00:00",
+  "service": "https://api.osv.dev/v1/querybatch",
+  "lock_sha256": "ff7ed2c0e6a093f99ea7cce17f7cf1b01ba89ec91ac3d1584a2b603f23d2ceb2",
+  "registry_packages": 289,
+  "findings": [],
+  "scope": "Known OSV advisories for registry crates only; excludes path patches, OS libraries, kernel and rootfs."
+}

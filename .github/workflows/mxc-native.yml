@@ -400,5 +400,8 @@ jobs:
             ${{ runner.temp }}/mxc-v11/storage_probe/result.json
             ${{ runner.temp }}/mxc-v11/aggregate-storage/*.json
             ${{ runner.temp }}/mxc-v11/aggregate-storage/*.log
+            ${{ runner.temp }}/mxc-v11/runtime-contract/result.json
+            ${{ runner.temp }}/mxc-v11/runtime-contract/*/*.json
+            ${{ runner.temp }}/mxc-v11/runtime-contract/*/*.log
           if-no-files-found: error
           retention-days: 14

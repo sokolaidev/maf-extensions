@@ -188,6 +188,22 @@ def qualify(root: Path, report: dict, mode: str) -> None:
     startup = root / "images/agent/snapshot"
     run(
         root,
+        "runtime-contract",
+        sys.executable,
+        "-m",
+        "scripts.experiments.mxc_v11_patch.contract_probe",
+        "--helper",
+        str(helper(root)),
+        "--startup",
+        str(startup),
+        "--root",
+        str(root / "runtime-contract"),
+    )
+    report["runtime_contract"] = json.loads(
+        (root / "runtime-contract/result.json").read_text(encoding="utf-8")
+    )
+    run(
+        root,
         "aggregate-storage",
         sys.executable,
         "-m",
