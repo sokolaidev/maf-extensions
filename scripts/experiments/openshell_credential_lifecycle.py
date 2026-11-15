@@ -64,7 +64,7 @@ while sequence <= 256 and time.monotonic() < deadline:
     except urllib.error.HTTPError as exc:
         observed = {{'status': exc.code, 'body': exc.read(4096).decode()}}
     except Exception as exc:
-        observed = {{'error': type(exc).__name__, 'errno': getattr(getattr(exc, 'reason', exc), 'errno', None), 'detail': str(exc)}}
+        observed = {{'error': type(exc).__name__, 'errno': getattr(getattr(exc, 'reason', exc), 'errno', None)}}
     emit(f'result-{{sequence}}.json', {{'identity': identity, 'sequence': sequence,
          'reference_sha256': digest(token), 'guest': observed}})
     sequence += 1

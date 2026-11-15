@@ -106,7 +106,9 @@ def fixture_state(monkeypatch, tmp_path):
     ticks_ca = iter(range(0, 1000, 20))
     monkeypatch.setattr(ca, "time", NS(monotonic=lambda: next(ticks_ca)))
     monkeypatch.setattr(ca, "wait_gateway", lambda _: None)
-    monkeypatch.setattr(native.subprocess, "run", lambda *args, **kwargs: NS(returncode=0))
+    monkeypatch.setattr(
+        native.subprocess, "run", lambda *args, **kwargs: NS(returncode=0, stdout="", stderr="")
+    )
     return fixture, owner, state, ca, owned
 
 
@@ -189,6 +191,22 @@ def test_unavailable_diagnostics_do_not_prevent_owned_cleanup(fixture_state, mon
     monkeypatch.setattr(native.subprocess, "run", unavailable)
     assert fixture.cleanup(workspace_created=True) == []
     assert {command[-1] for command in commands} == {"old", "sandbox", "supervisor"}
-    assert all(row["error"] == "log capture unavailable" for row in owner["diagnostics"])
+    assert all(row["error"] == "TimeoutError" for row in owner["diagnostics"])
     assert state.calls[-2:] == ["DeleteWorkspace", "GetWorkspace"]
     assert fixture.report["workspace_cleanup_verified"] is True
+
+
+def test_diagnostic_signals_exclude_credentials_and_arbitrary_output(fixture_state):
+    native = importlib.import_module("openshell_native_probe")
+    raw = (
+        "Authorization: Bearer private-token\n"
+        "2026-11-15T11:40:48.123456789Z TLS relay error: "
+        "L7 tunnel policy generation is stale [captured_generation:4 current_generation:5] "
+        "host:internal.example Authorization:private-token\n"
+    )
+    events = native.diagnostic_signals(raw)
+    assert len(events) == 2
+    assert all(row["time"] == "2026-11-15T11:40:48.123456789Z" for row in events)
+    assert all(row["captured_generation"] == 4 and row["current_generation"] == 5 for row in events)
+    assert "private-token" not in str(events)
+    assert "internal.example" not in str(events)

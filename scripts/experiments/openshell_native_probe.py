@@ -9,6 +9,7 @@ import hashlib
 import importlib.metadata
 import json
 import platform
+import re
 import subprocess
 import sys
 import uuid
@@ -43,6 +44,36 @@ MEASURED = frozenset(
         Capability.FILES_DELETE,
     }
 )
+
+
+def diagnostic_signals(log: str) -> list[dict]:
+    """Extract fixed failure signals without retaining arbitrary container output."""
+    signals = (
+        "L7 tunnel closed after policy reload",
+        "L7 tunnel policy generation is stale",
+        "provider credential generation changed before upstream write",
+        "Forward proxy rejected request because policy generation changed after L4 decision",
+        "Upstream TLS establishment failed",
+        "TLS relay error",
+        "L7 relay error",
+        "HTTP relay error",
+        "client TLS handshake failed",
+    )
+    events = []
+    for line in log.splitlines():
+        for signal in signals:
+            if signal not in line:
+                continue
+            row: dict = {"signal": signal}
+            stamp = re.match(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,9}Z", line)
+            if stamp:
+                row["time"] = stamp.group()
+            for key in ("captured_generation", "current_generation"):
+                match = re.search(key + r":([0-9]{1,20})\b", line)
+                if match:
+                    row[key] = int(match[1])
+            events.append(row)
+    return events
 
 
 def native_host(system: str, kernel: str, engine: dict) -> None:
@@ -165,24 +196,23 @@ class Fixture:
         self.save()
 
     def retain_diagnostics(self, owner: dict) -> None:
-        """Retain owned container logs before deletion makes them unavailable."""
+        """Retain only fixed diagnostic signals before owned containers disappear."""
         rows = owner.setdefault("diagnostics", [])
         for identity in owner["containers"]:
-            path = self.report_path.with_name(f"{self.report_path.stem}.{identity}.log")
-            row: dict = {"container": identity, "file": path.name}
+            row: dict = {"container": identity}
             rows.append(row)
             try:
-                with path.open("wb") as stream:
-                    result = subprocess.run(
-                        ["docker", "logs", "--timestamps", "--tail", "5000", identity],
-                        stdout=stream,
-                        stderr=subprocess.STDOUT,
-                        timeout=10,
-                        check=False,
-                    )
+                result = subprocess.run(
+                    ["docker", "logs", "--timestamps", "--tail", "5000", identity],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                )
                 row["returncode"] = result.returncode
+                row["events"] = diagnostic_signals(result.stdout + "\n" + result.stderr)
             except Exception as exc:
-                row["error"] = str(exc)
+                row["error"] = type(exc).__name__
         self.save()
 
     def subject(self, sandbox: Candidate, path: str) -> Subject:
