@@ -401,6 +401,8 @@ def test_argv_is_fixed_and_raw_filter_is_grouped():
         {},
         {"currency": "USD"},
         {"include_savings_plan": True},
+        {"price_type": "Consumption"},
+        {"price_type": "Reservation", "currency": "EUR"},
         {"sku": " "},
         {"sku": "a\x00b"},
         {"sku": "a\nb"},
@@ -456,16 +458,16 @@ def test_private_endpoint_raw_filter_needs_no_invented_sku():
         "get",
         "--currency=USD",
         "--region=Global",
+        "--price-type=Consumption",
         f"--filter=({predicate})",
     ]
     assert len(backend.disposed) == 1
 
 
-@pytest.mark.parametrize("field", ["sku", "region", "service_family", "price_type", "filter"])
+@pytest.mark.parametrize("field", ["sku", "region", "service_family", "filter"])
 def test_individual_filter_is_sufficient(field):
     tool, backend, _ = attach()
-    value = "Consumption" if field == "price_type" else "value"
-    assert asyncio.run(tool.func(**{field: value}))[0].text == COMPLETED_TEXT
+    assert asyncio.run(tool.func(**{field: "value"}))[0].text == COMPLETED_TEXT
     assert backend.disposed
 
 
@@ -1138,3 +1140,53 @@ def test_every_selection_value_the_kind_writes_is_one_it_checks():
             assert checked_row(1, labels) == {"row": 1} | labels, labels
             written.update(labels.items())
     assert {name for name, _ in written} == set(_SELECTION_FIELDS)
+
+
+def _price_type_argument(
+    *, sku: str | None = None, price_type: PriceType | None = None, filter: str | None = None
+) -> str | None:
+    from maf_sandbox_azure_pricing._tool import _argv
+
+    args = _argv(sku, None, None, None, price_type, "USD", False, filter)
+    return next((arg for arg in args if arg.startswith("--price-type=")), None)
+
+
+def test_an_omitted_price_type_asks_for_consumption_prices():
+    assert _price_type_argument(sku="Standard_D4s_v5") == "--price-type=Consumption"
+    tool, _, sandbox = attach()
+    assert asyncio.run(tool.func(sku="Standard_D4s_v5"))[0].text == COMPLETED_TEXT
+    assert "--price-type=Consumption" in shlex.split(sandbox.commands[0][0])
+
+
+@pytest.mark.parametrize("price_type", list(PriceType))
+def test_a_named_price_type_is_kept(price_type: PriceType):
+    assert _price_type_argument(sku="x", price_type=price_type) == (
+        f"--price-type={price_type.value}"
+    )
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    [
+        "priceType eq 'Reservation'",
+        "pricetype eq 'Reservation' and reservationTerm eq '3 Years'",
+        "(priceType eq 'Consumption' or priceType eq 'Reservation')",
+    ],
+)
+def test_a_filter_selecting_price_type_gets_no_default(predicate: str):
+    assert _price_type_argument(filter=predicate) is None
+    assert _price_type_argument(filter=predicate, price_type=PriceType.RESERVATION) == (
+        "--price-type=Reservation"
+    )
+
+
+def test_price_type_named_inside_a_string_literal_keeps_the_default():
+    predicate = "meterName eq 'priceType eq Reservation'"
+    assert _price_type_argument(filter=predicate) == "--price-type=Consumption"
+
+
+def test_the_schema_says_what_an_omitted_price_type_returns():
+    tool, _, _ = attach()
+    description = tool.input_model.model_json_schema()["properties"]["price_type"]["description"]
+    assert "When omitted, Consumption" in description and "Reservation" in description
+    assert "price_type defaults to Consumption" in tool.description
