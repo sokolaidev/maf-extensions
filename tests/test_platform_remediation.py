@@ -63,6 +63,26 @@ def apk(name="glibc", installed="2.43-r0", fixed="2.43-r2", vendor="wolfi"):
     return match
 
 
+@pytest.mark.parametrize("installed", ["2.44-r14", "2.44-r16"])
+def test_unpinned_checkout_survives_pinned_replay_source(tmp_path, monkeypatch, request, installed):
+    source = tmp_path / "pinned-source"
+    copy_checkout(ROOT, source)
+    recipe = source / "images/graphviz-sandbox/Dockerfile"
+    fixture = ROOT / "tests/fixtures/image_dependencies/platform-positive/Dockerfile"
+    recipe.write_bytes(
+        re.sub(rb"glibc-2\.44=[^\s]+", f"glibc-2.44={installed}".encode(), fixture.read_bytes())
+    )
+    pinned = recipe.read_bytes()
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", source)
+    root = request.getfixturevalue("checkout")
+    expected = planner.plan(root, [retained(tmp_path, [apk()], profile="graphviz")])
+    assert expected["findings"][0]["status"] == "rebuild-required"
+    assert remediation.vendor_requests(expected, "graphviz") == [
+        (expected["findings"][0]["base"], "glibc", "2.43-r2")
+    ]
+    assert recipe.read_bytes() == pinned
+
+
 @pytest.mark.parametrize(
     "installed,fixed",
     [("2.43-r0", "2.43-r13"), ("3.53.4-r0", "3.53.4-r2"), ("1.4.6-r0", "1.4.7-r0")],

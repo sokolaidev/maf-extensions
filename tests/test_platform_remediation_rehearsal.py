@@ -326,6 +326,36 @@ def test_positive_apk_fixture_remains_an_update_on_delivery_draft(context, reque
     assert result["caseMatches"] == {"baseline": 1, "candidate": 0}
 
 
+def test_positive_apk_acquisition_failure_restores_native_recipe(positive_apk, monkeypatch):
+    root, old_work, _ = positive_apk
+    work = old_work.parent / "failed-acquisition"
+    recipe = root / "images/graphviz-sandbox/Dockerfile"
+    original = recipe.read_bytes()
+    fixture = root / replay.CASES["replay-apk-pinned"]["images/graphviz-sandbox/Dockerfile"]
+    assert original != fixture.read_bytes()
+
+    def fail_download(_url):
+        assert recipe.read_bytes() == fixture.read_bytes()
+        raise ValueError("vendor feed unavailable")
+
+    download = Mock(side_effect=fail_download)
+    deliver = Mock()
+    monkeypatch.setattr(replay.vendor_fix_evidence, "download", download)
+    monkeypatch.setattr(rehearsal, "lifecycle", deliver)
+    monkeypatch.setattr(rehearsal, "ROOT", root)
+    monkeypatch.setattr(sys, "argv", ["rehearsal", "acquire", "--work", str(work)])
+    with pytest.raises(ValueError, match="vendor feed unavailable"):
+        rehearsal.main()
+    download.assert_called_once()
+    deliver.assert_not_called()
+    assert recipe.read_bytes() == original
+    failure = read(work / "rehearsal-failure.json")
+    assert failure["case"] == "replay-apk-pinned"
+    assert failure["status"] == "failed"
+    assert failure["reason"] == "vendor feed unavailable"
+    assert not (work / "rehearsal-qualified.json").exists()
+
+
 @pytest.mark.parametrize("outcome", ["ready", "deferred", "producer"])
 def test_positive_acquisition_authenticates_history_and_current_scope(
     positive, monkeypatch, outcome
