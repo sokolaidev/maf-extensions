@@ -23,3 +23,16 @@ Dispatch `mxc-native.yml` with `mxc_v11=resolve-lock` first. This only resolves 
 Qualification runs independently on Linux/KVM and Windows/WHP: helper build, overflow/budget tests, rich Python state, bounded output and exports, durable replay/crash controls, and mutual-TLS checkpoint publication/restore/replay. It builds the retained 1.0.1 helper to produce an old checkpoint, requires the new helper to refuse it unchanged, and requires the old helper to restore it. Finally, every patch is removed and checked. Reports retain source, helper, dependency and image identities; failure remains `unqualified`.
 
 Cross-runner checkpoint portability, physical reboot/power loss, byte-stream/file kernel migration and production deployment are separate acceptance boundaries. Existing sessions require their exact original helper/profile assets. A rejected old checkpoint must never be replaced silently with fresh state.
+
+## Retained qualification
+
+[Run 43770746800](https://github.com/sokolaidev/maf-extensions/actions/runs/43770746800), source `a57e40029915e4aae92defdad75b597b04268cc5`, qualified both platforms with the retained lock. Subsequent report/documentation commits do not change the tested harness.
+
+| Platform | Session, output, storage and recovery | Rich Python state | Exact export |
+|---|---|---|---|
+| Linux/KVM | [Qualified](linux-result.json) | [Passed](linux-native-result.json) | 894,126,477 bytes / 8 files |
+| Windows/WHP | [Qualified](windows-result.json) | [Passed](windows-native-result.json) | 894,384,576 bytes / 8 files |
+
+Both platforms passed stdout/stderr flushing without newlines, split UTF-8 writes, closed IPv4/IPv6 TCP/UDP socket denial, bounded-output floods and durable truncation metadata. Exact export budgets passed; one-byte and one-file deficits refused without exceeding their budgets. Restart/crash and lost-ack controls passed, as did mutual-TLS native checkpoint publication, restore, replay and verified local cleanup. Each new helper refused an incompatible 1.0.1 checkpoint without changing it, and its old-pin helper restored the same checkpoint afterward. All layers were removed successfully.
+
+The candidate is suitable for new closed-network rich-Python session experiments under this qualified profile. Existing sessions and custom byte-stream/file profiles retain their original assets. Independent qualification on each platform does not establish checkpoint portability between them.

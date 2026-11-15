@@ -1,0 +1,422 @@
+{
+  "status": "qualified",
+  "mode": "qualify",
+  "platform": "Linux",
+  "source_commit": "a57e40029915e4aae92defdad75b597b04268cc5",
+  "run_id": "43770746800",
+  "run_attempt": "1",
+  "pins": {
+    "mxc_base": "c66201839d63cae2239db5e92f1f1d6076cf5181",
+    "runtime_base": "34c0d647a9f8679c0ce53b76e174894b2c5bfa7a",
+    "host_base": "a03088470d822b538d2525ef9a5ae9e29daea1e8",
+    "layers": {
+      "session": {
+        "session": {
+          "files": {
+            "src/mxc-sdk/Cargo.toml": {
+              "before": "094a7a043e8ee0ac8d6aeb14eccd2fee1c4e0f45f0e34f7f18325e682690e557",
+              "after": "82ec31b651bb2947a1059a0059efc7bc2987f1b335afcdbd47478e774609d5d5"
+            },
+            "src/mxc-sdk/src/backends/hyperlight/common/mod.rs": {
+              "before": "f90c0a62a67c5c5403850ffed8629ee713882c853be3aa685189180d4d0b32c3",
+              "after": "8499c68623fc78d5694d18a8a0b44fbca23b2cb6beb8b29927a0665859dcbeed"
+            },
+            "src/mxc-sdk/src/backends/hyperlight/common/session_preview.rs": {
+              "before": null,
+              "after": "fefc65deb76bae12f1ac195b0c65c749b7c4dc48a451b87e91335e50d1d60466"
+            }
+          },
+          "sha256": "e6f09ae2a67fc1f895ba9cb01f303a0dc6682375f869baea03b7f0562aa4b3f2"
+        }
+      },
+      "output": {
+        "session": {
+          "files": {
+            "src/mxc-sdk/Cargo.toml": {
+              "before": "82ec31b651bb2947a1059a0059efc7bc2987f1b335afcdbd47478e774609d5d5",
+              "after": "e56dcb457156447f79496186cf03c397518d22d70d621bd0a064f64926f24fda"
+            },
+            "src/mxc-sdk/src/backends/hyperlight/common/session_preview.rs": {
+              "before": "fefc65deb76bae12f1ac195b0c65c749b7c4dc48a451b87e91335e50d1d60466",
+              "after": "8261d9c11afb79ee138ac2c26aa3cda134447cbe47451fe499f31b2b37a6bf1e"
+            }
+          },
+          "sha256": "b89fce197a6a5d32f86b4b82bffaf725ce7be99b93286cdfee9ff5c0316598a1"
+        },
+        "runtime": {
+          "files": {
+            "src/lib.rs": {
+              "before": "ee885b61d7aa1299625b44968183294bac4bea7b4e4ccaabd126445624ee5442",
+              "after": "606d9a9453bc5ce8916ce09ce7747b7dc8fd4ac29691d07e6396d97fb23640f7"
+            },
+            "src/output_counter.rs": {
+              "before": null,
+              "after": "be6bc75f77d9fbc53a64ad3242e7bdc2baeeb8ae219b4004518939c9375b19d3"
+            }
+          },
+          "sha256": "57fc093abe335cfc110a00d0217295ce606cf7cbc1baba8c44408179333e0b41"
+        }
+      },
+      "storage": {
+        "session": {
+          "files": {
+            "src/mxc-sdk/src/backends/hyperlight/common/session_preview.rs": {
+              "before": "8261d9c11afb79ee138ac2c26aa3cda134447cbe47451fe499f31b2b37a6bf1e",
+              "after": "415e7274ea2501a786c8d735bd1efbc551ce2f89f7a89560de6adc91d111e1ca"
+            }
+          },
+          "sha256": "413941aede0f32af6885788d4434c2f6e87a4c85197b83a068d440551b04ac46"
+        },
+        "runtime": {
+          "files": {
+            "src/lib.rs": {
+              "before": "606d9a9453bc5ce8916ce09ce7747b7dc8fd4ac29691d07e6396d97fb23640f7",
+              "after": "dce2d480d673595c6b9792f2c74a06a0656ddd5c73dd36f30f8e0b43c1545e02"
+            }
+          },
+          "sha256": "9c5a7ef8de42f3f483d494ee1aca5d88dd5fa2fdf0feb099cd31ea272bff3c96"
+        },
+        "host": {
+          "files": {
+            "src/hyperlight_host/src/sandbox/snapshot/file/write_budget.rs": {
+              "before": null,
+              "after": "832148dbdc096b86b04929aeae920ab5eab6c44d8e712bfc4703206956a786d0"
+            },
+            "src/hyperlight_host/src/sandbox/snapshot/file/fsutil.rs": {
+              "before": "1bdbf4d53bea8b401846131b77af4223db87d006ba888de2e92fa452bc410b9f",
+              "after": "cd692f6a08d0ebd7f079f5c285dbde93682632a00a48e4753ecad3bf7ebb7dea"
+            },
+            "src/hyperlight_host/src/sandbox/snapshot/file/mod.rs": {
+              "before": "3b0593822aafec5a0a578cd0a32fa522257d6bba608e935fb1835b16c08542df",
+              "after": "75a98a1dfcc42cd87c84aa8c3f6c22e6c01cf08be7e7aa08b1c96be9aaaab5b7"
+            }
+          },
+          "sha256": "b389e40385a2b1689cc25c53d039acabb0789fea26cf10380a28740c4384a62a"
+        }
+      }
+    }
+  },
+  "rootfs": {
+    "tag": "initrd-v0.21.0",
+    "index_sha256": "b9c1a2e3dd171f4902a622bcb5538b7c16fedfa4ab76525745b9e4f7ebacd3c6",
+    "manifest_sha256": "0a6c0ad88c29652f08c8e7345bb6afec8985dfe62c461c01c0106e5fc495702d",
+    "layer_sha256": "82e503cfa0676e33a23269d28478956515885ddbb123c20e0088b915d9093e54",
+    "initrd_sha256": "8d7f9d72512e6736e1febb7b02fb7ae3da3bee8a8e2918dfa6da1458a5fb3995",
+    "initrd_bytes": 425325568
+  },
+  "hypervisor": "KVM",
+  "helper_sha256": "c37a68966491b0418be174fb65da91faaa0aa62f175b20b538536e828cbbda31",
+  "lock_sha256": "ff7ed2c0e6a093f99ea7cce17f7cf1b01ba89ec91ac3d1584a2b603f23d2ceb2",
+  "runtime_contract": {
+    "stdout-no-newline": {
+      "limit_bytes": 64,
+      "omitted_bytes": 0,
+      "omitted_bytes_saturated": false,
+      "retained_bytes": 7,
+      "truncated": false
+    },
+    "stderr-no-newline": {
+      "limit_bytes": 64,
+      "omitted_bytes": 0,
+      "omitted_bytes_saturated": false,
+      "retained_bytes": 5,
+      "truncated": false
+    },
+    "split-utf8": {
+      "limit_bytes": 64,
+      "omitted_bytes": 0,
+      "omitted_bytes_saturated": false,
+      "retained_bytes": 3,
+      "truncated": false
+    },
+    "closed-network": {
+      "limit_bytes": 64,
+      "omitted_bytes": 0,
+      "omitted_bytes_saturated": false,
+      "retained_bytes": 6,
+      "truncated": false
+    }
+  },
+  "aggregate_storage": {
+    "exact_bytes": 894126477,
+    "exact_files": 8,
+    "refusals": {
+      "one-byte-short": {
+        "bounds": [
+          894126476,
+          8
+        ],
+        "written": [
+          894125914,
+          7
+        ]
+      },
+      "one-file-short": {
+        "bounds": [
+          894126477,
+          7
+        ],
+        "written": [
+          894125914,
+          7
+        ]
+      }
+    }
+  },
+  "bounded_probe": {
+    "helper_sha256": "c37a68966491b0418be174fb65da91faaa0aa62f175b20b538536e828cbbda31",
+    "startup_index_sha256": "fa5499bf41459de95046729aab8709bccd50079820ed15e3f8f693fb5dc5904b",
+    "platform": "Linux",
+    "architecture": "x86_64",
+    "host_python": "3.12.3",
+    "measurements": {
+      "empty": {
+        "output": {
+          "limit_bytes": 1048576,
+          "omitted_bytes": 0,
+          "omitted_bytes_saturated": false,
+          "retained_bytes": 0,
+          "truncated": false
+        },
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "exact": {
+        "output": {
+          "limit_bytes": 1048576,
+          "omitted_bytes": 0,
+          "omitted_bytes_saturated": false,
+          "retained_bytes": 1048576,
+          "truncated": false
+        },
+        "sha256": "15d414601da8558309434ed89fe9bf86cef3d99f864a26b225c04b49f3653a7a"
+      },
+      "overflow": {
+        "output": {
+          "limit_bytes": 1048576,
+          "omitted_bytes": 1024,
+          "omitted_bytes_saturated": false,
+          "retained_bytes": 1048576,
+          "truncated": true
+        },
+        "sha256": "15d414601da8558309434ed89fe9bf86cef3d99f864a26b225c04b49f3653a7a"
+      },
+      "continued": {
+        "output": {
+          "limit_bytes": 1048576,
+          "omitted_bytes": 0,
+          "omitted_bytes_saturated": false,
+          "retained_bytes": 2,
+          "truncated": false
+        },
+        "sha256": "565339bc4d33d72817b583024112eb7f5cdf3e5eef0252d6ec1b9c9a94e12bb3"
+      },
+      "unicode": {
+        "output": {
+          "limit_bytes": 3,
+          "omitted_bytes": 4,
+          "omitted_bytes_saturated": false,
+          "retained_bytes": 1,
+          "truncated": true
+        },
+        "sha256": "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+      },
+      "zero": {
+        "output": {
+          "limit_bytes": 0,
+          "omitted_bytes": 3,
+          "omitted_bytes_saturated": false,
+          "retained_bytes": 0,
+          "truncated": true
+        },
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "bypass": {
+        "output": {
+          "limit_bytes": 8,
+          "omitted_bytes": 56,
+          "omitted_bytes_saturated": false,
+          "retained_bytes": 8,
+          "truncated": true
+        },
+        "sha256": "2f858775d71cc4ece5f46f497c58c01167cd6fc301e56e935070f5e81bfe5890"
+      },
+      "recovered": {
+        "output": {
+          "limit_bytes": 1048576,
+          "omitted_bytes": 0,
+          "omitted_bytes_saturated": false,
+          "retained_bytes": 4,
+          "truncated": false
+        },
+        "sha256": "7a66eabf637f6a4c162d331966b5966e2656f4051ae52acbcb1af0a3ab2eff10"
+      },
+      "after-failure": {
+        "output": {
+          "limit_bytes": 1048576,
+          "omitted_bytes": 0,
+          "omitted_bytes_saturated": false,
+          "retained_bytes": 0,
+          "truncated": false
+        },
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "lost_ack_redelivery_identical": true,
+    "checkpoint_after_truncation": true,
+    "guest_failure_and_timeout_refuse_publication": true,
+    "scope": "bounded HostPrint text capture; no full stream or binary fidelity qualification"
+  },
+  "storage_probe": {
+    "helper_sha256": "c37a68966491b0418be174fb65da91faaa0aa62f175b20b538536e828cbbda31",
+    "bounded_export": {
+      "bytes": {
+        "written_bytes": 0,
+        "written_files": 0,
+        "byte_limit": 1,
+        "file_limit": 128
+      },
+      "files": {
+        "written_bytes": 5464064,
+        "written_files": 1,
+        "byte_limit": 2147483648,
+        "file_limit": 1
+      }
+    },
+    "same_machine_restart_replay": true,
+    "failed_exports_preserve_checkpoint": true,
+    "interrupted_calls_refuse_reexecution": true,
+    "scratch_reclaimed": true,
+    "collected_checkpoint_preserves_delivery": true,
+    "max_result_bytes": 2097152
+  },
+  "durability_probe": {
+    "format": 4,
+    "helper_sha256": "c37a68966491b0418be174fb65da91faaa0aa62f175b20b538536e828cbbda31",
+    "platform": "Linux",
+    "python": "3.12.3",
+    "sqlite": "3.45.1",
+    "source_commit": "a57e40029915e4aae92defdad75b597b04268cc5",
+    "run_id": "43770746800",
+    "run_attempt": "1",
+    "boundaries": [
+      {
+        "boundary": "before_commit",
+        "committed": false,
+        "before": {
+          "": 3044173467,
+          "one": 3044169371
+        },
+        "after": {
+          "": 894320283,
+          "one": 894316187
+        }
+      },
+      {
+        "boundary": "after_commit",
+        "committed": true,
+        "before": {
+          "": 1795013518,
+          "one": 1795009422
+        },
+        "after": {
+          "": 1795013518,
+          "one": 1795009422
+        }
+      },
+      {
+        "boundary": "before_ack",
+        "committed": true,
+        "before": {
+          "": 2702102233,
+          "one": 2702098137
+        },
+        "after": {
+          "": 2702102233,
+          "one": 2702098137
+        }
+      },
+      {
+        "boundary": "before_cleanup_intent",
+        "committed": true,
+        "before": {
+          "": 3615586428,
+          "one": 3615582332
+        },
+        "after": {
+          "": 3615586428,
+          "one": 3615582332
+        }
+      },
+      {
+        "boundary": "after_cleanup_intent",
+        "committed": true,
+        "before": {
+          "": 4529070623,
+          "one": 4529066527
+        },
+        "after": {
+          "": 4529070623,
+          "one": 4529066527
+        }
+      },
+      {
+        "boundary": "after_scratch_removal",
+        "committed": true,
+        "before": {
+          "": 5442563010,
+          "one": 5442558914
+        },
+        "after": {
+          "": 5442563010,
+          "one": 5442558914
+        }
+      },
+      {
+        "boundary": "before_cleanup_release",
+        "committed": true,
+        "before": {
+          "": 6362450877,
+          "one": 6362446781
+        },
+        "after": {
+          "": 6362450877,
+          "one": 6362446781
+        }
+      },
+      {
+        "boundary": "after_cleanup_release",
+        "committed": true,
+        "before": {
+          "": 7282342840,
+          "one": 7282338744
+        },
+        "after": {
+          "": 7282342840,
+          "one": 7282338744
+        }
+      }
+    ],
+    "quota_controls": {
+      "session": {
+        "refused_before_launch": true,
+        "replay_sha256": "cb87730ce74be009db8be580fcf0179223981b659e4300965d96e2a0c39565c6"
+      },
+      "store": {
+        "refused_before_launch": true,
+        "replay_sha256": "cb87730ce74be009db8be580fcf0179223981b659e4300965d96e2a0c39565c6"
+      }
+    },
+    "collected_checkpoints": 8,
+    "replay_after_collection": true,
+    "qualified": true
+  },
+  "remote_native": "TLS publication, restore, replay and verified local cleanup passed",
+  "compatibility": {
+    "old_to_new": "refused-incompatible",
+    "old_checkpoint_unchanged": true,
+    "old_helper_recovery": true,
+    "old_helper_sha256": "c2f06591ac300556d6c78e0482c17313595567cc1ae35fc9873ad627c1c9624d",
+    "refusal_kind": "snapshot kernel or host contract mismatch"
+  },
+  "overlays_removed": true
+}
