@@ -1,6 +1,6 @@
 # MXC integration research, design and qualification
 
-This is the single MXC research record for the suite: accepted design decisions, release assessments, candidate-specific evidence and reproduction instructions. The experimental host runtime is packaged as [`maf-sandbox-mxc`](../../../packages/maf-sandbox-mxc/README.md); native build recipes and qualification probes remain under `scripts/experiments`. The package does not yet implement `SandboxBackend`.
+> This is the single MXC research record for the suite: accepted design decisions, release assessments, candidate-specific evidence and reproduction instructions. The experimental host runtime is packaged as [`maf-sandbox-mxc`](../../../packages/maf-sandbox-mxc/README.md); native build recipes and qualification probes remain under `scripts/experiments`. The package does not yet implement `SandboxBackend`.
 
 Read the [accepted design](#accepted-design) and [status table](#status) for the selected contract and its implementation boundaries. The release assessments and experiment sections preserve the findings at their recorded source revisions; historical proposals, pending gates and conclusions do not override later qualified evidence. A successful probe establishes only the behavior, platform and profile it measured. Closed networking remains the baseline, and production adapter conformance remains unqualified.
 
