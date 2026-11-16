@@ -297,6 +297,8 @@ def retryable_download(error: subprocess.CalledProcessError | subprocess.Timeout
             ": eof",
             "connection reset",
             "connection refused",
+            "received *http2.goawayframe before a settings frame",
+            "connection error: protocol_error",
             "timeout",
             "timed out",
             "temporary failure",
