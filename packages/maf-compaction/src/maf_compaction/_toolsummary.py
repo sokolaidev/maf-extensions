@@ -80,7 +80,7 @@ from ._preserve import (
     set_preserved,
     stands_in,
 )
-from ._record_replay import LINEAGE_KEY, source_lineage
+from ._record_replay import LINEAGE_KEY, MessageKeyCache, source_lineage
 from ._request import RECALL_PROMPT_KEY, request_tools
 from ._summary_links import has_summary_links
 from ._tool_result import (
@@ -2212,6 +2212,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         text: str,
         *,
         replay: bool = False,
+        keys: MessageKeyCache | None = None,
     ) -> None:
         """Put one record carrying ``text`` in place of the records ``groups`` span.
 
@@ -2238,6 +2239,12 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             groups: The records being replaced, from :func:`consolidatable_record_groups`, oldest
                 first.
             text: The replacement's own text, without marker or preamble.
+
+        Keyword Args:
+            replay: Restore a persisted decision on its exact sources; see
+                :func:`consolidatable_record_groups`.
+            keys: The fingerprints and token counts of the replay call putting this edit back,
+                so a history is not serialized again behind every record it gets back.
 
         Raises:
             ValueError: When a result carries more than bare text, a group contains unrelated
@@ -2286,7 +2293,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 for message in messages[group["start_index"] : group["end_index"] + 1]
             )
         )
-        lineage = source_lineage(messages, groups)
+        lineage = source_lineage(messages, groups, keys=keys)
         for group in groups:
             _exclude_record(messages, group)
         insertion_index = int(groups[-1]["end_index"]) + 1
@@ -2297,7 +2304,12 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         if replaces_value_anchor:
             self._value_target_anchor = _record_identity(replacement, {})
         annotate_message_groups(messages, from_index=insertion_index)
-        annotate_token_counts(messages, tokenizer=self.tokenizer, from_index=insertion_index)
+        annotate_token_counts(
+            messages,
+            tokenizer=self.tokenizer,
+            from_index=insertion_index,
+            counts=None if keys is None else keys.counts,
+        )
         records = _preserve_records(messages)
         self._records_in_conversation = max(self._records_in_conversation, records)
         if self._reforce is not None:
