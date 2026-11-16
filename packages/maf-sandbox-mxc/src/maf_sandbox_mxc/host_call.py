@@ -1,13 +1,11 @@
-"""Run one closed-network MXC experiment with atomic local checkpoint/result publication."""
+"""Supervise bounded native helper execution and validate captured output."""
 
 from __future__ import annotations
 
-import argparse
 import base64
 import hashlib
 import json
 import os
-import platform
 import subprocess
 import threading
 import time
@@ -17,7 +15,7 @@ from typing import Any
 
 from maf_sandbox_mxc._records import is_record
 
-from .host_store import CHUNK, Store
+from .host_store import CHUNK
 from .host_store import Refused as Refused
 
 
@@ -25,43 +23,6 @@ def digest(path: Path) -> str:
     """Hash a runtime artifact without retaining its contents."""
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def atomic_report(path: Path, value: dict[str, object]) -> None:
-    """Publish probe readiness separately from guest output."""
-    staged = path.with_suffix(".part")
-    staged.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
-    staged.replace(path)
-
-
-def chart_data(combined: str) -> dict[str, str]:
-    """Decode bounded experimental chart data; these guest bytes never carry control status."""
-    chunks: list[bytes] = []
-    total = 0
-    finished = False
-    for line in combined.splitlines():
-        if line.startswith("MAF_CHART:"):
-            _, sequence, encoded = line.split(":", 2)
-            if finished or sequence != str(len(chunks)):
-                raise Refused("chart chunks are duplicate or out of order")
-            data = base64.b64decode(encoded, validate=True)
-            total += len(data)
-            if not data or len(data) > 384 or total > CHUNK // 2:
-                raise Refused("chart exceeds limit")
-            chunks.append(data)
-        elif line.startswith("MAF_CHART_END:"):
-            _, size, expected_hash = line.split(":", 2)
-            if finished or not chunks:
-                raise Refused("unexpected chart trailer")
-            chart = b"".join(chunks)
-            if size != str(total) or hashlib.sha256(chart).hexdigest() != expected_hash:
-                raise Refused("chart hash or size differs")
-            if not chart.startswith(b"\x89PNG\r\n\x1a\n"):
-                raise Refused("invalid chart signature")
-            finished = True
-    if chunks and not finished:
-        raise Refused("chart transfer is incomplete")
-    return {"chart.png": base64.b64encode(b"".join(chunks)).decode("ascii")} if finished else {}
 
 
 def bounded_result_size(limit: int) -> int:
@@ -121,23 +82,18 @@ def bounded_result(report: Path, limit: int) -> dict[str, object]:
     return {"console_base64": base64.b64encode(console).decode("ascii"), "output": metadata}
 
 
-def execute(
+def _run(
     helper: Path,
     startup: Path,
     work: Path,
     code: bytes,
-    output_limit: int | None = None,
+    command: str,
+    limits: tuple[int, ...],
     before_start: Callable[[subprocess.Popen[bytes]], None] = lambda _: None,
-    checkpoint_limits: tuple[int, int] | None = None,
     check_active: Callable[[], None] = lambda: None,
     before_spawn: Callable[[], None] = lambda: None,
-) -> bytes:
-    """Supervise one helper; opt-in capture keeps payload separate from native control."""
-    if checkpoint_limits is not None and (
-        output_limit is None
-        or any(type(value) is not int or value <= 0 for value in checkpoint_limits)
-    ):
-        raise Refused("invalid bounded checkpoint configuration")
+) -> tuple[Path, bytes, bytes]:
+    """Drain bounded diagnostics and require a separate native control report."""
     helper, startup, work = (path.resolve() for path in (helper, startup, work))
     request = work / "code.py"
     request.write_bytes(code)
@@ -148,17 +104,12 @@ def execute(
     with subprocess.Popen(
         [
             str(helper),
-            "call-stored"
-            if checkpoint_limits is not None
-            else "call-bounded"
-            if output_limit is not None
-            else "call-owned",
+            command,
             str(startup),
             str(work / "candidate"),
             str(request),
             str(report),
-            *([str(output_limit)] if output_limit is not None else []),
-            *([str(value) for value in checkpoint_limits] if checkpoint_limits is not None else []),
+            *[str(value) for value in limits],
         ],
         env=env,
         cwd=work,
@@ -212,99 +163,36 @@ def execute(
             raise Refused(f"native execution/capture failed: {child.returncode}")
         if report.stat().st_size > 1024:
             raise Refused("oversized native control report")
-        if output_limit is None and json.loads(report.read_bytes()) != {"captured": True}:
-            raise Refused("invalid native control report")
-    if output_limit is not None:
-        return json.dumps(bounded_result(report, output_limit), sort_keys=True).encode()
-    combined = outputs[0].decode("utf-8", errors="replace")
-    artifacts = chart_data(combined)
-    return json.dumps(
-        {
-            "combined_output": combined,
-            "native_stderr": outputs[1].decode("utf-8", errors="replace"),
-            "artifacts": artifacts,
-        },
-        sort_keys=True,
-    ).encode()
+    return report, bytes(outputs[0]), bytes(outputs[1])
 
 
-def main() -> int:
-    """Use explicit paths and fresh scratch space; fault stops are for the crash probe only."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--helper", type=Path, required=True)
-    parser.add_argument("--startup", type=Path, required=True)
-    parser.add_argument("--store", type=Path, required=True)
-    parser.add_argument("--work", type=Path, required=True)
-    parser.add_argument("--code", type=Path, required=True)
-    parser.add_argument("--call-id", required=True)
-    parser.add_argument("--session-id", required=True)
-    parser.add_argument("--report", type=Path, required=True)
-    parser.add_argument("--bounded-output", action="store_true")
-    parser.add_argument("--output-limit", type=int, default=CHUNK)
-    parser.add_argument(
-        "--fault",
-        choices=(
-            "checkpoint_stored",
-            "before_commit",
-            "after_commit",
-            "before_ack",
-        ),
+def execute(
+    helper: Path,
+    startup: Path,
+    work: Path,
+    code: bytes,
+    output_limit: int,
+    before_start: Callable[[subprocess.Popen[bytes]], None] = lambda _: None,
+    checkpoint_limits: tuple[int, int] | None = None,
+    check_active: Callable[[], None] = lambda: None,
+    before_spawn: Callable[[], None] = lambda: None,
+) -> bytes:
+    """Supervise one helper with bounded output kept separate from native control."""
+    if type(output_limit) is not int or output_limit < 0:
+        raise Refused("output limit must be a nonnegative integer")
+    if checkpoint_limits is not None and any(
+        type(value) is not int or value <= 0 for value in checkpoint_limits
+    ):
+        raise Refused("invalid bounded checkpoint configuration")
+    report, _, _ = _run(
+        helper,
+        startup,
+        work,
+        code,
+        "call-stored" if checkpoint_limits is not None else "call-bounded",
+        (output_limit, *(checkpoint_limits or ())),
+        before_start,
+        check_active,
+        before_spawn,
     )
-    args = parser.parse_args()
-    if args.output_limit < 0:
-        parser.error("output limit must be nonnegative")
-    helper = args.helper.resolve(strict=True)
-    startup = args.startup.resolve(strict=True)
-    if args.code.stat().st_size > 65536:
-        parser.error("code exceeds probe limit")
-    code = args.code.read_bytes()
-    profile = {
-        "format": "sqlite-chunks-v1",
-        "helper": digest(helper),
-        "startup_index": digest(startup / "index.json"),
-        "platform": f"{platform.system()}-{platform.machine()}",
-        "machine": platform.node(),
-        "policy": "closed-no-mounts",
-        "session": args.session_id,
-    }
-    if args.bounded_output:
-        profile["capture"] = "truncate-continue-v1"
-        profile["output_limit"] = str(args.output_limit)
-    work = args.work.resolve()
-    work.mkdir(parents=True, exist_ok=False)
-
-    def boundary(point: str) -> None:
-        if point == args.fault:
-            atomic_report(args.report, {"paused": point})
-            while True:
-                time.sleep(1)
-
-    with Store(args.store, profile) as store:
-        result = store.begin(args.call_id, code)
-        replayed = result is not None
-        if result is None:
-            restored = work / "restored"
-            previous = store.restore(restored)
-            result = execute(
-                helper,
-                restored if previous else startup,
-                work,
-                code,
-                args.output_limit if args.bounded_output else None,
-            )
-            store.commit(args.call_id, work / "candidate", result, boundary)
-        boundary("before_ack")
-        atomic_report(
-            args.report,
-            {
-                "call_id": args.call_id,
-                "redelivered": replayed,
-                "result_sha256": hashlib.sha256(result).hexdigest(),
-                "result": json.loads(result),
-            },
-        )
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    return json.dumps(bounded_result(report, output_limit), sort_keys=True).encode()

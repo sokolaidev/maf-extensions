@@ -54,7 +54,7 @@ def main() -> int:
         command = [
             sys.executable,
             "-m",
-            "maf_sandbox_mxc.host_call",
+            "scripts.experiments.mxc_session_patch.host_call",
             "--helper",
             str(args.helper.resolve()),
             "--startup",

@@ -13,7 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[1]))
 try:
     files = importlib.import_module("maf_sandbox_mxc.files.request")
-    inventory = importlib.import_module("maf_sandbox_mxc.files.inventory")
+    inventory = importlib.import_module("mxc_inventory")
     storage = importlib.import_module("maf_sandbox_mxc.shared_store")
 finally:
     sys.path.remove(str(Path(__file__).parents[1]))

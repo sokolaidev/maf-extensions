@@ -175,7 +175,7 @@ Interrupted call IDs remain non-executable and require explicit recovery. Retire
 
 ### Qualification of accounting and recovery
 
-The first increment changes [the experimental store](../../../packages/maf-sandbox-mxc/src/maf_sandbox_mxc/host_store.py) and its focused tests, then [the supervisor](../../../packages/maf-sandbox-mxc/src/maf_sandbox_mxc/host_call.py) and process-death probes. It keeps the production adapter and cross-machine recovery separate. Clock tests use injected time rather than long sleeps; crash tests kill child processes at persisted boundaries. Native qualification runs on GitHub runners with the required hypervisor, separately for Windows/WHP and Linux/KVM. An unavailable platform remains unverified.
+The first increment changes [the experimental store](../../../scripts/experiments/mxc_session_patch/host_store.py) and its focused tests, then [the supervisor](../../../packages/maf-sandbox-mxc/src/maf_sandbox_mxc/host_call.py) and process-death probes. It keeps the production adapter and cross-machine recovery separate. Clock tests use injected time rather than long sleeps; crash tests kill child processes at persisted boundaries. Native qualification runs on GitHub runners with the required hypervisor, separately for Windows/WHP and Linux/KVM. An unavailable platform remains unverified.
 
 | Area | Required controls |
 |---|---|

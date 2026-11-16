@@ -11,7 +11,7 @@ Durable MXC Python sessions, bounded helper transports and mutual-TLS coordinati
 - `shared_store`, `native_journal` and `shared_call` provide SQLite publication, checkpoint recovery, result replay, quotas, freshness and cleanup ownership.
 - `remote_authority`, `remote_api`, `remote_host` and `remote_control` provide fenced ownership and mutually authenticated checkpoint transfer between configured hosts.
 - `files` and `streams` provide bounded transport for the separately qualified custom-kernel profiles.
-- `host_call` supervises the pinned native helper and can run as `python -m maf_sandbox_mxc.host_call`.
+- `host_call` supervises the pinned native helper with bounded output. The legacy single-owner CLI and crash probes remain in repository tooling.
 
 The package uses the Python standard library. Native helper binaries, kernels and rootfs images are provisioned separately, with exact identities supplied by the host. Installation does not download, compile or launch them. Existing stores retain their original helper/profile bindings; packaging does not migrate checkpoints or change wire/store formats.
 

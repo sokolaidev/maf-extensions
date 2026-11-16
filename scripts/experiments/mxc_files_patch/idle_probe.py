@@ -10,7 +10,7 @@ from pathlib import Path
 
 from maf_sandbox_mxc.files.shared_call import call
 from maf_sandbox_mxc.files.transport import execute
-from maf_sandbox_mxc.host_call import atomic_report, digest
+from maf_sandbox_mxc.host_call import digest
 from maf_sandbox_mxc.host_store import Refused
 from maf_sandbox_mxc.idle import Policy
 from maf_sandbox_mxc.native_journal import NativeJournal
@@ -18,6 +18,7 @@ from maf_sandbox_mxc.shared_store import SECOND, SharedStore
 
 from scripts.experiments.mxc_files_patch.deletion_probe import LIMITS, SCRATCH, SEED
 from scripts.experiments.mxc_session_patch.durability_probe import _profile_for
+from scripts.experiments.mxc_session_patch.host_call import atomic_report
 
 
 class Clock:

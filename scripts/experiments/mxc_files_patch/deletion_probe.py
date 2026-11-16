@@ -16,7 +16,7 @@ from pathlib import Path
 from maf_sandbox_mxc.files.request import FileLimits, Request
 from maf_sandbox_mxc.files.shared_call import call
 from maf_sandbox_mxc.files.transport import result_limit
-from maf_sandbox_mxc.host_call import atomic_report, digest
+from maf_sandbox_mxc.host_call import digest
 from maf_sandbox_mxc.host_store import Refused
 from maf_sandbox_mxc.native_journal import NativeJournal
 from maf_sandbox_mxc.process_identity import Identity, stopped
@@ -33,6 +33,7 @@ from scripts.experiments.mxc_session_patch.durability_probe import (
     _profile_for,
     reconcile,
 )
+from scripts.experiments.mxc_session_patch.host_call import atomic_report
 
 SEED = Request(
     IO + b"write_file('result.bin',b'retained'); print('retained')",

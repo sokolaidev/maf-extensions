@@ -16,7 +16,7 @@ from pathlib import Path
 
 from maf_sandbox_mxc.files.request import FileLimits, Input, Request, WorkspaceLimits
 from maf_sandbox_mxc.files.shared_call import call
-from maf_sandbox_mxc.host_call import atomic_report, digest
+from maf_sandbox_mxc.host_call import digest
 from maf_sandbox_mxc.host_store import Refused
 from maf_sandbox_mxc.native_journal import NativeJournal
 from maf_sandbox_mxc.physical import VERSION, Policy
@@ -28,6 +28,7 @@ from scripts.experiments.mxc_files_patch.deletion_probe import SCRATCH as BASE_S
 from scripts.experiments.mxc_files_patch.durability_probe import console
 from scripts.experiments.mxc_files_patch.native_probe import IO
 from scripts.experiments.mxc_session_patch.durability_probe import _profile_for
+from scripts.experiments.mxc_session_patch.host_call import atomic_report
 
 MARGIN = 8 * 1024**2
 PAYLOAD_BYTES = 64 * 1024**2

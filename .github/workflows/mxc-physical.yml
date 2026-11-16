@@ -7,7 +7,7 @@ on:
       - 'scripts/experiments/mxc_session_patch/**'
       - 'packages/maf-sandbox-mxc/**'
       - 'packages/maf-sandbox-mxc/tests/test_mxc_shared_store.py'
-      - 'packages/maf-sandbox-mxc/tests/test_mxc_host_store.py'
+      - 'tests/test_mxc_host_store.py'
       - 'tests/test_mxc_local_initialization.py'
       - 'packages/maf-sandbox-mxc/tests/test_mxc_accounting.py'
       - 'packages/maf-sandbox-mxc/tests/test_mxc_private_root.py'
@@ -50,7 +50,7 @@ jobs:
         shell: bash
         run: >-
           uv run pytest -q
-          packages/maf-sandbox-mxc/tests/test_mxc_host_store.py tests/test_mxc_local_initialization.py
+          tests/test_mxc_host_store.py tests/test_mxc_local_initialization.py
           packages/maf-sandbox-mxc/tests/test_mxc_shared_store.py packages/maf-sandbox-mxc/tests/test_mxc_accounting.py
           packages/maf-sandbox-mxc/tests/test_mxc_private_root.py tests/test_mxc_native_journal.py
           packages/maf-sandbox-mxc/tests/test_mxc_process_identity.py

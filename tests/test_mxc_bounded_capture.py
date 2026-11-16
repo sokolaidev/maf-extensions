@@ -80,6 +80,17 @@ def test_control_size_is_checked_before_json_parse(capture):
         host.bounded_result(report, 4)
 
 
+@pytest.mark.parametrize("limit", [None, True, -1])
+def test_runtime_requires_a_bounded_output_limit_before_launch(tmp_path, monkeypatch, limit):
+    def refuse_launch(*args, **kwargs):
+        pytest.fail("invalid output limit reached process supervision")
+
+    monkeypatch.setattr(host, "_run", refuse_launch)
+    with pytest.raises(host.Refused, match="output limit"):
+        host.execute(tmp_path / "helper", tmp_path / "startup", tmp_path, b"code", limit)
+    assert not (tmp_path / "code.py").exists()
+
+
 PATCH_SPEC = importlib.util.spec_from_file_location("mxc_output_patch", ROOT / "output_patch.py")
 assert PATCH_SPEC and PATCH_SPEC.loader
 patch = importlib.util.module_from_spec(PATCH_SPEC)

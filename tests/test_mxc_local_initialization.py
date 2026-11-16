@@ -13,7 +13,7 @@ import pytest
 ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT))
 try:
-    host = importlib.import_module("maf_sandbox_mxc.host_store")
+    host = importlib.import_module("scripts.experiments.mxc_session_patch.host_store")
     shared = importlib.import_module("maf_sandbox_mxc.shared_store")
 finally:
     sys.path.remove(str(ROOT))
