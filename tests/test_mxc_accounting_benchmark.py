@@ -1,9 +1,11 @@
 """Accounting benchmark tooling preserves durable identity charges."""
 
 import importlib
+from pathlib import Path
 
 
-def test_benchmark_preserves_identity_charges_and_separates_measurements(tmp_path):
+def test_benchmark_preserves_identity_charges_and_separates_measurements(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1]))
     benchmark = importlib.import_module(
         "scripts.experiments.mxc_session_patch.accounting_benchmark"
     )

@@ -23,7 +23,7 @@ jobs:
       - name: Measure retained-history admission and audits
         shell: bash
         run: >-
-          uv run --no-project --python 3.12 python
+          uv run --no-project --python 3.12 --with ./packages/maf-sandbox-mxc python
           -m scripts.experiments.mxc_session_patch.accounting_benchmark
           --history 0 1000 10000 --samples 50
           --output "$RUNNER_TEMP/mxc-accounting.json"
