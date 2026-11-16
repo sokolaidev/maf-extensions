@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.8](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.7...maf-compaction-v0.13.8) (2026-11-16)
+
+
+### Performance
+
+* **maf-compaction:** put saved record edits back with the whole-history work done once per replay, not once per edit, about three times cheaper on the first pass of a run ([#2772](https://github.com/sokolaidev/maf-extensions/issues/2772)) ([ea61aad](https://github.com/sokolaidev/maf-extensions/commit/ea61aadb6d67a3572e3a654481a377bc559ba196))
+
 ## [0.13.7](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.6...maf-compaction-v0.13.7) (2026-11-16)
 
 
