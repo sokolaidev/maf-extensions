@@ -110,6 +110,35 @@ async def test_next_pass_does_not_wait_for_unfinished_merge():
     await work.close()
 
 
+@pytest.mark.parametrize("complete", [False, True])
+async def test_prompt_change_discards_background_answer_and_search(complete):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Waiting(_Summarizer):
+        async def get_response(self, messages, **kwargs):
+            entered.set()
+            await release.wait()
+            return await super().get_response(messages, **kwargs)
+
+    strategy, work, messages = await prepared(Waiting())
+    work.start(tool_reply())
+    await entered.wait()
+    if complete:
+        release.set()
+        await running(work)
+    strategy.merge_prompt += " Preserve the source attribution."
+    release.set()
+    await running(work)
+    assert work._ready
+    before = _sent(messages)
+    assert not await strategy(messages)
+    assert _sent(messages) == before
+    assert not strategy._kept_records
+    assert not strategy.session_state()["searched_records"]
+    assert not strategy.session_state()["refused_merges"]
+    await work.close()
+
+
 @pytest.mark.parametrize("change", ["content", "identity", "hold", "reasoning", "excluded"])
 async def test_stale_or_newly_protected_sources_refuse_background_answer(change):
     strategy, work, messages = await prepared()

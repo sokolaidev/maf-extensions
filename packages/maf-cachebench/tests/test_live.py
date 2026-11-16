@@ -3007,9 +3007,9 @@ class _RefusingRecordSummarizer:
     async def get_response(self, messages: Any, *, stream: bool = False, **kwargs: Any) -> Any:
         prompt, body = messages[0].text or "", messages[-1].text or ""
         self.requests.append((prompt, body))
-        record = prompt == DEFAULT_RECORD_MERGE_PROMPT or prompt.startswith(
-            "Rewrite the compaction record"
-        )
+        record = prompt == DEFAULT_RECORD_MERGE_PROMPT or prompt in {
+            harder_record_prompt(attempt) for attempt in range(1, DEFAULT_HARDER_ATTEMPTS + 1)
+        }
         text = f"{body} {body}" if record else "The user asked for several things, in order."
         return ChatResponse(messages=[Message(role="assistant", contents=[text])])
 
@@ -3060,7 +3060,8 @@ async def test_a_refused_rewrite_is_asked_once_through_the_live_paths_two_lists(
     rewrites = [
         request
         for request in summarizer.requests
-        if request[0].startswith("Rewrite the compaction record")
+        if request[0]
+        in {harder_record_prompt(attempt) for attempt in range(1, DEFAULT_HARDER_ATTEMPTS + 1)}
     ]
     merges = [
         request for request in summarizer.requests if request[0] == DEFAULT_RECORD_MERGE_PROMPT

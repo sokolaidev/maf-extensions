@@ -639,7 +639,7 @@ async def test_merges_and_rewrites_preserve_rich_records_between_plain_records(s
     _size(messages)
     assert len(consolidatable_record_groups(messages)) == 8
     summarizer = _Summarizer()
-    strategy = _strategy(summarizer, budget=1100, share=share, cap=None)
+    strategy = _strategy(summarizer, budget=1500, share=share, cap=None)
     strategy.harder_attempts = 2
 
     with pytest.raises(ValueError, match="bare text"):
@@ -686,7 +686,7 @@ async def test_harder_rewrite_cannot_flatten_a_protected_record(shape):
 
 async def test_replayed_merge_skips_a_record_that_now_carries_metadata():
     original = _history(9)
-    strategy = _strategy(_Summarizer(), budget=1100, cap=None)
+    strategy = _strategy(_Summarizer(), budget=1500, cap=None)
     await strategy(copy.deepcopy(original))
     assert strategy.records_merged > 0
     result = original[11].contents[0]

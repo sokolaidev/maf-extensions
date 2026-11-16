@@ -53,6 +53,9 @@ class BoundedClient:
 
 
 def users(client, **kwargs):
+    # Fixed prompts keep these request-size boundaries independent of default wording.
+    kwargs.setdefault("prompt", "Summarize the user's requirements.")
+    kwargs.setdefault("fold_prompt", "Combine the earlier user summaries.")
     kwargs.setdefault("max_input_tokens", 2_000)
     kwargs.setdefault("trigger_fraction", 0.01)
     return UserTurnAnchoredSummarizationCompactionStrategy(
@@ -276,6 +279,8 @@ async def test_oversized_user_band_can_fall_back_to_an_eligible_fold(mode, limit
 def composed(client, **kwargs):
     # These pin the max_summary_input_tokens bound; the record budget's batches have their own.
     kwargs.setdefault("record_budget_share", None)
+    kwargs.setdefault("merge_prompt", "Combine the records, preserving their values.")
+    kwargs.setdefault("rewrite_prompt", lambda attempt: f"Shorten the records further: {attempt}.")
     return ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
         tokenizer=TOKENIZER,
         tool_results=ToolResultAnchoredSummarizationCompactionStrategy(
@@ -706,8 +711,8 @@ async def test_growing_band_reuses_closed_chunks_even_after_restore():
 
 
 async def test_chunking_refuses_an_oversized_single_turn_without_truncation():
-    client = BoundedClient(500)
-    strategy = users(client, summary_input_policy="chunk", max_summary_input_tokens=500)
+    client = BoundedClient(350)
+    strategy = users(client, summary_input_policy="chunk", max_summary_input_tokens=350)
     messages = conversation()
     before = visible(messages)
     assert not await strategy(messages)

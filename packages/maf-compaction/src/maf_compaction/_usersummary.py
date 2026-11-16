@@ -46,7 +46,12 @@ from ._media import MEDIA_TYPES, annotate_token_counts, media_identity
 from ._preserve import PRESERVE_REASON_KEY, any_preserved, set_preserved
 from ._record_replay import SummaryReplayCache
 from ._request import RECALL_PROMPT_KEY
-from ._summary_input import bounded_prefix, fits_summary_input, summary_request
+from ._summary_input import (
+    SUMMARY_DATA_BOUNDARY,
+    bounded_prefix,
+    fits_summary_input,
+    summary_request,
+)
 from ._summary_links import has_summary_links
 
 if TYPE_CHECKING:
@@ -287,7 +292,8 @@ PRESERVE_REASON: Final[str] = "user_summary_boundary"
 #: invites the model to invent the assistant's half; and a fixed five-sentence bound is a
 #: length, which is the one thing a summary of seventy turns must be allowed to vary.
 DEFAULT_USER_SUMMARY_PROMPT: Final[str] = (
-    "You are compacting a conversation to save space. Below are the user's own turns, in "
+    SUMMARY_DATA_BOUNDARY
+    + "You are compacting a conversation to save space. Below are the user's own turns, in "
     "order, with the assistant's replies and any tool output removed. Rewrite them as a "
     "single, much shorter account of what the user asked for, in the order they asked for "
     "it. Keep every requirement, constraint, correction and preference exactly as stated, "
@@ -306,7 +312,8 @@ DEFAULT_USER_SUMMARY_PROMPT: Final[str] = (
 #: made of the second -- a model told it is reading turns would compress what is already
 #: compressed as though it were padding.
 DEFAULT_USER_FOLD_PROMPT: Final[str] = (
-    "You are compacting a conversation to save space. Below are earlier compaction summaries "
+    SUMMARY_DATA_BOUNDARY
+    + "You are compacting a conversation to save space. Below are earlier compaction summaries "
     "of the user's own turns, in the order those turns were spoken; each one already stands "
     "for turns that are no longer present, and none of it is padding. Rewrite them as a "
     "single, shorter account of what the user asked for, in the order they asked for it. Keep "
