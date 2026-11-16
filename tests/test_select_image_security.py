@@ -522,7 +522,6 @@ def test_mxc_evidence_changes_do_not_select_image_builds(repository, event):
             "docs/sandbox/backends/mxc.md": "Updated status",
             "docs/sandbox/research/mxc-backend.md": "Updated qualification",
             "scripts/experiments/mxc_session_patch/HOST_PUBLICATION.md": "Updated evidence",
-            "scripts/experiments/mxc_session_patch/cross-active-results.json": "[]",
         },
     )
     profiles, reason = select(root, event, base, head)
@@ -545,7 +544,7 @@ def test_mxc_evidence_does_not_hide_build_or_unknown_inputs(repository, path, ex
     head = commit(
         root,
         {
-            "scripts/experiments/mxc_session_patch/cross-active-results.json": "[]",
+            "scripts/experiments/mxc_session_patch/HOST_PUBLICATION.md": "Updated evidence",
             path: "Updated input",
         },
     )

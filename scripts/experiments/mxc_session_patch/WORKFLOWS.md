@@ -1,5 +1,7 @@
 # MXC qualification workflows
 
+Generated MXC and Unikraft output reports are not committed. Keep local reports outside the checkout; hosted runs upload them as Actions artifacts subject to workflow retention. The documentation preserves prose findings and run/source identities, but historical artifacts may have expired. JSON source pins and patch manifests remain versioned inputs.
+
 The MXC experiments are source-only qualification tooling. Moving a dispatcher does not qualify a new runtime, convert retained checkpoints or establish production readiness. Existing candidate-specific reports and run links remain the evidence.
 
 | Entry point | Purpose | Trigger |

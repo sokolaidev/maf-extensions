@@ -12,6 +12,20 @@ dist/
 .codeql-build/
 codeql-results/
 bandit-report.json
+# MXC generated evidence belongs in Actions artifacts; source pins remain tracked.
+/scripts/experiments/mxc*/**/*.json
+/scripts/experiments/unikraft_output/**/*.json
+!/scripts/experiments/mxc_files_patch/files.json
+!/scripts/experiments/mxc_files_patch/kernel.json
+!/scripts/experiments/mxc_session_patch/patch.json
+!/scripts/experiments/mxc_session_patch/output-patch.json
+!/scripts/experiments/mxc_session_patch/storage-patch.json
+!/scripts/experiments/mxc_streams_patch/kernel.json
+!/scripts/experiments/mxc_streams_patch/streams.json
+!/scripts/experiments/mxc_v1_patch/manifest.json
+!/scripts/experiments/mxc_v1_patch/rootfs.json
+!/scripts/experiments/mxc_v11_patch/manifest.json
+!/scripts/experiments/mxc_v11_patch/rootfs.json
 *.egg-info/
 
 # Sample runs land artifacts here; the sink is a host directory, not the repository.

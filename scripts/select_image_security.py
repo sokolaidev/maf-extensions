@@ -87,10 +87,9 @@ CONSUMER_GUIDES = {
     "images/terraform-sandbox/TERRAFORM.md",
     "images/hyperlight-sandbox/README.md",
 }
-# These retained experiment records are not consumed by image builds or checks.
+# This experiment documentation is not consumed by image builds or checks.
 EXPERIMENT_RECORDS = {
     "scripts/experiments/mxc_session_patch/HOST_PUBLICATION.md",
-    "scripts/experiments/mxc_session_patch/cross-active-results.json",
 }
 # Workflow behavior tests cover selection tooling without rebuilding unchanged images.
 SELECTION_TOOLING = {

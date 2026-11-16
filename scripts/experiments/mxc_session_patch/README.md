@@ -36,7 +36,7 @@ The Windows measurement used Rust 1.98.0 with `x86_64-pc-windows-gnu` and the po
 
 ## Measured evidence
 
-[windows-result.json](windows-result.json) retains the Windows/WHP execution result and artifact hashes without host paths or transient process identifiers. The source patch applies and reverses on a pristine checkout at the pinned base, leaving its Git status clean; a different base is refused. The patched common crate's unit suite passed **22 tests**, including the two added state/token tests. Locked builds, Rust formatting and probe and patched-crate Clippy with warnings denied passed, as did Python lint/format/type checks, the generated-manifest check, real helper help and invalid-argument controls. Two complete Windows probe executions passed; the retained result is from the final executable.
+The source patch applies and reverses on a pristine checkout at the pinned base, leaving its Git status clean; a different base is refused. The patched common crate's unit suite passed **22 tests**, including the two added state/token tests. Locked builds, Rust formatting and probe and patched-crate Clippy with warnings denied passed, as did Python lint/format/type checks, the generated-manifest check, real helper help and invalid-argument controls. Two complete Windows probe executions passed; this summary describes the final executable.
 
 | Live control | Result |
 |---|---|

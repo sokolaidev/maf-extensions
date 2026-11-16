@@ -71,9 +71,9 @@ On Windows, this experiment used Rust 1.98.0 targeting `x86_64-pc-windows-gnu` a
 | Missing snapshot blobs | Exit 1, explicit missing-blob error, no success report |
 | Altered compatibility key | Exit 1, explicit kernel/host-contract mismatch, no success report |
 
-The initial recovery execution passed; a second complete execution also passed and included all three refusal controls. The [retained result](mxc_native_state/windows-result.json) omits transient process identifiers and records that the helpers were distinct processes. The helper executable SHA-256 was `77db7ece296c0ce7a1bea4834afb243773e78bdd9c280a3943e72541fd78f751`; the snapshot compatibility key was `k5e9192dfed5c8dbb-c1`. The second snapshot's main memory blob occupied 915,845,120 bytes. This is one observed footprint for this workload, not a capacity estimate or performance benchmark.
+The initial recovery execution passed; a second complete execution also passed and included all three refusal controls. The helpers were distinct processes. The helper executable SHA-256 was `77db7ece296c0ce7a1bea4834afb243773e78bdd9c280a3943e72541fd78f751`; the snapshot compatibility key was `k5e9192dfed5c8dbb-c1`. The second snapshot's main memory blob occupied 915,845,120 bytes. This is one observed footprint for this workload, not a capacity estimate or performance benchmark.
 
-`cargo build --locked`, `cargo fmt --check`, `cargo clippy --locked -- -D warnings`, supervisor lint/format/type checks, real helper `--help`, and a safe invalid-argument control were used for validation. The snapshot and diagnostic files remain outside Git; the retained structured result contains artifact hashes without host locations.
+`cargo build --locked`, `cargo fmt --check`, `cargo clippy --locked -- -D warnings`, supervisor lint/format/type checks, real helper `--help`, and a safe invalid-argument control were used for validation. Generated reports, snapshots and diagnostic files remain outside Git; this prose preserves the historical result and executable identity.
 
 ### Integration consequence
 
