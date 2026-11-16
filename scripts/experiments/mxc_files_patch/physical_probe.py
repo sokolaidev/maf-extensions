@@ -14,19 +14,20 @@ import zlib
 from dataclasses import asdict, replace
 from pathlib import Path
 
+from maf_sandbox_mxc.files.request import FileLimits, Input, Request, WorkspaceLimits
+from maf_sandbox_mxc.files.shared_call import call
+from maf_sandbox_mxc.host_call import atomic_report, digest
+from maf_sandbox_mxc.host_store import Refused
+from maf_sandbox_mxc.native_journal import NativeJournal
+from maf_sandbox_mxc.physical import VERSION, Policy
+from maf_sandbox_mxc.process_identity import Identity, stopped
+from maf_sandbox_mxc.shared_store import PRELAUNCH_VERSION, SharedStore
+
 from scripts.experiments.mxc_files_patch.deletion_probe import LIMITS
 from scripts.experiments.mxc_files_patch.deletion_probe import SCRATCH as BASE_SCRATCH
 from scripts.experiments.mxc_files_patch.durability_probe import console
 from scripts.experiments.mxc_files_patch.native_probe import IO
-from scripts.experiments.mxc_files_patch.request import FileLimits, Input, Request, WorkspaceLimits
-from scripts.experiments.mxc_files_patch.shared_call import call
 from scripts.experiments.mxc_session_patch.durability_probe import _profile_for
-from scripts.experiments.mxc_session_patch.host_call import atomic_report, digest
-from scripts.experiments.mxc_session_patch.host_store import Refused
-from scripts.experiments.mxc_session_patch.native_journal import NativeJournal
-from scripts.experiments.mxc_session_patch.physical import VERSION, Policy
-from scripts.experiments.mxc_session_patch.process_identity import Identity, stopped
-from scripts.experiments.mxc_session_patch.shared_store import PRELAUNCH_VERSION, SharedStore
 
 MARGIN = 8 * 1024**2
 PAYLOAD_BYTES = 64 * 1024**2

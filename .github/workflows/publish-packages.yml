@@ -35,6 +35,7 @@ on:
       - "maf-sandbox-shell-v*"
       - "maf-sandbox-azure-pricing-v*"
       - "maf-sandbox-mcp-v*"
+      - "maf-sandbox-mxc-v*"
       - "maf-sandbox-tui-v*"
       - "maf-sandbox-wslc-v*"
       - "maf-compaction-v*"
@@ -63,6 +64,7 @@ on:
           - maf-sandbox-drawio
           - maf-sandbox-hyperlight
           - maf-sandbox-mcp
+          - maf-sandbox-mxc
           - maf-sandbox-otel
           - maf-sandbox-shell
           - maf-sandbox-terraform

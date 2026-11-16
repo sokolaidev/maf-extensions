@@ -17,8 +17,8 @@ try:
     base = importlib.import_module("scripts.experiments.mxc_session_patch.patch")
     storage = importlib.import_module("scripts.experiments.mxc_session_patch.storage_patch")
     output = importlib.import_module("scripts.experiments.mxc_session_patch.output_patch")
-    store = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
-    shared = importlib.import_module("scripts.experiments.mxc_session_patch.shared_call")
+    store = importlib.import_module("maf_sandbox_mxc.shared_store")
+    shared = importlib.import_module("maf_sandbox_mxc.shared_call")
 finally:
     sys.path.remove(str(Path(__file__).parents[1]))
 ROOT = Path(__file__).parents[1] / "scripts/experiments/mxc_session_patch"

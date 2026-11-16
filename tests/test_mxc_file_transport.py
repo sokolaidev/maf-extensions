@@ -13,9 +13,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 try:
-    transport = importlib.import_module("scripts.experiments.mxc_files_patch.transport")
-    shared = importlib.import_module("scripts.experiments.mxc_files_patch.shared_call")
-    storage = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
+    transport = importlib.import_module("maf_sandbox_mxc.files.transport")
+    shared = importlib.import_module("maf_sandbox_mxc.files.shared_call")
+    storage = importlib.import_module("maf_sandbox_mxc.shared_store")
 finally:
     sys.path.remove(str(Path(__file__).parents[1]))
 
@@ -46,7 +46,7 @@ def native(tmp_path):
 
 
 def request():
-    model = importlib.import_module("scripts.experiments.mxc_files_patch.request")
+    model = importlib.import_module("maf_sandbox_mxc.files.request")
     return model.Request(b"pass", (), ("out.bin",), model.FileLimits())
 
 
@@ -130,7 +130,7 @@ def test_budget_refusal_precedes_admission(tmp_path, monkeypatch):
 
 
 def test_maximum_file_envelope_fits_explicit_store_ceiling():
-    model = importlib.import_module("scripts.experiments.mxc_files_patch.request")
+    model = importlib.import_module("maf_sandbox_mxc.files.request")
     req = model.Request(b"pass", (), (), model.FileLimits(artifact_bytes=64 * 1024**2))
     assert transport.result_limit(req) <= storage.MAX_SHARED_RESULT
     assert storage.Limits(10**9, 10**9).result_bytes == 2 * 1024**2
@@ -151,7 +151,7 @@ def test_maximum_file_envelope_fits_explicit_store_ceiling():
     ],
 )
 def test_restored_upload_authority_uses_portable_exact_names(tmp_path, old, new, replace, valid):
-    model = importlib.import_module("scripts.experiments.mxc_files_patch.request")
+    model = importlib.import_module("maf_sandbox_mxc.files.request")
     req = model.Request(
         b"pass", (model.Input(new, b"", "session", replace),), (), model.FileLimits()
     )

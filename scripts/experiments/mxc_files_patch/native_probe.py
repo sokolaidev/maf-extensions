@@ -10,9 +10,10 @@ import threading
 from collections.abc import Mapping
 from pathlib import Path
 
-from scripts.experiments.mxc_files_patch.request import FileLimits, Input, Request, WorkspaceLimits
-from scripts.experiments.mxc_files_patch.transport import execute
-from scripts.experiments.mxc_session_patch.host_store import Refused
+from maf_sandbox_mxc.files.request import FileLimits, Input, Request, WorkspaceLimits
+from maf_sandbox_mxc.files.transport import execute
+from maf_sandbox_mxc.host_store import Refused
+
 from scripts.experiments.mxc_streams_patch.native_probe import streams
 
 IO = b"""def read_file(path):

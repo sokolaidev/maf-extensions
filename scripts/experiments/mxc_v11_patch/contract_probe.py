@@ -8,7 +8,7 @@ import json
 import shutil
 from pathlib import Path
 
-from scripts.experiments.mxc_session_patch.host_call import execute
+from maf_sandbox_mxc.host_call import execute
 
 CASES = {
     "stdout-no-newline": ("print('flushed', end='')", b"flushed"),

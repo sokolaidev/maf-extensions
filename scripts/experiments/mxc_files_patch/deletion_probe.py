@@ -13,10 +13,16 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+from maf_sandbox_mxc.files.request import FileLimits, Request
+from maf_sandbox_mxc.files.shared_call import call
+from maf_sandbox_mxc.files.transport import result_limit
+from maf_sandbox_mxc.host_call import atomic_report, digest
+from maf_sandbox_mxc.host_store import Refused
+from maf_sandbox_mxc.native_journal import NativeJournal
+from maf_sandbox_mxc.process_identity import Identity, stopped
+from maf_sandbox_mxc.shared_store import SharedStore
+
 from scripts.experiments.mxc_files_patch.native_probe import IO
-from scripts.experiments.mxc_files_patch.request import FileLimits, Request
-from scripts.experiments.mxc_files_patch.shared_call import call
-from scripts.experiments.mxc_files_patch.transport import result_limit
 from scripts.experiments.mxc_session_patch.durability_probe import (
     LIMITS as BASE_LIMITS,
 )
@@ -27,11 +33,6 @@ from scripts.experiments.mxc_session_patch.durability_probe import (
     _profile_for,
     reconcile,
 )
-from scripts.experiments.mxc_session_patch.host_call import atomic_report, digest
-from scripts.experiments.mxc_session_patch.host_store import Refused
-from scripts.experiments.mxc_session_patch.native_journal import NativeJournal
-from scripts.experiments.mxc_session_patch.process_identity import Identity, stopped
-from scripts.experiments.mxc_session_patch.shared_store import SharedStore
 
 SEED = Request(
     IO + b"write_file('result.bin',b'retained'); print('retained')",

@@ -5,20 +5,12 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import pytest
+from maf_sandbox_mxc import host_call as host
 
 ROOT = Path(__file__).parents[1] / "scripts/experiments/mxc_session_patch"
-sys.path.insert(0, str(ROOT))
-try:
-    SPEC = importlib.util.spec_from_file_location("mxc_bounded_host", ROOT / "host_call.py")
-    assert SPEC and SPEC.loader
-    host = importlib.util.module_from_spec(SPEC)
-    SPEC.loader.exec_module(host)
-finally:
-    sys.path.remove(str(ROOT))
 
 
 @pytest.fixture

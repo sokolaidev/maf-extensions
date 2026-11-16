@@ -17,11 +17,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 try:
-    store = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
-    native = importlib.import_module("scripts.experiments.mxc_session_patch.native_journal")
-    identity = importlib.import_module("scripts.experiments.mxc_session_patch.process_identity")
-    host = importlib.import_module("scripts.experiments.mxc_session_patch.host_call")
-    shared = importlib.import_module("scripts.experiments.mxc_session_patch.shared_call")
+    store = importlib.import_module("maf_sandbox_mxc.shared_store")
+    native = importlib.import_module("maf_sandbox_mxc.native_journal")
+    identity = importlib.import_module("maf_sandbox_mxc.process_identity")
+    host = importlib.import_module("maf_sandbox_mxc.host_call")
+    shared = importlib.import_module("maf_sandbox_mxc.shared_call")
 finally:
     sys.path.remove(str(Path(__file__).parents[1]))
 PROFILE = {"runtime": "pinned", "machine": "local", "policy": "closed"}
@@ -229,8 +229,8 @@ def test_process_death_during_cleanup_is_recoverable(tmp_path, child, boundary):
     source = f"""
 import os
 from pathlib import Path
-from scripts.experiments.mxc_session_patch.shared_store import SharedStore, Limits
-from scripts.experiments.mxc_session_patch.native_journal import NativeJournal
+from maf_sandbox_mxc.shared_store import SharedStore, Limits
+from maf_sandbox_mxc.native_journal import NativeJournal
 with SharedStore(Path({str(root)!r}), 'one', {PROFILE!r}, {LIMITS!r}) as db:
     NativeJournal(db).reclaim('a', lambda point: os._exit(73) if point == {boundary!r} else None)
 """
@@ -286,8 +286,8 @@ while not Path({str(release_wrapper)!r}).exists():
     source = f"""
 import os, subprocess, sys
 from pathlib import Path
-from scripts.experiments.mxc_session_patch.shared_store import SharedStore, Limits, ScratchLimits
-from scripts.experiments.mxc_session_patch.native_journal import NativeJournal
+from maf_sandbox_mxc.shared_store import SharedStore, Limits, ScratchLimits
+from maf_sandbox_mxc.native_journal import NativeJournal
 with SharedStore(Path({str(root)!r}), 'one', {PROFILE!r}, {LIMITS!r}) as db:
     db.begin('a', b'code', scratch={SCRATCH!r})
     journal = NativeJournal(db)
@@ -632,12 +632,14 @@ def test_delete_keeps_uncertain_launch_charged(tmp_path, child, monkeypatch, dam
         assert db.usage() == charged
 
 
-@pytest.mark.parametrize("family", ["mxc_session_patch", "mxc_streams_patch", "mxc_files_patch"])
+@pytest.mark.parametrize(
+    "family", ["maf_sandbox_mxc", "maf_sandbox_mxc.streams", "maf_sandbox_mxc.files"]
+)
 def test_requested_deletion_interrupts_owned_transport(tmp_path, monkeypatch, family):
-    module = importlib.import_module(f"scripts.experiments.{family}.shared_call")
+    module = importlib.import_module(f"{family}.shared_call")
     request = b"code"
-    if family == "mxc_files_patch":
-        requests = importlib.import_module("scripts.experiments.mxc_files_patch.request")
+    if family == "maf_sandbox_mxc.files":
+        requests = importlib.import_module("maf_sandbox_mxc.files.request")
         request = requests.Request(b"code", (), (), requests.FileLimits())
     limits = replace(
         LIMITS, session_quota=200_000_000, store_quota=400_000_000, result_bytes=32_000_000
@@ -670,7 +672,7 @@ def test_requested_deletion_interrupts_owned_transport(tmp_path, monkeypatch, fa
     notifier.start()
     try:
         with store.SharedStore(tmp_path / "db", "one", PROFILE, limits) as db:
-            args = (100,) if family == "mxc_session_patch" else ()
+            args = (100,) if family == "maf_sandbox_mxc" else ()
             with pytest.raises(store.Refused, match="deletion requested"):
                 module.call(
                     db,

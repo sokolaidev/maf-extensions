@@ -4,6 +4,8 @@ The selected design uses MXC Hyperlight to supply a rich Python runtime for Code
 
 ## Agreed scope
 
+The host runtime now lives in the unreleased [`maf-sandbox-mxc`](../../../packages/maf-sandbox-mxc/README.md) package: durable sessions, helper supervision, bounded file/stream transports and mutual-TLS coordination. Build recipes and qualification probes remain repository tooling. The package does not yet implement `SandboxBackend`; its packaging and offline tests do not extend the native qualification recorded for each helper/profile.
+
 | Decision | Selected behavior |
 |---|---|
 | First MXC backend | Hyperlight with a rich Python environment |
@@ -173,7 +175,7 @@ Interrupted call IDs remain non-executable and require explicit recovery. Retire
 
 ### Qualification of accounting and recovery
 
-The first increment changes [the experimental store](../../../scripts/experiments/mxc_session_patch/host_store.py) and its focused tests, then [the supervisor](../../../scripts/experiments/mxc_session_patch/host_call.py) and process-death probes. It keeps the production adapter and cross-machine recovery separate. Clock tests use injected time rather than long sleeps; crash tests kill child processes at persisted boundaries. Native qualification runs on GitHub runners with the required hypervisor, separately for Windows/WHP and Linux/KVM. An unavailable platform remains unverified.
+The first increment changes [the experimental store](../../../packages/maf-sandbox-mxc/src/maf_sandbox_mxc/host_store.py) and its focused tests, then [the supervisor](../../../packages/maf-sandbox-mxc/src/maf_sandbox_mxc/host_call.py) and process-death probes. It keeps the production adapter and cross-machine recovery separate. Clock tests use injected time rather than long sleeps; crash tests kill child processes at persisted boundaries. Native qualification runs on GitHub runners with the required hypervisor, separately for Windows/WHP and Linux/KVM. An unavailable platform remains unverified.
 
 | Area | Required controls |
 |---|---|

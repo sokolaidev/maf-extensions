@@ -6,6 +6,7 @@ on:
       - '.github/workflows/mxc-remote.yml'
       - '.github/workflows/mxc-cross-runner.yml'
       - 'scripts/experiments/mxc_session_patch/**'
+      - 'packages/maf-sandbox-mxc/**'
       - 'tests/test_mxc_remote_authority.py'
       - 'tests/test_mxc_remote_api.py'
       - 'tests/test_mxc_freshness.py'

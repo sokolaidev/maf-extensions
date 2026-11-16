@@ -13,9 +13,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 try:
-    transport = importlib.import_module("scripts.experiments.mxc_streams_patch.transport")
-    shared = importlib.import_module("scripts.experiments.mxc_streams_patch.shared_call")
-    storage = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
+    transport = importlib.import_module("maf_sandbox_mxc.streams.transport")
+    shared = importlib.import_module("maf_sandbox_mxc.streams.shared_call")
+    storage = importlib.import_module("maf_sandbox_mxc.shared_store")
 finally:
     sys.path.remove(str(Path(__file__).parents[1]))
 

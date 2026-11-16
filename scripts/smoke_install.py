@@ -43,6 +43,7 @@ _PACKAGES = {
     "maf-sandbox-shell": "maf_sandbox_shell",
     "maf-sandbox-azure-pricing": "maf_sandbox_azure_pricing",
     "maf-sandbox-mcp": "maf_sandbox_mcp",
+    "maf-sandbox-mxc": "maf_sandbox_mxc",
     "maf-sandbox-tui": "maf_sandbox_tui",
     "maf-sandbox-wslc": "maf_sandbox_wslc",
     "maf-sandbox-bubblewrap": "maf_sandbox_bubblewrap",
@@ -837,6 +838,34 @@ def _smoke_maf_sandbox_drawio() -> str:
     )
 
 
+def _smoke_maf_sandbox_mxc() -> str:
+    """Exercise installed runtime imports and durable result/checkpoint recovery."""
+    import importlib
+    import pkgutil
+    import tempfile
+
+    import maf_sandbox_mxc
+    from maf_sandbox_mxc.shared_store import Limits, SharedStore
+
+    for module in pkgutil.walk_packages(maf_sandbox_mxc.__path__, "maf_sandbox_mxc."):
+        importlib.import_module(module.name)
+    profile = {"runtime": "smoke", "policy": "closed"}
+    limits = Limits(200_000, 500_000, checkpoint_bytes=1024, result_bytes=128, files=2)
+    with tempfile.TemporaryDirectory() as temporary:
+        root = pathlib.Path(temporary)
+        candidate = root / "candidate"
+        candidate.mkdir()
+        (candidate / "index.json").write_bytes(b"checkpoint")
+        with SharedStore(root / "store", "session", profile, limits) as store:
+            assert store.begin("call", b"code") is None
+            store.commit("call", candidate, b"result")
+        with SharedStore(root / "store", "session", profile, limits) as store:
+            assert store.begin("call", b"code") == b"result"
+            assert store.restore(root / "restored") == "call"
+            assert (root / "restored/index.json").read_bytes() == b"checkpoint"
+    return "runtime modules import; SQLite checkpoint and result survive reopen"
+
+
 def _smoke_maf_sandbox_mcp() -> str:
     from maf_sandbox_mcp.server import OUTPUT_SCHEMA, TOOL, http_application, snapshot
 
@@ -1023,6 +1052,7 @@ _SMOKES = {
     "maf-sandbox-terraform": _smoke_maf_sandbox_terraform,
     "maf-sandbox-shell": _smoke_maf_sandbox_shell,
     "maf-sandbox-mcp": _smoke_maf_sandbox_mcp,
+    "maf-sandbox-mxc": _smoke_maf_sandbox_mxc,
     "maf-sandbox-tui": _smoke_maf_sandbox_tui,
     "maf-sandbox-wslc": _smoke_maf_sandbox_wslc,
     "maf-sandbox-bubblewrap": _smoke_maf_sandbox_bubblewrap,

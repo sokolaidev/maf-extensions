@@ -26,8 +26,8 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 try:
-    api = importlib.import_module("scripts.experiments.mxc_session_patch.remote_api")
-    remote = importlib.import_module("scripts.experiments.mxc_session_patch.remote_authority")
+    api = importlib.import_module("maf_sandbox_mxc.remote_api")
+    remote = importlib.import_module("maf_sandbox_mxc.remote_authority")
 finally:
     sys.path.remove(str(Path(__file__).parents[1]))
 
@@ -372,8 +372,9 @@ def certificates(tmp_path_factory):
 SERVER = r"""
 import json, os, sys
 from pathlib import Path
-from scripts.experiments.mxc_session_patch.remote_api import Coordinator, Grant, Session, Limits, Server, server_context
-from scripts.experiments.mxc_session_patch import remote_api, remote_authority
+from maf_sandbox_mxc.remote_api import Coordinator, Grant, Session, Limits, Server, server_context
+from maf_sandbox_mxc import remote_api
+from maf_sandbox_mxc import remote_authority
 config = json.loads(Path(sys.argv[1]).read_text())
 certs = Path(config['certificates'])
 remote_api.TIMEOUT = config['timeout']
@@ -399,7 +400,7 @@ def boundary(point):
         os._exit(76)
 grants = {k: Grant(v['host'], v['boot'], frozenset(v['sessions']), frozenset(v['operations'])) for k,v in config['grants'].items()}
 sessions = {'session': Session(config['profile'], Limits(**config['limits']))}
-from scripts.experiments.mxc_session_patch.remote_scratch import Policy
+from maf_sandbox_mxc.remote_scratch import Policy
 scratch = Policy(**config['scratch']) if config.get('scratch') else None
 coordinator = Coordinator(Path(config['root']), grants, sessions, enabled=True, initialize=config['initialize'], boundary=boundary, scratch_policy=scratch)
 try:
@@ -1424,8 +1425,8 @@ def test_remote_cleanup_process_death_is_conservative_and_repeatable(tmp_path, b
     script = """
 import os, sys
 from pathlib import Path
-from scripts.experiments.mxc_session_patch.remote_api import Coordinator, Grant, Session, Limits
-from scripts.experiments.mxc_session_patch.remote_scratch import Policy
+from maf_sandbox_mxc.remote_api import Coordinator, Grant, Session, Limits
+from maf_sandbox_mxc.remote_scratch import Policy
 
 def boundary(point):
     if point == sys.argv[2]:
@@ -1588,7 +1589,7 @@ def test_remote_scratch_invalid_policy_refuses(values):
 # These controls use real local processes but substitute the native payload producer.
 @pytest.fixture
 def native_host(tmp_path, monkeypatch):
-    module = importlib.import_module("scripts.experiments.mxc_session_patch.remote_host")
+    module = importlib.import_module("maf_sandbox_mxc.remote_host")
     startup = tmp_path / "startup"
     startup.mkdir()
     (startup / "index.json").write_bytes(b"{}")
@@ -1832,7 +1833,7 @@ def test_native_preflight_refuses_before_launch(tmp_path, native_host, change):
     not os.environ.get("MXC_REMOTE_HELPER"), reason="requires a built native helper"
 )
 def test_native_host_real_helper_tls_restore_and_cleanup(tmp_path, certificates, record_property):
-    module = importlib.import_module("scripts.experiments.mxc_session_patch.remote_host")
+    module = importlib.import_module("maf_sandbox_mxc.remote_host")
     helper = Path(os.environ["MXC_REMOTE_HELPER"])
     startup = Path(os.environ["MXC_REMOTE_STARTUP"])
     limits = api.Limits(8 * api.MAX_CHECKPOINT, 16 * api.MAX_CHECKPOINT)
@@ -1902,7 +1903,7 @@ def test_native_host_real_helper_tls_restore_and_cleanup(tmp_path, certificates,
 
 def test_native_cleanup_terminates_recorded_live_helper(tmp_path, native_host):
     host, _, _, _ = native_host
-    module = importlib.import_module("scripts.experiments.mxc_session_patch.remote_host")
+    module = importlib.import_module("maf_sandbox_mxc.remote_host")
     db = native_coordinator(tmp_path / "service", host)
     child = None
     try:
@@ -1974,8 +1975,8 @@ def test_native_host_process_death_retains_durable_proof(tmp_path, native_host, 
         script = r"""
 import json, os, subprocess, sys
 from pathlib import Path
-from scripts.experiments.mxc_session_patch.remote_host import Host, Session, physical, remote_scratch, ScratchLimits, NativeJournal
-from scripts.experiments.mxc_session_patch.shared_store import Limits
+from maf_sandbox_mxc.remote_host import Host, Session, physical, remote_scratch, ScratchLimits, NativeJournal
+from maf_sandbox_mxc.shared_store import Limits
 v = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
 host = Host(Path(v['root']), 'host-a', 'boot-a', 'session', Session(v['profile'], Limits(**v['limits'])), remote_scratch.Policy(**v['scratch']), physical.Policy(**v['storage']))
 r = remote_scratch.Receipt(**v['receipt'])
@@ -2023,8 +2024,10 @@ def generation_host(host, owner, root=None):
 CONTROL_SERVER = r"""
 import json, os, sys
 from pathlib import Path
-from scripts.experiments.mxc_session_patch import remote_api as api, remote_control as control
-from scripts.experiments.mxc_session_patch import remote_host, physical
+from maf_sandbox_mxc import remote_api as api
+from maf_sandbox_mxc import remote_control as control
+from maf_sandbox_mxc import remote_host
+from maf_sandbox_mxc import physical
 config = json.loads(Path(sys.argv[1]).read_text())
 certs = Path(config['certificates'])
 owner = control.Authority._decode_owner(config['owner'])
@@ -2092,13 +2095,13 @@ def control_running(root, certs, host, *, crash=None, automatic=False):
 
 
 def control_verifier(certs, address, owner, name="controller"):
-    control = importlib.import_module("scripts.experiments.mxc_session_patch.remote_control")
+    control = importlib.import_module("maf_sandbox_mxc.remote_control")
     context = api.client_context(certs / f"{name}.pem", certs / f"{name}.key", certs / "ca.pem")
     return control.Verifier(api.Client(address, context, "localhost"), owner)
 
 
 def armed_generation(host, receipt):
-    module = importlib.import_module("scripts.experiments.mxc_session_patch.remote_host")
+    module = importlib.import_module("maf_sandbox_mxc.remote_host")
     with host._store() as store:
         store.begin(
             receipt.token,
@@ -2212,7 +2215,7 @@ def test_controller_crash_keeps_takeover_blocked_until_retry(
 @pytest.mark.parametrize("failure", ["missing", "busy", "unknown", "unidentified", "wrong-owner"])
 def test_controller_missing_or_ambiguous_evidence_refuses(tmp_path, native_host, failure):
     host, _, _, _ = native_host
-    module = importlib.import_module("scripts.experiments.mxc_session_patch.remote_host")
+    module = importlib.import_module("maf_sandbox_mxc.remote_host")
     db = native_coordinator(tmp_path / "service", host)
     held = None
     try:
@@ -2312,7 +2315,7 @@ def test_controller_tls_worker_certificates_cannot_fence(
 )
 def test_controller_rejects_changed_authority_before_retirement(tmp_path, native_host, change):
     host, _, _, _ = native_host
-    control = importlib.import_module("scripts.experiments.mxc_session_patch.remote_control")
+    control = importlib.import_module("maf_sandbox_mxc.remote_control")
     db = native_coordinator(tmp_path / "service", host)
     try:
         receipt = native_admit(db)
@@ -2364,7 +2367,7 @@ def test_controller_automatic_shutdown_requires_both_opt_ins(
     tmp_path, native_host, coordinator_opt_in, controller_opt_in
 ):
     host, _, _, _ = native_host
-    control = importlib.import_module("scripts.experiments.mxc_session_patch.remote_control")
+    control = importlib.import_module("maf_sandbox_mxc.remote_control")
     db = native_coordinator(tmp_path / "service", host)
     db.fencing_policy = remote.Policy(automatic_shutdown=coordinator_opt_in)
     try:
@@ -2405,7 +2408,7 @@ def test_controller_automatic_shutdown_requires_both_opt_ins(
 
 def test_controller_response_must_match_request_and_owner(tmp_path, native_host):
     host, _, _, _ = native_host
-    control = importlib.import_module("scripts.experiments.mxc_session_patch.remote_control")
+    control = importlib.import_module("maf_sandbox_mxc.remote_control")
     db = native_coordinator(tmp_path / "service", host)
     try:
         receipt = native_admit(db)
@@ -2430,7 +2433,7 @@ def test_controller_response_must_match_request_and_owner(tmp_path, native_host)
 
 def test_controller_refuses_unbound_legacy_or_nonclosed_roots(tmp_path, native_host):
     host, helper, startup, _ = native_host
-    control = importlib.import_module("scripts.experiments.mxc_session_patch.remote_control")
+    control = importlib.import_module("maf_sandbox_mxc.remote_control")
     db = native_coordinator(tmp_path / "service", host)
     try:
         receipt = native_admit(db)
@@ -2468,7 +2471,7 @@ def test_controller_storage_failure_before_retirement_never_confirms(
     tmp_path, native_host, monkeypatch
 ):
     host, _, _, _ = native_host
-    module = importlib.import_module("scripts.experiments.mxc_session_patch.remote_host")
+    module = importlib.import_module("maf_sandbox_mxc.remote_host")
     db = native_coordinator(tmp_path / "service", host)
     try:
         receipt = native_admit(db)

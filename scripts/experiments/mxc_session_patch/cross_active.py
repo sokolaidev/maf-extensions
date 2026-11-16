@@ -6,8 +6,8 @@ import os
 import subprocess
 from pathlib import Path
 
-from . import process_identity as identity
-from .host_store import Refused
+from maf_sandbox_mxc import process_identity as identity
+from maf_sandbox_mxc.host_store import Refused
 
 MARKER = b"MXC_ACTIVE_READY:99"
 CODE = b"assert remote_counter == 41\nremote_counter = 99\nprint('MXC_ACTIVE_READY:99', flush=True)\nwhile True: pass\n"

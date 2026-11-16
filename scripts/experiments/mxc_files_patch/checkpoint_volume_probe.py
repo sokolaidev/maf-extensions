@@ -15,15 +15,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+from maf_sandbox_mxc.files import transport
+from maf_sandbox_mxc.host_call import atomic_report, digest
+from maf_sandbox_mxc.host_store import Refused
+from maf_sandbox_mxc.native_journal import NativeJournal
+from maf_sandbox_mxc.process_identity import Identity, stopped
+from maf_sandbox_mxc.shared_store import SharedStore
+
 from scripts.experiments.mxc_files_patch import physical_probe as native
-from scripts.experiments.mxc_files_patch import transport
 from scripts.experiments.mxc_files_patch.volume_probe import POLICY, VOLUME_BYTES
 from scripts.experiments.mxc_session_patch import volume_probe as volume_control
-from scripts.experiments.mxc_session_patch.host_call import atomic_report, digest
-from scripts.experiments.mxc_session_patch.host_store import Refused
-from scripts.experiments.mxc_session_patch.native_journal import NativeJournal
-from scripts.experiments.mxc_session_patch.process_identity import Identity, stopped
-from scripts.experiments.mxc_session_patch.shared_store import SharedStore
 
 EXPORT_FREE = 32 * 1024**2
 STAGES = ("seed", "fail", "recover")

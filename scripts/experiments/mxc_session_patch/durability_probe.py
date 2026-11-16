@@ -13,11 +13,11 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-from .host_call import digest
-from .host_store import CHUNK, MAX_CHECKPOINT, MAX_FILES, Refused
-from .native_journal import NativeJournal
-from .shared_call import call
-from .shared_store import (
+from maf_sandbox_mxc.host_call import digest
+from maf_sandbox_mxc.host_store import CHUNK, MAX_CHECKPOINT, MAX_FILES, Refused
+from maf_sandbox_mxc.native_journal import NativeJournal
+from maf_sandbox_mxc.shared_call import call
+from maf_sandbox_mxc.shared_store import (
     CALL_METADATA,
     PATH_BYTES,
     SESSION_METADATA,
@@ -27,6 +27,7 @@ from .shared_store import (
     ScratchLimits,
     SharedStore,
 )
+
 from .storage_probe import console
 
 BOUNDARIES = (

@@ -11,9 +11,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 try:
-    store = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
-    idle = importlib.import_module("scripts.experiments.mxc_session_patch.idle")
-    native = importlib.import_module("scripts.experiments.mxc_session_patch.native_journal")
+    store = importlib.import_module("maf_sandbox_mxc.shared_store")
+    idle = importlib.import_module("maf_sandbox_mxc.idle")
+    native = importlib.import_module("maf_sandbox_mxc.native_journal")
 finally:
     sys.path.remove(str(Path(__file__).parents[1]))
 
@@ -231,8 +231,8 @@ def test_process_death_at_idle_transactions_is_recoverable(tmp_path, boundary):
     program = f"""
 import os
 from pathlib import Path
-from scripts.experiments.mxc_session_patch.shared_store import SharedStore, Limits, SECOND
-from scripts.experiments.mxc_session_patch.idle import Policy
+from maf_sandbox_mxc.shared_store import SharedStore, Limits, SECOND
+from maf_sandbox_mxc.idle import Policy
 class Clock:
     def utc_ns(self): return {utc} * SECOND
     def monotonic_ns(self): return 200 * SECOND
@@ -283,9 +283,11 @@ def test_another_session_keeps_its_own_deadline(tmp_path):
             assert not two.retire_idle()
 
 
-@pytest.mark.parametrize("family", ["mxc_session_patch", "mxc_streams_patch", "mxc_files_patch"])
+@pytest.mark.parametrize(
+    "family", ["maf_sandbox_mxc", "maf_sandbox_mxc.streams", "maf_sandbox_mxc.files"]
+)
 def test_supervisors_preserve_retry_and_refuse_new_native_launch_after_idle(tmp_path, family):
-    module = importlib.import_module(f"scripts.experiments.{family}.shared_call")
+    module = importlib.import_module(f"{family}.shared_call")
     from dataclasses import replace
 
     limits = replace(
@@ -295,8 +297,8 @@ def test_supervisors_preserve_retry_and_refuse_new_native_launch_after_idle(tmp_
     clock = Clock()
     request = b"a"
     code = request
-    if family == "mxc_files_patch":
-        requests = importlib.import_module("scripts.experiments.mxc_files_patch.request")
+    if family == "maf_sandbox_mxc.files":
+        requests = importlib.import_module("maf_sandbox_mxc.files.request")
         request = requests.Request(code, (), (), requests.FileLimits())
         code = request.identity()
     with store.SharedStore(
@@ -309,7 +311,7 @@ def test_supervisors_preserve_retry_and_refuse_new_native_launch_after_idle(tmp_
         db.commit("a", candidate, b"saved")
         clock.advance(10)
         args = (request, tmp_path / "absent", tmp_path / "absent", scratch)
-        if family != "mxc_files_patch":
+        if family != "maf_sandbox_mxc.files":
             args += (100,)
         assert module.call(db, "a", *args) == b"saved"
         with pytest.raises(store.Refused, match="retired"):

@@ -401,6 +401,7 @@ NOT_BACKENDS = frozenset(
         "maf-sandbox-document",  # Workload kind; provides no backend.
         "maf-sandbox-drawio",
         "maf-sandbox-mcp",  # Host composition; delegates execution to Docker.
+        "maf-sandbox-mxc",  # Session runtime and coordinator; no SandboxBackend adapter yet.
         "maf-sandbox-otel",
         "maf-sandbox-shell",  # Workload kind; provides no backend.
         "maf-sandbox-terraform",  # Workload kind using a session; provides no backend.

@@ -7,8 +7,8 @@ import json
 import shutil
 from pathlib import Path
 
-from scripts.experiments.mxc_session_patch.host_call import execute as native_execute
-from scripts.experiments.mxc_session_patch.host_store import MAX_CHECKPOINT, MAX_FILES, Refused
+from maf_sandbox_mxc.host_call import execute as native_execute
+from maf_sandbox_mxc.host_store import MAX_CHECKPOINT, MAX_FILES, Refused
 
 
 def measure(root: Path) -> tuple[int, int]:

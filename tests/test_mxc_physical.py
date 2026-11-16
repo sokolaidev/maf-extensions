@@ -16,10 +16,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 try:
-    store = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
-    physical = importlib.import_module("scripts.experiments.mxc_session_patch.physical")
-    idle = importlib.import_module("scripts.experiments.mxc_session_patch.idle")
-    journal = importlib.import_module("scripts.experiments.mxc_session_patch.native_journal")
+    store = importlib.import_module("maf_sandbox_mxc.shared_store")
+    physical = importlib.import_module("maf_sandbox_mxc.physical")
+    idle = importlib.import_module("maf_sandbox_mxc.idle")
+    journal = importlib.import_module("maf_sandbox_mxc.native_journal")
 finally:
     sys.path.remove(str(Path(__file__).parents[1]))
 
@@ -267,8 +267,8 @@ def test_new_process_reapplies_ceiling_and_replays_saved_result(tmp_path):
     program = """
 import sys
 from pathlib import Path
-from scripts.experiments.mxc_session_patch.shared_store import SharedStore, Limits
-from scripts.experiments.mxc_session_patch.physical import Policy
+from maf_sandbox_mxc.shared_store import SharedStore, Limits
+from maf_sandbox_mxc.physical import Policy
 with SharedStore(Path(sys.argv[1]), 'one', {'runtime':'pinned','policy':'closed'},
                  Limits(20000000,40000000,checkpoint_bytes=1000000,result_bytes=128,files=2),
                  physical_policy=Policy(262144,131072,65536)) as db:

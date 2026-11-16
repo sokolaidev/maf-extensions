@@ -26,6 +26,7 @@ members = [
     "maf-sandbox-drawio",
     "maf-sandbox-hyperlight",
     "maf-sandbox-mcp",
+    "maf-sandbox-mxc",
     "maf-sandbox-otel",
     "maf-sandbox-shell",
     "maf-sandbox-terraform",
@@ -1927,6 +1928,11 @@ requires-dist = [
     { name = "starlette", specifier = "==1.7.0" },
     { name = "uvicorn", specifier = "==0.54.0" },
 ]
+
+[[package]]
+name = "maf-sandbox-mxc"
+version = "0.0.0"
+source = { editable = "packages/maf-sandbox-mxc" }
 
 [[package]]
 name = "maf-sandbox-otel"

@@ -12,7 +12,7 @@ import sys
 import time
 from pathlib import Path
 
-from host_call import digest
+from maf_sandbox_mxc.host_call import digest
 
 
 def main() -> int:
@@ -24,7 +24,6 @@ def main() -> int:
     args = parser.parse_args()
     state = args.state_dir.resolve()
     state.mkdir(parents=True, exist_ok=False)
-    host = Path(__file__).with_name("host_call.py")
     sequence = 0
     measurements = {}
 
@@ -44,7 +43,8 @@ def main() -> int:
         report = prefix.with_suffix(".json")
         command = [
             sys.executable,
-            str(host),
+            "-m",
+            "maf_sandbox_mxc.host_call",
             "--helper",
             str(args.helper.resolve()),
             "--startup",

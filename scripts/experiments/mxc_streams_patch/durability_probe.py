@@ -8,10 +8,11 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+from maf_sandbox_mxc.streams.shared_call import call
+from maf_sandbox_mxc.streams.transport import RESULT_LIMIT
+
 from scripts.experiments.mxc_session_patch import durability_probe as baseline
 from scripts.experiments.mxc_streams_patch.native_probe import streams
-from scripts.experiments.mxc_streams_patch.shared_call import call
-from scripts.experiments.mxc_streams_patch.transport import RESULT_LIMIT
 
 
 def launch(

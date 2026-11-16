@@ -2,7 +2,7 @@
 
 Generated MXC and Unikraft output reports are not committed. Keep local reports outside the checkout; hosted runs upload them as Actions artifacts subject to workflow retention. The documentation preserves prose findings and run/source identities, but historical artifacts may have expired. JSON source pins and patch manifests remain versioned inputs.
 
-The MXC experiments are source-only qualification tooling. Moving a dispatcher does not qualify a new runtime, convert retained checkpoints or establish production readiness. Existing candidate-specific reports and run links remain the evidence.
+The MXC experiments are source-only qualification tooling that imports the [host runtime package](../../../packages/maf-sandbox-mxc/README.md). Native workflow commands install that package explicitly; local qualification requires a workspace sync or an installed wheel. Moving a dispatcher does not qualify a new runtime, convert retained checkpoints or establish production readiness. Existing candidate-specific reports and run links remain the evidence.
 
 | Entry point | Purpose | Trigger |
 | --- | --- | --- |
@@ -18,7 +18,7 @@ Dispatch `mxc-native.yml` with `mxc_v1=qualify`, `mxc_streams=true`, `mxc_files=
 
 ## Retired entry points
 
-The pre-1.0 `mxc-recovery` and `mxc-durability` jobs and inputs are removed from `tests.yml`. The current session runner executes the same `storage_probe` and `durability_probe` modules and additionally checks bounded output, remote publication/replay and incompatible-checkpoint refusal with recovery by the retained helper. The old helper, probes and reports remain available for historical reproduction and compatibility tests. Removing the old dispatchers does not promise that a current profile can restore a legacy checkpoint.
+The pre-1.0 `mxc-recovery` and `mxc-durability` jobs and inputs are removed from `tests.yml`. The current session runner executes the same `storage_probe` and `durability_probe` modules and additionally checks bounded output, remote publication/replay and incompatible-checkpoint refusal with recovery by the retained helper. The old helper and probes remain available for historical reproduction and compatibility tests; report retention follows the policy above. Removing the old dispatchers does not promise that a current profile can restore a legacy checkpoint.
 
 The historical [Unikraft comparison workflow](../unikraft_output/workflow.yml) is archived outside `.github/workflows/`. Its [reproduction instructions and measurements](../unikraft_output/README.md) remain available. The outcome is still to defer overlay removal; [#1957](https://github.com/sokolaidev/maf-extensions/issues/1957) requires an equivalent integrated candidate.
 

@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 try:
-    remote = importlib.import_module("scripts.experiments.mxc_session_patch.remote_authority")
+    remote = importlib.import_module("maf_sandbox_mxc.remote_authority")
 finally:
     sys.path.remove(str(Path(__file__).parents[1]))
 
@@ -294,7 +294,7 @@ CHILD = """
 import sys, os
 from contextlib import contextmanager
 from pathlib import Path
-from scripts.experiments.mxc_session_patch.remote_authority import Authority, Resource
+from maf_sandbox_mxc.remote_authority import Authority, Resource
 root, operation, boundary = sys.argv[1:]
 with Authority(Path(root), enabled=True) as db:
     owner = db.acquire('session', 'a'*64, Resource('host-a','boot-a','guest-a'))
@@ -347,7 +347,7 @@ def test_process_death_preserves_exact_committed_transition(tmp_path, operation,
 RACE = """
 import json, sys, time
 from pathlib import Path
-from scripts.experiments.mxc_session_patch.remote_authority import Authority, Resource, Refused
+from maf_sandbox_mxc.remote_authority import Authority, Resource, Refused
 root, signal, label, operation, encoded = sys.argv[1:]
 with Authority(Path(root), enabled=True) as db:
     Path(signal + label).write_text('ready')
@@ -457,7 +457,7 @@ CONFIRM_CRASH = """
 import sys, os
 from contextlib import contextmanager
 from pathlib import Path
-from scripts.experiments.mxc_session_patch.remote_authority import Authority
+from maf_sandbox_mxc.remote_authority import Authority
 root, boundary = sys.argv[1:]
 with Authority(Path(root), enabled=True) as db:
     original = db._transaction
@@ -591,7 +591,7 @@ INITIALIZE_CRASH = """
 import os, sys
 from contextlib import contextmanager
 from pathlib import Path
-from scripts.experiments.mxc_session_patch.remote_authority import Authority
+from maf_sandbox_mxc.remote_authority import Authority
 root, boundary = sys.argv[1:]
 original = Authority._transaction
 @contextmanager
@@ -674,7 +674,7 @@ def test_partial_or_altered_coordinator_schema_is_refused(tmp_path, damage):
 LOCK_CONTENDER = """
 import sys
 from pathlib import Path
-from scripts.experiments.mxc_session_patch.remote_authority import Authority, Refused
+from maf_sandbox_mxc.remote_authority import Authority, Refused
 try:
     Authority(Path(sys.argv[1]), enabled=True)
 except Refused as error:
