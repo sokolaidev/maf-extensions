@@ -7,7 +7,7 @@ import os
 import platform
 from pathlib import Path
 
-from .host_call import digest
+from maf_sandbox_mxc.host_call import digest
 
 VENDORS = ("GenuineIntel", "AuthenticAMD")
 

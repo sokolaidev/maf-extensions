@@ -20,7 +20,62 @@ SPEC.loader.exec_module(probe)
 
 @pytest.fixture
 def evidence(tmp_path):
-    results = json.loads((ROOT / "windows-descriptor-result.json").read_text())["results"]
+    """Synthetic observations exercise validation without claiming native qualification."""
+    names = [
+        "console_4095",
+        "console_4096",
+        "console_4097",
+        "fidelity",
+        "exact",
+        "overflow",
+        "bypass",
+        "file_limit",
+        "timeout",
+        "cancel",
+        "file_seed",
+        "file_restore",
+        "pipe_seed",
+        "pipe_restore",
+    ]
+    results = {
+        name: {
+            "exit_code": 0,
+            "control": {"captured": True} if name.endswith("_seed") else {"executed": True},
+            "supervisor_killed": False,
+            "supervisor_overflow": False,
+        }
+        for name in names
+    }
+
+    def stream(data):
+        return {
+            "total": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "retained_bytes": min(len(data), 1048576),
+            "retained_sha256": hashlib.sha256(data[:1048576]).hexdigest(),
+            "overflow": len(data) > 1048576,
+        }
+
+    for size in (4095, 4096, 4097):
+        data = b"X" * min(size, 4096)
+        results[f"console_{size}"].update(
+            stdout_bytes=len(data), stdout_sha256=hashlib.sha256(data).hexdigest()
+        )
+    results["fidelity"]["guest_observation"] = [
+        stream(
+            bytes(range(256)) * 32
+            + ("\u20ac\U0001f642\n" * 1000).encode()
+            + bytes([fd]) * 4097
+            + b"DUP\x00\xffVEC\x00\xffNATIVE\x00\xffPYTHON\n"
+        )
+        for fd in (1, 2)
+    ]
+    for name, count in (("exact", 1048576), ("overflow", 1048577)):
+        results[name]["guest_observation"] = [stream(b"Q" * count), stream(b"")]
+    results["bypass"]["guest_observation"] = [stream(b""), stream(b"")]
+    for name, exit_code in (("file_limit", 1), ("timeout", 1), ("cancel", 74)):
+        results[name].update(exit_code=exit_code, control=None)
+    results["cancel"]["cancel_sent"] = True
     for name, data in {
         "bypass.stdout": b"MXC_BYPASS\r\n",
         "file_limit.stdout": b"Unsupported resource 1",
@@ -32,7 +87,7 @@ def evidence(tmp_path):
     return results, tmp_path
 
 
-def test_observed_positive_controls_still_conclude_no_host_enforcement(evidence):
+def test_positive_controls_still_conclude_no_host_enforcement(evidence):
     results, state = evidence
     assessment = probe.validate(results, state)
     assert assessment["cooperative_pipe_fidelity"]

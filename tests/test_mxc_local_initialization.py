@@ -14,7 +14,7 @@ ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT))
 try:
     host = importlib.import_module("scripts.experiments.mxc_session_patch.host_store")
-    shared = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
+    shared = importlib.import_module("maf_sandbox_mxc.shared_store")
 finally:
     sys.path.remove(str(ROOT))
 
@@ -411,9 +411,7 @@ def test_wal_database_is_refused_without_changing_database_or_sidecars(
 
     def factory():
         if kind == "coordinator":
-            remote = importlib.import_module(
-                "scripts.experiments.mxc_session_patch.remote_authority"
-            )
+            remote = importlib.import_module("maf_sandbox_mxc.remote_authority")
             return remote.Authority(root, enabled=True)
         return open_store(root, kind)
 

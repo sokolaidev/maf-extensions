@@ -1344,7 +1344,7 @@
     "count": 1
   },
   {
-    "filename": "scripts/experiments/mxc_session_patch/accounting.py",
+    "filename": "packages/maf-sandbox-mxc/src/maf_sandbox_mxc/accounting.py",
     "test_id": "B608",
     "issue_severity": "MEDIUM",
     "issue_confidence": "MEDIUM",
@@ -1408,7 +1408,7 @@
     "count": 1
   },
   {
-    "filename": "scripts/experiments/mxc_session_patch/remote_authority.py",
+    "filename": "packages/maf-sandbox-mxc/src/maf_sandbox_mxc/remote_authority.py",
     "test_id": "B608",
     "issue_severity": "MEDIUM",
     "issue_confidence": "MEDIUM",
@@ -1736,7 +1736,7 @@
     "count": 1
   },
   {
-    "filename": "tests/test_mxc_accounting.py",
+    "filename": "packages/maf-sandbox-mxc/tests/test_mxc_accounting.py",
     "test_id": "B608",
     "issue_severity": "MEDIUM",
     "issue_confidence": "MEDIUM",
@@ -1744,7 +1744,7 @@
     "count": 1
   },
   {
-    "filename": "tests/test_mxc_accounting.py",
+    "filename": "packages/maf-sandbox-mxc/tests/test_mxc_accounting.py",
     "test_id": "B608",
     "issue_severity": "MEDIUM",
     "issue_confidence": "MEDIUM",
@@ -1752,7 +1752,7 @@
     "count": 1
   },
   {
-    "filename": "tests/test_mxc_accounting.py",
+    "filename": "packages/maf-sandbox-mxc/tests/test_mxc_accounting.py",
     "test_id": "B608",
     "issue_severity": "MEDIUM",
     "issue_confidence": "MEDIUM",

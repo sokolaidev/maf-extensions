@@ -78,6 +78,7 @@ class TestTheGateEnumerates:
             "maf-sandbox-drawio",
             "maf-sandbox-hyperlight",
             "maf-sandbox-mcp",
+            "maf-sandbox-mxc",
             "maf-sandbox-otel",
             "maf-sandbox-shell",
             "maf-sandbox-terraform",

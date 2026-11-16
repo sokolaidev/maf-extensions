@@ -12,9 +12,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 try:
-    files = importlib.import_module("scripts.experiments.mxc_files_patch.request")
-    inventory = importlib.import_module("scripts.experiments.mxc_files_patch.inventory")
-    storage = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
+    files = importlib.import_module("maf_sandbox_mxc.files.request")
+    inventory = importlib.import_module("mxc_inventory")
+    storage = importlib.import_module("maf_sandbox_mxc.shared_store")
 finally:
     sys.path.remove(str(Path(__file__).parents[1]))
 

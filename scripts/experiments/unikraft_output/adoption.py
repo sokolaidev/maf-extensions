@@ -12,10 +12,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from maf_sandbox_mxc.host_store import Refused
+from maf_sandbox_mxc.shared_store import Limits, SharedStore
+from maf_sandbox_mxc.streams.transport import FORMAT, STREAM_LIMIT, read_result
+
 from scripts.experiments.mxc_native_state_probe import digest
-from scripts.experiments.mxc_session_patch.host_store import Refused
-from scripts.experiments.mxc_session_patch.shared_store import Limits, SharedStore
-from scripts.experiments.mxc_streams_patch.transport import FORMAT, STREAM_LIMIT, read_result
 from scripts.experiments.mxc_v1_patch import qualification_runner as retained
 from scripts.experiments.unikraft_output.qualify import PIN, _execute
 

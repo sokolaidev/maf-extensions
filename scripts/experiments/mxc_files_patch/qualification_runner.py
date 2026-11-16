@@ -11,8 +11,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from maf_sandbox_mxc.host_call import digest
+
 from scripts.experiments.mxc_files_patch.kernel_patch import metadata as kernel_metadata
-from scripts.experiments.mxc_session_patch.host_call import digest
 from scripts.experiments.mxc_session_patch.qualification_runner import hypervisor
 from scripts.experiments.mxc_v1_patch.patch import metadata
 from scripts.experiments.mxc_v1_patch.qualification_runner import build, helper, run, sources

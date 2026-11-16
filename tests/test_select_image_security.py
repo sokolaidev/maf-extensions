@@ -519,10 +519,7 @@ def test_mxc_evidence_changes_do_not_select_image_builds(repository, event):
     head = commit(
         root,
         {
-            "docs/sandbox/backends/mxc.md": "Updated status",
             "docs/sandbox/research/mxc-backend.md": "Updated qualification",
-            "scripts/experiments/mxc_session_patch/HOST_PUBLICATION.md": "Updated evidence",
-            "scripts/experiments/mxc_session_patch/cross-active-results.json": "[]",
         },
     )
     profiles, reason = select(root, event, base, head)
@@ -536,7 +533,8 @@ def test_mxc_evidence_changes_do_not_select_image_builds(repository, event):
         ("images/shell-sandbox/Dockerfile", ["shell"]),
         ("scripts/experiments/mxc_session_patch/driver.py", list(PROFILES)),
         ("scripts/experiments/mxc_session_patch/new-results.json", list(PROFILES)),
-        ("scripts/experiments/mxc_session_patch/nested/HOST_PUBLICATION.md", list(PROFILES)),
+        ("scripts/experiments/mxc_session_patch/notes.md", list(PROFILES)),
+        ("scripts/experiments/mxc_session_patch/nested/notes.md", list(PROFILES)),
         (".github/workflows/image-security.yml", list(PROFILES)),
     ],
 )
@@ -545,7 +543,7 @@ def test_mxc_evidence_does_not_hide_build_or_unknown_inputs(repository, path, ex
     head = commit(
         root,
         {
-            "scripts/experiments/mxc_session_patch/cross-active-results.json": "[]",
+            "docs/sandbox/research/mxc-backend.md": "Updated evidence",
             path: "Updated input",
         },
     )

@@ -13,11 +13,13 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from maf_sandbox_mxc.host_call import digest
+from maf_sandbox_mxc.physical import Policy
+from maf_sandbox_mxc.shared_store import SharedStore
+
 from scripts.experiments.mxc_files_patch import physical_probe as native
 from scripts.experiments.mxc_session_patch import volume_probe as volume_control
-from scripts.experiments.mxc_session_patch.host_call import atomic_report, digest
-from scripts.experiments.mxc_session_patch.physical import Policy
-from scripts.experiments.mxc_session_patch.shared_store import SharedStore
+from scripts.experiments.mxc_session_patch.host_call import atomic_report
 
 VOLUME_BYTES = 8 * 1024**3
 POLICY = Policy(1024**3, 128 * 1024**2, 64 * 1024**2)

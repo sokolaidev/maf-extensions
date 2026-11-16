@@ -10,7 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.experiments.mxc_session_patch.host_call import digest
+from maf_sandbox_mxc.host_call import digest
+
 from scripts.experiments.mxc_streams_patch.kernel_patch import metadata, overlay
 
 BUILD = r"""set -euo pipefail

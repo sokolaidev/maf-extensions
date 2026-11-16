@@ -11,8 +11,8 @@ import threading
 import time
 from pathlib import Path
 
-from scripts.experiments.mxc_session_patch.host_store import CHUNK, Refused
-from scripts.experiments.mxc_streams_patch.transport import execute
+from maf_sandbox_mxc.host_store import CHUNK, Refused
+from maf_sandbox_mxc.streams.transport import execute
 
 
 def streams(result: bytes) -> tuple[bytes, bytes]:

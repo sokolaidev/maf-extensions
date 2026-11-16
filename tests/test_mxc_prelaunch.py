@@ -15,11 +15,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[1]))
 try:
     files = importlib.import_module("scripts.experiments.mxc_files_patch.physical_probe")
-    idle = importlib.import_module("scripts.experiments.mxc_session_patch.idle")
-    physical = importlib.import_module("scripts.experiments.mxc_session_patch.physical")
-    journal = importlib.import_module("scripts.experiments.mxc_session_patch.native_journal")
-    identity = importlib.import_module("scripts.experiments.mxc_session_patch.process_identity")
-    store = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
+    idle = importlib.import_module("maf_sandbox_mxc.idle")
+    physical = importlib.import_module("maf_sandbox_mxc.physical")
+    journal = importlib.import_module("maf_sandbox_mxc.native_journal")
+    identity = importlib.import_module("maf_sandbox_mxc.process_identity")
+    store = importlib.import_module("maf_sandbox_mxc.shared_store")
 finally:
     sys.path.remove(str(Path(__file__).parents[1]))
 
@@ -57,10 +57,10 @@ def run_worker(root: Path, source: str) -> subprocess.CompletedProcess:
     preamble = f"""
 import os, subprocess, sys
 from pathlib import Path
-from scripts.experiments.mxc_session_patch.native_journal import NativeJournal
-from scripts.experiments.mxc_session_patch.process_identity import capture
-from scripts.experiments.mxc_session_patch.shared_store import SharedStore, Limits, ScratchLimits
-from scripts.experiments.mxc_session_patch.physical import Policy
+from maf_sandbox_mxc.native_journal import NativeJournal
+from maf_sandbox_mxc.process_identity import capture
+from maf_sandbox_mxc.shared_store import SharedStore, Limits, ScratchLimits
+from maf_sandbox_mxc.physical import Policy
 root = Path({str(root)!r})
 db = SharedStore(root, 'one', {PROFILE!r}, Limits(200_000, 500_000, checkpoint_bytes=1024, result_bytes=1024, files=2), physical_policy=Policy(8*1024**2,1024**2,1024**2), prelaunch_recovery=True)
 journal = NativeJournal(db)
@@ -224,14 +224,16 @@ def test_unlaunched_cleanup_still_refuses_unaccounted_files(tmp_path):
         assert db.usage() == charged and work.exists()
 
 
-@pytest.mark.parametrize("folder", ["mxc_session_patch", "mxc_streams_patch", "mxc_files_patch"])
+@pytest.mark.parametrize(
+    "folder", ["maf_sandbox_mxc", "maf_sandbox_mxc.streams", "maf_sandbox_mxc.files"]
+)
 @pytest.mark.parametrize("intent_fails", [False, True])
 def test_each_supervisor_commits_intent_before_process_creation(
     tmp_path, monkeypatch, folder, intent_fails
 ):
-    shared = importlib.import_module(f"scripts.experiments.{folder}.shared_call")
-    transport_name = "host_call" if folder == "mxc_session_patch" else "transport"
-    transport = importlib.import_module(f"scripts.experiments.{folder}.{transport_name}")
+    shared = importlib.import_module(f"{folder}.shared_call")
+    transport_name = "host_call" if folder == "maf_sandbox_mxc" else "transport"
+    transport = importlib.import_module(f"{folder}.{transport_name}")
     limits = Limits(256 * MIB, 512 * MIB, checkpoint_bytes=1024, result_bytes=64 * MIB, files=2)
     scratch = ScratchLimits(100 * MIB, 4096, 200 * MIB)
     with SharedStore(
@@ -250,9 +252,9 @@ def test_each_supervisor_commits_intent_before_process_creation(
             if intent_fails and point == "before_spawn_intent":
                 raise OSError("intent fixture")
 
-        request = SEED if folder == "mxc_files_patch" else b"print(1)"
+        request = SEED if folder == "maf_sandbox_mxc.files" else b"print(1)"
         args = (db, "a", request, tmp_path / "helper", tmp_path / "startup", scratch)
-        if folder == "mxc_session_patch":
+        if folder == "maf_sandbox_mxc":
             args += (1024,)
         with pytest.raises(OSError, match="intent fixture" if intent_fails else "spawn fixture"):
             shared.call(*args, boundary=boundary)

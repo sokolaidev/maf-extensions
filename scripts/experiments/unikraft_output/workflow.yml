@@ -73,6 +73,8 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
+      - name: Install MXC host runtime
+        run: python -m pip install ./packages/maf-sandbox-mxc
       - name: Verify private publication fixture
         run: >-
           python -c "from pathlib import Path; from scripts.experiments.unikraft_output.adoption import publication; print(publication(Path('publication-preflight'), {'case': 'byte_prefix', 'retained_bytes': 1048575, 'omitted_bytes': 3, 'limit_bytes': 1048576}))"

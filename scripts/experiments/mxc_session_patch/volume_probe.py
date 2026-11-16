@@ -15,8 +15,8 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from . import physical
-from .shared_store import Limits, Refused, SharedStore
+from maf_sandbox_mxc import physical
+from maf_sandbox_mxc.shared_store import Limits, Refused, SharedStore
 
 MIB = 1024**2
 POLICY = physical.Policy(32 * MIB, 4 * MIB, MIB)

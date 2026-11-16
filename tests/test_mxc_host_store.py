@@ -2,20 +2,69 @@
 
 from __future__ import annotations
 
-import importlib.util
+import hashlib
+import importlib
+import json
 import os
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 import pytest
 
-MODULE = Path(__file__).parents[1] / "scripts/experiments/mxc_session_patch/host_store.py"
-SPEC = importlib.util.spec_from_file_location("mxc_host_store", MODULE)
-assert SPEC and SPEC.loader
-store = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(store)
+sys.path.insert(0, str(Path(__file__).parents[1]))
+try:
+    host_call = importlib.import_module("scripts.experiments.mxc_session_patch.host_call")
+    store = importlib.import_module("scripts.experiments.mxc_session_patch.host_store")
+finally:
+    sys.path.remove(str(Path(__file__).parents[1]))
+
 PROFILE = {"runtime": "pinned", "policy": "closed", "machine": "local", "session": "one"}
+
+
+@pytest.mark.parametrize("bounded", [False, True])
+def test_probe_supervision_preserves_legacy_and_bounded_payloads(tmp_path, monkeypatch, bounded):
+    import base64
+
+    real_popen = subprocess.Popen
+    program = r"""
+import base64, hashlib, json, sys
+from pathlib import Path
+assert sys.stdin.buffer.read(8) == b'MXCOWN1\n'
+assert Path(sys.argv[4]).read_bytes() == b'code'
+report = Path(sys.argv[5])
+if sys.argv[1] == 'call-bounded':
+    assert sys.argv[6:] == ['100']
+    report.with_suffix('.output').write_bytes(b'ok')
+    report.write_text(json.dumps({'captured': True, 'output': {
+        'limit_bytes': 100, 'retained_bytes': 2, 'omitted_bytes': 0,
+        'omitted_bytes_saturated': False, 'truncated': False}}))
+else:
+    assert sys.argv[1] == 'call-owned' and len(sys.argv) == 6
+    data = b'\x89PNG\r\n\x1a\nchart'
+    print('MAF_CHART:0:' + base64.b64encode(data).decode())
+    print(f'MAF_CHART_END:{len(data)}:{hashlib.sha256(data).hexdigest()}')
+    report.write_text(json.dumps({'captured': True}))
+print('diagnostic', file=sys.stderr)
+"""
+
+    def spawn(command, **kwargs):
+        return real_popen([sys.executable, "-c", program, *command[1:]], **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    result = json.loads(
+        host_call.execute(
+            tmp_path / "helper", tmp_path / "startup", tmp_path, b"code", 100 if bounded else None
+        )
+    )
+    if bounded:
+        assert base64.b64decode(result["console_base64"]) == b"ok"
+        assert result["output"]["limit_bytes"] == 100
+    else:
+        assert base64.b64decode(result["artifacts"]["chart.png"]) == b"\x89PNG\r\n\x1a\nchart"
+        assert "MAF_CHART_END:" in result["combined_output"]
+        assert result["native_stderr"].strip() == "diagnostic"
 
 
 def candidate(root: Path, content: bytes = b"checkpoint") -> Path:
@@ -46,15 +95,14 @@ def test_real_process_death_preserves_atomic_checkpoint_and_result(tmp_path, poi
         db.commit("old", candidate(tmp_path / "old", b"old-state"), b"old-result")
     new = candidate(tmp_path / "new", b"new-state")
     script = """
-import importlib.util, json, os, sys
+import json, os, sys
+from scripts.experiments.mxc_session_patch import host_store as m
 from pathlib import Path
-spec=importlib.util.spec_from_file_location('store',sys.argv[1])
-m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-with m.Store(Path(sys.argv[2]),json.loads(sys.argv[4])) as db:
+with m.Store(Path(sys.argv[1]),json.loads(sys.argv[3])) as db:
     db.begin('new',b'new')
     def crash(point):
-        if point==sys.argv[5]: os._exit(73)
-    db.commit('new',Path(sys.argv[3]),b'new-result',crash)
+        if point==sys.argv[4]: os._exit(73)
+    db.commit('new',Path(sys.argv[2]),b'new-result',crash)
 """
     import json
 
@@ -63,7 +111,6 @@ with m.Store(Path(sys.argv[2]),json.loads(sys.argv[4])) as db:
             sys.executable,
             "-c",
             script,
-            str(MODULE),
             str(root),
             str(new),
             json.dumps(PROFILE),
@@ -124,7 +171,7 @@ def test_corruption_refuses_without_fresh_fallback(tmp_path, corruption):
         }[corruption]
         db.db.execute(sql)
         db.db.commit()
-        with pytest.raises((store.Refused, store.zlib.error)):
+        with pytest.raises((store.Refused, zlib.error)):
             if corruption == "result":
                 db.begin("a", b"code")
             else:
@@ -163,15 +210,10 @@ def test_missing_session_metadata_cannot_create_fresh_state(tmp_path):
         store.Store(tmp_path / "db", PROFILE)
 
 
-def test_chart_chunks_detect_loss_and_duplicates(monkeypatch):
+def test_chart_chunks_detect_loss_and_duplicates():
     import base64
     import hashlib
 
-    monkeypatch.setitem(sys.modules, "host_store", store)
-    spec = importlib.util.spec_from_file_location("host_call", MODULE.with_name("host_call.py"))
-    assert spec and spec.loader
-    host_call = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(host_call)
     data = b"\x89PNG\r\n\x1a\n" + b"x" * 8000
     chunks = [data[i : i + 384] for i in range(0, len(data), 384)]
     lines = [f"MAF_CHART:{i}:{base64.b64encode(chunk).decode()}" for i, chunk in enumerate(chunks)]
@@ -188,11 +230,11 @@ def test_chart_chunks_detect_loss_and_duplicates(monkeypatch):
             host_call.chart_data(bad)
 
 
-@pytest.mark.parametrize("corrupt", [b"invalid-zlib", store.zlib.compress(b"wrong-state")])
+@pytest.mark.parametrize("corrupt", [b"invalid-zlib", zlib.compress(b"wrong-state")])
 def test_publication_replaces_corrupt_historical_chunk(tmp_path, corrupt):
     root = tmp_path / "db"
     old = b"old-state"
-    chunk_hash = store.hashlib.sha256(old).hexdigest()
+    chunk_hash = hashlib.sha256(old).hexdigest()
     with store.Store(root, PROFILE) as db:
         db.begin("old", b"old")
         db.commit("old", candidate(tmp_path / "old", old), b"old-result")
@@ -215,7 +257,7 @@ def test_publication_replaces_corrupt_historical_chunk(tmp_path, corrupt):
 def test_chunk_replacement_rolls_back_with_failed_publication(tmp_path, fault):
     root = tmp_path / "db"
     old = b"old-state"
-    chunk_hash = store.hashlib.sha256(old).hexdigest()
+    chunk_hash = hashlib.sha256(old).hexdigest()
     with store.Store(root, PROFILE) as db:
         db.begin("old", b"old")
         db.commit("old", candidate(tmp_path / "old", old), b"old-result")
