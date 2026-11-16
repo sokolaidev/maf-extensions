@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       case:
-        description: Current finding case or explicitly pinned historical rebuild replay
+        description: Current finding case or explicitly reviewed historical replay
         type: choice
-        options: [current-rebuild, bicep-update, apk-pinned, apk-unpinned, historical-rebuild]
+        options: [current-rebuild, bicep-update, apk-pinned, apk-unpinned, historical-rebuild, replay-bicep-update, replay-apk-pinned]
         default: current-rebuild
         required: true
       exercise_delivery:
@@ -123,16 +123,10 @@ jobs:
         with:
           name: platform-rehearsal-plan-${{ github.run_attempt }}
           path: ${{ runner.temp }}/remediation
-      - name: Validate and apply bounded package updates
-        run: uv run --locked python scripts/platform_remediation_rehearsal.py apply --work "$RUNNER_TEMP/remediation"
-      - name: Run the source gate
-        run: uv run --locked poe gate
-      - name: Check Markdown and trackers
+      - name: Check qualified package updates in the selected source scope
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          uv run --locked poe md-blocks
-          uv run --locked poe doc-trackers
+        run: uv run --locked python scripts/platform_remediation_rehearsal.py checks --work "$RUNNER_TEMP/remediation"
 
   qualify:
     needs: [acquire, scan, checks]

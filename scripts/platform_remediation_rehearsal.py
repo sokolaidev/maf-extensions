@@ -7,10 +7,12 @@ import copy
 import hashlib
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
 import image_remediation_pr as publication
+import platform_positive_replay as replay
 import platform_rehearsal_history as history
 import platform_remediation as platform
 from container_release import REPOSITORY, ROOT, read, write
@@ -23,8 +25,15 @@ from plan_platform_remediation import RUNTIME_RECIPES, acquire_plan
 
 MANIFEST = "scripts/platform_rehearsal_cases.json"
 WORKFLOW = "platform-image-remediation-rehearsal.yml"
-CASES = ("current-rebuild", "bicep-update", "apk-pinned", "apk-unpinned", history.CASE)
-UPDATE_CASES = {"bicep-update", "apk-pinned"}
+CASES = (
+    "current-rebuild",
+    "bicep-update",
+    "apk-pinned",
+    "apk-unpinned",
+    history.CASE,
+    *replay.CASES,
+)
+UPDATE_CASES = {"bicep-update", "apk-pinned", *replay.CASES}
 
 
 class InterruptedDelivery(RuntimeError):
@@ -110,6 +119,7 @@ def request_record(root: Path) -> dict[str, Any]:
         "runAttempt": positive_id(int(os.environ["GITHUB_RUN_ATTEMPT"])),
         "case": case,
         "manifestSha256": digest(root / MANIFEST),
+        **({"fixtureInputs": replay.fixture_hashes(root, case)} if case in replay.CASES else {}),
     }
 
 
@@ -135,7 +145,9 @@ def acquire(root: Path, work: Path) -> dict[str, Any]:
     """Acquire the explicit finding case and current delivery authority without fallback."""
     request = request_record(root)
     expected = (
-        history.acquire(root, work)
+        replay.acquire(root, work, request["case"])
+        if request["case"] in replay.CASES
+        else history.acquire(root, work)
         if request["case"] == history.CASE
         else acquire_with_retry(
             GitHub(),
@@ -158,11 +170,15 @@ def validator(root: Path, work: Path):
     request = request_record(root)
     if read(work / "rehearsal-request.json") != request:
         raise ValueError("Rehearsal request belongs to another source, run, attempt or case")
+    if request["case"] in replay.CASES:
+        return replay.validate
     return history.validate if request["case"] == history.CASE else platform.validate
 
 
 def authority(work: Path, case: str) -> dict[str, Any]:
     """Historical findings never replace the current receipt used at every delivery write."""
+    if case in replay.CASES:
+        return replay.authority(work)
     return history.authority(work) if case == history.CASE else read(work / "receipt.json")
 
 
@@ -208,8 +224,20 @@ def qualify(root: Path, work: Path, results: Path) -> dict[str, Any]:
         "status": "qualified",
         "scope": "controlled-rehearsal",
         "productionRecovery": False,
-        "evidenceMode": "historical-replay" if request["case"] == history.CASE else "current",
-        "fixture": history.fixture(root) if request["case"] == history.CASE else None,
+        "evidenceMode": (
+            "controlled-positive-replay"
+            if request["case"] in replay.CASES
+            else "historical-replay"
+            if request["case"] == history.CASE
+            else "current"
+        ),
+        "fixture": (
+            replay.rule(root, request["case"])["fixture"]
+            if request["case"] in replay.CASES
+            else history.fixture(root)
+            if request["case"] == history.CASE
+            else None
+        ),
         "caseMatches": counts,
         **({"rawCaseMatches": raw_counts} if "vendorEvidence" in expected else {}),
         "qualification": report,
@@ -221,7 +249,8 @@ def delivery_payload(
 ) -> tuple[dict[str, Any], dict[str, bytes]]:
     """Recompute qualified update bytes; rebuild cases deliver only a tracked test receipt."""
     if qualified["case"] in UPDATE_CASES:
-        if work is None or qualified.get("evidenceMode") != "current":
+        mode = "controlled-positive-replay" if qualified["case"] in replay.CASES else "current"
+        if work is None or qualified.get("evidenceMode") != mode:
             raise ValueError("Dependency delivery requires current authenticated update evidence")
         expected, files = validator(root, work)(root, work)
         case_rows(root, expected, qualified["case"])
@@ -235,7 +264,15 @@ def delivery_payload(
             or hashes != report["files"]
         ):
             raise ValueError("Dependency proposal differs from qualified update files")
-        return {**report, "kind": "platform-update-rehearsal", "evidenceMode": "current"}, files
+        if qualified["case"] in replay.CASES:
+            files = replay.delivery_files(qualified["case"], files)
+            report = {
+                **report,
+                "nativeFiles": hashes,
+                "fixtureCase": qualified["case"],
+                "files": {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()},
+            }
+        return {**report, "kind": "platform-update-rehearsal", "evidenceMode": mode}, files
     git(root, "cat-file", "-e", f"{qualified['source']}:{publication.REHEARSAL_PATH}")
     record = {
         "schemaVersion": 1,
@@ -334,10 +371,12 @@ def lifecycle(
     return progress
 
 
-def main() -> None:
+def execute() -> None:
     """Expose the manual workflow's read-only qualification and explicit isolated delivery."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("acquire", "apply", "scan", "qualify", "deliver"))
+    parser.add_argument(
+        "command", choices=("acquire", "apply", "checks", "scan", "qualify", "deliver")
+    )
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--results", type=Path)
     parser.add_argument("--profile")
@@ -353,8 +392,13 @@ def main() -> None:
                 {"source": request["source"], "profiles": json.dumps(expected["affectedProfiles"])}
             )
             return
-        if args.command == "apply":
+        if args.command in {"apply", "checks"}:
+            if args.command == "apply" and request["case"] in replay.CASES:
+                raise ValueError("Positive replay source gates require the scoped checks command")
             platform.apply(ROOT, validator(ROOT, args.work)(ROOT, args.work)[1])
+            if args.command == "checks":
+                for task in ("gate", "md-blocks", "doc-trackers"):
+                    subprocess.run(["uv", "run", "--locked", "poe", task], cwd=ROOT, check=True)
             return
         if args.results is None:
             parser.error("qualification requires results")
@@ -403,6 +447,16 @@ def main() -> None:
             {**request, "status": "failed", "reason": str(error)},
         )
         raise
+
+
+def main() -> None:
+    """Scope fixture overlays to this authenticated manual workflow process."""
+    request = request_record(ROOT)
+    if request["case"] in replay.CASES:
+        with replay.overlay(ROOT, request["case"]):
+            execute()
+    else:
+        execute()
 
 
 if __name__ == "__main__":
