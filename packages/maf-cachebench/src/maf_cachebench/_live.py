@@ -55,12 +55,17 @@ from maf_compaction import (
     DEFAULT_RECORD_MAX_TOKENS,
     DEFAULT_RECORD_TARGET_TOKENS,
     RecallGate,
+    SessionCompactionProvider,
+    SessionCompactionRegistry,
+    SessionToolResultRecallMiddleware,
     ToolResultAnchoredSummarizationCompactionStrategy,
     ToolResultRecallMiddleware,
     UserTurnAnchoredSummarizationCompactionStrategy,
     find_nested_strategy,
     find_record_index,
     make_recall_tool,
+    make_session_recall_tool,
+    make_session_record_merge_middleware,
 )
 from maf_compaction import record_text as _record_text
 
@@ -455,6 +460,7 @@ class MeteredClient:
         self.inner = inner
         self.calls = 0
         self.failures = 0
+        self.cancelled = 0
         self.usage: list[SummarizerUsage] = []
         self.input_tokens = 0
         self.cached_tokens = 0
@@ -486,6 +492,9 @@ class MeteredClient:
         self.calls += 1
         try:
             response = await self.inner.get_response(*args, **kwargs)
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
         except Exception:
             self.failures += 1
             raise
@@ -719,7 +728,7 @@ class LiveOutcome:
     record_rewrites: int = 0
     """Harder rewrites of the record the chain tried, kept or not: step c. ``RECHARDER``."""
     record_rewrites_rejected: int = 0
-    """Of those, the rewrites discarded as no smaller or lossy. ``RECHARDERREJ``."""
+    """Rewrites refused for size, insufficient gain, truncation or value loss. ``RECHARDERREJ``."""
     record_rewrites_skipped: int = 0
     """Rewrite attempts not made, because the same record had already been refused at them.
 
@@ -1329,6 +1338,7 @@ def build_live_agent(
     instructions: str = _INSTRUCTIONS,
     max_context_window_tokens: int,
     max_output_tokens: int,
+    registry: SessionCompactionRegistry | None = None,
 ) -> Agent[Any]:
     """Assemble the agent under test, with compaction wired the way the harness wires it.
 
@@ -1346,6 +1356,7 @@ def build_live_agent(
         instructions: System instructions for the agent.
         max_context_window_tokens: Window the harness variant sizes its default against.
         max_output_tokens: Output reservation.
+        registry: Session-owned compaction for background record merging.
 
     Returns:
         The configured agent.
@@ -1358,12 +1369,25 @@ def build_live_agent(
 
     # Both agent kinds need message IDs to preserve repeated control replies.
     history = IdentifiedHistoryProvider()
+    session_provider = (
+        SessionCompactionProvider(
+            registry, tokenizer=tokenizer, before=False, history_source_id=history.source_id
+        )
+        if registry is not None
+        else None
+    )
+    if registry is not None:
+        extra_middleware = [
+            make_session_record_merge_middleware(registry),
+            SessionToolResultRecallMiddleware(registry, compact_before=True),
+            *extra_middleware,
+        ]
     if kind == "harness":
         # The harness resolves both phases itself from the strategies handed in, so it gets
         # the same object twice. Its optional providers are switched off: each adds tools
         # and system-prompt text to every measured prompt, which would inflate every cell
         # and move the trigger points without saying anything about compaction.
-        return create_harness_agent(
+        agent = create_harness_agent(
             runtime.client,
             name="cachebench",
             agent_instructions=instructions,
@@ -1371,23 +1395,31 @@ def build_live_agent(
             max_context_window_tokens=max_context_window_tokens,
             max_output_tokens=max_output_tokens,
             history_provider=history,
-            disable_compaction=strategy is None,
-            before_compaction_strategy=strategy,
-            after_compaction_strategy=strategy,
+            disable_compaction=strategy is None or registry is not None,
+            before_compaction_strategy=strategy if registry is None else None,
+            after_compaction_strategy=strategy if registry is None else None,
+            context_providers=[session_provider] if session_provider is not None else [],
             tokenizer=tokenizer,
             disable_todo=True,
             disable_mode=True,
             disable_file_memory=True,
             disable_web_search=True,
+            disable_tool_auto_approval=True,
             middleware=[*extra_middleware, recorder],
             # Deliberately empty: every option travels per turn instead. An option baked
             # in here cannot be dropped when a provider rejects it without rebuilding the
             # agent, which would discard the session the conversation lives in.
             default_options={},
         )
+        if session_provider is not None:
+            agent.context_providers.remove(session_provider)
+            agent.context_providers.insert(1, session_provider)
+        return agent
 
     providers: list[Any] = [history]
-    if strategy is not None:
+    if session_provider is not None:
+        providers.append(session_provider)
+    elif strategy is not None:
         # before_strategy is deliberately None: on a provider it would never run. The
         # before phase travels as the agent's compaction_strategy below.
         providers.append(
@@ -1404,7 +1436,7 @@ def build_live_agent(
         instructions=instructions,
         tools=list(tools),
         context_providers=providers,
-        compaction_strategy=strategy,
+        compaction_strategy=strategy if registry is None else None,
         require_per_service_call_history_persistence=True,
         middleware=[*extra_middleware, recorder],
         default_options={},
@@ -1796,16 +1828,21 @@ async def run_live(
     tool_calls = 0
     scopes_called: list[str] = []
 
-    def _wrap(scope: str, inner: Callable[[], str]) -> Callable[[], str]:
+    def _wrap(scope: str, inner: Callable[[], str]) -> Callable[[], Any]:
         def recorded() -> str:
             nonlocal tool_calls
             tool_calls += 1
             scopes_called.append(scope)
             return inner()
 
-        recorded.__name__ = inner.__name__
-        recorded.__doc__ = inner.__doc__
-        return recorded
+        async def delayed() -> str:
+            await sleep(options.compaction.tool_delay_seconds)
+            return recorded()
+
+        wrapped = delayed if options.compaction.tool_delay_seconds else recorded
+        wrapped.__name__ = inner.__name__
+        wrapped.__doc__ = inner.__doc__
+        return wrapped
 
     scope_tools = [
         _wrap(name.removeprefix("lookup_"), fn)
@@ -1815,7 +1852,7 @@ async def run_live(
         if (name := fn.__name__)
     ]
 
-    def build_binding() -> LiveBinding:
+    def build_binding(registry: SessionCompactionRegistry | None = None) -> LiveBinding:
         strategy = build_strategy(strategy_name, options)
         tools = list(scope_tools)
         gate: RecallGate | None = None
@@ -1825,7 +1862,12 @@ async def run_live(
         )
         if recording is not None:
             gate = RecallGate()
-            tools = [*tools, make_recall_tool(gate, target_tokens=record_target_tokens)]
+            recall_tool = (
+                make_recall_tool(gate, target_tokens=record_target_tokens)
+                if registry is None
+                else make_session_recall_tool(registry, target_tokens=record_target_tokens)
+            )
+            tools = [*tools, recall_tool]
             recall_middleware = ToolResultRecallMiddleware(
                 max_input_tokens=recording.max_input_tokens,
                 tokenizer=options.tokenizer,
@@ -1850,14 +1892,23 @@ async def run_live(
             tokenizer=options.tokenizer,
             tools=tools,
             recorder=recorder,
-            extra_middleware=[recall_middleware] if recall_middleware else [],
+            extra_middleware=[recall_middleware]
+            if recall_middleware is not None and registry is None
+            else [],
             instructions=resolve_instructions(narration, retrieval_guidance=retrieval_guidance),
             max_context_window_tokens=options.max_context_window_tokens,
             max_output_tokens=options.max_output_tokens,
+            registry=registry,
         )
         return LiveBinding(agent, strategy, recall_middleware, gate)
 
-    experiment = SessionExperiment(build_binding, options.compaction)
+    background = (
+        options.compaction.background_record_merges
+        and strategy_name == "tool_and_user_summary_anchored"
+    )
+    experiment = SessionExperiment(
+        build_binding, options.compaction, session_build=build_binding if background else None
+    )
     agent = experiment.binding.agent
     strategy = experiment.binding.strategy
     recall_middleware = experiment.binding.recall
@@ -2100,6 +2151,8 @@ async def run_live(
     )
     if usage_missing and error is None:
         error = "Incomplete pricing: missing or non-positive input usage."
+    if summarizer is not None and summarizer.cancelled and error is None:
+        error = "Incomplete pricing: cancelled summarizer requests have no usage."
 
     recording = find_nested_strategy(strategy, ToolResultAnchoredSummarizationCompactionStrategy)
     user_compacting = find_nested_strategy(
@@ -2161,6 +2214,8 @@ async def run_live(
         replies=tuple(replies),
     )
     diagnostics: dict[str, Any] = {**experiment.totals, **experiment.observations}
+    diagnostics["background_record_merges"] = background
+    diagnostics["summarizer_requests_cancelled"] = summarizer.cancelled if summarizer else 0
     if experiment.persistence_store is not None:
         diagnostics["persistence_requests"] = experiment.persistence_store.requests
         diagnostics["storage_evidence"] = "simulated_in_memory"

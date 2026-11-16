@@ -262,7 +262,8 @@ __all__ = [
 # Schema 23 meters every recall attempt and restores full behavioral state between probes.
 # Older costs and decisions cannot be pooled with these measurements.
 # Named persistence and host-hook profiles are part of schema 24's cell identity.
-SCHEMA_VERSION: Final[int] = 24
+# Schema 25 records reduction controls and background execution; older controls stay unknown.
+SCHEMA_VERSION: Final[int] = 25
 
 #: Versions this reader accepts, which is not only the current one.
 #:
@@ -353,7 +354,7 @@ SCHEMA_VERSION: Final[int] = 24
 #:
 #: Version 20 joins on the same argument: it priced no long-context tier, so the tier reads back
 #: as absent and its token counts as zero.
-_READABLE_SCHEMAS: Final[frozenset[int]] = frozenset({*range(2, 24), SCHEMA_VERSION})
+_READABLE_SCHEMAS: Final[frozenset[int]] = frozenset(range(2, SCHEMA_VERSION + 1))
 
 #: The parameters that make two records the same cell, and so aggregable into one row.
 #:
@@ -706,10 +707,17 @@ class StrategySettings:
     repeat_records: bool
     compaction: CompactionOptions | None = None
     package_versions: tuple[tuple[str, str], ...] | None = None
+    unrecorded_compaction_fields: tuple[str, ...] = ()
+    """Controls absent from an archive; their fallback values are not measured settings."""
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable mapping of these settings."""
-        return asdict(self)
+        data = asdict(self)
+        data.pop("unrecorded_compaction_fields")
+        if data["compaction"] is not None:
+            for name in self.unrecorded_compaction_fields:
+                data["compaction"].pop(name)
+        return data
 
 
 def _settings_from_dict(data: Mapping[str, Any]) -> StrategySettings:
@@ -787,6 +795,11 @@ def _settings_from_dict(data: Mapping[str, Any]) -> StrategySettings:
         package_versions=tuple(tuple(pair) for pair in data["package_versions"])
         if data.get("package_versions")
         else None,
+        unrecorded_compaction_fields=tuple(
+            sorted({field.name for field in fields(CompactionOptions)} - data["compaction"].keys())
+        )
+        if data.get("compaction")
+        else (),
     )
 
 
@@ -1026,7 +1039,9 @@ class CellParams:
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable mapping of these parameters."""
-        return asdict(self)
+        data = asdict(self)
+        data["settings"] = self.settings.to_dict() if self.settings is not None else None
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> CellParams:
@@ -1368,7 +1383,7 @@ class SeedRecord:
     record_rewrites: int
     """Harder rewrites of the record the chain tried, kept or not: step c, per attempt."""
     record_rewrites_rejected: int
-    """Of those, the rewrites discarded because they came back no smaller."""
+    """Rewrites refused for size, insufficient gain, truncation or value loss."""
     record_rewrites_skipped: int
     """Rewrite attempts not made because the same record had already been refused at them.
 
@@ -1599,7 +1614,9 @@ class SeedRecord:
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable mapping of this record."""
-        return asdict(self)
+        data = asdict(self)
+        data["cell"] = self.cell.to_dict()
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> SeedRecord:

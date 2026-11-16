@@ -142,11 +142,12 @@ def binding_factory(
     summarizer=None,
     budget=100_000,
     trigger_fraction=0.6,
+    tools=(),
 ):
     tokenizer = CharacterEstimatorTokenizer()
     controls = options or CompactionOptions()
 
-    def build():
+    def build(registry=None):
         strategy = build_strategy(
             strategy_name,
             StrategyOptions(
@@ -184,11 +185,17 @@ def binding_factory(
             kind=kind,
             strategy=strategy,
             tokenizer=tokenizer,
-            tools=[maf_compaction.make_recall_tool(gate)],
+            tools=[
+                *tools,
+                maf_compaction.make_recall_tool(gate)
+                if registry is None
+                else maf_compaction.make_session_recall_tool(registry),
+            ],
             recorder=recorder,
-            extra_middleware=[recall],
+            extra_middleware=[recall] if registry is None else [],
             max_context_window_tokens=budget,
             max_output_tokens=1000,
+            registry=registry,
         )
         binding = LiveBinding(agent, strategy, recall, gate)
         if built is not None:
@@ -350,8 +357,11 @@ async def test_failed_persistent_request_does_not_commit_history(stream):
 
 
 @pytest.mark.parametrize("mode", ["memory", "roundtrip", "restart"])
-@pytest.mark.parametrize("strategy", ["none", "tool_summary_anchored"])
-async def test_run_live_exposes_modes_and_reproduces_costs(mode, strategy):
+@pytest.mark.parametrize(
+    "strategy", ["none", "tool_summary_anchored", "tool_and_user_summary_anchored"]
+)
+@pytest.mark.parametrize("background", [False, True])
+async def test_run_live_exposes_modes_and_reproduces_costs(mode, strategy, background):
     if (
         mode != "memory"
         and strategy != "none"
@@ -363,7 +373,13 @@ async def test_run_live_exposes_modes_and_reproduces_costs(mode, strategy):
         tokenizer=CharacterEstimatorTokenizer(),
         max_context_window_tokens=100_000,
         max_output_tokens=1000,
-        compaction=CompactionOptions(session_mode=mode, history_mode="replay", stream=True),
+        compaction=CompactionOptions(
+            session_mode=mode,
+            history_mode="replay",
+            stream=True,
+            background_record_merges=background,
+        ),
+        summarizer=cast(Any, Summarizer()),
     )
     scenario = build_live_scenario(salt="modes", filler_turns=1, filler_tokens=20, tool_turns=1)
     outcome = await run_live(
@@ -378,6 +394,11 @@ async def test_run_live_exposes_modes_and_reproduces_costs(mode, strategy):
     assert outcome.error is None
     assert len(outcome.calls) == len(model.requests)
     assert outcome.input_tokens == sum((i + 1) * 100 for i in range(len(model.requests)))
+    assert outcome.compaction_diagnostics["background_record_merges"] == (
+        background and strategy == "tool_and_user_summary_anchored"
+    )
+    assert outcome.compaction_diagnostics["chain_timeouts"] == 0
+    assert outcome.compaction_diagnostics["summarizer_requests_cancelled"] == 0
 
 
 def test_cli_controls_reach_settings_and_distinguish_cells():

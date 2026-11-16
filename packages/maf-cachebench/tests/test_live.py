@@ -9331,6 +9331,7 @@ def test_every_boolean_flag_that_changes_a_run_is_recorded_somewhere() -> None:
         "server_history",
     }
     a_strategy_setting = {
+        "background_record_merges",
         "record_repeats",
         "preserve_prompt_cache",
         "supports_tool_choice",
