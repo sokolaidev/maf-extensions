@@ -110,6 +110,32 @@
           "graphviz-0.2.6/sbom.syft.json": "sha256:ce2ecf93a3950b73f86c97da98f0f137d61243c0a68ce833adbb39ad744e35d6"
         }
       }
+    },
+    "historical-apk-rebuild": {
+      "type": "apk",
+      "findingStatus": "rebuild-required",
+      "qualificationStatus": "release-needed",
+      "requireBaselineMatch": false,
+      "fixture": {
+        "monitor": {
+          "id": 42613419444,
+          "run_attempt": 1,
+          "status": "completed",
+          "conclusion": "failure",
+          "stateDeliveryVerified": true
+        },
+        "producer": "3117c76c9c51bcf5ebe209b62de8221ea6a690c0",
+        "directories": [
+          "graphviz-0.2.6"
+        ],
+        "files": {
+          "monitor-index.json": "sha256:eaaad6fef5066cd9022f2aa5f0f3a2db2567170960e19790daf33e5ae23598b2",
+          "graphviz-0.2.6/assessment.json": "sha256:ca93d95d59fc091ed3e0cdf9dd4ea5c806261159b68a9473d231954ceb2d3079",
+          "graphviz-0.2.6/grype.json": "sha256:35936d1537d8892a6a094b60a6cb0ee10a8839f13ffbe1fdc6352ed7fdd65102",
+          "graphviz-0.2.6/observation.json": "sha256:373f137d88cea83e1cbd9d519628386bcc6e3e92668801e2f4970333fa11e6ac",
+          "graphviz-0.2.6/sbom.syft.json": "sha256:ce2ecf93a3950b73f86c97da98f0f137d61243c0a68ce833adbb39ad744e35d6"
+        }
+      }
     }
   }
 }

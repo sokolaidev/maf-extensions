@@ -6,7 +6,7 @@ on:
       case:
         description: Current finding case or explicitly reviewed historical replay
         type: choice
-        options: [current-rebuild, bicep-update, apk-pinned, apk-unpinned, historical-rebuild, replay-bicep-update, replay-apk-pinned]
+        options: [current-rebuild, bicep-update, apk-pinned, apk-unpinned, historical-rebuild, historical-apk-rebuild, replay-bicep-update, replay-apk-pinned]
         default: current-rebuild
         required: true
       exercise_delivery:

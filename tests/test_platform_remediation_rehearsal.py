@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -146,11 +147,20 @@ def test_positive_fixture_failure_restores_native_inputs(context):
 
 @pytest.fixture
 def positive_apk(context, tmp_path, monkeypatch):
-    root, case = context, "replay-apk-pinned"
-    path = root / replay.CASES[case]["images/graphviz-sandbox/Dockerfile"]
+    return apk_rehearsal(context, tmp_path, monkeypatch, "replay-apk-pinned")
+
+
+@pytest.fixture
+def historical_apk(context, tmp_path, monkeypatch):
+    return apk_rehearsal(context, tmp_path, monkeypatch, history.APK_CASE)
+
+
+def apk_rehearsal(root, tmp_path, monkeypatch, case):
+    module = history if case == history.APK_CASE else replay
+    path = root / replay.CASES["replay-apk-pinned"]["images/graphviz-sandbox/Dockerfile"]
     path.write_text(re.sub(r"glibc-2\.44=[^\s]+", "glibc-2.44=2.44-r14", path.read_text()))
     monkeypatch.setenv("REHEARSAL_CASE", case)
-    monkeypatch.setattr(replay, "git", lambda *_: SOURCE)
+    monkeypatch.setattr(module, "git", lambda *_: SOURCE)
     match = apk("glibc-2.44", "2.44-r14", "2.44-r16")
     match["artifact"]["metadata"] = {"originPackage": "glibc", "architecture": "x86_64"}
     match["vulnerability"].update(namespace="nvd:cpe", fix={"state": "unknown", "versions": []})
@@ -162,7 +172,7 @@ def positive_apk(context, tmp_path, monkeypatch):
     fixture = manifest["cases"][case]["fixture"]
     fixture["files"] = {name: digest(seed / name) for name in fixture["files"]}
     write(root / rehearsal.MANIFEST, manifest)
-    monkeypatch.setattr(replay, "monitor_source", lambda *_: fixture["producer"])
+    monkeypatch.setattr(module, "monitor_source", lambda *_: fixture["producer"])
 
     def restore(client, monitor, producer, targets, destination):
         assert (monitor, producer, targets) == (
@@ -194,23 +204,27 @@ def positive_apk(context, tmp_path, monkeypatch):
             }
         ).encode()
 
-    monkeypatch.setattr(replay, "restore_monitor", restore)
-    monkeypatch.setattr(replay, "acquire_with_retry", current_scope)
+    monkeypatch.setattr(module, "restore_monitor", restore)
+    monkeypatch.setattr(module, "acquire_with_retry", current_scope)
     monkeypatch.setattr(replay.vendor_fix_evidence, "download", download)
-    monkeypatch.setattr(replay, "current", lambda *_: None)
+    monkeypatch.setattr(module, "current", lambda *_: None)
     work, results = tmp_path / "apk-work", tmp_path / "apk-results"
-    with replay.overlay(root, case):
+    with replay.overlay(root, case) if case in replay.CASES else nullcontext():
         expected = rehearsal.acquire(root, work)
         files = planner.proposal(root, expected)
         assert expected["affectedProfiles"] == ["graphviz"]
-        assert b"glibc-2.44=2.44-r16" in files["images/graphviz-sandbox/Dockerfile"]
+        if case == history.APK_CASE:
+            assert files == {} and expected["updates"] == []
+            assert expected["findings"][0]["status"] == "rebuild-required"
+        else:
+            assert b"glibc-2.44=2.44-r16" in files["images/graphviz-sandbox/Dockerfile"]
         assert expected["vendorEvidence"] == read(work / "vendor-security/receipt.json")
         assert set(downloads) == {
             endpoint for _, endpoint in replay.vendor_fix_evidence.SOURCES.values()
         }
         for variant in ("baseline", "candidate"):
             directory = results / f"{variant}-graphviz"
-            installed = "2.44-r14" if variant == "baseline" else "2.44-r16"
+            installed = "2.44-r14" if variant == "baseline" and case in replay.CASES else "2.44-r16"
             observed = copy.deepcopy(match)
             observed["artifact"].update(
                 version=installed, purl=f"pkg:apk/wolfi/glibc-2.44@{installed}?arch=x86_64"
@@ -324,6 +338,140 @@ def test_positive_apk_fixture_remains_an_update_on_delivery_draft(context, reque
     with replay.overlay(root, case):
         result = rehearsal.qualify(root, work, results)
     assert result["caseMatches"] == {"baseline": 1, "candidate": 0}
+
+
+def test_historical_apk_qualifies_ordinary_upgrade_and_delivers_only_receipt(
+    historical_apk, monkeypatch
+):
+    root, work, results = historical_apk
+    recipe = root / "images/graphviz-sandbox/Dockerfile"
+    original = recipe.read_bytes()
+    assert b"apk upgrade --no-cache" in original and b"glibc-2.44=" not in original
+    seen = []
+    monkeypatch.setattr(rehearsal, "current", lambda _, receipt: seen.append(receipt))
+    monkeypatch.setattr(publication, "current", lambda _, receipt: seen.append(receipt))
+    monkeypatch.setenv("IMAGE_REMEDIATION_TOKEN", "fixture-token")
+    qualified = rehearsal.qualify(root, work, results)
+    assert qualified["qualification"]["status"] == "release-needed"
+    assert qualified["qualification"]["files"] == {}
+    assert qualified["evidenceMode"] == "historical-replay"
+    assert qualified["productionRecovery"] is False
+    assert qualified["caseMatches"] == {"baseline": 1, "candidate": 0}
+    assert qualified["rawCaseMatches"] == {"baseline": 1, "candidate": 1}
+    report, files = rehearsal.delivery_payload(root, qualified, URL, work=work)
+    assert set(files) == {publication.REHEARSAL_PATH}
+    assert json.loads(files[publication.REHEARSAL_PATH])["fixture"] == history.fixture(
+        root, history.APK_CASE
+    )
+    client = FakeRehearsal()
+    authority = rehearsal.authority(work, history.APK_CASE)
+    result = rehearsal.lifecycle(client, authority, report, files, BOT, URL, work)
+    assert result["status"] == "delivery-passed" and result["payload"] == "receipt"
+    assert result["repeated"]["status"] == "unchanged"
+    for endpoint, data in client.writes:
+        if endpoint == "git/trees":
+            assert {entry["path"] for entry in data["tree"]} == {publication.REHEARSAL_PATH}
+    assert seen and all(receipt == authority for receipt in seen)
+    assert recipe.read_bytes() == original
+
+
+def test_historical_apk_does_not_require_vulnerable_fresh_baseline(historical_apk, monkeypatch):
+    root, work, results = historical_apk
+    path = results / "baseline-graphviz/grype.json"
+    report = read(path)
+    report["matches"] = []
+    write(path, report)
+    write(
+        path.parent / "assessment.json",
+        scan_result(report, IMAGE, AT, sbom=read(path.parent / "sbom.syft.json")),
+    )
+    monkeypatch.setattr(rehearsal, "current", lambda *_: None)
+    qualified = rehearsal.qualify(root, work, results)
+    assert qualified["caseMatches"] == {"baseline": 0, "candidate": 0}
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "vendor-bytes",
+        "vendor-receipt",
+        "case",
+        "scope",
+        "source",
+        "evidence",
+        "recipe",
+        "inventory",
+        "vendor-install",
+        "runtime",
+        "stale",
+    ],
+)
+def test_historical_apk_refuses_unverified_rebuild(historical_apk, monkeypatch, mutation):
+    root, work, results = historical_apk
+    monkeypatch.setattr(rehearsal, "current", lambda *_: None)
+    if mutation.startswith("vendor-") and mutation != "vendor-install":
+        path = work / "vendor-security/wolfi.json"
+        data = read(path)
+        data["packages"][0]["pkg"]["secfixes"] = {"2.44-r17": ["CVE-apk"]}
+        write(path, data)
+        if mutation == "vendor-receipt":
+            receipt = read(work / "vendor-security/receipt.json")
+            receipt["sources"]["wolfi"]["sha256"] = planner.digest(path)
+            write(work / "vendor-security/receipt.json", receipt)
+    elif mutation == "case":
+        receipt = read(work / "receipt.json")
+        receipt["case"] = history.CASE
+        write(work / "receipt.json", receipt)
+    elif mutation in {"scope", "source"}:
+        receipt = read(work / "current/receipt.json")
+        if mutation == "scope":
+            receipt["images"] = {"bicep": {}}
+        else:
+            receipt["source"] = "foreign"
+        write(work / "current/receipt.json", receipt)
+    elif mutation == "evidence":
+        write(work / "evidence/graphviz-0.2.6/grype.json", {})
+    elif mutation == "recipe":
+        path = root / "images/graphviz-sandbox/Dockerfile"
+        path.write_bytes(path.read_bytes() + b"\nRUN apk add glibc-2.44=2.44-r14\n")
+    elif mutation == "inventory":
+        path = results / "candidate-graphviz/sbom.syft.json"
+        sbom = read(path)
+        sbom["artifacts"][0]["version"] = "2.44-r14"
+        write(path, sbom)
+    elif mutation == "vendor-install":
+        write(results / "candidate-graphviz/vendor.json", [])
+    elif mutation == "runtime":
+        path = results / "candidate-graphviz/runtime.json"
+        write(path, {**read(path), "passed": False})
+    else:
+        monkeypatch.setattr(
+            rehearsal, "current", Mock(side_effect=acquisition.EvidenceChanging("Monitor changed"))
+        )
+    with pytest.raises(ValueError):
+        rehearsal.qualify(root, work, results)
+
+
+@pytest.mark.parametrize("failure", ["vendor", "producer", "deferred"])
+def test_historical_apk_acquisition_failure_keeps_native_recipe(
+    historical_apk, monkeypatch, failure
+):
+    root, old_work, _ = historical_apk
+    work = old_work.parent / "failed-unpinned"
+    recipe = root / "images/graphviz-sandbox/Dockerfile"
+    original = recipe.read_bytes()
+    if failure == "vendor":
+        monkeypatch.setattr(
+            history.vendor_fix_evidence, "download", Mock(side_effect=ValueError("unavailable"))
+        )
+    elif failure == "producer":
+        monkeypatch.setattr(history, "monitor_source", lambda *_: "foreign")
+    else:
+        monkeypatch.setattr(history, "acquire_with_retry", lambda *_, **__: None)
+    with pytest.raises(ValueError):
+        rehearsal.acquire(root, work)
+    assert recipe.read_bytes() == original
+    assert not (work / "rehearsal-qualified.json").exists()
 
 
 def test_positive_apk_acquisition_failure_restores_native_recipe(positive_apk, monkeypatch):
@@ -499,7 +647,7 @@ def test_case_selection_requires_real_matching_planner_rows(context, tmp_path, c
         match["vulnerability"]["fix"]["versions"] = ["3.1.12"]
     elif case in {"apk-pinned", "replay-apk-pinned"}:
         match, profile = apk("clamav-scanner", "1.4.6-r0", "1.4.6-r1", "alpine"), "antivirus"
-    elif case == "apk-unpinned":
+    elif case in {"apk-unpinned", history.APK_CASE}:
         match, profile = apk(), "graphviz"
     expected = planner.plan(context, [retained(tmp_path, [match], profile=profile)])
     rows = rehearsal.case_rows(context, expected, case)
@@ -1130,13 +1278,10 @@ def test_historical_acquisition_authenticates_pins_and_current_scope(
         expected = rehearsal.acquire(root, work)
         assert expected == read(old_work / "plan.json")
         assert read(work / "rehearsal-request.json") == rehearsal.request_record(root)
-        assert observed == [
-            {
-                "selected_profiles": history.BICEP_ROUTES,
-                "planner": history.authority_scope,
-                "require_all_profiles": False,
-            }
-        ]
+        assert len(observed) == 1
+        assert observed[0]["selected_profiles"] == sorted(history.BICEP_ROUTES)
+        assert observed[0]["require_all_profiles"] is False
+        assert observed[0]["planner"](root, [])["affectedProfiles"] == sorted(history.BICEP_ROUTES)
         with pytest.raises(FileExistsError):
             rehearsal.acquire(root, work)
     else:
