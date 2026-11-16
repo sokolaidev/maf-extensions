@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from copy import copy, deepcopy
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 from agent_framework import Content, Message, TokenizerProtocol
 from agent_framework._compaction import (
     GROUP_ANNOTATION_KEY,
+    GROUP_TOKEN_COUNT_BASIS_KEY,
     GROUP_TOKEN_COUNT_KEY,
+    TOKEN_COUNT_BASIS_VERSION,
+    annotate_message_groups,
 )
 from agent_framework._compaction import (
     annotate_token_counts as framework_annotate_token_counts,
@@ -112,14 +116,96 @@ def _prepare_message(message: Message, estimator: MediaTokenEstimator) -> tuple[
     return shadow, media_cost
 
 
+@dataclass
+class TokenCounts:
+    """Share message token counts across the candidate histories of one replay call.
+
+    Counting from an index has the framework serialize and count every message behind it,
+    and a replay inserts one record for each edit it puts back, so a long history is counted
+    once per edit. A count is kept here under what the framework serializes to take it: the
+    role, the message id and the contents, by the list a copied message shares with its
+    original. Each entry holds that list and its items, and is taken again when they differ.
+
+    It must not outlive one replay call, for the reason
+    :class:`~._record_replay.MessageKeyCache` gives: the compaction around a replay rewrites
+    a result in place, which no identity shows, and nothing a replay itself calls does.
+    """
+
+    entries: dict[tuple[Any, ...], tuple[Any, list[Content], tuple[Content, ...], int]] = field(
+        default_factory=dict[tuple[Any, ...], tuple[Any, list[Content], tuple[Content, ...], int]]
+    )
+
+    def annotate(
+        self,
+        shadows: list[Message],
+        messages: list[Message],
+        *,
+        tokenizer: TokenizerProtocol,
+        from_index: int,
+    ) -> None:
+        """Count from ``from_index`` as the framework does, reading what this call counted.
+
+        ``shadows`` is what the framework would be handed: ``messages``, with each media
+        message replaced by its text-only stand-in.
+        """
+        if not shadows:
+            return
+        annotate_message_groups(shadows, from_index=from_index)
+        start = max(0, min(from_index, len(shadows) - 1))
+        if not all(shadow.message_id for shadow in shadows[start:]):
+            # Unreachable after grouping; a count taken apart would number the message anew.
+            framework_annotate_token_counts(shadows, tokenizer=tokenizer, from_index=from_index)
+            return
+        for index in range(start, len(shadows)):
+            shadow = shadows[index]
+            annotation = shadow.additional_properties.get(GROUP_ANNOTATION_KEY)
+            if not isinstance(annotation, Mapping):
+                continue
+            annotation = cast(dict[str, Any], annotation)
+            annotation[GROUP_TOKEN_COUNT_KEY] = self._count(shadow, messages[index], tokenizer)
+            annotation[GROUP_TOKEN_COUNT_BASIS_KEY] = TOKEN_COUNT_BASIS_VERSION
+            shadow.additional_properties[GROUP_ANNOTATION_KEY] = annotation
+
+    def _count(self, shadow: Message, message: Message, tokenizer: TokenizerProtocol) -> int:
+        contents = message.contents
+        fields: tuple[Any, ...] = (shadow.role, shadow.message_id)
+        # Equal values of different types serialize differently; those are counted afresh.
+        if not all(value is None or isinstance(value, str) for value in fields):
+            return _text_tokens(shadow, tokenizer)
+        slot = (*fields, shadow is not message, id(contents), id(tokenizer))
+        entry = self.entries.get(slot)
+        if (
+            entry is not None
+            and len(entry[2]) == len(contents)
+            and all(held is content for held, content in zip(entry[2], contents, strict=True))
+        ):
+            return entry[3]
+        count = _text_tokens(shadow, tokenizer)
+        self.entries[slot] = (tokenizer, contents, tuple(contents), count)
+        return count
+
+
+def _text_tokens(message: Message, tokenizer: TokenizerProtocol) -> int:
+    """Return the framework's count for one message, taken on a copy."""
+    probe = copy(message)
+    probe.additional_properties = dict[str, Any]()
+    framework_annotate_token_counts([probe], tokenizer=tokenizer, force_retokenize=True)
+    return int(probe.additional_properties[GROUP_ANNOTATION_KEY][GROUP_TOKEN_COUNT_KEY])
+
+
 def annotate_token_counts(
     messages: list[Message],
     *,
     tokenizer: TokenizerProtocol,
     from_index: int | None = None,
     force_retokenize: bool = False,
+    counts: TokenCounts | None = None,
 ) -> None:
-    """Retain incremental text counts, recomputing media costs without accumulating them."""
+    """Retain incremental text counts, recomputing media costs without accumulating them.
+
+    ``counts`` shares one replay call's counts between its candidate histories; it is read
+    only for a count from an index, which is the one that repeats.
+    """
     estimator = (
         tokenizer if isinstance(tokenizer, MediaTokenEstimator) else MediaTokenEstimator(tokenizer)
     )
@@ -136,12 +222,15 @@ def annotate_token_counts(
             if message.additional_properties.pop(_MEDIA_COUNTED, False):
                 force_retokenize = True
             shadows.append(message)
-    framework_annotate_token_counts(
-        shadows,
-        tokenizer=tokenizer,
-        from_index=from_index,
-        force_retokenize=force_retokenize,
-    )
+    if counts is not None and from_index is not None and not force_retokenize:
+        counts.annotate(shadows, messages, tokenizer=tokenizer, from_index=from_index)
+    else:
+        framework_annotate_token_counts(
+            shadows,
+            tokenizer=tokenizer,
+            from_index=from_index,
+            force_retokenize=force_retokenize,
+        )
     for index, cost in costs.items():
         annotation = shadows[index].additional_properties[GROUP_ANNOTATION_KEY]
         annotation[GROUP_TOKEN_COUNT_KEY] += cost

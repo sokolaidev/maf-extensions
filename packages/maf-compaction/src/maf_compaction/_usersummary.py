@@ -1410,6 +1410,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
 
         release(released)
         changed = grew = chain_fold = False
+        # Read once for every summary that reaches it, and again only after one is inserted.
+        spans: list[dict[str, Any]] | None = None
         for kept in self._replacements.values():
             if kept.summary_id in invalid:
                 continue
@@ -1435,9 +1437,11 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 summary is not None and not superseded and not restore_held_sources
             ):
                 continue
+            if spans is None:
+                spans = group_messages(messages)
             turns = [
                 span
-                for span in group_messages(messages)
+                for span in spans
                 if span.get("kind") == "user"
                 and (
                     not messages[int(span["start_index"])].additional_properties.get(EXCLUDED_KEY)
@@ -1511,6 +1515,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 reason=kept.reason,
                 remember=False,
             )
+            spans = None
             self._replayed += 1
             if kept.reason == EXCLUDE_REASON:
                 self._replaced = len(selected)

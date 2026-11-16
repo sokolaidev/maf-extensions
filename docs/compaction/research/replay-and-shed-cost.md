@@ -1,6 +1,6 @@
 # Why the composed pass got slower in 0.13 (#2724)
 
-> Exploration record for [#2724](https://github.com/sokolaidev/maf-extensions/issues/2724): where the per-call cost of the composed strategy's pass comes from in 0.13, which review findings each slow path answers, and which fixes keep what those findings protect. Sections 1 to 9 are the analysis as written before any change; [section 10](#10-what-the-first-change-implemented), [section 11](#11-what-the-second-change-implemented) and [section 12](#12-what-the-third-change-implemented) record the changes made from it and what they measured. Sections 10 and 11 measured a host that keeps its list between calls; section 12 is about the hosts that do not.
+> Exploration record for [#2724](https://github.com/sokolaidev/maf-extensions/issues/2724): where the per-call cost of the composed strategy's pass comes from in 0.13, which review findings each slow path answers, and which fixes keep what those findings protect. Sections 1 to 9 are the analysis as written before any change; [section 10](#10-what-the-first-change-implemented), [section 11](#11-what-the-second-change-implemented), [section 12](#12-what-the-third-change-implemented) and [section 13](#13-what-the-fourth-change-implemented) record the changes made from it and what they measured. Sections 10 and 11 measured a host that keeps its list between calls; section 12 is about the hosts that do not, and section 13 about the pass such a host still pays in full: the one that is handed a history without any of its decisions.
 
 A steady per-call pass on a long conversation (about 5,000 messages, 1,890 included, 120 records) took 2.5 s on 0.12.4, 17.4 s on 0.13.0 and 17.0 s on 0.13.1. This note records why each slow path exists, which review findings shaped it, and which fixes keep the invariants those findings protect.
 
@@ -351,3 +351,84 @@ The first call has nothing to resume from, and the second resumes and then makes
 - **The call after the agent stamps a stored message.** **[measured]** in that review: not streaming, the agent sets `author_name` on the stored responses when a run ends, so a host that keeps the list across turns departs on the next turn's first call.
 - **The stored-history phase** at the end of a turn still puts every decision back, once per turn.
 - **`_insert_note`** remains what the first call of a long run spends most on ([#2736](https://github.com/sokolaidev/maf-extensions/issues/2736)).
+
+## 13. What the fourth change implemented
+
+The fourth change answers [#2771](https://github.com/sokolaidev/maf-extensions/issues/2771). Section 12 left two passes that are handed a history without any of its decisions while the strategy holds them all: the first call of a run on a host that rebuilds its transcript for every run, and the stored-history phase at the end of a turn. On a long conversation of that kind (about 4,900 handed messages, about 3.1 million estimated tokens, some 200 records, 30 to 45 accepted record edits) the first pass of a run held its host's event loop for 160 s, and the figure had grown through a day as merges were accepted: 79 s, 127 s, 165 s. Every stack sample was under `_keep_decisions` in `_replay_record_candidates`. The fourth change is for that pass.
+
+### What that pass does
+- **The replay runs after the shedding, and twice.** **[read]** With no retained reasoning in the handed list the `_compact` entry is skipped, so the pass first sheds again what earlier passes shed, then puts the reshapes back, and reaches the full replay in `_keep_decisions` with written records standing in the list. That is the condition for the private preview, so every edit is put back on copies and then again on the list.
+- **Every edit rebuilds its window without that shedding.** **[read]** An edit accepted before the shed has every shed message released on a copy of the history, every note and later summary staged away, the edit applied, and all of it put back.
+- **Where the time went.** **[measured]** wall timers on the released code, on the larger reproduction below (36 edits, 6,338 messages in the pass, 2.84 million estimated tokens). The pass took 102 s, 98 s of it in the replay, in three traversals that applied 35 edits twice:
+
+| Step, once per edit and traversal | Seconds | Share of the pass | What it repeats |
+|---|---|---|---|
+| `ReplayView.restore_later` | 26.9 | 26% | one walk of the history for every deferred note |
+| `_record_replay_view` | 22.0 | 21% | `unique_shed_groups` serializing every group, 18.5 s over 98 calls |
+| `consolidate_records` | 17.2 | 17% | counting again every message behind the inserted record, 9.3 s |
+| `_index_record_replacements` | 13.5 | 13% | a copy of the history and the reshape of every record, for edits that read neither |
+| `replay_summaries` | 5.8 | 6% | 289 calls |
+| `_match_record_edit` | 4.4 | 4% | |
+
+- **It grows with the edits and with the history.** **[measured]** on the released code, the first call of a run took 35 to 40 s with 16 edits over 3,502 handed messages and 0.73 million tokens, 79 s with 19 edits over 4,247 messages and 2.45 million, and 136 s with 36 edits over 4,258 messages and 2.84 million.
+
+### Implemented
+- **One traversal.** `_replay_record_edits` runs the traversal on the history itself, with the preview's rule that a chain is committed whole or not at all. `ReplayUndo` keeps each message's attributes, its `additional_properties` and its group annotation, and `_replay_state` the attributes of the strategy and of each half and the record half's decisions; a traversal that refuses, changes nothing or raises is taken back from them, in place. The preview on copies stays for a history in which two messages share their properties or their annotation, which copies would tell apart and the history itself would not, and for a message or a strategy with state outside its `__dict__`.
+- **Shed groups are fingerprinted once per replay call.** `ShedGroupKeys` keeps a group's fingerprint under its members' roles, authors and contents lists, held with their items as `MessageKeyCache` holds them. A window's `shed_lookup`, and the replay's closing `_keep_shedding`, read it.
+- **The history behind a record put back is counted once per replay call.** The framework's count from an index serializes and counts every message from there on. `TokenCounts` does the same grouping and writes the same annotation, and takes a message's count once: the framework's own count for that message, taken on a copy. Media messages keep their stand-ins and their costs are recomputed as before.
+- **Deferred messages are placed from an index.** `_place_deferred` indexes the history once by the three things a walk looked for (the following message itself, a message id, a staged output's identity), queues what goes back in front of each message, and finds the earliest match by place. Ids or source links the index cannot hold keep the walk.
+- **The reshape index is built for the edits that read it.** Only an edit at or before the last accepted reshape expects a stand-in, so `RecordReplayIndex.reshapes` is built when the first such edit asks.
+- **The rest of a window shares the replay's readings.** The available-member fingerprints and the lineage of a record put back come from the replay's `MessageKeyCache`; a user turn's fingerprint survives `ReplayView.invalidate`, as it already survived `fork`; and `replay_summaries` reads the groups once for all the held summaries it puts back, and again only after it inserts one.
+- **The transcript replay shares one call's readings.** When the exact replay matches none of a chain, `_keep_records` redoes every merge by transcript, and each one captured its certificate and counted the history afresh. One `_keep_records` call now shares fingerprints, group keys and token counts between its merges.
+
+### Why one traversal is the two it replaced
+The preview was the same traversal, run first on copies with `required_outputs` set. **[read]**
+- **A committed replay is the second traversal.** With `required_outputs` set the traversal differs from the unset one at two places only: it returns when a staged output cannot be put back where it stood, and it returns None when a staged output was not produced again. A traversal that gets past both took the branches the unset one takes, on the same messages and the same strategy, so what it leaves is what the second traversal left.
+- **A refused replay is the first traversal's verdict, undone.** The copies gave every message its own attributes, properties and annotation, and the strategy copies gave the strategy and each half their own attributes, with the record half's decisions rebuilt by value. Those are what is kept and restored, on the same objects, since a loaded message shares its annotation with the stored one.
+- **Where copies and the history would differ, copies are still used.** Two messages sharing one properties mapping or one annotation are one object to the history and two to its copies.
+
+### What it rests on
+1. **Nothing a replay calls rewrites a content in place,** as section 10 states for the fingerprints. The group keys and the counts are held the same way and for as long: one `_replay_record_edits` or `_keep_records` call.
+2. **A tokenizer answers the same for the same text.** The package already trusts a stored count across passes.
+3. **The framework writes a count as a number and a basis on the group annotation.** `TokenCounts` writes those two keys with the framework's constants, and a test requires its annotations to equal the framework's.
+4. **A replay changes a strategy only by rebinding attributes and by the record half's decisions.** **[read]** `consolidate_records` moves an outstanding ask's record count in place; nothing else under a replay mutates a container the strategy holds.
+
+### Measured
+This note's harness on the host wiring of section 12, with a call that starts a run: the kept list is released, as at the end of a turn, and the whole transcript is handed again as new objects. Released code and this change ran side by side, two processes at a time. "Reasoning retained" is the shape of sections 10 to 12; the others carry no reasoning and give every third tool round no message id, so its shed is remembered by content.
+
+| History | Edits | Pass | 0.13.7 | This change |
+|---|---|---|---|---|
+| 3,502 messages, 0.77M tokens, reasoning retained | 16 | first call of a run | 12.9 s | 9.8 s |
+| | | end of the turn | 9.9 s | 7.6 s |
+| 3,502 messages, 0.73M tokens | 16 | first call of a run | 40.4 s, 35.5 s | 13.0 s, 13.1 s |
+| | | end of the turn | 34.4 s | 12.6 s |
+| 4,258 messages, 2.84M tokens | 36 | first call of a run | 136.0 s | 38.0 s |
+| | | end of the turn | 103.1 s | 39.2 s |
+
+- **Calls that resume are as they were:** 3.6 to 4.1 s on both at the first shape, call for call.
+- **The first call of a conversation is as it was:** 12.2 s on both at the first shape and 22.7 against 22.9 s at the last. It starts with no accepted edits.
+- **In the replay of the last row's first call** the released code spent 98 s and this change 27 s, in one traversal: `consolidate_records` 7.5 s, `_record_replay_view` 7.5 s, `replay_summaries` 4.2 s, `_match_record_edit` 2.8 s, `restore_later` 1.5 s, the reshape index 0.3 s.
+- **On the test history** (15 edits, 229 messages) one replay went from 2 traversals to 1, from 11,220 content serializations to 822, from 1,288 token counts to 98, from 29 copies of the history for the reshape index to 1, and from every group serialized 30 times to once.
+
+### Outputs
+- **Call for call, the same.** **[measured]** On the three shapes above and a fourth whose chain fires several times, every call's sent messages, stored exclusion flags, record texts, accepted edits and saved session state were identical between 0.13.7 and this change, the end-of-turn pass included.
+- **One saved field depends on object addresses, before and after.** **[measured]** `_merge_batches` keys its bodies, digests and handled set by `id(message)`, and a message it has read can leave the list during the sweep, so a new message can take its id. On the largest shape the first call's saved `batch_resume` and `searched_records` differed between two runs that differed only in what else the process had allocated; with every message the sweep reads kept alive, the released code and this change saved the same state on every call. The comparisons above were made that way.
+- **Differential runs over the package suite,** each older form run on copies beside the newer one: 4,621 replays against the preview on copies and 4,331 of them against the whole replay in the released code, 639 of which changed their history; 1,705 transcript replays against the released one; 1,721 placements of 3,549 deferred messages against the walk; 964 group keys, 175,532 user-turn fingerprints and 1,174 counts from an index over 46,755 messages against a fresh reading. No difference in return values, histories, object identities or saved decisions.
+
+### Pinned by tests
+- One traversal puts a handed history's edits back, and it leaves what the preview on copies followed by the real traversal leaves.
+- A replay refused part of the way, by placement or by an error, leaves the history, its message objects and the strategy as they were; a history sharing message state is still replayed on copies first.
+- Serializations per message do not grow with the edits put back; the history behind a record is counted once; shed groups are serialized once; the reshape index is built once; a user turn is fingerprinted once; the transcript replay reads the history once.
+- Placing deferred messages agrees with a walk for each over 120 generated histories, takes no walk per message, and keeps the walk for ids it cannot index.
+- An undone history is the one that was kept, object for object, with a shared annotation restored in place.
+- Shared group keys and token counts equal a fresh reading, with and without media, and are read again when a contents list changes.
+
+Each cost test fails with its optimization turned off.
+
+### Not done
+- **Each edit still rebuilds its window.** What is left of the last row's replay is walks of the history, some twenty for each edit put back and none of them a serialization of it: 0.78 s an edit at 6,338 messages. **[inferred]** Removing them means applying a run of edits on one rebuilt window, or keeping the groups and record spans up to date between edits, and both change what each edit's certificate is checked against; that is a design of its own.
+- **Edits accepted before a later reshape do not replay by certificate on a rebuilt history.** **[measured]** in the shape whose chain fires several times: with a second reshape accepted after fifteen merges and rewrites, each of those had all 121 stand-ins staged away as expected outputs and matched nothing, the replay changed nothing, and `_keep_records` redid the merges by transcript. **[inferred]** `_held_record_replacements` expects every reshape's stand-in for every edit at or before the last reshape, and the stand-ins of an earlier reshape are those merges' sources.
+- **The transcript replay appends to `_record_order`.** **[measured]** in that pass it grew from 18 edits to 36, the redone merges being captured again with the shedding they now stand behind; on the test history, from 15 to 29. Nothing prunes it (section 5), so the next rebuilt pass walks both.
+- **`_merge_batches` keys by `id`,** as measured above.
+- **The stored-history phase and the first call of a run** still put every decision back; they cost what this section measured, not what a resumed call does.
+- **A steady pass still serializes every group** three times, outside any replay call: once in `_compact` and once for each `_keep_shedding` that replays by content.

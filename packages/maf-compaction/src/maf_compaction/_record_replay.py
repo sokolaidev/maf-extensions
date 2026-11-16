@@ -19,9 +19,9 @@ from agent_framework._compaction import (
     annotate_message_groups,
 )
 
-from ._media import media_identity
+from ._media import TokenCounts, media_identity
 from ._preserve import STANDS_IN_KEY
-from ._shed import durable_message_id, unique_shed_groups
+from ._shed import ShedGroupKeys, durable_message_id, unique_shed_groups
 
 if TYPE_CHECKING:
     from ._usersummary import UserTurnAnchoredSummarizationCompactionStrategy
@@ -74,11 +74,15 @@ class MessageKeyCache:
 
     It must not outlive one replay call. The compaction around a replay rewrites a result or a
     call's arguments in place, which no identity shows; nothing a replay itself calls does.
+    The group fingerprints shedding is replayed by, and the token counts taken behind each
+    record put back, are shared the same way and for as long.
     """
 
     entries: dict[tuple[Any, ...], tuple[list[Content], tuple[Content, ...], str]] = field(
         default_factory=dict[tuple[Any, ...], tuple[list[Content], tuple[Content, ...], str]]
     )
+    shed_groups: ShedGroupKeys = field(default_factory=ShedGroupKeys)
+    counts: TokenCounts = field(default_factory=TokenCounts)
 
     def key(self, message: Message) -> str:
         properties = message.additional_properties
@@ -108,13 +112,117 @@ class MessageKeyCache:
 
 @dataclass
 class RecordReplayIndex:
-    """Index held outputs and their last accepted edit in one unchanged replay history."""
+    """Index held outputs and their last accepted edit in one unchanged replay history.
+
+    ``reshapes`` is None until an edit at or before ``last_reshape`` reads it: building it walks
+    the whole history, and an edit accepted after the last reshape never does.
+    """
 
     held: list[tuple[int, Message]]
     known: set[tuple[str, str]]
-    reshapes: dict[tuple[str, str], Message]
+    reshapes: dict[tuple[str, str], Message] | None
     merges: dict[tuple[str, str], tuple[int, Message]]
     last_reshape: int
+
+
+class _Placed:
+    """One message of a history that deferred messages are being put back into."""
+
+    __slots__ = ("home", "message", "original")
+
+    def __init__(self, message: Message, home: int, *, original: bool) -> None:
+        self.message = message
+        self.home = home
+        self.original = original
+
+
+_Kept = tuple[
+    Message,
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+]
+
+
+@dataclass
+class ReplayUndo:
+    """A history as a replay was handed it, kept so a refused replay leaves no trace on it.
+
+    A replay over a history that holds package-written records can stop part of the way
+    through a chain of staged edits, and must then have changed nothing. It works on the
+    history itself and is taken back from this, where it once ran a second time on copies to
+    find out. What is kept is what a copied message would have had of its own: its attributes,
+    its ``additional_properties`` and its group annotation, each restored in place, since a
+    loaded message shares its annotation with the stored one.
+    """
+
+    messages: list[Message]
+    order: list[Message]
+    kept: list[_Kept]
+
+    @classmethod
+    def take(cls, messages: list[Message]) -> ReplayUndo | None:
+        """Keep ``messages`` as they stand, or None for a history copies would not mirror.
+
+        Copies give every message its own properties and annotation, so two messages sharing
+        either would be told apart on the copies and not here; such a history keeps the replay
+        on copies. So does a message whose state is not all in its ``__dict__``.
+        """
+        seen: set[int] = set()
+        owned: set[int] = set()
+        kept: list[_Kept] = []
+        if not all(keeps_state_in_dict(kind) for kind in {type(message) for message in messages}):
+            return None
+        for message in messages:
+            if id(message) in seen:
+                continue
+            seen.add(id(message))
+            properties = _plain_dict(message.additional_properties)
+            if properties is None:
+                return None
+            held: object = properties.get(GROUP_ANNOTATION_KEY)
+            annotation = _plain_dict(held)
+            if annotation is None and isinstance(held, dict):
+                return None
+            identities = (
+                {id(properties)} if annotation is None else {id(properties), id(annotation)}
+            )
+            if owned & identities:
+                return None
+            owned |= identities
+            kept.append(
+                (
+                    message,
+                    dict(vars(message)),
+                    properties,
+                    dict(properties),
+                    annotation,
+                    None if annotation is None else dict(annotation),
+                )
+            )
+        return cls(messages, list(messages), kept)
+
+    def restore(self) -> None:
+        """Put the history back as it was taken."""
+        self.messages[:] = self.order
+        for message, fields, properties, kept_properties, annotation, kept_annotation in self.kept:
+            state = vars(message)
+            state.clear()
+            state.update(fields)
+            properties.clear()
+            properties.update(kept_properties)
+            if annotation is not None and kept_annotation is not None:
+                annotation.clear()
+                annotation.update(kept_annotation)
+
+
+def keeps_state_in_dict(kind: type) -> bool:
+    """Return whether an instance of ``kind`` has every attribute in its ``__dict__``."""
+    return kind.__dictoffset__ != 0 and not any(
+        cls.__dict__.get("__slots__") for cls in kind.__mro__
+    )
 
 
 @dataclass
@@ -176,7 +284,8 @@ class ReplayView:
         self.message_keys.clear()
         self.shed_groups = None
         self.replacement_keys.clear()
-        self.summary_cache = SummaryReplayCache()
+        # A fingerprint is of a message, not of the history; only the refusals are of both.
+        self.summary_cache = self.summary_cache.fork()
         self.record_index = None
         self.available_members = None
 
@@ -199,9 +308,10 @@ class ReplayView:
 
     def shed_lookup(self) -> dict[str, set[str]]:
         if self.shed_groups is None:
+            keys = None if self.key_cache is None else self.key_cache.shed_groups
             self.shed_groups = {
                 key: {message.message_id for message in members if message.message_id}
-                for key, members in unique_shed_groups(self.messages)
+                for key, members in unique_shed_groups(self.messages, keys=keys)
             }
         return self.shed_groups
 
@@ -215,6 +325,13 @@ class ReplayView:
                 message.additional_properties[GROUP_ANNOTATION_KEY][
                     SUMMARIZED_BY_SUMMARY_ID_KEY
                 ] = owner
+        if not self._place_deferred():
+            self._scan_for_deferred()
+        annotate_message_groups(self.messages)
+        self.invalidate()
+
+    def _scan_for_deferred(self) -> None:
+        """Put each deferred message back by reading the history for where it goes."""
         for message, following in reversed(self.deferred):
             if id(message) in self.record_replacements:
                 regenerated = next(
@@ -226,13 +343,9 @@ class ReplayView:
                     None,
                 )
                 if regenerated is not None:
-                    current = self.messages[regenerated]
-                    restored = copy(message)
-                    restored.additional_properties = dict(message.additional_properties)
-                    for key in (EXCLUDED_KEY, EXCLUDE_REASON_KEY):
-                        restored.additional_properties.pop(key, None)
-                    restored.additional_properties.update(current.additional_properties)
-                    self.messages[regenerated] = restored
+                    self.messages[regenerated] = _restored_output(
+                        message, self.messages[regenerated]
+                    )
                     continue
             sources = message.additional_properties.get(GROUP_ANNOTATION_KEY, {}).get(
                 SUMMARY_OF_MESSAGE_IDS_KEY, []
@@ -252,8 +365,98 @@ class ReplayView:
                 len(self.messages),
             )
             self.messages.insert(insertion, message)
-        annotate_message_groups(self.messages)
-        self.invalidate()
+
+    def _place_deferred(self) -> bool:
+        """Put the deferred messages back where :meth:`_scan_for_deferred` would, in one pass.
+
+        A rebuilt window defers every note and summary accepted after its edit, and reading
+        the history once for each is that many walks of it for every edit replayed. The
+        history is indexed once instead, by the three things a walk looks for: the following
+        message itself, a message id, and a staged output's identity. Each message keeps the
+        place it was handed with, and what is put back in front of it queues there, so the
+        earliest match is found by place without renumbering anything.
+
+        Returns:
+            False, having changed nothing, for ids or source links the index cannot hold.
+        """
+        staged: list[tuple[Message, Message | None, tuple[str, str] | None, list[Any]]] = []
+        for message, following in reversed(self.deferred):
+            output = id(message) in self.record_replacements
+            identity = replacement_identity(message) if output else None
+            annotation = _plain_dict(message.additional_properties.get(GROUP_ANNOTATION_KEY, {}))
+            sources = (
+                None
+                if annotation is None
+                else _plain_list(annotation.get(SUMMARY_OF_MESSAGE_IDS_KEY, []))
+            )
+            if (
+                (output and identity is None)
+                or sources is None
+                or not all(_plain_id(source) for source in sources)
+                or not _plain_id(message.message_id)
+                or (following is not None and not _plain_id(following.message_id))
+            ):
+                return False
+            staged.append((message, following, identity, sources))
+        if not all(_plain_id(item.message_id) for item in self.messages):
+            return False
+        count = len(self.messages)
+        handed = [_Placed(item, index, original=True) for index, item in enumerate(self.messages)]
+        queued: list[list[_Placed]] = [[] for _ in range(count + 1)]
+        by_object: dict[int, list[_Placed]] = {}
+        by_id: dict[str | None, list[_Placed]] = {}
+        by_identity: dict[tuple[str, str], list[_Placed]] = {}
+        # Only a staged output is looked for by identity, and most windows stage none.
+        outputs = any(identity is not None for _, _, identity, _ in staged)
+
+        def lists_of(placed: _Placed) -> list[list[_Placed]]:
+            found = [
+                by_object.setdefault(id(placed.message), []),
+                by_id.setdefault(placed.message.message_id, []),
+            ]
+            identity = replacement_identity(placed.message) if outputs else None
+            if identity is not None:
+                found.append(by_identity.setdefault(identity, []))
+            return found
+
+        def place(placed: _Placed) -> tuple[int, int, int]:
+            if placed.original:
+                return placed.home, 1, 0
+            return placed.home, 0, _queue_index(queued[placed.home], placed)
+
+        for placed in handed:
+            for found in lists_of(placed):
+                found.append(placed)
+        for message, following, identity, sources in staged:
+            if identity is not None:
+                regenerated = min(by_identity.get(identity, ()), key=place, default=None)
+                if regenerated is not None:
+                    for found in lists_of(regenerated):
+                        found.remove(regenerated)
+                    regenerated.message = _restored_output(message, regenerated.message)
+                    for found in lists_of(regenerated):
+                        found.append(regenerated)
+                    continue
+            matches: list[_Placed] = []
+            if following is not None:
+                matches.extend(by_object.get(id(following), ()))
+                if following.message_id is not None:
+                    matches.extend(by_id.get(following.message_id, ()))
+            for source in sources:
+                matches.extend(by_id.get(source, ()))
+            anchor = min(matches, key=place, default=None)
+            placed = _Placed(message, count if anchor is None else anchor.home, original=False)
+            queue = queued[placed.home]
+            if anchor is None or anchor.original:
+                queue.append(placed)
+            else:
+                queue.insert(_queue_index(queue, anchor), placed)
+            for found in lists_of(placed):
+                found.append(placed)
+        self.messages[:] = [
+            item.message for index, placed in enumerate(handed) for item in (*queued[index], placed)
+        ] + [item.message for item in queued[count]]
+        return True
 
 
 def replacement_identity(message: Message) -> tuple[str, str] | None:
@@ -265,9 +468,40 @@ def replacement_identity(message: Message) -> tuple[str, str] | None:
     return None
 
 
-def source_key(messages: list[Message], groups: list[dict[str, Any]]) -> str | None:
+def _restored_output(message: Message, current: Message) -> Message:
+    """Return a staged output as it was held, under the state its regenerated form now has."""
+    restored = copy(message)
+    restored.additional_properties = dict(message.additional_properties)
+    for key in (EXCLUDED_KEY, EXCLUDE_REASON_KEY):
+        restored.additional_properties.pop(key, None)
+    restored.additional_properties.update(current.additional_properties)
+    return restored
+
+
+def _plain_id(value: object) -> bool:
+    return value is None or type(value) is str
+
+
+def _plain_dict(value: object) -> dict[str, Any] | None:
+    return cast(dict[str, Any], value) if type(value) is dict else None
+
+
+def _plain_list(value: object) -> list[Any] | None:
+    return cast(list[Any], value) if type(value) is list else None
+
+
+def _queue_index(queue: list[_Placed], placed: _Placed) -> int:
+    return next(index for index, other in enumerate(queue) if other is placed)
+
+
+def source_key(
+    messages: list[Message],
+    groups: list[dict[str, Any]],
+    *,
+    keys: MessageKeyCache | None = None,
+) -> str | None:
     """Identify a replay's source window and originally excluded later reasoning."""
-    key = source_lineage(messages, groups)
+    key = source_lineage(messages, groups, keys=keys)
     if key is None:
         return None
     excluded_reasoning = {
@@ -282,19 +516,32 @@ def source_key(messages: list[Message], groups: list[dict[str, Any]]) -> str | N
     return "v2:" + key + ":" + ",".join(sorted(value for value in excluded_reasoning if value))
 
 
-def source_members(messages: list[Message], groups: list[dict[str, Any]]) -> list[str]:
+def source_members(
+    messages: list[Message],
+    groups: list[dict[str, Any]],
+    *,
+    keys: MessageKeyCache | None = None,
+) -> list[str]:
     """Fingerprint included batch members whose owned exclusions can be reconstructed."""
     return [
-        _message_key(message)
+        _message_key(message) if keys is None else keys.key(message)
         for group in groups
         for message in messages[group["start_index"] : group["end_index"] + 1]
         if not message.additional_properties.get(EXCLUDED_KEY)
     ]
 
 
-def source_lineage(messages: list[Message], groups: list[dict[str, Any]]) -> str | None:
-    """Fingerprint identified sources independently of later history."""
-    return _source_key(messages, groups, {})
+def source_lineage(
+    messages: list[Message],
+    groups: list[dict[str, Any]],
+    *,
+    keys: MessageKeyCache | None = None,
+) -> str | None:
+    """Fingerprint identified sources independently of later history.
+
+    ``keys`` shares the message fingerprints of the replay call that is putting the edit back.
+    """
+    return _source_key(messages, groups, {}, keys)
 
 
 def _message_key(message: Message) -> str:

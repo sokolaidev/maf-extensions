@@ -69,7 +69,9 @@ from ._record_replay import (
     MessageKeyCache,
     RecordEdit,
     RecordReplayIndex,
+    ReplayUndo,
     ReplayView,
+    keeps_state_in_dict,
     replacement_identity,
     replay_match,
     source_key,
@@ -1869,17 +1871,27 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return self.tool_results.shed_again_after_record(messages, message_ids)
 
     def _record_edit(
-        self, messages: list[Message], groups: list[dict[str, Any]], text: str | None
+        self,
+        messages: list[Message],
+        groups: list[dict[str, Any]],
+        text: str | None,
+        *,
+        keys: MessageKeyCache | None = None,
     ) -> RecordEdit | None:
-        """Capture the accepted window's replay prerequisites without copying their contents."""
-        sources = source_key(messages, groups)
+        """Capture the accepted window's replay prerequisites without copying their contents.
+
+        ``keys`` shares fingerprints between the edits one :meth:`_keep_records` call captures.
+        """
+        sources = source_key(messages, groups, keys=keys)
         if sources is None:
             return None
         excluded = {message.message_id for message in messages if _is_excluded(message)}
         shed_groups = (
             [
                 key
-                for key, members in unique_shed_groups(messages)
+                for key, members in unique_shed_groups(
+                    messages, keys=None if keys is None else keys.shed_groups
+                )
                 if key in self._shed_groups and all(_is_excluded(message) for message in members)
             ]
             if self._shed_groups
@@ -1892,26 +1904,85 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self.user_turns.replay_summary_ids(messages),
             sorted(self._shed_ids & excluded),
             shed_groups,
-            source_members(messages, groups),
+            source_members(messages, groups, keys=keys),
         )
 
     def _replay_record_edits(self, messages: list[Message], *, reshape_only: bool = False) -> bool:
-        """Restore each accepted record window before applying edits that followed it."""
-        # The preview's copies share their contents with the history, and so its fingerprints.
+        """Restore each accepted record window before applying edits that followed it.
+
+        A history that holds package-written records can refuse a chain of staged edits part
+        of the way through, and must then be left as it was handed. The traversal that finds
+        that out is the one that commits: it runs on the history itself, and a traversal that
+        refuses, changes nothing or raises is taken back from what
+        :class:`~._record_replay.ReplayUndo` and :meth:`_replay_state` kept. It used to run
+        twice, once on copies to learn the answer and again on the history, which doubled
+        the cost of putting every edit back on a history handed without them.
+        """
         key_cache = MessageKeyCache()
-        if self._record_order and any(replacement_identity(message) for message in messages):
-            preview = copy(self)
-            preview.user_turns = copy(self.user_turns)
-            preview.tool_results = copy(self.tool_results)
-            preview.tool_results.restore_decisions(self.tool_results.decision_state())
-            candidate = ReplayView(messages).fork().messages
-            if not preview._replay_record_candidates(
-                candidate, reshape_only=reshape_only, required_outputs=set(), key_cache=key_cache
-            ):
-                return False
+        if not self._record_order or not any(replacement_identity(message) for message in messages):
+            return bool(
+                self._replay_record_candidates(
+                    messages, reshape_only=reshape_only, key_cache=key_cache
+                )
+            )
+        undo = ReplayUndo.take(messages)
+        state = self._replay_state()
+        if undo is None or state is None:
+            return self._replay_record_edits_previewed(messages, reshape_only, key_cache)
+        try:
+            committed = self._replay_record_candidates(
+                messages, reshape_only=reshape_only, required_outputs=set(), key_cache=key_cache
+            )
+        except BaseException:
+            undo.restore()
+            state()
+            raise
+        if not committed:
+            undo.restore()
+            state()
+        return bool(committed)
+
+    def _replay_record_edits_previewed(
+        self, messages: list[Message], reshape_only: bool, key_cache: MessageKeyCache
+    ) -> bool:
+        """Replay on copies first, for a history or a strategy that cannot be taken back."""
+        preview = copy(self)
+        preview.user_turns = copy(self.user_turns)
+        preview.tool_results = copy(self.tool_results)
+        preview.tool_results.restore_decisions(self.tool_results.decision_state())
+        # The preview's copies share their contents with the history, and so its fingerprints.
+        candidate = ReplayView(messages).fork().messages
+        if not preview._replay_record_candidates(
+            candidate, reshape_only=reshape_only, required_outputs=set(), key_cache=key_cache
+        ):
+            return False
         return bool(
             self._replay_record_candidates(messages, reshape_only=reshape_only, key_cache=key_cache)
         )
+
+    def _replay_state(self) -> Callable[[], None] | None:
+        """Keep what a replay changes on this strategy, and return how to put it back.
+
+        What a copy of the strategy and of each half would have had of its own: every
+        attribute as it is bound, and the record half's decisions by value, since a replayed
+        merge moves an outstanding ask's record count in place. None for a strategy or a half
+        whose state is not all in its ``__dict__``.
+        """
+        halves = (self, self.user_turns, self.tool_results)
+        if not all(keeps_state_in_dict(type(half)) for half in halves):
+            return None
+        kept = [(half, dict(vars(half))) for half in halves]
+        decisions = self.tool_results.decision_state()
+
+        def restore() -> None:
+            for half, attributes in kept:
+                current = vars(half)
+                current.clear()
+                current.update(attributes)
+            if self.tool_results.decision_state() != decisions:
+                self.tool_results.restore_decisions(decisions)
+
+        return restore
 
     def _replay_record_candidates(
         self,
@@ -2021,7 +2092,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if edit.text is None:
                 self.tool_results.reshape_records(view.messages, groups, replay=True)
             else:
-                self.tool_results.consolidate_records(view.messages, groups, edit.text, replay=True)
+                self.tool_results.consolidate_records(
+                    view.messages, groups, edit.text, replay=True, keys=view.key_cache
+                )
             view.invalidate()
             if view is not base:
                 if view.summary_preview is not None:
@@ -2054,7 +2127,13 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             changed = True
         if restored_view:
             self.user_turns.replay_summaries(messages, invalid_summary_ids=base.invalid_summary_ids)
-            self._keep_shedding(messages)
+            # Still inside the replay call, so its group fingerprints serve this lookup too.
+            self._keep_shedding(
+                messages,
+                group_lookup=ReplayView(messages, key_cache=base.key_cache).shed_lookup()
+                if self._shed_groups
+                else None,
+            )
         return None if required_outputs else changed
 
     @staticmethod
@@ -2133,7 +2212,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     candidate = copy(message)
                     candidate.additional_properties = dict(message.additional_properties)
                     set_excluded(candidate, excluded=False)
-                    base.available_members.add(ReplayView([candidate]).message_key(0))
+                    base.available_members.add(
+                        ReplayView([candidate], key_cache=base.key_cache).message_key(0)
+                    )
         return base.available_members
 
     def _index_record_replacements(self, base: ReplayView) -> RecordReplayIndex:
@@ -2155,26 +2236,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             for position, content in enumerate(message.contents)
             if content.type == "function_call" and content.name == RECALL_TOOL_NAME
         }
-        reshapes: dict[tuple[str, str], Message] = {}
         merges: dict[tuple[str, str], tuple[int, Message]] = {}
         last_reshape = max(
             (index for index, edit in enumerate(self._record_order) if edit.text is None),
             default=-1,
         )
-        if last_reshape >= 0:
-            source_view = base
-            owned = self._owned_record_exclusions(messages)
-            if owned:
-                source_view = base.fork()
-                for index in owned:
-                    set_excluded(source_view.messages[index], excluded=False)
-                annotate_message_groups(source_view.messages)
-            for _, replacement in reshape_replacements(
-                source_view.messages, reshapeable_record_groups(source_view.messages, replay=True)
-            ):
-                identity = replacement_identity(replacement)
-                if identity is not None:
-                    reshapes[identity] = replacement
         for index, edit in enumerate(self._record_order):
             if edit.text is not None and edit.sources.startswith("v2:"):
                 replacement = build_record_message(edit.text)
@@ -2182,7 +2248,25 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 identity = replacement_identity(replacement)
                 assert identity is not None
                 merges[identity] = (index, replacement)
-        return RecordReplayIndex(held, known, reshapes, merges, last_reshape)
+        return RecordReplayIndex(held, known, None, merges, last_reshape)
+
+    def _index_reshape_replacements(self, base: ReplayView) -> dict[tuple[str, str], Message]:
+        """Build the written record each model-made record of ``base`` reshapes into."""
+        source_view = base
+        owned = self._owned_record_exclusions(base.messages)
+        if owned:
+            source_view = base.fork()
+            for index in owned:
+                set_excluded(source_view.messages[index], excluded=False)
+            annotate_message_groups(source_view.messages)
+        reshapes: dict[tuple[str, str], Message] = {}
+        for _, replacement in reshape_replacements(
+            source_view.messages, reshapeable_record_groups(source_view.messages, replay=True)
+        ):
+            identity = replacement_identity(replacement)
+            if identity is not None:
+                reshapes[identity] = replacement
+        return reshapes
 
     def _held_record_replacements(self, base: ReplayView, edit_index: int) -> set[int] | None:
         if base.record_index is None:
@@ -2190,7 +2274,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         indexed = base.record_index
         if not indexed.held:
             return set()
-        expected = dict(indexed.reshapes) if edit_index <= indexed.last_reshape else {}
+        expected: dict[tuple[str, str], Message] = {}
+        if edit_index <= indexed.last_reshape:
+            if indexed.reshapes is None:
+                indexed.reshapes = self._index_reshape_replacements(base)
+            expected.update(indexed.reshapes)
         expected.update(
             (identity, replacement)
             for identity, (index, replacement) in indexed.merges.items()
@@ -2396,6 +2484,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         under the reasoning-prefix guard the merge itself was accepted under.
         """
         changed = False
+        # A history handed without its merges takes every one of them here when the exact
+        # replay matches none. Nothing between two of them rewrites a message in place, so
+        # the fingerprints, group keys and token counts of one are the next one's too.
+        keys = MessageKeyCache()
         while self._kept_records:
             groups = consolidatable_record_groups(messages)
             source_counts = {count for _, count in self._kept_records}
@@ -2428,8 +2520,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     break
             if found is None:
                 break
-            edit = self._record_edit(messages, found[0], found[1])
-            self.tool_results.consolidate_records(messages, *found)
+            edit = self._record_edit(messages, found[0], found[1], keys=keys)
+            self.tool_results.consolidate_records(messages, *found, keys=keys)
             if edit is not None and edit not in self._record_order:
                 self._record_order.append(edit)
             changed = True
