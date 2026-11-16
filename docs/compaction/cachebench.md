@@ -509,7 +509,7 @@ Tests are offline; the provider call is stubbed. The [testing record](research/t
 | Replay harness: deterministic scripts with per-cell cache isolation, comparable across providers | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
 | Live harness: seed, snapshot and probe, with the control as a price reference past the window | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
 | Current compaction controls, streaming, serialized sessions, object reconstruction and original-history replay | Implemented | [Control reference](../../packages/maf-cachebench/README.md#compaction-controls-and-session-experiments) |
-| Record reduction controls, background merges and cancellation-aware cost evidence | Implemented | untracked |
+| Record reduction controls, background merges and cancellation-aware cost evidence | Implemented | [#2776](https://github.com/sokolaidev/maf-extensions/pull/2776) (merged) |
 | Records keyed on every workload and strategy setting, with the schema refusing what it cannot read | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
 | Cost split into seeding and probing, ranking on the seeding half behind an accuracy bar | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
 | Per-request long-context pricing and cache-write rates | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
