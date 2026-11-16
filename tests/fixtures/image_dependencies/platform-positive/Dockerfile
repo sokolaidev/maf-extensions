@@ -1,6 +1,6 @@
 FROM cgr.dev/chainguard/wolfi-base:latest@sha256:94fa13e26d449f7d78dbcd02d12ea37a0da80d24fcc3e1f17b95d515dec607a7 AS assembled
 
-RUN apk add --no-cache glibc-2.44=2.44-r14 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44 \
+RUN apk add --no-cache glibc-2.44=2.44-r16 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44 \
     && apk add --no-cache graphviz ttf-dejavu bash coreutils util-linux-misc mount \
        'libbrotlicommon1>=1.2.0-r7' 'libbrotlidec1>=1.2.0-r7' 'libbrotlienc1>=1.2.0-r7' \
     && dot -c \
