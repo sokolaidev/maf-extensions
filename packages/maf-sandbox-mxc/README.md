@@ -20,3 +20,5 @@ The package uses the Python standard library. Native helper binaries, kernels an
 Install from this directory with `pip install .`, or use the repository's uv workspace. Build and qualification tooling remains under `scripts/experiments`, importing this package. Generated reports belong outside Git and hosted reports remain workflow artifacts subject to retention.
 
 MXC 1.1 rich-state qualification is recorded separately from the 1.0.1 custom file/stream profiles. A package build or offline test pass does not establish native isolation, cross-platform checkpoint portability, physical power-loss recovery or production readiness. Networking remains closed for the qualified Hyperlight profile.
+
+The [MXC research record](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/research/mxc-backend.md) contains the accepted design, implementation status, native evidence, reproduction instructions and workflow entry points.

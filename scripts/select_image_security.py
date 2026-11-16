@@ -87,10 +87,6 @@ CONSUMER_GUIDES = {
     "images/terraform-sandbox/TERRAFORM.md",
     "images/hyperlight-sandbox/README.md",
 }
-# This experiment documentation is not consumed by image builds or checks.
-EXPERIMENT_RECORDS = {
-    "scripts/experiments/mxc_session_patch/HOST_PUBLICATION.md",
-}
 # Workflow behavior tests cover selection tooling without rebuilding unchanged images.
 SELECTION_TOOLING = {
     "scripts/check_kind_release_images.py",
@@ -222,7 +218,7 @@ def metadata_only(root: Path, base: str, head: str, paths: list[str]) -> set[str
 
 def affected(path: str) -> tuple[str, ...]:
     """Map known build inputs; shared and unknown image tooling selects every profile."""
-    if path in CONSUMER_GUIDES or path in EXPERIMENT_RECORDS or path in SELECTION_TOOLING:
+    if path in CONSUMER_GUIDES or path in SELECTION_TOOLING:
         return ()
     if path in SHARED_INPUTS:
         return PROFILES
