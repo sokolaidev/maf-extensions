@@ -27,8 +27,6 @@ PROFILE = {"runtime": "pinned", "policy": "closed", "machine": "local", "session
 def test_probe_supervision_preserves_legacy_and_bounded_payloads(tmp_path, monkeypatch, bounded):
     import base64
 
-    from maf_sandbox_mxc import host_call as runtime
-
     real_popen = subprocess.Popen
     program = r"""
 import base64, hashlib, json, sys
@@ -54,7 +52,7 @@ print('diagnostic', file=sys.stderr)
     def spawn(command, **kwargs):
         return real_popen([sys.executable, "-c", program, *command[1:]], **kwargs)
 
-    monkeypatch.setattr(runtime.subprocess, "Popen", spawn)
+    monkeypatch.setattr(subprocess, "Popen", spawn)
     result = json.loads(
         host_call.execute(
             tmp_path / "helper", tmp_path / "startup", tmp_path, b"code", 100 if bounded else None
