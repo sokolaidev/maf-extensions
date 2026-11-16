@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.7](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.6...maf-compaction-v0.13.7) (2026-11-16)
+
+
+### Performance
+
+* **compaction:** reduce long-history shedding cost by batching removal notes ([#2766](https://github.com/sokolaidev/maf-extensions/issues/2766)) ([5e50da8](https://github.com/sokolaidev/maf-extensions/commit/5e50da885cbe367e85188f4ef89f0a55589105ed))
+
 ## [0.13.6](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.5...maf-compaction-v0.13.6) (2026-11-15)
 
 
