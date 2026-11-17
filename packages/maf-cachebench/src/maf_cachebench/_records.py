@@ -263,7 +263,8 @@ __all__ = [
 # Older costs and decisions cannot be pooled with these measurements.
 # Named persistence and host-hook profiles are part of schema 24's cell identity.
 # Schema 25 records reduction controls and background execution; older controls stay unknown.
-SCHEMA_VERSION: Final[int] = 25
+# Schema 26 distinguishes merge diagnostics and qualification from ordinary comparisons.
+SCHEMA_VERSION: Final[int] = 26
 
 #: Versions this reader accepts, which is not only the current one.
 #:
@@ -478,7 +479,7 @@ def _plan_from_dict(data: Mapping[str, Any]) -> FillPlan:
 
 @dataclass(frozen=True, slots=True)
 class WorkloadSettings:
-    """Which conversation was had, for the five options no other field on the cell records.
+    """Which conversation was had, for options no other field on the cell records.
 
     Everything else on :class:`CellParams` describes the shape of the workload -- how long it
     was, how much of it was tool output, where the codes sat. These describe what was *asked*
@@ -499,9 +500,7 @@ class WorkloadSettings:
     ``None`` rather than to a boolean, and the run is configured from these fields rather than
     from a second reading of ``args``.
 
-    Every field is required, so a live run cannot omit one and inherit a plausible value. The
-    only way a record carries no workload block is by predating it, where the whole of it is
-    ``None`` -- see :data:`SCHEMA_VERSION`.
+    Archived rows predating the workload block have no workload at all.
     """
 
     force_tool_calls: bool
@@ -539,10 +538,15 @@ class WorkloadSettings:
     a cell that measured the service must never be pooled with one that measured compaction,
     and nothing else on the record would say which it was.
     """
+    agent_reasoning_effort: str | None = None
+    """Requested reasoning effort, when the agent call overrides the provider default."""
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable mapping of these flags."""
-        return asdict(self)
+        result = asdict(self)
+        if self.agent_reasoning_effort is None:
+            del result["agent_reasoning_effort"]
+        return result
 
 
 def _workload_from_dict(data: Mapping[str, Any]) -> WorkloadSettings:
@@ -565,6 +569,7 @@ def _workload_from_dict(data: Mapping[str, Any]) -> WorkloadSettings:
         subset_questions=bool(data["subset_questions"]),
         temperature=None if data["temperature"] is None else float(data["temperature"]),
         server_history=bool(data["server_history"]),
+        agent_reasoning_effort=data.get("agent_reasoning_effort"),
     )
 
 
@@ -1011,6 +1016,7 @@ class CellParams:
             f"questions {'scoped' if flags.subset_questions else 'sweeping'} "
             f"temp {'none' if flags.temperature is None else f'{flags.temperature:g}'} "
             f"history {'server' if flags.server_history else 'client'}"
+            + (f" reasoning {flags.agent_reasoning_effort}" if flags.agent_reasoning_effort else "")
         )
 
     @property

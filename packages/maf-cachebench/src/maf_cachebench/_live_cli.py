@@ -839,6 +839,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-temperature", action="store_true", help="Omit temperature for models that reject it."
     )
     parser.add_argument(
+        "--agent-reasoning-effort", help="Send this reasoning effort on live agent calls."
+    )
+    parser.add_argument(
         "--show-answers", action="store_true", help="Print each final answer in full."
     )
     parser.add_argument(
@@ -1084,6 +1087,17 @@ def _seed_record(
     scores = _sample_scores(outcome, scenario)
     facts_total = len(scores[0].outcomes) if scores else 0
     facts_left = scores[0].facts_left if scores else 0
+    diagnostics = outcome.compaction_diagnostics.copy()
+    if diagnostics.get("record_merge_qualification") == "observed":
+        diagnostics["record_merge_qualification"] = (
+            "qualified"
+            if outcome.error is None
+            and outcome.turns_completed == outcome.turns_total
+            and facts_total > 0
+            and facts_left == facts_total
+            and not outcome.disqualified(cell.context_window)
+            else "not_qualified"
+        )
     nofetch = len(unretrieved_facts(outcome, scenario))
     long_input, long_cached, long_output = _long_totals(outcome.calls, pricing)
     probe_long_input, probe_long_cached, probe_long_output = _long_totals(
@@ -1160,7 +1174,7 @@ def _seed_record(
         answer=outcome.answer,
         error=outcome.error,
         cache_reported=outcome.cache_reported,
-        compaction_diagnostics=outcome.compaction_diagnostics,
+        compaction_diagnostics=diagnostics,
     )
 
 
@@ -3160,7 +3174,7 @@ def _strategy_settings(
 def _workload_settings(args: argparse.Namespace) -> WorkloadSettings:
     """Return the workload block the cell records, resolved once for the whole run.
 
-    The five flags that change the conversation rather than the strategies, and the last part of
+    Flags that change the conversation rather than the strategies, and the last part of
     the command line that was on no key at all: two runs differing in any of them keyed as one
     cell and were meaned into one row. Resolved here rather than at each use for the reason
     :func:`_strategy_settings` is -- ``not args.sweeping_question`` appears at three call sites
@@ -3185,6 +3199,7 @@ def _workload_settings(args: argparse.Namespace) -> WorkloadSettings:
         # which number the other branch meant.
         temperature=None if args.no_temperature else 0.0,
         server_history=args.server_history,
+        agent_reasoning_effort=args.agent_reasoning_effort,
     )
 
 
@@ -3221,6 +3236,9 @@ def _progress(record: SeedRecord) -> str:
         parts.append(f"RECONNECTED:{record.connection_retries} ({record.connection_seconds:,.0f}s)")
     if record.error:
         parts.append(record.error)
+    qualification = (record.compaction_diagnostics or {}).get("record_merge_qualification")
+    if qualification is not None:
+        parts.append(f"record merge {qualification.replace('_', ' ')}")
     return "  ".join(parts)
 
 
@@ -3866,6 +3884,14 @@ def _render_from_records(args: argparse.Namespace) -> int:
     print(f"{len(records)} seed records from {_sources(paths)}, in {len(groups)} cell(s).")
     rendered: list[_CellGroup] = []
     for cell_params, cell_records in groups:
+        if (
+            cell_params.settings is not None
+            and cell_params.settings.compaction is not None
+            and cell_params.settings.compaction.qualify_record_merges
+        ):
+            for record in cell_records:
+                print(_progress(record))
+            continue
         cells = _cells_from_records(cell_records)
         incomplete, oversized, diverged = _excluded_cells(cells)
         excluded = incomplete | oversized | diverged
@@ -3964,7 +3990,20 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
     unknown = set(strategies) - set(strategy_names())
     if unknown:
         raise SystemExit(f"Unknown strategies: {', '.join(sorted(unknown))}.")
-    if "none" not in strategies:
+    if args.qualify_record_merges:
+        if strategies != ["tool_and_user_summary_anchored"]:
+            raise SystemExit(
+                "Record merge qualification requires only 'tool_and_user_summary_anchored'."
+            )
+        if args.results_jsonl is None:
+            raise SystemExit("Record merge qualification requires --results-jsonl.")
+        if args.tool_turns < 3:
+            raise SystemExit("Record merge qualification requires at least three lookup turns.")
+        if args.no_force_tool_calls or args.server_history:
+            raise SystemExit(
+                "Record merge qualification requires pinned lookups and client-side history."
+            )
+    elif "none" not in strategies:
         raise SystemExit("The 'none' control must be included; every comparison is relative to it.")
     try:
         validate_session_support(compaction_options(args), has_recall=forces_records(strategies))
@@ -4133,6 +4172,8 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
                 model=model_override,
             )
         )
+        if workload.agent_reasoning_effort is not None:
+            runtime.options["reasoning"] = {"effort": workload.agent_reasoning_effort}
         pricing = _resolve_pricing(args, provider, runtime.model)
         if plan is not None:
             # Printed on every run, not only the dry one. These logs are archived and read back
@@ -4316,6 +4357,16 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
                 seeds.append(record)
                 print(_progress(record), flush=True)
             cells.append(_aggregate(name, seeds))
+
+        if args.qualify_record_merges:
+            return int(
+                any(
+                    (record.compaction_diagnostics or {}).get("record_merge_qualification")
+                    != "qualified"
+                    for cell in cells
+                    for record in cell.records
+                )
+            )
 
         # A run that stopped early spent almost nothing and answered almost nothing. Ranking it
         # produces "100% cheaper" for a strategy that simply died, and counts it as clearing the

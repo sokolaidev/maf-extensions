@@ -1807,6 +1807,50 @@ def test_later_retained_reasoning_protects_its_entire_record_prefix() -> None:
     assert _sent(messages) == before
 
 
+@pytest.mark.parametrize(
+    "change",
+    ["none", "extra_property", "different_item", "different_occurrence", "raw_result", "status"],
+)
+def test_responses_recall_record_allows_only_the_paired_calls_mirrored_properties(change):
+    messages = _reasoned(1)
+    groups = active_record_groups(messages)
+    assert len(groups) == 1
+    call = next(c for m in messages for c in m.contents if c.type == "function_call")
+    result = next(c for m in messages for c in m.contents if c.type == "function_result")
+    props = {
+        "fc_id": "fc_recall",
+        "openai": {"item_id": "fc_recall"},
+        "status": "completed",
+    }
+    call.id = result.id = "recall-occurrence"
+    call.additional_properties = copy.deepcopy(props)
+    result.additional_properties = copy.deepcopy(props)
+    if change == "extra_property":
+        # Equality with the source call does not authorize unrelated properties.
+        call.additional_properties["provider_state"] = True
+        result.additional_properties["provider_state"] = True
+    elif change == "different_item":
+        call.additional_properties["fc_id"] = "fc_other"
+    elif change == "different_occurrence":
+        result.id = "other-occurrence"
+    elif change == "raw_result":
+        result.raw_representation = object()
+    elif change == "status":
+        result.status = "completed"
+
+    strategy = _strategy(_Summarizer(), budget=100_000)
+    if change == "none":
+        assert consolidatable_record_groups(messages) == groups
+        assert reshapeable_record_groups(messages) == groups
+        assert strategy._reshape_records(messages)
+        assert result.additional_properties == props
+    else:
+        assert not consolidatable_record_groups(messages)
+        assert not reshapeable_record_groups(messages)
+        with pytest.raises(ValueError):
+            strategy.tool_results.consolidate_records(messages, groups, "replacement")
+
+
 @pytest.mark.anyio
 async def test_an_over_budget_chain_merges_records_behind_the_active_loops_reasoning() -> None:
     """A run's later model calls carry the loop's reasoning; past the budget the chain still merges.

@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 from dataclasses import replace
+from hashlib import sha256
 from typing import Any, cast
 
 import maf_compaction
@@ -26,6 +27,8 @@ from maf_cachebench import (
 from maf_cachebench._configuration import compaction_options
 from maf_cachebench._lifecycle import SessionExperiment
 from maf_cachebench._live_cli import _strategy_options, _strategy_settings, build_parser
+from maf_cachebench._merge_evidence import MergeEvidence
+from maf_cachebench._merge_workload import PRESSURE_REQUEST
 from maf_cachebench._records import SCHEMA_VERSION, _settings_from_dict
 
 pytestmark = pytest.mark.anyio
@@ -76,6 +79,8 @@ def test_record_controls_reach_cli_strategy_and_saved_identity(share, seconds):
         "record_merge_split_depth": 0,
         "rewrite_gain_fraction": 0.0,
         "background_record_merges": False,
+        "record_merge_diagnostics": True,
+        "qualify_record_merges": True,
         "tool_delay_seconds": 0.0,
     }.items():
         assert (
@@ -94,14 +99,73 @@ def test_older_record_controls_remain_absent_on_roundtrip():
         "record_merge_split_depth",
         "rewrite_gain_fraction",
         "background_record_merges",
+        "record_merge_diagnostics",
+        "qualify_record_merges",
         "tool_delay_seconds",
     ):
         del data["compaction"][name]
     restored = _settings_from_dict(data)
     assert restored.to_dict() == data
     assert "rewrite_gain_fraction" in restored.unrecorded_compaction_fields
+    assert "qualify_record_merges" in restored.unrecorded_compaction_fields
     assert hash(restored) == hash(_settings_from_dict(data))
-    assert SCHEMA_VERSION == 25
+    assert SCHEMA_VERSION == 26
+
+
+def test_worker_acceptance_does_not_qualify_and_observed_fingerprints_stay_private():
+    evidence = MergeEvidence()
+    replacement = Message("assistant", ["qualified synthetic record"])
+    identifier = sha256(replacement.text.encode()).hexdigest()
+    data = {"tracked_values": 3, "kept_tracked_values": 3, "replacement": identifier}
+    evidence.observe("background", "answer_accepted", data)
+    evidence.sent([replacement])
+    assert "apply.value_preserving_merge_sent" not in evidence.counts
+    evidence.observe("apply", "answer_accepted", {**data, "kept_tracked_values": 2})
+    evidence.sent([replacement])
+    assert "apply.value_preserving_merge_sent" not in evidence.counts
+    evidence.observe("apply", "answer_accepted", data)
+    evidence.sent([Message("user", [replacement.text])])
+    assert "apply.value_preserving_merge_sent" not in evidence.counts
+    evidence.sent([replacement])
+    evidence.sent([replacement])
+    assert evidence.counts["apply.value_preserving_merge_sent"] == 1
+    serialized = json.dumps(evidence.snapshot())
+    assert identifier not in serialized
+    assert replacement.text not in serialized
+
+
+def test_merge_survey_sample_is_bounded_but_counts_include_every_pass():
+    evidence = MergeEvidence()
+    for index in range(100):
+        evidence.observe("background", "survey", {"pressure": 1, "eligible": 0, "records": index})
+    summary = evidence.snapshot()
+    counts = cast(dict[str, int], summary["counts"])
+    by_status = cast(dict[str, list[dict[str, int | str]]], summary["surveys"])
+    assert counts["background.too_few_eligible"] == 100
+    surveys = by_status["background.too_few_eligible"]
+    assert len(surveys) == 16
+    assert surveys[-1]["records"] == 99
+
+
+async def test_qualification_checkpoint_adds_pressure_once():
+    options = StrategyOptions(
+        tokenizer=CharacterEstimatorTokenizer(),
+        max_context_window_tokens=5000,
+        max_output_tokens=1000,
+        summarizer=cast(Any, Summarizer()),
+        compaction=CompactionOptions(qualify_record_merges=True),
+    )
+    strategy = build_strategy("tool_and_user_summary_anchored", options)
+    assert isinstance(
+        strategy, maf_compaction.ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+    )
+    request = Message("user", [PRESSURE_REQUEST])
+    messages = [request]
+    await strategy.compact_before(messages, options={})
+    padded = request.text
+    assert padded.startswith(PRESSURE_REQUEST) and len(padded) > len(PRESSURE_REQUEST)
+    await strategy.compact_before(messages, options={})
+    assert request.text == padded
 
 
 @pytest.mark.parametrize(

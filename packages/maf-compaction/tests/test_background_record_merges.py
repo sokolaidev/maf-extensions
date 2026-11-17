@@ -38,6 +38,7 @@ from maf_compaction import (
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     make_session_recall_tool,
     make_session_record_merge_middleware,
+    observe_record_merges,
 )
 from maf_compaction import _composed as composed_module
 from maf_compaction._composed import _RecordMergeWork
@@ -86,6 +87,27 @@ async def test_background_does_not_mutate_live_history_or_decisions():
     original = _history(4)
     await restored(original)
     assert _sent(original) == accepted
+    await work.close()
+
+
+async def test_merge_observer_separates_preparation_and_application():
+    strategy, work, messages = await prepared()
+    events = []
+    with observe_record_merges(
+        lambda phase, event, details: events.append((phase, event, details)),
+        tracked_values=_values(0),
+    ):
+        work.start(tool_reply())
+        await running(work)
+        assert ("background", "answer_prepared") in [(p, e) for p, e, _ in events]
+        assert all(p != "apply" for p, _, _ in events)
+        await strategy(messages)
+    survey = next(d for p, e, d in events if p == "background" and e == "survey")
+    assert survey["pressure"] == 1 and survey["eligible"] == 4
+    assert survey["record_tokens"] > survey["record_limit"]
+    accepted = next(d for p, e, d in events if p == "apply" and e == "answer_accepted")
+    assert accepted["tracked_values"] == accepted["kept_tracked_values"] == len(_values(0))
+    assert accepted["records"] == 4
     await work.close()
 
 

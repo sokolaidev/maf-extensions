@@ -84,6 +84,7 @@ from maf_compaction import (
 
 from ._configuration import CompactionOptions
 from ._host_hooks import FixtureMediaEstimate, invalid_rewrite, media_kwargs, rewrite_fixture
+from ._merge_workload import MergeQualificationStrategy
 
 if TYPE_CHECKING:
     from agent_framework._clients import SupportsChatGetResponse
@@ -472,7 +473,12 @@ def _build_tool_and_user_summary_anchored(options: StrategyOptions) -> Compactio
         ValueError: If no summarizer client was configured, from the user-band half. The
             record half needs none: its record is written by the agent's own model.
     """
-    return ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
+    strategy_type = (
+        MergeQualificationStrategy
+        if options.compaction.qualify_record_merges
+        else ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+    )
+    return strategy_type(
         tokenizer=options.tokenizer,
         tool_results=_build_tool_summary_anchored(options),
         user_turns=_build_user_summary_anchored(

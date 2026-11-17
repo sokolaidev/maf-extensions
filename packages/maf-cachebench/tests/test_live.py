@@ -9333,6 +9333,8 @@ def test_every_boolean_flag_that_changes_a_run_is_recorded_somewhere() -> None:
     }
     a_strategy_setting = {
         "background_record_merges",
+        "record_merge_diagnostics",
+        "qualify_record_merges",
         "record_repeats",
         "preserve_prompt_cache",
         "supports_tool_choice",
@@ -9345,9 +9347,9 @@ def test_every_boolean_flag_that_changes_a_run_is_recorded_somewhere() -> None:
         "a new boolean flag belongs in CellParams.workload, in StrategySettings, or in neither "
         "because it changes nothing measured -- pick one here"
     )
-    assert len(fields(WorkloadSettings)) == len(changes_the_conversation), (
-        "one recorded field per flag"
-    )
+    workload_fields = {field.name for field in fields(WorkloadSettings)}
+    assert "agent_reasoning_effort" in workload_fields
+    assert len(workload_fields - {"agent_reasoning_effort"}) == len(changes_the_conversation)
 
 
 async def test_the_workload_flags_recorded_are_the_ones_the_run_was_configured_with(
@@ -9387,6 +9389,8 @@ async def test_the_workload_flags_recorded_are_the_ones_the_run_was_configured_w
                 "1",
                 "--no-force-tool-calls",
                 "--no-temperature",
+                "--agent-reasoning-effort",
+                "high",
             )
         )
     )
@@ -9406,6 +9410,8 @@ async def test_the_workload_flags_recorded_are_the_ones_the_run_was_configured_w
     assert "temperature" not in runtime.options, (
         "and the omission is what the request actually carried"
     )
+    assert flags.agent_reasoning_effort == "high"
+    assert runtime.options["reasoning"] == {"effort": "high"}
     assert seen == [
         {"force_tool_calls": False, "retrieval_guidance": True, "allow_server_history": False}
     ], (
