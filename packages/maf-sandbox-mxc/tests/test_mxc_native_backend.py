@@ -145,7 +145,12 @@ def test_native_file_contract(native_config):
             await assert_files_out_conformance(subject)
             await assert_files_delete_conformance(subject)
             await assert_reclaim_conformance(subject)
-            await assert_exec_conformance(subject)
+            with pytest.raises(ValueError, match="declares no EXEC"):
+                await assert_exec_conformance(subject)
+            with pytest.raises(NotImplementedError, match="native program channel"):
+                await subject.sandbox.exec(
+                    ["echo", "unsupported"], working_directory=subject.working_directory, timeout=5
+                )
         finally:
             await backend.aclose()
 

@@ -212,6 +212,8 @@ def test_storage_base_and_expired_cleanup_authority(config):
             async with backend.call_admission(KEY, SPEC, owner="one", timeout=2) as cleanup:
                 sandbox = await backend.acquire(KEY, SPEC)
                 await assert_storage_base_conformance(sandbox, backend.declarations.capabilities)
+                with pytest.raises(NotImplementedError, match="native program channel"):
+                    await sandbox.exec(["echo", "unsupported"], working_directory=".", timeout=1)
             with pytest.raises(RuntimeError, match="expired"):
                 with cleanup:
                     pass
