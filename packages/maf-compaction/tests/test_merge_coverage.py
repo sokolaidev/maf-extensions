@@ -8,7 +8,8 @@ import logging
 from typing import Any
 
 import pytest
-from agent_framework import ChatResponse, Message
+from agent_framework import ChatResponse, Content, Message
+from test_background_record_merges import running, tool_reply
 from test_record_budget import (
     _VALUE,
     TOKENIZER,
@@ -27,6 +28,7 @@ from maf_compaction._composed import (
     _ChainTimeSpent,
     _PreparedMerge,
     _RecordAnswer,
+    _RecordMergeWork,
 )
 from maf_compaction._merge_coverage import LossyMerge, MergeCoverage
 from maf_compaction._preserve import set_preserved
@@ -370,6 +372,112 @@ async def test_background_retains_answers_but_foreground_alone_relaxes() -> None
     assert len(summarizer.merges) == 3
     assert strategy.current_merge_coverage_share == 0.75
     assert worker.current_merge_coverage_share == 0.8
+
+
+@pytest.mark.parametrize("restore", [False, True])
+@pytest.mark.parametrize("policy", ["shed", "raise"])
+async def test_cached_answers_follow_over_budget_reasoning_policy(
+    restore: bool, policy: str
+) -> None:
+    summarizer = _Summarizer(merge=_lossy)
+    strategy = _configured(summarizer, merge_coverage_floor=0.7)
+    messages = _records()
+    strategy._reshape_records(messages)
+    assert not await strategy._merge_batches(messages, None, strategy.record_budget_share)
+    assert len(summarizer.merges) == 3
+    if restore:
+        state = json.loads(json.dumps(strategy.session_state()))
+        strategy = _configured(summarizer, merge_coverage_floor=0.7)
+        strategy.restore_session_state(state)
+    strategy.overflow_policy = policy
+    messages.append(
+        Message("assistant", [Content.from_text_reasoning(text="Compare the records.")])
+    )
+    _size(messages)
+    assert strategy._over(messages)
+    await strategy._last_resort(messages)
+    assert strategy.records_merged == (1 if policy == "shed" else 0)
+    assert len(summarizer.merges) == 3
+    assert len(_sent_values(messages)) == (12 if policy == "shed" else 16)
+
+
+@pytest.mark.parametrize("change", [None, "sources", "prompt", "coverage", "split_depth", "limit"])
+@pytest.mark.parametrize("budget", [1000, 100_000])
+async def test_completed_background_sweep_relaxes_only_its_current_sources_and_policy(
+    change: str | None,
+    budget: int,
+) -> None:
+    summarizer = _Summarizer(merge=_lossy)
+    strategy = _configured(summarizer, share=0.00001, merge_coverage_floor=0.7)
+    strategy.max_input_tokens = budget
+    messages = _records()
+    work = _RecordMergeWork()
+    work.bind(strategy, None)
+    work.remember(messages, budget)
+    work.start(tool_reply())
+    try:
+        await running(work)
+        assert work._worker is not None
+        assert work._worker.current_merge_coverage_share == 0.8
+        assert len(summarizer.merges) == 3
+        if change == "sources":
+            messages[-1:-1] = _record_pair(9)
+        elif change == "prompt":
+            strategy.merge_prompt += " Preserve attribution."
+        elif change == "coverage":
+            strategy.tool_results.coverage_share = 0.9
+        elif change == "split_depth":
+            strategy.record_merge_split_depth += 1
+        elif change == "limit":
+            strategy.user_turns.max_summary_input_tokens -= 1
+        _size(messages)
+        await strategy._last_resort(messages)
+        assert strategy.records_merged == (1 if change is None else 0)
+        assert strategy.current_merge_coverage_share == (
+            0.75 if change is None else 0.9 if change == "coverage" else 0.8
+        )
+        assert len(summarizer.merges) == 3
+        assert work.defer_merges
+        assert work._task is None
+    finally:
+        await work.close()
+
+
+@pytest.mark.parametrize("stop", ["deadline", "failure", "rate_limit", "probe_limit"])
+async def test_interrupted_background_sweep_does_not_authorize_relaxation(
+    stop: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = 0.0
+    monkeypatch.setattr(composed_module, "monotonic", lambda: now)
+
+    class Interrupted(_Summarizer):
+        async def get_response(self, messages: list[Message], **kwargs: Any) -> ChatResponse:
+            nonlocal now
+            if self.requests and stop in {"failure", "rate_limit"}:
+                if stop == "rate_limit":
+                    raise SummaryRateLimited
+                raise RuntimeError("summary unavailable")
+            response = await super().get_response(messages, **kwargs)
+            if stop == "deadline":
+                now = 2.0
+            return response
+
+    strategy = _configured(Interrupted(merge=_lossy), merge_coverage_floor=0.7)
+    strategy.chain_seconds = 1.0
+    if stop == "probe_limit":
+        monkeypatch.setattr(composed_module, "_MAX_BATCH_PROBES", 1)
+    messages = _records()
+    work = _RecordMergeWork()
+    work.bind(strategy, None)
+    work.remember(messages, 1000)
+    work.start(tool_reply())
+    try:
+        await running(work)
+        await strategy._last_resort(messages)
+        assert strategy.current_merge_coverage_share == 0.8
+        assert strategy.records_merged == 0
+    finally:
+        await work.close()
 
 
 async def test_snapshot_scores_do_not_override_live_coverage_check() -> None:

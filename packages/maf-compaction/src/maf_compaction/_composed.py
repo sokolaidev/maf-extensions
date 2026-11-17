@@ -259,8 +259,16 @@ class _RecordMergeWork:
         if self._worker is not None:
             strategy._remember_record_search(self._worker)  # pyright: ignore[reportPrivateUsage]
         if self._task is not None and self._task.done():
+            worker = self._worker
             self._worker = None
             self._task = None
+            if worker is not None:
+                changed = (
+                    await strategy._apply_completed_merge_sweep(  # pyright: ignore[reportPrivateUsage]
+                        messages, worker
+                    )
+                    or changed
+                )
         return changed
 
 
@@ -893,6 +901,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._record_consolidations_by_coverage: dict[float, int] = {}
         self._record_values_omitted = 0
         self._merge_sweep_complete = False
+        self._completed_merge_sweep: str | None = None
         self._removed_by_record = 0
         self._records_reshaped = 0
         self._records_merged = 0
@@ -975,6 +984,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return worker
 
     async def _prepare_record_merges(self, messages: list[Message]) -> None:
+        self._completed_merge_sweep = None
         deadline = None if self.chain_seconds is None else monotonic() + self.chain_seconds
         token = self._chain_deadline.set(deadline)
         try:
@@ -985,6 +995,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 return
             with _yielding_when(over_budget=start is not None, policy=self.overflow_policy):
                 await self._merge_records(messages, start)
+                if self._merge_coverage.adaptive and self._merge_sweep_complete:
+                    self._completed_merge_sweep = self._merge_sweep_key(messages)
         except _ChainTimeSpent:
             # Ready answers remain available to the next foreground pass.
             pass
@@ -1868,10 +1880,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             True if anything changed the outgoing messages.
         """
         changed = self._keep_decisions(messages, replayed_user_fold=replayed_user_fold)
-        self._refresh_merge_coverage(messages)
-        if self._background is not None:
-            # Answers prepared over budget are checked under the same guard they were made with.
-            with _yielding_when(over_budget=self._over(messages), policy=self.overflow_policy):
+        # Refresh and application must see the same eligible sources.
+        with _yielding_when(over_budget=self._over(messages), policy=self.overflow_policy):
+            self._refresh_merge_coverage(messages)
+            if self._background is not None:
                 changed = await self._background.apply_ready(messages) or changed
         if not self._over(messages):
             return changed
@@ -3368,9 +3380,48 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             or not self._merge_sweep_complete
         ):
             return changed
+        return await self._relax_merge_coverage(messages) or changed
+
+    def _merge_sweep_key(self, messages: list[Message]) -> str | None:
+        sources = source_key(messages, consolidatable_record_groups(messages))
+        if sources is None:
+            return None
+        self._sync_merge_coverage()
+        coverage = self._merge_coverage
+        return _digest(
+            json.dumps(
+                [
+                    sources,
+                    coverage.prompt,
+                    coverage.start,
+                    coverage.floor,
+                    coverage.step,
+                    coverage.current,
+                    self.record_merge_split_depth,
+                    self._record_request_limit(),
+                ]
+            )
+        )
+
+    async def _apply_completed_merge_sweep(
+        self,
+        messages: list[Message],
+        worker: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+    ) -> bool:
+        if (
+            worker._completed_merge_sweep is None
+            or worker._completed_merge_sweep != self._merge_sweep_key(messages)
+        ):
+            return False
+        return await self._relax_merge_coverage(messages)
+
+    async def _relax_merge_coverage(self, messages: list[Message]) -> bool:
+        if not self._merge_coverage.adaptive:
+            return False
         if await self._apply_lossy_merges(messages):
             self._refresh_merge_coverage(messages)
             return True
+        changed = False
         while self._records_over_share(messages) and self._merge_coverage.adaptive:
             self._check_chain_deadline()
             if not self._merge_coverage.lower():
