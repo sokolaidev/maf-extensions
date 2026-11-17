@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import vendor_fix_evidence
 from container_release import digest, read, require_digest, write
 from container_release_history import GitHub
 from image_release_needed import git
@@ -14,18 +15,25 @@ from plan_platform_remediation import plan, proposal
 
 MANIFEST = "scripts/platform_rehearsal_cases.json"
 CASE = "historical-rebuild"
+APK_CASE = "historical-apk-rebuild"
+CASES = {
+    CASE: (sorted(BICEP_ROUTES), ["bicep-docker-sbx-0.2.2"]),
+    APK_CASE: (["graphviz"], ["graphviz-0.2.6"]),
+}
 
 
-def fixture(root: Path) -> dict[str, Any]:
+def fixture(root: Path, case: str = CASE) -> dict[str, Any]:
     """Only the committed case manifest selects historical inputs; dispatch supplies no URLs."""
-    return read(root / MANIFEST)["cases"][CASE]["fixture"]
+    if case not in CASES:
+        raise ValueError("Unknown historical rebuild case")
+    return read(root / MANIFEST)["cases"][case]["fixture"]
 
 
-def verify_files(root: Path, directory: Path) -> list[Path]:
+def verify_files(root: Path, directory: Path, case: str = CASE) -> list[Path]:
     """Pin the index and every consumed member independently of downloaded artifact metadata."""
-    expected = fixture(root)
+    expected = fixture(root, case)
     targets = expected["directories"]
-    if targets != ["bicep-docker-sbx-0.2.2"]:
+    if targets != CASES[case][1]:
         raise ValueError("Unsupported historical rebuild fixture scope")
     names = {"monitor-index.json"} | {
         f"{target}/{name}"
@@ -45,43 +53,44 @@ def verify_files(root: Path, directory: Path) -> list[Path]:
     return [directory / name for name in targets]
 
 
-def receipt(root: Path, source: str) -> dict[str, Any]:
+def receipt(root: Path, source: str, case: str = CASE) -> dict[str, Any]:
     """Describe historical finding provenance without relabelling its assessment timestamps."""
-    return {"source": source, "rehearsalFixture": fixture(root)}
+    return {"source": source, "case": case, "rehearsalFixture": fixture(root, case)}
 
 
-def authority(work: Path) -> dict[str, Any]:
+def authority(work: Path, case: str = CASE) -> dict[str, Any]:
     """Scope the acquired current snapshot to the profiles this replay actually rebuilds."""
     retained = read(work / "current" / "receipt.json")
     images = retained.get("images")
-    if not isinstance(images, dict) or not set(BICEP_ROUTES) <= images.keys():
+    profiles = CASES[case][0]
+    if not isinstance(images, dict) or not set(profiles) <= images.keys():
         raise ValueError("Current authority does not cover every historical rebuild profile")
-    return {**retained, "images": {name: images[name] for name in sorted(BICEP_ROUTES)}}
+    return {**retained, "images": {name: images[name] for name in profiles}}
 
 
-def validate(root: Path, work: Path) -> tuple[dict[str, Any], dict[str, bytes]]:
+def validate(
+    root: Path, work: Path, *, case: str = CASE
+) -> tuple[dict[str, Any], dict[str, bytes]]:
     """Recompute the replay proposal and require current authority for every inherited profile."""
     source = git(root, "rev-parse", "HEAD").strip()
-    current_receipt = authority(work)
-    if current_receipt["source"] != source or read(work / "receipt.json") != receipt(root, source):
+    current_receipt = authority(work, case)
+    if current_receipt["source"] != source or read(work / "receipt.json") != receipt(
+        root, source, case
+    ):
         raise ValueError("Historical rehearsal source or fixture changed")
-    expected = plan(root, verify_files(root, work / "evidence"))
+    vendor = vendor_fix_evidence.load(work / "vendor-security") if case == APK_CASE else None
+    expected = plan(root, verify_files(root, work / "evidence", case), vendor=vendor)
     if expected != read(work / "plan.json"):
         raise ValueError("Historical plan differs from pinned evidence and current source")
-    if expected["affectedProfiles"] != sorted(BICEP_ROUTES) or expected["updates"]:
-        raise ValueError("Historical rebuild requires all Bicep profiles and no source edits")
+    if expected["affectedProfiles"] != CASES[case][0] or expected["updates"]:
+        raise ValueError("Historical rebuild requires its exact profiles and no source edits")
     return expected, proposal(root, expected)
 
 
-def authority_scope(_root: Path, _directories: list[Path]) -> dict[str, Any]:
-    """Retain authority for every rebuilt profile independently of current actionable findings."""
-    return {"kind": "platform-rehearsal-authority", "affectedProfiles": sorted(BICEP_ROUTES)}
-
-
-def acquire(root: Path, work: Path) -> dict[str, Any]:
+def acquire(root: Path, work: Path, case: str = CASE) -> dict[str, Any]:
     """Restore immutable historical findings and retain fresh production delivery authority."""
     work.mkdir(parents=True, exist_ok=False)
-    expected = fixture(root)
+    expected = fixture(root, case)
     client = GitHub()
     producer = monitor_source(client, expected["monitor"])
     if producer != expected["producer"]:
@@ -89,21 +98,26 @@ def acquire(root: Path, work: Path) -> dict[str, Any]:
     restore_monitor(
         client, expected["monitor"], producer, set(expected["directories"]), work / "evidence"
     )
-    directories = verify_files(root, work / "evidence")
-    replay = plan(root, directories)
+    directories = verify_files(root, work / "evidence", case)
+    vendor = vendor_fix_evidence.acquire(work / "vendor-security") if case == APK_CASE else None
+    replay = plan(root, directories, vendor=vendor)
+
+    def authority_scope(_root: Path, _directories: list[Path]) -> dict[str, Any]:
+        return {"kind": "platform-rehearsal-authority", "affectedProfiles": CASES[case][0]}
+
     acquired = acquire_with_retry(
         client,
         root,
         work / "current",
-        selected_profiles=BICEP_ROUTES,
+        selected_profiles=CASES[case][0],
         planner=authority_scope,
         require_all_profiles=False,
     )
     if acquired is None:
         raise ValueError("Rehearsal acquisition deferred; retry after evidence stabilizes")
-    current_receipt = authority(work)
-    write(work / "receipt.json", receipt(root, current_receipt["source"]))
+    current_receipt = authority(work, case)
+    write(work / "receipt.json", receipt(root, current_receipt["source"], case))
     write(work / "plan.json", replay)
-    validate(root, work)
+    validate(root, work, case=case)
     current(client, current_receipt)
     return replay

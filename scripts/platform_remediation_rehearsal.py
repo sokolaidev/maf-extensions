@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import subprocess
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +31,7 @@ CASES = (
     "bicep-update",
     "apk-pinned",
     "apk-unpinned",
-    history.CASE,
+    *history.CASES,
     *replay.CASES,
 )
 UPDATE_CASES = {"bicep-update", "apk-pinned", *replay.CASES}
@@ -147,8 +148,8 @@ def acquire(root: Path, work: Path) -> dict[str, Any]:
     expected = (
         replay.acquire(root, work, request["case"])
         if request["case"] in replay.CASES
-        else history.acquire(root, work)
-        if request["case"] == history.CASE
+        else history.acquire(root, work, request["case"])
+        if request["case"] in history.CASES
         else acquire_with_retry(
             GitHub(),
             root,
@@ -172,14 +173,18 @@ def validator(root: Path, work: Path):
         raise ValueError("Rehearsal request belongs to another source, run, attempt or case")
     if request["case"] in replay.CASES:
         return replay.validate
-    return history.validate if request["case"] == history.CASE else platform.validate
+    return (
+        partial(history.validate, case=request["case"])
+        if request["case"] in history.CASES
+        else platform.validate
+    )
 
 
 def authority(work: Path, case: str) -> dict[str, Any]:
     """Historical findings never replace the current receipt used at every delivery write."""
     if case in replay.CASES:
         return replay.authority(work)
-    return history.authority(work) if case == history.CASE else read(work / "receipt.json")
+    return history.authority(work, case) if case in history.CASES else read(work / "receipt.json")
 
 
 def qualify(root: Path, work: Path, results: Path) -> dict[str, Any]:
@@ -228,14 +233,14 @@ def qualify(root: Path, work: Path, results: Path) -> dict[str, Any]:
             "controlled-positive-replay"
             if request["case"] in replay.CASES
             else "historical-replay"
-            if request["case"] == history.CASE
+            if request["case"] in history.CASES
             else "current"
         ),
         "fixture": (
             replay.rule(root, request["case"])["fixture"]
             if request["case"] in replay.CASES
-            else history.fixture(root)
-            if request["case"] == history.CASE
+            else history.fixture(root, request["case"])
+            if request["case"] in history.CASES
             else None
         ),
         "caseMatches": counts,
