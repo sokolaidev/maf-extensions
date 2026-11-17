@@ -139,6 +139,58 @@ async def test_prompt_change_discards_background_answer_and_search(complete):
     await work.close()
 
 
+@pytest.mark.parametrize("restore", [False, True])
+async def test_partial_search_after_prompt_change_drops_old_batches(monkeypatch, restore):
+    class PolicyTokenizer(CharacterEstimatorTokenizer):
+        def count_tokens(self, text):
+            if '"role": "system"' in text and "compaction records" in text:
+                return 100 if "New merge policy." in text else 49_000
+            if '"role": "user"' in text and '"text": "1. ' in text and "\\n2. " in text:
+                return 1500
+            return super().count_tokens(text)
+
+    model = _Summarizer()
+    tokenizer = PolicyTokenizer()
+    model.rewrite = model.merge
+    strategy = _strategy(model, budget=100_000, share=0.001, cap=None, tokenizer=tokenizer)
+    work = _RecordMergeWork()
+    work.bind(strategy, None)
+    messages = _history(4)
+    await strategy(messages)
+    work.start(tool_reply())
+    await running(work)
+    assert not await strategy(messages)
+    assert len(strategy.session_state()["searched_records"]) > 1
+    assert not model.requests
+    if restore:
+        state = deepcopy(strategy.session_state())
+        await work.close()
+        strategy = _strategy(model, budget=100_000, share=0.001, cap=None, tokenizer=tokenizer)
+        strategy.restore_session_state(state)
+        work = _RecordMergeWork()
+        work.bind(strategy, None)
+        await strategy(messages)
+    strategy.merge_prompt += " New merge policy."
+    with monkeypatch.context() as limited:
+        limited.setattr(composed_module, "_MAX_BATCH_PROBES", 1)
+        work.start(tool_reply())
+        await running(work)
+        assert work._worker is not None
+        partial = work._worker.session_state()
+        assert len(partial["searched_records"]) == 1
+        assert not await strategy(messages)
+    adopted = strategy.session_state()
+    work.start(tool_reply())
+    await running(work)
+    assert await strategy(messages)
+    assert strategy.records_merged == 2
+    assert [_batch_size(body) for _, body in model.requests] == [2, 2]
+    assert _sent_values(messages) == {v for i in range(4) for v in _values(i)}
+    assert adopted["search_prompt"] == partial["search_prompt"]
+    assert adopted["searched_records"] == partial["searched_records"]
+    await work.close()
+
+
 @pytest.mark.parametrize("change", ["content", "identity", "hold", "reasoning", "excluded"])
 async def test_stale_or_newly_protected_sources_refuse_background_answer(change):
     strategy, work, messages = await prepared()

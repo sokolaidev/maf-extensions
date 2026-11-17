@@ -995,6 +995,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             return
         if worker.user_turns._summary_options_disabled:  # pyright: ignore[reportPrivateUsage]
             self.user_turns._summary_options_disabled = True  # pyright: ignore[reportPrivateUsage]
+        if self._search_prompt != worker._search_prompt:
+            self._searched.clear()
         self._search_prompt = worker._search_prompt
         self._searched.update(worker._searched)
         self._record_input_fits.update(worker._record_input_fits)
