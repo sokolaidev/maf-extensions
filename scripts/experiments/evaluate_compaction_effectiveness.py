@@ -312,10 +312,11 @@ async def targeted(args: Any, run_id: str, save: Any, report: dict[str, Any]) ->
             cache_id = namespace(run_id, index, row["variant"])
             prefix = f"Benchmark cache identifier (not a task requirement): {cache_id}.\n"
             try:
-                response = await runtime.client.get_response(
-                    summary_request(prefix + row["prompt"], row["source"]),
-                    options={**runtime.options, "extra_body": {"prompt_cache_key": cache_id}},
-                )
+                async with asyncio.timeout(args.timeout):
+                    response = await runtime.client.get_response(
+                        summary_request(prefix + row["prompt"], row["source"]),
+                        options={**runtime.options, "extra_body": {"prompt_cache_key": cache_id}},
+                    )
                 row.update(observations(row["source"], response.text or ""))
                 row.update(usage=usage(response), finish_reason=str(response.finish_reason))
             except Exception as error:

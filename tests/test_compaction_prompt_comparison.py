@@ -9,7 +9,7 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from agent_framework import ChatResponse, Message
@@ -210,8 +210,8 @@ def test_pricing_does_not_charge_writes_as_ordinary_input(comparison):
         reporting.cost({**usage, "cache_write": 300}, prices)
 
 
-def test_failed_pairs_remain_visible_and_prevent_aggregate_cost(comparison):
-    reporting = importlib.import_module("report_compaction_effectiveness")
+@pytest.fixture
+def paired_effectiveness():
     prices = dict.fromkeys(("input", "cached", "cache_write", "output"), 1.0)
     measured = {
         "input": 1200,
@@ -236,11 +236,80 @@ def test_failed_pairs_remain_visible_and_prevent_aggregate_cost(comparison):
         "agent_seed_calls": [{"usage": {"input": 1200, "cached": 0}}],
     }
     after = {**deepcopy(before), "variant": "hardened", "cache_id": "after"}
-    report = {"conversations": [before, after]}
+    return {"conversations": [before, after]}, prices
+
+
+def test_failed_pairs_remain_visible_and_prevent_aggregate_cost(comparison, paired_effectiveness):
+    reporting = importlib.import_module("report_compaction_effectiveness")
+    report, prices = paired_effectiveness
     assert reporting.summarize(report, prices)["screen_within_margins"]
-    after["failed"] = True
+    report["conversations"][1]["failed"] = True
     result = reporting.summarize(report, prices)
     assert result["pairs"] == [{"seed": 1, "complete": False}]
     assert result["aggregate"]["hardened"]["failures"] == 1
     assert "workload" not in result["aggregate"]["hardened"]
     assert not result["screen_within_margins"]
+
+
+@pytest.mark.parametrize("arm", [0, 1])
+@pytest.mark.parametrize("metric", ["scoped_accuracy", "combined_accuracy"])
+def test_missing_answers_prevent_retention_verdict(comparison, paired_effectiveness, arm, metric):
+    reporting = importlib.import_module("report_compaction_effectiveness")
+    report, prices = paired_effectiveness
+    report["conversations"][arm][metric] = []
+    result = reporting.summarize(report, prices)
+    assert not result["pairs"][0]["no_retention_loss"]
+    assert not result["screen_within_margins"]
+
+
+@pytest.mark.parametrize("arm", [0, 1])
+@pytest.mark.parametrize("missing", ["input", "cached"])
+def test_unknown_cache_usage_withholds_cache_verdict(
+    comparison, paired_effectiveness, arm, missing
+):
+    reporting = importlib.import_module("report_compaction_effectiveness")
+    report, prices = paired_effectiveness
+    measured = report["conversations"][arm]["agent_seed"]
+    measured[missing] = measured["hit_rate"] = measured["uncached"] = None
+    report["conversations"][arm]["agent_seed_calls"][0]["usage"][missing] = None
+    result = reporting.summarize(report, prices)
+    assert result["pairs"][0]["agent_cache_change_pp"] is None
+    assert not result["pairs"][0]["within_cache_margin"]
+    assert not result["screen_within_margins"]
+    assert (
+        result["aggregate"][report["conversations"][arm]["variant"]]["agent_seed"]["hit_rate"]
+        is None
+    )
+    json.dumps(result, allow_nan=False)
+
+
+def test_targeted_timeout_records_failure_and_continues(comparison, monkeypatch):
+    evaluation = importlib.import_module("evaluate_compaction_effectiveness")
+    model = AsyncMock()
+
+    async def response(*args, **kwargs):
+        if model.get_response.await_count == 1:
+            await asyncio.Event().wait()
+        return ChatResponse(
+            messages=[Message("assistant", ["DEPLOY-42 eu-west USD 120 2026-11-20"])]
+        )
+
+    model.get_response.side_effect = response
+    runtime = ProviderRuntime(model, "synthetic-model", {"max_tokens": 100})
+    monkeypatch.setattr(evaluation, "build_provider", lambda *args, **kwargs: runtime)
+    rows = comparison.plan(1)[:2]
+    monkeypatch.setattr(evaluation, "plan", lambda repeats: rows)
+    report = {"targeted": []}
+    save = Mock()
+    args = argparse.Namespace(provider="azure:synthetic-model", timeout=0.01)
+
+    async def run():
+        await asyncio.wait_for(evaluation.targeted(args, "test-run", save, report), timeout=1)
+
+    asyncio.run(run())
+    assert model.get_response.await_count == 2
+    assert save.call_count == 2
+    assert report["targeted"][0]["error_type"] == "TimeoutError"
+    assert "value_recall" not in report["targeted"][0]
+    assert "error_type" not in report["targeted"][1]
+    assert report["targeted"][1]["value_recall"] == 1

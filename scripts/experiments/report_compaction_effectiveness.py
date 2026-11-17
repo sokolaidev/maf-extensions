@@ -94,7 +94,12 @@ def summarize(report: dict[str, Any], prices: dict[str, float]) -> dict[str, Any
         if before["cache_id"] == after["cache_id"]:
             raise ValueError("Paired variants share a cache identity")
         priced = [cost(row["workload"], prices) for row in (before, after)]
-        cache_delta = (after["agent_seed"]["hit_rate"] - before["agent_seed"]["hit_rate"]) * 100
+        before_hit, after_hit = before["agent_seed"]["hit_rate"], after["agent_seed"]["hit_rate"]
+        cache_delta = (
+            (after_hit - before_hit) * 100
+            if before_hit is not None and after_hit is not None
+            else None
+        )
         cost_delta = percent_change(*priced)
         pairs.append(
             {
@@ -110,11 +115,14 @@ def summarize(report: dict[str, Any], prices: dict[str, float]) -> dict[str, Any
                     before["agent_seed"]["uncached"], after["agent_seed"]["uncached"]
                 ),
                 "within_cost_margin": cost_delta is not None and cost_delta <= 5,
-                "within_cache_margin": cache_delta >= -3,
+                "within_cache_margin": cache_delta is not None and cache_delta >= -3,
                 "no_retention_loss": after["facts_left"] >= before["facts_left"]
-                and bool(after["combined_accuracy"])
-                and min(after["combined_accuracy"]) >= min(before["combined_accuracy"] or [1])
-                and min(after["scoped_accuracy"] or [0]) >= min(before["scoped_accuracy"] or [1]),
+                and all(
+                    bool(before[metric])
+                    and bool(after[metric])
+                    and min(after[metric]) >= min(before[metric])
+                    for metric in ("combined_accuracy", "scoped_accuracy")
+                ),
             }
         )
     aggregates = {}
@@ -148,7 +156,7 @@ def summarize(report: dict[str, Any], prices: dict[str, float]) -> dict[str, Any
                 (
                     call["usage"]["cached"]
                     for call in row.get("agent_seed_calls", [])
-                    if call["usage"]["input"] >= 1024
+                    if call["usage"]["input"] is not None and call["usage"]["input"] >= 1024
                 ),
                 None,
             ),
