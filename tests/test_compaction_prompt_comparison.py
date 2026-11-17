@@ -5,7 +5,9 @@ import asyncio
 import importlib
 import json
 import sys
+from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -127,3 +129,106 @@ def test_retention_harness_matches_salts_and_omits_summary_temperature(
         {"temperature": None, "response_max_tokens": 1024, "model": "synthetic-model"}
     ]
     assert configured_prompts() == current
+
+
+def test_cache_identity_does_not_change_workload(comparison):
+    evaluation = importlib.import_module("evaluate_compaction_effectiveness")
+    from maf_cachebench._tokenizers import build_tokenizer
+
+    tokenizer = build_tokenizer("tiktoken")
+    identities = [
+        evaluation.namespace("experiment", 1, variant) for variant in ("baseline", "hardened")
+    ]
+    assert identities[0] != identities[1]
+    assert tokenizer.count_tokens(identities[0]) == tokenizer.count_tokens(identities[1])
+    first = evaluation._live.build_live_scenario(salt="same-seed", filler_turns=1, filler_tokens=20)
+    second = evaluation._live.build_live_scenario(
+        salt="same-seed", filler_turns=1, filler_tokens=20
+    )
+    assert evaluation.scenario_digest(first) == evaluation.scenario_digest(second)
+
+
+def test_missing_cache_write_usage_stays_unknown(comparison):
+    evaluation = importlib.import_module("evaluate_compaction_effectiveness")
+    response = SimpleNamespace(
+        usage_details={
+            "input_token_count": 1200,
+            "cache_read_input_token_count": 1000,
+            "output_token_count": 50,
+        },
+        raw_representation=None,
+    )
+    measured = evaluation.usage(response)
+    assert measured["cache_write"] is None
+    assert evaluation.totals([{"usage": measured}])["cache_write"] is None
+    response.raw_representation = SimpleNamespace(
+        usage={"input_tokens_details": {"cache_write_tokens": 200}}
+    )
+    measured = evaluation.usage(response)
+    assert measured["cache_write"] == 200
+    summed = evaluation.totals([{"usage": measured}, {"usage": measured}])
+    assert summed["uncached"] == 400
+    assert summed["hit_rate"] == 2000 / 2400
+
+
+def test_trace_records_failures_without_provider_error_text(comparison, monkeypatch, tmp_path):
+    evaluation = importlib.import_module("evaluate_compaction_effectiveness")
+    model = AsyncMock()
+    model.get_response.side_effect = RuntimeError("private-provider-error")
+    trace = evaluation.Trace(tmp_path / "trace.jsonl", 1, "baseline")
+    with trace.capture({"summary": "summarize"}):
+        with pytest.raises(RuntimeError, match="private-provider-error"):
+            asyncio.run(
+                evaluation._live.MeteredClient(model).get_response(
+                    [Message("system", ["summarize"]), Message("user", ["source"])]
+                )
+            )
+    assert trace.rows[0]["kind"] == "summary_failure"
+    assert trace.rows[0]["operation"] == "summary"
+    assert "private-provider-error" not in trace.path.read_text(encoding="utf-8")
+
+
+def test_pricing_does_not_charge_writes_as_ordinary_input(comparison):
+    reporting = importlib.import_module("report_compaction_effectiveness")
+    prices = {"input": 0.1, "cached": 0.01, "cache_write": 0.125, "output": 0.5}
+    usage = {"input": 1200, "cached": 1000, "cache_write": 150, "output": 50}
+    assert reporting.cost(usage, prices) == pytest.approx(58.75 / 1_000_000)
+    assert reporting.cost({**usage, "cache_write": None}, prices) is None
+    with pytest.raises(ValueError, match="exceed input"):
+        reporting.cost({**usage, "cache_write": 300}, prices)
+
+
+def test_failed_pairs_remain_visible_and_prevent_aggregate_cost(comparison):
+    reporting = importlib.import_module("report_compaction_effectiveness")
+    prices = dict.fromkeys(("input", "cached", "cache_write", "output"), 1.0)
+    measured = {
+        "input": 1200,
+        "cached": 1000,
+        "cache_write": 100,
+        "output": 50,
+        "hit_rate": 1000 / 1200,
+        "uncached": 200,
+    }
+    before = {
+        "seed": 1,
+        "variant": "baseline",
+        "failed": False,
+        "scenario_sha256": "same-workload",
+        "cache_id": "before",
+        "facts_left": 17,
+        "scoped_accuracy": [1.0],
+        "combined_accuracy": [1.0],
+        "agent_seed": measured,
+        "summarizer_seed": measured,
+        "workload": measured,
+        "agent_seed_calls": [{"usage": {"input": 1200, "cached": 0}}],
+    }
+    after = {**deepcopy(before), "variant": "hardened", "cache_id": "after"}
+    report = {"conversations": [before, after]}
+    assert reporting.summarize(report, prices)["screen_within_margins"]
+    after["failed"] = True
+    result = reporting.summarize(report, prices)
+    assert result["pairs"] == [{"seed": 1, "complete": False}]
+    assert result["aggregate"]["hardened"]["failures"] == 1
+    assert "workload" not in result["aggregate"]["hardened"]
+    assert not result["screen_within_margins"]
