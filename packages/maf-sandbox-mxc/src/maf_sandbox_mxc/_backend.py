@@ -158,8 +158,14 @@ class MxcSandbox:
         self.authorize()
         _timeout(timeout)
         self.files.resolve(directory, working_directory, self_allowed=False)
-        await self.backend.work(lambda catalog: catalog.reclaim(self.instance_id), timeout=timeout)
-        self.files.remove(directory, working_directory, True)
+        self.busy = True
+        try:
+            await self.backend.work(
+                lambda catalog: catalog.reclaim(self.instance_id), timeout=timeout
+            )
+            self.files.remove(directory, working_directory, True)
+        finally:
+            self.busy = False
 
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float

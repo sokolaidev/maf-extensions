@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+import subprocess
+import sys
 import threading
 from dataclasses import replace
 
@@ -15,7 +18,7 @@ from maf_sandbox.conformance import assert_storage_base_conformance
 from maf_sandbox_mxc._backend import MxcSandboxBackend
 from maf_sandbox_mxc._config import MxcSandboxConfig, startup_identity
 from maf_sandbox_mxc._files import Files
-from maf_sandbox_mxc._state import Catalog
+from maf_sandbox_mxc._state import Catalog, contract
 from maf_sandbox_mxc.files.request import FileLimits, Request
 from maf_sandbox_mxc.host_store import Refused
 from maf_sandbox_mxc.shared_store import Limits, ScratchLimits
@@ -27,6 +30,65 @@ SPEC = SandboxSpec(
     requires=frozenset(),
     program=ProgramRequirements(max_program_bytes=65536),
 )
+
+
+def test_contract_identity_survives_hash_randomization_and_label_order():
+    program = (
+        "from maf_sandbox import Capability, SandboxSpec\n"
+        "from maf_sandbox_mxc._state import contract\n"
+        "caps=frozenset({Capability.FILES_IN, Capability.FILES_OUT, Capability.FILES_LIST})\n"
+        "print(contract(SandboxSpec(kind='test', requires=caps)))"
+    )
+    fingerprints = {
+        subprocess.check_output(
+            [sys.executable, "-c", program],
+            env=os.environ | {"PYTHONHASHSEED": seed},
+            timeout=30,
+        )
+        for seed in ("1", "2", "3", "4")
+    }
+    assert len(fingerprints) == 1
+    first = replace(SPEC, labels={"a": "one", "b": "two"})
+    reordered = replace(SPEC, labels={"b": "two", "a": "one"})
+    changed = replace(first, execution_contract="different")
+    assert contract(first) == contract(reordered) != contract(changed)
+
+
+def test_reclaim_excludes_programs_until_worker_cleanup_finishes(config, monkeypatch):
+    started, release = threading.Event(), threading.Event()
+
+    def reclaim(self, session):
+        started.set()
+        assert release.wait(10)
+
+    monkeypatch.setattr(Catalog, "reclaim", reclaim)
+
+    async def check():
+        backend = MxcSandboxBackend(config)
+        await backend.initialize()
+        try:
+            async with backend.call_admission(KEY, SPEC, owner="cleanup", timeout=20):
+                sandbox = await backend.acquire(KEY, SPEC)
+                cleanup = asyncio.create_task(
+                    sandbox.reclaim("old", working_directory=".", timeout=10)
+                )
+                try:
+                    async with asyncio.timeout(5):
+                        while not started.is_set():
+                            await asyncio.sleep(0.01)
+                    with pytest.raises(Refused, match="already has"):
+                        await sandbox.run_call(
+                            "next", "print(1)", guest_call_path="next", timeout=5
+                        )
+                finally:
+                    release.set()
+                    await cleanup
+                sandbox.authorize()
+        finally:
+            release.set()
+            await backend.aclose()
+
+    asyncio.run(check())
 
 
 def test_collected_files_do_not_become_another_calls_implicit_uploads():

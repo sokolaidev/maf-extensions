@@ -6,6 +6,7 @@ import hashlib
 import json
 import threading
 import uuid
+from dataclasses import asdict
 
 from maf_sandbox import SandboxKey, SandboxSpec
 
@@ -20,6 +21,13 @@ from .shared_store import SharedStore
 def identity(*values: str) -> str:
     """Hash framed host identities without storing user-visible names in the journal."""
     return hashlib.sha256(json.dumps(values, separators=(",", ":")).encode()).hexdigest()
+
+
+def contract(spec: SandboxSpec) -> str:
+    """Bind an admitted contract independently of set and mapping iteration order."""
+    fields = asdict(spec)
+    fields["requires"] = sorted(spec.requires)
+    return identity(json.dumps(fields, sort_keys=True, separators=(",", ":")))
 
 
 class Catalog:
@@ -97,7 +105,7 @@ class Catalog:
             "owner": identity(key.scope, key.thread_id, key.agent_id, key.call_id),
             "kind": identity(spec.kind),
             "scope": identity(key.scope, key.thread_id),
-            "contract": identity(repr(spec)),
+            "contract": contract(spec),
         }
 
     def replay(

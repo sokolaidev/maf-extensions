@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from maf_sandbox import ProgramRequirements, Sandbox, SandboxKey, SandboxSpec
+from maf_sandbox import IsolationScope, ProgramRequirements, Sandbox, SandboxKey, SandboxSpec
 from maf_sandbox.native_conformance import (
     assert_call_scope_conformance,
     assert_exec_conformance,
@@ -57,14 +57,15 @@ def native_config(tmp_path):
 class Subject:
     working_directory = "/workspace/calls/probe"
 
-    def __init__(self, backend, key):
+    def __init__(self, backend, key, spec=SPEC):
         self.backend, self.key = backend, key
+        self.spec = spec
         self.capabilities = backend.declarations.capabilities
         self.sandbox: Sandbox = cast(Sandbox, Access(self))
 
     async def call(self, code):
-        async with self.backend.call_admission(self.key, SPEC, owner="native", timeout=90):
-            sandbox = await self.backend.acquire(self.key, SPEC)
+        async with self.backend.call_admission(self.key, self.spec, owner="native", timeout=90):
+            sandbox = await self.backend.acquire(self.key, self.spec)
             return await sandbox.run_call(
                 uuid.uuid4().hex, code, guest_call_path="probe", timeout=90
             )
@@ -98,7 +99,7 @@ class Subject:
         )
 
     async def dispose(self):
-        assert await self.backend.dispose(self.key, kind=SPEC.kind) is None
+        assert await self.backend.dispose(self.key, kind=self.spec.kind) is None
 
     async def plant_symlink(self, path: str, target: str) -> None:
         raise NotImplementedError("native link creation must be refused")
@@ -125,8 +126,10 @@ class Access:
     def __getattr__(self, method):
         async def access(*args, **kwargs):
             subject = self.subject
-            async with subject.backend.call_admission(subject.key, SPEC, owner="probe", timeout=90):
-                sandbox = await subject.backend.acquire(subject.key, SPEC)
+            async with subject.backend.call_admission(
+                subject.key, subject.spec, owner="probe", timeout=90
+            ):
+                sandbox = await subject.backend.acquire(subject.key, subject.spec)
                 return await getattr(sandbox, method)(*args, **kwargs)
 
         return access
@@ -153,12 +156,13 @@ def test_native_call_scope(native_config):
     async def check():
         backend = MxcSandboxBackend(native_config)
         await backend.initialize()
-        first = Subject(backend, SandboxKey("native", "scope", "agent", "first"))
-        second = Subject(backend, SandboxKey("native", "scope", "agent", "second"))
+        spec = replace(SPEC, isolation_scope=IsolationScope.CALL)
+        first = Subject(backend, SandboxKey("native", "scope", "agent", "first"), spec)
+        second = Subject(backend, SandboxKey("native", "scope", "agent", "second"), spec)
 
         async def acquire_second():
-            async with backend.call_admission(second.key, SPEC, owner="second", timeout=90):
-                await backend.acquire(second.key, SPEC)
+            async with backend.call_admission(second.key, spec, owner="second", timeout=90):
+                await backend.acquire(second.key, spec)
             return second
 
         try:
