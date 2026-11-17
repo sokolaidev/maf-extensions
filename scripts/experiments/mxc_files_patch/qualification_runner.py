@@ -111,6 +111,22 @@ def qualify(root: Path, kernel_dir: Path, report: dict, prelaunch_recovery: bool
         str(root / "native"),
     )
     report["native_state"] = json.loads((root / "native/result.json").read_text(encoding="utf-8"))
+    run(
+        root,
+        "closed-network",
+        sys.executable,
+        "-m",
+        "scripts.experiments.mxc_session_patch.network_probe",
+        "--helper",
+        str(helper(root)),
+        "--startup",
+        str(root / "images/agent/snapshot"),
+        "--root",
+        str(root / "network"),
+        "--profile",
+        "files",
+    )
+    report["network"] = json.loads((root / "network/result.json").read_text(encoding="utf-8"))
     volume_probes = [("checkpoint_volume_probe", "checkpoint-volume")]
     if not prelaunch_recovery:
         volume_probes.insert(0, ("volume_probe", "volume"))

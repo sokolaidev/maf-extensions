@@ -241,6 +241,10 @@ jobs:
             ${{ runner.temp }}/mxc-files/native/*.json
             ${{ runner.temp }}/mxc-files/native/*.stdout
             ${{ runner.temp }}/mxc-files/native/*.stderr
+            ${{ runner.temp }}/mxc-files/network/result.json
+            ${{ runner.temp }}/mxc-files/network/*/native.stdout
+            ${{ runner.temp }}/mxc-files/network/*/native.stderr
+            ${{ runner.temp }}/mxc-files/network/*/native.stderr.bin
             ${{ runner.temp }}/mxc-files/files/result.json
             ${{ runner.temp }}/mxc-files/files/*/native.json
             ${{ runner.temp }}/mxc-files/files/*/native.stdout
@@ -404,6 +408,9 @@ jobs:
             ${{ runner.temp }}/mxc-v11/aggregate-storage/*/native.stdout
             ${{ runner.temp }}/mxc-v11/aggregate-storage/*/native.stderr
             ${{ runner.temp }}/mxc-v11/runtime-contract/result.json
+            ${{ runner.temp }}/mxc-v11/network/result.json
+            ${{ runner.temp }}/mxc-v11/network/*/native.stdout
+            ${{ runner.temp }}/mxc-v11/network/*/native.stderr
             ${{ runner.temp }}/mxc-v11/runtime-contract/*/*.json
             ${{ runner.temp }}/mxc-v11/runtime-contract/*/*.log
             ${{ runner.temp }}/mxc-v11/runtime-contract/*/native.stdout
