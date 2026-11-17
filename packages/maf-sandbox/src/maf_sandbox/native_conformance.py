@@ -32,6 +32,10 @@ class NativeFileSubject(Protocol):
         """Read bytes by executing in the guest, independent of the host pull implementation."""
         ...
 
+    async def write_in_guest(self, path: str, content: bytes) -> None:
+        """Write by executing in the guest and collect its output through the native transport."""
+        ...
+
     async def assert_links_refused(self) -> None:
         """Attempt guest symbolic and hard links; fail unless both are refused without a link."""
         ...
@@ -64,8 +68,9 @@ async def assert_files_out_conformance(subject: NativeFileSubject) -> None:
     await assert_storage_base_conformance(subject.sandbox, subject.capabilities)
     sandbox, cwd = subject.sandbox, subject.working_directory
     data = bytes(range(256))
-    await sandbox.write_file("native-output/value", data, working_directory=cwd)
-    assert await subject.read_in_guest("native-output/value") == data
+    await sandbox.write_file("native-output/value", b"staged", working_directory=cwd)
+    assert await subject.read_in_guest("native-output/value") == b"staged"
+    await subject.write_in_guest("native-output/value", data)
     entry = await sandbox.stat_file("native-output/value", working_directory=cwd)
     assert entry is not None and entry.kind is EntryKind.FILE and entry.size_bytes == len(data)
     assert (

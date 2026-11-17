@@ -28,10 +28,18 @@ class Subject:
         }
     )
 
-    def __init__(self, *, corrupt=False, allows_links=False):
+    def __init__(self, *, corrupt=False, allows_links=False, artifact_defect=None):
         self.sandbox = InProcessSandbox()
         self.sandbox.directories.add(self.working_directory)
         self.corrupt, self.allows_links = corrupt, allows_links
+        self.artifact_defect = artifact_defect
+
+    async def write_in_guest(self, path, content):
+        if self.artifact_defect == "drop":
+            return
+        self.sandbox.contents[self.working_directory + "/" + path] = (
+            b"x" * len(content) if self.artifact_defect == "corrupt" else content
+        )
 
     async def read_in_guest(self, path):
         if self.corrupt:
@@ -69,3 +77,9 @@ def test_native_probe_positive_control(suite):
 def test_native_probe_rejects_failed_guest_control(suite, defect):
     with pytest.raises(AssertionError):
         asyncio.run(suite(Subject(**{defect: True})))
+
+
+@pytest.mark.parametrize("defect", ["drop", "corrupt"])
+def test_files_out_rejects_missing_or_corrupted_guest_artifacts(defect):
+    with pytest.raises(AssertionError):
+        asyncio.run(assert_files_out_conformance(Subject(artifact_defect=defect)))

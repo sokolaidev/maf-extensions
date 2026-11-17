@@ -12,6 +12,7 @@ from maf_sandbox import (
     Sandbox,
     SandboxLimits,
     SandboxSpec,
+    SandboxTransferLimitsNotPermitted,
     TransferLimits,
 )
 
@@ -45,8 +46,10 @@ class MxcProgramChannel:
         )
 
     def _requirements(self, requirements: ProgramRequirements) -> None:
-        if requirements.profile not in self.profiles or requirements.max_program_bytes > MAX_CODE:
-            raise ValueError("MXC requires python-portable-v1 with at most 65536 program bytes")
+        if requirements.profile not in self.profiles:
+            raise ValueError("MXC requires python-portable-v1")
+        if requirements.max_program_bytes > MAX_CODE:
+            raise SandboxTransferLimitsNotPermitted("MXC permits at most 65536 program bytes")
 
     def guest_working_directory(self, guest_call_path: str, *, host_tools: bool = False) -> str:
         if host_tools:

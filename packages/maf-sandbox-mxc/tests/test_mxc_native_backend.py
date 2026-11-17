@@ -82,6 +82,13 @@ class Subject:
         assert result.exit_code == 0 and not result.stderr_bytes
         return base64.b64decode(result.stdout_bytes.strip(), validate=True)
 
+    async def write_in_guest(self, path, content):
+        result = await self.call(
+            "import os\nos.makedirs(os.path.dirname(" + repr(path) + "), exist_ok=True)\n"
+            "with open(" + repr(path) + ", 'wb') as stream:\n stream.write(" + repr(content) + ")"
+        )
+        assert result.exit_code == 0 and not result.stderr_bytes
+
     async def assert_links_refused(self):
         result = await self.call(
             "import os\nwith open('link-control', 'wb') as stream: stream.write(b'control')\n"

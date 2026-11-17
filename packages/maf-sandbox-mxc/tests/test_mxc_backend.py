@@ -17,12 +17,16 @@ from maf_sandbox import (
     BackendDeclarations,
     Cleanup,
     Egress,
+    Isolation,
     ProgramRequirements,
     SandboxKey,
     SandboxRouter,
     SandboxSpec,
+    SandboxTransferLimitsNotPermitted,
+    Selection,
 )
 from maf_sandbox.conformance import assert_storage_base_conformance
+from maf_sandbox.testing import InProcessSandboxBackend
 
 from maf_sandbox_mxc._backend import MxcSandbox, MxcSandboxBackend
 from maf_sandbox_mxc._config import MxcSandboxConfig, startup_identity
@@ -41,6 +45,27 @@ SPEC = SandboxSpec(
     requires=frozenset(),
     program=ProgramRequirements(max_program_bytes=65536),
 )
+
+
+@pytest.mark.parametrize("program_bytes", [65537, 8 * 1024**2])
+@pytest.mark.parametrize("mxc_first", [False, True])
+def test_program_capacity_refusal_allows_router_fallback(config, program_bytes, mxc_first):
+    async def check():
+        mxc = MxcSandboxBackend(config)
+        fallback = InProcessSandboxBackend(isolation=Isolation.MICROVM)
+        spec = replace(SPEC, program=ProgramRequirements(max_program_bytes=program_bytes))
+        backends = [mxc, fallback] if mxc_first else [fallback, mxc]
+        try:
+            router = SandboxRouter(backends, selection=Selection.PER_SPEC)
+            await router.acquire(KEY, spec)
+            assert fallback.keys and all(key == KEY for key in fallback.keys)
+            assert not config.root.exists()
+            with pytest.raises(SandboxTransferLimitsNotPermitted, match="65536"):
+                mxc.declarations.program_channels[0].transfer_limits(spec)
+        finally:
+            await mxc.aclose()
+
+    asyncio.run(check())
 
 
 def test_cancelled_close_finishes_shutdown_before_propagating(config, monkeypatch):
@@ -467,13 +492,13 @@ def config(tmp_path):
 
 def test_closed_admission_refuses_unsupported_policy_before_store_creation(config):
     backend = MxcSandboxBackend(config)
-    for spec in (
-        replace(SPEC, egress=Egress.UNRESTRICTED),
-        replace(SPEC, egress=Egress.ALLOWLIST, egress_allow=("example.com",)),
-        replace(SPEC, program=ProgramRequirements()),
-        replace(SPEC, image="unqualified"),
+    for spec, error in (
+        (replace(SPEC, egress=Egress.UNRESTRICTED), ValueError),
+        (replace(SPEC, egress=Egress.ALLOWLIST, egress_allow=("example.com",)), ValueError),
+        (replace(SPEC, program=ProgramRequirements()), SandboxTransferLimitsNotPermitted),
+        (replace(SPEC, image="unqualified"), ValueError),
     ):
-        with pytest.raises(ValueError):
+        with pytest.raises(error):
             backend.validate(spec)
     assert not config.root.exists()
     asyncio.run(backend.aclose())
