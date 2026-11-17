@@ -4,7 +4,7 @@
 
 > **Experimental.** The API may change without notice. Importing the package emits `MafSandboxMxcExperimentalWarning`.
 
-Durable MXC Python sessions, bounded helper transports and mutual-TLS coordination. This package is unreleased and experimental. `MxcSandboxBackend` supplies a closed-network native Python program channel with bounded input and output files. Native adapter qualification is tracked separately from the previously qualified helper profiles.
+Durable MXC Python sessions, bounded helper transports and mutual-TLS coordination. This package is unreleased and experimental. `MxcSandboxBackend` supplies a closed-network native Python program channel with bounded input and output files. The fixed adapter/CodeAct workloads passed independently on Linux/KVM and Windows/WHP in [run 44001109808](https://github.com/sokolaidev/maf-extensions/actions/runs/44001109808); this is experimental qualification of the retained file profile, separate from MXC 1.1 console qualification and production acceptance.
 
 ## Runtime surfaces
 
@@ -18,6 +18,8 @@ The adapter depends on `maf-sandbox`; the underlying journal and transports use 
 ## Native adapter
 
 Construct `MxcSandboxConfig` with the host-owned helper, startup directory, private journal root, a runtime profile name, expected helper SHA-256, `startup_identity(startup)`, `Limits` and `ScratchLimits`. Pin identities from qualification evidence rather than accepting assets from an untrusted request. Keep the configured assets immutable while the backend is open. Call `await backend.initialize()` once for a new root; subsequent backend instances reopen that journal on acquisition and refuse a missing or mismatched store. `await backend.aclose()` releases ownership while retaining checkpoints and completed results. Disposal retires the selected session; scope purge also includes sessions not acquired by this process.
+
+The result allowance must cover base64-encoded artifacts and both streams. For the default transfer envelope, the native qualification uses `Limits(..., result_bytes=32 * 1024**2)`. Scratch admission must also cover two configured maximum checkpoints plus bounded input, output and metadata staging; the transport refuses insufficient budgets before starting a guest.
 
 The first channel uses the retained MXC 1.0.1 file-capable custom profile with the directory-collection helper extension. The MXC 1.1 console profile is a separate qualification and cannot supply this file/independent-stream contract. Allowlisted and unrestricted network requests, guest images, shell execution and host tools are refused. Use `ProgramRequirements(max_program_bytes=65536)` and a call timeout of at most 90 seconds. Configure CodeAct file transfer limits within the default 16 MiB / 64-file envelope. Directory collection includes input files still present after execution, so they count toward the output envelope. Output exceeding either independent one-MiB stream allowance refuses publication rather than returning an apparently complete `ExecResult`.
 
