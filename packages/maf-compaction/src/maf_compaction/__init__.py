@@ -81,6 +81,7 @@ from ._session import (
     make_session_recall_tool,
     make_session_record_merge_middleware,
 )
+from ._summary_limiter import SummaryRequestLimiter, SummaryRequestStats
 from ._tool_result import ResultTextRewriter
 from ._toolsummary import (
     DEFAULT_COVERAGE_SHARE,
@@ -173,6 +174,8 @@ __all__ = [
     "SessionPersistence",
     "SessionResponseStream",
     "SessionToolResultRecallMiddleware",
+    "SummaryRequestLimiter",
+    "SummaryRequestStats",
     "ToolResultAnchoredSummarizationCompactionStrategy",
     "ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy",
     "ToolResultRecallMiddleware",

@@ -34,6 +34,7 @@ from maf_compaction import (
     SessionCompactionProvider,
     SessionCompactionRegistry,
     SessionToolResultRecallMiddleware,
+    SummaryRequestLimiter,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     make_session_recall_tool,
     make_session_record_merge_middleware,
@@ -500,16 +501,22 @@ async def test_agent_merges_during_tools_without_waiting_for_pending_work(stream
 
 
 @pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("ending", ["tool_error", "model_error", "cancel"])
-async def test_agent_failure_or_cancellation_cleans_up_work(stream, ending):
+@pytest.mark.parametrize("ending", ["done", "tool_error", "model_error", "cancel"])
+@pytest.mark.parametrize("parallel", [1, 3])
+async def test_agent_failure_or_cancellation_cleans_up_work(stream, ending, parallel):
     entered, tool_entered, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    started_count = cancelled_count = 0
 
     class Waiting(_Summarizer):
         async def get_response(self, messages, **kwargs):
-            entered.set()
+            nonlocal started_count, cancelled_count
+            started_count += 1
+            if started_count == parallel:
+                entered.set()
             try:
                 await asyncio.Future()
             finally:
+                cancelled_count += 1
                 cancelled.set()
 
     def build():
@@ -518,11 +525,16 @@ async def test_agent_failure_or_cancellation_cleans_up_work(stream, ending):
             stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
         )
         stack.strategy.record_budget_share = 0.001
+        if parallel > 1:
+            stack.strategy.user_turns.summary_options = {"max_tokens": 1_200}
+            stack.strategy.user_turns.summary_limiter = SummaryRequestLimiter(
+                10_000_000, max_parallel_summary_requests=parallel
+            )
         return stack
 
     registry = SessionCompactionRegistry(build)
     session = AgentSession()
-    session.state["in_memory"] = {"messages": _history(4)}
+    session.state["in_memory"] = {"messages": _history(18 if parallel > 1 else 4)}
 
     @tool
     async def lookup() -> str:
@@ -557,6 +569,7 @@ async def test_agent_failure_or_cancellation_cleans_up_work(stream, ending):
     else:
         await asyncio.wait_for(task, 10)
     assert cancelled.is_set()
+    assert started_count == cancelled_count == parallel
     assert not registry._merge_work
     with registry.activate(session) as stack:
         assert isinstance(
@@ -566,15 +579,21 @@ async def test_agent_failure_or_cancellation_cleans_up_work(stream, ending):
         assert stack.strategy._background is None
 
 
-async def test_early_stream_close_cancels_pending_merge():
+@pytest.mark.parametrize("parallel", [1, 3])
+async def test_early_stream_close_cancels_pending_merge(parallel):
     entered, cancelled = asyncio.Event(), asyncio.Event()
+    started_count = cancelled_count = 0
 
     class Waiting(_Summarizer):
         async def get_response(self, messages, **kwargs):
-            entered.set()
+            nonlocal started_count, cancelled_count
+            started_count += 1
+            if started_count == parallel:
+                entered.set()
             try:
                 await asyncio.Future()
             finally:
+                cancelled_count += 1
                 cancelled.set()
 
     def build():
@@ -583,11 +602,16 @@ async def test_early_stream_close_cancels_pending_merge():
             stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
         )
         stack.strategy.record_budget_share = 0.001
+        if parallel > 1:
+            stack.strategy.user_turns.summary_options = {"max_tokens": 1_200}
+            stack.strategy.user_turns.summary_limiter = SummaryRequestLimiter(
+                10_000_000, max_parallel_summary_requests=parallel
+            )
         return stack
 
     registry = SessionCompactionRegistry(build)
     session = AgentSession()
-    session.state["in_memory"] = {"messages": _history(4)}
+    session.state["in_memory"] = {"messages": _history(18 if parallel > 1 else 4)}
 
     @tool
     async def lookup() -> str:
@@ -604,6 +628,7 @@ async def test_early_stream_close_cancels_pending_merge():
                     break
     assert len(model.prompts) == 1
     assert cancelled.is_set()
+    assert started_count == cancelled_count == parallel
     assert not registry._merge_work
 
 

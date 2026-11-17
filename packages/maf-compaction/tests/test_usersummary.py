@@ -39,7 +39,7 @@ from agent_framework._compaction import (
     project_included_messages,
 )
 
-from maf_compaction import _usersummary
+from maf_compaction import SummaryRequestLimiter, _usersummary
 from maf_compaction._preserve import (
     PRESERVE_REASON_KEY,
     PRESERVED_KEY,
@@ -756,13 +756,15 @@ class _WaitingSummarizer:
         raise AssertionError("The request must be cancelled")
 
 
-async def test_summary_timeout_cancels_request_and_counts_toward_cooldown() -> None:
+@pytest.mark.parametrize("limited", [False, True])
+async def test_summary_timeout_cancels_request_and_counts_toward_cooldown(limited: bool) -> None:
     client = _WaitingSummarizer()
     strategy = _strategy(
         client,
         summary_timeout_seconds=0.01,
         max_consecutive_summary_failures=1,
         summary_backoff_seconds=60,
+        summary_limiter=SummaryRequestLimiter(300_000) if limited else None,
     )
     messages = _conversation(8)
     before = _rendered(messages)
