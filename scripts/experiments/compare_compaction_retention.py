@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
-from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from compaction_prompt_baseline import BASELINE_PROMPTS
 from maf_cachebench import _live_cli
 from maf_cachebench._providers import ProviderRuntime, build_provider
 from maf_compaction import _composed, _usersummary
@@ -20,9 +19,6 @@ from maf_compaction._summary_input import PROMPT_VERSION_ENV, versioned_prompt
 @contextmanager
 def prompt_policy(variant: str, *, prefix: str = "") -> Iterator[dict[str, str]]:
     """Select only prompt text, optionally adding a stable benchmark cache namespace."""
-    baseline = json.loads(
-        Path(__file__).with_name("compaction_prompt_baseline.json").read_text(encoding="utf-8")
-    )["prompts"]
     current = {
         "summary": _usersummary.DEFAULT_USER_SUMMARY_PROMPT,
         "fold": _usersummary.DEFAULT_USER_FOLD_PROMPT,
@@ -33,7 +29,7 @@ def prompt_policy(variant: str, *, prefix: str = "") -> Iterator[dict[str, str]]
     selected = {
         key: prefix + value
         for key, value in (
-            baseline
+            BASELINE_PROMPTS
             if variant == "baseline"
             else {key: versioned_prompt(value, "2") for key, value in current.items()}
         ).items()

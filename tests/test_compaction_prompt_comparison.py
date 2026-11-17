@@ -89,7 +89,7 @@ def test_retention_harness_matches_salts_and_omits_summary_temperature(
         monkeypatch.setenv(PROMPT_VERSION_ENV, ambient_version)
     retention = importlib.import_module("compare_compaction_retention")
     current = comparison.prompts()
-    previous = json.loads(comparison.BASELINE.read_text(encoding="utf-8"))["prompts"]
+    previous = comparison.BASELINE_PROMPTS
     expected = previous if variant == "baseline" else current
     options = []
 

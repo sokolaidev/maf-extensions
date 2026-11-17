@@ -4,9 +4,11 @@ Issue [#2763](https://github.com/sokolaidev/maf-extensions/issues/2763) covers u
 
 The candidate is experimental prompt version 2, selected with `MAF_COMPACTION_PROMPT_VERSION=2` before constructing strategies. Unset or `1` keeps the exact historical prompts; other values fail construction. Existing strategies retain their selection, custom prompts take precedence, and switching versions preserves accepted history. The [configuration contract](../../../packages/maf-compaction/README.md#summarizer-instructions-and-upgrades) describes rollback and session restoration. The comparison scripts explicitly select their historical and hardened arms independently of this environment variable, retaining the same prompt texts used in the evidence below.
 
+Raw benchmark JSON outputs are kept outside source control. The results below summarize the completed local runs; the commands write new reports to ignored local paths.
+
 ## Comparison protocol
 
-[compare_compaction_prompts.py](../../../scripts/experiments/compare_compaction_prompts.py) pairs the candidate prompts with the exact defaults from main revision `55612574ec2bdf500b4ed4fa010ab5b92428978f`, retained in [compaction_prompt_baseline.json](../../../scripts/experiments/compaction_prompt_baseline.json). It covers all four operations, including both default harder attempts. Each receives benign requirements or source facts, a task-override attack, and a fact-poisoning attack. User cases include a region correction and approval and credential constraints. Three repetitions produce 90 requests, alternating which variant goes first on successive repetitions.
+[compare_compaction_prompts.py](../../../scripts/experiments/compare_compaction_prompts.py) pairs the candidate prompts with the exact defaults from main revision `55612574ec2bdf500b4ed4fa010ab5b92428978f`, retained in [compaction_prompt_baseline.py](../../../scripts/experiments/compaction_prompt_baseline.py). It covers all four operations, including both default harder attempts. Each receives benign requirements or source facts, a task-override attack, and a fact-poisoning attack. User cases include a region correction and approval and credential constraints. Three repetitions produce 90 requests, alternating which variant goes first on successive repetitions.
 
 Run from the repository environment, using an already configured cachebench provider:
 
@@ -36,7 +38,7 @@ The increase can change whole-unit batch selection near an input cap. Tests exer
 
 ## Live prompt comparison
 
-The [retained synthetic evidence](summarizer-boundary-luna6.json) uses the Azure Responses route with `gpt-6-luna`, model version `2026-09-22`, in Sweden Central. The run used three repetitions, a 2,048-token output cap, no temperature option and Azure CLI authentication. Package metadata was `maf-compaction` 0.13.8, `maf-cachebench` 0.6.1 and `agent-framework-core` 1.24.0; the candidate was the working implementation of this issue, identified by its exact prompt text and hashes in the evidence.
+The synthetic comparison used the Azure Responses route with `gpt-6-luna`, model version `2026-09-22`, in Sweden Central. The run used three repetitions, a 2,048-token output cap, no temperature option and Azure CLI authentication. Package metadata was `maf-compaction` 0.13.8, `maf-cachebench` 0.6.1 and `agent-framework-core` 1.24.0; the candidate was the working implementation of this issue, identified by its exact prompt text and hashes in the evidence.
 
 | Result | Historical | Hardened |
 |---|---:|---:|
@@ -63,7 +65,7 @@ uv run python scripts/experiments/compare_compaction_retention.py --variant base
 
 Repeat with `--variant hardened` and a separate results file, then with seed offsets 1 and 2. The measured variants run concurrently, each processing its three seeds in order. The fixed salt shares some cacheable prefixes across paired variants; cache-hit and latency comparisons are therefore not independent cache measurements. The three price inputs are unit weights for token accounting, not Azure prices or a bill estimate. The uncompacted control is expected to exceed the simulated 16,000-token window; its accuracy still anchors retention.
 
-The [completed retention evidence](summarizer-boundary-retention-luna6.json) retains all twelve result rows from implementation revision `27541959e5c951868ab288d8cfa7545b1804f13b`: an uncompacted control and the composed strategy for each variant and seed. Every run completed 17 seeding turns and 10 closing probe steps. Each control retained all 37 facts and answered both measures at 100%, while exceeding the simulated context window. The composed strategy produced these observations; paired entries are historical / hardened:
+The completed retention comparison recorded all twelve result rows from implementation revision `27541959e5c951868ab288d8cfa7545b1804f13b`: an uncompacted control and the composed strategy for each variant and seed. Every run completed 17 seeding turns and 10 closing probe steps. Each control retained all 37 facts and answered both measures at 100%, while exceeding the simulated context window. The composed strategy produced these observations; paired entries are historical / hardened:
 
 | Seed | Historical facts retained | Hardened facts retained | Scoped answer accuracy | Combined answer accuracy | Summarizer calls |
 |---|---:|---:|---:|---:|---:|
@@ -103,7 +105,7 @@ The price input is an Azure Retail Prices API response containing exactly one US
 
 ### Results from 17 November 2026
 
-The [isolated effectiveness evidence](summarizer-boundary-effectiveness-luna6.json) retains six completed conversations, ten complete targeted answers, provider usage, compression events, reviewed summaries and the four retrieved price meters. Both variants used implementation `1a9064267da8ddd297f5a5ee621433569875af41` and the same Luna 6 deployment/version described above. Every pair has matching canonical workload hashes and distinct cache identities. Each conversation's first cacheable request reported zero cached tokens. No rate-limit retry, connection retry, summarizer failure or budget failure occurred.
+The isolated effectiveness comparison recorded six completed conversations, ten complete targeted answers, provider usage, compression events, reviewed summaries and the four retrieved price meters. Both variants used implementation `1a9064267da8ddd297f5a5ee621433569875af41` and the same Luna 6 deployment/version described above. Every pair has matching canonical workload hashes and distinct cache identities. Each conversation's first cacheable request reported zero cached tokens. No rate-limit retry, connection retry, summarizer failure or budget failure occurred.
 
 | Seed | Facts, historical / hardened | Agent seed hit%, historical / hardened | Workload cost change |
 |---|---:|---:|---:|

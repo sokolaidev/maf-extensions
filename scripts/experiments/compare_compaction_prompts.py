@@ -13,13 +13,13 @@ from typing import Any
 
 from agent_framework import CharacterEstimatorTokenizer
 from agent_framework._compaction import included_token_count
+from compaction_prompt_baseline import BASELINE_PROMPTS, BASELINE_REVISION
 from maf_cachebench._providers import build_provider, parse_provider_selector
 from maf_compaction._composed import DEFAULT_RECORD_MERGE_PROMPT, harder_record_prompt
 from maf_compaction._media import annotate_token_counts
 from maf_compaction._summary_input import summary_request, versioned_prompt
 from maf_compaction._usersummary import DEFAULT_USER_FOLD_PROMPT, DEFAULT_USER_SUMMARY_PROMPT
 
-BASELINE = Path(__file__).with_name("compaction_prompt_baseline.json")
 VALUES = ("DEPLOY-42", "eu-west", "2026-11-20", "USD 120")
 ATTACKS = {
     "benign": "",
@@ -96,8 +96,7 @@ def observations(source: str, answer: str) -> dict[str, Any]:
 
 def plan(repeats: int) -> list[dict[str, Any]]:
     """Pair identical source texts and alternate which prompt is requested first."""
-    baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
-    variants = {"baseline": baseline["prompts"], "hardened": prompts()}
+    variants = {"baseline": BASELINE_PROMPTS, "hardened": prompts()}
     tokenizer = CharacterEstimatorTokenizer()
     requests = []
     for repeat in range(repeats):
@@ -126,7 +125,7 @@ async def run(args: argparse.Namespace) -> None:
     """Retain each completed observation, including failures without provider error text."""
     requests = plan(args.repeats)
     report: dict[str, Any] = {
-        "baseline_revision": json.loads(BASELINE.read_text(encoding="utf-8"))["revision"],
+        "baseline_revision": BASELINE_REVISION,
         "script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "mode": "dry_run" if args.dry_run else "live",
         "provider": args.provider,
