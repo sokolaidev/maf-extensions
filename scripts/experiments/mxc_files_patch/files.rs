@@ -94,7 +94,7 @@ pub fn run(args: &[String]) -> Result<bool> {
     let mut sandbox = BackendSession::restore_files(Path::new(&args[2]), shared.clone())?;
     let mut code = format!("import os\nguest_call_path={}\nguest_session_path='/workspace/session'\nos.chdir(guest_call_path)\n", serde_json::to_string(&format!("/workspace/{call_root}"))?);
     let source = String::from_utf8(bounded(Path::new(&args[4]),65536)?)?;
-    code.push_str(&format!("exec(compile({}, '<mxc-program>', 'exec', dont_inherit=True), globals(), globals())", serde_json::to_string(&source)?));
+    code.push_str(&format!("import builtins as _maf_mxc_builtins\n_maf_mxc_builtins.exec(_maf_mxc_builtins.compile({}, '<mxc-program>', 'exec', dont_inherit=True), _maf_mxc_builtins.globals(), _maf_mxc_builtins.globals())", serde_json::to_string(&source)?));
     let timeout_ms = number(&request,"timeout_ms",90000)?;
     if timeout_ms == 0 { return Err("invalid program timeout".into()); }
     write(&Path::new(&args[5]).with_extension("ready"), b"ready\n")?;

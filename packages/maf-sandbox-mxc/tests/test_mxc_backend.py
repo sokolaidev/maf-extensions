@@ -43,6 +43,113 @@ SPEC = SandboxSpec(
 )
 
 
+def test_cancelled_close_finishes_shutdown_before_propagating(config, monkeypatch):
+    started, release, stopped = threading.Event(), threading.Event(), threading.Event()
+    close = Catalog.close
+
+    def blocked_close(self):
+        started.set()
+        assert release.wait(10)
+        close(self)
+        stopped.set()
+
+    monkeypatch.setattr(Catalog, "close", blocked_close)
+
+    async def check():
+        backend = MxcSandboxBackend(config)
+        await backend.initialize()
+        async with backend.call_admission(KEY, SPEC, owner="one", timeout=2):
+            sandbox = await backend.acquire(KEY, SPEC)
+        task = asyncio.create_task(backend.aclose())
+        try:
+            async with asyncio.timeout(5):
+                while not started.is_set():
+                    await asyncio.sleep(0.001)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done() and not stopped.is_set()
+        finally:
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert stopped.is_set() and backend.closed
+        with pytest.raises(RuntimeError, match="shutdown"):
+            backend.executor.submit(lambda: None)
+        with pytest.raises(Refused, match="closed"):
+            await backend.work(lambda c: c.acquire(KEY, SPEC))
+        async with backend.call_admission(KEY, SPEC, owner="closed", timeout=2):
+            with pytest.raises(Refused, match="retired"):
+                sandbox.authorize()
+        await backend.aclose()
+        reopened = MxcSandboxBackend(config)
+        try:
+            async with reopened.call_admission(KEY, SPEC, owner="reopen", timeout=2):
+                await reopened.acquire(KEY, SPEC)
+        finally:
+            await reopened.aclose()
+
+    asyncio.run(check())
+
+
+def test_warm_acquires_keep_freshness_and_share_session_operations(config, monkeypatch):
+    started, release = threading.Event(), threading.Event()
+
+    def execute(self, session, call_id, request, cancel, timeout):
+        started.set()
+        assert release.wait(10)
+        return json.dumps(
+            {
+                "streams": {"stdout": {"base64": ""}, "stderr": {"base64": ""}},
+                "artifacts": [],
+                "directories": [],
+                "call_directory": request.call_directory,
+            }
+        ).encode()
+
+    monkeypatch.setattr(Catalog, "execute", execute)
+
+    async def check():
+        backend = MxcSandboxBackend(config)
+        await backend.initialize()
+        try:
+            async with backend.call_admission(KEY, SPEC, owner="one", timeout=5):
+                first = await backend.acquire(KEY, SPEC)
+                second = await backend.acquire(KEY, SPEC)
+                assert first is not second
+                assert first.instance_id == second.instance_id
+                assert first.freshly_created and not second.freshly_created
+                await first.write_file("one/input", b"input", working_directory="/workspace/calls")
+                assert (
+                    await second.read_file(
+                        "one/input", working_directory="/workspace/calls", max_bytes=10
+                    )
+                    == b"input"
+                )
+                task = asyncio.create_task(
+                    first.run_call("one", "pass", guest_call_path="one", timeout=5)
+                )
+                try:
+                    async with asyncio.timeout(5):
+                        while not started.is_set():
+                            await asyncio.sleep(0.001)
+                    with pytest.raises(Refused, match="running program"):
+                        second.authorize()
+                finally:
+                    release.set()
+                    await task
+                assert first.freshly_created and not second.freshly_created
+                with pytest.raises(Refused, match="retry code"):
+                    await second.run_call("one", "changed", guest_call_path="one", timeout=2)
+                assert await backend.dispose(KEY, kind=SPEC.kind) is None
+                for sandbox in (first, second):
+                    with pytest.raises(Refused, match="retired"):
+                        sandbox.authorize()
+        finally:
+            await backend.aclose()
+
+    asyncio.run(check())
+
+
 @pytest.mark.parametrize("cancelled", [False, True])
 def test_router_admission_can_release_from_another_task(config, cancelled):
     async def check():
@@ -164,7 +271,7 @@ def test_adapter_returns_guest_diagnostics_but_refuses_transport_failures(config
                 result = await sandbox.run_call("guest", "bad", guest_call_path="guest", timeout=2)
                 assert result.exit_code == 1
                 assert result.stdout == "before\n" and result.stderr == "ValueError: bad input\n"
-                assert sandbox.last_request is None and sandbox.files.revision == 0
+                assert sandbox.state.last_request is None and sandbox.state.files.revision == 0
                 with pytest.raises(Refused, match="native transport failed"):
                     await sandbox.run_call(
                         "transport", "bad", guest_call_path="transport", timeout=2
@@ -426,7 +533,7 @@ def test_root_has_one_owner_and_scope_purge_includes_unopened_sessions(config):
                 replacement = await third.acquire(KEY, SPEC)
                 assert replacement.instance_id != previous
                 assert await third.dispose(KEY, kind=SPEC.kind, instance_id=previous) is None
-                assert replacement.alive
+                assert replacement.state.alive
         finally:
             await third.aclose()
 
@@ -541,7 +648,7 @@ def test_cancellation_waits_for_worker_shutdown(config, monkeypatch, cancelled):
                 with pytest.raises(asyncio.CancelledError if cancelled else TimeoutError):
                     await task
                 assert stopped.is_set()
-                assert not sandbox.busy
+                assert not sandbox.state.busy
         finally:
             await backend.aclose()
 

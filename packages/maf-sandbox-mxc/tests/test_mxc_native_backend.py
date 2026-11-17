@@ -240,7 +240,8 @@ def test_native_program_errors_future_imports_and_execution_budget(native_config
                     "future",
                     "from __future__ import annotations\n"
                     "def identity(value: Unresolved) -> Unresolved: return value\n"
-                    "saved = 7\nprint(identity.__annotations__['value'])",
+                    "saved = 7\ncompile = exec = globals = None\n"
+                    "print(identity.__annotations__['value'])",
                     guest_call_path="future",
                     timeout=90,
                 )
@@ -257,6 +258,9 @@ def test_native_program_errors_future_imports_and_execution_budget(native_config
                 assert not list((native_config.root / "scratch").iterdir())
                 later = await sandbox.run_call(
                     "later",
+                    "from __future__ import annotations\n"
+                    "assert compile is exec is globals is None\n"
+                    "del compile, exec, globals\n"
                     "import time\ntime.sleep(35)\nprint(saved)",
                     guest_call_path="later",
                     timeout=60,

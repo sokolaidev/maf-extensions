@@ -10,7 +10,7 @@ import threading
 from collections.abc import AsyncGenerator, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, asynccontextmanager
-from dataclasses import fields, replace
+from dataclasses import dataclass, fields, replace
 from typing import TYPE_CHECKING, cast
 
 from maf_sandbox import (
@@ -56,6 +56,15 @@ def _timeout(value: float) -> None:
         raise ValueError("MXC requires a positive timeout of at most 90 seconds")
 
 
+@dataclass
+class _SessionState:
+    files: Files
+    alive: bool = True
+    busy: bool = False
+    cancel: threading.Event | None = None
+    last_request: tuple[str, Request, int] | None = None
+
+
 class MxcSandbox:
     """A durable session handle; file operations require its exclusive admission scope."""
 
@@ -66,23 +75,20 @@ class MxcSandbox:
         spec: SandboxSpec,
         session: str,
         fresh: bool,
+        state: _SessionState | None = None,
     ):
         self.backend = backend
         self.key = key
         self.spec = spec
         self.instance_id = session
         self.freshly_created = fresh
-        self.files = Files(backend.config.files)
-        self.alive = True
-        self.busy = False
-        self.cancel: threading.Event | None = None
-        self.last_request: tuple[str, Request, int] | None = None
+        self.state = state if state is not None else _SessionState(Files(backend.config.files))
 
     def authorize(self) -> None:
         self.backend.admission.require((self.key, self.spec.kind))
-        if not self.alive or self.backend.closed:
+        if not self.state.alive or self.backend.closed:
             raise Refused("MXC sandbox is retired")
-        if self.busy:
+        if self.state.busy:
             raise Refused("MXC sandbox already has a running program")
 
     async def run_call(
@@ -96,23 +102,23 @@ class MxcSandbox:
             raise ValueError("MXC requires one call directory component")
         request = Request(
             code.encode(),
-            self.files.inputs(guest_call_path),
+            self.state.files.inputs(guest_call_path),
             (),
             self.backend.config.files,
             self.backend.config.workspace,
             guest_call_path,
         )
-        if self.last_request is not None:
-            previous_id, previous_request, revision = self.last_request
-            if previous_id == call_id and revision == self.files.revision:
+        if self.state.last_request is not None:
+            previous_id, previous_request, revision = self.state.last_request
+            if previous_id == call_id and revision == self.state.files.revision:
                 if (
                     previous_request.code != request.code
                     or previous_request.call_directory != guest_call_path
                 ):
                     raise Refused("retry code or call directory differs")
                 request = previous_request
-        self.busy = True
-        self.cancel = cancel = threading.Event()
+        self.state.busy = True
+        self.state.cancel = cancel = threading.Event()
         try:
             try:
                 result = await self.backend.work(
@@ -125,55 +131,54 @@ class MxcSandbox:
             except GuestProgramError as error:
                 result = error.result
             else:
-                self.files.publish(result)
-                self.last_request = (call_id, request, self.files.revision)
+                self.state.files.publish(result)
+                self.state.last_request = (call_id, request, self.state.files.revision)
             completion = json.loads(result)
             streams = completion["streams"]
-            self.freshly_created = False
             return ExecResult(
                 exit_code=completion.get("exit_code", 0),
                 stdout_bytes=base64.b64decode(streams["stdout"]["base64"], validate=True),
                 stderr_bytes=base64.b64decode(streams["stderr"]["base64"], validate=True),
             )
         finally:
-            self.busy = False
-            self.cancel = None
+            self.state.busy = False
+            self.state.cancel = None
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         self.authorize()
-        self.files.write(
+        self.state.files.write(
             path, content.encode() if isinstance(content, str) else content, working_directory
         )
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
         self.authorize()
-        entry = self.files.stat(self.files.resolve(path, working_directory))
+        entry = self.state.files.stat(self.state.files.resolve(path, working_directory))
         return None if entry is None else SandboxEntry(path, entry.kind, entry.size_bytes)
 
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
         self.authorize()
-        return self.files.read(path, working_directory, max_bytes)
+        return self.state.files.read(path, working_directory, max_bytes)
 
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
         self.authorize()
-        return self.files.list(path, working_directory)
+        return self.state.files.list(path, working_directory)
 
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
         self.authorize()
-        self.files.remove(path, working_directory, recursive)
+        self.state.files.remove(path, working_directory, recursive)
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         self.authorize()
         _timeout(timeout)
-        self.files.resolve(directory, working_directory, self_allowed=False)
-        self.busy = True
+        self.state.files.resolve(directory, working_directory, self_allowed=False)
+        self.state.busy = True
         try:
             await self.backend.work(
                 lambda catalog: catalog.reclaim(self.instance_id), timeout=timeout
             )
-            self.files.remove(directory, working_directory, True)
+            self.state.files.remove(directory, working_directory, True)
         finally:
-            self.busy = False
+            self.state.busy = False
 
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
@@ -345,10 +350,8 @@ class MxcSandboxBackend:
         index = (key, spec.kind)
         session, fresh = await self.work(lambda catalog: catalog.acquire(key, spec))
         previous = self.sandboxes.get(index)
-        if previous is not None and previous.instance_id == session:
-            previous.freshly_created = False
-            return previous
-        sandbox = MxcSandbox(self, key, spec, session, fresh)
+        state = previous.state if previous is not None and previous.instance_id == session else None
+        sandbox = MxcSandbox(self, key, spec, session, fresh, state)
         self.sandboxes[index] = sandbox
         return sandbox
 
@@ -377,9 +380,9 @@ class MxcSandboxBackend:
                 continue
             current = next((s for s in self.sandboxes.values() if s.instance_id == session), None)
             if current is not None:
-                if current.busy:
+                if current.state.busy:
                     raise Refused("wait for the active call to stop before disposal")
-                current.alive = False
+                current.state.alive = False
             await self.work(lambda catalog: catalog.retire(session))
             if current is not None:
                 del self.sandboxes[current.key, current.spec.kind]
@@ -393,7 +396,7 @@ class MxcSandboxBackend:
                     await self.work(lambda catalog: catalog.retire(session))
                     for index, sandbox in tuple(self.sandboxes.items()):
                         if sandbox.instance_id == session:
-                            sandbox.alive = False
+                            sandbox.state.alive = False
                             del self.sandboxes[index]
                     disposed += 1
             return ScopePurge(disposed)
@@ -405,13 +408,15 @@ class MxcSandboxBackend:
         if self.closed:
             return
         async with self.admission.enter("close", 90):
-            if self.catalog is not None:
-                await self.work(lambda catalog: catalog.close())
-            self.closed = True
-            for sandbox in self.sandboxes.values():
-                sandbox.alive = False
-            self.sandboxes.clear()
-            self.executor.shutdown(wait=True)
+            try:
+                if self.catalog is not None:
+                    await self.work(lambda catalog: catalog.close())
+            finally:
+                self.closed = True
+                for sandbox in self.sandboxes.values():
+                    sandbox.state.alive = False
+                self.sandboxes.clear()
+                self.executor.shutdown(wait=True)
 
 
 if TYPE_CHECKING:
