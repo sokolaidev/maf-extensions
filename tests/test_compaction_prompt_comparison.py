@@ -161,6 +161,25 @@ def test_cache_identity_does_not_change_workload(comparison):
     assert evaluation.scenario_digest(first) == evaluation.scenario_digest(second)
 
 
+@pytest.mark.parametrize("variant", ["baseline", "hardened"])
+@pytest.mark.parametrize("prefix", ["", "Cache namespace.\n"])
+def test_retention_policy_supports_additional_rewrite_attempts(comparison, variant, prefix):
+    retention = importlib.import_module("compare_compaction_retention")
+    original = retention._composed.harder_record_prompt
+    expected = {
+        attempt: prefix
+        + (SUMMARY_DATA_BOUNDARY if variant == "hardened" else "")
+        + original(attempt)
+        for attempt in range(1, 5)
+    }
+    with retention.prompt_policy(variant, prefix=prefix) as prompts:
+        for attempt in range(1, 5):
+            assert retention._composed.harder_record_prompt(attempt) == expected[attempt]
+        assert prompts["rewrite_1"] == expected[1]
+        assert prompts["rewrite_2"] == expected[2]
+    assert retention._composed.harder_record_prompt is original
+
+
 def test_missing_cache_write_usage_stays_unknown(comparison):
     evaluation = importlib.import_module("evaluate_compaction_effectiveness")
     response = SimpleNamespace(
@@ -311,7 +330,7 @@ def test_incomplete_probe_answers_withhold_retention(
     reporting = importlib.import_module("report_compaction_effectiveness")
     outcome, scenario = sampled_outcome
     trace = evaluation.Trace(tmp_path / "unused.jsonl", 1, "baseline")
-    intact = evaluation.outcome_report(outcome, scenario, trace)
+    intact = evaluation.outcome_report(outcome, scenario, trace, context_window=24000)
     assert intact["scoped_accuracy"] == intact["combined_accuracy"] == [1.0, 1.0]
     assert intact["facts_left"] == len(scenario.facts)
     scope = evaluation.COMBINED_SCOPE if metric == "combined_accuracy" else ""
@@ -324,7 +343,9 @@ def test_incomplete_probe_answers_withhold_retention(
                 continue
             probe = replace(probe, answer="" if damage == "empty" else " \n\t ")
         damaged.append(probe)
-    collected = evaluation.outcome_report(replace(outcome, probes=tuple(damaged)), scenario, trace)
+    collected = evaluation.outcome_report(
+        replace(outcome, probes=tuple(damaged)), scenario, trace, context_window=24000
+    )
     assert not collected["failed"]
     assert collected[metric] == []
     assert collected["facts_left"] == intact["facts_left"]
@@ -343,10 +364,54 @@ def test_absent_probes_keep_survival_without_answer_samples(comparison, sampled_
     outcome, scenario = sampled_outcome
     trace = evaluation.Trace(tmp_path / "unused.jsonl", 1, "baseline")
     for probes in ((), tuple(replace(probe, repeat=3) for probe in outcome.probes)):
-        collected = evaluation.outcome_report(replace(outcome, probes=probes), scenario, trace)
+        collected = evaluation.outcome_report(
+            replace(outcome, probes=probes), scenario, trace, context_window=24000
+        )
         assert collected["scoped_accuracy"] == collected["combined_accuracy"] == []
         assert collected["facts_left"] == len(scenario.facts)
         assert all(item["survived"] for item in collected["fact_outcomes"])
+
+
+@pytest.mark.parametrize("arm", [0, 1])
+@pytest.mark.parametrize("phase", ["seed", "probe"])
+@pytest.mark.parametrize("input_tokens", [24000, 24001])
+def test_over_window_calls_prevent_screen_verdict(
+    comparison, paired_effectiveness, sampled_outcome, tmp_path, arm, phase, input_tokens
+):
+    evaluation = importlib.import_module("evaluate_compaction_effectiveness")
+    reporting = importlib.import_module("report_compaction_effectiveness")
+    outcome, scenario = sampled_outcome
+    call = evaluation._live.ModelCall(
+        messages_sent=1,
+        prompt_text=outcome.snapshot_prompt,
+        messages_before_compaction=1,
+        input_tokens=input_tokens,
+        cached_tokens=0,
+        output_tokens=1,
+    )
+    trace = evaluation.Trace(tmp_path / "trace.jsonl", 1, "baseline")
+    if phase == "seed":
+        trace.emit(
+            "agent",
+            call=1,
+            usage={"input": input_tokens, "cached": 0, "cache_write": 0, "output": 1},
+        )
+    else:
+        outcome = replace(
+            outcome, probes=(replace(outcome.probes[0], calls=(call,)), *outcome.probes[1:])
+        )
+    outcome = replace(outcome, calls=(call,))
+    collected = evaluation.outcome_report(outcome, scenario, trace, context_window=24000)
+    assert outcome.error is None
+    assert collected["failed"] is (input_tokens > 24000)
+    assert collected["prompt_tokens_peak"] == input_tokens
+    assert collected["context_window"] == 24000
+    assert collected["disqualified"] is (input_tokens > 24000)
+    report, prices = paired_effectiveness
+    report["conversations"][arm]["failed"] = collected["failed"]
+    result = reporting.summarize(report, prices)
+    assert result["screen_within_margins"] is (input_tokens <= 24000)
+    assert result["pairs"][0]["complete"] is (input_tokens <= 24000)
 
 
 @pytest.mark.parametrize("arm", [0, 1])

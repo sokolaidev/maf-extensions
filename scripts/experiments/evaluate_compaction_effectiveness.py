@@ -195,7 +195,9 @@ class Trace:
             yield
 
 
-def outcome_report(outcome: Any, scenario: Any, trace: Trace) -> dict[str, Any]:
+def outcome_report(
+    outcome: Any, scenario: Any, trace: Trace, *, context_window: int
+) -> dict[str, Any]:
     """Score the snapshot and separate conversational usage from measurement probes."""
     scores = _live_cli._sample_scores(outcome, scenario)
     fact_outcomes = (
@@ -222,10 +224,14 @@ def outcome_report(outcome: Any, scenario: Any, trace: Trace) -> dict[str, Any]:
     probe_calls = sum(len(probe.calls) for probe in outcome.probes)
     if len(agents) != len(outcome.calls) - probe_calls:
         raise ValueError("Trace phase accounting disagrees with cachebench")
+    disqualified = outcome.disqualified(context_window)
     return {
         "seed": trace.seed,
         "variant": trace.variant,
-        "failed": outcome.error is not None,
+        "failed": outcome.error is not None or disqualified,
+        "disqualified": disqualified,
+        "context_window": context_window,
+        "prompt_tokens_peak": outcome.prompt_tokens_peak,
         "steps_completed": outcome.turns_completed,
         "steps_total": outcome.turns_total,
         "facts_left": sum(item.survived for item in fact_outcomes),
@@ -313,7 +319,7 @@ async def conversation(args: Any, seed: int, variant: str, run_id: str) -> dict[
                     answer_max_tokens=4096,
                     record_max_tokens=4096,
                 )
-    result = outcome_report(outcome, scenario, trace)
+    result = outcome_report(outcome, scenario, trace, context_window=settings.context_window)
     result.update(
         elapsed_seconds=perf_counter() - start,
         cache_id=cache_id,

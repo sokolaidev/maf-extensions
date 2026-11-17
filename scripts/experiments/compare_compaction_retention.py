@@ -19,12 +19,13 @@ from maf_compaction._summary_input import PROMPT_VERSION_ENV, versioned_prompt
 @contextmanager
 def prompt_policy(variant: str, *, prefix: str = "") -> Iterator[dict[str, str]]:
     """Select only prompt text, optionally adding a stable benchmark cache namespace."""
+    original_rewrite = _composed.harder_record_prompt
     current = {
         "summary": _usersummary.DEFAULT_USER_SUMMARY_PROMPT,
         "fold": _usersummary.DEFAULT_USER_FOLD_PROMPT,
         "merge": _composed.DEFAULT_RECORD_MERGE_PROMPT,
-        "rewrite_1": _composed.harder_record_prompt(1),
-        "rewrite_2": _composed.harder_record_prompt(2),
+        "rewrite_1": original_rewrite(1),
+        "rewrite_2": original_rewrite(2),
     }
     selected = {
         key: prefix + value
@@ -34,6 +35,15 @@ def prompt_policy(variant: str, *, prefix: str = "") -> Iterator[dict[str, str]]
             else {key: versioned_prompt(value, "2") for key, value in current.items()}
         ).items()
     }
+
+    def rewrite(attempt: int) -> str:
+        key = f"rewrite_{attempt}"
+        if key in selected:
+            return selected[key]
+        return prefix + versioned_prompt(
+            original_rewrite(attempt), "1" if variant == "baseline" else "2"
+        )
+
     with ExitStack() as stack:
         # Each selected string already contains its complete prompt policy.
         stack.enter_context(patch.dict(os.environ, {PROMPT_VERSION_ENV: "1"}))
@@ -41,7 +51,7 @@ def prompt_policy(variant: str, *, prefix: str = "") -> Iterator[dict[str, str]]
             (_usersummary, "DEFAULT_USER_SUMMARY_PROMPT", selected["summary"]),
             (_usersummary, "DEFAULT_USER_FOLD_PROMPT", selected["fold"]),
             (_composed, "DEFAULT_RECORD_MERGE_PROMPT", selected["merge"]),
-            (_composed, "harder_record_prompt", lambda attempt: selected[f"rewrite_{attempt}"]),
+            (_composed, "harder_record_prompt", rewrite),
         ):
             stack.enter_context(patch.object(module, name, value))
         yield selected
