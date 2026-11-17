@@ -12,13 +12,9 @@ from typing import cast
 
 import pytest
 from maf_sandbox import IsolationScope, ProgramRequirements, Sandbox, SandboxKey, SandboxSpec
-from maf_sandbox.native_conformance import (
+from maf_sandbox.conformance import (
     assert_call_scope_conformance,
     assert_exec_conformance,
-    assert_files_delete_conformance,
-    assert_files_in_conformance,
-    assert_files_out_conformance,
-    assert_reclaim_conformance,
 )
 
 from maf_sandbox_mxc._backend import MxcSandboxBackend
@@ -136,6 +132,13 @@ class Access:
 
 
 def test_native_file_contract(native_config):
+    from maf_sandbox.native_conformance import (
+        assert_files_delete_conformance,
+        assert_files_in_conformance,
+        assert_files_out_conformance,
+        assert_reclaim_conformance,
+    )
+
     async def check():
         backend = MxcSandboxBackend(native_config)
         await backend.initialize()
