@@ -223,8 +223,11 @@ class _RecordMergeWork:
         if not any(c.type == "function_call" for m in response for c in m.contents):
             self.cancel()
             return
+        if self._history is None or self.strategy is None:
+            # No worker can start, so the foreground keeps its merges.
+            return
         self.defer_merges = True
-        if self._history is None or self.strategy is None or self._task is not None:
+        if self._task is not None:
             return
         messages = deepcopy([*self._history, *response])
         generation = self._generation
@@ -1621,8 +1624,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     for message in members
                 )
             )
-        if self._background is not None:
-            self._background.remember(messages, self._budget)
+            # In the finally: a pass still over budget raises here, and that list is the one the
+            # next request carries, so the worker must start from it all the same.
+            if self._background is not None:
+                self._background.remember(messages, self._budget)
         return replayed or replay.changed or changed or compacted or chained or fitted
 
     def _enforce_budget(self, messages: list[Message]) -> bool:

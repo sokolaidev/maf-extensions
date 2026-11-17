@@ -374,6 +374,53 @@ async def test_an_over_budget_background_merge_reaches_records_behind_the_loops_
     await work.close()
 
 
+async def over_budget_pass(strategy, messages):
+    """One foreground pass that ends over budget, as on a host every pass of which does."""
+    token = strategy._request_budget.set(OVER_BUDGET)
+    try:
+        with pytest.raises(CompactionBudgetExceeded):
+            await strategy(messages)
+    finally:
+        strategy._request_budget.reset(token)
+
+
+async def test_a_pass_that_ends_over_budget_still_hands_the_worker_its_history():
+    """A pass that ends over budget still hands the worker its list, so a tool round starts it."""
+    model = _Summarizer()
+    strategy = _strategy(model, budget=100_000, share=None, cap=None, policy="shed")
+    work = _RecordMergeWork()
+    work.bind(strategy, None)
+    messages = _history(4)
+    # An earlier tool round left the merges to the worker, so this pass merges nothing itself.
+    work.defer_merges = True
+
+    await over_budget_pass(strategy, messages)
+    assert not model.merges
+    work.start(tool_reply())
+    await running(work)
+    assert model.merges, "the worker started from the over-budget pass's list"
+
+    await over_budget_pass(strategy, messages)
+    assert strategy.records_merged >= 1, "the next pass applied what the worker prepared"
+    await work.close()
+
+
+async def test_a_worker_that_cannot_start_leaves_the_merges_to_the_foreground():
+    """While no worker can start, a tool-calling reply leaves the merges to the foreground."""
+    model = _Summarizer()
+    strategy = _strategy(model, budget=100_000, share=None, cap=None, policy="shed")
+    work = _RecordMergeWork()
+    work.bind(strategy, None)
+    messages = _history(4)
+
+    work.start(tool_reply())
+    assert work._task is None
+    assert not work.defer_merges
+    await over_budget_pass(strategy, messages)
+    assert strategy.records_merged >= 1, "the foreground merged, as without the bundle"
+    await work.close()
+
+
 async def test_cancelled_lossy_answer_cannot_start_child_requests():
     entered = asyncio.Event()
 
