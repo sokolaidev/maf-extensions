@@ -6,6 +6,7 @@ import hashlib
 import json
 import threading
 import uuid
+from contextlib import nullcontext
 from dataclasses import asdict
 
 from maf_sandbox import SandboxKey, SandboxSpec
@@ -221,17 +222,24 @@ class Catalog:
                 (session, session),
             ).fetchone():
                 continue
-            profile = json.loads(row["profile"])["profile"]
             store = self.stores.get(session)
-            if store is not None:
-                store.collect_checkpoints(limit=128)
-                store.expire()
-            else:
-                with SharedStore(
-                    self.config.root, session, profile, self.config.limits, existing_only=True
-                ) as retired:
+            with (
+                nullcontext(store)
+                if store is not None
+                else SharedStore(
+                    self.config.root,
+                    session,
+                    json.loads(row["profile"])["profile"],
+                    self.config.limits,
+                    existing_only=True,
+                )
+            ) as retired:
+                if retired.db.execute(
+                    "SELECT 1 FROM calls WHERE session=? AND checkpoint_charge>0 LIMIT 1",
+                    (session,),
+                ).fetchone():
                     retired.collect_checkpoints(limit=128)
-                    retired.expire()
+                retired.expire()
 
     def cleanup_sessions(self) -> tuple[tuple[str, dict[str, str]], ...]:
         """Exclude retired delivery history only once native resources and checkpoints are gone."""

@@ -36,7 +36,7 @@ from maf_sandbox_mxc.files.request import FileLimits, Request
 from maf_sandbox_mxc.files.transport import GuestProgramError
 from maf_sandbox_mxc.host_store import Refused
 from maf_sandbox_mxc.native_journal import NativeJournal
-from maf_sandbox_mxc.shared_store import Limits, ScratchLimits
+from maf_sandbox_mxc.shared_store import Limits, ScratchLimits, SharedStore
 
 KEY = SandboxKey("scope", "thread", "agent")
 SPEC = SandboxSpec(
@@ -325,6 +325,41 @@ def test_retirement_collects_checkpoints_but_preserves_retry_results(config):
         with_catalog.sentinel.audit_usage()
     finally:
         with_catalog.close()
+
+
+@pytest.mark.parametrize("reopen", [False, True])
+def test_retired_maintenance_scans_only_while_checkpoints_remain(config, monkeypatch, reopen):
+    catalog = Catalog(config, initialize=True)
+    try:
+        live, _ = catalog.acquire(replace(KEY, agent_id="live"), SPEC)
+        _seed_checkpoint(catalog, live, "live")
+        session, _ = catalog.acquire(KEY, SPEC)
+        _seed_checkpoint(catalog, session, "retired")
+        catalog.stores[session].retire()
+        if reopen:
+            catalog.stores.pop(session).close()
+
+        catalog.maintain()
+        db = catalog.sentinel.db
+        assert (
+            db.execute(
+                "SELECT checkpoint_charge FROM calls WHERE session=?", (session,)
+            ).fetchone()[0]
+            == 0
+        )
+        db.execute("UPDATE calls SET expires=0 WHERE session=?", (session,))
+        monkeypatch.setattr(
+            SharedStore, "_audit_checkpoints", lambda self: pytest.fail("unexpected payload scan")
+        )
+        catalog.maintain()  # Wrap the bounded maintenance cursor.
+        catalog.maintain()
+        assert db.execute("SELECT expired FROM calls WHERE session=?", (session,)).fetchone()[0]
+        assert (
+            db.execute("SELECT checkpoint_charge FROM calls WHERE session=?", (live,)).fetchone()[0]
+            > 0
+        )
+    finally:
+        catalog.close()
 
 
 @pytest.mark.parametrize("scope", [False, True])
