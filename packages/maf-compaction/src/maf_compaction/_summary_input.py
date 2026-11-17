@@ -26,7 +26,7 @@ SUMMARY_DATA_BOUNDARY: Final[str] = (
 )
 
 
-PROMPT_VERSION_ENV: Final[str] = "MAF_COMPACTION_EXPERIMENTAL_PROMPT_VERSION"
+PROMPT_VERSION_ENV: Final[str] = "MAF_COMPACTION_PROMPT_VERSION"
 
 
 def default_prompt_version() -> Literal["1", "2"]:

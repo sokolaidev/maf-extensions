@@ -56,7 +56,7 @@ async def record_attempt(strategy, messages, operation):
 async def test_selected_record_request_separates_instructions_from_source(
     operation, version, monkeypatch
 ):
-    monkeypatch.setenv(PROMPT_VERSION_ENV, version)
+    monkeypatch.setenv("MAF_COMPACTION_PROMPT_VERSION", version)
     model = _Summarizer()
     model.rewrite = model.merge
     strategy = _strategy(model, budget=100_000)
@@ -77,7 +77,7 @@ async def test_selected_record_request_separates_instructions_from_source(
 async def test_selected_user_and_fold_requests_keep_source_out_of_system_message(
     version, monkeypatch
 ):
-    monkeypatch.setenv(PROMPT_VERSION_ENV, version)
+    monkeypatch.setenv("MAF_COMPACTION_PROMPT_VERSION", version)
     model = UserSummarizer("The user requested a comparison.")
     strategy = user_strategy(model)
     assert await strategy(_conversation(8))
@@ -252,7 +252,7 @@ async def test_prompt_guard_is_not_a_semantic_output_validator(operation, monkey
 
 @pytest.mark.parametrize("version", ["", "0", "3", "true", "v2", " 2 "])
 def test_invalid_prompt_version_fails_at_construction(version, monkeypatch):
-    monkeypatch.setenv(PROMPT_VERSION_ENV, version)
+    monkeypatch.setenv("MAF_COMPACTION_PROMPT_VERSION", version)
     model = UserSummarizer()
     with pytest.raises(ValueError, match=PROMPT_VERSION_ENV):
         user_strategy(model)

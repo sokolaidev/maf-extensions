@@ -165,7 +165,7 @@ Size the record deliberately: value-bearing records may need much more than the 
 
 ## Summarizer instructions and upgrades
 
-`MAF_COMPACTION_EXPERIMENTAL_PROMPT_VERSION` selects the built-in user-summary, user-fold, record-merge and harder-rewrite prompts. The default keeps the previously shipped prompts; the hardened prompts are experimental and require an explicit opt-in.
+`MAF_COMPACTION_PROMPT_VERSION` selects the built-in user-summary, user-fold, record-merge and harder-rewrite prompts. The default keeps the previously shipped prompts; the hardened prompts are experimental and require an explicit opt-in.
 
 | Environment value | Built-in prompts |
 |---|---|
@@ -176,7 +176,7 @@ Size the record deliberately: value-bearing records may need much more than the 
 Set the variable before constructing the user strategy or its compaction stack. For example, in PowerShell:
 
 ```powershell
-$env:MAF_COMPACTION_EXPERIMENTAL_PROMPT_VERSION = "2"
+$env:MAF_COMPACTION_PROMPT_VERSION = "2"
 ```
 
 Set it to `1` to roll back. The user strategy captures the version at construction and exposes it as its read-only `prompt_version`; the composition inherits that selection. Changing the environment does not change an existing strategy. Recreate cached strategies and stacks, or restart the host, to switch versions. The version is host configuration and is not persisted in session state. Exported `DEFAULT_*` prompt constants and `harder_record_prompt()` always return version 1 text, independently of the environment.

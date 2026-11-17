@@ -618,7 +618,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             See ``docs/compaction/strategies.md`` for the trade-offs and
             :data:`DEFAULT_SUMMARY_MODE` for why the default is the one it is.
         prompt: What the summarizer is asked for. Overrides the built-in prompt selected by
-            ``MAF_COMPACTION_EXPERIMENTAL_PROMPT_VERSION`` (unset/1: shipped, 2: hardened).
+            ``MAF_COMPACTION_PROMPT_VERSION`` (unset/1: shipped, 2: hardened).
             Invalid versions raise ``ValueError`` at construction.
         fold_prompt: What the summarizer is asked for when a fold collapses the standing
             summaries. Read in the fold mode and by :meth:`fold_if_smaller`. See
