@@ -81,10 +81,10 @@ from ._record_replay import (
 from ._request import RequestOverhead
 from ._shed import durable_message_id, unique_shed_groups
 from ._summary_input import (
-    SUMMARY_DATA_BOUNDARY,
     async_bounded_prefix_extent,
     bounded_prefix,
     fits_summary_input,
+    versioned_prompt,
 )
 from ._toolsummary import (
     CONSOLIDATE_EXCLUDE_REASON,
@@ -447,8 +447,7 @@ _RECORD_WAIT_RESPONSES: Final[int] = 2
 #: value that cannot be reconstructed survives; wording is to be cut because that is what a merge
 #: can remove without losing anything a later question could need.
 DEFAULT_RECORD_MERGE_PROMPT: Final[str] = (
-    SUMMARY_DATA_BOUNDARY
-    + "The numbered texts below are compaction records: each is an account of tool results an "
+    "The numbered texts below are compaction records: each is an account of tool results an "
     "agent received earlier in a conversation, written so those results could be removed. "
     "Write one record that replaces all of them. Copy every identifier, code, number, date, "
     "name and other exact value verbatim, from every record; do not paraphrase, round, "
@@ -473,7 +472,7 @@ def harder_record_prompt(attempt: int) -> str:
     """
     percent = round(100 * _HARDER_RATIO**attempt)
     return (
-        SUMMARY_DATA_BOUNDARY + "Rewrite the compaction record below so that it is at most about "
+        "Rewrite the compaction record below so that it is at most about "
         f"{percent}% of its current length. Keep every identifier, code, number, date, name and "
         "other exact value verbatim: do not paraphrase, round, abbreviate or drop any of them. "
         "Cut wording instead -- repetition, explanation, connecting prose and formatting. If "
@@ -717,11 +716,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         rewrite_gain_fraction: Share of the records a harder rewrite replaces that it must
             remove to be kept, in ``[0.0, 1.0)``. See :data:`DEFAULT_REWRITE_GAIN_FRACTION`;
             zero keeps any smaller answer.
-        merge_prompt: What the summarizer is asked when the records are merged. See
-            :data:`DEFAULT_RECORD_MERGE_PROMPT`.
+        merge_prompt: What the summarizer is asked when the records are merged. Defaults to
+            :data:`DEFAULT_RECORD_MERGE_PROMPT` with the version captured by ``user_turns``.
         rewrite_prompt: A pure function of the one-based attempt, returning a nonempty system
             prompt with progressively stronger shortening requests. Defaults to
-            :func:`harder_record_prompt`. Custom prompts own their data/instruction boundary.
+            :func:`harder_record_prompt` with the version captured by ``user_turns``.
+            Custom prompts own their data/instruction boundary.
         overflow_policy: ``"shed"`` (default) releases the record phase's holds as a last
             resort and removes whole unrecorded groups, logging their message IDs at WARNING.
             ``"raise"`` retains those groups. Both raise :class:`CompactionBudgetExceeded`
@@ -849,8 +849,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         )
         self.harder_attempts = harder_attempts
         self.rewrite_gain_fraction = rewrite_gain_fraction
-        self.merge_prompt = merge_prompt or DEFAULT_RECORD_MERGE_PROMPT
-        self.rewrite_prompt = harder_record_prompt if rewrite_prompt is None else rewrite_prompt
+        prompt_version = user_turns.prompt_version
+        self.merge_prompt = merge_prompt or versioned_prompt(
+            DEFAULT_RECORD_MERGE_PROMPT, prompt_version
+        )
+        self.rewrite_prompt: Callable[[int], str] = (
+            (lambda attempt: versioned_prompt(harder_record_prompt(attempt), prompt_version))
+            if rewrite_prompt is None
+            else rewrite_prompt
+        )
         self.chain_gain_fraction = chain_gain_fraction
         self._removed_by_record = 0
         self._records_reshaped = 0

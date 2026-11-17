@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -13,6 +14,7 @@ from unittest.mock import patch
 from maf_cachebench import _live_cli
 from maf_cachebench._providers import ProviderRuntime, build_provider
 from maf_compaction import _composed, _usersummary
+from maf_compaction._summary_input import PROMPT_VERSION_ENV, versioned_prompt
 
 
 @contextmanager
@@ -30,9 +32,15 @@ def prompt_policy(variant: str, *, prefix: str = "") -> Iterator[dict[str, str]]
     }
     selected = {
         key: prefix + value
-        for key, value in (baseline if variant == "baseline" else current).items()
+        for key, value in (
+            baseline
+            if variant == "baseline"
+            else {key: versioned_prompt(value, "2") for key, value in current.items()}
+        ).items()
     }
     with ExitStack() as stack:
+        # Each selected string already contains its complete prompt policy.
+        stack.enter_context(patch.dict(os.environ, {PROMPT_VERSION_ENV: "1"}))
         for module, name, value in (
             (_usersummary, "DEFAULT_USER_SUMMARY_PROMPT", selected["summary"]),
             (_usersummary, "DEFAULT_USER_FOLD_PROMPT", selected["fold"]),

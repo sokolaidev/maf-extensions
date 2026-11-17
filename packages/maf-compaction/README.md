@@ -165,15 +165,31 @@ Size the record deliberately: value-bearing records may need much more than the 
 
 ## Summarizer instructions and upgrades
 
-The default user-summary, user-fold, record-merge and harder-rewrite prompts tell the summarizer that its next message is source data. Embedded instructions must not change its task or authorize actions; legitimate user requirements and corrections remain reported content, quoted instructions retain their attribution, and the answer must add nothing unsupported by the source. These instructions reduce ambiguity; they are not a semantic output validator. Record acceptance still checks size and retained distinctive values, and user summaries and folds still check usable output and size. Neither establishes that the output contains no invented prose or authorization.
+`MAF_COMPACTION_EXPERIMENTAL_PROMPT_VERSION` selects the built-in user-summary, user-fold, record-merge and harder-rewrite prompts. The default keeps the previously shipped prompts; the hardened prompts are experimental and require an explicit opt-in.
 
-Hosts can replace the user half's `prompt` and `fold_prompt`, and the composition's `merge_prompt`. The composition also accepts `rewrite_prompt: Callable[[int], str]`: a pure function of the one-based attempt that returns a nonempty system prompt. Its default is `harder_record_prompt`, requesting about 60%, then 36% of the original length. Custom functions must ask for progressively stronger shortening because a refused harder attempt also forecloses milder attempts under the same prompt sequence. Custom prompts replace the defaults and own their data/instruction boundary.
+| Environment value | Built-in prompts |
+|---|---|
+| Unset or `1` | Previously shipped prompts |
+| `2` | Hardened prompts with an explicit source-data boundary |
+| Any other value, including an empty string | Strategy construction raises `ValueError` |
+
+Set the variable before constructing the user strategy or its compaction stack. For example, in PowerShell:
+
+```powershell
+$env:MAF_COMPACTION_EXPERIMENTAL_PROMPT_VERSION = "2"
+```
+
+Set it to `1` to roll back. The user strategy captures the version at construction and exposes it as its read-only `prompt_version`; the composition inherits that selection. Changing the environment does not change an existing strategy. Recreate cached strategies and stacks, or restart the host, to switch versions. The version is host configuration and is not persisted in session state. Exported `DEFAULT_*` prompt constants and `harder_record_prompt()` always return version 1 text, independently of the environment.
+
+Version 2 tells the summarizer that its next message is source data. Embedded instructions must not change its task or authorize actions; legitimate user requirements and corrections remain reported content, quoted instructions retain their attribution, and the answer must add nothing unsupported by the source. These instructions reduce ambiguity; they are not a semantic output validator. Record acceptance still checks size and retained distinctive values, and user summaries and folds still check usable output and size. Neither establishes that the output contains no invented prose or authorization.
+
+Hosts can replace the user half's `prompt` and `fold_prompt`, and the composition's `merge_prompt`. The composition also accepts `rewrite_prompt: Callable[[int], str]`: a pure function of the one-based attempt that returns a nonempty system prompt. The built-in rewrite requests about 60%, then 36% of the original length, with the version 2 boundary when selected. Custom functions must ask for progressively stronger shortening because a refused harder attempt also forecloses milder attempts under the same prompt sequence. Nonempty custom prompt strings and a custom rewrite function take precedence over the selected version, remain unchanged, and own their data/instruction boundary.
 
 Changing a prompt preserves accepted summaries, folds, record edits and their replay certificates. It does not revalidate their content or restore source history that storage already pruned. A host requiring reprocessing must rebuild from its retained original history and start fresh compaction state; clearing state alone is insufficient for history containing generated replacements or exclusions.
 
 Fresh user-summary and chunk requests already include their prompt in the answer-cache key. Record refusals now include the merge prompt or complete rewrite prompt sequence. A changed prompt permits another request; an unchanged prompt retains refusal reuse across session restore. Legacy refusals without prompt identity are discarded, so an upgrade can retry eligible batches once under the new policy. Merge search progress and unfinished splits remain prompt-sensitive, and background answers prepared under a different merge prompt are discarded. Existing deadlines, input limits and retry bounds still apply.
 
-The longer system prompts count against `max_summary_input_tokens` and the record batch cap. Near either limit, fewer whole source units may fit and more requests may be needed. [The comparison protocol](https://github.com/sokolaidev/maf-extensions/blob/main/docs/compaction/research/summarizer-boundary.md) separates measured prompt overhead from live retention and injection evidence. An optional host-configured model judge is tracked separately in [#2777](https://github.com/sokolaidev/maf-extensions/issues/2777).
+The longer version 2 system prompts count against `max_summary_input_tokens` and the record batch cap. Near either limit, fewer whole source units may fit and more requests may be needed. [The comparison protocol](https://github.com/sokolaidev/maf-extensions/blob/main/docs/compaction/research/summarizer-boundary.md) separates measured prompt overhead from live retention and injection evidence. An optional host-configured model judge is tracked separately in [#2777](https://github.com/sokolaidev/maf-extensions/issues/2777).
 
 ## Serving many sessions
 

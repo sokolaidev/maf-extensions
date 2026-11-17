@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import importlib
 import json
+import os
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -13,6 +14,7 @@ from unittest.mock import AsyncMock
 import pytest
 from agent_framework import ChatResponse, Message
 from maf_cachebench._providers import ProviderRuntime
+from maf_compaction._summary_input import PROMPT_VERSION_ENV, SUMMARY_DATA_BOUNDARY
 
 
 @pytest.fixture
@@ -77,9 +79,14 @@ def test_failed_request_does_not_claim_success_or_expose_error_text(
 
 
 @pytest.mark.parametrize("variant", ["baseline", "hardened"])
+@pytest.mark.parametrize("ambient_version", [None, "1", "2"])
 def test_retention_harness_matches_salts_and_omits_summary_temperature(
-    comparison, monkeypatch, variant
+    comparison, monkeypatch, variant, ambient_version
 ):
+    if ambient_version is None:
+        monkeypatch.delenv(PROMPT_VERSION_ENV, raising=False)
+    else:
+        monkeypatch.setenv(PROMPT_VERSION_ENV, ambient_version)
     retention = importlib.import_module("compare_compaction_retention")
     current = comparison.prompts()
     previous = json.loads(comparison.BASELINE.read_text(encoding="utf-8"))["prompts"]
@@ -103,6 +110,7 @@ def test_retention_harness_matches_salts_and_omits_summary_temperature(
         assert arguments == ["azure:synthetic-model", "--no-temperature"]
         assert retention._live_cli.new_run_id() == "paired-seed"
         assert configured_prompts() == expected
+        assert os.environ[PROMPT_VERSION_ENV] == "1"
         retention._live_cli.build_provider(
             "azure", temperature=0.0, response_max_tokens=1024, model="synthetic-model"
         )
@@ -124,11 +132,15 @@ def test_retention_harness_matches_salts_and_omits_summary_temperature(
             "--no-temperature",
         ],
     )
+    original = configured_prompts()
+    assert original == previous
+    assert current == {key: SUMMARY_DATA_BOUNDARY + value for key, value in previous.items()}
     assert retention.main() == 0
     assert options == [
         {"temperature": None, "response_max_tokens": 1024, "model": "synthetic-model"}
     ]
-    assert configured_prompts() == current
+    assert configured_prompts() == original
+    assert os.environ.get(PROMPT_VERSION_ENV) == ambient_version
 
 
 def test_cache_identity_does_not_change_workload(comparison):

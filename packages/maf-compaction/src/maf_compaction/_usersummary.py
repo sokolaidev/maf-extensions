@@ -47,10 +47,11 @@ from ._preserve import PRESERVE_REASON_KEY, any_preserved, set_preserved
 from ._record_replay import SummaryReplayCache
 from ._request import RECALL_PROMPT_KEY
 from ._summary_input import (
-    SUMMARY_DATA_BOUNDARY,
     bounded_prefix,
+    default_prompt_version,
     fits_summary_input,
     summary_request,
+    versioned_prompt,
 )
 from ._summary_links import has_summary_links
 
@@ -292,8 +293,7 @@ PRESERVE_REASON: Final[str] = "user_summary_boundary"
 #: invites the model to invent the assistant's half; and a fixed five-sentence bound is a
 #: length, which is the one thing a summary of seventy turns must be allowed to vary.
 DEFAULT_USER_SUMMARY_PROMPT: Final[str] = (
-    SUMMARY_DATA_BOUNDARY
-    + "You are compacting a conversation to save space. Below are the user's own turns, in "
+    "You are compacting a conversation to save space. Below are the user's own turns, in "
     "order, with the assistant's replies and any tool output removed. Rewrite them as a "
     "single, much shorter account of what the user asked for, in the order they asked for "
     "it. Keep every requirement, constraint, correction and preference exactly as stated, "
@@ -312,8 +312,7 @@ DEFAULT_USER_SUMMARY_PROMPT: Final[str] = (
 #: made of the second -- a model told it is reading turns would compress what is already
 #: compressed as though it were padding.
 DEFAULT_USER_FOLD_PROMPT: Final[str] = (
-    SUMMARY_DATA_BOUNDARY
-    + "You are compacting a conversation to save space. Below are earlier compaction summaries "
+    "You are compacting a conversation to save space. Below are earlier compaction summaries "
     "of the user's own turns, in the order those turns were spoken; each one already stands "
     "for turns that are no longer present, and none of it is padding. Rewrite them as a "
     "single, shorter account of what the user asked for, in the order they asked for it. Keep "
@@ -618,10 +617,12 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             that and collapses the standing summaries into one once they are worth the break.
             See ``docs/compaction/strategies.md`` for the trade-offs and
             :data:`DEFAULT_SUMMARY_MODE` for why the default is the one it is.
-        prompt: What the summarizer is asked for. See :data:`DEFAULT_USER_SUMMARY_PROMPT`.
+        prompt: What the summarizer is asked for. Overrides the built-in prompt selected by
+            ``MAF_COMPACTION_EXPERIMENTAL_PROMPT_VERSION`` (unset/1: shipped, 2: hardened).
+            Invalid versions raise ``ValueError`` at construction.
         fold_prompt: What the summarizer is asked for when a fold collapses the standing
             summaries. Read in the fold mode and by :meth:`fold_if_smaller`. See
-            :data:`DEFAULT_USER_FOLD_PROMPT`.
+            :data:`DEFAULT_USER_FOLD_PROMPT`, with the selected version's boundary.
         remembered_requests: How many of the most recent summarizer requests are remembered
             for replay on the other list the live path runs this on. One, the default, is what
             every row of this strategy has run with and is enough for it: a pass makes at most
@@ -745,8 +746,11 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self.trigger_fraction = trigger_fraction
         self.min_band_share = min_band_share
         self.summary_mode = summary_mode
-        self.prompt = prompt or DEFAULT_USER_SUMMARY_PROMPT
-        self.fold_prompt = fold_prompt or DEFAULT_USER_FOLD_PROMPT
+        self._prompt_version: Literal["1", "2"] = default_prompt_version()
+        self.prompt = prompt or versioned_prompt(DEFAULT_USER_SUMMARY_PROMPT, self.prompt_version)
+        self.fold_prompt = fold_prompt or versioned_prompt(
+            DEFAULT_USER_FOLD_PROMPT, self.prompt_version
+        )
         self._compactions = 0
         self._replaced = 0
         self._failures = 0
@@ -765,6 +769,11 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         # Kept fold outputs identify how far a history has already replayed.
         self._kept_folds: dict[str, _Remembered] = {}
         self._kept_fold_counts: dict[str, int] = {}
+
+    @property
+    def prompt_version(self) -> Literal["1", "2"]:
+        """Built-in prompt version captured at construction, also used by the composition."""
+        return self._prompt_version
 
     def session_state(self) -> dict[str, Any]:
         """Return JSON-safe behavioral state for session persistence."""

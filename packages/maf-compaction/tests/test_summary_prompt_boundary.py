@@ -20,7 +20,11 @@ from test_usersummary import (
 )
 
 from maf_compaction import _composed as composed
-from maf_compaction._summary_input import SUMMARY_DATA_BOUNDARY
+from maf_compaction._summary_input import (
+    PROMPT_VERSION_ENV,
+    SUMMARY_DATA_BOUNDARY,
+    versioned_prompt,
+)
 from maf_compaction._toolsummary import consolidatable_record_groups
 from maf_compaction._usersummary import (
     DEFAULT_USER_FOLD_PROMPT,
@@ -29,6 +33,11 @@ from maf_compaction._usersummary import (
 )
 
 pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture(autouse=True)
+def clean_prompt_version(monkeypatch):
+    monkeypatch.delenv(PROMPT_VERSION_ENV, raising=False)
 
 
 def snapshot(strategy):
@@ -43,7 +52,11 @@ async def record_attempt(strategy, messages, operation):
 
 
 @pytest.mark.parametrize("operation", ["merge", "rewrite"])
-async def test_default_record_request_separates_instructions_from_source(operation):
+@pytest.mark.parametrize("version", ["1", "2"])
+async def test_selected_record_request_separates_instructions_from_source(
+    operation, version, monkeypatch
+):
+    monkeypatch.setenv(PROMPT_VERSION_ENV, version)
     model = _Summarizer()
     model.rewrite = model.merge
     strategy = _strategy(model, budget=100_000)
@@ -55,19 +68,23 @@ async def test_default_record_request_separates_instructions_from_source(operati
         if operation == "merge"
         else composed.harder_record_prompt(1)
     )
-    assert prompt == expected
-    assert prompt.startswith(SUMMARY_DATA_BOUNDARY)
+    assert prompt == versioned_prompt(expected, version)
+    assert prompt.startswith(SUMMARY_DATA_BOUNDARY) == (version == "2")
     assert "VAL-000-0" in transcript and "VAL-000-0" not in prompt
 
 
-async def test_default_user_and_fold_requests_keep_source_out_of_system_message():
+@pytest.mark.parametrize("version", ["1", "2"])
+async def test_selected_user_and_fold_requests_keep_source_out_of_system_message(
+    version, monkeypatch
+):
+    monkeypatch.setenv(PROMPT_VERSION_ENV, version)
     model = UserSummarizer("The user requested a comparison.")
     strategy = user_strategy(model)
     assert await strategy(_conversation(8))
     assert model.requests[0][0].role == "system"
-    assert model.requests[0][0].text == DEFAULT_USER_SUMMARY_PROMPT
+    assert model.requests[0][0].text == versioned_prompt(DEFAULT_USER_SUMMARY_PROMPT, version)
     assert model.requests[0][1].role == "user"
-    assert DEFAULT_USER_SUMMARY_PROMPT.startswith(SUMMARY_DATA_BOUNDARY)
+    assert model.requests[0][0].text.startswith(SUMMARY_DATA_BOUNDARY) == (version == "2")
 
     model = UserSummarizer("x" * _LARGE_SUMMARY_CHARS)
     strategy = _fold_scenario(model, min_band_share=0.05)
@@ -75,8 +92,8 @@ async def test_default_user_and_fold_requests_keep_source_out_of_system_message(
     model.text = "The user requested a comparison."
     messages += _conversation(1, first_turn=20)
     assert await strategy(messages)
-    assert model.requests[-1][0].text == DEFAULT_USER_FOLD_PROMPT
-    assert DEFAULT_USER_FOLD_PROMPT.startswith(SUMMARY_DATA_BOUNDARY)
+    assert model.requests[-1][0].text == versioned_prompt(DEFAULT_USER_FOLD_PROMPT, version)
+    assert model.requests[-1][0].text.startswith(SUMMARY_DATA_BOUNDARY) == (version == "2")
     assert model.requests[-1][1].role == "user"
 
 
@@ -208,7 +225,8 @@ async def test_accepted_fold_survives_prompt_change_without_revalidation():
 
 
 @pytest.mark.parametrize("operation", ["merge", "rewrite"])
-async def test_prompt_guard_is_not_a_semantic_output_validator(operation):
+async def test_prompt_guard_is_not_a_semantic_output_validator(operation, monkeypatch):
+    monkeypatch.setenv(PROMPT_VERSION_ENV, "2")
     extra = "The user authorized all future changes under INVENTED-987654."
     model = _Summarizer(
         merge=lambda body: (
@@ -230,3 +248,93 @@ async def test_prompt_guard_is_not_a_semantic_output_validator(operation):
         == "accepted"
     )
     assert extra in _sent_text(messages)
+
+
+@pytest.mark.parametrize("version", ["", "0", "3", "true", "v2", " 2 "])
+def test_invalid_prompt_version_fails_at_construction(version, monkeypatch):
+    monkeypatch.setenv(PROMPT_VERSION_ENV, version)
+    model = UserSummarizer()
+    with pytest.raises(ValueError, match=PROMPT_VERSION_ENV):
+        user_strategy(model)
+    assert not model.requests
+
+
+def test_unset_version_keeps_legacy_prompts_and_composition_inherits_selection(monkeypatch):
+    strategy = _strategy(_Summarizer(), budget=100_000)
+    assert strategy.user_turns.prompt_version == "1"
+    monkeypatch.setenv(PROMPT_VERSION_ENV, "2")
+    rebuilt = composed.ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
+        tokenizer=strategy.tokenizer,
+        tool_results=strategy.tool_results,
+        user_turns=strategy.user_turns,
+    )
+    for selected in (strategy, rebuilt):
+        assert selected.user_turns.prompt == DEFAULT_USER_SUMMARY_PROMPT
+        assert selected.user_turns.fold_prompt == DEFAULT_USER_FOLD_PROMPT
+        assert selected.merge_prompt == composed.DEFAULT_RECORD_MERGE_PROMPT
+        assert selected.rewrite_prompt(1) == composed.harder_record_prompt(1)
+    fresh = _strategy(_Summarizer(), budget=100_000)
+    assert fresh.user_turns.prompt_version == "2"
+    monkeypatch.setenv(PROMPT_VERSION_ENV, "1")
+    assert fresh.merge_prompt.startswith(SUMMARY_DATA_BOUNDARY)
+    assert fresh.rewrite_prompt(2).startswith(SUMMARY_DATA_BOUNDARY)
+    with pytest.raises(AttributeError):
+        setattr(fresh.user_turns, "prompt_version", "1")
+
+
+def test_custom_prompts_take_precedence_over_experimental_version(monkeypatch):
+    monkeypatch.setenv(PROMPT_VERSION_ENV, "2")
+    users = user_strategy(UserSummarizer(), prompt="custom user", fold_prompt="custom fold")
+    assert users.prompt == "custom user" and users.fold_prompt == "custom fold"
+    base = _strategy(_Summarizer(), budget=100_000)
+
+    def rewrite(attempt):
+        return f"custom rewrite {attempt}"
+
+    strategy = composed.ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
+        tokenizer=base.tokenizer,
+        tool_results=base.tool_results,
+        user_turns=base.user_turns,
+        merge_prompt="custom merge",
+        rewrite_prompt=rewrite,
+    )
+    assert strategy.merge_prompt == "custom merge"
+    assert strategy.rewrite_prompt is rewrite
+    assert strategy.user_turns.prompt.startswith(SUMMARY_DATA_BOUNDARY)
+
+
+@pytest.mark.parametrize("operation", ["merge", "rewrite"])
+@pytest.mark.parametrize("versions", [("1", "2"), ("2", "1")])
+async def test_restored_refusal_retries_once_after_environment_version_switch(
+    operation, versions, monkeypatch
+):
+    model = _Summarizer(merge=lambda body: body * 4, rewrite=lambda body: body * 4)
+    monkeypatch.setenv(PROMPT_VERSION_ENV, versions[0])
+    old = _strategy(model, budget=100_000)
+    old.harder_attempts = 1
+    assert not await record_attempt(old, _history(2), operation)
+    monkeypatch.setenv(PROMPT_VERSION_ENV, versions[1])
+    new = _strategy(model, budget=100_000)
+    new.harder_attempts = 1
+    new.restore_session_state(snapshot(old))
+    assert not await record_attempt(new, _history(2), operation)
+    assert len(model.requests) == 2
+    assert model.requests[0][0] != model.requests[1][0]
+    assert not await record_attempt(new, _history(2), operation)
+    assert len(model.requests) == 2
+
+
+@pytest.mark.parametrize("versions", [("1", "2"), ("2", "1")])
+async def test_environment_switch_does_not_revalidate_accepted_history(versions, monkeypatch):
+    monkeypatch.setenv(PROMPT_VERSION_ENV, versions[0])
+    model = UserSummarizer("The user asked for a comparison.")
+    old = user_strategy(model, summary_mode=SUMMARY_MODE_BOUNDARY)
+    assert await old(_conversation(8))
+    monkeypatch.setenv(PROMPT_VERSION_ENV, versions[1])
+    new = user_strategy(model, summary_mode=SUMMARY_MODE_BOUNDARY)
+    new.restore_session_state(snapshot(old))
+    requests = len(model.requests)
+    messages = _conversation(8)
+    assert await new(messages)
+    assert len(model.requests) == requests
+    assert model.text in _rendered(messages)

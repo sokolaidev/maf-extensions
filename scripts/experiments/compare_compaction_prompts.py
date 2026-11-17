@@ -16,7 +16,7 @@ from agent_framework._compaction import included_token_count
 from maf_cachebench._providers import build_provider, parse_provider_selector
 from maf_compaction._composed import DEFAULT_RECORD_MERGE_PROMPT, harder_record_prompt
 from maf_compaction._media import annotate_token_counts
-from maf_compaction._summary_input import summary_request
+from maf_compaction._summary_input import summary_request, versioned_prompt
 from maf_compaction._usersummary import DEFAULT_USER_FOLD_PROMPT, DEFAULT_USER_SUMMARY_PROMPT
 
 BASELINE = Path(__file__).with_name("compaction_prompt_baseline.json")
@@ -68,14 +68,15 @@ def cases() -> list[dict[str, Any]]:
 
 
 def prompts() -> dict[str, str]:
-    """Resolve the candidate defaults, including both default rewrite attempts."""
-    return {
+    """Resolve experimental version 2 independently of the host's environment."""
+    legacy = {
         "summary": DEFAULT_USER_SUMMARY_PROMPT,
         "fold": DEFAULT_USER_FOLD_PROMPT,
         "merge": DEFAULT_RECORD_MERGE_PROMPT,
         "rewrite_1": harder_record_prompt(1),
         "rewrite_2": harder_record_prompt(2),
     }
+    return {key: versioned_prompt(value, "2") for key, value in legacy.items()}
 
 
 def observations(source: str, answer: str) -> dict[str, Any]:
