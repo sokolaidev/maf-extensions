@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.14.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.8...maf-compaction-v0.14.0) (2026-11-17)
+
+
+### Features
+
+* **compaction:** share summary capacity and merge record batches in parallel ([#2788](https://github.com/sokolaidev/maf-extensions/issues/2788)) ([3266d82](https://github.com/sokolaidev/maf-extensions/commit/3266d82147dce8f3d71940cc68c54e9a0e8029d0))
+
+
+### Fixes
+
+* **compaction:** add opt-in hardened prompts and retry changed policies ([#2778](https://github.com/sokolaidev/maf-extensions/issues/2778)) ([e268236](https://github.com/sokolaidev/maf-extensions/commit/e2682366c503351166a935786c472a37cbf824f7))
+
 ## [0.13.8](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.7...maf-compaction-v0.13.8) (2026-11-16)
 
 
