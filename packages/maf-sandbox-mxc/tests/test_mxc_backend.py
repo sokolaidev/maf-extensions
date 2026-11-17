@@ -1,0 +1,177 @@
+"""Offline adapter admission, ownership and retained-session controls."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import threading
+from dataclasses import replace
+
+import pytest
+from maf_sandbox import Egress, ProgramRequirements, SandboxKey, SandboxSpec
+from maf_sandbox.conformance import assert_storage_base_conformance
+
+from maf_sandbox_mxc._backend import MxcSandboxBackend
+from maf_sandbox_mxc._config import MxcSandboxConfig, startup_identity
+from maf_sandbox_mxc._state import Catalog
+from maf_sandbox_mxc.host_store import Refused
+from maf_sandbox_mxc.shared_store import Limits, ScratchLimits
+
+KEY = SandboxKey("scope", "thread", "agent")
+SPEC = SandboxSpec(
+    kind="python",
+    work_dir=None,
+    requires=frozenset(),
+    program=ProgramRequirements(max_program_bytes=65536),
+)
+
+
+@pytest.fixture
+def config(tmp_path):
+    helper = tmp_path / "helper"
+    helper.write_bytes(b"test helper identity")
+    startup = tmp_path / "startup"
+    startup.mkdir()
+    (startup / "snapshot").write_bytes(b"test snapshot")
+    return MxcSandboxConfig(
+        helper,
+        startup,
+        tmp_path / "store",
+        "unit-test-file-profile",
+        hashlib.sha256(helper.read_bytes()).hexdigest(),
+        startup_identity(startup),
+        Limits(100_000_000, 200_000_000, checkpoint_bytes=1024, result_bytes=40_000_000),
+        ScratchLimits(100_000_000, 100_000, 200_000_000),
+    )
+
+
+def test_closed_admission_refuses_unsupported_policy_before_store_creation(config):
+    backend = MxcSandboxBackend(config)
+    for spec in (
+        replace(SPEC, egress=Egress.UNRESTRICTED),
+        replace(SPEC, egress=Egress.ALLOWLIST, egress_allow=("example.com",)),
+        replace(SPEC, program=ProgramRequirements()),
+        replace(SPEC, image="unqualified"),
+    ):
+        with pytest.raises(ValueError):
+            backend.validate(spec)
+    assert not config.root.exists()
+    asyncio.run(backend.aclose())
+
+
+def test_explicit_initialization_restart_and_policy_binding(config):
+    async def check():
+        backend = MxcSandboxBackend(config)
+        try:
+            async with backend.call_admission(KEY, SPEC, owner="one", timeout=2):
+                with pytest.raises(Refused, match="unavailable"):
+                    await backend.acquire(KEY, SPEC)
+            await backend.initialize()
+            async with backend.call_admission(KEY, SPEC, owner="one", timeout=2):
+                sandbox = await backend.acquire(KEY, SPEC)
+                first_id = sandbox.instance_id
+                assert sandbox.freshly_created
+            with pytest.raises(RuntimeError, match="admission"):
+                await sandbox.stat_file("x", working_directory=".")
+        finally:
+            await backend.aclose()
+        reopened = MxcSandboxBackend(config)
+        try:
+            async with reopened.call_admission(KEY, SPEC, owner="two", timeout=2):
+                restored = await reopened.acquire(KEY, SPEC)
+                assert restored.instance_id == first_id
+                assert not restored.freshly_created
+                changed = replace(SPEC, execution_contract="changed")
+                with pytest.raises(Refused, match="contract"):
+                    await reopened.acquire(KEY, changed)
+        finally:
+            await reopened.aclose()
+
+    asyncio.run(check())
+
+
+def test_root_has_one_owner_and_scope_purge_includes_unopened_sessions(config):
+    async def check():
+        first = MxcSandboxBackend(config)
+        await first.initialize()
+        async with first.call_admission(KEY, SPEC, owner="one", timeout=2):
+            sandbox = await first.acquire(KEY, SPEC)
+            previous = sandbox.instance_id
+        second = MxcSandboxBackend(config)
+        try:
+            async with second.call_admission(KEY, SPEC, owner="two", timeout=2):
+                with pytest.raises(Refused, match="owner"):
+                    await second.acquire(KEY, SPEC)
+        finally:
+            await second.aclose()
+            await first.aclose()
+        third = MxcSandboxBackend(config)
+        try:
+            purged = await third.dispose_scope(KEY.scope, KEY.thread_id)
+            assert purged.disposed == 1 and purged.undisposed is None
+            async with third.call_admission(KEY, SPEC, owner="three", timeout=2):
+                replacement = await third.acquire(KEY, SPEC)
+                assert replacement.instance_id != previous
+                assert await third.dispose(KEY, kind=SPEC.kind, instance_id=previous) is None
+                assert replacement.alive
+        finally:
+            await third.aclose()
+
+    asyncio.run(check())
+
+
+def test_storage_base_and_expired_cleanup_authority(config):
+    async def check():
+        backend = MxcSandboxBackend(config)
+        await backend.initialize()
+        try:
+            async with backend.call_admission(KEY, SPEC, owner="one", timeout=2) as cleanup:
+                sandbox = await backend.acquire(KEY, SPEC)
+                await assert_storage_base_conformance(sandbox, backend.declarations.capabilities)
+            with pytest.raises(RuntimeError, match="expired"):
+                with cleanup:
+                    pass
+        finally:
+            await backend.aclose()
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_cancellation_waits_for_worker_shutdown(config, monkeypatch, cancelled):
+    started, stopped = threading.Event(), threading.Event()
+
+    def execute(self, session, call_id, request, cancel, timeout):
+        started.set()
+        assert cancel.wait(5)
+        stopped.set()
+        raise Refused("cancelled")
+
+    monkeypatch.setattr(Catalog, "execute", execute)
+
+    async def check():
+        backend = MxcSandboxBackend(config)
+        await backend.initialize()
+        try:
+            async with backend.call_admission(KEY, SPEC, owner="one", timeout=2):
+                sandbox = await backend.acquire(KEY, SPEC)
+                task = asyncio.create_task(
+                    sandbox.run_call(
+                        "one",
+                        "pass",
+                        guest_call_path="one",
+                        timeout=1 if cancelled else 0.1,
+                    )
+                )
+                while not started.is_set():
+                    await asyncio.sleep(0.001)
+                if cancelled:
+                    task.cancel()
+                with pytest.raises(asyncio.CancelledError if cancelled else TimeoutError):
+                    await task
+                assert stopped.is_set()
+                assert not sandbox.busy
+        finally:
+            await backend.aclose()
+
+    asyncio.run(check())

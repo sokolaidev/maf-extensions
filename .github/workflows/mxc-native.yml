@@ -223,7 +223,7 @@ jobs:
         run: |
           args=()
           if [[ "$MXC_PRELAUNCH" == "true" ]]; then args+=(--prelaunch-recovery); fi
-          uv run --no-project --python 3.12 --with ./packages/maf-sandbox-mxc python -m scripts.experiments.mxc_files_patch.qualification_runner --root "$RUNNER_TEMP/mxc-files" --kernel-dir "$RUNNER_TEMP/mxc-file-kernel" "${args[@]}"
+          uv run --no-project --python 3.12 --with ./packages/maf-sandbox --with ./packages/maf-sandbox-mxc --with ./packages/maf-sandbox-codeact --with pytest python -m scripts.experiments.mxc_files_patch.qualification_runner --root "$RUNNER_TEMP/mxc-files" --kernel-dir "$RUNNER_TEMP/mxc-file-kernel" "${args[@]}"
       - name: Detach native publication exhaustion volume
         if: always() && github.event_name == 'workflow_dispatch' && inputs.mxc_files
         uses: ./.github/actions/mxc-volume
@@ -237,6 +237,7 @@ jobs:
           path: |
             ${{ runner.temp }}/mxc-files/*.json
             ${{ runner.temp }}/mxc-files/*.log
+            ${{ runner.temp }}/mxc-files/adapter-codeact.xml
             ${{ runner.temp }}/mxc-files/build/Cargo.lock
             ${{ runner.temp }}/mxc-files/native/*.json
             ${{ runner.temp }}/mxc-files/native/*.stdout

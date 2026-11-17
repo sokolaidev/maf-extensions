@@ -1933,6 +1933,12 @@ requires-dist = [
 name = "maf-sandbox-mxc"
 version = "0.0.0"
 source = { editable = "packages/maf-sandbox-mxc" }
+dependencies = [
+    { name = "maf-sandbox" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "maf-sandbox", editable = "packages/maf-sandbox" }]
 
 [[package]]
 name = "maf-sandbox-otel"

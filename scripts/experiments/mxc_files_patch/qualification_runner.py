@@ -175,6 +175,20 @@ def qualify(root: Path, kernel_dir: Path, report: dict, prelaunch_recovery: bool
         report[directory] = json.loads(
             (root / directory / "result.json").read_text(encoding="utf-8")
         )
+    os.environ["MXC_ADAPTER_HELPER"] = str(helper(root))
+    os.environ["MXC_ADAPTER_STARTUP"] = str(root / "images/agent/snapshot")
+    run(
+        root,
+        "adapter-codeact",
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "packages/maf-sandbox-mxc/tests/test_mxc_native_backend.py",
+        "tests/test_mxc_codeact_live.py",
+        "--junitxml=" + str(root / "adapter-codeact.xml"),
+    )
+    report["adapter_codeact"] = "passed"
     shutil.copyfile(original, embedded)
     run(root, "remove-files", *file_tool, "remove", *opts)
     run(

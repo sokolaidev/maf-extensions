@@ -91,10 +91,11 @@ def call(
             active()
             return result
         except BaseException:
-            row = store.db.execute(
-                "SELECT identity FROM launches WHERE session=? AND call=?",
-                (store.session, call_id),
-            ).fetchone()
-            if row is not None and row["identity"] is not None:
-                journal.reclaim(call_id, boundary)
+            if cancel is not None and cancel.is_set():
+                row = store.db.execute(
+                    "SELECT identity FROM launches WHERE session=? AND call=?",
+                    (store.session, call_id),
+                ).fetchone()
+                if row is not None and row["identity"] is not None:
+                    journal.reclaim(call_id, boundary)
             raise
