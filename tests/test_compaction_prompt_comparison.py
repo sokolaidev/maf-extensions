@@ -7,6 +7,7 @@ import json
 import os
 import sys
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -260,6 +261,92 @@ def test_missing_answers_prevent_retention_verdict(comparison, paired_effectiven
     result = reporting.summarize(report, prices)
     assert not result["pairs"][0]["no_retention_loss"]
     assert not result["screen_within_margins"]
+
+
+@pytest.fixture
+def sampled_outcome(comparison):
+    evaluation = importlib.import_module("evaluate_compaction_effectiveness")
+    scenario = evaluation._live.build_live_scenario(
+        salt="answers", filler_turns=1, filler_tokens=20, tool_turns=2, markers_per_tool=1
+    )
+    snapshot = "\n".join(fact.marker for fact in scenario.facts)
+    probes = tuple(
+        evaluation._live.ProbeOutcome(
+            scope=scope,
+            question="Recall the planted facts",
+            repeat=repeat,
+            answer="\n".join(
+                fact.marker
+                for fact in scenario.facts
+                if scope == evaluation.COMBINED_SCOPE or fact.scope == scope
+            ),
+            prompt_text=snapshot,
+            calls=(),
+        )
+        for repeat in (1, 2)
+        for scope in scenario.answer_scopes
+    )
+    outcome = evaluation._live.LiveOutcome(
+        strategy=evaluation.STRATEGY,
+        calls=(),
+        answer=snapshot,
+        snapshot_prompt=snapshot,
+        tool_calls_made=2,
+        turns_completed=1,
+        turns_total=1,
+        probes=probes,
+        probe_repeats=2,
+        combined_repeats=2,
+    )
+    return outcome, scenario
+
+
+@pytest.mark.parametrize("arm", [0, 1])
+@pytest.mark.parametrize("metric", ["scoped_accuracy", "combined_accuracy"])
+@pytest.mark.parametrize("damage", ["empty", "whitespace", "missing_scope", "missing_repeat"])
+def test_incomplete_probe_answers_withhold_retention(
+    comparison, paired_effectiveness, sampled_outcome, tmp_path, arm, metric, damage
+):
+    evaluation = importlib.import_module("evaluate_compaction_effectiveness")
+    reporting = importlib.import_module("report_compaction_effectiveness")
+    outcome, scenario = sampled_outcome
+    trace = evaluation.Trace(tmp_path / "unused.jsonl", 1, "baseline")
+    intact = evaluation.outcome_report(outcome, scenario, trace)
+    assert intact["scoped_accuracy"] == intact["combined_accuracy"] == [1.0, 1.0]
+    assert intact["facts_left"] == len(scenario.facts)
+    scope = evaluation.COMBINED_SCOPE if metric == "combined_accuracy" else ""
+    damaged = []
+    for probe in outcome.probes:
+        if damage == "missing_repeat" and probe.repeat == 2:
+            continue
+        if probe.scope == scope and probe.repeat == 2:
+            if damage == "missing_scope":
+                continue
+            probe = replace(probe, answer="" if damage == "empty" else " \n\t ")
+        damaged.append(probe)
+    collected = evaluation.outcome_report(replace(outcome, probes=tuple(damaged)), scenario, trace)
+    assert not collected["failed"]
+    assert collected[metric] == []
+    assert collected["facts_left"] == intact["facts_left"]
+    assert all(item["survived"] for item in collected["fact_outcomes"])
+    report, prices = paired_effectiveness
+    report["conversations"][arm].update(
+        {key: collected[key] for key in ("facts_left", "scoped_accuracy", "combined_accuracy")}
+    )
+    result = reporting.summarize(report, prices)
+    assert not result["pairs"][0]["no_retention_loss"]
+    assert not result["screen_within_margins"]
+
+
+def test_absent_probes_keep_survival_without_answer_samples(comparison, sampled_outcome, tmp_path):
+    evaluation = importlib.import_module("evaluate_compaction_effectiveness")
+    outcome, scenario = sampled_outcome
+    trace = evaluation.Trace(tmp_path / "unused.jsonl", 1, "baseline")
+    for probes in ((), tuple(replace(probe, repeat=3) for probe in outcome.probes)):
+        collected = evaluation.outcome_report(replace(outcome, probes=probes), scenario, trace)
+        assert collected["scoped_accuracy"] == collected["combined_accuracy"] == []
+        assert collected["facts_left"] == len(scenario.facts)
+        assert all(item["survived"] for item in collected["fact_outcomes"])
 
 
 @pytest.mark.parametrize("arm", [0, 1])

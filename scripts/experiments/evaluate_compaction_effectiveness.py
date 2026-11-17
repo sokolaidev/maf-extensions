@@ -22,6 +22,7 @@ from compare_compaction_retention import prompt_policy
 from maf_cachebench import _live, _live_cli
 from maf_cachebench._metrics import serialize_message
 from maf_cachebench._providers import ConfiguredClient, build_provider, parse_provider_selector
+from maf_cachebench._recall import COMBINED_SCOPE, score_answer
 from maf_cachebench._tokenizers import build_tokenizer
 from maf_compaction import _composed
 from maf_compaction._summary_input import summary_request
@@ -197,6 +198,22 @@ class Trace:
 def outcome_report(outcome: Any, scenario: Any, trace: Trace) -> dict[str, Any]:
     """Score the snapshot and separate conversational usage from measurement probes."""
     scores = _live_cli._sample_scores(outcome, scenario)
+    fact_outcomes = (
+        scores[0].outcomes if scores else score_answer("", scenario.facts, outcome.snapshot_prompt)
+    )
+    answered = {(probe.scope, probe.repeat) for probe in outcome.probes if probe.answer.strip()}
+    required_scoped = {
+        (scope, repeat)
+        for scope in scenario.answer_scopes
+        if scope != COMBINED_SCOPE
+        for repeat in range(1, outcome.probe_repeats + 1)
+    }
+    required_combined = {
+        (scope, repeat)
+        for scope in scenario.answer_scopes
+        if scope == COMBINED_SCOPE
+        for repeat in range(1, outcome.combined_repeats + 1)
+    }
     agents = [row for row in trace.rows if row["kind"] == "agent" and row["phase"] == "seed"]
     summaries = [row for row in trace.rows if row["kind"] == "summary" and row["phase"] == "seed"]
     compactions = [
@@ -211,11 +228,15 @@ def outcome_report(outcome: Any, scenario: Any, trace: Trace) -> dict[str, Any]:
         "failed": outcome.error is not None,
         "steps_completed": outcome.turns_completed,
         "steps_total": outcome.turns_total,
-        "facts_left": scores[0].facts_left,
+        "facts_left": sum(item.survived for item in fact_outcomes),
         "facts_total": len(scenario.facts),
-        "scoped_accuracy": [score.correctness_score for score in scores],
-        "combined_accuracy": list(_live.score_combined_samples(outcome, scenario)),
-        "fact_outcomes": [asdict(item) for item in scores[0].outcomes],
+        "scoped_accuracy": [score.correctness_score for score in scores]
+        if required_scoped and required_scoped <= answered
+        else [],
+        "combined_accuracy": list(_live.score_combined_samples(outcome, scenario))
+        if required_combined and required_combined <= answered
+        else [],
+        "fact_outcomes": [asdict(item) for item in fact_outcomes],
         "agent_seed": totals(agents),
         "summarizer_seed": totals(summaries),
         "workload": totals(agents + summaries),
