@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import weakref
 from copy import deepcopy
 
 import pytest
@@ -11,13 +12,15 @@ from agent_framework._compaction import EXCLUDED_KEY
 from test_background_record_merges import running, tool_reply
 from test_record_budget import _VALUE, _body, _history, _sent, _sent_values, _strategy, _Summarizer
 from test_record_merge_limits import _batch_size
-from test_summary_limiter import RateLimit
+from test_summary_limiter import Clock, RateLimit
 
 from maf_compaction import SummaryRequestLimiter
 from maf_compaction import _composed as module
+from maf_compaction import _summary_limiter as limiter_module
 from maf_compaction._composed import _ChainTimeSpent, _RecordMergeWork
 from maf_compaction._preserve import set_preserved
 from maf_compaction._record_replay import source_key
+from maf_compaction._summary_limiter import SummaryRateLimited
 from maf_compaction._toolsummary import build_record_message, consolidatable_record_groups
 
 pytestmark = pytest.mark.anyio
@@ -122,7 +125,27 @@ async def test_background_leaves_unidentified_sources_for_foreground(kind):
 
 
 @pytest.mark.parametrize("lossy", [False, True])
-async def test_out_of_order_answers_match_sequential_edits_and_replay(lossy):
+@pytest.mark.parametrize("recycle_ids", [False, True])
+async def test_out_of_order_answers_match_sequential_edits_and_replay(
+    lossy, recycle_ids, monkeypatch
+):
+    if recycle_ids:
+        identities = []
+
+        def recycled_id(value):
+            if not isinstance(value, Message):
+                return id(value)
+            for index, reference in enumerate(identities):
+                if reference() is value:
+                    return index
+            for index, reference in enumerate(identities):
+                if reference() is None:
+                    identities[index] = weakref.ref(value)
+                    return index
+            identities.append(weakref.ref(value))
+            return len(identities) - 1
+
+        monkeypatch.setattr(module, "id", recycled_id, raising=False)
     messages = _history(18)
     sequential_messages = deepcopy(messages)
 
@@ -365,3 +388,60 @@ async def test_user_rate_limit_does_not_increment_failure_backoff():
     assert await strategy.user_turns._summarize("Some requirements", prompt="Summarize") is None
     assert strategy.user_turns.user_summary_failures == 0
     assert strategy.user_turns.summary_limiter.stats.requests_started == 1
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+async def test_retry_after_wait_timeout_skips_without_failure_backoff(monkeypatch, chunked):
+    clock = Clock()
+    monkeypatch.setattr(limiter_module, "monotonic", clock)
+    model = _Summarizer()
+    strategy = configured(model).user_turns
+    strategy.summary_timeout_seconds = 0.01
+    strategy.max_consecutive_summary_failures = 1
+    strategy.summary_backoff_seconds = 60
+    strategy.retry_without_summary_options = True
+    strategy.max_summary_input_tokens = 1_000
+    units = [f"{index}: " + "requirements " * 100 for index in range(8)] if chunked else None
+    transcript = "\n".join(units) if units else "Some requirements"
+    limiter = strategy.summary_limiter
+    limiter.configure_request(12_000, {"max_tokens": 1_200})
+    with pytest.raises(SummaryRateLimited):
+        async with limiter.request():
+            raise RateLimit("120")
+    assert await strategy._summarize(transcript, prompt="Summarize", units=units) is None
+    assert strategy.user_summary_skips == 1
+    assert strategy.user_summary_failures == 0
+    assert strategy.session_state()["summary_failures"] == 0
+    assert strategy.session_state()["summary_backoff_until"] == 0
+    assert not strategy._summary_options_disabled
+    assert not model.requests
+    assert limiter.stats.requests_started == limiter.stats.requests_finished == 1
+    clock.now += 120
+    assert (
+        await strategy._summarize(transcript, prompt="Summarize", units=units) == "Short summary."
+    )
+    assert len(model.requests) > 1 if chunked else len(model.requests) == 1
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_capacity_wait_timeout_or_cancellation_is_not_a_provider_failure(cancel):
+    model = _Summarizer()
+    strategy = configured(model, parallel=1).user_turns
+    strategy.summary_timeout_seconds = 60 if cancel else 0.01
+    strategy.max_consecutive_summary_failures = 1
+    strategy.summary_backoff_seconds = 60
+    limiter = strategy.summary_limiter
+    async with limiter.request():
+        task = asyncio.create_task(strategy._summarize("Some requirements", prompt="Summarize"))
+        if cancel:
+            await asyncio.sleep(0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            assert await task is None
+    assert strategy.user_summary_skips == (0 if cancel else 1)
+    assert strategy.user_summary_failures == 0
+    assert strategy.session_state()["summary_backoff_until"] == 0
+    assert not model.requests
+    assert limiter.stats.requests_started == limiter.stats.requests_finished == 1

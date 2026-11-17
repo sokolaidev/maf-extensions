@@ -2721,6 +2721,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._searched.clear()
             self._search_prompt = prompt_digest
         handled: set[int] = set()
+        # Exclusion can replace message instances; keep cache identities alive for this sweep.
+        seen_messages = {id(message): message for message in messages}
         bodies: dict[int, str] = {}
         digests: dict[int, str] = {}
         runs: list[int] = [0]
@@ -2971,7 +2973,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                         continue
             if not batches:
                 break
-            standing = {id(message) for message in messages}
+            seen_messages.update((id(message), message) for message in messages)
             if len(batches) == 1:
                 batch, transcript, _ = batches[0]
                 merged, failed = await self._merge_batch(messages, batch, transcript=transcript)
@@ -2979,7 +2981,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 merged, failed = await self._merge_parallel_batches(messages, batches)
             batches.clear()
             if merged:
-                handled.update(id(message) for message in messages if id(message) not in standing)
+                fresh = {
+                    id(message): message for message in messages if id(message) not in seen_messages
+                }
+                handled.update(fresh)
+                seen_messages.update(fresh)
                 changed = True
                 groups, _, over = survey()
                 layout = prompt_digest, limit, len(groups), chain(0, len(groups))

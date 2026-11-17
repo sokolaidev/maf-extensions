@@ -140,6 +140,30 @@ async def test_retry_after_blocks_admission_until_provider_wait_expires(clock):
     assert entered.is_set()
 
 
+@pytest.mark.parametrize("elapsed,expected", [(90, 7), (269, 8), (270, 9), (540, 12)])
+async def test_recovery_counts_elapsed_intervals_without_polling(clock, elapsed, expected):
+    limiter = SummaryRequestLimiter(300_000)
+    limiter.configure_request(12_000, {"max_tokens": 4_000})
+    with pytest.raises(SummaryRateLimited):
+        async with limiter.request():
+            raise RateLimit()
+    clock.now += elapsed
+    assert limiter.concurrency_limit == expected
+    assert limiter.stats.concurrency_limit == expected
+
+
+async def test_late_poll_does_not_move_the_next_recovery_interval(clock):
+    limiter = SummaryRequestLimiter(300_000)
+    limiter.configure_request(12_000, {"max_tokens": 4_000})
+    with pytest.raises(SummaryRateLimited):
+        async with limiter.request():
+            raise RateLimit()
+    clock.now += 91
+    assert limiter.concurrency_limit == 7
+    clock.now += 89
+    assert limiter.concurrency_limit == 8
+
+
 @pytest.mark.parametrize("header", ["invalid", "nan", "inf", "-1"])
 async def test_invalid_retry_after_still_uses_default_cooldown(clock, header):
     limiter = SummaryRequestLimiter(300_000)

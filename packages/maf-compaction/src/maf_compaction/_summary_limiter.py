@@ -142,8 +142,9 @@ class SummaryRequestLimiter:
             return target
         now = monotonic()
         if now >= self._recover_at:
-            self._reduced += 1
-            self._recover_at = now + self.rate_limit_cooldown_seconds
+            intervals = 1 + math.floor((now - self._recover_at) / self.rate_limit_cooldown_seconds)
+            self._reduced += intervals
+            self._recover_at += intervals * self.rate_limit_cooldown_seconds
             if self._reduced >= target:
                 self._reduced = None
                 return target
