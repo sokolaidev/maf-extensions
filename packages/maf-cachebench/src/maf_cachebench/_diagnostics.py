@@ -38,6 +38,8 @@ COUNTER_LABELS = {
     "user_summary_skips": "USERSUMMSKIP",
     "user_folds": "USERFOLD",
     "records_merged": "RECMERGE",
+    "records_reshaped": "RECSHAPE",
+    "calls_resumed": "CALLRESUME",
     "record_merges_rejected": "RECMERGEREJ",
     "user_summaries_merged": "USERMERGE",
     "user_merges_rejected": "USERMERGEREJ",
@@ -51,6 +53,7 @@ COUNTER_LABELS = {
     "chain_targets_reached": "CHAINTARGET",
     "chain_targets_missed": "CHAINSHORT",
     "chain_decisions_kept": "CHAINKEPT",
+    "chain_timeouts": "CHAINTIMEOUT",
 }
 
 

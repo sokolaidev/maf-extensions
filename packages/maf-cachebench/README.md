@@ -103,7 +103,7 @@ uv run cachebench_capabilities --scenario media_select_pdf --media-tokens 800
 uv run cachebench_capabilities --scenario result_invalid
 ```
 
-Output files must not already exist. Each row identifies itself as `cachebench_capability`, schema 1, with `offline_simulated` evidence, fixture version, package/Python versions, resolved controls, observations and individual checks. These records are separate from cost/cache benchmark records and must not be averaged with them. Live records use schema 24 for the new profile settings; the reader still accepts schemas 2–23, and omitted profile settings retain their default behavior.
+Output files must not already exist. Each row identifies itself as `cachebench_capability`, schema 1, with `offline_simulated` evidence, fixture version, package/Python versions, resolved controls, observations and individual checks. These records are separate from cost/cache benchmark records and must not be averaged with them. Live records use schema 25; the reader still accepts schemas 2–24 and retains older control mappings without filling absent settings with current defaults.
 
 | Scenario | Observation |
 | --- | --- |
@@ -120,6 +120,16 @@ Output files must not already exist. Each row identifies itself as `cachebench_c
 Programmatic callers pass `CompactionOptions(...)` through `StrategyOptions(compaction=...)`. Existing record, user-summary, fold, coverage and chain controls remain available. Each option and the installed CacheBench, compaction and framework versions become part of the recorded cell identity. Schema 23 records also contain `compaction_diagnostics`, including forced-call failures, ignored pins, summary replay/skips and final recall-disabled state. Older records remain readable with unknown new settings and diagnostics; they are grouped separately.
 
 Each completed provider attempt is metered, including an attempt rejected and retried by recall middleware. Independent probes restore the complete supported strategy, middleware and gate state, including pin disablement and summary backoff. Costs from older schemas can undercount internal retries and should not be pooled with new runs.
+
+### Record reduction and background merges
+
+The composed row supports `--record-budget-share` (default `0.5`, or `none` to disable the share), `--chain-seconds` (default `30`, or `none` to disable the admission deadline), `--record-merge-split-depth` (default `2`) and `--rewrite-gain-fraction` (default `0.1`). A rewrite must save that fraction of its source records and satisfy the existing value-coverage check. Zero gain permits any smaller answer; zero split depth disables smaller retries after a lossy or truncated batch. These controls require `maf-compaction>=0.13.6,<0.14`.
+
+Pass `--background-record-merges` to `cachebench_live` to prepare record merges during tools on `tool_and_user_summary_anchored`. Both agent kinds support it with memory, round-trip or restart sessions, original-history replay and streaming. Other strategy rows keep their existing execution path. The first model call, user summaries, harder rewrites and budget enforcement remain foreground work. Only completed answers accepted by a foreground pass enter persisted history; run completion, failure, cancellation and stream closure discard outstanding work. The synthetic tools require no approval, so the harness approval wrapper is disabled.
+
+Use `--tool-delay-seconds 1` to give each synthetic lookup one second of asynchronous work during which a background merge can complete. The default is zero; immediate tool fixtures may leave little opportunity for overlap. The delay applies equally to every live comparison row and is recorded with the controls.
+
+Schema 25 records these controls in the cell identity and adds `chain_timeouts` (`CHAINTIMEOUT`), `records_reshaped` (`RECSHAPE`) and `calls_resumed` (`CALLRESUME`) to diagnostics. Diagnostics also state whether background merging applied to the row and count `summarizer_requests_cancelled`. A cancelled request without returned usage makes pricing incomplete; it is not counted as free. Tests use deterministic local models to verify lifecycle and state behavior. Live provider cost, quality and latency comparisons require a separate benchmark run.
 
 ## Reading the table
 

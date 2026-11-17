@@ -78,14 +78,22 @@ class SessionExperiment:
     The store is in memory: this measures state restoration, not storage latency or durability.
     """
 
-    def __init__(self, build: Callable[[], LiveBinding], options: CompactionOptions) -> None:
+    def __init__(
+        self,
+        build: Callable[[], LiveBinding],
+        options: CompactionOptions,
+        *,
+        session_build: Callable[[maf_compaction.SessionCompactionRegistry], LiveBinding]
+        | None = None,
+    ) -> None:
         self.build = build
         self.options = options
-        self.binding = build()
+        self.session_build = session_build
+        self.registry = self._registry()
+        self.binding = self._build()
         self.lock = asyncio.Lock()
         self.totals = counters(self.binding.strategy, self.binding.recall)
         self.observations = {name: 0 for name in OBSERVATION_LABELS}
-        self.registry = self._registry()
         validate_session_support(options, has_recall=self.binding.recall is not None)
         self.persistence_store = (
             ScenarioStore(options.persistence_scenario)
@@ -93,9 +101,14 @@ class SessionExperiment:
             else None
         )
 
+    def _build(self) -> LiveBinding:
+        if self.session_build is not None:
+            return self.session_build(self.registry)
+        return self.build()
+
     def _registry(self) -> maf_compaction.SessionCompactionRegistry:
         def build() -> maf_compaction.CompactionStack:
-            self.binding = self.build()
+            self.binding = self._build()
             return self.binding.stack()
 
         return maf_compaction.SessionCompactionRegistry(build, max_cached_sessions=1)
@@ -175,7 +188,13 @@ class SessionExperiment:
         try:
             mode = self.options.session_mode
             if mode == "memory":
-                result = await call(session)
+                if self.session_build is None:
+                    result = await call(session)
+                else:
+                    session.state[self.registry.state_key] = self.binding.stack().to_dict()
+                    with self.registry.activate(session):
+                        pass
+                    result = await call(session)
             elif self.binding.recall is None:
                 behavioral = snapshot_behavior(self.binding.strategy, None)
                 session = AgentSession.from_dict(_json_snapshot(session.to_dict()))
@@ -215,6 +234,8 @@ class SessionExperiment:
                     )
 
                 async def complete(active: AgentSession) -> Any:
+                    if self.session_build is not None:
+                        return await call(active)
                     with self.registry.activate(active):
                         return await call(active)
 
@@ -228,9 +249,14 @@ class SessionExperiment:
                         before = counters(self.binding.strategy, self.binding.recall)
 
                         model_in_progress = True
-                        return self.binding.agent.run(
+                        response = self.binding.agent.run(
                             inputs, session=active, options=options, stream=True
-                        ).with_consumption_context_manager(lambda: self.registry.activate(active))
+                        )
+                        if self.session_build is None:
+                            response.with_consumption_context_manager(
+                                lambda: self.registry.activate(active)
+                            )
+                        return response
 
                     async with persistence.stream(
                         session.session_id, stream, **request_kwargs

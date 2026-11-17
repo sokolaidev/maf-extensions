@@ -483,6 +483,10 @@ def _build_tool_and_user_summary_anchored(options: StrategyOptions) -> Compactio
         overflow_policy=cast(Literal["shed", "raise"], options.compaction.overflow_policy),
         estimate_margin=options.compaction.estimate_margin,
         merge_prompt=options.compaction.record_merge_prompt,
+        record_budget_share=options.compaction.record_budget_share,
+        chain_seconds=options.compaction.chain_seconds,
+        record_merge_split_depth=options.compaction.record_merge_split_depth,
+        rewrite_gain_fraction=options.compaction.rewrite_gain_fraction,
     )
 
 
