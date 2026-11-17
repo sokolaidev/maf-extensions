@@ -86,6 +86,7 @@ from ._summary_input import (
     fits_summary_input,
     versioned_prompt,
 )
+from ._summary_limiter import SummaryRateLimited
 from ._toolsummary import (
     CONSOLIDATE_EXCLUDE_REASON,
     PRESERVE_REASON_UNCOVERED,
@@ -308,7 +309,10 @@ _Phase = (
 )
 
 #: What one attempt to replace the records ended as.
-_Consolidation = Literal["accepted", "rejected", "lossy", "incomplete", "failed", "skipped"]
+_Consolidation = Literal[
+    "accepted", "rejected", "lossy", "incomplete", "failed", "skipped", "rate_limited"
+]
+_MergeStop = Literal["failed", "rate_limited"]
 
 #: Shared time allowance for the chain's merges, user fold and record rewrites.
 DEFAULT_CHAIN_SECONDS: Final[float] = 30.0
@@ -2821,7 +2825,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             remember(first, checked)
             return []
 
-        def pending_batch() -> tuple[_PendingMerge, list[dict[str, Any]]] | None:
+        def pending_batch(
+            selected: set[int],
+        ) -> tuple[_PendingMerge, list[dict[str, Any]]] | None:
             matches: list[tuple[int, _PendingMerge]] = []
             for pending in self._pending_merges:
                 if (
@@ -2835,6 +2841,13 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                         matches.append((first, pending))
                         break
             self._pending_merges = [pending for _, pending in matches]
+            matches = [
+                (first, pending)
+                for first, pending in matches
+                if not any(
+                    last(group) in selected for group in groups[first : first + pending.count]
+                )
+            ]
             if not matches:
                 return None
             first, pending = min(matches, key=lambda match: (match[0], -match[1].depth))
@@ -2842,7 +2855,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
         groups, _, over = survey()
         resumed = False
-        while over and (selected := pending_batch()) is not None:
+        while over and (selected := pending_batch(set())) is not None:
             if self._record_answer_ready is not None:
                 await asyncio.sleep(0)
             self._check_chain_deadline()
@@ -2854,14 +2867,35 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 self._pending_merges.remove(pending)
                 continue
             resumed = True
-            merged, failed = await self._merge_batch(
-                messages, batch, transcript=transcript, depth=pending.depth
-            )
+            pending_wave = [pending]
+            batches = [(batch, transcript, pending.depth)]
+            selected_ids = {last(group) for group in batch}
+            while len(batches) < self._summary_parallelism():
+                next_pending = pending_batch(selected_ids)
+                if next_pending is None:
+                    break
+                item, child = next_pending
+                selected_ids.update(last(group) for group in child)
+                body = _numbered_records([bodies[last(group)] for group in child])
+                if not fits_summary_input(
+                    self.merge_prompt, body, tokenizer=self.tokenizer, limit=limit
+                ):
+                    self._pending_merges.remove(item)
+                    continue
+                pending_wave.append(item)
+                batches.append((child, body, item.depth))
+            if len(batches) == 1:
+                merged, failed = await self._merge_batch(
+                    messages, batch, transcript=transcript, depth=pending.depth
+                )
+            else:
+                merged, failed = await self._merge_parallel_batches(messages, batches)
             changed = merged or changed
             if failed:
                 return changed
-            if pending in self._pending_merges:
-                self._pending_merges.remove(pending)
+            for item in pending_wave:
+                if item in self._pending_merges:
+                    self._pending_merges.remove(item)
             if merged:
                 groups, _, over = survey()
         if resumed:
@@ -2890,6 +2924,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if self._batch_resume is not None and self._batch_resume[:4] == layout:
             cursor = self._batch_resume[4]
         self._batch_resume = None
+        batches: list[tuple[list[dict[str, Any]], str, int]] = []
+        exhausted = False
         while over:
             if self._record_answer_ready is not None:
                 await asyncio.sleep(0)
@@ -2897,38 +2933,51 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 cursor += 1
             if len(groups) - cursor < 2:
                 self._batch_resume = None
+                exhausted = True
+            if not exhausted:
+                if not batches:
+                    self._batch_resume = (*layout, cursor)
+                self._check_chain_deadline()
+                oldest = last(groups[cursor])
+                key = prompt_digest, digests[oldest], limit
+                if key not in self._record_input_fits:
+                    self._record_input_fits[key] = fits_summary_input(
+                        self.merge_prompt,
+                        _numbered_records([bodies[oldest]]),
+                        tokenizer=self.tokenizer,
+                        limit=limit,
+                    )
+                if not self._record_input_fits[key]:
+                    handled.add(oldest)
+                    continue
+                try:
+                    batch = await search(cursor)
+                except _BatchProbesSpent:
+                    logger.info(
+                        "Compaction stopped looking for record batches after %d prefixes; "
+                        "%d records were left unsearched.",
+                        _MAX_BATCH_PROBES,
+                        len(groups) - cursor,
+                    )
+                    exhausted = True
+                else:
+                    if len(batch) < 2:
+                        handled.add(oldest)
+                        continue
+                    handled.update(last(group) for group in batch)
+                    transcript = _numbered_records([bodies[last(group)] for group in batch])
+                    batches.append((batch, transcript, 0))
+                    if len(batches) < self._summary_parallelism():
+                        continue
+            if not batches:
                 break
-            self._batch_resume = (*layout, cursor)
-            self._check_chain_deadline()
-            oldest = last(groups[cursor])
-            key = prompt_digest, digests[oldest], limit
-            if key not in self._record_input_fits:
-                self._record_input_fits[key] = fits_summary_input(
-                    self.merge_prompt,
-                    _numbered_records([bodies[oldest]]),
-                    tokenizer=self.tokenizer,
-                    limit=limit,
-                )
-            if not self._record_input_fits[key]:
-                handled.add(oldest)
-                continue
-            try:
-                batch = await search(cursor)
-            except _BatchProbesSpent:
-                logger.info(
-                    "Compaction stopped looking for record batches after %d prefixes; "
-                    "%d records were left unsearched.",
-                    _MAX_BATCH_PROBES,
-                    len(groups) - cursor,
-                )
-                break
-            if len(batch) < 2:
-                handled.add(oldest)
-                continue
-            handled.update(last(group) for group in batch)
-            transcript = _numbered_records([bodies[last(group)] for group in batch])
             standing = {id(message) for message in messages}
-            merged, failed = await self._merge_batch(messages, batch, transcript=transcript)
+            if len(batches) == 1:
+                batch, transcript, _ = batches[0]
+                merged, failed = await self._merge_batch(messages, batch, transcript=transcript)
+            else:
+                merged, failed = await self._merge_parallel_batches(messages, batches)
+            batches.clear()
             if merged:
                 handled.update(id(message) for message in messages if id(message) not in standing)
                 changed = True
@@ -2937,11 +2986,87 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 self._batch_resume = None
                 cursor = 0
             if failed:
+                # A rate-limited or unstarted batch must be considered on the next sweep.
+                self._batch_resume = None
+                break
+            if exhausted:
                 break
         # Kept only while its start record stands, so it stays one entry a record.
         starts = {(digests[last(group)], limit) for group in groups}
         self._searched = {key: found for key, found in self._searched.items() if key in starts}
         return changed
+
+    def _summary_parallelism(self) -> int:
+        limiter = self.user_turns.summary_limiter
+        if limiter is None:
+            return 1
+        return limiter.configure_request(
+            self.user_turns.max_summary_input_tokens,
+            {} if self.user_turns._summary_options_disabled else self.user_turns.summary_options,  # pyright: ignore[reportPrivateUsage]
+        )
+
+    async def _merge_parallel_batches(
+        self,
+        messages: list[Message],
+        batches: list[tuple[list[dict[str, Any]], str, int]],
+    ) -> tuple[bool, _MergeStop | None]:
+        """Ask independently, then validate sources and apply answers in selection order."""
+        prompt = self.merge_prompt
+        sources = [source_key(messages, groups) for groups, _, _ in batches]
+        tasks = [
+            asyncio.create_task(self._ask(prompt=prompt, transcript=body))
+            if (body, len(groups), _digest(prompt)) not in self._refused_merges
+            else None
+            for groups, body, _ in batches
+        ]
+        active = [task for task in tasks if task is not None]
+        changed = False
+        stopped: _ChainTimeSpent | None = None
+        rate_limited = False
+        try:
+            await asyncio.gather(*active, return_exceptions=True)
+            for (original, body, depth), expected, task in zip(
+                batches, sources, tasks, strict=True
+            ):
+                answer = None
+                if task is not None:
+                    try:
+                        answer = task.result()
+                    except SummaryRateLimited:
+                        rate_limited = True
+                        continue
+                    except _ChainTimeSpent as error:
+                        stopped = error
+                        continue
+                    if answer is None:
+                        return changed, "failed"
+                if expected is None or self.merge_prompt != prompt:
+                    continue
+                standing = consolidatable_record_groups(messages)
+                for first in range(len(standing) - len(original) + 1):
+                    groups = standing[first : first + len(original)]
+                    if source_key(messages, groups) != expected:
+                        continue
+                    try:
+                        merged, failed = await self._merge_batch(
+                            messages, groups, transcript=body, depth=depth, answer=answer
+                        )
+                    except _ChainTimeSpent as error:
+                        stopped = error
+                        break
+                    changed = merged or changed
+                    if failed == "failed":
+                        return changed, failed
+                    rate_limited = rate_limited or failed == "rate_limited"
+                    break
+            if stopped is not None:
+                raise stopped
+            return changed, "rate_limited" if rate_limited else None
+        finally:
+            for task in active:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*active, return_exceptions=True)
 
     async def _merge_batch(
         self,
@@ -2950,26 +3075,28 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         *,
         transcript: str,
         depth: int = 0,
-    ) -> tuple[bool, bool]:
-        """Merge a batch or its smaller halves; return whether it changed or failed.
+        answer: _RecordAnswer | None = None,
+    ) -> tuple[bool, _MergeStop | None]:
+        """Merge a batch or its smaller halves; return progress and any reason to stop asking.
 
         Unfinished smaller batches are retained independently of their parent.
         """
-        self._check_chain_deadline()
+        if answer is None:
+            self._check_chain_deadline()
         key = transcript, len(groups), _digest(self.merge_prompt)
         if key in self._refused_merges:
             self._record_merges_skipped += 1
         else:
             outcome = await self._consolidate(
-                messages, groups, prompt=self.merge_prompt, transcript=transcript
+                messages, groups, prompt=self.merge_prompt, transcript=transcript, answer=answer
             )
-            if outcome == "failed":
-                return False, True
+            if outcome == "failed" or outcome == "rate_limited":
+                return False, outcome
             if outcome == "skipped":
-                return False, False
+                return False, None
             if outcome == "accepted":
                 self._records_merged += 1
-                return True, False
+                return True, None
             self._record_merges_rejected += 1
             self._refused_merges.add(key)
             if outcome in {"lossy", "incomplete"}:
@@ -2979,7 +3106,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             or depth >= self.record_merge_split_depth
             or len(groups) < 3
         ):
-            return False, False
+            return False, None
         midpoint = len(groups) // 2
         changed = False
         children = groups[:midpoint], groups[midpoint:]
@@ -3001,6 +3128,24 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             queued.append(pending)
             if len(child) >= 2 and pending not in self._pending_merges:
                 self._pending_merges.append(pending)
+        if self._summary_parallelism() > 1:
+            batches = [
+                (child, _transcript(messages, child), depth + 1)
+                for child in children
+                if len(child) >= 2
+                and fits_summary_input(
+                    self.merge_prompt,
+                    _transcript(messages, child),
+                    tokenizer=self.tokenizer,
+                    limit=self._record_request_limit(),
+                )
+            ]
+            changed, failed = await self._merge_parallel_batches(messages, batches)
+            if not failed:
+                for pending in queued:
+                    if pending in self._pending_merges:
+                        self._pending_merges.remove(pending)
+            return changed, failed
         for child, expected, pending in zip(children, identities, queued, strict=True):
             self._check_chain_deadline()
             if len(child) < 2:
@@ -3030,10 +3175,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             )
             changed = merged or changed
             if failed:
-                return changed, True
+                return changed, failed
             if pending in self._pending_merges:
                 self._pending_merges.remove(pending)
-        return changed, False
+        return changed, None
 
     def _record_tokens(self, messages: list[Message]) -> int:
         """Return the included tokens of every record still being sent."""
@@ -3170,6 +3315,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             elif outcome in {"rejected", "lossy", "incomplete"}:
                 self._record_rewrites_rejected += 1
                 self._refused_rewrites[key] = max(self._refused_rewrites.get(key, 0), attempt)
+            elif outcome == "rate_limited":
+                break
         return changed
 
     def _bounded_records(
@@ -3236,7 +3383,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if any(_record_has_external_hold(message) for message in sources):
             return "skipped"
         if answer is None:
-            answer = await self._ask(prompt=prompt, transcript=transcript)
+            try:
+                answer = await self._ask(prompt=prompt, transcript=transcript)
+            except SummaryRateLimited:
+                return "rate_limited"
         if answer is None:
             return "failed"
         if self._record_answer_ready is not None:
@@ -3371,7 +3521,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 before_request=self._check_chain_deadline,
             )
             return _RecordAnswer(text, incomplete)
-        except _ChainTimeSpent:
+        except (_ChainTimeSpent, SummaryRateLimited):
             raise
         except Exception as error:
             # Broad on purpose, as the user half's is: this runs inside the chat client's own

@@ -290,6 +290,29 @@ Only a foreground pass can accept an answer. It matches source fingerprints and 
 
 Snapshots written before `split_merges` existed treat every counted refused merge as eligible for retries in smaller halves, including refusals that were no smaller. A present, empty `split_merges` list keeps its explicit meaning: none are eligible. Refusals without a source count remain ambiguous and are discarded on restore.
 
+### Sharing summarizer capacity
+
+Pass one `SummaryRequestLimiter` to the user-turn strategy in every stack using the same summarizer deployment and event loop. Create it outside the stack factory. The host supplies the configured client and divides the deployment's tokens-per-minute allowance between processes or replicas.
+
+```python
+from maf_compaction import SummaryRequestLimiter
+
+summary_limiter = SummaryRequestLimiter(
+    summary_tokens_per_minute=300_000,
+    expected_request_seconds=40,
+    max_parallel_summary_requests=12,
+    rate_limit_cooldown_seconds=90,
+)
+```
+
+Set `summary_limiter=summary_limiter`, `max_summary_input_tokens=12_000` and `summary_options={"max_tokens": 4_000}` when constructing each `UserTurnAnchoredSummarizationCompactionStrategy`. This starts at `floor(300000 * 40 / (60 * 16000)) = 12` concurrent requests, shared across stacks. The estimate uses the largest registered input-plus-output ceiling and an exponential moving average of successful request durations (20% weight for each observation). The optional maximum is an additional cap. An absent output cap restricts the shared limiter to one; omitting the limiter keeps the existing sequential behavior.
+
+Foreground and background record merges select the oldest independent batches, including smaller refused-batch retries, and apply answers in selection order after checking current sources. A wave may finish more reductions than were needed to reach the target. New merged records wait for a later sweep. User summaries, chunks, folds and harder rewrites remain sequential within a stack but acquire capacity from the same limiter. `chain_seconds` still controls admission; admitted requests may finish after it expires. Cancellation and run or stream closure drain outstanding requests.
+
+A 429 halves concurrency, down to one, for 90 seconds by default. Each further 429 restarts that cooldown; recovery adds one slot per cooldown interval without another 429. Numeric or HTTP-date `Retry-After` headers delay new requests and can extend the cooldown. Detection reads `status_code` on exceptions, their responses and cause chains, without a provider dependency. An optional `classify_rate_limit` callback returns a nonnegative wait in seconds for a rate limit (`0` if no provider wait), or `None` for other failures. Rate-limited batches remain eligible; they do not count as summary failures, retire summary options or become refusals. Already admitted successful answers are retained in order, and later sweeps retry remaining work.
+
+`summary_limiter.stats` reports the admission limit, current and peak concurrency, started and finished requests (including failed or cancelled requests), rate-limit events and cooldowns. Reducing the limit allows existing requests to finish, so active requests may temporarily exceed the new limit. These counters belong to the shared limiter and are not session state. This is a throughput estimate, not a strict token bucket or requests-per-minute limit; hosts still configure provider-specific budgets and client timeouts.
+
 ### Loading and saving a session
 
 `SessionPersistence` wraps the whole agent request around the registry above. Supply asynchronous `load(session_id)` and `save(session_id, snapshot)` callbacks and a `lease(session_id)` asynchronous context manager. `load` returns a framework session snapshot or `None`; `save` atomically replaces that snapshot. The lease must exclude every writer to that session, across replicas when applicable, from before loading until after stream cleanup and saving. A storage backend with expiring leases must fence writes and reject saves from an expired lease. This package supplies neither a database client nor a distributed lock. A local `asyncio.Lock` is sufficient only when every writer runs in that same process.

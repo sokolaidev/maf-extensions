@@ -53,6 +53,7 @@ from ._summary_input import (
     summary_request,
     versioned_prompt,
 )
+from ._summary_limiter import SummaryRateLimited, SummaryRequestLimiter
 from ._summary_links import has_summary_links
 
 if TYPE_CHECKING:
@@ -606,6 +607,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             shares this limit for record merges and rewrites. Reserve provider overhead separately.
         summary_timeout_seconds: Positive finite timeout for each user-summary or fold request.
             None leaves requests unbounded. Cancellation must be honoured by the client.
+        summary_limiter: Optional deployment-scoped ``SummaryRequestLimiter`` shared by stacks
+            on this event loop. User summaries, folds, record merges and rewrites share its
+            capacity; the composition also prepares independent record batches concurrently.
         max_consecutive_summary_failures: Positive failure threshold for a cooldown, or None
             to disable it. Requires ``summary_backoff_seconds``. Accepted fresh summaries
             reset the streak; cached replays do not. Session snapshots retain the cooldown.
@@ -655,6 +659,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         summary_timeout_seconds: float | None = None,
         summary_input_policy: str = "skip",
         summary_options: dict[str, Any] | None = None,
+        summary_limiter: SummaryRequestLimiter | None = None,
         retry_without_summary_options: bool = False,
         chunk_cache_size: int = 128,
         max_consecutive_summary_failures: int | None = None,
@@ -707,6 +712,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             raise ValueError("chunk_cache_size must be a non-negative integer.")
         self.summary_input_policy = summary_input_policy
         self.summary_options = deepcopy(summary_options or {})
+        self.summary_limiter = summary_limiter
+        if summary_limiter is not None:
+            summary_limiter.configure_request(max_summary_input_tokens, self.summary_options)
         self.retry_without_summary_options = retry_without_summary_options
         self._summary_options_disabled = False
         self.chunk_cache_size = chunk_cache_size
@@ -2295,9 +2303,16 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         options = self.summary_options if not self._summary_options_disabled else {}
 
         async def ask(call_options: dict[str, Any]) -> str:
-            response = await self.client.get_response(
-                summary_request(prompt, transcript), stream=False, options=call_options
-            )
+            if self.summary_limiter is None:
+                response = await self.client.get_response(
+                    summary_request(prompt, transcript), stream=False, options=call_options
+                )
+            else:
+                self.summary_limiter.configure_request(self.max_summary_input_tokens, call_options)
+                async with self.summary_limiter.request(before_request):
+                    response = await self.client.get_response(
+                        summary_request(prompt, transcript), stream=False, options=call_options
+                    )
             if observe is not None:
                 observe(response)
             summary = response.text.strip() if response.text else ""
@@ -2310,6 +2325,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             before_request()
         try:
             return await ask(options)
+        except (SummaryRateLimited, SummaryWorkStopped):
+            raise
         except Exception:
             if not options or not self.retry_without_summary_options:
                 raise
@@ -2375,6 +2392,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 return await self._generate(transcript, prompt=prompt)
         except SummaryWorkStopped:
             raise
+        except SummaryRateLimited:
+            self._summary_skips += 1
+            return None
         except Exception as error:
             logger.warning("Skipping user-turn compaction: summary generation failed (%s).", error)
             self._summary_failed()
