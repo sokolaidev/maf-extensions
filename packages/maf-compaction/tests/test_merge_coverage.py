@@ -401,7 +401,9 @@ async def test_cached_answers_follow_over_budget_reasoning_policy(
     assert len(_sent_values(messages)) == (12 if policy == "shed" else 16)
 
 
-@pytest.mark.parametrize("change", [None, "sources", "prompt", "coverage", "split_depth", "limit"])
+@pytest.mark.parametrize(
+    "change", [None, "sources", "held", "prompt", "coverage", "split_depth", "limit"]
+)
 @pytest.mark.parametrize("budget", [1000, 100_000])
 async def test_completed_background_sweep_relaxes_only_its_current_sources_and_policy(
     change: str | None,
@@ -422,6 +424,10 @@ async def test_completed_background_sweep_relaxes_only_its_current_sources_and_p
         assert len(summarizer.merges) == 3
         if change == "sources":
             messages[-1:-1] = _record_pair(9)
+        elif change == "held":
+            for group in consolidatable_record_groups(messages):
+                for message in messages[group["start_index"] : group["end_index"] + 1]:
+                    set_preserved(message, preserved=True, reason="host")
         elif change == "prompt":
             strategy.merge_prompt += " Preserve attribution."
         elif change == "coverage":

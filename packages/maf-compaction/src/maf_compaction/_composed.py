@@ -3383,7 +3383,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return await self._relax_merge_coverage(messages) or changed
 
     def _merge_sweep_key(self, messages: list[Message]) -> str | None:
-        sources = source_key(messages, consolidatable_record_groups(messages))
+        groups = consolidatable_record_groups(messages)
+        if not groups:
+            return None
+        sources = source_key(messages, groups)
         if sources is None:
             return None
         self._sync_merge_coverage()
