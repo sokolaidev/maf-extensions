@@ -2043,12 +2043,20 @@ class SandboxRouter:
         *,
         snapshot: bool,
     ) -> Sandbox:
-        """Clean an unfamiliar instance before any input reaches it, under the acquire gate."""
+        """Adopt fresh or authorized recovery state; clean other unfamiliar instances."""
         at = (key, spec.kind, id(backend))
         with self._seen_guard:
             if sandbox.instance_id in self._seen.get(at, set()):
                 return sandbox
         if getattr(sandbox, "freshly_created", False) is True:
+            self._remember_instance(
+                key, spec.kind, backend, sandbox, execution_contract=spec.execution_contract
+            )
+            return sandbox
+        if (
+            _declarations(backend).recovers_state is True
+            and self._cleanup_on(backend, spec) is Cleanup.RECLAIM
+        ):
             self._remember_instance(
                 key, spec.kind, backend, sandbox, execution_contract=spec.execution_contract
             )

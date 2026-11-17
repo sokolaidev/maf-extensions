@@ -48,12 +48,14 @@ class Catalog:
             existing_only=not initialize,
         )
         self.stores: dict[str, SharedStore] = {}
+        self.maintenance_cursor = ""
 
     def acquire(self, key: SandboxKey, spec: SandboxSpec) -> tuple[str, bool]:
         """Reopen only the exact admitted execution contract, or allocate a new epoch."""
         if not self.verified:
             self.config.verify()
             self.verified = True
+        self.maintain()
         profile = self.profile(key, spec)
         hashed = profile["key"]
         prefix = "mxc_" + hashed[:32] + "_"
@@ -154,8 +156,11 @@ class Catalog:
             if any(streams[key]["omitted_bytes"] for key in ("stdout", "stderr")):
                 raise Refused("program output exceeds the adapter's independent stream limits")
 
+        store = self.stores[session]
+        store.collect_checkpoints()
+        store.expire()
         return call(
-            self.stores[session],
+            store,
             call_id,
             request,
             self.config.helper,
@@ -194,32 +199,70 @@ class Catalog:
             )
             self.stores[session] = store
         NativeJournal(store).delete()
+        store.collect_checkpoints(limit=128)
+        store.expire()
         store.close()
         del self.stores[session]
+
+    def maintain(self) -> None:
+        """Visit at most eight retired epochs per pass without erasing retry identities."""
+        rows = self.sentinel.db.execute(
+            "SELECT id,profile FROM sessions WHERE state='retired' AND id>? ORDER BY id LIMIT 8",
+            (self.maintenance_cursor,),
+        ).fetchall()
+        if not rows:
+            self.maintenance_cursor = ""
+        for row in rows:
+            session = row["id"]
+            self.maintenance_cursor = session
+            if self.sentinel.db.execute(
+                "SELECT 1 FROM launches WHERE session=? UNION ALL "
+                "SELECT 1 FROM reservations WHERE session=?",
+                (session, session),
+            ).fetchone():
+                continue
+            profile = json.loads(row["profile"])["profile"]
+            store = self.stores.get(session)
+            if store is not None:
+                store.collect_checkpoints(limit=128)
+                store.expire()
+            else:
+                with SharedStore(
+                    self.config.root, session, profile, self.config.limits, existing_only=True
+                ) as retired:
+                    retired.collect_checkpoints(limit=128)
+                    retired.expire()
+
+    def cleanup_sessions(self) -> tuple[tuple[str, dict[str, str]], ...]:
+        """Exclude retired delivery history only once native resources and checkpoints are gone."""
+        return tuple(
+            (row["id"], json.loads(row["profile"])["profile"])
+            for row in self.sentinel.db.execute(
+                "SELECT id,profile FROM sessions s WHERE id!='mxc_adapter' AND "
+                "(state='active' OR EXISTS(SELECT 1 FROM launches WHERE session=s.id) OR "
+                "EXISTS(SELECT 1 FROM reservations WHERE session=s.id) OR "
+                "EXISTS(SELECT 1 FROM calls WHERE session=s.id AND checkpoint_charge>0))"
+            )
+        )
 
     def scope_sessions(self, scope: str, thread_id: str) -> tuple[str, ...]:
         """Include unopened sessions when a host purges a retained conversation."""
         hashed = identity(scope, thread_id)
         return tuple(
-            row["id"]
-            for row in self.sentinel.db.execute(
-                "SELECT id,profile FROM sessions WHERE state='active' AND id!='mxc_adapter'",
-            )
-            if json.loads(row["profile"])["profile"].get("scope") == hashed
+            session
+            for session, profile in self.cleanup_sessions()
+            if profile.get("scope") == hashed
         )
 
     def key_sessions(self, key: SandboxKey, kind: str | None) -> tuple[str, ...]:
         """Find retained epochs even before this process has acquired a handle."""
         owner = identity(key.scope, key.thread_id, key.agent_id, key.call_id)
         sessions: list[str] = []
-        for row in self.sentinel.db.execute(
-            "SELECT id,profile FROM sessions WHERE state='active' AND id!='mxc_adapter'"
-        ):
-            profile = json.loads(row["profile"])["profile"]
+        for session, profile in self.cleanup_sessions():
             if profile.get("owner") == owner and (
                 kind is None or profile.get("kind") == identity(kind)
             ):
-                sessions.append(row["id"])
+                sessions.append(session)
         return tuple(sessions)
 
     def close(self) -> None:

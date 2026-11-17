@@ -93,14 +93,29 @@ pub fn run(args: &[String]) -> Result<bool> {
     let shared = Arc::new(Mutex::new(workspace));
     let mut sandbox = BackendSession::restore_files(Path::new(&args[2]), shared.clone())?;
     let mut code = format!("import os\nguest_call_path={}\nguest_session_path='/workspace/session'\nos.chdir(guest_call_path)\n", serde_json::to_string(&format!("/workspace/{call_root}"))?);
-    code.push_str(&String::from_utf8(bounded(Path::new(&args[4]),65536)?)?);
+    let source = String::from_utf8(bounded(Path::new(&args[4]),65536)?)?;
+    code.push_str(&format!("exec(compile({}, '<mxc-program>', 'exec', dont_inherit=True), globals(), globals())", serde_json::to_string(&source)?));
+    let timeout_ms = number(&request,"timeout_ms",90000)?;
+    if timeout_ms == 0 { return Err("invalid program timeout".into()); }
     write(&Path::new(&args[5]).with_extension("ready"), b"ready\n")?;
-    let execution = sandbox.execute(&code);
+    let execution = sandbox.execute_program(&code, std::time::Duration::from_millis(timeout_ms as u64));
     let (stdout,stderr,streams) = sandbox.take_streams()?;
     let report = Path::new(&args[5]);
     write(&report.with_extension("stdout.bin"),&stdout)?;
     write(&report.with_extension("stderr.bin"),&stderr)?;
-    execution?;
+    let exit_code = execution?;
+    if exit_code != 0 && directory_mode {
+        sandbox.close();
+        write(&report.with_extension("artifacts.bin"), b"")?;
+        let completion = json!({"format":"mxc-directory-result-v1","completed":true,"checkpoint":false,
+            "limit_bytes":1048576,"streams":streams,"artifacts":[],"workspace_bytes":0,"workspace_files":0,
+            "directories":[],"call_directory":call_name,"exit_code":exit_code});
+        write(&report.with_extension("part"), &serde_json::to_vec(&completion)?)?;
+        if report.exists() { return Err("completion destination exists".into()); }
+        fs::rename(report.with_extension("part"),report)?;
+        return Ok(true);
+    }
+    if exit_code != 0 { return Err(format!("guest exited with {exit_code}").into()); }
     let mut w = shared.lock().unwrap();
     if !w.ready() { return Err("incomplete or malformed file transfer".into()); }
     let requested = request["artifacts"].as_array().ok_or("invalid artifacts")?;

@@ -32,11 +32,12 @@ class Admission:
     def activate(self, permit: object) -> Generator[None]:
         if self.permit is not permit:
             raise RuntimeError("MXC call admission has expired")
-        token = self.current.set(permit)
+        previous = self.current.get()
+        self.current.set(permit)
         try:
             yield
         finally:
-            self.current.reset(token)
+            self.current.set(previous)
 
     @asynccontextmanager
     async def enter(

@@ -91,6 +91,8 @@ def test_native_codeact_text_and_csv_chart(tmp_path, persistent):
                 )
             )
             assert "mean: 4.0" in text(answer), text(answer)
+            answer = await function(code="print('before failure')\nraise ValueError('bad input')")
+            assert "before failure" in text(answer) and "ValueError: bad input" in text(answer)
             tools = make_codeact_tools(
                 router,
                 "files",

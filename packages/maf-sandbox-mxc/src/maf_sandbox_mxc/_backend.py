@@ -37,6 +37,7 @@ from ._config import MxcSandboxConfig
 from ._files import GUEST_ROOT, Files
 from ._state import Catalog
 from .files.request import Request, name
+from .files.transport import GuestProgramError
 from .host_store import Refused
 
 
@@ -112,18 +113,24 @@ class MxcSandbox:
         self.busy = True
         self.cancel = cancel = threading.Event()
         try:
-            result = await self.backend.work(
-                lambda catalog: catalog.execute(
-                    self.instance_id, call_id, request, cancel, timeout
-                ),
-                timeout=timeout,
-                cancel=cancel,
-            )
-            self.files.publish(result)
-            self.last_request = (call_id, request, self.files.revision)
-            streams = json.loads(result)["streams"]
+            try:
+                result = await self.backend.work(
+                    lambda catalog: catalog.execute(
+                        self.instance_id, call_id, request, cancel, timeout
+                    ),
+                    timeout=timeout,
+                    cancel=cancel,
+                )
+            except GuestProgramError as error:
+                result = error.result
+            else:
+                self.files.publish(result)
+                self.last_request = (call_id, request, self.files.revision)
+            completion = json.loads(result)
+            streams = completion["streams"]
             self.freshly_created = False
             return ExecResult(
+                exit_code=completion.get("exit_code", 0),
                 stdout_bytes=base64.b64decode(streams["stdout"]["base64"], validate=True),
                 stderr_bytes=base64.b64decode(streams["stderr"]["base64"], validate=True),
             )
@@ -217,6 +224,7 @@ class MxcSandboxBackend:
             isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
             requires_exclusive_admission=True,
             program_channels=(MxcProgramChannel(),),
+            recovers_state=config.persistent,
         )
 
     async def initialize(self) -> None:

@@ -11,7 +11,15 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from maf_sandbox import IsolationScope, ProgramRequirements, Sandbox, SandboxKey, SandboxSpec
+from maf_sandbox import (
+    Cleanup,
+    IsolationScope,
+    ProgramRequirements,
+    Sandbox,
+    SandboxKey,
+    SandboxRouter,
+    SandboxSpec,
+)
 from maf_sandbox.conformance import (
     assert_call_scope_conformance,
     assert_exec_conformance,
@@ -206,10 +214,54 @@ def test_native_restart_and_retry_without_execution(native_config):
             async with backend.call_admission(key, SPEC, owner="recovered", timeout=90):
                 sandbox = await backend.acquire(key, SPEC)
                 assert sandbox.instance_id == identity
+                router = SandboxRouter([backend], min_cleanup=Cleanup.RECLAIM)
+                adopted = await router.acquire(key, SPEC)
+                assert adopted.instance_id == identity
+                assert getattr(adopted, "freshly_created") is False
                 replay = await sandbox.run_call("first", code, guest_call_path="one", timeout=90)
                 assert replay == first
                 second = await sandbox.run_call("second", code, guest_call_path="two", timeout=90)
                 assert second.stdout == "2\n"
+        finally:
+            await backend.aclose()
+
+    asyncio.run(check())
+
+
+def test_native_program_errors_future_imports_and_execution_budget(native_config):
+    async def check():
+        backend = MxcSandboxBackend(native_config)
+        await backend.initialize()
+        key = SandboxKey("native", "program", "agent")
+        try:
+            async with backend.call_admission(key, SPEC, owner="native", timeout=90):
+                sandbox = await backend.acquire(key, SPEC)
+                first = await sandbox.run_call(
+                    "future",
+                    "from __future__ import annotations\n"
+                    "def identity(value: Unresolved) -> Unresolved: return value\n"
+                    "saved = 7\nprint(identity.__annotations__['value'])",
+                    guest_call_path="future",
+                    timeout=90,
+                )
+                assert first.exit_code == 0 and first.stdout == "Unresolved\n"
+                failed = await sandbox.run_call(
+                    "failure",
+                    "saved = 99\nprint('before failure')\nraise ValueError('bad input')",
+                    guest_call_path="failure",
+                    timeout=90,
+                )
+                assert failed.exit_code != 0
+                assert "before failure" in failed.stdout
+                assert "ValueError: bad input" in failed.stderr and "Traceback" in failed.stderr
+                assert not list((native_config.root / "scratch").iterdir())
+                later = await sandbox.run_call(
+                    "later",
+                    "import time\ntime.sleep(35)\nprint(saved)",
+                    guest_call_path="later",
+                    timeout=60,
+                )
+                assert later.exit_code == 0 and later.stdout == "7\n"
         finally:
             await backend.aclose()
 

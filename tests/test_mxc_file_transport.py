@@ -241,3 +241,72 @@ def test_directory_mode_is_bound_to_retry_identity():
             replace(directory, call_directory=invalid)
     with pytest.raises(transport.Refused):
         replace(original, call_directory="valid")
+
+
+def test_requested_execution_budget_reaches_native_metadata(tmp_path):
+    transport.prepare(tmp_path, directory_request(), False, tmp_path, timeout=60)
+    assert json.loads((tmp_path / "request.json").read_text())["timeout_ms"] == 60_000
+
+
+@pytest.mark.parametrize("bad", [None, "checkpoint", "exit_code", "artifacts", "directories"])
+def test_guest_failure_has_bounded_diagnostics_and_no_checkpoint(native, bad):
+    report, control = native
+    directory_control(control)
+    control.update(checkpoint=False, exit_code=1, artifacts=[], directories=[])
+    report.with_suffix(".artifacts.bin").write_bytes(b"")
+    for name, data in (("stdout", b"before failure\n"), ("stderr", b"ValueError: bad input\n")):
+        report.with_suffix(f".{name}.bin").write_bytes(data)
+        control["streams"][name]["retained_bytes"] = len(data)
+    if bad == "checkpoint":
+        control[bad] = True
+    elif bad == "exit_code":
+        control[bad] = True
+    elif bad in ("artifacts", "directories"):
+        control[bad] = ["uncommitted"]
+    report.write_text(json.dumps(control), encoding="utf-8")
+    if bad is not None:
+        with pytest.raises(transport.Refused):
+            transport.read_result(report, True, directory_request())
+    else:
+        result = json.loads(transport.read_result(report, True, directory_request()))
+        assert result["exit_code"] == 1
+        assert base64.b64decode(result["streams"]["stdout"]["base64"]) == b"before failure\n"
+        assert base64.b64decode(result["streams"]["stderr"]["base64"]) == b"ValueError: bad input\n"
+
+
+def test_guest_failure_preserves_previous_checkpoint_and_releases_scratch(tmp_path, monkeypatch):
+    journal_module = importlib.import_module("maf_sandbox_mxc.native_journal")
+    req = directory_request()
+    limits = storage.Limits(10**8, 2 * 10**8, checkpoint_bytes=1024, result_bytes=40_000_000)
+    scratch = storage.ScratchLimits(100_000_000, 100_000, 200_000_000)
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    (candidate / "state").write_bytes(b"previous state")
+    monkeypatch.setattr(journal_module, "stopped", lambda _: True)
+    monkeypatch.setattr(journal_module.Identity, "decode", lambda _: None)
+    with storage.SharedStore(tmp_path / "store", "one", {}, limits) as store:
+        store.begin("good", b"good")
+        store.commit("good", candidate, b"saved")
+
+        def execute(*args, **kwargs):
+            store.db.execute(
+                "UPDATE launches SET state='armed',identity='stopped-test-helper' WHERE call='bad'"
+            )
+            raise transport.GuestProgramError(b"bounded-failure")
+
+        monkeypatch.setattr(shared, "execute", execute)
+        with pytest.raises(transport.GuestProgramError) as error:
+            shared.call(store, "bad", req, tmp_path / "helper", candidate, scratch)
+        assert error.value.result == b"bounded-failure"
+        assert (
+            store.db.execute("SELECT current_call FROM sessions WHERE id='one'").fetchone()[0]
+            == "good"
+        )
+        assert (
+            store.db.execute("SELECT status FROM calls WHERE id='bad'").fetchone()[0]
+            == "interrupted"
+        )
+        assert store.db.execute("SELECT count(*) FROM launches").fetchone()[0] == 0
+        assert store.db.execute("SELECT count(*) FROM reservations").fetchone()[0] == 0
+        assert not list((store.root / "scratch").iterdir())
+        store.audit_usage()

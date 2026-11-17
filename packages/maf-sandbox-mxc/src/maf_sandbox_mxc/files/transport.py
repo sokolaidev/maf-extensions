@@ -32,18 +32,27 @@ DIRECTORY_FORMAT = "mxc-directory-result-v1"
 CONTROL_LIMIT = 16 * CHUNK
 
 
+class GuestProgramError(Refused):
+    """A validated guest failure with bounded streams and no publishable checkpoint."""
+
+    def __init__(self, result: bytes):
+        super().__init__("guest program failed")
+        self.result = result
+
+
 def result_limit(request: Request) -> int:
     """Reserve base64 payloads and bounded names without borrowing checkpoint capacity."""
     return 4 * ((2 * STREAM_LIMIT + request.limits.artifact_bytes + 2) // 3) + 4 * CHUNK
 
 
-def prepare(work: Path, request: Request, restoring: bool, base: Path) -> None:
+def prepare(work: Path, request: Request, restoring: bool, base: Path, timeout: float = 90) -> None:
     """Stage only host-selected bytes under fixed private host filenames."""
     metadata: dict[str, Any] = json.loads(request.identity())
     metadata.update(
         token=uuid.uuid4().hex,
         restoring=restoring,
         uploads_valid=not restoring or uploads_valid(base, request),
+        timeout_ms=max(1, int(timeout * 1000)),
     )
     offset = 0
     inputs: list[dict[str, object]] = []
@@ -121,6 +130,18 @@ def read_result(report: Path, checkpoint: bool, request: Request) -> bytes:
         raise Refused("malformed native file completion") from error
     directory = request.call_directory is not None
     extra: set[str] = {"directories", "call_directory"} if directory else set()
+    failed = directory and is_record(control) and "exit_code" in control
+    if failed:
+        extra.add("exit_code")
+        if (
+            type(control["exit_code"]) is not int
+            or not 1 <= control["exit_code"] <= 255
+            or control.get("artifacts") != []
+            or control.get("directories") != []
+            or control.get("workspace_bytes") != 0
+            or control.get("workspace_files") != 0
+        ):
+            raise Refused("invalid guest failure completion")
     if (
         not is_record(control)
         or set(control)
@@ -137,7 +158,7 @@ def read_result(report: Path, checkpoint: bool, request: Request) -> bytes:
         | extra
         or control["format"] != (DIRECTORY_FORMAT if directory else FORMAT)
         or control["completed"] is not True
-        or control["checkpoint"] is not checkpoint
+        or control["checkpoint"] is not (False if failed else checkpoint)
         or type(control["limit_bytes"]) is not int
         or control["limit_bytes"] != STREAM_LIMIT
         or not is_record(control["streams"])
@@ -155,6 +176,8 @@ def read_result(report: Path, checkpoint: bool, request: Request) -> bytes:
         "streams": {},
         "artifacts": [],
     }
+    if failed:
+        result["exit_code"] = control["exit_code"]
     selected: list[str] = sorted(request.artifacts)
     if directory:
         if control["call_directory"] != request.call_directory:
@@ -255,7 +278,7 @@ def execute(
     helper, startup, work = (path.resolve() for path in (helper, startup, work))
     request = work / "code.py"
     request.write_bytes(code)
-    prepare(work, file_request, restoring, startup)
+    prepare(work, file_request, restoring, startup, timeout)
     report = work / "native.json"
     if any(work.glob("native*")) or (work / "candidate").exists():
         raise Refused("native destinations must be fresh")
@@ -323,4 +346,7 @@ def execute(
             raise Refused("call cancelled")
         if child.returncode != 0:
             raise Refused(f"native call failed: {child.returncode}")
-    return read_result(report, checkpoint, file_request)
+    result = read_result(report, checkpoint, file_request)
+    if "exit_code" in json.loads(result):
+        raise GuestProgramError(result)
+    return result

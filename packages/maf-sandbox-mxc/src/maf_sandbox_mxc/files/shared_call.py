@@ -7,7 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from maf_sandbox_mxc.files.request import Request
-from maf_sandbox_mxc.files.transport import CONTROL_LIMIT, execute, result_limit
+from maf_sandbox_mxc.files.transport import CONTROL_LIMIT, GuestProgramError, execute, result_limit
 from maf_sandbox_mxc.host_store import CHUNK, Refused
 from maf_sandbox_mxc.native_journal import NativeJournal
 from maf_sandbox_mxc.shared_store import (
@@ -93,6 +93,10 @@ def call(
             boundary("before_ack")
             active()
             return result
+        except GuestProgramError as error:
+            validate_result(error.result)
+            journal.reclaim(call_id, boundary)
+            raise
         except BaseException:
             if cancel is not None and cancel.is_set():
                 row = store.db.execute(
