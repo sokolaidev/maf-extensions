@@ -385,8 +385,7 @@ async def over_budget_pass(strategy, messages):
 
 
 async def test_a_pass_that_ends_over_budget_still_hands_the_worker_its_history():
-    """#2793: the closing budget check raised before the worker was handed the pass's list, so on
-    a conversation over budget on every pass no worker ever started, and nothing was merged."""
+    """A pass that ends over budget still hands the worker its list, so a tool round starts it."""
     model = _Summarizer()
     strategy = _strategy(model, budget=100_000, share=None, cap=None, policy="shed")
     work = _RecordMergeWork()
@@ -407,8 +406,7 @@ async def test_a_pass_that_ends_over_budget_still_hands_the_worker_its_history()
 
 
 async def test_a_worker_that_cannot_start_leaves_the_merges_to_the_foreground():
-    """#2793: the foreground stopped merging as soon as a reply called a tool, even when no worker
-    could start to merge instead."""
+    """While no worker can start, a tool-calling reply leaves the merges to the foreground."""
     model = _Summarizer()
     strategy = _strategy(model, budget=100_000, share=None, cap=None, policy="shed")
     work = _RecordMergeWork()
