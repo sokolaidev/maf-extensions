@@ -10,6 +10,7 @@ import threading
 from collections.abc import AsyncGenerator, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, asynccontextmanager
+from dataclasses import fields, replace
 from typing import TYPE_CHECKING, cast
 
 from maf_sandbox import (
@@ -197,6 +198,11 @@ class MxcSandboxBackend:
     isolation = Isolation.MICROVM
 
     def __init__(self, config: MxcSandboxConfig):
+        recovery_supported = any(
+            field.name == "recovers_state" for field in fields(BackendDeclarations)
+        )
+        if config.persistent and not recovery_supported:
+            raise ValueError("persistent MXC router recovery requires maf-sandbox 0.55 or later")
         self.config = config
         self.admission = Admission()
         self.closed = False
@@ -224,8 +230,9 @@ class MxcSandboxBackend:
             isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
             requires_exclusive_admission=True,
             program_channels=(MxcProgramChannel(),),
-            recovers_state=config.persistent,
         )
+        if recovery_supported:
+            self.declarations = replace(self.declarations, recovers_state=config.persistent)
 
     async def initialize(self) -> None:
         """Provision a new private journal explicitly; never overwrite an existing root."""

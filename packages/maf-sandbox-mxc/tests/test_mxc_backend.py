@@ -13,7 +13,15 @@ import threading
 from dataclasses import replace
 
 import pytest
-from maf_sandbox import Cleanup, Egress, ProgramRequirements, SandboxKey, SandboxRouter, SandboxSpec
+from maf_sandbox import (
+    BackendDeclarations,
+    Cleanup,
+    Egress,
+    ProgramRequirements,
+    SandboxKey,
+    SandboxRouter,
+    SandboxSpec,
+)
 from maf_sandbox.conformance import assert_storage_base_conformance
 
 from maf_sandbox_mxc._backend import MxcSandbox, MxcSandboxBackend
@@ -76,6 +84,10 @@ def test_router_admission_can_release_from_another_task(config, cancelled):
 @pytest.mark.parametrize("cleanup", [Cleanup.RECLAIM, Cleanup.RESET, Cleanup.DISPOSE])
 def test_router_restart_recovery_requires_persistence_and_reclaim(config, persistent, cleanup):
     config = replace(config, persistent=persistent)
+    if persistent and "recovers_state" not in BackendDeclarations.__dataclass_fields__:
+        with pytest.raises(ValueError, match="requires maf-sandbox 0.55"):
+            MxcSandboxBackend(config)
+        return
 
     async def check():
         backend = MxcSandboxBackend(config)
@@ -113,6 +125,15 @@ def test_router_restart_recovery_requires_persistence_and_reclaim(config, persis
             await backend.aclose()
 
     asyncio.run(check())
+
+
+def test_old_core_refuses_persistence_before_allocating_backend_resources(config, monkeypatch):
+    monkeypatch.delitem(BackendDeclarations.__dataclass_fields__, "recovers_state", raising=False)
+    with pytest.raises(ValueError, match="requires maf-sandbox 0.55"):
+        MxcSandboxBackend(replace(config, persistent=True))
+    assert not config.root.exists()
+    backend = MxcSandboxBackend(config)
+    asyncio.run(backend.aclose())
 
 
 def _seed_checkpoint(catalog, session, call_id):
