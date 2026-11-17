@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 import uuid
 from dataclasses import replace
@@ -27,6 +28,8 @@ from maf_sandbox.conformance import (
 
 from maf_sandbox_mxc._backend import MxcSandboxBackend
 from maf_sandbox_mxc._config import MxcSandboxConfig, startup_identity
+from maf_sandbox_mxc.files.request import Request
+from maf_sandbox_mxc.files.transport import execute
 from maf_sandbox_mxc.host_call import digest
 from maf_sandbox_mxc.shared_store import Limits, ScratchLimits
 
@@ -268,7 +271,7 @@ def test_native_program_errors_future_imports_and_execution_budget(native_config
                     "from __future__ import annotations\n"
                     "assert compile is exec is globals is None\n"
                     "del compile, exec, globals\n"
-                    "import time\ntime.sleep(35)\nprint(saved)",
+                    "print(saved)",
                     guest_call_path="later",
                     # The call budget also covers restore and checkpoint publication.
                     timeout=90,
@@ -278,6 +281,27 @@ def test_native_program_errors_future_imports_and_execution_budget(native_config
             await backend.aclose()
 
     asyncio.run(check())
+
+
+def test_native_execution_budget_exceeds_thirty_seconds(native_config, tmp_path):
+    work = tmp_path / "execution"
+    work.mkdir()
+    result = execute(
+        native_config.helper,
+        native_config.startup,
+        work,
+        Request(
+            b"import time\ntime.sleep(35)\nprint('completed')",
+            (),
+            (),
+            native_config.files,
+            call_directory="budget",
+        ),
+        checkpoint=False,
+        timeout=60,
+    )
+    completion = json.loads(result)
+    assert base64.b64decode(completion["streams"]["stdout"]["base64"]) == b"completed\n"
 
 
 def test_native_fresh_state_and_cancellation_reclaim(native_config):

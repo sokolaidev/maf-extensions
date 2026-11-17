@@ -452,6 +452,16 @@ def test_reclaim_excludes_programs_until_worker_cleanup_finishes(config, monkeyp
     asyncio.run(check())
 
 
+@pytest.mark.parametrize("cwd", [".", "/workspace/calls"])
+def test_upload_requires_a_call_directory_before_staging(cwd):
+    files = Files(FileLimits())
+    with pytest.raises(ValueError, match="call directory"):
+        files.write("input.csv", b"data", cwd)
+    assert not files.data and not files.uploads and files.revision == 0
+    files.write("call/input.csv", b"data", cwd)
+    assert [(item.name, item.data) for item in files.inputs("call")] == [("input.csv", b"data")]
+
+
 def test_collected_files_do_not_become_another_calls_implicit_uploads():
     files = Files(FileLimits())
     files.write("input", b"host", "one")

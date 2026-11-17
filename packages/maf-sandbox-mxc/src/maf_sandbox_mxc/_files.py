@@ -44,6 +44,8 @@ class Files:
 
     def write(self, path: str, content: bytes, working_directory: str) -> None:
         relative = self.resolve(path, working_directory, self_allowed=False)
+        if "/" not in relative:
+            raise ValueError("MXC uploads require a call directory beneath /workspace/calls")
         if relative in self.dirs:
             raise IsADirectoryError(path)
         parts = relative.split("/")
