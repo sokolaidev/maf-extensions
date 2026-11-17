@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import threading
 from dataclasses import replace
 
@@ -13,7 +14,9 @@ from maf_sandbox.conformance import assert_storage_base_conformance
 
 from maf_sandbox_mxc._backend import MxcSandboxBackend
 from maf_sandbox_mxc._config import MxcSandboxConfig, startup_identity
+from maf_sandbox_mxc._files import Files
 from maf_sandbox_mxc._state import Catalog
+from maf_sandbox_mxc.files.request import FileLimits, Request
 from maf_sandbox_mxc.host_store import Refused
 from maf_sandbox_mxc.shared_store import Limits, ScratchLimits
 
@@ -24,6 +27,25 @@ SPEC = SandboxSpec(
     requires=frozenset(),
     program=ProgramRequirements(max_program_bytes=65536),
 )
+
+
+def test_collected_files_do_not_become_another_calls_implicit_uploads():
+    files = Files(FileLimits())
+    files.write("input", b"host", "one")
+    assert [item.data for item in files.inputs("one")] == [b"host"]
+    files.publish(
+        json.dumps(
+            {
+                "call_directory": "one",
+                "directories": [],
+                "artifacts": [{"name": "output", "base64": "Z3Vlc3Q="}],
+            }
+        ).encode()
+    )
+    assert files.read("output", "one", 5) == b"guest"
+    assert files.inputs("one") == ()
+    files.write("output", b"explicit", "one")
+    assert [item.data for item in files.inputs("one")] == [b"explicit"]
 
 
 @pytest.fixture
@@ -131,6 +153,62 @@ def test_storage_base_and_expired_cleanup_authority(config):
             with pytest.raises(RuntimeError, match="expired"):
                 with cleanup:
                     pass
+        finally:
+            await backend.aclose()
+
+    asyncio.run(check())
+
+
+def test_replay_of_retired_session_needs_no_native_assets(config):
+    request = Request(b"pass", (), (), config.files, config.workspace, "one")
+
+    async def check():
+        backend = MxcSandboxBackend(config)
+        await backend.initialize()
+        try:
+            async with backend.call_admission(KEY, SPEC, owner="seed", timeout=2):
+                sandbox = await backend.acquire(KEY, SPEC)
+                session = sandbox.instance_id
+
+                def seed(catalog):
+                    store = catalog.stores[session]
+                    store.begin("one", b"mxc-fresh-state-v1\0" + request.identity())
+                    store.commit("one", config.startup, b"saved-result-envelope")
+
+                await backend.work(seed)
+                assert await backend.dispose(KEY, kind=SPEC.kind) is None
+        finally:
+            await backend.aclose()
+        config.helper.unlink()
+        backend = MxcSandboxBackend(config)
+        try:
+            async with backend.call_admission(KEY, SPEC, owner="retry", timeout=2):
+                assert (
+                    await backend.replay_result(
+                        KEY,
+                        SPEC,
+                        instance_id=session,
+                        call_id="one",
+                        request=request,
+                    )
+                    == b"saved-result-envelope"
+                )
+                with pytest.raises(Refused, match="no retained call"):
+                    await backend.replay_result(
+                        KEY,
+                        SPEC,
+                        instance_id=session,
+                        call_id="missing",
+                        request=request,
+                    )
+                with pytest.raises(Refused, match="different request"):
+                    await backend.replay_result(
+                        KEY,
+                        SPEC,
+                        instance_id=session,
+                        call_id="one",
+                        request=replace(request, code=b"different"),
+                    )
         finally:
             await backend.aclose()
 

@@ -20,6 +20,7 @@ class Files:
     def __init__(self, limits: FileLimits):
         self.limits = limits
         self.data: dict[str, bytes] = {}
+        self.uploads: dict[str, bytes] = {}
         self.dirs: set[str] = {""}
         self.revision = 0
 
@@ -59,6 +60,7 @@ class Files:
         ):
             raise SandboxTransferCapExceeded("staged files exceed MXC transfer limits")
         self.data[relative] = content
+        self.uploads[relative] = content
         self.dirs.update(candidates - {relative})
         self.revision += 1
 
@@ -115,13 +117,18 @@ class Files:
             k: v for k, v in self.data.items() if k != relative and not k.startswith(relative + "/")
         }
         self.dirs = {k for k in self.dirs if k != relative and not k.startswith(relative + "/")}
+        self.uploads = {
+            k: v
+            for k, v in self.uploads.items()
+            if k != relative and not k.startswith(relative + "/")
+        }
         self.revision += 1
 
     def inputs(self, directory: str) -> tuple[Input, ...]:
         prefix = directory + "/"
         return tuple(
             Input(key.removeprefix(prefix), value)
-            for key, value in sorted(self.data.items())
+            for key, value in sorted(self.uploads.items())
             if key.startswith(prefix)
         )
 
@@ -151,4 +158,7 @@ class Files:
                 "reclaim previous call snapshots before collecting more files"
             )
         self.data, self.dirs = data, dirs
+        self.uploads = {
+            key: value for key, value in self.uploads.items() if not key.startswith(directory + "/")
+        }
         self.revision += 1

@@ -27,7 +27,9 @@ class Catalog:
 
     def __init__(self, config: MxcSandboxConfig, *, initialize: bool):
         self.config = config
-        config.verify()
+        if initialize:
+            config.verify()
+        self.verified = initialize
         if initialize and (config.root / "shared.sqlite").exists():
             raise Refused("initialization requires a new adapter store")
         self.sentinel = SharedStore(
@@ -41,14 +43,11 @@ class Catalog:
 
     def acquire(self, key: SandboxKey, spec: SandboxSpec) -> tuple[str, bool]:
         """Reopen only the exact admitted execution contract, or allocate a new epoch."""
-        hashed = identity(key.scope, key.thread_id, key.agent_id, key.call_id, spec.kind)
-        profile = self.config.identity() | {
-            "key": hashed,
-            "owner": identity(key.scope, key.thread_id, key.agent_id, key.call_id),
-            "kind": identity(spec.kind),
-            "scope": identity(key.scope, key.thread_id),
-            "contract": identity(repr(spec)),
-        }
+        if not self.verified:
+            self.config.verify()
+            self.verified = True
+        profile = self.profile(key, spec)
+        hashed = profile["key"]
         prefix = "mxc_" + hashed[:32] + "_"
         rows = self.sentinel.db.execute(
             "SELECT id FROM sessions WHERE state='active' AND substr(id,1,?)=?",
@@ -90,6 +89,52 @@ class Catalog:
         ):
             raise Refused("dispose the session before changing its execution contract")
         return session, not rows
+
+    def profile(self, key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
+        hashed = identity(key.scope, key.thread_id, key.agent_id, key.call_id, spec.kind)
+        return self.config.identity() | {
+            "key": hashed,
+            "owner": identity(key.scope, key.thread_id, key.agent_id, key.call_id),
+            "kind": identity(spec.kind),
+            "scope": identity(key.scope, key.thread_id),
+            "contract": identity(repr(spec)),
+        }
+
+    def replay(
+        self, key: SandboxKey, spec: SandboxSpec, session: str, call_id: str, request: Request
+    ) -> bytes:
+        """Read an exact retained result without provisioning or invoking native assets."""
+        profile = self.profile(key, spec)
+
+        def read(store: SharedStore) -> bytes:
+            encoded = store.db.execute(
+                "SELECT profile FROM sessions WHERE id=?", (session,)
+            ).fetchone()[0]
+            if json.loads(encoded)["profile"] != profile:
+                raise Refused("retained session belongs to another execution contract")
+            if (
+                store.db.execute(
+                    "SELECT 1 FROM calls WHERE session=? AND id=?", (session, call_id)
+                ).fetchone()
+                is None
+            ):
+                raise Refused("no retained call exists for replay")
+            identity = (
+                request.identity()
+                if self.config.persistent
+                else b"mxc-fresh-state-v1\0" + request.identity()
+            )
+            result = store.begin(call_id, identity)
+            if result is None:
+                raise Refused("no committed result exists for replay")
+            return result
+
+        if session in self.stores:
+            return read(self.stores[session])
+        with SharedStore(
+            self.config.root, session, profile, self.config.limits, existing_only=True
+        ) as store:
+            return read(store)
 
     def execute(
         self, session: str, call_id: str, request: Request, cancel: threading.Event, timeout: float

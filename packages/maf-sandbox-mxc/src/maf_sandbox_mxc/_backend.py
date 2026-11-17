@@ -298,6 +298,26 @@ class MxcSandboxBackend:
             ):
                 raise ValueError("requested transfers exceed configured MXC limits")
 
+    async def replay_result(
+        self,
+        key: SandboxKey,
+        spec: SandboxSpec,
+        *,
+        instance_id: str,
+        call_id: str,
+        request: Request,
+    ) -> bytes:
+        """Return the retained result envelope for an exact request, including retired sessions.
+
+        Requires matching call admission. No native assets are needed and an unknown,
+        interrupted or expired call is refused without admitting a new execution.
+        """
+        self.validate(spec)
+        self.admission.require((key, spec.kind))
+        return await self.work(
+            lambda catalog: catalog.replay(key, spec, instance_id, call_id, request)
+        )
+
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> MxcSandbox:
         self.validate(spec)
         self.admission.require((key, spec.kind))
