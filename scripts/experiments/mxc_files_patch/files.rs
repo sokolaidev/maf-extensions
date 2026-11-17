@@ -47,7 +47,7 @@ fn state(w: &Workspace) -> Result<(Vec<u8>, Vec<u8>)> {
     if meta.len() > META { return Err("workspace metadata exceeds bound".into()); } Ok((meta, data))
 }
 pub fn run(args: &[String]) -> Result<bool> {
-    if !matches!(args.get(1).map(String::as_str), Some("call-files" | "execute-files")) { return Ok(false); }
+    if !matches!(args.get(1).map(String::as_str), Some("call-files" | "execute-files" | "call-directory" | "execute-directory")) { return Ok(false); }
     if args.len() != 8 { return Err("invalid file arguments".into()); }
     owner::watch();
     let work = Path::new(&args[4]).parent().ok_or("request has no directory")?;
@@ -67,7 +67,10 @@ pub fn run(args: &[String]) -> Result<bool> {
     let items = request["inputs"].as_array().ok_or("invalid inputs")?;
     if items.len() > number(&request["limits"],"input_files",1024)? { return Err("input count exceeded".into()); }
     let per_file = number(&request["limits"],"file_bytes",64*1024*1024)?;
-    let call_root = format!("calls/{token}");
+    let directory_mode = matches!(args[1].as_str(), "call-directory" | "execute-directory");
+    let call_name = if directory_mode { text(&request,"call_directory")? } else { token };
+    if call_name.is_empty() || call_name.len() > 255 || call_name.contains('/') { return Err("invalid call directory".into()); }
+    let call_root = format!("calls/{call_name}");
     parents(&mut workspace,&format!("{call_root}/_"))?;
     if !workspace.dirs.contains("session") { check(workspace.mkdir("session"))?; }
     let mut offset = 0;
@@ -100,12 +103,23 @@ pub fn run(args: &[String]) -> Result<bool> {
     execution?;
     let mut w = shared.lock().unwrap();
     if !w.ready() { return Err("incomplete or malformed file transfer".into()); }
-    let selected = request["artifacts"].as_array().ok_or("invalid artifacts")?;
+    let requested = request["artifacts"].as_array().ok_or("invalid artifacts")?;
+    let prefix = format!("{call_root}/");
+    let selected: Vec<String> = if directory_mode {
+        if !requested.is_empty() { return Err("directory collection conflicts with named artifacts".into()); }
+        w.files.keys().filter_map(|p| p.strip_prefix(&prefix).map(String::from)).collect()
+    } else {
+        requested.iter().map(|v| v.as_str().map(String::from).ok_or("invalid artifact name"))
+            .collect::<std::result::Result<Vec<_>,_>>()?
+    };
+    let directories: Vec<String> = if directory_mode {
+        w.dirs.iter().filter_map(|p| p.strip_prefix(&prefix).map(String::from)).collect()
+    } else { Vec::new() };
+    if directories.len() > 1024 { return Err("directory count exceeded".into()); }
     if selected.len() > number(&request["limits"],"artifact_files",1024)? { return Err("artifact count exceeded".into()); }
     let artifact_limit = number(&request["limits"],"artifact_bytes",64*1024*1024)?;
     let mut artifacts = Vec::new(); let mut payload = Vec::new();
-    for name in selected {
-        let name = name.as_str().ok_or("invalid artifact name")?;
+    for name in &selected {
         let p = format!("{call_root}/{name}");
         let file = w.files.get(&p).ok_or("requested artifact missing or unsafe")?;
         if file.data.len() > per_file || file.data.len() > artifact_limit-payload.len() { return Err("artifact allowance exceeded".into()); }
@@ -115,7 +129,7 @@ pub fn run(args: &[String]) -> Result<bool> {
     let (manifest,bytes) = state(&w)?;
     let retained_files = w.files.len(); let retained_bytes = w.bytes();
     drop(w);
-    let checkpoint = args[1] == "call-files";
+    let checkpoint = matches!(args[1].as_str(), "call-files" | "call-directory");
     if checkpoint {
         let max_bytes: u64 = args[6].parse()?; let max_files: u64 = args[7].parse()?;
         let allowance = max_bytes.checked_sub((manifest.len()+bytes.len()) as u64).ok_or("checkpoint cannot cover workspace")?;
@@ -126,8 +140,14 @@ pub fn run(args: &[String]) -> Result<bool> {
     }
     sandbox.close();
     write(&report.with_extension("artifacts.bin"),&payload)?;
-    let control = serde_json::to_vec(&json!({"format":"mxc-files-result-v1","completed":true,"checkpoint":checkpoint,
-        "limit_bytes":1048576,"streams":streams,"artifacts":artifacts,"workspace_bytes":retained_bytes,"workspace_files":retained_files}))?;
+    let mut completion = json!({"format":"mxc-files-result-v1","completed":true,"checkpoint":checkpoint,
+        "limit_bytes":1048576,"streams":streams,"artifacts":artifacts,"workspace_bytes":retained_bytes,"workspace_files":retained_files});
+    if directory_mode {
+        completion["format"] = json!("mxc-directory-result-v1");
+        completion["directories"] = json!(directories);
+        completion["call_directory"] = json!(call_name);
+    }
+    let control = serde_json::to_vec(&completion)?;
     if control.len() > META { return Err("completion metadata exceeds limit".into()); }
     write(&report.with_extension("part"),&control)?;
     if report.exists() { return Err("completion destination exists".into()); }

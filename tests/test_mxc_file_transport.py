@@ -168,3 +168,66 @@ def test_prepare_keeps_replacement_refusal_inside_identified_helper(tmp_path):
     base.mkdir()
     transport.prepare(work, request(), True, base)
     assert json.loads((work / "request.json").read_text())["uploads_valid"] is False
+
+
+def directory_request():
+    return replace(request(), artifacts=(), call_directory="a" * 32)
+
+
+def directory_control(control):
+    control.update(
+        format=transport.DIRECTORY_FORMAT,
+        call_directory="a" * 32,
+        directories=["nested", "empty"],
+    )
+    control["artifacts"][0]["name"] = "nested/result.bin"
+
+
+def test_directory_collection_preserves_bytes_and_empty_directories(native):
+    report, control = native
+    directory_control(control)
+    report.write_text(json.dumps(control), encoding="utf-8")
+    result = json.loads(transport.read_result(report, True, directory_request()))
+    assert result["directories"] == ["nested", "empty"]
+    assert result["call_directory"] == "a" * 32
+    assert result["artifacts"][0]["name"] == "nested/result.bin"
+    assert base64.b64decode(result["artifacts"][0]["base64"]) == b"\x00\xffA"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda c: c.update(call_directory="another"),
+        lambda c: c.update(format=transport.FORMAT),
+        lambda c: c.update(directories=[]),
+        lambda c: c.update(directories=["nested", "Nested"]),
+        lambda c: c.update(directories=["nested", "nested/result.bin"]),
+        lambda c: c.update(directories=["nested", "../outside"]),
+        lambda c: c.update(directories=["nested", "missing/child"]),
+        lambda c: c.update(directories=["nested"] * 1025),
+        lambda c: c.update(directories=[False]),
+        lambda c: c["artifacts"][0].update(name="/outside"),
+        lambda c: c["artifacts"][0].update(name="nested/CON"),
+        lambda c: c["artifacts"].append({"name": "Nested/RESULT.bin", "offset": 3, "bytes": 0}),
+        lambda c: c["artifacts"].append({"name": "aaa", "offset": 3, "bytes": 0}),
+    ],
+)
+def test_directory_completion_rejects_unsafe_or_ambiguous_inventory(native, mutate):
+    report, control = native
+    directory_control(control)
+    mutate(control)
+    report.write_text(json.dumps(control), encoding="utf-8")
+    with pytest.raises(transport.Refused):
+        transport.read_result(report, True, directory_request())
+
+
+def test_directory_mode_is_bound_to_retry_identity():
+    original = request()
+    assert "call_directory" not in json.loads(original.identity())
+    directory = directory_request()
+    assert directory.identity() != replace(directory, call_directory="b" * 32).identity()
+    for invalid in ("../outside", "nested/path", "CON", "", "/absolute"):
+        with pytest.raises(transport.Refused):
+            replace(directory, call_directory=invalid)
+    with pytest.raises(transport.Refused):
+        replace(original, call_directory="valid")

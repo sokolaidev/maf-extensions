@@ -27,10 +27,23 @@ def call(
     boundary: Callable[[str], None] = lambda _: None,
     *,
     delete: threading.Event | None = None,
+    cancel: threading.Event | None = None,
+    timeout: float = 90,
+    restore_state: bool = True,
+    validate_result: Callable[[bytes], None] = lambda _: None,
 ) -> bytes:
     """Reserve file transfers before execution and publish before acknowledging success."""
     journal = NativeJournal(store)
     with journal.deletion(delete, boundary) as check:
+
+        def active() -> None:
+            check()
+            if cancel is not None and cancel.is_set():
+                raise Refused("call cancelled")
+
+        active()
+        if not 0 < timeout <= 90:
+            raise Refused("invalid native deadline")
         existing = store.db.execute(
             "SELECT 1 FROM calls WHERE session=? AND id=?", (store.session, call_id)
         ).fetchone()
@@ -54,21 +67,34 @@ def call(
             return saved
         work = journal.prepare(call_id)
         restored = work / "restored"
-        restoring = store.restore(restored) is not None
+        restoring = restore_state and store.restore(restored) is not None
         base = restored if restoring else startup
-        result = execute(
-            helper,
-            base,
-            work,
-            request,
-            restoring=restoring,
-            before_spawn=lambda: journal.start(call_id, boundary),
-            before_start=lambda child: journal.arm(call_id, child, boundary),
-            check_active=check,
-            checkpoint_limits=(store.limits.checkpoint_bytes, store.limits.files),
-        )
-        check()
-        store.commit(call_id, work / "candidate", result, boundary)
-        journal.reclaim(call_id, boundary)
-        boundary("before_ack")
-        return result
+        try:
+            result = execute(
+                helper,
+                base,
+                work,
+                request,
+                restoring=restoring,
+                before_spawn=lambda: journal.start(call_id, boundary),
+                before_start=lambda child: journal.arm(call_id, child, boundary),
+                check_active=active,
+                cancel=cancel,
+                timeout=timeout,
+                checkpoint_limits=(store.limits.checkpoint_bytes, store.limits.files),
+            )
+            active()
+            validate_result(result)
+            store.commit(call_id, work / "candidate", result, boundary)
+            journal.reclaim(call_id, boundary)
+            boundary("before_ack")
+            active()
+            return result
+        except BaseException:
+            row = store.db.execute(
+                "SELECT identity FROM launches WHERE session=? AND call=?",
+                (store.session, call_id),
+            ).fetchone()
+            if row is not None and row["identity"] is not None:
+                journal.reclaim(call_id, boundary)
+            raise
