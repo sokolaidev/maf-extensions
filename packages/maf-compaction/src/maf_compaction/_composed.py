@@ -3444,15 +3444,21 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self, messages: list[Message]
     ) -> list[tuple[list[dict[str, Any]], LossyMerge]]:
         groups = consolidatable_record_groups(messages)
+        wanted = {(answer.count, answer.sources) for answer in self._merge_coverage.answers}
+        windows: dict[tuple[int, str], list[dict[str, Any]] | None] = {}
+        keys = MessageKeyCache()
+        for count in {count for count, _ in wanted}:
+            for first in range(len(groups) - count + 1):
+                batch = groups[first : first + count]
+                sources = source_key(messages, batch, keys=keys)
+                if sources is not None and (count, sources) in wanted:
+                    key = count, sources
+                    windows[key] = None if key in windows else batch
         matches: list[tuple[list[dict[str, Any]], LossyMerge]] = []
         for answer in self._merge_coverage.answers:
-            candidates = [
-                groups[first : first + answer.count]
-                for first in range(len(groups) - answer.count + 1)
-                if source_key(messages, groups[first : first + answer.count]) == answer.sources
-            ]
-            if len(candidates) == 1:
-                matches.append((candidates[0], answer))
+            batch = windows.get((answer.count, answer.sources))
+            if batch is not None:
+                matches.append((batch, answer))
         self._merge_coverage.answers = [answer for _, answer in matches]
         return sorted(matches, key=lambda item: (item[0][0]["start_index"], -item[1].count))
 

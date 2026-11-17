@@ -23,6 +23,7 @@ from test_record_budget import (
 
 from maf_compaction import CompactionBudgetExceeded
 from maf_compaction import _composed as composed_module
+from maf_compaction import _record_replay as replay_module
 from maf_compaction._composed import (
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     _ChainTimeSpent,
@@ -31,9 +32,13 @@ from maf_compaction._composed import (
     _RecordMergeWork,
 )
 from maf_compaction._merge_coverage import LossyMerge, MergeCoverage
-from maf_compaction._preserve import set_preserved
+from maf_compaction._preserve import STANDS_IN_KEY, set_preserved
 from maf_compaction._summary_limiter import SummaryRateLimited
-from maf_compaction._toolsummary import consolidatable_record_groups, record_bodies
+from maf_compaction._toolsummary import (
+    build_record_message,
+    consolidatable_record_groups,
+    record_bodies,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -350,6 +355,57 @@ async def test_new_external_hold_invalidates_saved_candidate() -> None:
     strategy._refresh_merge_coverage(messages)
     assert not strategy.session_state()["merge_coverage"]["answers"]
     assert len(_sent_values(messages)) == 8
+
+
+@pytest.mark.parametrize("count", [8, 16])
+async def test_cache_refresh_fingerprints_messages_once_and_windows_once_per_size(
+    count: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    strategy = _configured(merge_coverage_floor=0.7)
+    messages = _records(count)
+    await strategy._merge_batches(messages, None, strategy.record_budget_share)
+    answers = list(strategy._merge_coverage.answers)
+    assert len(answers) == 7
+    source_calls = message_calls = 0
+    source_key, message_key = replay_module.source_key, replay_module._message_key
+
+    def source(*args: Any, **kwargs: Any) -> str | None:
+        nonlocal source_calls
+        source_calls += 1
+        return source_key(*args, **kwargs)
+
+    def message(value: Message) -> str:
+        nonlocal message_calls
+        message_calls += 1
+        return message_key(value)
+
+    monkeypatch.setattr(composed_module, "source_key", source)
+    monkeypatch.setattr(replay_module, "_message_key", message)
+    matches = strategy._lossy_merge_matches(messages)
+    assert len(matches) == len(answers)
+    assert source_calls == sum(count - size + 1 for size in {answer.count for answer in answers})
+    assert message_calls == count * 2
+
+
+async def test_cached_answer_with_ambiguous_source_window_is_discarded() -> None:
+    strategy = _configured(merge_coverage_floor=0.7)
+    messages = [
+        build_record_message(" ".join(_values(index)) + " detail" * 100) for index in range(2)
+    ]
+    for index, message in enumerate(messages):
+        message.message_id = f"record-{index}"
+        message.additional_properties[STANDS_IN_KEY] = f"source-{index}"
+    _size(messages)
+    await strategy._merge_batches(messages, None, strategy.record_budget_share)
+    assert len(strategy._merge_coverage.answers) == 1
+    copies = copy.deepcopy(messages)
+    for index, message in enumerate(copies):
+        message.message_id = f"copy-{index}"
+    messages.extend(copies)
+    _size(messages)
+    assert len(consolidatable_record_groups(messages)) == 4
+    assert not strategy._lossy_merge_matches(messages)
+    assert not strategy._merge_coverage.answers
 
 
 async def test_background_retains_answers_but_foreground_alone_relaxes() -> None:
