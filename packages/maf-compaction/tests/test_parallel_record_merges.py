@@ -6,8 +6,10 @@ import asyncio
 from copy import deepcopy
 
 import pytest
+from agent_framework import Content, Message
+from agent_framework._compaction import EXCLUDED_KEY
 from test_background_record_merges import running, tool_reply
-from test_record_budget import _VALUE, _history, _sent, _sent_values, _strategy, _Summarizer
+from test_record_budget import _VALUE, _body, _history, _sent, _sent_values, _strategy, _Summarizer
 from test_record_merge_limits import _batch_size
 from test_summary_limiter import RateLimit
 
@@ -15,6 +17,8 @@ from maf_compaction import SummaryRequestLimiter
 from maf_compaction import _composed as module
 from maf_compaction._composed import _ChainTimeSpent, _RecordMergeWork
 from maf_compaction._preserve import set_preserved
+from maf_compaction._record_replay import source_key
+from maf_compaction._toolsummary import build_record_message, consolidatable_record_groups
 
 pytestmark = pytest.mark.anyio
 
@@ -55,6 +59,66 @@ class Ordered(_Summarizer):
         for index in (2, 1, 0):
             self.release[index].set()
             await asyncio.wait_for(self.complete[index].wait(), 2)
+
+
+def unidentified_history(kind):
+    messages = _history(18)
+    if kind == "records":
+        records = [build_record_message(_body(index)) for index in range(18)]
+        for record in records:
+            record.message_id = None
+        messages[2:-1] = records
+    else:
+        messages.insert(
+            -1,
+            Message(
+                "assistant",
+                [Content.from_text_reasoning(text="retained")],
+                additional_properties={EXCLUDED_KEY: True},
+            ),
+        )
+    assert source_key(messages, consolidatable_record_groups(messages)) is None
+    return messages
+
+
+@pytest.mark.parametrize("kind", ["records", "reasoning"])
+@pytest.mark.parametrize("lossy", [False, True])
+async def test_unidentified_sources_fall_back_to_sequential_merges(kind, lossy):
+    messages = unidentified_history(kind)
+    sequential_messages = deepcopy(messages)
+    original_values = _sent_values(messages)
+
+    def answer(body):
+        values = sorted(set(_VALUE.findall(body)))
+        return values[0] if lossy and _batch_size(body) > 2 else " ".join(values)
+
+    model, sequential_model = _Summarizer(merge=answer), _Summarizer(merge=answer)
+    strategy, sequential = configured(model), configured(sequential_model, parallel=1)
+    assert await strategy._merge_batches(messages, None, 0.001)
+    assert await sequential._merge_batches(sequential_messages, None, 0.001)
+    assert _sent(messages) == _sent(sequential_messages)
+    assert _sent_values(messages) == original_values
+    assert strategy.records_merged == sequential.records_merged
+    assert model.requests == sequential_model.requests
+    assert strategy.user_turns.summary_limiter.stats.peak_concurrency == 1
+    assert not strategy._pending_merges
+
+
+@pytest.mark.parametrize("kind", ["records", "reasoning"])
+async def test_background_leaves_unidentified_sources_for_foreground(kind):
+    model = _Summarizer()
+    strategy = configured(model)
+    messages = unidentified_history(kind)
+    work = _RecordMergeWork()
+    work.bind(strategy, None)
+    work.remember(messages, 100_000)
+    work.start(tool_reply())
+    await asyncio.wait_for(running(work), 2)
+    assert not model.requests
+    assert not work._ready
+    await work.close()
+    assert await strategy._merge_batches(messages, None, 0.001)
+    assert _sent_values(messages) == _sent_values(unidentified_history(kind))
 
 
 @pytest.mark.parametrize("lossy", [False, True])
@@ -100,8 +164,6 @@ async def test_stale_parallel_answers_are_discarded(change):
     elif change == "prompt":
         strategy.merge_prompt += " Changed."
     else:
-        from agent_framework import Content, Message
-
         messages.insert(4, Message("assistant", [Content.from_text_reasoning(text="retained")]))
     for event in model.release:
         event.set()
@@ -181,6 +243,7 @@ async def test_cancellation_drains_every_request(background):
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+    assert task.done()
     assert model.started == model.cancelled == 3
     assert not work._ready
     assert strategy.records_merged == 0

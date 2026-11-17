@@ -3013,6 +3013,30 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """Ask independently, then validate sources and apply answers in selection order."""
         prompt = self.merge_prompt
         sources = [source_key(messages, groups) for groups, _, _ in batches]
+        if any(source is None for source in sources):
+            # Object identities reattach sequential batches without authorizing persisted replay.
+            identities = [
+                {id(messages[int(group["end_index"])]) for group in groups}
+                for groups, _, _ in batches
+            ]
+            changed = False
+            for (_, body, depth), expected in zip(batches, identities, strict=True):
+                if self.merge_prompt != prompt:
+                    break
+                groups = [
+                    group
+                    for group in consolidatable_record_groups(messages)
+                    if id(messages[int(group["end_index"])]) in expected
+                ]
+                if len(groups) != len(expected) or _transcript(messages, groups) != body:
+                    continue
+                merged, failed = await self._merge_batch(
+                    messages, groups, transcript=body, depth=depth
+                )
+                changed = merged or changed
+                if failed:
+                    return changed, failed
+            return changed, None
         tasks = [
             asyncio.create_task(self._ask(prompt=prompt, transcript=body))
             if (body, len(groups), _digest(prompt)) not in self._refused_merges
@@ -3083,6 +3107,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         """
         if answer is None:
             self._check_chain_deadline()
+        if self._record_answer_ready is not None and source_key(messages, groups) is None:
+            # Background answers need durable sources to be applied by the foreground.
+            return False, None
         key = transcript, len(groups), _digest(self.merge_prompt)
         if key in self._refused_merges:
             self._record_merges_skipped += 1

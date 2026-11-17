@@ -46,6 +46,7 @@ async def measure(parallel: int) -> dict[str, int | float]:
         try:
             await strategy._merge_batches(messages, None, 1.0)
         except _ChainTimeSpent:
+            # Keep completed reductions and resume in the next admission window.
             pass
         finally:
             strategy._chain_deadline.reset(token)

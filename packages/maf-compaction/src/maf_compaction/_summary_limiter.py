@@ -177,7 +177,7 @@ class SummaryRequestLimiter:
                 try:
                     await asyncio.wait_for(self._condition.wait(), timeout=0.1)
                 except TimeoutError:
-                    pass
+                    continue
             self._active += 1
             self._started += 1
             self._peak = max(self._peak, self._active)
