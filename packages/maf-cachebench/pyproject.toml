@@ -52,6 +52,7 @@ cachebench_advise = "maf_cachebench:advise_main"
 cachebench_recall = "maf_cachebench:recall_main"
 cachebench_summary = "maf_cachebench:summary_main"
 cachebench_capabilities = "maf_cachebench._capabilities:main"
+cachebench_merge_loss = "maf_cachebench.merge_loss:main"
 
 [project.urls]
 Homepage = "https://www.sokol.ai"
