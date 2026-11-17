@@ -75,6 +75,7 @@ async def test_lossy_parent_retries_halves_and_replays_both_accepted_children() 
     original = copy.deepcopy(messages)
     strategy = _strategy(summarizer, budget=_record_size(messages) - 200, share=0.01, cap=None)
     assert strategy.chain_seconds == DEFAULT_CHAIN_SECONDS == 30
+    strategy.user_turns.max_summary_input_tokens = 10_000
 
     await strategy(messages)
 
@@ -118,6 +119,7 @@ async def test_truncated_answer_is_split_even_when_it_keeps_every_value(
     summarizer = Limited()
     messages = _history(4)
     strategy = _strategy(summarizer, budget=_record_size(messages) - 200, share=0.01, cap=None)
+    strategy.user_turns.max_summary_input_tokens = 10_000
     with caplog.at_level(logging.INFO, logger="maf_compaction._composed"):
         await strategy(messages)
     assert [_batch_size(body) for body in summarizer.merges] == [4, 2, 2]
@@ -311,6 +313,7 @@ async def test_timeout_before_a_child_resumes_halves_after_restore(
     summarizer = Waiting(merge=lambda body: _VALUE.findall(body)[0])
     messages = _history(4)
     strategy = _strategy(summarizer, budget=_record_size(messages) - 200, share=0.01, cap=None)
+    strategy.user_turns.max_summary_input_tokens = 10_000
     await strategy(messages)
     assert strategy.chain_timeouts == 1
     assert len(strategy._refused_merges) == len(strategy._split_merges) == 1

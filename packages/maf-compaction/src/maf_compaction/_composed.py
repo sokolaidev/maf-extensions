@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 from bisect import bisect_left
 from collections.abc import Callable, Generator, Mapping
@@ -79,7 +80,12 @@ from ._record_replay import (
 )
 from ._request import RequestOverhead
 from ._shed import durable_message_id, unique_shed_groups
-from ._summary_input import async_bounded_prefix_extent, bounded_prefix, fits_summary_input
+from ._summary_input import (
+    async_bounded_prefix_extent,
+    bounded_prefix,
+    fits_summary_input,
+    versioned_prompt,
+)
 from ._toolsummary import (
     CONSOLIDATE_EXCLUDE_REASON,
     PRESERVE_REASON_UNCOVERED,
@@ -159,6 +165,7 @@ class _PreparedMerge:
     count: int
     transcript: str
     answer: _RecordAnswer
+    prompt: str
 
 
 class _RecordMergeWork:
@@ -220,10 +227,11 @@ class _RecordMergeWork:
             return
         messages = deepcopy([*self._history, *response])
         generation = self._generation
+        prompt = self.strategy.merge_prompt
 
         def ready(sources: str, count: int, transcript: str, answer: _RecordAnswer) -> None:
             if generation == self._generation:
-                self._ready.append(_PreparedMerge(sources, count, transcript, answer))
+                self._ready.append(_PreparedMerge(sources, count, transcript, answer, prompt))
 
         worker = self.strategy._record_worker(  # pyright: ignore[reportPrivateUsage]
             self._budget, ready, lambda: generation == self._generation
@@ -708,8 +716,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         rewrite_gain_fraction: Share of the records a harder rewrite replaces that it must
             remove to be kept, in ``[0.0, 1.0)``. See :data:`DEFAULT_REWRITE_GAIN_FRACTION`;
             zero keeps any smaller answer.
-        merge_prompt: What the summarizer is asked when the records are merged. See
-            :data:`DEFAULT_RECORD_MERGE_PROMPT`.
+        merge_prompt: What the summarizer is asked when the records are merged. Defaults to
+            :data:`DEFAULT_RECORD_MERGE_PROMPT` with the version captured by ``user_turns``.
+        rewrite_prompt: A pure function of the one-based attempt, returning a nonempty system
+            prompt with progressively stronger shortening requests. Defaults to
+            :func:`harder_record_prompt` with the version captured by ``user_turns``.
+            Custom prompts own their data/instruction boundary.
         overflow_policy: ``"shed"`` (default) releases the record phase's holds as a last
             resort and removes whole unrecorded groups, logging their message IDs at WARNING.
             ``"raise"`` retains those groups. Both raise :class:`CompactionBudgetExceeded`
@@ -762,6 +774,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         user_trigger_fraction: float | None = None,
         harder_attempts: int = DEFAULT_HARDER_ATTEMPTS,
         merge_prompt: str | None = None,
+        rewrite_prompt: Callable[[int], str] | None = None,
         chain_gain_fraction: float = DEFAULT_CHAIN_GAIN_FRACTION,
         overflow_policy: Literal["shed", "raise"] = "shed",
         estimate_margin: float = 0.0,
@@ -836,7 +849,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         )
         self.harder_attempts = harder_attempts
         self.rewrite_gain_fraction = rewrite_gain_fraction
-        self.merge_prompt = merge_prompt or DEFAULT_RECORD_MERGE_PROMPT
+        prompt_version = user_turns.prompt_version
+        self.merge_prompt = merge_prompt or versioned_prompt(
+            DEFAULT_RECORD_MERGE_PROMPT, prompt_version
+        )
+        self.rewrite_prompt: Callable[[int], str] = (
+            (lambda attempt: versioned_prompt(harder_record_prompt(attempt), prompt_version))
+            if rewrite_prompt is None
+            else rewrite_prompt
+        )
         self.chain_gain_fraction = chain_gain_fraction
         self._removed_by_record = 0
         self._records_reshaped = 0
@@ -878,9 +899,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._record_order: list[RecordEdit] = []
         self._shed_ids: set[str] = set()
         self._shed_groups: set[str] = set()
-        # Shrink acceptance depends on the source count as well as the request's transcript.
-        self._refused_merges: set[tuple[str, int]] = set()
-        self._split_merges: set[tuple[str, int]] = set()
+        # Refusals apply to the same sources and prompt; accepted edits retain their history.
+        self._refused_merges: set[tuple[str, int, str]] = set()
+        self._split_merges: set[tuple[str, int, str]] = set()
         # Per start record (body digest, cap): how far the batch search from it got, so a later
         # sweep resumes it, or takes the batch it found, only while those records stand.
         self._searched: dict[tuple[str, int], _Searched] = {}
@@ -888,7 +909,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._record_input_fits: dict[tuple[str, str, int], bool] = {}
         self._batch_resume: tuple[str, int, int, str, int] | None = None
         self._pending_merges: list[_PendingMerge] = []
-        self._refused_rewrites: dict[tuple[str, int], int] = {}
+        self._refused_rewrites: dict[tuple[str, int, str], int] = {}
         self._background: _RecordMergeWork | None = None
         self._record_answer_ready: Callable[[str, int, str, _RecordAnswer], None] | None = None
         self._record_work_current: Callable[[], bool] | None = None
@@ -941,6 +962,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     ) -> bool:
         changed = False
         for item in prepared:
+            if item.prompt != self.merge_prompt:
+                continue
             groups = consolidatable_record_groups(messages)
             for index in range(len(groups) - item.count + 1):
                 batch = groups[index : index + item.count]
@@ -957,7 +980,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     self._records_merged += 1
                     changed = True
                 elif outcome in {"rejected", "lossy", "incomplete"}:
-                    key = item.transcript, item.count
+                    key = item.transcript, item.count, _digest(item.prompt)
                     self._record_merges_rejected += 1
                     self._refused_merges.add(key)
                     if outcome in {"lossy", "incomplete"}:
@@ -968,8 +991,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     def _remember_record_search(
         self, worker: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
     ) -> None:
+        if worker.merge_prompt != self.merge_prompt:
+            return
         if worker.user_turns._summary_options_disabled:  # pyright: ignore[reportPrivateUsage]
             self.user_turns._summary_options_disabled = True  # pyright: ignore[reportPrivateUsage]
+        if self._search_prompt != worker._search_prompt:
+            self._searched.clear()
         self._search_prompt = worker._search_prompt
         self._searched.update(worker._searched)
         self._record_input_fits.update(worker._record_input_fits)
@@ -1159,16 +1186,21 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             "shed_ids": sorted(self._shed_ids),
             "shed_groups": sorted(self._shed_groups),
             "refused_merges": [
-                {"transcript": transcript, "source_count": count}
-                for transcript, count in sorted(self._refused_merges)
+                {"transcript": transcript, "source_count": count, "prompt": prompt}
+                for transcript, count, prompt in sorted(self._refused_merges)
             ],
             "split_merges": [
-                {"transcript": transcript, "source_count": count}
-                for transcript, count in sorted(self._split_merges)
+                {"transcript": transcript, "source_count": count, "prompt": prompt}
+                for transcript, count, prompt in sorted(self._split_merges)
             ],
             "refused_rewrites": [
-                {"transcript": transcript, "source_count": count, "attempt": attempt}
-                for (transcript, count), attempt in self._refused_rewrites.items()
+                {
+                    "transcript": transcript,
+                    "source_count": count,
+                    "prompt": prompt,
+                    "attempt": attempt,
+                }
+                for (transcript, count, prompt), attempt in self._refused_rewrites.items()
             ],
         }
 
@@ -1212,15 +1244,19 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._pending_merges = [_PendingMerge(*entry) for entry in data.get("pending_merges", [])]
         self._shed_ids = {value for value in data["shed_ids"] if durable_message_id(value)}
         self._shed_groups = set(data.get("shed_groups", []))
-        # A legacy refusal without a count cannot safely suppress another request.
+        # A refusal without its source count and prompt cannot suppress another request.
         merges: list[dict[str, Any] | str] = data["refused_merges"]
         self._refused_merges = {
-            (entry["transcript"], entry["source_count"])
+            (entry["transcript"], entry["source_count"], entry["prompt"])
             for entry in merges
-            if not isinstance(entry, str)
+            if not isinstance(entry, str) and "source_count" in entry and "prompt" in entry
         }
         self._split_merges = (
-            {(entry["transcript"], entry["source_count"]) for entry in data.get("split_merges", [])}
+            {
+                (entry["transcript"], entry["source_count"], entry["prompt"])
+                for entry in data.get("split_merges", [])
+                if "source_count" in entry and "prompt" in entry
+            }
             & self._refused_merges
             if "split_merges" in data
             else set(self._refused_merges)
@@ -1230,7 +1266,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             {}
             if isinstance(rewrites, dict)
             else {
-                (entry["transcript"], entry["source_count"]): entry["attempt"] for entry in rewrites
+                (entry["transcript"], entry["source_count"], entry["prompt"]): entry["attempt"]
+                for entry in rewrites
+                if "source_count" in entry and "prompt" in entry
             }
         )
 
@@ -2918,7 +2956,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Unfinished smaller batches are retained independently of their parent.
         """
         self._check_chain_deadline()
-        key = transcript, len(groups)
+        key = transcript, len(groups), _digest(self.merge_prompt)
         if key in self._refused_merges:
             self._record_merges_skipped += 1
         else:
@@ -3074,7 +3112,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         not merge it.
 
         **A refusal forecloses its own attempt and every milder one, on that record, for the
-        run.** Remembered by transcript and source count as the harshest attempt refused
+        run under the same prompts.** Remembered by transcript, source count and the complete
+        rewrite prompt sequence as the harshest attempt refused
         on it; an attempt at or below that is skipped rather than asked, and the loop goes on to
         the next attempt, and the chain to step d, exactly as after a refusal. The two directions
         are decided apart:
@@ -3095,20 +3134,26 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
           and the record simply stands at its size until it changes.
 
         A record refused at attempt ``harder_attempts`` is therefore incompressible until it
-        changes; a merge folding new material in, or a kept rewrite, gives it a new transcript and
-        every attempt back.
+        or the prompt sequence changes; a merge folding new material in, or a kept rewrite,
+        gives it a new transcript and every attempt back.
         """
         changed = False
-        for attempt in range(1, self.harder_attempts + 1):
+        prompts = [self.rewrite_prompt(attempt) for attempt in range(1, self.harder_attempts + 1)]
+        if any(
+            not isinstance(prompt, str) or not prompt.strip()  # pyright: ignore[reportUnnecessaryIsInstance]
+            for prompt in prompts
+        ):
+            raise ValueError("rewrite_prompt must return a nonempty string for each attempt.")
+        policy = _digest(json.dumps(prompts))
+        for attempt, prompt in enumerate(prompts, 1):
             self._check_chain_deadline()
             if attempt > 1 and not self._short_of_target(messages, start):
                 break
-            prompt = harder_record_prompt(attempt)
             groups = self._bounded_records(messages, prompt)
             if not groups:
                 continue
             transcript = _transcript(messages, groups)
-            key = (transcript, len(groups))
+            key = (transcript, len(groups), policy)
             if self._refused_rewrites.get(key, 0) >= attempt:
                 self._record_rewrites_skipped += 1
                 continue
