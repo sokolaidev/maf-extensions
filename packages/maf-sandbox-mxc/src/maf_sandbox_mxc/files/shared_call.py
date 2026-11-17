@@ -42,7 +42,7 @@ def call(
                 raise Refused("call cancelled")
 
         active()
-        if not 0 < timeout <= 90:
+        if not 0 < timeout <= 90 or type(restore_state) is not bool:
             raise Refused("invalid native deadline")
         existing = store.db.execute(
             "SELECT 1 FROM calls WHERE session=? AND id=?", (store.session, call_id)
@@ -62,7 +62,10 @@ def call(
             scratch.bytes < minimum_bytes or scratch.entries < minimum_entries
         ):
             raise Refused("scratch allowance cannot cover files, streams and checkpoints")
-        saved = store.begin(call_id, request.identity(), scratch=scratch)
+        identity = (
+            request.identity() if restore_state else b"mxc-fresh-state-v1\0" + request.identity()
+        )
+        saved = store.begin(call_id, identity, scratch=scratch)
         if saved is not None:
             return saved
         work = journal.prepare(call_id)

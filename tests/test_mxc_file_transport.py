@@ -82,6 +82,16 @@ def test_artifacts_replay_after_reopen_without_native_helper(native, tmp_path):
             == result
         )
         store.audit_usage()
+        with pytest.raises(transport.Refused, match="different request"):
+            shared.call(
+                store,
+                "one",
+                req,
+                tmp_path / "absent",
+                tmp_path / "absent",
+                storage.ScratchLimits(1, 1, 1),
+                restore_state=False,
+            )
 
 
 @pytest.mark.parametrize(
