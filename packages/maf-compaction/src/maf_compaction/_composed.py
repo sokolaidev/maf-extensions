@@ -58,7 +58,6 @@ from ._anchored import (
 )
 from ._carryover import CarriedView, Handed
 from ._media import annotate_token_counts
-from ._merge_coverage import LossyMerge, MergeCoverage
 from ._preserve import (
     PRESERVE_REASON_KEY,
     STANDS_IN_KEY,
@@ -753,13 +752,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         record_merge_split_depth: Maximum recursive halvings of a lossy or truncated merge
             batch, default two. Zero disables smaller retries. Every child holds at least
             two records and shares the chain deadline.
-        merge_coverage_share: Starting value coverage for merges and rewrites, defaulting to
-            ``tool_results.coverage_share`` without changing tool-group grounding.
-        merge_coverage_floor: Lowest merge coverage, defaulting to the starting bar (no
-            relaxation). Smaller splits are tried before relaxing under record-share pressure.
-        merge_coverage_step: Coverage decrement after an exhausted sweep, default 0.05.
-        merge_answer_cache_bytes: Maximum serialized UTF-8 bytes of refused merge answers,
-            default 1 MiB. Oldest answers are evicted first; zero disables retention.
 
     Raises:
         ValueError: If the two phases measure against different ceilings or with different
@@ -794,10 +786,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         chain_seconds: float | None = DEFAULT_CHAIN_SECONDS,
         record_merge_split_depth: int = 2,
         rewrite_gain_fraction: float = DEFAULT_REWRITE_GAIN_FRACTION,
-        merge_coverage_share: float | None = None,
-        merge_coverage_floor: float | None = None,
-        merge_coverage_step: float = 0.05,
-        merge_answer_cache_bytes: int = 1_048_576,
     ) -> None:
         """Validate the pair and store it."""
         if tool_results.max_input_tokens != user_turns.max_input_tokens:
@@ -875,21 +863,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             else rewrite_prompt
         )
         self.chain_gain_fraction = chain_gain_fraction
-        self._inherit_merge_coverage = merge_coverage_share is None
-        self._inherit_merge_floor = merge_coverage_floor is None
-        coverage = (
-            tool_results.coverage_share if merge_coverage_share is None else merge_coverage_share
-        )
-        self._merge_coverage = MergeCoverage(
-            coverage,
-            coverage if merge_coverage_floor is None else merge_coverage_floor,
-            merge_coverage_step,
-            merge_answer_cache_bytes,
-        )
-        self._merge_coverage.bind(_digest(self.merge_prompt))
-        self._record_consolidations_by_coverage: dict[float, int] = {}
-        self._record_values_omitted = 0
-        self._merge_sweep_complete = False
         self._removed_by_record = 0
         self._records_reshaped = 0
         self._records_merged = 0
@@ -961,8 +934,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         worker.tool_results = copy(self.tool_results)
         worker.user_turns = copy(self.user_turns)
         worker._background = None
-        worker._merge_coverage = copy(self._merge_coverage)
-        worker._record_consolidations_by_coverage = {}
         worker._carried = None
         worker.restore_session_state(deepcopy(self.session_state()))
         worker._request_budget = ContextVar("background_record_budget", default=budget)
@@ -1008,7 +979,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     prompt=self.merge_prompt,
                     transcript=item.transcript,
                     answer=item.answer,
-                    remember_lossy=True,
                 )
                 if outcome == "accepted":
                     self._records_merged += 1
@@ -1194,11 +1164,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
     def session_state(self) -> dict[str, Any]:
         """Return JSON-safe behavioral state for session persistence."""
-        self._sync_merge_coverage()
         return {
             "decisions": self.decision_state().to_dict(),
             "user_turns": self.user_turns.session_state(),
-            "merge_coverage": self._merge_coverage.snapshot(),
             "kept_records": [
                 {"transcript": transcript, "source_count": count, "text": text}
                 for (transcript, count), text in self._kept_records.items()
@@ -1250,8 +1218,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._carried = None
         self._put_decisions(ChainDecisions.from_dict(data["decisions"]))
         self.user_turns.restore_session_state(data["user_turns"])
-        self._sync_merge_coverage()
-        self._merge_coverage.restore(data.get("merge_coverage", {}))
         kept_records = data["kept_records"]
         if isinstance(kept_records, dict):
             counts = data.get("kept_record_counts", {})
@@ -1309,44 +1275,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 if "source_count" in entry and "prompt" in entry
             }
         )
-
-    @property
-    def merge_coverage_share(self) -> float:
-        """Starting coverage for record merges and rewrites."""
-        self._sync_merge_coverage()
-        return self._merge_coverage.start
-
-    @property
-    def merge_coverage_floor(self) -> float:
-        """Lowest coverage allowed under record-share pressure."""
-        self._sync_merge_coverage()
-        return self._merge_coverage.floor
-
-    @property
-    def merge_coverage_step(self) -> float:
-        """Size of one coverage decrement."""
-        return self._merge_coverage.step
-
-    @property
-    def merge_answer_cache_bytes(self) -> int:
-        """Maximum serialized UTF-8 bytes retained for refused merge answers."""
-        return self._merge_coverage.cache_bytes
-
-    @property
-    def current_merge_coverage_share(self) -> float:
-        """Current acceptance bar, persisted with the session."""
-        self._sync_merge_coverage()
-        return self._merge_coverage.current
-
-    @property
-    def record_consolidations_by_coverage(self) -> dict[float, int]:
-        """Newly accepted merges and rewrites at each bar on this instance, excluding replay."""
-        return dict(self._record_consolidations_by_coverage)
-
-    @property
-    def record_values_omitted(self) -> int:
-        """Sum of distinctive source values omitted by newly accepted merges and rewrites."""
-        return self._record_values_omitted
 
     @property
     def user_passes_waited(self) -> int:
@@ -1624,8 +1552,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             an irreducible overflow raises CompactionBudgetExceeded.
         """
         if not messages:
-            self._merge_coverage.current = self._merge_coverage.start
-            self._merge_coverage.answers = []
             return False
         annotate_message_groups(messages)
         annotate_token_counts(messages, tokenizer=self.tokenizer)
@@ -1863,7 +1789,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             True if anything changed the outgoing messages.
         """
         changed = self._keep_decisions(messages, replayed_user_fold=replayed_user_fold)
-        self._refresh_merge_coverage(messages)
         if self._background is not None:
             # Answers prepared over budget are checked under the same guard they were made with.
             with _yielding_when(over_budget=self._over(messages), policy=self.overflow_policy):
@@ -1897,7 +1822,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 )
             finally:
                 self._chain_deadline.reset(token)
-                self._refresh_merge_coverage(messages)
         if self._short_of_target(messages, start) and find_record_index(messages) is not None:
             # With no record, budget enforcement owns unrecorded shedding and its headroom.
             self._last_resort_fallbacks += 1
@@ -2790,7 +2714,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             True if any batch was merged.
         """
-        self._merge_sweep_complete = False
         bound = None if share is None else int(self._budget * share)
         limit = self._record_request_limit()
         prompt_digest = _digest(self.merge_prompt)
@@ -3005,7 +2928,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._batch_resume = None
         batches: list[tuple[list[dict[str, Any]], str, int]] = []
         exhausted = False
-        interrupted = False
         while over:
             if self._record_answer_ready is not None:
                 await asyncio.sleep(0)
@@ -3033,7 +2955,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 try:
                     batch = await search(cursor)
                 except _BatchProbesSpent:
-                    interrupted = True
                     logger.info(
                         "Compaction stopped looking for record batches after %d prefixes; "
                         "%d records were left unsearched.",
@@ -3073,14 +2994,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if failed:
                 # A rate-limited or unstarted batch must be considered on the next sweep.
                 self._batch_resume = None
-                interrupted = True
                 break
             if exhausted:
                 break
         # Kept only while its start record stands, so it stays one entry a record.
         starts = {(digests[last(group)], limit) for group in groups}
         self._searched = {key: found for key, found in self._searched.items() if key in starts}
-        self._merge_sweep_complete = exhausted and not interrupted and not changed
         return changed
 
     def _summary_parallelism(self) -> int:
@@ -3202,12 +3121,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._record_merges_skipped += 1
         else:
             outcome = await self._consolidate(
-                messages,
-                groups,
-                prompt=self.merge_prompt,
-                transcript=transcript,
-                answer=answer,
-                remember_lossy=True,
+                messages, groups, prompt=self.merge_prompt, transcript=transcript, answer=answer
             )
             if outcome == "failed" or outcome == "rate_limited":
                 return False, outcome
@@ -3353,99 +3267,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         that cannot answer without dropping values. Without it, one such merge while the prompt is
         short of its target. Without ``start`` there is no target, only the share.
         """
-        self._refresh_merge_coverage(messages)
-        changed = await self._merge_batches(messages, start, self.record_budget_share)
-        self._refresh_merge_coverage(messages)
-        # Worker histories cannot decide whether the foreground still needs a lower bar.
-        if (
-            not self._merge_coverage.adaptive
-            or self._record_answer_ready is not None
-            or not self._merge_sweep_complete
-        ):
-            return changed
-        if await self._apply_lossy_merges(messages):
-            self._refresh_merge_coverage(messages)
-            return True
-        while self._records_over_share(messages) and self._merge_coverage.adaptive:
-            self._check_chain_deadline()
-            if not self._merge_coverage.lower():
-                break
-            if await self._apply_lossy_merges(messages):
-                changed = True
-                break
-        self._refresh_merge_coverage(messages)
-        return changed
-
-    def _records_over_share(self, messages: list[Message]) -> bool:
-        return self.record_budget_share is not None and self._record_tokens(messages) > int(
-            self._budget * self.record_budget_share
-        )
-
-    def _lossy_merge_matches(
-        self, messages: list[Message]
-    ) -> list[tuple[list[dict[str, Any]], LossyMerge]]:
-        groups = consolidatable_record_groups(messages)
-        matches: list[tuple[list[dict[str, Any]], LossyMerge]] = []
-        for answer in self._merge_coverage.answers:
-            candidates = [
-                groups[first : first + answer.count]
-                for first in range(len(groups) - answer.count + 1)
-                if source_key(messages, groups[first : first + answer.count]) == answer.sources
-            ]
-            if len(candidates) == 1:
-                matches.append((candidates[0], answer))
-        self._merge_coverage.answers = [answer for _, answer in matches]
-        return sorted(matches, key=lambda item: (item[0][0]["start_index"], -item[1].count))
-
-    def _sync_merge_coverage(self) -> None:
-        coverage = self._merge_coverage
-        start = self.tool_results.coverage_share if self._inherit_merge_coverage else coverage.start
-        floor = start if self._inherit_merge_floor else coverage.floor
-        if (start, floor) != (coverage.start, coverage.floor):
-            self._merge_coverage = MergeCoverage(start, floor, coverage.step, coverage.cache_bytes)
-        self._merge_coverage.bind(_digest(self.merge_prompt))
-
-    def _refresh_merge_coverage(self, messages: list[Message]) -> None:
-        self._sync_merge_coverage()
-        if not self._merge_coverage.adaptive:
-            return
-        if not self._records_over_share(messages):
-            self._merge_coverage.current = self._merge_coverage.start
-        if self._merge_coverage.answers:
-            self._lossy_merge_matches(messages)
-
-    async def _apply_lossy_merges(self, messages: list[Message]) -> bool:
-        changed = False
-        while self._records_over_share(messages):
-            self._check_chain_deadline()
-            matches = self._lossy_merge_matches(messages)
-            candidate = next(
-                (
-                    (groups, answer)
-                    for groups, answer in matches
-                    if answer.kept >= self._merge_coverage.required(answer.total)
-                ),
-                None,
-            )
-            if candidate is None:
-                break
-            groups, answer = candidate
-            self._merge_coverage.answers.remove(answer)
-            outcome = await self._consolidate(
-                messages,
-                groups,
-                prompt=self.merge_prompt,
-                transcript=_transcript(messages, groups),
-                answer=_RecordAnswer(answer.text),
-                remember_lossy=True,
-            )
-            # Scores from a snapshot are hints; consolidation rechecks every acceptance guard.
-            if outcome == "accepted":
-                self._records_merged += 1
-                changed = True
-            elif answer in self._merge_coverage.answers:
-                self._merge_coverage.answers.remove(answer)
-        return changed
+        return await self._merge_batches(messages, start, self.record_budget_share)
 
     async def _merge_user_summaries(self, messages: list[Message]) -> bool:
         """Step b: fold the oldest user summaries that fit, when at least two fit."""
@@ -3559,7 +3381,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         transcript: str,
         answer: _RecordAnswer | None = None,
         min_gain_fraction: float = 0.0,
-        remember_lossy: bool = False,
     ) -> _Consolidation:
         """Ask for one record in place of ``groups``, and put it there if it is smaller and whole.
 
@@ -3583,7 +3404,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             min_gain_fraction: Share of the replaced records' tokens the replacement must
                 remove; an answer that keeps the values and removes less is refused though
                 it is smaller. One that drops values is refused as lossy first, and counted.
-            remember_lossy: Retain an eligible merge answer for adaptive acceptance.
 
         Returns:
             Whether it was kept, refused, unavailable, or its sources became ineligible.
@@ -3595,12 +3415,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         ]
         if any(_record_has_external_hold(message) for message in sources):
             return "skipped"
-        self._sync_merge_coverage()
-        cache_sources = (
-            source_key(messages, groups)
-            if self._merge_coverage.adaptive and remember_lossy
-            else None
-        )
         if answer is None:
             try:
                 answer = await self._ask(prompt=prompt, transcript=transcript)
@@ -3635,16 +3449,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         elif not _meets_gain_floor(saved, replaced_tokens, min_gain_fraction):
             outcome, reason = "rejected", "saving too little"
         if outcome != "accepted":
-            if (
-                outcome == "lossy"
-                and len(groups) >= 2
-                and cache_sources is not None
-                and cache_sources == source_key(messages, groups)
-                and _meets_gain_floor(saved, replaced_tokens, min_gain_fraction)
-            ):
-                self._merge_coverage.remember(
-                    LossyMerge(cache_sources, len(groups), text, total, kept)
-                )
             logger.warning(
                 "Compaction kept a batch of %d records unmerged: the %s was refused as %s; "
                 "values_total=%d kept=%d missing=%d required=%d.",
@@ -3657,22 +3461,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 required,
             )
             return outcome
-        bar = self.current_merge_coverage_share
-        self._record_consolidations_by_coverage[bar] = (
-            self._record_consolidations_by_coverage.get(bar, 0) + 1
-        )
-        self._record_values_omitted += total - kept
-        if kept < total:
-            logger.warning(
-                "Compaction accepted a batch of %d records at coverage=%g; "
-                "values_total=%d kept=%d missing=%d required=%d.",
-                len(groups),
-                bar,
-                total,
-                kept,
-                total - kept,
-                required,
-            )
         edit = self._record_edit(messages, groups, text)
         self.tool_results.consolidate_records(messages, groups, text)
         self._kept_records[(transcript, len(groups))] = text
@@ -3682,11 +3470,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # new material can come back as the record an earlier rewrite started from -- and that
         # replacement is already decided, so it is taken here rather than asked for again.
         self._keep_records(messages)
-        self._refresh_merge_coverage(messages)
         return "accepted"
 
     def _keeps_values(self, bodies: list[str], text: str) -> bool:
-        """Whether ``text`` meets the current merge coverage for distinctive source values.
+        """Whether ``text`` quotes ``coverage_share`` of the distinctive values in ``bodies``.
 
         The rule a record meets before it may stand in for a tool group (see
         :meth:`~._toolsummary.ToolResultAnchoredSummarizationCompactionStrategy._is_covered`),
@@ -3697,7 +3484,6 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
     def _value_coverage(self, bodies: list[str], text: str) -> tuple[int, int, int]:
         """Return distinct source values, matched values and the required match count."""
-        self._sync_merge_coverage()
         values: set[str] = set()
         for body in bodies:
             values |= _distinctive_tokens(body)
@@ -3705,7 +3491,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         return (
             len(values),
             len(values & quoted),
-            self._merge_coverage.required(len(values)),
+            ceil(len(values) * self.tool_results.coverage_share),
         )
 
     async def _ask(self, *, prompt: str, transcript: str) -> _RecordAnswer | None:
