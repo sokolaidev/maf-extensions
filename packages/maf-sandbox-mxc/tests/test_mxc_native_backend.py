@@ -270,7 +270,8 @@ def test_native_program_errors_future_imports_and_execution_budget(native_config
                     "del compile, exec, globals\n"
                     "import time\ntime.sleep(35)\nprint(saved)",
                     guest_call_path="later",
-                    timeout=60,
+                    # The call budget also covers restore and checkpoint publication.
+                    timeout=90,
                 )
                 assert later.exit_code == 0 and later.stdout == "7\n"
         finally:
