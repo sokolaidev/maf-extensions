@@ -228,9 +228,9 @@ Background mode works with both agent kinds and all session modes. The first mod
 
 ### Live record merge qualification
 
-`--qualify-record-merges` selects a separate workload with one composed strategy and a JSONL destination. The model generates records from ordinary lookups across completed user turns. The final lookup starts from a synthetic near-budget user turn so the worker can see pressure before its result arrives. The same sending budget, reasoning and source checks still apply. A seed qualifies when the required mode accepts a merge, all planted values from its source records survive in the replacement, the replacement reaches subsequent model input, and the completed scenario retains its planted facts. A missed merge is reported as `not_exercised` and makes the qualification command exit nonzero.
+`--qualify-record-merges` selects a separate workload with one composed strategy and a JSONL destination. The model generates records from ordinary lookups across completed user turns. The final lookup starts from a synthetic near-budget user turn so the worker can see pressure before its result arrives. A seed qualifies when the checkpoint produces a merge, the identified replacement reaches subsequent model input with its planted source values intact, and the completed scenario retains its planted facts. Background qualification also requires the applied answer to have been prepared during the checkpoint lookup. Each billed agent call, including probes, must fit with its own output reservation. Qualification keeps the configured summarizer options for every request. A missed checkpoint merge reports `not_exercised` and makes the command exit nonzero.
 
-Run these two arms with the same deployment, seeds and settings. Add `--background-record-merges` to the second arm and give it its own output file. Supply the deployment's pricing or use unit rates solely for token accounting.
+Run both arms with the same deployment and `--scenario-seed` so their markers and filler match while each run gets a separate agent prompt prefix. Add `--background-record-merges` to the second arm and give it its own output file. Supply the deployment's pricing or use unit rates solely for token accounting.
 
 ```bash
 cachebench_live azure-responses:gpt-6-luna \
@@ -244,7 +244,7 @@ cachebench_live azure-responses:gpt-6-luna \
   --summarizer-provider azure-responses:gpt-6-luna \
   --summary-options-json '{"max_tokens":8192,"reasoning":{"effort":"high"},"store":false}' \
   --summary-timeout-seconds 300 --tool-delay-seconds 30 \
-  --repeats 3 --probe-repeats 1 --combined-repeats 2 \
+  --scenario-seed 2779 --repeats 3 --probe-repeats 1 --combined-repeats 2 \
   --price-input 1 --price-cached 1 --price-output 1 \
   --results-jsonl luna-foreground-qualification.jsonl
 ```

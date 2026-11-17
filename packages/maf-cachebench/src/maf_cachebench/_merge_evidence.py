@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections import Counter, deque
 from collections.abc import Mapping, Sequence
-from hashlib import sha256
 from typing import TYPE_CHECKING
+
+from maf_compaction import record_merge_identity
 
 if TYPE_CHECKING:
     from agent_framework import Message
@@ -18,9 +19,13 @@ class MergeEvidence:
     def __init__(self) -> None:
         self.counts: Counter[str] = Counter()
         self.active_lookups = 0
+        self.active_checkpoint_lookups = 0
+        self.checkpoint_turn = False
+        self.checkpoint_lookup_called = False
         self._surveys: dict[str, deque[dict[str, int | str]]] = {}
         self._accepted: dict[str, deque[dict[str, int | str]]] = {}
-        self._pending: dict[tuple[str, str], None] = {}
+        self._prepared: dict[str, None] = {}
+        self._pending: dict[tuple[str, str], bool] = {}
 
     def observe(self, phase: str, event: str, data: Mapping[str, int | str]) -> None:
         """Count all events and retain a bounded sample of each pressure outcome."""
@@ -33,6 +38,14 @@ class MergeEvidence:
             and event in {"request_prepared", "answer_prepared"}
         ):
             self.counts[f"{key}_during_lookup"] += 1
+            if (
+                event == "answer_prepared"
+                and self.active_checkpoint_lookups
+                and (batch := data.get("batch"))
+            ):
+                if batch not in self._prepared and len(self._prepared) == _MAX_REPLACEMENTS:
+                    self._prepared.pop(next(iter(self._prepared)))
+                self._prepared[str(batch)] = None
         if event == "survey":
             if not data["pressure"]:
                 status = "no_pressure"
@@ -50,27 +63,33 @@ class MergeEvidence:
         if phase not in self._accepted:
             self._accepted[phase] = deque(maxlen=_MAX_SAMPLES)
         self._accepted[phase].append(
-            {key: val for key, val in data.items() if key != "replacement"}
+            {key: val for key, val in data.items() if key not in {"replacement", "batch"}}
         )
-        if data["tracked_values"] and data["kept_tracked_values"] == data["tracked_values"]:
-            replacement = (phase, str(data["replacement"]))
-            if len(self._pending) == _MAX_REPLACEMENTS:
+        identity = data["replacement"]
+        if (
+            identity
+            and data["tracked_values"]
+            and data["kept_tracked_values"] == data["tracked_values"]
+        ):
+            replacement = (phase, str(identity))
+            checkpoint = self.checkpoint_turn and (
+                phase == "foreground" or (phase == "apply" and data.get("batch") in self._prepared)
+            )
+            if replacement not in self._pending and len(self._pending) == _MAX_REPLACEMENTS:
                 self._pending.pop(next(iter(self._pending)))
-            self._pending[replacement] = None
+            self._pending[replacement] = checkpoint or self._pending.get(replacement, False)
 
     def sent(self, messages: Sequence[Message]) -> None:
         """Confirm that a replacement preserving its values was sent to the model."""
         if not self._pending:
             return
-        fingerprints = {
-            sha256(message.text.encode()).hexdigest()
-            for message in messages
-            if message.role == "assistant" and message.text
-        }
+        fingerprints = {record_merge_identity(message) for message in messages}
         for phase, fingerprint in tuple(self._pending):
             if fingerprint in fingerprints:
-                del self._pending[phase, fingerprint]
+                checkpoint = self._pending.pop((phase, fingerprint))
                 self.counts[f"{phase}.value_preserving_merge_sent"] += 1
+                if checkpoint:
+                    self.counts[f"{phase}.checkpoint_merge_sent"] += 1
 
     def snapshot(self) -> dict[str, object]:
         """Serialize only counts, bounds and reason codes."""

@@ -356,6 +356,7 @@ class ModelCall:
     cached_tokens: int
     output_tokens: int
     cache_reported: bool = True
+    output_reservation: int | None = None
 
     @property
     def fresh_tokens(self) -> int:
@@ -383,14 +384,16 @@ class UsageRecorder(ChatMiddleware):
             call_next: Continuation that performs the call.
         """
         await call_next()
+        reservation = (context.options or {}).get("max_tokens")
+        output_cap = reservation if type(reservation) is int and reservation > 0 else None
         if isinstance(context.result, ResponseStream):
             context.result = context.result.with_result_hook(
-                lambda response: self._record(context, response)
+                lambda response: self._record(context, response, output_cap)
             )
         else:
-            self._record(context, context.result)
+            self._record(context, context.result, output_cap)
 
-    def _record(self, context: ChatContext, response: Any) -> None:
+    def _record(self, context: ChatContext, response: Any, output_cap: int | None) -> None:
         """Capture one provider response before recall validation can discard it."""
         # Read after the call, not before: the history middleware replaces this attribute
         # with the loaded history, and compaction then flags that list in place.
@@ -425,6 +428,7 @@ class UsageRecorder(ChatMiddleware):
                 ),
                 output_tokens=usage.get("output_token_count") or 0,
                 cache_reported=usage.get("cache_read_input_token_count") is not None,
+                output_reservation=output_cap,
             )
         )
 
@@ -1727,6 +1731,7 @@ async def run_live(
     max_groups_before_record: int | None = None,
     repeat_records: bool = True,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    cache_run_id: str | None = None,
 ) -> LiveOutcome:
     """Seed a conversation against a real agent, snapshot it, then probe the snapshot.
 
@@ -1821,6 +1826,7 @@ async def run_live(
         sleep: How the backoff between re-sent attempts is taken, throttled and disconnected
             alike. Injectable only so that a test can prove the retries are bounded, and prove
             it against the schedule itself, without spending the bound in wall clock.
+        cache_run_id: A separate prompt prefix for runs that share the same scenario.
 
     Returns:
         The outcome. A turn that fails sets ``error`` and stops the run rather than raising,
@@ -1860,18 +1866,27 @@ async def run_live(
             tool_calls += 1
             scopes_called.append(scope)
             if scope == checkpoint_scope:
+                if merge_evidence is not None and merge_evidence.checkpoint_turn:
+                    merge_evidence.checkpoint_lookup_called = True
                 return render_codes(scenario.tool_lookups[scope])
             return inner()
 
         async def delayed() -> str:
+            checkpoint = (
+                merge_evidence is not None
+                and merge_evidence.checkpoint_turn
+                and scope == checkpoint_scope
+            )
             if merge_evidence is not None:
                 merge_evidence.active_lookups += 1
+                merge_evidence.active_checkpoint_lookups += int(checkpoint)
             try:
                 await sleep(options.compaction.tool_delay_seconds)
                 return recorded()
             finally:
                 if merge_evidence is not None:
                     merge_evidence.active_lookups -= 1
+                    merge_evidence.active_checkpoint_lookups -= int(checkpoint)
 
         wrapped = delayed if options.compaction.tool_delay_seconds else recorded
         wrapped.__name__ = inner.__name__
@@ -1919,6 +1934,9 @@ async def run_live(
                 reforce=recording.take_reforce,
             )
 
+        instructions = resolve_instructions(narration, retrieval_guidance=retrieval_guidance)
+        if cache_run_id is not None:
+            instructions = f"Benchmark run identifier {cache_run_id}.\n\n{instructions}"
         agent = build_live_agent(
             runtime,
             kind=agent_kind,
@@ -1929,7 +1947,7 @@ async def run_live(
             extra_middleware=[recall_middleware]
             if recall_middleware is not None and registry is None
             else [],
-            instructions=resolve_instructions(narration, retrieval_guidance=retrieval_guidance),
+            instructions=instructions,
             max_context_window_tokens=options.max_context_window_tokens,
             max_output_tokens=options.max_output_tokens,
             registry=registry,
@@ -2128,7 +2146,13 @@ async def run_live(
         text = _turn_text(turn.request)
         if index == checkpoint_index:
             text += f"\n\n{PRESSURE_REQUEST} After receiving the result, answer 'OK'."
-        response = await _send(text, turn_index=index, label=f"turn {index + 1}")
+        if merge_evidence is not None:
+            merge_evidence.checkpoint_turn = index == checkpoint_index
+        try:
+            response = await _send(text, turn_index=index, label=f"turn {index + 1}")
+        finally:
+            if merge_evidence is not None:
+                merge_evidence.checkpoint_turn = False
         if response is None:
             if error is None:
                 error = f"turn {index + 1}: no response"
@@ -2281,10 +2305,11 @@ async def run_live(
             }
         if options.compaction.qualify_record_merges:
             phase = "apply" if background else "foreground"
-            diagnostics["checkpoint_lookup_called"] = checkpoint_scope in scopes_called
+            diagnostics["checkpoint_lookup_called"] = merge_evidence.checkpoint_lookup_called
             diagnostics["record_merge_qualification"] = (
                 "observed"
-                if merge_evidence.counts[f"{phase}.value_preserving_merge_sent"]
+                if diagnostics["checkpoint_lookup_called"]
+                and merge_evidence.counts[f"{phase}.checkpoint_merge_sent"]
                 else "not_exercised"
             )
     if experiment.persistence_store is not None:

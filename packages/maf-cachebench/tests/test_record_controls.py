@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 from dataclasses import replace
-from hashlib import sha256
+from inspect import signature
 from typing import Any, cast
 
 import maf_compaction
@@ -114,9 +114,19 @@ def test_older_record_controls_remain_absent_on_roundtrip():
 
 def test_worker_acceptance_does_not_qualify_and_observed_fingerprints_stay_private():
     evidence = MergeEvidence()
-    replacement = Message("assistant", ["qualified synthetic record"])
-    identifier = sha256(replacement.text.encode()).hexdigest()
-    data = {"tracked_values": 3, "kept_tracked_values": 3, "replacement": identifier}
+    replacement = Message(
+        "assistant",
+        ["qualified synthetic record"],
+        additional_properties={"maf_compaction_record_lineage": "fixture-lineage"},
+    )
+    identifier = maf_compaction.record_merge_identity(replacement)
+    assert identifier is not None
+    data = {
+        "tracked_values": 3,
+        "kept_tracked_values": 3,
+        "replacement": identifier,
+        "batch": "prepared-fixture",
+    }
     evidence.observe("background", "answer_accepted", data)
     evidence.sent([replacement])
     assert "apply.value_preserving_merge_sent" not in evidence.counts
@@ -124,14 +134,72 @@ def test_worker_acceptance_does_not_qualify_and_observed_fingerprints_stay_priva
     evidence.sent([replacement])
     assert "apply.value_preserving_merge_sent" not in evidence.counts
     evidence.observe("apply", "answer_accepted", data)
-    evidence.sent([Message("user", [replacement.text])])
+    evidence.sent([Message("assistant", [replacement.text])])
     assert "apply.value_preserving_merge_sent" not in evidence.counts
     evidence.sent([replacement])
     evidence.sent([replacement])
     assert evidence.counts["apply.value_preserving_merge_sent"] == 1
+    assert evidence.counts["apply.checkpoint_merge_sent"] == 0
     serialized = json.dumps(evidence.snapshot())
     assert identifier not in serialized
+    assert "prepared-fixture" not in serialized
     assert replacement.text not in serialized
+
+
+@pytest.mark.parametrize(
+    "lookup,prepared_batch,checkpoint_turn,qualifies",
+    [
+        (True, "same", True, True),
+        (False, "same", True, False),
+        (True, "other", True, False),
+        (True, "same", False, False),
+    ],
+)
+def test_checkpoint_requires_overlap_from_the_applied_batch(
+    lookup, prepared_batch, checkpoint_turn, qualifies
+):
+    evidence = MergeEvidence()
+    replacement = Message(
+        "assistant",
+        ["replacement"],
+        additional_properties={"maf_compaction_record_lineage": "fixture-lineage"},
+    )
+    identity = maf_compaction.record_merge_identity(replacement)
+    assert identity is not None
+    evidence.active_lookups = 1
+    evidence.active_checkpoint_lookups = int(lookup)
+    evidence.observe("background", "answer_prepared", {"batch": prepared_batch})
+    evidence.active_lookups = 0
+    evidence.checkpoint_turn = checkpoint_turn
+    evidence.observe(
+        "apply",
+        "answer_accepted",
+        {
+            "batch": "same",
+            "replacement": identity,
+            "tracked_values": 1,
+            "kept_tracked_values": 1,
+        },
+    )
+    evidence.sent([replacement])
+    assert evidence.counts["apply.checkpoint_merge_sent"] == int(qualifies)
+
+
+def test_record_controls_preserve_the_positional_lookup_delay():
+    parameters = list(signature(CompactionOptions).parameters.values())
+    defaults = [parameter.default for parameter in parameters[:23]]
+    controls = cast("Any", CompactionOptions)(*defaults, 30.0, "restart")
+    assert controls.tool_delay_seconds == 30.0
+    assert controls.session_mode == "restart"
+    assert not controls.record_merge_diagnostics and not controls.qualify_record_merges
+
+
+def test_qualification_refuses_to_retry_without_configured_summarizer_options():
+    args = build_parser().parse_args(
+        ["azure", "--qualify-record-merges", "--retry-without-summary-options"]
+    )
+    with pytest.raises(ValueError, match="requires fixed summarizer options"):
+        compaction_options(args)
 
 
 def test_merge_survey_sample_is_bounded_but_counts_include_every_pass():

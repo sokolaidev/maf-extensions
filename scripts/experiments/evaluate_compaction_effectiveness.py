@@ -120,8 +120,8 @@ class Trace:
         compact = _composed.ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy._compact
         serialize = _live.serialize_history
 
-        def recorded(recorder: Any, context: Any, response: Any) -> None:
-            record(recorder, context, response)
+        def recorded(recorder: Any, context: Any, response: Any, output_cap: int | None) -> None:
+            record(recorder, context, response, output_cap)
             self.emit(
                 "agent",
                 call=len(recorder.calls),

@@ -16,7 +16,7 @@ from agent_framework import (
     create_harness_agent,
     tool,
 )
-from agent_framework._compaction import EXCLUDED_KEY
+from agent_framework._compaction import EXCLUDED_KEY, annotate_message_groups
 from test_record_budget import (
     _VALUE,
     _history,
@@ -41,8 +41,13 @@ from maf_compaction import (
     observe_record_merges,
 )
 from maf_compaction import _composed as composed_module
-from maf_compaction._composed import _RecordMergeWork
+from maf_compaction._composed import _RecordAnswer, _RecordMergeWork, _transcript
 from maf_compaction._preserve import set_preserved
+from maf_compaction._toolsummary import (
+    _distinctive_tokens,
+    consolidatable_record_groups,
+    record_bodies,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -106,9 +111,61 @@ async def test_merge_observer_separates_preparation_and_application():
     assert survey["pressure"] == 1 and survey["eligible"] == 4
     assert survey["record_tokens"] > survey["record_limit"]
     accepted = next(d for p, e, d in events if p == "apply" and e == "answer_accepted")
+    prepared_batch = next(d["batch"] for p, e, d in events if e == "answer_prepared")
     assert accepted["tracked_values"] == accepted["kept_tracked_values"] == len(_values(0))
+    assert accepted["batch"] == prepared_batch
     assert accepted["records"] == 4
     await work.close()
+
+
+async def test_observer_failure_preserves_merge_journal_and_worker_cleanup():
+    strategy, work, messages = await prepared()
+
+    def fail(phase, event, details):
+        if (phase, event) in {("apply", "answer_accepted"), ("background", "worker_closed")}:
+            raise RuntimeError("observer failure")
+
+    with observe_record_merges(fail):
+        work.start(tool_reply())
+        await running(work)
+        assert await strategy(messages)
+        work.remember(messages, strategy.max_input_tokens)
+        work.start(tool_reply())
+        task = running(work)
+        await work.close()
+    assert task.done()
+    assert strategy._background is None
+    assert len(strategy.session_state()["record_order"]) == 1
+    assert len(strategy.session_state()["kept_records"]) == 1
+
+
+async def test_tracked_values_require_whole_identifiers_and_rewrites_emit_no_merge_events():
+    model = _Summarizer()
+    strategy = _strategy(model, budget=100_000)
+    messages = _history(6)
+    annotate_message_groups(messages)
+    groups = consolidatable_record_groups(messages)
+    bodies = record_bodies(messages, groups)
+    values = set().union(*(_distinctive_tokens(body) for body in bodies))
+    marker = next(value for value in _values(0) if value in values)
+    replacement = " ".join(sorted((values - {marker}) | {f"{marker}9"}))
+    events = []
+    with observe_record_merges(lambda p, e, d: events.append((e, d)), tracked_values=[marker]):
+        await strategy._ask(
+            prompt=strategy.merge_prompt, transcript="synthetic", operation="rewrite"
+        )
+        assert not events
+        outcome = await strategy._consolidate(
+            messages,
+            groups,
+            prompt=strategy.merge_prompt,
+            transcript=_transcript(messages, groups),
+            answer=_RecordAnswer(replacement),
+        )
+    assert outcome == "accepted"
+    accepted = next(data for event, data in events if event == "answer_accepted")
+    assert accepted["tracked_values"] == 1
+    assert accepted["kept_tracked_values"] == 0
 
 
 async def test_next_pass_does_not_wait_for_unfinished_merge():

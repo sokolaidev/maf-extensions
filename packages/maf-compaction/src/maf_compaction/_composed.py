@@ -66,7 +66,13 @@ from ._preserve import (
     pending_result_messages,
     set_preserved,
 )
-from ._record_diagnostics import RecordMergePhase, record_merge_observer, tracked_merge_values
+from ._record_diagnostics import (
+    RecordMergePhase,
+    RecordReduction,
+    record_merge_identity,
+    record_merge_observer,
+    tracked_merge_values,
+)
 from ._record_replay import (
     LINEAGE_KEY,
     MessageKeyCache,
@@ -247,7 +253,10 @@ class _RecordMergeWork:
         def ready(sources: str, count: int, transcript: str, answer: _RecordAnswer) -> None:
             if generation == self._generation:
                 self._ready.append(_PreparedMerge(sources, count, transcript, answer, prompt))
-                worker._merge_event("answer_prepared", records=count)  # pyright: ignore[reportPrivateUsage]
+                if record_merge_observer.get() is not None:
+                    worker._merge_event(  # pyright: ignore[reportPrivateUsage]
+                        "answer_prepared", records=count, batch=_digest(f"{sources}:{answer.text}")
+                    )
 
         worker = self.strategy._record_worker(  # pyright: ignore[reportPrivateUsage]
             self._budget, ready, lambda: generation == self._generation
@@ -1004,11 +1013,15 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     ) -> None:
         observer = record_merge_observer.get()
         if observer is not None:
-            observer(
-                phase or ("background" if self._record_answer_ready is not None else "foreground"),
-                event,
-                counts if details is None else {**counts, **details},
-            )
+            try:
+                observer(
+                    phase
+                    or ("background" if self._record_answer_ready is not None else "foreground"),
+                    event,
+                    counts if details is None else {**counts, **details},
+                )
+            except Exception as error:
+                logger.warning("Record merge observer failed (%s).", type(error).__name__)
 
     async def _prepare_record_merges(self, messages: list[Message]) -> None:
         self._completed_merge_sweep = None
@@ -1956,7 +1969,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if self._short_of_target(messages, start) and find_record_index(messages) is not None:
             # With no record, budget enforcement owns unrecorded shedding and its headroom.
             self._last_resort_fallbacks += 1
-            self._merge_event("fallback", target=self._target(messages, start))
+            if record_merge_observer.get() is not None:
+                self._merge_event("fallback", target=self._target(messages, start))
             changed = await self._fall_back(messages, start) or changed
         if self._short_of_target(messages, start):
             self._chain_targets_missed += 1
@@ -3653,6 +3667,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 prompt=prompt,
                 transcript=transcript,
                 min_gain_fraction=self.rewrite_gain_fraction,
+                operation="rewrite",
             )
             if outcome == "accepted":
                 changed = True
@@ -3694,6 +3709,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         min_gain_fraction: float = 0.0,
         remember_lossy: bool = False,
         merge_phase: RecordMergePhase | None = None,
+        operation: RecordReduction = "merge",
     ) -> _Consolidation:
         """Ask for one record in place of ``groups``, and put it there if it is smaller and whole.
 
@@ -3727,7 +3743,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             for group in groups
             for message in messages[group["start_index"] : group["end_index"] + 1]
         ]
-        merge = len(groups) >= 2 and prompt == self.merge_prompt
+        merge = operation == "merge" and len(groups) >= 2
         if any(_record_has_external_hold(message) for message in sources):
             if merge:
                 self._merge_event("answer_discarded", phase=merge_phase, reason="external_hold")
@@ -3740,7 +3756,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         )
         if answer is None:
             try:
-                answer = await self._ask(prompt=prompt, transcript=transcript)
+                answer = await self._ask(prompt=prompt, transcript=transcript, operation=operation)
             except SummaryRateLimited:
                 return "rate_limited"
         if answer is None:
@@ -3790,7 +3806,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 "Compaction kept a batch of %d records unmerged: the %s was refused as %s; "
                 "values_total=%d kept=%d missing=%d required=%d.",
                 len(groups),
-                "merge" if prompt == self.merge_prompt else "rewrite",
+                operation,
                 reason,
                 total,
                 kept,
@@ -3816,24 +3832,31 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             )
         edit = self._record_edit(messages, groups, text)
         self.tool_results.consolidate_records(messages, groups, text)
+        self._kept_records[(transcript, len(groups))] = text
+        if edit is not None and edit not in self._record_order:
+            self._record_order.append(edit)
         if merge and record_merge_observer.get() is not None:
-            tracked = {
-                value for value in tracked_merge_values.get() if any(value in b for b in bodies)
-            }
+            tracked = set(tracked_merge_values.get())
+            kept_tracked = 0
+            if tracked:
+                source_values = {
+                    value for body in bodies for value in _record_tokens(body, fold_case=False)
+                }
+                tracked.intersection_update(source_values)
+                kept_tracked = len(tracked.intersection(_record_tokens(text, fold_case=False)))
+            replacement = messages[int(groups[-1]["end_index"]) + 1]
             self._merge_event(
                 "answer_accepted",
                 phase=merge_phase,
                 records=len(groups),
-                replacement=_digest(candidate[0].text or ""),
+                replacement=record_merge_identity(replacement) or "",
+                batch=_digest(f"{edit.sources}:{text}") if edit is not None else "",
                 values=total,
                 kept_values=kept,
                 tracked_values=len(tracked),
-                kept_tracked_values=sum(value in text for value in tracked),
+                kept_tracked_values=kept_tracked,
                 saved_tokens=saved,
             )
-        self._kept_records[(transcript, len(groups))] = text
-        if edit is not None and edit not in self._record_order:
-            self._record_order.append(edit)
         # The new record may read exactly as one an earlier pass went on to replace -- a merge of
         # new material can come back as the record an earlier rewrite started from -- and that
         # replacement is already decided, so it is taken here rather than asked for again.
@@ -3864,7 +3887,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._merge_coverage.required(len(values)),
         )
 
-    async def _ask(self, *, prompt: str, transcript: str) -> _RecordAnswer | None:
+    async def _ask(
+        self, *, prompt: str, transcript: str, operation: RecordReduction = "merge"
+    ) -> _RecordAnswer | None:
         """Return the summarizer's answer to one merge or rewrite request.
 
         Asked every time it is reached, because nothing reaches it twice for the same records: a
@@ -3894,7 +3919,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         self._check_chain_deadline()
         started = monotonic()
         incomplete = False
-        merge = prompt == self.merge_prompt
+        merge = operation == "merge"
         if merge:
             self._merge_event("request_prepared")
 
@@ -3912,7 +3937,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             logger.info(
                 "Compaction record %s response: seconds=%.3f finish_reason=%s "
                 "input_tokens=%s output_tokens=%s reasoning_tokens=%s.",
-                "merge" if prompt == self.merge_prompt else "rewrite",
+                operation,
                 monotonic() - started,
                 finish,
                 usage.get("input_token_count"),

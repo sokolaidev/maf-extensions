@@ -467,12 +467,13 @@ async def test_recorder_captures_usage() -> None:
     )
     recorder = UsageRecorder()
     agent = _agent(StubChatClient(usage=usage), None, recorder)
-    await agent.run("hello", session=agent.create_session())
+    await agent.run("hello", session=agent.create_session(), options={"max_tokens": 1_200})
 
     call = recorder.calls[0]
     assert call.input_tokens == 900
     assert call.cached_tokens == 300
     assert call.output_tokens == 40
+    assert call.output_reservation == 1_200
     assert call.fresh_tokens == 600
 
 
@@ -9348,8 +9349,9 @@ def test_every_boolean_flag_that_changes_a_run_is_recorded_somewhere() -> None:
         "because it changes nothing measured -- pick one here"
     )
     workload_fields = {field.name for field in fields(WorkloadSettings)}
-    assert "agent_reasoning_effort" in workload_fields
-    assert len(workload_fields - {"agent_reasoning_effort"}) == len(changes_the_conversation)
+    optional = {"agent_reasoning_effort", "scenario_seed"}
+    assert optional <= workload_fields
+    assert len(workload_fields - optional) == len(changes_the_conversation)
 
 
 async def test_the_workload_flags_recorded_are_the_ones_the_run_was_configured_with(
@@ -9391,12 +9393,14 @@ async def test_the_workload_flags_recorded_are_the_ones_the_run_was_configured_w
                 "--no-temperature",
                 "--agent-reasoning-effort",
                 "high",
+                "--summarizer-provider",
+                "azure",
             )
         )
     )
 
     (record,) = read_seed_records(path)
-    (runtime,) = built
+    runtime, summarizer = built
     flags = record.cell.workload
 
     assert flags is not None
@@ -9412,11 +9416,99 @@ async def test_the_workload_flags_recorded_are_the_ones_the_run_was_configured_w
     )
     assert flags.agent_reasoning_effort == "high"
     assert runtime.options["reasoning"] == {"effort": "high"}
+    assert "temperature" not in summarizer.options
     assert seen == [
         {"force_tool_calls": False, "retrieval_guidance": True, "allow_server_history": False}
     ], (
         "the run must be driven from the values the record carries, not from a second reading of the flags"
     )
+
+
+@pytest.mark.parametrize(
+    "reservation,status", [(10000, "qualified"), (16384, "not_qualified"), (None, "not_qualified")]
+)
+def test_merge_qualification_checks_the_reservation_of_each_call(reservation, status):
+    scenario = build_live_scenario(
+        salt="reserved-window", filler_turns=0, filler_tokens=0, tool_turns=3
+    )
+    facts = " ".join(fact.marker for fact in scenario.facts)
+    outcome = LiveOutcome(
+        strategy="tool_and_user_summary_anchored",
+        calls=(ModelCall(1, facts, 1, 260_000, 0, 5, output_reservation=reservation),),
+        answer=facts,
+        snapshot_prompt=facts,
+        tool_calls_made=3,
+        turns_completed=1,
+        turns_total=1,
+        compaction_diagnostics={"record_merge_qualification": "observed"},
+    )
+    record = _record(outcome, scenario, cell=_cell_params(context_window=270_000))
+    assert record.compaction_diagnostics is not None
+    assert record.compaction_diagnostics["record_merge_qualification"] == status
+
+
+async def test_qualification_pairs_inputs_and_labels_the_archived_arms(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_provider(monkeypatch)
+    inputs = []
+    prefixes = []
+
+    async def fake_live(*_args: Any, **kwargs: Any) -> LiveOutcome:
+        scenario = kwargs["scenario"]
+        inputs.append((scenario.facts, scenario.transcript))
+        prefixes.append(kwargs["cache_run_id"])
+        facts = " ".join(fact.marker for fact in scenario.facts)
+        background = kwargs["options"].compaction.background_record_merges
+        return LiveOutcome(
+            strategy=kwargs["strategy_name"],
+            calls=(ModelCall(1, facts, 1, 1000, 0, 5, output_reservation=1000),),
+            answer=facts,
+            snapshot_prompt=facts,
+            tool_calls_made=3,
+            turns_completed=1,
+            turns_total=1,
+            records_merged=1,
+            compaction_diagnostics={
+                "record_merge_qualification": "observed",
+                "background_record_merges": background,
+                "record_merge_evidence": {"counts": {"apply.checkpoint_merge_sent": 1}},
+            },
+        )
+
+    monkeypatch.setattr("maf_cachebench._live_cli.run_live", fake_live)
+    paths = [tmp_path / name for name in ("foreground.jsonl", "background.jsonl")]
+    for path, arm in zip(paths, ([], ["--background-record-merges"]), strict=True):
+        args = build_parser().parse_args(
+            _live_argv(
+                "--strategies",
+                "tool_and_user_summary_anchored",
+                "--qualify-record-merges",
+                "--summarizer-provider",
+                "azure",
+                "--scenario-seed",
+                "2799",
+                "--repeats",
+                "1",
+                "--results-jsonl",
+                str(path),
+                *arm,
+            )
+        )
+        assert await run_live_comparison(args) == 0
+        workload = read_seed_records(path)[0].cell.workload
+        assert workload is not None and workload.scenario_seed == 2799
+    assert inputs[0][0] == inputs[1][0]
+    assert [t.request[0].text for t in inputs[0][1].turns] == [
+        t.request[0].text for t in inputs[1][1].turns
+    ]
+    assert prefixes[0] != prefixes[1]
+    capsys.readouterr()
+    args = build_parser().parse_args(["--from-jsonl", *(str(path) for path in paths)])
+    assert await run_live_comparison(args) == 0
+    report = capsys.readouterr().out
+    assert "foreground seed 1" in report and "background seed 1" in report
+    assert "checkpoint overlaps 1" in report
 
 
 def test_the_workload_block_is_what_the_run_resolves_from_the_flags() -> None:

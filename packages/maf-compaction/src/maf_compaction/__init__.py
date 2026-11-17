@@ -72,7 +72,7 @@ from ._preserve import (
     is_preserved,
     set_preserved,
 )
-from ._record_diagnostics import observe_record_merges
+from ._record_diagnostics import observe_record_merges, record_merge_identity
 from ._session import (
     DEFAULT_MAX_CARRIED_VIEWS,
     CompactionStack,
@@ -189,6 +189,7 @@ __all__ = [
     "make_session_recall_tool",
     "make_session_record_merge_middleware",
     "observe_record_merges",
+    "record_merge_identity",
     "record_text",
     "set_preserved",
 ]

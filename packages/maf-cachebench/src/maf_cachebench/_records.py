@@ -540,12 +540,15 @@ class WorkloadSettings:
     """
     agent_reasoning_effort: str | None = None
     """Requested reasoning effort, when the agent call overrides the provider default."""
+    scenario_seed: int | None = None
+    """Fixed input seed for pairing experiments across independent cache prefixes."""
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable mapping of these flags."""
         result = asdict(self)
-        if self.agent_reasoning_effort is None:
-            del result["agent_reasoning_effort"]
+        for optional in ("agent_reasoning_effort", "scenario_seed"):
+            if result[optional] is None:
+                del result[optional]
         return result
 
 
@@ -570,6 +573,7 @@ def _workload_from_dict(data: Mapping[str, Any]) -> WorkloadSettings:
         temperature=None if data["temperature"] is None else float(data["temperature"]),
         server_history=bool(data["server_history"]),
         agent_reasoning_effort=data.get("agent_reasoning_effort"),
+        scenario_seed=data.get("scenario_seed"),
     )
 
 
@@ -1017,6 +1021,7 @@ class CellParams:
             f"temp {'none' if flags.temperature is None else f'{flags.temperature:g}'} "
             f"history {'server' if flags.server_history else 'client'}"
             + (f" reasoning {flags.agent_reasoning_effort}" if flags.agent_reasoning_effort else "")
+            + (f" scenario seed {flags.scenario_seed}" if flags.scenario_seed is not None else "")
         )
 
     @property

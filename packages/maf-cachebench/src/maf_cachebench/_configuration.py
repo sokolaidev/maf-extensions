@@ -38,8 +38,6 @@ class CompactionOptions:
     record_merge_split_depth: int = 2
     rewrite_gain_fraction: float = maf_compaction.DEFAULT_REWRITE_GAIN_FRACTION
     background_record_merges: bool = False
-    record_merge_diagnostics: bool = False
-    qualify_record_merges: bool = False
     tool_delay_seconds: float = 0.0
     session_mode: str = "memory"
     history_mode: str = "incremental"
@@ -48,9 +46,13 @@ class CompactionOptions:
     media_profile: str = "none"
     media_tokens: int = 1024
     result_rewrite_profile: str = "none"
+    record_merge_diagnostics: bool = False
+    qualify_record_merges: bool = False
 
     def __post_init__(self) -> None:
         """Reject invalid controls before a provider is contacted."""
+        if self.qualify_record_merges and self.retry_without_summary_options:
+            raise ValueError("Record merge qualification requires fixed summarizer options.")
         for name in (
             "forced_call_timeout_seconds",
             "min_groups_before_repeat",
