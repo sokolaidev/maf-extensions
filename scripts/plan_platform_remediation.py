@@ -10,7 +10,7 @@ from typing import Any
 
 import vendor_fix_evidence
 from bicep_source import policy
-from container_image_inputs import build_inputs, inventory
+from container_image_inputs import ANTIVIRUS_PYTHON_TAG, build_inputs, inventory
 from image_scan_policy import BICEP_ROUTES
 from plan_go_remediation import digest, evidence, locations, semver
 from select_image_security import PROFILES
@@ -91,6 +91,10 @@ def runtime_base(root: Path, profile: str) -> str | None:
         ref
         for ref in inventory(root / name)
         if ref.startswith(("cgr.dev/chainguard/wolfi-base:latest@", "alpine:3.24@"))
+        or (
+            profile == "antivirus"
+            and re.fullmatch(rf"python:{ANTIVIRUS_PYTHON_TAG}", ref.partition("@")[0])
+        )
     }
     return next(iter(references)) if len(references) == 1 else None
 

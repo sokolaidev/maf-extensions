@@ -1,4 +1,4 @@
-# Refresh framework locks and Actions; image dependencies receive security updates only.
+# Refresh framework locks, Actions, and antivirus Python. Other image dependencies receive security updates only.
 # Image compatibility lines and manual exceptions are documented in images/DEPENDENCIES.md.
 # Zero version-PR limits preserve security updates; package-required changes are explicit PRs.
 #
@@ -101,8 +101,21 @@ updates:
   - package-ecosystem: "docker"
     open-pull-requests-limit: 0
     directories:
-      - "/images/*"
+      - "/images/azure-pricing-sandbox"
+      - "/images/bicep-docker-sbx"
+      - "/images/bicep-sandbox"
+      - "/images/document-export"
+      - "/images/document-sandbox"
+      - "/images/drawio-export"
+      - "/images/drawio-sandbox"
+      - "/images/egress-proxy"
+      - "/images/graphviz-sandbox"
+      - "/images/hyperlight-sandbox"
+      - "/images/sbx-template"
+      - "/images/shell-sandbox"
       - "/images/shell-sandbox/fixtures"
+      - "/images/terraform-sandbox"
+      - "/images/wolfi-python"
       - "/packages/maf-sandbox-docker/tests/fixtures/missing-commands"
       - "/packages/maf-sandbox-wslc/tests/fixtures/*"
       - "/packages/maf-sandbox-docker-sbx/tests/images"
@@ -120,6 +133,24 @@ updates:
       other-build-images:
         patterns: ["*"]
       build-images-security:
+        applies-to: security-updates
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    commit-message:
+      prefix: "build"
+
+  - package-ecosystem: "docker"
+    directory: "/images/antivirus-sandbox"
+    open-pull-requests-limit: 1
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    allow:
+      - dependency-name: "python"
+    groups:
+      antivirus-python-security:
         applies-to: security-updates
         patterns: ["*"]
     ignore:
