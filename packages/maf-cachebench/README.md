@@ -91,6 +91,24 @@ Storage scenarios require `roundtrip` or `restart` and apply to recall-bearing s
 
 The host-hook profiles are synthetic fixture policies. `describe` supplies a fixed description without fetching media or calling a model; `decline` returns no description; `select_pdf` describes PDFs and preserves other media turns while allowing later turns to compact. `preserve` installs only the media estimator. `--media-tokens` is a host estimate per part, never billed provider usage. The result `preserve` profile authorizes shortening a single text item while retaining its metadata and non-text items; it declines multiple text items or raw provider representations. `invalid` deliberately drops media to exercise validation. These policies are for fixtures and controlled experiments; their fixed descriptions do not interpret arbitrary user media. Defaults install none of these hooks.
 
+### Record merge loss
+
+Run `uv run cachebench_merge_loss` for a matched comparison of count-only coverage and coverage that credits distinct values present in the retained messages. Add `--fixture-judge` to include a scripted judge. Both commands print JSON and run entirely offline.
+
+Six synthetic cases use the same source records and next task. Each row reports the raw and surviving value counts, later messages mentioning each missing value, acceptance, source facts preserved, and whether the projected prompt identifies the correct deployment target. The task reader requires an unambiguous line with the deployment role. Swapping the active and retired identifiers therefore fails even at full token coverage. A false acceptance loses the correct next target and a false refusal rejects a candidate that would have preserved it. The budget counts estimated tokens in the projected fixture text at one decision per case.
+
+The count policy uses compaction's distinctive tokens and default coverage share. The context policy credits equal tokens anywhere in the final retained messages, so a mention with a different role can earn credit. Both context and judge policies require the candidate to meet the configured raw floor. The judge receives one batch of missing values with their source lines, later mention counts, candidate, retained messages, task and versioned rubric. A confident material verdict vetoes acceptance and an all-minor verdict allows it. Uncertain or unavailable judgments use the count decision. Full-coverage candidates have no missing values to judge.
+
+For a live experiment, await `maf_cachebench.merge_loss.evaluate(judge=adapter, model_id=deployment, rubric=criteria, rubric_version=version)` with a host-owned async callable from `JudgeRequest` to `JudgeAnswer`. The adapter supplies one typed `Verdict` per missing value and optional USD cost. The report records the model identity, per-value probabilities, request count and elapsed time. Unknown cost is JSON null. The request size limit applies to the UTF-8 JSON of the request fields. The timeout cancels a cooperative adapter and caller cancellation propagates. Each evaluation scores fresh fixture projections. Runtime compaction and session replay use their existing policy.
+
+With the default 80% threshold, 60% floor and 45-token text budget, the six fixtures produce the following counts. Crediting surviving tokens accepts the repeated audits but also credits a target mentioned in the wrong role. The scripted judge uses the deployment label to catch that case. Every policy accepts the role swap.
+
+| Policy | False accepts | False refusals | Projections over budget |
+| --- | ---: | ---: | ---: |
+| Count | 2 | 3 | 4 |
+| Count with surviving context | 3 | 2 | 2 |
+| Scripted judge | 1 | 1 | 3 |
+
 ### Offline capability scenarios
 
 `cachebench_capabilities` supplies the content, model responses and storage faults needed to exercise these paths without credentials or external I/O. Persistence cases use the same agent builder and session runner as `cachebench_live`; media and result cases use the shared strategy builders directly. The command writes one JSON object per scenario and exits nonzero if any contract check fails. Expected injected failures pass only when their observed commit, cleanup and ordering outcomes match the contract.
