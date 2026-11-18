@@ -499,10 +499,11 @@ def source_key(
     groups: list[dict[str, Any]],
     *,
     keys: MessageKeyCache | None = None,
+    wanted_lineages: set[str] | None = None,
 ) -> str | None:
     """Identify a replay's source window and originally excluded later reasoning."""
     key = source_lineage(messages, groups, keys=keys)
-    if key is None:
+    if key is None or (wanted_lineages is not None and key not in wanted_lineages):
         return None
     excluded_reasoning = {
         _reasoning_key(message)
