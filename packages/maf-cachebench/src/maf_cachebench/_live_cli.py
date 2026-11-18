@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import logging
 import math
+import re
 from collections.abc import Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -1104,12 +1105,16 @@ def _seed_record(
         diagnostics["peak_input_with_output_reservation"] = peak_reserved
         diagnostics["calls_missing_reserved_size"] = missing_reservations
         if diagnostics["record_merge_qualification"] == "observed":
+            snapshot = outcome.snapshot_prompt.casefold()
             diagnostics["record_merge_qualification"] = (
                 "qualified"
                 if outcome.error is None
                 and outcome.turns_completed == outcome.turns_total
                 and facts_total > 0
-                and facts_left == facts_total
+                and all(
+                    re.search(rf"(?<![\w-]){re.escape(fact.marker.casefold())}(?![\w-])", snapshot)
+                    for fact in scenario.facts
+                )
                 and not missing_reservations
                 and peak_reserved is not None
                 and peak_reserved <= cell.context_window

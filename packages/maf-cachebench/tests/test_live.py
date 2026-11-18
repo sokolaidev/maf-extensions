@@ -9447,6 +9447,45 @@ def test_merge_qualification_checks_the_reservation_of_each_call(reservation, st
     assert record.compaction_diagnostics["record_merge_qualification"] == status
 
 
+@pytest.mark.parametrize(
+    "kind,prefix,suffix,status",
+    [
+        ("requirement", "", "", "qualified"),
+        ("requirement", "", "9", "not_qualified"),
+        ("correction", "", "s", "not_qualified"),
+        ("tool_result", "other-", "", "not_qualified"),
+        ("tool_result", "", "-extra", "not_qualified"),
+    ],
+)
+def test_merge_qualification_requires_whole_snapshot_facts(kind, prefix, suffix, status):
+    scenario = build_live_scenario(
+        salt="whole-snapshot", filler_turns=0, filler_tokens=0, tool_turns=3
+    )
+    target = next(
+        fact
+        for fact in scenario.facts
+        if fact.kind == kind and (kind != "correction" or fact.marker == "streaming pipeline")
+    )
+    snapshot = " ".join(
+        f"'{prefix}{fact.marker.lower()}{suffix}'" if fact == target else fact.marker
+        for fact in scenario.facts
+    )
+    outcome = LiveOutcome(
+        strategy="tool_and_user_summary_anchored",
+        calls=(ModelCall(1, snapshot, 1, 1_000, 0, 5, output_reservation=1_000),),
+        answer=snapshot,
+        snapshot_prompt=snapshot,
+        tool_calls_made=3,
+        turns_completed=1,
+        turns_total=1,
+        compaction_diagnostics={"record_merge_qualification": "observed"},
+    )
+    record = _record(outcome, scenario)
+    assert record.facts_left == len(scenario.facts)
+    assert record.compaction_diagnostics is not None
+    assert record.compaction_diagnostics["record_merge_qualification"] == status
+
+
 async def test_qualification_pairs_inputs_and_labels_the_archived_arms(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
