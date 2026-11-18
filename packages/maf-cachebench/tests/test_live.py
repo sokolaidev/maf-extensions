@@ -808,6 +808,29 @@ async def test_the_ids_never_reach_the_provider() -> None:
     assert not [call for call in outcome.calls if "cachebench_" in call.prompt_text]
 
 
+@pytest.mark.parametrize("agent_kind", ["plain", "harness"])
+async def test_run_live_uses_an_opaque_cache_prefix(agent_kind: str) -> None:
+    scenario = build_live_scenario(
+        salt="opaque-prefix", filler_turns=0, filler_tokens=0, tool_turns=3
+    )
+    supplied_id = "external label\nwith control\ttext"
+    client = StubChatClient()
+    outcome = await run_live(
+        ProviderRuntime(client=client, model="stub"),
+        strategy_name="none",
+        options=_options(),
+        scenario=scenario,
+        agent_kind=agent_kind,
+        probe_repeats=1,
+        cache_run_id=supplied_id,
+    )
+
+    assert outcome.error is None
+    prompt = client.options_seen[0]["instructions"]
+    assert "external label" not in prompt
+    assert re.search(r"Benchmark run identifier cachebench-[0-9a-f]{32}\.", prompt)
+
+
 def test_unknown_agent_kind_is_rejected() -> None:
     """An unknown agent kind must fail loudly rather than silently picking a default."""
     with pytest.raises(ValueError, match="Unknown agent kind"):

@@ -83,6 +83,7 @@ from ._merge_evidence import MergeEvidence
 from ._merge_workload import PRESSURE_REQUEST
 from ._metrics import clamp_cached_tokens, serialize_message
 from ._persistence_scenarios import ScenarioFailure
+from ._providers import prompt_cache_key
 from ._recall import (
     COMBINED_SCOPE,
     FactOutcome,
@@ -1826,7 +1827,7 @@ async def run_live(
         sleep: How the backoff between re-sent attempts is taken, throttled and disconnected
             alike. Injectable only so that a test can prove the retries are bounded, and prove
             it against the schedule itself, without spending the bound in wall clock.
-        cache_run_id: A separate prompt prefix for runs that share the same scenario.
+        cache_run_id: Seed for a fixed-length cache prefix when runs share a scenario.
 
     Returns:
         The outcome. A turn that fails sets ``error`` and stops the run rather than raising,
@@ -1936,7 +1937,8 @@ async def run_live(
 
         instructions = resolve_instructions(narration, retrieval_guidance=retrieval_guidance)
         if cache_run_id is not None:
-            instructions = f"Benchmark run identifier {cache_run_id}.\n\n{instructions}"
+            cache_key = prompt_cache_key(cache_run_id)
+            instructions = f"Benchmark run identifier {cache_key}.\n\n{instructions}"
         agent = build_live_agent(
             runtime,
             kind=agent_kind,
