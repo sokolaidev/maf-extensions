@@ -3881,18 +3881,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 total - kept,
                 required,
             )
-        await off_loop(self._accept_record, messages, groups, text, transcript)
-        return "accepted"
-
-    def _accept_record(
-        self, messages: list[Message], groups: Any, text: str, transcript: str
-    ) -> None:
-        """Put an accepted record in place of the records it merges, off the loop."""
-        edit = self._record_edit(messages, groups, text)
-        self.tool_results.consolidate_records(messages, groups, text)
-        self._kept_records[(transcript, len(groups))] = text
-        if edit is not None and edit not in self._record_order:
-            self._record_order.append(edit)
+        edit = await off_loop(self._accept_record, messages, groups, text, transcript)
         if merge and record_merge_observer.get() is not None:
             tracked = set(tracked_merge_values.get())
             kept_tracked = 0
@@ -3915,6 +3904,25 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 kept_tracked_values=kept_tracked,
                 saved_tokens=saved,
             )
+        await off_loop(self._settle_accepted_record, messages)
+        return "accepted"
+
+    def _accept_record(
+        self, messages: list[Message], groups: Any, text: str, transcript: str
+    ) -> Any:
+        """Put an accepted record in place of the records it merges, off the loop.
+
+        Returns the edit recorded for replay, or None when there is none.
+        """
+        edit = self._record_edit(messages, groups, text)
+        self.tool_results.consolidate_records(messages, groups, text)
+        self._kept_records[(transcript, len(groups))] = text
+        if edit is not None and edit not in self._record_order:
+            self._record_order.append(edit)
+        return edit
+
+    def _settle_accepted_record(self, messages: list[Message]) -> None:
+        """Take decided replacements of the new record and refresh coverage, off the loop."""
         # The new record may read exactly as one an earlier pass went on to replace -- a merge of
         # new material can come back as the record an earlier rewrite started from -- and that
         # replacement is already decided, so it is taken here rather than asked for again.
