@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 from agent_framework import ChatResponse, Content, Message
+from agent_framework._compaction import EXCLUDED_KEY
 from test_background_record_merges import running, tool_reply
 from test_record_budget import (
     _VALUE,
@@ -410,6 +411,39 @@ async def test_cache_refresh_fingerprints_messages_once_and_windows_once_per_siz
     assert len(matches) == len(answers)
     assert source_calls == sum(count - size + 1 for size in {answer.count for answer in answers})
     assert message_calls == count * 2
+
+
+@pytest.mark.parametrize("count", [8, 32])
+def test_cache_refresh_checks_later_reasoning_only_for_matching_windows(
+    count: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    strategy = _configured(merge_coverage_floor=0.7)
+    messages = _records(count)
+    reasoning = Message(
+        "assistant", [Content.from_text_reasoning(text="reasoning")], message_id="reasoning-1"
+    )
+    reasoning.additional_properties[EXCLUDED_KEY] = True
+    messages.append(reasoning)
+    groups = consolidatable_record_groups(messages)
+    assert len(groups) == count
+    pair = groups[:2]
+    sources = replay_module.source_key(messages, pair)
+    assert sources is not None
+    answer = LossyMerge(sources, 2, "answer", 4, 3)
+    strategy._merge_coverage.remember(answer)
+    reasoning_key = replay_module._reasoning_key
+    reads = 0
+
+    def key(message: Message) -> str | None:
+        nonlocal reads
+        reads += 1
+        return reasoning_key(message)
+
+    monkeypatch.setattr(replay_module, "_reasoning_key", key)
+    assert strategy._lossy_merge_matches(messages) == [(pair, answer)]
+    assert reads == 1
+    reasoning.message_id = "reasoning-2"
+    assert not strategy._lossy_merge_matches(messages)
 
 
 async def test_cached_answer_with_ambiguous_source_window_is_discarded() -> None:

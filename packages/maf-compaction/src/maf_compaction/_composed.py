@@ -3445,12 +3445,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     ) -> list[tuple[list[dict[str, Any]], LossyMerge]]:
         groups = consolidatable_record_groups(messages)
         wanted = {(answer.count, answer.sources) for answer in self._merge_coverage.answers}
+        lineages: dict[int, set[str]] = {}
+        for count, sources in wanted:
+            version, _, payload = sources.partition(":")
+            lineage, separator, _ = payload.partition(":")
+            if version == "v2" and separator:
+                lineages.setdefault(count, set()).add(lineage)
         windows: dict[tuple[int, str], list[dict[str, Any]] | None] = {}
         keys = MessageKeyCache()
-        for count in {count for count, _ in wanted}:
+        for count, wanted_lineages in lineages.items():
             for first in range(len(groups) - count + 1):
                 batch = groups[first : first + count]
-                sources = source_key(messages, batch, keys=keys)
+                sources = source_key(messages, batch, keys=keys, wanted_lineages=wanted_lineages)
                 if sources is not None and (count, sources) in wanted:
                     key = count, sources
                     windows[key] = None if key in windows else batch
