@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import logging
 import math
+import re
 from collections.abc import Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -839,6 +840,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-temperature", action="store_true", help="Omit temperature for models that reject it."
     )
     parser.add_argument(
+        "--agent-reasoning-effort", help="Send this reasoning effort on live agent calls."
+    )
+    parser.add_argument(
+        "--scenario-seed",
+        type=int,
+        help="Repeat scenario inputs across runs with independent cache prefixes.",
+    )
+    parser.add_argument(
         "--show-answers", action="store_true", help="Print each final answer in full."
     )
     parser.add_argument(
@@ -1084,6 +1093,33 @@ def _seed_record(
     scores = _sample_scores(outcome, scenario)
     facts_total = len(scores[0].outcomes) if scores else 0
     facts_left = scores[0].facts_left if scores else 0
+    diagnostics = outcome.compaction_diagnostics.copy()
+    if "record_merge_qualification" in diagnostics:
+        reservations = [
+            call.input_tokens + call.output_reservation
+            for call in outcome.calls
+            if call.output_reservation is not None and call.input_tokens > 0
+        ]
+        peak_reserved = max(reservations, default=None)
+        missing_reservations = len(outcome.calls) - len(reservations)
+        diagnostics["peak_input_with_output_reservation"] = peak_reserved
+        diagnostics["calls_missing_reserved_size"] = missing_reservations
+        if diagnostics["record_merge_qualification"] == "observed":
+            snapshot = outcome.snapshot_prompt.casefold()
+            diagnostics["record_merge_qualification"] = (
+                "qualified"
+                if outcome.error is None
+                and outcome.turns_completed == outcome.turns_total
+                and facts_total > 0
+                and all(
+                    re.search(rf"(?<![\w-]){re.escape(fact.marker.casefold())}(?![\w-])", snapshot)
+                    for fact in scenario.facts
+                )
+                and not missing_reservations
+                and peak_reserved is not None
+                and peak_reserved <= cell.context_window
+                else "not_qualified"
+            )
     nofetch = len(unretrieved_facts(outcome, scenario))
     long_input, long_cached, long_output = _long_totals(outcome.calls, pricing)
     probe_long_input, probe_long_cached, probe_long_output = _long_totals(
@@ -1160,7 +1196,7 @@ def _seed_record(
         answer=outcome.answer,
         error=outcome.error,
         cache_reported=outcome.cache_reported,
-        compaction_diagnostics=outcome.compaction_diagnostics,
+        compaction_diagnostics=diagnostics,
     )
 
 
@@ -3160,7 +3196,7 @@ def _strategy_settings(
 def _workload_settings(args: argparse.Namespace) -> WorkloadSettings:
     """Return the workload block the cell records, resolved once for the whole run.
 
-    The five flags that change the conversation rather than the strategies, and the last part of
+    Flags that change the conversation rather than the strategies, and the last part of
     the command line that was on no key at all: two runs differing in any of them keyed as one
     cell and were meaned into one row. Resolved here rather than at each use for the reason
     :func:`_strategy_settings` is -- ``not args.sweeping_question`` appears at three call sites
@@ -3185,6 +3221,8 @@ def _workload_settings(args: argparse.Namespace) -> WorkloadSettings:
         # which number the other branch meant.
         temperature=None if args.no_temperature else 0.0,
         server_history=args.server_history,
+        agent_reasoning_effort=args.agent_reasoning_effort,
+        scenario_seed=args.scenario_seed,
     )
 
 
@@ -3221,6 +3259,29 @@ def _progress(record: SeedRecord) -> str:
         parts.append(f"RECONNECTED:{record.connection_retries} ({record.connection_seconds:,.0f}s)")
     if record.error:
         parts.append(record.error)
+    diagnostics = record.compaction_diagnostics or {}
+    qualification = diagnostics.get("record_merge_qualification")
+    if isinstance(qualification, str):
+        background = diagnostics.get("background_record_merges")
+        arm = "background" if background else "foreground"
+        parts[0] = f"   {arm} seed {record.seed}"
+        parts.append(f"record merge {qualification.replace('_', ' ')}")
+        parts.append(f"merges {record.records_merged}")
+        if background:
+            evidence: dict[str, Any] = diagnostics.get("record_merge_evidence") or {}
+            counts: dict[str, int] = evidence.get("counts", {})
+            overlap = counts.get("apply.checkpoint_merge_sent")
+            parts.append(f"checkpoint overlaps {overlap if overlap is not None else 'unrecorded'}")
+        for key, label in (("conversation_seconds", "conversation"), ("probe_seconds", "probes")):
+            if isinstance(seconds := diagnostics.get(key), (int, float)):
+                parts.append(f"{label} {seconds:.1f}s")
+        if summary_usage := diagnostics.get("summarizer_usage"):
+            parts.append(
+                f"summarizer input {summary_usage.get('input_tokens', 'unrecorded')}, "
+                f"output {summary_usage.get('output_tokens', 'unrecorded')}, "
+                f"missing usage {summary_usage.get('requests_missing_usage', 'unrecorded')}, "
+                f"cancelled {diagnostics.get('summarizer_requests_cancelled', 0)}"
+            )
     return "  ".join(parts)
 
 
@@ -3866,6 +3927,14 @@ def _render_from_records(args: argparse.Namespace) -> int:
     print(f"{len(records)} seed records from {_sources(paths)}, in {len(groups)} cell(s).")
     rendered: list[_CellGroup] = []
     for cell_params, cell_records in groups:
+        if (
+            cell_params.settings is not None
+            and cell_params.settings.compaction is not None
+            and cell_params.settings.compaction.qualify_record_merges
+        ):
+            for record in cell_records:
+                print(_progress(record))
+            continue
         cells = _cells_from_records(cell_records)
         incomplete, oversized, diverged = _excluded_cells(cells)
         excluded = incomplete | oversized | diverged
@@ -3964,7 +4033,20 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
     unknown = set(strategies) - set(strategy_names())
     if unknown:
         raise SystemExit(f"Unknown strategies: {', '.join(sorted(unknown))}.")
-    if "none" not in strategies:
+    if args.qualify_record_merges:
+        if strategies != ["tool_and_user_summary_anchored"]:
+            raise SystemExit(
+                "Record merge qualification requires only 'tool_and_user_summary_anchored'."
+            )
+        if args.results_jsonl is None:
+            raise SystemExit("Record merge qualification requires --results-jsonl.")
+        if args.tool_turns < 3:
+            raise SystemExit("Record merge qualification requires at least three lookup turns.")
+        if args.no_force_tool_calls or args.server_history:
+            raise SystemExit(
+                "Record merge qualification requires pinned lookups and client-side history."
+            )
+    elif "none" not in strategies:
         raise SystemExit("The 'none' control must be included; every comparison is relative to it.")
     try:
         validate_session_support(compaction_options(args), has_recall=forces_records(strategies))
@@ -4133,6 +4215,8 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
                 model=model_override,
             )
         )
+        if workload.agent_reasoning_effort is not None:
+            runtime.options["reasoning"] = {"effort": workload.agent_reasoning_effort}
         pricing = _resolve_pricing(args, provider, runtime.model)
         if plan is not None:
             # Printed on every run, not only the dry one. These logs are archived and read back
@@ -4179,7 +4263,10 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
             sum_provider, sum_model = parse_provider_selector(args.summarizer_provider)
             summarizer_runtime = await resources.enter_async_context(
                 build_provider(
-                    sum_provider, temperature=0.0, response_max_tokens=1_024, model=sum_model
+                    sum_provider,
+                    temperature=workload.temperature,
+                    response_max_tokens=1_024,
+                    model=sum_model,
                 )
             )
             if sum_provider != provider or summarizer_runtime.model != runtime.model:
@@ -4261,8 +4348,14 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
                 summarizer = (
                     MeteredClient(summarizer_client) if summarizer_client is not None else None
                 )
+                run_id = new_run_id()
+                scenario_seed = workload.scenario_seed
                 scenario = build_live_scenario(
-                    salt=f"{new_run_id()}-{name}-{repeat}",
+                    salt=(
+                        f"{run_id}-{name}-{repeat}"
+                        if scenario_seed is None
+                        else f"scenario-{scenario_seed}-{repeat}"
+                    ),
                     filler_turns=filler_turns,
                     filler_tokens=filler_tokens,
                     tool_turns=args.tool_turns,
@@ -4304,6 +4397,7 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
                     record_target_tokens=settings.record_target_tokens,
                     max_groups_before_record=settings.max_groups_before_record,
                     repeat_records=settings.repeat_records,
+                    cache_run_id=run_id if scenario_seed is not None else None,
                 )
                 # Scored, written and reported here rather than when the cell ends. A seed that
                 # has been paid for is durable the moment it exists, and the line that follows is
@@ -4316,6 +4410,16 @@ async def run_live_comparison(args: argparse.Namespace) -> int:
                 seeds.append(record)
                 print(_progress(record), flush=True)
             cells.append(_aggregate(name, seeds))
+
+        if args.qualify_record_merges:
+            return int(
+                any(
+                    (record.compaction_diagnostics or {}).get("record_merge_qualification")
+                    != "qualified"
+                    for cell in cells
+                    for record in cell.records
+                )
+            )
 
         # A run that stopped early spent almost nothing and answered almost nothing. Ranking it
         # produces "100% cheaper" for a strategy that simply died, and counts it as clearing the

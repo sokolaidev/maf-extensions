@@ -220,10 +220,36 @@ The composed row reads `--trigger-fraction`, `--fallback-fraction`, `--coverage-
 | `--record-merge-split-depth` | 2 | Maximum recursive halvings of a lossy or truncated merge batch. Zero disables splitting. |
 | `--rewrite-gain-fraction` | 0.1 | Minimum fraction of source-record tokens a harder rewrite must remove, in addition to the size and value checks. Zero permits any smaller answer. |
 | `--background-record-merges` | off | Prepare record merges during tools with session-owned middleware. Completed answers are revalidated on the next foreground pass; unfinished work never delays that pass. |
+| `--record-merge-diagnostics` | off | Record sending budget, chain target, record token share, exclusions, batch admission and answer outcomes with bounded count-only evidence. |
 
 Background mode works with both agent kinds and all session modes. The first model call, user summaries, harder rewrites and overflow enforcement remain foreground work. Run completion, errors, cancellation and early stream closure discard pending work; accepted decisions use normal session persistence. Synthetic benchmark tools do not require approval, so the harness approval wrapper is disabled. See the [record-reduction control reference](../../packages/maf-cachebench/README.md#record-reduction-and-background-merges) for diagnostics and evidence limits.
 
 `--tool-delay-seconds` defaults to zero. Set a positive duration to simulate asynchronous lookup latency and give background requests time to complete during tools. This delay applies to every live row, including the control, and participates in cell identity. Immediate tool results can leave little opportunity for overlap.
+
+### Live record merge qualification
+
+`--qualify-record-merges` selects a separate workload with one composed strategy and a JSONL destination. The model generates records from ordinary lookups across completed user turns. The final lookup starts from a synthetic near-budget user turn so the worker can see pressure before its result arrives. A seed qualifies when the checkpoint produces a merge, the identified replacement reaches subsequent model input with its planted source values intact, and the completed snapshot contains every planted identifier or phrase in full. Background qualification also requires the applied answer to have been prepared during the checkpoint lookup. Each billed agent call, including probes, must fit with its own output reservation. Qualification keeps the configured summarizer options for every request. A missed checkpoint merge reports `not_exercised` and makes the command exit nonzero.
+
+Run both arms with the same deployment and `--scenario-seed` so their markers and filler match while each run gets a separate agent prompt prefix. Add `--background-record-merges` to the second arm and give it its own output file. Supply the deployment's pricing or use unit rates solely for token accounting.
+
+```bash
+cachebench_live azure-responses:gpt-6-luna \
+  --agent harness --agent-reasoning-effort high --no-temperature \
+  --strategies tool_and_user_summary_anchored --qualify-record-merges \
+  --context-window 270000 --tokenizer tiktoken --fill 0 --tool-share 0 \
+  --tool-turns 8 --tool-result-tokens 512 --filler-turns 6 --filler-tokens 64 \
+  --narration suppressed --max-groups-before-record 1 --min-groups-before-repeat 1 \
+  --record-target-tokens 512 --max-output-tokens 16384 \
+  --record-max-tokens 16384 --answer-max-tokens 16384 \
+  --summarizer-provider azure-responses:gpt-6-luna \
+  --summary-options-json '{"max_tokens":8192,"reasoning":{"effort":"high"},"store":false}' \
+  --summary-timeout-seconds 300 --tool-delay-seconds 30 \
+  --scenario-seed 2779 --repeats 3 --probe-repeats 1 --combined-repeats 2 \
+  --price-input 1 --price-cached 1 --price-output 1 \
+  --results-jsonl luna-foreground-qualification.jsonl
+```
+
+Compare retained facts, scoped and combined answer accuracy, prompt tokens, conversation and probe cache reads, and uncached input. The merge diagnostics identify background requests and prepared answers observed during delayed lookups. They also retain separate conversation and probe durations and summarizer usage totals, with missing usage counted explicitly.
 
 **Everything else:**
 

@@ -32,6 +32,7 @@ import random
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, fields, replace
+from time import monotonic
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from agent_framework import (
@@ -66,6 +67,7 @@ from maf_compaction import (
     make_recall_tool,
     make_session_recall_tool,
     make_session_record_merge_middleware,
+    observe_record_merges,
 )
 from maf_compaction import record_text as _record_text
 
@@ -77,8 +79,11 @@ from ._lifecycle import (
     capture_original_messages,
     update_original_reasoning,
 )
+from ._merge_evidence import MergeEvidence
+from ._merge_workload import PRESSURE_REQUEST
 from ._metrics import clamp_cached_tokens, serialize_message
 from ._persistence_scenarios import ScenarioFailure
+from ._providers import prompt_cache_key
 from ._recall import (
     COMBINED_SCOPE,
     FactOutcome,
@@ -352,6 +357,7 @@ class ModelCall:
     cached_tokens: int
     output_tokens: int
     cache_reported: bool = True
+    output_reservation: int | None = None
 
     @property
     def fresh_tokens(self) -> int:
@@ -366,9 +372,10 @@ class UsageRecorder(ChatMiddleware):
     the prompt actually sent.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, merge_evidence: MergeEvidence | None = None) -> None:
         """Create a recorder holding no calls."""
         self.calls: list[ModelCall] = []
+        self._merge_evidence = merge_evidence
 
     async def process(self, context: ChatContext, call_next: Callable[[], Awaitable[None]]) -> None:
         """Run the call, then read back what compaction left of the prompt.
@@ -378,14 +385,16 @@ class UsageRecorder(ChatMiddleware):
             call_next: Continuation that performs the call.
         """
         await call_next()
+        reservation = (context.options or {}).get("max_tokens")
+        output_cap = reservation if type(reservation) is int and reservation > 0 else None
         if isinstance(context.result, ResponseStream):
             context.result = context.result.with_result_hook(
-                lambda response: self._record(context, response)
+                lambda response: self._record(context, response, output_cap)
             )
         else:
-            self._record(context, context.result)
+            self._record(context, context.result, output_cap)
 
-    def _record(self, context: ChatContext, response: Any) -> None:
+    def _record(self, context: ChatContext, response: Any, output_cap: int | None) -> None:
         """Capture one provider response before recall validation can discard it."""
         # Read after the call, not before: the history middleware replaces this attribute
         # with the loaded history, and compaction then flags that list in place.
@@ -394,6 +403,8 @@ class UsageRecorder(ChatMiddleware):
         # UsageDetails is a TypedDict, so it is read with .get() rather than getattr:
         # attribute access on it silently yields None and reports every call as free.
         usage: dict[str, Any] = dict(getattr(response, "usage_details", None) or {})
+        if self._merge_evidence is not None and isinstance(response, ChatResponse):
+            self._merge_evidence.sent(sent)
         # The provider reports the reasoning it billed on the response's usage, and the content
         # that carries the encrypted payload says nothing about its size. Stamping the count
         # here is what lets ReasoningStampTokenizer charge the replayed reasoning what the
@@ -418,6 +429,7 @@ class UsageRecorder(ChatMiddleware):
                 ),
                 output_tokens=usage.get("output_token_count") or 0,
                 cache_reported=usage.get("cache_read_input_token_count") is not None,
+                output_reservation=output_cap,
             )
         )
 
@@ -1720,6 +1732,7 @@ async def run_live(
     max_groups_before_record: int | None = None,
     repeat_records: bool = True,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    cache_run_id: str | None = None,
 ) -> LiveOutcome:
     """Seed a conversation against a real agent, snapshot it, then probe the snapshot.
 
@@ -1814,6 +1827,7 @@ async def run_live(
         sleep: How the backoff between re-sent attempts is taken, throttled and disconnected
             alike. Injectable only so that a test can prove the retries are bounded, and prove
             it against the schedule itself, without spending the bound in wall clock.
+        cache_run_id: Seed for a fixed-length cache prefix when runs share a scenario.
 
     Returns:
         The outcome. A turn that fails sets ``error`` and stops the run rather than raising,
@@ -1823,21 +1837,57 @@ async def run_live(
     if wants_client_side_history(runtime.client, allow_server_history=allow_server_history):
         runtime_options["store"] = False
     options = replace(options, record_target_tokens=record_target_tokens)
-    recorder = UsageRecorder()
+    merge_evidence = (
+        MergeEvidence()
+        if strategy_name == "tool_and_user_summary_anchored"
+        and (
+            options.compaction.record_merge_diagnostics or options.compaction.qualify_record_merges
+        )
+        else None
+    )
+    recorder = UsageRecorder(merge_evidence)
+    tracked_values = (
+        tuple(fact.marker for fact in scenario.facts if fact.kind == "tool_result")
+        if options.compaction.qualify_record_merges
+        else ()
+    )
     summarizer = options.summarizer if isinstance(options.summarizer, MeteredClient) else None
     tool_calls = 0
     scopes_called: list[str] = []
+    checkpoint_index = (
+        max(scenario.tool_turn_scopes, default=-1)
+        if options.compaction.qualify_record_merges
+        else -1
+    )
+    checkpoint_scope = scenario.tool_turn_scopes.get(checkpoint_index)
 
     def _wrap(scope: str, inner: Callable[[], str]) -> Callable[[], Any]:
         def recorded() -> str:
             nonlocal tool_calls
             tool_calls += 1
             scopes_called.append(scope)
+            if scope == checkpoint_scope:
+                if merge_evidence is not None and merge_evidence.checkpoint_turn:
+                    merge_evidence.checkpoint_lookup_called = True
+                return render_codes(scenario.tool_lookups[scope])
             return inner()
 
         async def delayed() -> str:
-            await sleep(options.compaction.tool_delay_seconds)
-            return recorded()
+            checkpoint = (
+                merge_evidence is not None
+                and merge_evidence.checkpoint_turn
+                and scope == checkpoint_scope
+            )
+            if merge_evidence is not None:
+                merge_evidence.active_lookups += 1
+                merge_evidence.active_checkpoint_lookups += int(checkpoint)
+            try:
+                await sleep(options.compaction.tool_delay_seconds)
+                return recorded()
+            finally:
+                if merge_evidence is not None:
+                    merge_evidence.active_lookups -= 1
+                    merge_evidence.active_checkpoint_lookups -= int(checkpoint)
 
         wrapped = delayed if options.compaction.tool_delay_seconds else recorded
         wrapped.__name__ = inner.__name__
@@ -1885,6 +1935,10 @@ async def run_live(
                 reforce=recording.take_reforce,
             )
 
+        instructions = resolve_instructions(narration, retrieval_guidance=retrieval_guidance)
+        if cache_run_id is not None:
+            cache_key = prompt_cache_key(cache_run_id)
+            instructions = f"Benchmark run identifier {cache_key}.\n\n{instructions}"
         agent = build_live_agent(
             runtime,
             kind=agent_kind,
@@ -1895,7 +1949,7 @@ async def run_live(
             extra_middleware=[recall_middleware]
             if recall_middleware is not None and registry is None
             else [],
-            instructions=resolve_instructions(narration, retrieval_guidance=retrieval_guidance),
+            instructions=instructions,
             max_context_window_tokens=options.max_context_window_tokens,
             max_output_tokens=options.max_output_tokens,
             registry=registry,
@@ -1981,7 +2035,11 @@ async def run_live(
             while True:
                 try:
                     try:
-                        response, session = await experiment.run(session, text, turn_options)
+                        with observe_record_merges(
+                            merge_evidence.observe if merge_evidence is not None else None,
+                            tracked_values=tracked_values,
+                        ):
+                            response, session = await experiment.run(session, text, turn_options)
                         return response
                     finally:
                         agent = experiment.binding.agent
@@ -2067,7 +2125,15 @@ async def run_live(
                 return await _attempt(text, turn_options, before, before_decisions)
             except Exception as exc:
                 option = None if isinstance(exc, ScenarioFailure) else unsupported_option(exc)
-                if option is None or option in dropped or not drop_option(turn_options, option):
+                if (
+                    option is None
+                    or option in dropped
+                    or (
+                        options.compaction.qualify_record_merges
+                        and option in {"reasoning", "tool_choice", "max_tokens", "store"}
+                    )
+                    or not drop_option(turn_options, option)
+                ):
                     error = f"{label}: {type(exc).__name__}: {exc}"
                     return None
                 dropped.append(option)
@@ -2077,10 +2143,18 @@ async def run_live(
         return None
 
     seeded = 0
+    seed_started = monotonic()
     for index, turn in enumerate(seed_turns):
-        response = await _send(
-            _turn_text(turn.request), turn_index=index, label=f"turn {index + 1}"
-        )
+        text = _turn_text(turn.request)
+        if index == checkpoint_index:
+            text += f"\n\n{PRESSURE_REQUEST} After receiving the result, answer 'OK'."
+        if merge_evidence is not None:
+            merge_evidence.checkpoint_turn = index == checkpoint_index
+        try:
+            response = await _send(text, turn_index=index, label=f"turn {index + 1}")
+        finally:
+            if merge_evidence is not None:
+                merge_evidence.checkpoint_turn = False
         if response is None:
             if error is None:
                 error = f"turn {index + 1}: no response"
@@ -2088,6 +2162,7 @@ async def run_live(
         seeded += 1
         replies.append(response.text or "")
 
+    seed_seconds = monotonic() - seed_started
     seed_prompt_tokens = recorder.calls[-1].input_tokens if recorder.calls else 0
     snapshot = snapshot_state(session)
     snapshot_session_id = session.session_id
@@ -2097,6 +2172,7 @@ async def run_live(
     probes: list[ProbeOutcome] = []
     questions_done = 0
     drift = 0
+    probes_started = monotonic()
     if error is None:
         # Grouped by question rather than interleaved, so a question's repeats sit together
         # in the log and in ``LiveOutcome.sample``. The order is otherwise immaterial: every
@@ -2216,6 +2292,28 @@ async def run_live(
     diagnostics: dict[str, Any] = {**experiment.totals, **experiment.observations}
     diagnostics["background_record_merges"] = background
     diagnostics["summarizer_requests_cancelled"] = summarizer.cancelled if summarizer else 0
+    if merge_evidence is not None:
+        diagnostics["record_merge_evidence"] = merge_evidence.snapshot()
+        diagnostics["conversation_seconds"] = seed_seconds
+        diagnostics["probe_seconds"] = monotonic() - probes_started
+        if summarizer is not None:
+            requests_with_usage = sum(call.input_tokens > 0 for call in summarizer.usage)
+            diagnostics["summarizer_usage"] = {
+                "input_tokens": summarizer.input_tokens,
+                "cached_tokens": summarizer.cached_tokens,
+                "output_tokens": summarizer.output_tokens,
+                "requests_with_usage": requests_with_usage,
+                "requests_missing_usage": summarizer.calls - requests_with_usage,
+            }
+        if options.compaction.qualify_record_merges:
+            phase = "apply" if background else "foreground"
+            diagnostics["checkpoint_lookup_called"] = merge_evidence.checkpoint_lookup_called
+            diagnostics["record_merge_qualification"] = (
+                "observed"
+                if diagnostics["checkpoint_lookup_called"]
+                and merge_evidence.counts[f"{phase}.checkpoint_merge_sent"]
+                else "not_exercised"
+            )
     if experiment.persistence_store is not None:
         diagnostics["persistence_requests"] = experiment.persistence_store.requests
         diagnostics["storage_evidence"] = "simulated_in_memory"

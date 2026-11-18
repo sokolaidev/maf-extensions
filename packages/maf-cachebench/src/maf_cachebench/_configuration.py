@@ -46,9 +46,13 @@ class CompactionOptions:
     media_profile: str = "none"
     media_tokens: int = 1024
     result_rewrite_profile: str = "none"
+    record_merge_diagnostics: bool = False
+    qualify_record_merges: bool = False
 
     def __post_init__(self) -> None:
         """Reject invalid controls before a provider is contacted."""
+        if self.qualify_record_merges and self.retry_without_summary_options:
+            raise ValueError("Record merge qualification requires fixed summarizer options.")
         for name in (
             "forced_call_timeout_seconds",
             "min_groups_before_repeat",
@@ -173,6 +177,8 @@ def add_compaction_arguments(parser: argparse.ArgumentParser) -> None:
         "record_merge_split_depth": "Recursive halvings of refused merge batches; zero disables.",
         "rewrite_gain_fraction": "Minimum fraction a harder rewrite must remove, in [0, 1).",
         "background_record_merges": "Prepare composed record merges while tools execute.",
+        "record_merge_diagnostics": "Retain count-only composed record merge diagnostics.",
+        "qualify_record_merges": "Require a value-preserving merge in sent history for every seed.",
         "tool_delay_seconds": "Simulated async lookup latency, applied equally to every live row.",
         "session_mode": "Keep objects, round-trip JSON, or also rebuild objects each request.",
         "history_mode": "Send each new input or replay the original conversation.",
