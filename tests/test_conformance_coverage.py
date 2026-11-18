@@ -137,7 +137,7 @@ def _suite_keys(tree: ast.Module, suite: str) -> frozenset[str]:
     keys: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            if node.module == SUITE_MODULE:
+            if node.module in (SUITE_MODULE, "maf_sandbox.native_conformance"):
                 keys |= {alias.asname or alias.name for alias in node.names if alias.name == suite}
             elif node.module == "maf_sandbox":
                 keys |= {
@@ -401,7 +401,6 @@ NOT_BACKENDS = frozenset(
         "maf-sandbox-document",  # Workload kind; provides no backend.
         "maf-sandbox-drawio",
         "maf-sandbox-mcp",  # Host composition; delegates execution to Docker.
-        "maf-sandbox-mxc",  # Session runtime and coordinator; no SandboxBackend adapter yet.
         "maf-sandbox-otel",
         "maf-sandbox-shell",  # Workload kind; provides no backend.
         "maf-sandbox-terraform",  # Workload kind using a session; provides no backend.

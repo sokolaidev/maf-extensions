@@ -2994,6 +2994,7 @@ _PROTOCOL_MODULES = frozenset(
         "_shim",
         "_shim_wire_contract",
         "conformance",
+        "native_conformance",
         "credentials",
         "bounded_exec",
         "file_transfer",

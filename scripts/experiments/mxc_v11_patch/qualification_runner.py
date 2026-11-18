@@ -189,6 +189,22 @@ def qualify(root: Path, report: dict, mode: str) -> None:
     startup = root / "images/agent/snapshot"
     run(
         root,
+        "closed-network",
+        sys.executable,
+        "-m",
+        "scripts.experiments.mxc_session_patch.network_probe",
+        "--helper",
+        str(helper(root)),
+        "--startup",
+        str(startup),
+        "--root",
+        str(root / "network"),
+        "--profile",
+        "console",
+    )
+    report["network"] = json.loads((root / "network/result.json").read_text(encoding="utf-8"))
+    run(
+        root,
         "runtime-contract",
         sys.executable,
         "-m",

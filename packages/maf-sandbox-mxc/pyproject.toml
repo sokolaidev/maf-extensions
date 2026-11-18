@@ -19,7 +19,10 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Topic :: System :: Monitoring",
 ]
-dependencies = []
+dependencies = ["maf-sandbox>=0.54.0,<0.56"]
+
+[tool.uv.sources]
+maf-sandbox = { workspace = true }
 
 [project.urls]
 Homepage = "https://www.sokol.ai"

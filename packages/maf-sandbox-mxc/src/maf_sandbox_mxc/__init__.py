@@ -2,6 +2,10 @@
 
 import warnings as _warnings
 
+from ._backend import MxcSandboxBackend as MxcSandboxBackend
+from ._config import MxcSandboxConfig as MxcSandboxConfig
+from ._config import startup_identity as startup_identity
+
 
 class MafSandboxMxcExperimentalWarning(UserWarning):
     """Warning category for maf-sandbox-mxc's experimental-package notice."""

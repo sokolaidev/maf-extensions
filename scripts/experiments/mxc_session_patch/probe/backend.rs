@@ -43,6 +43,14 @@ impl BackendSession {
             .execute(code, Duration::from_secs(30))
             .map_err(failure)
     }
+    #[cfg(feature = "bounded-storage")]
+    pub fn execute_program(&mut self, code: &str, timeout: Duration) -> Result<i32, Failure> {
+        match self.0.execute(code, timeout) {
+            Ok(()) => Ok(0),
+            Err(Error::GuestExit(code)) if code != 0 => Ok(code),
+            Err(error) => Err(failure(error)),
+        }
+    }
     pub fn capture(&mut self, path: &Path) -> Result<Checkpoint, Failure> {
         self.0
             .prepare_checkpoint(path)

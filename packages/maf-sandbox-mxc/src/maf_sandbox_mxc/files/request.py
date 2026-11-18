@@ -117,6 +117,7 @@ class Request:
     artifacts: tuple[str, ...]
     limits: FileLimits
     workspace: WorkspaceLimits = WorkspaceLimits()
+    call_directory: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.code) is not bytes or len(self.code) > MAX_CODE:
@@ -150,6 +151,10 @@ class Request:
             raise Refused("inputs exceed workspace allowance")
         _names(tuple(item.name for item in self.inputs))
         _names(self.artifacts)
+        if self.call_directory is not None:
+            name(self.call_directory)
+            if "/" in self.call_directory or self.artifacts:
+                raise Refused("directory collection requires one call name and no named artifacts")
 
     def identity(self) -> bytes:
         """Return canonical request metadata for the store's request digest."""
@@ -171,4 +176,6 @@ class Request:
             "limits": asdict(self.limits),
             "workspace": asdict(self.workspace),
         }
+        if self.call_directory is not None:
+            value["call_directory"] = self.call_directory
         return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()

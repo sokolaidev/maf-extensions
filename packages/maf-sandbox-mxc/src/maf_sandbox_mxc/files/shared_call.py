@@ -7,7 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from maf_sandbox_mxc.files.request import Request
-from maf_sandbox_mxc.files.transport import CONTROL_LIMIT, execute, result_limit
+from maf_sandbox_mxc.files.transport import CONTROL_LIMIT, GuestProgramError, execute, result_limit
 from maf_sandbox_mxc.host_store import CHUNK, Refused
 from maf_sandbox_mxc.native_journal import NativeJournal
 from maf_sandbox_mxc.shared_store import (
@@ -27,10 +27,23 @@ def call(
     boundary: Callable[[str], None] = lambda _: None,
     *,
     delete: threading.Event | None = None,
+    cancel: threading.Event | None = None,
+    timeout: float = 90,
+    restore_state: bool = True,
+    validate_result: Callable[[bytes], None] = lambda _: None,
 ) -> bytes:
     """Reserve file transfers before execution and publish before acknowledging success."""
     journal = NativeJournal(store)
     with journal.deletion(delete, boundary) as check:
+
+        def active() -> None:
+            check()
+            if cancel is not None and cancel.is_set():
+                raise Refused("call cancelled")
+
+        active()
+        if not 0 < timeout <= 90 or type(restore_state) is not bool:
+            raise Refused("invalid native deadline")
         existing = store.db.execute(
             "SELECT 1 FROM calls WHERE session=? AND id=?", (store.session, call_id)
         ).fetchone()
@@ -49,26 +62,47 @@ def call(
             scratch.bytes < minimum_bytes or scratch.entries < minimum_entries
         ):
             raise Refused("scratch allowance cannot cover files, streams and checkpoints")
-        saved = store.begin(call_id, request.identity(), scratch=scratch)
+        identity = (
+            request.identity() if restore_state else b"mxc-fresh-state-v1\0" + request.identity()
+        )
+        saved = store.begin(call_id, identity, scratch=scratch)
         if saved is not None:
             return saved
         work = journal.prepare(call_id)
         restored = work / "restored"
-        restoring = store.restore(restored) is not None
+        restoring = restore_state and store.restore(restored) is not None
         base = restored if restoring else startup
-        result = execute(
-            helper,
-            base,
-            work,
-            request,
-            restoring=restoring,
-            before_spawn=lambda: journal.start(call_id, boundary),
-            before_start=lambda child: journal.arm(call_id, child, boundary),
-            check_active=check,
-            checkpoint_limits=(store.limits.checkpoint_bytes, store.limits.files),
-        )
-        check()
-        store.commit(call_id, work / "candidate", result, boundary)
-        journal.reclaim(call_id, boundary)
-        boundary("before_ack")
-        return result
+        try:
+            result = execute(
+                helper,
+                base,
+                work,
+                request,
+                restoring=restoring,
+                before_spawn=lambda: journal.start(call_id, boundary),
+                before_start=lambda child: journal.arm(call_id, child, boundary),
+                check_active=active,
+                cancel=cancel,
+                timeout=timeout,
+                checkpoint_limits=(store.limits.checkpoint_bytes, store.limits.files),
+            )
+            active()
+            validate_result(result)
+            store.commit(call_id, work / "candidate", result, boundary)
+            journal.reclaim(call_id, boundary)
+            boundary("before_ack")
+            active()
+            return result
+        except GuestProgramError as error:
+            validate_result(error.result)
+            journal.reclaim(call_id, boundary)
+            raise
+        except BaseException:
+            if cancel is not None and cancel.is_set():
+                row = store.db.execute(
+                    "SELECT identity FROM launches WHERE session=? AND call=?",
+                    (store.session, call_id),
+                ).fetchone()
+                if row is not None and row["identity"] is not None:
+                    journal.reclaim(call_id, boundary)
+            raise
