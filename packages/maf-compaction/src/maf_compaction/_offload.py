@@ -46,7 +46,8 @@ async def off_loop[**P, R](step: Callable[P, R], /, *args: P.args, **kwargs: P.k
 
     Cancelling the caller does not abandon the step: the thread cannot be stopped, and a step
     still editing the conversation while the caller unwinds would race whatever runs next. The
-    cancellation is delivered once the step has finished.
+    cancellation is delivered once the step has finished, however many cancellations arrive
+    meanwhile (a request's cancel followed by a shutdown's, for example).
     """
     if _INLINE.get():
         return step(*args, **kwargs)
@@ -54,5 +55,13 @@ async def off_loop[**P, R](step: Callable[P, R], /, *args: P.args, **kwargs: P.k
     try:
         return await asyncio.shield(running)
     except asyncio.CancelledError:
-        await asyncio.wait({running})
+        while not running.done():
+            try:
+                await asyncio.wait({running})
+            except asyncio.CancelledError:
+                continue
+        if not running.cancelled():
+            # Retrieved so a step that failed is not reported as a never-retrieved exception;
+            # the cancellation is what the caller asked for.
+            running.exception()
         raise

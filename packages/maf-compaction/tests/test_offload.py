@@ -8,6 +8,7 @@ worker thread, and that a composed pass leaves the loop free while it works.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
 
@@ -16,6 +17,7 @@ from agent_framework._compaction import CharacterEstimatorTokenizer
 from test_record_budget import _history, _strategy, _Summarizer
 
 from maf_compaction._offload import off_loop, steps_inline
+from maf_compaction._summary_input import async_bounded_prefix_extent
 
 pytestmark = pytest.mark.anyio
 
@@ -74,6 +76,18 @@ async def test_cancelling_the_caller_waits_for_the_step_to_finish() -> None:
         raise AssertionError("the cancellation was swallowed")
 
 
+async def _tick_until(stop: asyncio.Event) -> list[float]:
+    """Wake every 5 ms until ``stop``; return how late each wake-up was."""
+    holds: list[float] = []
+    last = time.perf_counter()
+    while not stop.is_set():
+        await asyncio.sleep(0.005)
+        now = time.perf_counter()
+        holds.append(now - last - 0.005)
+        last = now
+    return holds
+
+
 class _SlowTokenizer(CharacterEstimatorTokenizer):
     """Counts like the estimator, slowly: a stand-in for a long conversation's CPU."""
 
@@ -86,28 +100,16 @@ async def _longest_hold_during_pass(*, inline: bool) -> tuple[float, float]:
     """Run one composed pass beside a 5 ms ticker; return the pass time and the longest hold."""
     strategy = _strategy(_Summarizer(), budget=200, tokenizer=_SlowTokenizer())
     messages = _history(40)
-    holds: list[float] = []
     stop = asyncio.Event()
-
-    async def tick() -> None:
-        last = time.perf_counter()
-        while not stop.is_set():
-            await asyncio.sleep(0.005)
-            now = time.perf_counter()
-            holds.append(now - last - 0.005)
-            last = now
-
-    ticker = asyncio.create_task(tick())
+    ticker = asyncio.create_task(_tick_until(stop))
     await asyncio.sleep(0.01)
     started = time.perf_counter()
-    with steps_inline(inline):
-        try:
-            await strategy(messages)
-        except ValueError:
-            pass  # a budget this small may be refused; the pass's work is what is measured
+    with steps_inline(inline), contextlib.suppress(ValueError):
+        # A budget this small may be refused; the pass's work is what is measured.
+        await strategy(messages)
     elapsed = time.perf_counter() - started
     stop.set()
-    await ticker
+    holds = await ticker
     return elapsed, max(holds)
 
 
@@ -120,4 +122,66 @@ async def test_a_composed_pass_leaves_the_loop_free_while_it_works() -> None:
 
     elapsed, longest = await _longest_hold_during_pass(inline=False)
     assert elapsed > 0.3
+    assert longest < 0.1
+
+
+async def test_a_second_cancellation_still_waits_for_the_step() -> None:
+    """A request's cancel followed by a shutdown's must not let the caller unwind mid-step."""
+    started = threading.Event()
+    finished = threading.Event()
+
+    def step() -> None:
+        started.set()
+        time.sleep(0.3)
+        finished.set()
+
+    caller = asyncio.create_task(off_loop(step))
+    await asyncio.to_thread(started.wait)
+    caller.cancel()
+    await asyncio.sleep(0.05)
+    caller.cancel()
+    try:
+        await caller
+    except asyncio.CancelledError:
+        assert finished.is_set()
+    else:
+        raise AssertionError("the cancellation was swallowed")
+
+
+async def _longest_hold_during_prefix_search(*, inline: bool) -> tuple[float, float]:
+    """Grow a fitting batch with a slow renderer beside a 5 ms ticker, as a foreground pass does."""
+
+    def render(items: list[int]) -> str:
+        time.sleep(0.03)
+        return " ".join(str(item) for item in items)
+
+    stop = asyncio.Event()
+    ticker = asyncio.create_task(_tick_until(stop))
+    await asyncio.sleep(0.01)
+    started = time.perf_counter()
+    with steps_inline(inline):
+        batch, _ = await async_bounded_prefix_extent(
+            list(range(64)),
+            render=render,
+            prompt="Merge these.",
+            tokenizer=CharacterEstimatorTokenizer(),
+            limit=100_000,
+            min_items=2,
+            cooperative=False,
+        )
+    elapsed = time.perf_counter() - started
+    stop.set()
+    holds = await ticker
+    assert len(batch) == 64
+    return elapsed, max(holds)
+
+
+async def test_growing_a_fitting_batch_leaves_the_loop_free() -> None:
+    # Control: kept on the loop, the probes of a batch that keeps fitting freeze it.
+    elapsed, longest = await _longest_hold_during_prefix_search(inline=True)
+    assert elapsed > 0.15
+    assert longest > elapsed / 2
+
+    elapsed, longest = await _longest_hold_during_prefix_search(inline=False)
+    assert elapsed > 0.15
     assert longest < 0.1
