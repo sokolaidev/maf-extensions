@@ -913,6 +913,7 @@ def _consolidatable_record_groups(
     messages: list[Message],
     *,
     replay: bool = False,
+    exclusions: dict[str, int] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[int, str]]:
     """Return :func:`consolidatable_record_groups` and the recall matches it was read with."""
     spans = group_messages(messages)
@@ -923,20 +924,29 @@ def _consolidatable_record_groups(
     completed_before = _completed_user_boundary(messages)
     last_reasoning = -1 if replay else _last_reasoning_index(messages)
     answered = _answered_elsewhere(messages, matches)
-    groups = [
-        group
-        for group in _active_record_groups(messages, spans, recalls)
-        if (group["start_index"], group["end_index"]) in removable
-        and _record_only_group(
+    groups: list[dict[str, Any]] = []
+    for group in _active_record_groups(messages, spans, recalls):
+        if (group["start_index"], group["end_index"]) not in removable:
+            reason = "not_removable_whole"
+        elif group["end_index"] < last_reasoning:
+            reason = "reasoning_prefix"
+        elif not _record_only_group(
             messages,
             group,
             record_contents,
             completed_before=completed_before,
             last_reasoning=last_reasoning,
-        )
-        and _plain_record_results(messages, group)
-        and not _call_ids(messages, group) & answered
-    ]
+        ):
+            reason = "held_or_additional_content"
+        elif not _plain_record_results(messages, group):
+            reason = "nonplain_result"
+        elif _call_ids(messages, group) & answered:
+            reason = "shared_call"
+        else:
+            groups.append(group)
+            continue
+        if exclusions is not None:
+            exclusions[reason] = exclusions.get(reason, 0) + 1
     return groups, recalls
 
 
@@ -1004,13 +1014,14 @@ def _reshape_payload(
     provider state, or which carries fields of its own, has no exact form -- the rule
     :func:`~._tool_result.can_shorten_result` sets for shortening a result in place.
     """
+    members = messages[group["start_index"] : group["end_index"] + 1]
     contents = [
         content
-        for message in messages[group["start_index"] : group["end_index"] + 1]
+        for message in members
         for content in message.contents
         if id(content) in recall_results and RECORD_MARKER in str(content.result)
     ]
-    if len(contents) != 1 or not _bare_text_result(contents[0]):
+    if len(contents) != 1 or not _bare_text_result(contents[0], members):
         return None
     result = str(contents[0].result)
     if result.startswith(f"{_WRITTEN_RECORD_PREFIX}\n"):
@@ -1020,24 +1031,58 @@ def _reshape_payload(
     return None
 
 
-def _bare_text_result(content: Content) -> bool:
+def _bare_text_result(content: Content, members: Sequence[Message]) -> bool:
     """Return whether ``content`` is a result whose text is all it carries."""
     return (
         can_shorten_result(content)
-        and not content.additional_properties
         and not content.annotations
         and content.raw_representation is None
         and (
             content.items is None
             or "\n".join(item.text or "" for item in content.items) == str(content.result)
         )
+        and (
+            not content.additional_properties
+            or _only_inherited_openai_call_properties(content, members)
+        )
+    )
+
+
+def _only_inherited_openai_call_properties(result: Content, members: Sequence[Message]) -> bool:
+    """Recognize the call metadata the framework copies onto a local recall result."""
+    props = result.additional_properties
+    item_id = props.get("fc_id")
+    status = props.get("status")
+    if (
+        not isinstance(item_id, str)
+        or not item_id.startswith("fc_")
+        or status not in (None, "completed")
+        or props != {"fc_id": item_id, "status": status, "openai": {"item_id": item_id}}
+        or not result.call_id
+        or result.status is not None
+        or result.exception is not None
+    ):
+        return False
+    calls = [
+        call
+        for message in members
+        for call in message.contents
+        if call.type == "function_call" and call.call_id == result.call_id
+    ]
+    return (
+        len(calls) == 1
+        and calls[0].name == RECALL_TOOL_NAME
+        and not calls[0].hosted
+        and calls[0].id == result.id
+        and calls[0].additional_properties == props
     )
 
 
 def _plain_record_results(messages: Sequence[Message], group: dict[str, Any]) -> bool:
+    members = messages[group["start_index"] : group["end_index"] + 1]
     return all(
-        _bare_text_result(content)
-        for message in messages[group["start_index"] : group["end_index"] + 1]
+        _bare_text_result(content, members)
+        for message in members
         for content in message.contents
         if content.type == "function_result"
     )

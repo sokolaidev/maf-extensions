@@ -141,13 +141,15 @@ Each completed provider attempt is metered, including an attempt rejected and re
 
 ### Record reduction and background merges
 
-The composed row supports `--record-budget-share` (default `0.5`, or `none` to disable the share), `--chain-seconds` (default `30`, or `none` to disable the admission deadline), `--record-merge-split-depth` (default `2`) and `--rewrite-gain-fraction` (default `0.1`). A rewrite must save that fraction of its source records and satisfy the existing value-coverage check. Zero gain permits any smaller answer; zero split depth disables smaller retries after a lossy or truncated batch. These controls require `maf-compaction>=0.13.6,<0.14`.
+The composed row supports `--record-budget-share` (default `0.5`, or `none` to disable the share), `--chain-seconds` (default `30`, or `none` to disable the admission deadline), `--record-merge-split-depth` (default `2`) and `--rewrite-gain-fraction` (default `0.1`). A rewrite must save that fraction of its source records and satisfy the existing value-coverage check. Zero gain permits any smaller answer. Zero split depth disables smaller retries after a lossy or truncated batch.
 
 Pass `--background-record-merges` to `cachebench_live` to prepare record merges during tools on `tool_and_user_summary_anchored`. Both agent kinds support it with memory, round-trip or restart sessions, original-history replay and streaming. Other strategy rows keep their existing execution path. The first model call, user summaries, harder rewrites and budget enforcement remain foreground work. Only completed answers accepted by a foreground pass enter persisted history; run completion, failure, cancellation and stream closure discard outstanding work. The synthetic tools require no approval, so the harness approval wrapper is disabled.
 
 Use `--tool-delay-seconds 1` to give each synthetic lookup one second of asynchronous work during which a background merge can complete. The default is zero; immediate tool fixtures may leave little opportunity for overlap. The delay applies equally to every live comparison row and is recorded with the controls.
 
 Schema 25 records these controls in the cell identity and adds `chain_timeouts` (`CHAINTIMEOUT`), `records_reshaped` (`RECSHAPE`) and `calls_resumed` (`CALLRESUME`) to diagnostics. Diagnostics also state whether background merging applied to the row and count `summarizer_requests_cancelled`. A cancelled request without returned usage makes pricing incomplete; it is not counted as free. Tests use deterministic local models to verify lifecycle and state behavior. Live provider cost, quality and latency comparisons require a separate benchmark run.
+
+For schema 26, add `--record-merge-diagnostics` to an ordinary composed run to retain pressure, eligibility, batch admission and foreground/background outcomes. The diagnostics store counts and bounded samples without record text or fingerprints. Use `--qualify-record-merges` for the separate [live merge workload](https://github.com/sokolaidev/maf-extensions/blob/main/docs/compaction/cachebench.md#live-record-merge-qualification). It requires a checkpoint merge that preserves its planted source values and appears in a subsequent model call. Background qualification requires foreground application of the answer prepared during the checkpoint lookup.
 
 ## Reading the table
 
