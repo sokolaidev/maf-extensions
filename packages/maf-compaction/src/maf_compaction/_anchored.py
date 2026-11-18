@@ -68,6 +68,7 @@ from agent_framework._compaction import (
 )
 
 from ._media import annotate_token_counts
+from ._offload import off_loop
 from ._preserve import any_preserved, is_preserved, removable_spans, stands_in
 from ._request import RECALL_PROMPT_KEY
 from ._summary_links import has_summary_links
@@ -321,6 +322,10 @@ class AnchoredCompactionStrategy:
         return await self.compact_to(messages, ceiling=self.max_input_tokens)
 
     async def compact_to(self, messages: list[Message], *, ceiling: int) -> bool:
+        """Shorten ``messages`` toward ``ceiling``, on a worker thread (:func:`off_loop`)."""
+        return await off_loop(self._compact_to, messages, ceiling=ceiling)
+
+    def _compact_to(self, messages: list[Message], *, ceiling: int) -> bool:
         """Compact in place, shedding until the prompt is at or under ``ceiling``.
 
         The composed row's seam: its last-resort chain hands this a ceiling below the input

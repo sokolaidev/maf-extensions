@@ -44,6 +44,7 @@ from agent_framework._compaction import (
 )
 
 from ._media import MEDIA_TYPES, annotate_token_counts, media_identity
+from ._offload import off_loop
 from ._preserve import PRESERVE_REASON_KEY, any_preserved, set_preserved
 from ._record_replay import SummaryReplayCache
 from ._request import RECALL_PROMPT_KEY
@@ -1198,7 +1199,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             self._replayed += 1
         else:
             self._compactions += 1
-        self._replace(messages, band, summary, summary_id=summary_id)
+        await off_loop(self._replace, messages, band, summary, summary_id=summary_id)
         self._replaced = len(band)
         return True
 
@@ -1661,7 +1662,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 if (
                     self.summary_input_policy == "skip"
                     and prepared
-                    and not fits_summary_input(
+                    and not await off_loop(
+                        fits_summary_input,
                         self.prompt,
                         _format_turns(
                             [messages[int(item["start_index"])] for item in prepared],
@@ -2366,13 +2368,14 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
     async def _chunked_summary(
         self, units: list[str], *, prompt: str, progress: _SummaryProgress
     ) -> str:
-        chunks = self._chunks(units, prompt=prompt)
+        chunks = await off_loop(self._chunks, units, prompt=prompt)
         partials = [
             await self._chunk_answer("\n".join(chunk), prompt=prompt, progress=progress)
             for chunk in chunks
         ]
         while len(partials) > 1:
-            batches = self._chunks(
+            batches = await off_loop(
+                self._chunks,
                 [f"{index}. {text}" for index, text in enumerate(partials, start=1)],
                 prompt=self.fold_prompt,
             )
@@ -2401,8 +2404,12 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         if self._summary_cooling_down():
             self._summary_skips += 1
             return None
-        fits = fits_summary_input(
-            prompt, transcript, tokenizer=self.tokenizer, limit=self.max_summary_input_tokens
+        fits = await off_loop(
+            fits_summary_input,
+            prompt,
+            transcript,
+            tokenizer=self.tokenizer,
+            limit=self.max_summary_input_tokens,
         )
         if not fits and units is None:
             self._summary_failed()

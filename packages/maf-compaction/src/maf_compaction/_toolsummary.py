@@ -35,6 +35,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import copy, deepcopy
 from dataclasses import dataclass, replace
+from enum import Enum, auto
 from math import ceil, isfinite
 from types import MethodType
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
@@ -72,6 +73,7 @@ from agent_framework.exceptions import ChatClientException
 from ._anchored import AnchoredCompactionStrategy
 from ._media import MEDIA_TYPES, annotate_token_counts
 from ._occurrences import ContentPosition, function_result_candidates
+from ._offload import off_loop
 from ._preserve import (
     PRESERVE_REASON_KEY,
     STANDS_IN_KEY,
@@ -94,6 +96,15 @@ if TYPE_CHECKING:
     from agent_framework import TokenizerProtocol
 
 logger = logging.getLogger(__name__)
+
+
+class _After(Enum):
+    """What :meth:`ToolResultAnchoredSummarizationCompactionStrategy.compact_against` does next."""
+
+    DONE = auto()
+    FALL_BACK_AFTER_RECORD = auto()
+    FALL_BACK = auto()
+
 
 __all__ = [
     "CONSOLIDATE_EXCLUDE_REASON",
@@ -2130,6 +2141,45 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             True if the outgoing messages changed.
         """
         budget = self.max_input_tokens if ceiling is None else ceiling
+        changed, after = await off_loop(
+            self._against,
+            messages,
+            prompt_tokens=prompt_tokens,
+            trigger_tokens=trigger_tokens,
+            fallback_after_record=fallback_after_record,
+            fallback_without_record=fallback_without_record,
+            budget=budget,
+            ceiling=ceiling,
+        )
+        if after is _After.DONE:
+            return changed
+        if after is _After.FALL_BACK_AFTER_RECORD:
+            return await self.fall_back_after_record(messages, ceiling=ceiling) or changed
+        repaired = changed
+
+        # Out of room to keep waiting. A model that has not answered by now may never answer,
+        # and the alternative to compacting without a record is a provider error. The tool
+        # results are lost either way at this point; at least the conversation survives.
+        self._fallbacks += 1
+        if ceiling is not None:
+            return await self.fallback.compact_to(messages, ceiling=ceiling) or repaired
+        return await self.fallback(messages) or repaired
+
+    def _against(
+        self,
+        messages: list[Message],
+        *,
+        prompt_tokens: int,
+        trigger_tokens: int,
+        fallback_after_record: bool,
+        fallback_without_record: bool,
+        budget: int,
+        ceiling: int | None,
+    ) -> tuple[bool, _After]:
+        """Everything :meth:`compact_against` does before it may fall back, off the loop.
+
+        Returns what changed so far and what the caller does next.
+        """
         repaired = repair_compacted_items(messages, lambda text: text.startswith(_ROWS_OMITTED))
         if repaired:
             annotate_token_counts(messages, tokenizer=self.tokenizer, force_retokenize=True)
@@ -2140,7 +2190,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 candidates = self._record_candidates(messages, anchor, recall_results)
                 self._observe_values(messages, anchor, candidates, recall_results)
             self._capture_pending_value_targets(messages, ceiling)
-            return repaired
+            return repaired, _After.DONE
 
         if anchor is not None:
             self._records = max(self._records, 1)
@@ -2162,22 +2212,15 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             # Even a good record may not be enough on its own: the groups after it are
             # untouched by design, and they can exceed the ceiling by themselves.
             if fallback_after_record and included_token_count(messages) > budget:
-                changed = await self.fall_back_after_record(messages, ceiling=ceiling) or changed
-            return changed
+                return changed, _After.FALL_BACK_AFTER_RECORD
+            return changed, _After.DONE
 
         self._capture_pending_value_targets(messages, ceiling)
         if not fallback_without_record or prompt_tokens < int(budget * self.fallback_fraction):
             # Still waiting for the middleware's forced call to come back. Nothing may be
             # dropped yet: the record is the only thing that would replace it.
-            return repaired
-
-        # Out of room to keep waiting. A model that has not answered by now may never answer,
-        # and the alternative to compacting without a record is a provider error. The tool
-        # results are lost either way at this point; at least the conversation survives.
-        self._fallbacks += 1
-        if ceiling is not None:
-            return await self.fallback.compact_to(messages, ceiling=ceiling) or repaired
-        return await self.fallback(messages) or repaired
+            return repaired, _After.DONE
+        return repaired, _After.FALL_BACK
 
     async def fall_back_after_record(
         self, messages: list[Message], *, ceiling: int | None = None
