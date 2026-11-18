@@ -75,18 +75,19 @@ def _configured(
     )
 
 
+@pytest.mark.parametrize(("step", "accepted_bar"), [(0.05, 0.75), (0.03, 0.74), (0.11, 0.7)])
 async def test_splits_precede_relaxation_and_cached_parent_costs_no_request(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, step: float, accepted_bar: float
 ) -> None:
     summarizer = _Summarizer(merge=_lossy)
-    strategy = _configured(summarizer, merge_coverage_floor=0.7)
+    strategy = _configured(summarizer, merge_coverage_floor=0.7, merge_coverage_step=step)
     messages = _records()
     with caplog.at_level(logging.WARNING):
         assert await strategy._merge_records(messages)
     assert len(summarizer.merges) == 3
     assert strategy.records_merged == 1
-    assert strategy.current_merge_coverage_share == 0.75
-    assert strategy.record_consolidations_by_coverage == {0.75: 1}
+    assert strategy.current_merge_coverage_share == accepted_bar
+    assert strategy.record_consolidations_by_coverage == {accepted_bar: 1}
     assert strategy.record_values_omitted == 4
     assert len(_sent_values(messages)) == 12
     assert not strategy.session_state()["merge_coverage"]["answers"]
@@ -248,6 +249,30 @@ def test_decimal_steps_accept_the_exact_value_ratio_and_clamp_at_floor() -> None
     assert coverage.lower()
     assert coverage.current == 0.53
     assert not coverage.lower()
+
+
+def test_next_step_uses_the_earliest_qualifying_answer_and_keeps_cache_order() -> None:
+    coverage = MergeCoverage(0.9, 0.6, 0.02, 1000)
+    answers = [LossyMerge("older", 2, "first", 4, 3), LossyMerge("newer", 2, "second", 6, 5)]
+    for answer in answers:
+        coverage.remember(answer)
+    assert coverage.lower_to_next_answer()
+    assert coverage.current == 0.82
+    assert coverage.required(6) == 5
+    assert coverage.required(4) == 4
+    assert coverage.answers == answers
+
+
+@pytest.mark.parametrize("retain_below_floor", [False, True])
+def test_next_step_without_a_qualifying_answer_lowers_directly_to_floor(
+    retain_below_floor: bool,
+) -> None:
+    coverage = MergeCoverage(0.8, 0.7, 1e-16, 1000)
+    if retain_below_floor:
+        coverage.remember(LossyMerge("source", 2, "answer", 10, 6))
+    assert coverage.lower_to_next_answer()
+    assert coverage.current == 0.7
+    assert not coverage.lower_to_next_answer()
 
 
 async def test_empty_history_resets_bar_and_caches() -> None:
@@ -428,6 +453,47 @@ async def test_background_retains_answers_but_foreground_alone_relaxes() -> None
     assert len(summarizer.merges) == 3
     assert strategy.current_merge_coverage_share == 0.75
     assert worker.current_merge_coverage_share == 0.8
+
+
+@pytest.mark.parametrize("step", [0.00001, 1e-16])
+@pytest.mark.parametrize("retain_answers", [False, True])
+async def test_background_relaxation_does_not_rescan_history_for_empty_steps(
+    step: float, retain_answers: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    summarizer = _Summarizer(merge=_lossy)
+    strategy = _configured(
+        summarizer,
+        share=0.00001,
+        merge_coverage_floor=0.7,
+        merge_coverage_step=step,
+        merge_answer_cache_bytes=1_048_576 if retain_answers else 0,
+    )
+    strategy.max_input_tokens = 100_000
+    messages = _records()
+    work = _RecordMergeWork()
+    work.bind(strategy, None)
+    work.remember(messages, strategy.max_input_tokens)
+    work.start(tool_reply())
+    try:
+        await running(work)
+        assert not strategy._over(messages)
+        assert len(summarizer.merges) == 3
+        original = strategy._records_over_share
+        checks = 0
+
+        def over_share(history: list[Message]) -> bool:
+            nonlocal checks
+            checks += 1
+            assert checks <= 20, "empty coverage steps repeatedly scan the foreground history"
+            return original(history)
+
+        monkeypatch.setattr(strategy, "_records_over_share", over_share)
+        assert await strategy._last_resort(messages) is retain_answers
+        assert strategy.current_merge_coverage_share == (0.75 if retain_answers else 0.7)
+        assert strategy.record_values_omitted == (4 if retain_answers else 0)
+        assert len(summarizer.merges) == 3
+    finally:
+        await work.close()
 
 
 @pytest.mark.parametrize("restore", [False, True])

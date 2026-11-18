@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from decimal import Decimal
+from fractions import Fraction
 from math import ceil
 from typing import Any
 
@@ -55,12 +56,21 @@ class MergeCoverage:
             self.current = self.start
             self.answers = []
 
-    def lower(self) -> bool:
-        bar = max(self.floor, float(Decimal(str(self.current)) - Decimal(str(self.step))))
+    def lower(self, steps: int = 1) -> bool:
+        bar = max(self.floor, float(Fraction(str(self.current)) - steps * Fraction(str(self.step))))
         if bar >= self.current:
             return False
         self.current = bar
         return True
+
+    def lower_to_next_answer(self) -> bool:
+        """Skip empty steps without rounding a candidate's value ratio upward."""
+        current, step = Fraction(str(self.current)), Fraction(str(self.step))
+        steps = max(1, ceil((current - Fraction(str(self.floor))) / step))
+        for answer in self.answers:
+            ratio = Fraction(answer.kept, answer.total) if answer.total else Fraction(1)
+            steps = min(steps, max(1, ceil((current - ratio) / step)))
+        return self.lower(steps)
 
     def required(self, total: int) -> int:
         """Keep legacy fixed-policy rounding; decimal steps must not add a phantom value."""

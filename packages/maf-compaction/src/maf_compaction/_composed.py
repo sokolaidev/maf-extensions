@@ -3427,7 +3427,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         changed = False
         while self._records_over_share(messages) and self._merge_coverage.adaptive:
             self._check_chain_deadline()
-            if not self._merge_coverage.lower():
+            if not self._merge_coverage.lower_to_next_answer():
                 break
             if await self._apply_lossy_merges(messages):
                 changed = True
