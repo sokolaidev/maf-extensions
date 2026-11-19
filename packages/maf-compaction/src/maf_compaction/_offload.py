@@ -81,7 +81,13 @@ async def off_loop[**P, R](step: Callable[P, R], /, *args: P.args, **kwargs: P.k
 
     running = asyncio.ensure_future(asyncio.to_thread(run))
     try:
-        return cast("R", await asyncio.shield(running))
+        # ``asyncio.wait`` never cancels what it waits for, unlike awaiting the task, and unlike
+        # ``asyncio.shield`` it leaves no outer future to report the step's failure on its own
+        # once the caller is cancelled.
+        await asyncio.wait({running})
+        if running.cancelled():
+            # Shutdown cancelled the step's task, not this caller: drain it the same way.
+            raise asyncio.CancelledError
     except asyncio.CancelledError:
         with decided:
             # A step not yet started never will: nothing is left to wait for.
@@ -102,3 +108,4 @@ async def off_loop[**P, R](step: Callable[P, R], /, *args: P.args, **kwargs: P.k
         if running.done() and not running.cancelled():
             running.exception()
         raise
+    return cast("R", running.result())
