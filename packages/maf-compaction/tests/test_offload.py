@@ -418,3 +418,81 @@ async def test_a_chunked_summary_counts_no_tokens_on_the_loop() -> None:
     assert await strategy(_conversation(12))
     assert len(summarizer.requests) > 1, "the band was summarized in chunks"
     assert counter.on_loop == 0
+
+
+#: Synchronous helpers that walk a whole conversation, render it, or tokenize it.
+_HISTORY_WORK = frozenset(
+    {
+        "annotate_token_counts",
+        "annotate_message_groups",
+        "bounded_prefix",
+        "bounded_prefix_extent",
+        "fits_summary_input",
+        "count_tokens",
+        "_format_turns",
+        "_smaller",
+        "_apply_fold",
+        "record_bodies",
+        "_value_coverage",
+        "_bounded_summaries",
+        "_bounded_records",
+        "consolidatable_record_groups",
+        "group_messages",
+        "_recall_results",
+        "invalid_replay_summaries",
+        "replay_summaries",
+        "_replay_record_edits",
+        "_keep_records",
+        "_reshape_records",
+        "_refresh_merge_coverage",
+        "_lossy_merge_matches",
+        "shed_to",
+        "_band",
+        "_observe_summaries",
+        "_transcript",
+        "function_result_candidates",
+        "_record_candidates",
+    }
+)
+
+#: Calls an async method may still make on the loop, each for a stated reason.
+_ALLOWED_ON_LOOP = {
+    # The background worker's own steps run inline by design (``steps_inline``).
+    ("_prepare_record_merges", "annotate_message_groups"),
+    ("_prepare_record_merges", "annotate_token_counts"),
+    # One turn's own text, counted to decide whether a media description is worth keeping.
+    ("_describe_turn", "count_tokens"),
+}
+
+
+def test_no_async_method_does_history_work_on_the_loop() -> None:
+    """Every whole-history, rendering or tokenizing step an async method makes goes through
+    :func:`off_loop`, so the next pass that holds the loop fails here rather than in review."""
+    import ast
+    from pathlib import Path
+
+    import maf_compaction
+
+    found: list[str] = []
+    for path in sorted(Path(maf_compaction.__file__).parent.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for function in ast.walk(tree):
+            if not isinstance(function, ast.AsyncFunctionDef):
+                continue
+            excluded: set[int] = set()
+            for node in ast.walk(function):
+                offloaded = (
+                    isinstance(node, ast.Call) and getattr(node.func, "id", None) == "off_loop"
+                )
+                nested = node is not function and isinstance(
+                    node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+                )
+                if offloaded or nested:
+                    excluded.update(id(sub) for sub in ast.walk(node))
+            for node in ast.walk(function):
+                if not isinstance(node, ast.Call) or id(node) in excluded:
+                    continue
+                name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+                if name in _HISTORY_WORK and (function.name, name) not in _ALLOWED_ON_LOOP:
+                    found.append(f"{path.name}:{node.lineno} {function.name} -> {name}")
+    assert found == []

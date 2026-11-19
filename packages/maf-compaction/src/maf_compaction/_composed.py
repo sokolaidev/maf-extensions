@@ -154,6 +154,17 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
+def _first_batch_with_sources(
+    messages: list[Message], groups: list[dict[str, Any]], count: int, sources: str | None
+) -> list[dict[str, Any]] | None:
+    """The first ``count`` consecutive groups whose source key is ``sources``, off the loop."""
+    for index in range(len(groups) - count + 1):
+        batch = groups[index : index + count]
+        if source_key(messages, batch) == sources:
+            return batch
+    return None
+
+
 def _expected_record_groups(
     messages: list[Message], expected: Collection[int]
 ) -> list[dict[str, Any]]:
@@ -1081,31 +1092,30 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 self._merge_event("answer_discarded", phase="apply", reason="prompt_changed")
                 continue
             groups = await off_loop(consolidatable_record_groups, messages)
-            for index in range(len(groups) - item.count + 1):
-                batch = groups[index : index + item.count]
-                if source_key(messages, batch) != item.sources:
-                    continue
-                outcome = await self._consolidate(
-                    messages,
-                    batch,
-                    prompt=self.merge_prompt,
-                    transcript=item.transcript,
-                    answer=item.answer,
-                    remember_lossy=True,
-                    merge_phase="apply",
-                )
-                if outcome == "accepted":
-                    self._records_merged += 1
-                    changed = True
-                elif outcome in {"rejected", "lossy", "incomplete"}:
-                    key = item.transcript, item.count, _digest(item.prompt)
-                    self._record_merges_rejected += 1
-                    self._refused_merges.add(key)
-                    if outcome in {"lossy", "incomplete"}:
-                        self._split_merges.add(key)
-                break
-            else:
+            batch = await off_loop(
+                _first_batch_with_sources, messages, groups, item.count, item.sources
+            )
+            if batch is None:
                 self._merge_event("answer_discarded", phase="apply", reason="sources_unavailable")
+                continue
+            outcome = await self._consolidate(
+                messages,
+                batch,
+                prompt=self.merge_prompt,
+                transcript=item.transcript,
+                answer=item.answer,
+                remember_lossy=True,
+                merge_phase="apply",
+            )
+            if outcome == "accepted":
+                self._records_merged += 1
+                changed = True
+            elif outcome in {"rejected", "lossy", "incomplete"}:
+                key = item.transcript, item.count, _digest(item.prompt)
+                self._record_merges_rejected += 1
+                self._refused_merges.add(key)
+                if outcome in {"lossy", "incomplete"}:
+                    self._split_merges.add(key)
         return changed
 
     def _remember_record_search(
@@ -1977,7 +1987,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         )
         # Refresh and application must see the same eligible sources.
         with _yielding_when(over_budget=self._over(messages), policy=self.overflow_policy):
-            self._refresh_merge_coverage(messages)
+            await off_loop(self._refresh_merge_coverage, messages)
             if self._background is not None:
                 changed = await self._background.apply_ready(messages) or changed
         if not self._over(messages):
@@ -2014,7 +2024,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 )
             finally:
                 self._chain_deadline.reset(token)
-                self._refresh_merge_coverage(messages)
+                await off_loop(self._refresh_merge_coverage, messages)
         if self._short_of_target(messages, start) and find_record_index(messages) is not None:
             # With no record, budget enforcement owns unrecorded shedding and its headroom.
             self._last_resort_fallbacks += 1
@@ -3301,22 +3311,22 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 if expected is None or self.merge_prompt != prompt:
                     continue
                 standing = await off_loop(consolidatable_record_groups, messages)
-                for first in range(len(standing) - len(original) + 1):
-                    groups = standing[first : first + len(original)]
-                    if source_key(messages, groups) != expected:
-                        continue
-                    try:
-                        merged, failed = await self._merge_batch(
-                            messages, groups, transcript=body, depth=depth, answer=answer
-                        )
-                    except _ChainTimeSpent as error:
-                        stopped = error
-                        break
-                    changed = merged or changed
-                    if failed == "failed":
-                        return changed, failed
-                    rate_limited = rate_limited or failed == "rate_limited"
-                    break
+                groups = await off_loop(
+                    _first_batch_with_sources, messages, standing, len(original), expected
+                )
+                if groups is None:
+                    continue
+                try:
+                    merged, failed = await self._merge_batch(
+                        messages, groups, transcript=body, depth=depth, answer=answer
+                    )
+                except _ChainTimeSpent as error:
+                    stopped = error
+                    continue
+                changed = merged or changed
+                if failed == "failed":
+                    return changed, failed
+                rate_limited = rate_limited or failed == "rate_limited"
             if stopped is not None:
                 raise stopped
             return changed, "rate_limited" if rate_limited else None
@@ -3504,9 +3514,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         that cannot answer without dropping values. Without it, one such merge while the prompt is
         short of its target. Without ``start`` there is no target, only the share.
         """
-        self._refresh_merge_coverage(messages)
+        await off_loop(self._refresh_merge_coverage, messages)
         changed = await self._merge_batches(messages, start, self.record_budget_share)
-        self._refresh_merge_coverage(messages)
+        await off_loop(self._refresh_merge_coverage, messages)
         # Worker histories cannot decide whether the foreground still needs a lower bar.
         if (
             not self._merge_coverage.adaptive
@@ -3556,7 +3566,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if not self._merge_coverage.adaptive:
             return False
         if await self._apply_lossy_merges(messages):
-            self._refresh_merge_coverage(messages)
+            await off_loop(self._refresh_merge_coverage, messages)
             return True
         changed = False
         while self._records_over_share(messages) and self._merge_coverage.adaptive:
@@ -3566,7 +3576,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if await self._apply_lossy_merges(messages):
                 changed = True
                 break
-        self._refresh_merge_coverage(messages)
+        await off_loop(self._refresh_merge_coverage, messages)
         return changed
 
     def _records_over_share(self, messages: list[Message]) -> bool:
@@ -3623,7 +3633,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         changed = False
         while self._records_over_share(messages):
             self._check_chain_deadline()
-            matches = self._lossy_merge_matches(messages)
+            matches = await off_loop(self._lossy_merge_matches, messages)
             candidate = next(
                 (
                     (groups, answer)
