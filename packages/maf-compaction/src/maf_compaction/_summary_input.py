@@ -11,6 +11,7 @@ from agent_framework import Message
 from agent_framework._compaction import included_token_count
 
 from ._media import annotate_token_counts
+from ._offload import off_loop
 
 if TYPE_CHECKING:
     from agent_framework import TokenizerProtocol
@@ -106,16 +107,22 @@ async def async_bounded_prefix_extent[T](
     min_items: int = 1,
     cooperative: bool = True,
 ) -> tuple[list[T], int | None]:
-    """Run the same prefix search, optionally yielding before each tokenization probe."""
+    """Run the same prefix search, optionally yielding before each tokenization probe.
+
+    Each probe renders and tokenizes a candidate prefix on a worker thread (:func:`off_loop`),
+    or in place where steps run inline, as the background merge worker's do.
+    """
+
+    def fits(count: int) -> bool:
+        return fits_summary_input(prompt, render(items[:count]), tokenizer=tokenizer, limit=limit)
+
     probes = _prefix_probes(len(items), min_items)
     try:
         count = next(probes)
         while True:
             if cooperative:
                 await asyncio.sleep(0)
-            count = probes.send(
-                fits_summary_input(prompt, render(items[:count]), tokenizer=tokenizer, limit=limit)
-            )
+            count = probes.send(await off_loop(fits, count))
     except StopIteration as done:
         count, extent = cast(tuple[int, int | None], done.value)
         return items[:count], extent

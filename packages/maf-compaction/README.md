@@ -324,6 +324,12 @@ A 429 halves concurrency, down to one, for 90 seconds by default. Each further 4
 
 `summary_limiter.stats` reports the admission limit, current and peak concurrency, started and finished requests (including failed or cancelled requests), rate-limit events and cooldowns. Reducing the limit allows existing requests to finish, so active requests may temporarily exceed the new limit. These counters belong to the shared limiter and are not session state. This is a throughput estimate, not a strict token bucket or requests-per-minute limit; hosts still configure provider-specific budgets and client timeouts.
 
+### Keeping the event loop free
+
+A pass over a long conversation spends seconds of CPU between its awaits: grouping, token counting, replaying earlier decisions, merging and shedding. The composition runs those synchronous steps on worker threads (`asyncio.to_thread`), so the host's event loop keeps serving other sessions and requests while a pass works. The pass takes as long as before; only the loop is free.
+
+Two consequences for a host. The tokenizer is called from worker threads, so it must be safe to call from more than one thread at a time; `tiktoken` and the framework's `CharacterEstimatorTokenizer` are. Awaited collaborators, such as the summarizer client and media describers, are still awaited on the host's loop. While background record-merge work runs for a session, that session's steps stay on the loop, because the worker shares the strategy's state.
+
 ### Loading and saving a session
 
 `SessionPersistence` wraps the whole agent request around the registry above. Supply asynchronous `load(session_id)` and `save(session_id, snapshot)` callbacks and a `lease(session_id)` asynchronous context manager. `load` returns a framework session snapshot or `None`; `save` atomically replaces that snapshot. The lease must exclude every writer to that session, across replicas when applicable, from before loading until after stream cleanup and saving. A storage backend with expiring leases must fence writes and reject saves from an expired lease. This package supplies neither a database client nor a distributed lock. A local `asyncio.Lock` is sufficient only when every writer runs in that same process.

@@ -32,7 +32,7 @@ import hashlib
 import json
 import logging
 from bisect import bisect_left
-from collections.abc import Callable, Generator, Mapping
+from collections.abc import Callable, Collection, Generator, Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar
 from copy import copy, deepcopy
@@ -59,6 +59,7 @@ from ._anchored import (
 from ._carryover import CarriedView, Handed
 from ._media import annotate_token_counts
 from ._merge_coverage import LossyMerge, MergeCoverage
+from ._offload import off_loop, steps_inline
 from ._preserve import (
     PRESERVE_REASON_KEY,
     STANDS_IN_KEY,
@@ -153,6 +154,33 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
+def _first_batch_with_sources(
+    messages: list[Message], groups: list[dict[str, Any]], count: int, sources: str | None
+) -> list[dict[str, Any]] | None:
+    """The first ``count`` consecutive groups whose source key is ``sources``, off the loop."""
+    for index in range(len(groups) - count + 1):
+        batch = groups[index : index + count]
+        if source_key(messages, batch) == sources:
+            return batch
+    return None
+
+
+def _expected_record_groups(
+    messages: list[Message], expected: Collection[int]
+) -> list[dict[str, Any]]:
+    """The consolidatable record groups whose last message is one of ``expected`` (by id)."""
+    return [
+        group
+        for group in consolidatable_record_groups(messages)
+        if id(messages[int(group["end_index"])]) in expected
+    ]
+
+
+def _annotate(messages: list[Message], tokenizer: Any) -> None:
+    annotate_message_groups(messages)
+    annotate_token_counts(messages, tokenizer=tokenizer)
+
+
 class _BatchProbesSpent(Exception):
     """A record-merge sweep has rendered :data:`_MAX_BATCH_PROBES` batch prefixes."""
 
@@ -210,6 +238,11 @@ class _RecordMergeWork:
     def remember(self, messages: list[Message], budget: int) -> None:
         self._history = messages
         self._budget = budget
+
+    @property
+    def busy(self) -> bool:
+        """Whether a worker task is running now."""
+        return self._task is not None and not self._task.done()
 
     def cancel(self) -> None:
         if self.strategy is not None and (self._task is not None or self._ready):
@@ -1034,7 +1067,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if start is None and self.record_budget_share is None:
                 self._merge_event("no_pressure")
                 return
-            with _yielding_when(over_budget=start is not None, policy=self.overflow_policy):
+            with (
+                steps_inline(),
+                _yielding_when(over_budget=start is not None, policy=self.overflow_policy),
+            ):
                 await self._merge_records(messages, start)
                 if self._merge_coverage.adaptive and self._merge_sweep_complete:
                     self._completed_merge_sweep = self._merge_sweep_key(messages)
@@ -1055,32 +1091,31 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if item.prompt != self.merge_prompt:
                 self._merge_event("answer_discarded", phase="apply", reason="prompt_changed")
                 continue
-            groups = consolidatable_record_groups(messages)
-            for index in range(len(groups) - item.count + 1):
-                batch = groups[index : index + item.count]
-                if source_key(messages, batch) != item.sources:
-                    continue
-                outcome = await self._consolidate(
-                    messages,
-                    batch,
-                    prompt=self.merge_prompt,
-                    transcript=item.transcript,
-                    answer=item.answer,
-                    remember_lossy=True,
-                    merge_phase="apply",
-                )
-                if outcome == "accepted":
-                    self._records_merged += 1
-                    changed = True
-                elif outcome in {"rejected", "lossy", "incomplete"}:
-                    key = item.transcript, item.count, _digest(item.prompt)
-                    self._record_merges_rejected += 1
-                    self._refused_merges.add(key)
-                    if outcome in {"lossy", "incomplete"}:
-                        self._split_merges.add(key)
-                break
-            else:
+            groups = await off_loop(consolidatable_record_groups, messages)
+            batch = await off_loop(
+                _first_batch_with_sources, messages, groups, item.count, item.sources
+            )
+            if batch is None:
                 self._merge_event("answer_discarded", phase="apply", reason="sources_unavailable")
+                continue
+            outcome = await self._consolidate(
+                messages,
+                batch,
+                prompt=self.merge_prompt,
+                transcript=item.transcript,
+                answer=item.answer,
+                remember_lossy=True,
+                merge_phase="apply",
+            )
+            if outcome == "accepted":
+                self._records_merged += 1
+                changed = True
+            elif outcome in {"rejected", "lossy", "incomplete"}:
+                key = item.transcript, item.count, _digest(item.prompt)
+                self._record_merges_rejected += 1
+                self._refused_merges.add(key)
+                if outcome in {"lossy", "incomplete"}:
+                    self._split_merges.add(key)
         return changed
 
     def _remember_record_search(
@@ -1688,32 +1723,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._merge_coverage.current = self._merge_coverage.start
             self._merge_coverage.answers = []
             return False
-        annotate_message_groups(messages)
-        annotate_token_counts(messages, tokenizer=self.tokenizer)
-        with self.user_turns.replay_scope(messages):
-            return await self._compact(messages)
+        # A background merge worker shares this strategy's state and runs on the loop between
+        # awaits, so its conversation keeps every step on the loop while it works (_offload).
+        with steps_inline(self._background is not None and self._background.busy):
+            await off_loop(_annotate, messages, self.tokenizer)
+            refusals = await off_loop(self.user_turns.invalid_replay_summaries, messages)
+            with self.user_turns.replay_scope(messages, refusals=frozenset(refusals)):
+                return await self._compact(messages)
 
     async def _compact(self, messages: list[Message]) -> bool:
         """Apply all phases within the caller's replay-refusal scope."""
-        replayed = (
-            self._replay_record_edits(messages) if _last_reasoning_index(messages) >= 0 else False
-        )
-        replayed = self._keep_shedding(messages) or replayed
-        # Before the record phase counts records, so a stand-in and the pair it replaced are
-        # never both counted.
-        replayed = self._reshape_records(messages, replay=True) or replayed
+        replayed, shed_sources, entry_tokens = await off_loop(self._enter_pass, messages)
         decisions_kept = self._decisions_kept
-        shed_sources = (
-            [
-                (key, members)
-                for key, members in unique_shed_groups(messages)
-                if any(not durable_message_id(message.message_id) for message in members)
-                and not any(_is_excluded(message) for message in members)
-            ]
-            if any(not durable_message_id(message.message_id) for message in messages)
-            else []
-        )
-        entry_tokens = included_token_count(messages)
 
         changed = await self.tool_results.compact_against(
             messages,
@@ -1723,18 +1744,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             fallback_without_record=False,
             ceiling=self._request_budget.get(),
         )
-        if changed:
-            # Record compaction can rewrite results whose token counts are already cached.
-            annotate_message_groups(messages)
-            annotate_token_counts(messages, tokenizer=self.tokenizer, force_retokenize=True)
-            self._removed_by_record += max(entry_tokens - included_token_count(messages), 0)
-
-        replay = self.user_turns.replay_summaries(messages)
-        prompt_tokens = included_token_count(messages)
+        replay, prompt_tokens, holding = await off_loop(
+            self._after_record_phase, messages, changed=changed, entry_tokens=entry_tokens
+        )
         compacted = False
-        if (not replay.changed or replay.new_turns) and not self._holds_for_record(
-            messages, entry_tokens=entry_tokens, prompt_tokens=prompt_tokens
-        ):
+        if (not replay.changed or replay.new_turns) and not holding:
             compacted = await self.user_turns.compact_against(
                 messages,
                 prompt_tokens=prompt_tokens,
@@ -1745,7 +1759,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._decisions_kept += 1
         self._settled = True
         try:
-            fitted = self._enforce_budget(messages)
+            fitted = await off_loop(self._enforce_budget, messages)
         finally:
             self._shed_groups.update(
                 key
@@ -1761,6 +1775,49 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if self._background is not None:
                 self._background.remember(messages, self._budget)
         return replayed or replay.changed or changed or compacted or chained or fitted
+
+    def _enter_pass(
+        self, messages: list[Message]
+    ) -> tuple[bool, list[tuple[Any, list[Message]]], int]:
+        """Put back earlier passes' decisions and measure the entry, off the loop.
+
+        Returns whether anything was put back, the shed groups this pass may lose, and the
+        prompt's size as the pass began.
+        """
+        replayed = (
+            self._replay_record_edits(messages) if _last_reasoning_index(messages) >= 0 else False
+        )
+        replayed = self._keep_shedding(messages) or replayed
+        # Before the record phase counts records, so a stand-in and the pair it replaced are
+        # never both counted.
+        replayed = self._reshape_records(messages, replay=True) or replayed
+        shed_sources = (
+            [
+                (key, members)
+                for key, members in unique_shed_groups(messages)
+                if any(not durable_message_id(message.message_id) for message in members)
+                and not any(_is_excluded(message) for message in members)
+            ]
+            if any(not durable_message_id(message.message_id) for message in messages)
+            else []
+        )
+        return replayed, shed_sources, included_token_count(messages)
+
+    def _after_record_phase(
+        self, messages: list[Message], *, changed: bool, entry_tokens: int
+    ) -> tuple[Any, int, bool]:
+        """Re-measure what the record phase left and decide whether the user half holds."""
+        if changed:
+            # Record compaction can rewrite results whose token counts are already cached.
+            annotate_message_groups(messages)
+            annotate_token_counts(messages, tokenizer=self.tokenizer, force_retokenize=True)
+            self._removed_by_record += max(entry_tokens - included_token_count(messages), 0)
+        replay = self.user_turns.replay_summaries(messages)
+        prompt_tokens = included_token_count(messages)
+        holding = (not replay.changed or replay.new_turns) and self._holds_for_record(
+            messages, entry_tokens=entry_tokens, prompt_tokens=prompt_tokens
+        )
+        return replay, prompt_tokens, holding
 
     def _enforce_budget(self, messages: list[Message]) -> bool:
         """Shed unrecorded groups as a last resort, or refuse an oversized prompt."""
@@ -1925,13 +1982,16 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             True if anything changed the outgoing messages.
         """
-        changed = self._keep_decisions(messages, replayed_user_fold=replayed_user_fold)
+        changed = await off_loop(
+            self._keep_decisions, messages, replayed_user_fold=replayed_user_fold
+        )
         # Refresh and application must see the same eligible sources.
-        with _yielding_when(over_budget=self._over(messages), policy=self.overflow_policy):
-            self._refresh_merge_coverage(messages)
+        over = await off_loop(self._over, messages)
+        with _yielding_when(over_budget=over, policy=self.overflow_policy):
+            await off_loop(self._refresh_merge_coverage, messages)
             if self._background is not None:
                 changed = await self._background.apply_ready(messages) or changed
-        if not self._over(messages):
+        if not await off_loop(self._over, messages):
             self._merge_event("under_budget")
             return changed
         start = _ChainStart.take(messages)
@@ -1939,7 +1999,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # A run's later calls carry its loop's reasoning after every record; under "shed" the
         # shed below edits that prefix anyway, so the record steps are not barred from it here.
         with _yielding_when(over_budget=True, policy=self.overflow_policy):
-            changed = self._reshape_records(messages) or changed
+            changed = await off_loop(self._reshape_records, messages) or changed
             kept = len(self._kept_records), self._user_summaries_merged
             deadline = None if self.chain_seconds is None else monotonic() + self.chain_seconds
             token = self._chain_deadline.set(deadline)
@@ -1965,7 +2025,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 )
             finally:
                 self._chain_deadline.reset(token)
-                self._refresh_merge_coverage(messages)
+                await off_loop(self._refresh_merge_coverage, messages)
         if self._short_of_target(messages, start) and find_record_index(messages) is not None:
             # With no record, budget enforcement owns unrecorded shedding and its headroom.
             self._last_resort_fallbacks += 1
@@ -2958,7 +3018,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     return groups[first : first + known.batch]
                 checked = known.covered
             if checked < 2:
-                if fits(groups[first : first + 2]):
+                if await off_loop(fits, groups[first : first + 2]):
                     remember(first, 2, 2)
                     batch, extent = await async_bounded_prefix_extent(
                         groups[first:],
@@ -2980,7 +3040,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 if self._record_answer_ready is not None:
                     await asyncio.sleep(0)
                 try:
-                    fit = fits(groups[first : first + count])
+                    fit = await off_loop(fits, groups[first : first + count])
                 except (_BatchProbesSpent, _ChainTimeSpent):
                     remember(first, checked)
                     raise
@@ -3019,16 +3079,20 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             first, pending = min(matches, key=lambda match: (match[0], -match[1].depth))
             return pending, groups[first : first + pending.count]
 
-        groups, _, over = survey()
+        groups, _, over = await off_loop(survey)
         resumed = False
-        while over and (selected := pending_batch(set())) is not None:
+        while over and (selected := await off_loop(pending_batch, set())) is not None:
             if self._record_answer_ready is not None:
                 await asyncio.sleep(0)
             self._check_chain_deadline()
             pending, batch = selected
-            transcript = _numbered_records([bodies[last(group)] for group in batch])
-            if not fits_summary_input(
-                self.merge_prompt, transcript, tokenizer=self.tokenizer, limit=limit
+            transcript = await off_loop(_numbered_records, [bodies[last(group)] for group in batch])
+            if not await off_loop(
+                fits_summary_input,
+                self.merge_prompt,
+                transcript,
+                tokenizer=self.tokenizer,
+                limit=limit,
             ):
                 self._pending_merges.remove(pending)
                 continue
@@ -3037,14 +3101,18 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             batches = [(batch, transcript, pending.depth)]
             selected_ids = {last(group) for group in batch}
             while len(batches) < self._summary_parallelism():
-                next_pending = pending_batch(selected_ids)
+                next_pending = await off_loop(pending_batch, selected_ids)
                 if next_pending is None:
                     break
                 item, child = next_pending
                 selected_ids.update(last(group) for group in child)
-                body = _numbered_records([bodies[last(group)] for group in child])
-                if not fits_summary_input(
-                    self.merge_prompt, body, tokenizer=self.tokenizer, limit=limit
+                body = await off_loop(_numbered_records, [bodies[last(group)] for group in child])
+                if not await off_loop(
+                    fits_summary_input,
+                    self.merge_prompt,
+                    body,
+                    tokenizer=self.tokenizer,
+                    limit=limit,
                 ):
                     self._pending_merges.remove(item)
                     continue
@@ -3063,7 +3131,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 if item in self._pending_merges:
                     self._pending_merges.remove(item)
             if merged:
-                groups, _, over = survey()
+                groups, _, over = await off_loop(survey)
         if resumed:
             self._batch_resume = None
             return changed
@@ -3082,7 +3150,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if len(groups) < 2:
                 return False
             changed, _ = await self._merge_batch(
-                messages, groups, transcript=_transcript(messages, groups)
+                messages, groups, transcript=await off_loop(_transcript, messages, groups)
             )
             return changed
         layout = prompt_digest, limit, len(groups), chain(0, len(groups))
@@ -3108,11 +3176,13 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 oldest = last(groups[cursor])
                 key = prompt_digest, digests[oldest], limit
                 if key not in self._record_input_fits:
-                    self._record_input_fits[key] = fits_summary_input(
-                        self.merge_prompt,
-                        _numbered_records([bodies[oldest]]),
-                        tokenizer=self.tokenizer,
-                        limit=limit,
+                    self._record_input_fits[key] = await off_loop(
+                        lambda: fits_summary_input(
+                            self.merge_prompt,
+                            _numbered_records([bodies[oldest]]),
+                            tokenizer=self.tokenizer,
+                            limit=limit,
+                        )
                     )
                 if not self._record_input_fits[key]:
                     self._merge_event("single_over_limit")
@@ -3136,7 +3206,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                         handled.add(oldest)
                         continue
                     handled.update(last(group) for group in batch)
-                    transcript = _numbered_records([bodies[last(group)] for group in batch])
+                    transcript = await off_loop(
+                        _numbered_records, [bodies[last(group)] for group in batch]
+                    )
                     batches.append((batch, transcript, 0))
                     if len(batches) < self._summary_parallelism():
                         continue
@@ -3156,7 +3228,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 handled.update(fresh)
                 seen_messages.update(fresh)
                 changed = True
-                groups, _, over = survey()
+                groups, _, over = await off_loop(survey)
                 layout = prompt_digest, limit, len(groups), chain(0, len(groups))
                 self._batch_resume = None
                 cursor = 0
@@ -3200,12 +3272,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             for (_, body, depth), expected in zip(batches, identities, strict=True):
                 if self.merge_prompt != prompt:
                     break
-                groups = [
-                    group
-                    for group in consolidatable_record_groups(messages)
-                    if id(messages[int(group["end_index"])]) in expected
-                ]
-                if len(groups) != len(expected) or _transcript(messages, groups) != body:
+                groups = await off_loop(_expected_record_groups, messages, expected)
+                if (
+                    len(groups) != len(expected)
+                    or await off_loop(_transcript, messages, groups) != body
+                ):
                     continue
                 merged, failed = await self._merge_batch(
                     messages, groups, transcript=body, depth=depth
@@ -3243,23 +3314,23 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                         return changed, "failed"
                 if expected is None or self.merge_prompt != prompt:
                     continue
-                standing = consolidatable_record_groups(messages)
-                for first in range(len(standing) - len(original) + 1):
-                    groups = standing[first : first + len(original)]
-                    if source_key(messages, groups) != expected:
-                        continue
-                    try:
-                        merged, failed = await self._merge_batch(
-                            messages, groups, transcript=body, depth=depth, answer=answer
-                        )
-                    except _ChainTimeSpent as error:
-                        stopped = error
-                        break
-                    changed = merged or changed
-                    if failed == "failed":
-                        return changed, failed
-                    rate_limited = rate_limited or failed == "rate_limited"
-                    break
+                standing = await off_loop(consolidatable_record_groups, messages)
+                groups = await off_loop(
+                    _first_batch_with_sources, messages, standing, len(original), expected
+                )
+                if groups is None:
+                    continue
+                try:
+                    merged, failed = await self._merge_batch(
+                        messages, groups, transcript=body, depth=depth, answer=answer
+                    )
+                except _ChainTimeSpent as error:
+                    stopped = error
+                    continue
+                changed = merged or changed
+                if failed == "failed":
+                    return changed, failed
+                rate_limited = rate_limited or failed == "rate_limited"
             if stopped is not None:
                 raise stopped
             return changed, "rate_limited" if rate_limited else None
@@ -3328,7 +3399,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         queued: list[_PendingMerge] = []
         for child in children:
             records = 0
-            for body in record_bodies(messages, child):
+            for body in await off_loop(record_bodies, messages, child):
                 records = (records * _RUN_BASE + int(_digest(body), 16)) % _RUN_MODULUS
             pending = _PendingMerge(
                 len(child),
@@ -3341,17 +3412,21 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if len(child) >= 2 and pending not in self._pending_merges:
                 self._pending_merges.append(pending)
         if self._summary_parallelism() > 1:
-            batches = [
-                (child, _transcript(messages, child), depth + 1)
-                for child in children
-                if len(child) >= 2
-                and fits_summary_input(
-                    self.merge_prompt,
-                    _transcript(messages, child),
-                    tokenizer=self.tokenizer,
-                    limit=self._record_request_limit(),
-                )
-            ]
+
+            def fitting() -> list[tuple[list[dict[str, Any]], str, int]]:
+                return [
+                    (child, _transcript(messages, child), depth + 1)
+                    for child in children
+                    if len(child) >= 2
+                    and fits_summary_input(
+                        self.merge_prompt,
+                        _transcript(messages, child),
+                        tokenizer=self.tokenizer,
+                        limit=self._record_request_limit(),
+                    )
+                ]
+
+            batches = await off_loop(fitting)
             changed, failed = await self._merge_parallel_batches(messages, batches)
             if not failed:
                 for pending in queued:
@@ -3363,17 +3438,14 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if len(child) < 2:
                 continue
             if changed:
-                child = [
-                    group
-                    for group in consolidatable_record_groups(messages)
-                    if id(messages[int(group["end_index"])]) in expected
-                ]
+                child = await off_loop(_expected_record_groups, messages, expected)
                 if len(child) != len(expected):
                     if pending in self._pending_merges:
                         self._pending_merges.remove(pending)
                     continue
-            child_transcript = _transcript(messages, child)
-            if not fits_summary_input(
+            child_transcript = await off_loop(_transcript, messages, child)
+            if not await off_loop(
+                fits_summary_input,
                 self.merge_prompt,
                 child_transcript,
                 tokenizer=self.tokenizer,
@@ -3446,9 +3518,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         that cannot answer without dropping values. Without it, one such merge while the prompt is
         short of its target. Without ``start`` there is no target, only the share.
         """
-        self._refresh_merge_coverage(messages)
+        await off_loop(self._refresh_merge_coverage, messages)
         changed = await self._merge_batches(messages, start, self.record_budget_share)
-        self._refresh_merge_coverage(messages)
+        await off_loop(self._refresh_merge_coverage, messages)
         # Worker histories cannot decide whether the foreground still needs a lower bar.
         if (
             not self._merge_coverage.adaptive
@@ -3498,17 +3570,17 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         if not self._merge_coverage.adaptive:
             return False
         if await self._apply_lossy_merges(messages):
-            self._refresh_merge_coverage(messages)
+            await off_loop(self._refresh_merge_coverage, messages)
             return True
         changed = False
-        while self._records_over_share(messages) and self._merge_coverage.adaptive:
+        while await off_loop(self._records_over_share, messages) and self._merge_coverage.adaptive:
             self._check_chain_deadline()
             if not self._merge_coverage.lower_to_next_answer():
                 break
             if await self._apply_lossy_merges(messages):
                 changed = True
                 break
-        self._refresh_merge_coverage(messages)
+        await off_loop(self._refresh_merge_coverage, messages)
         return changed
 
     def _records_over_share(self, messages: list[Message]) -> bool:
@@ -3563,9 +3635,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
     async def _apply_lossy_merges(self, messages: list[Message]) -> bool:
         changed = False
-        while self._records_over_share(messages):
+        while await off_loop(self._records_over_share, messages):
             self._check_chain_deadline()
-            matches = self._lossy_merge_matches(messages)
+            matches = await off_loop(self._lossy_merge_matches, messages)
             candidate = next(
                 (
                     (groups, answer)
@@ -3582,7 +3654,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 messages,
                 groups,
                 prompt=self.merge_prompt,
-                transcript=_transcript(messages, groups),
+                transcript=await off_loop(_transcript, messages, groups),
                 answer=_RecordAnswer(answer.text),
                 remember_lossy=True,
             )
@@ -3652,10 +3724,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._check_chain_deadline()
             if attempt > 1 and not self._short_of_target(messages, start):
                 break
-            groups = self._bounded_records(messages, prompt)
+            groups = await off_loop(self._bounded_records, messages, prompt)
             if not groups:
                 continue
-            transcript = _transcript(messages, groups)
+            transcript = await off_loop(_transcript, messages, groups)
             key = (transcript, len(groups), policy)
             if self._refused_rewrites.get(key, 0) >= attempt:
                 self._record_rewrites_skipped += 1
@@ -3770,14 +3842,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 self._merge_event("answer_discarded", phase=merge_phase, reason="external_hold")
             return "skipped"
         text = answer.text
-        bodies = record_bodies(messages, groups)
-        total, kept, required = self._value_coverage(bodies, text)
-        candidate = [build_record_message(text)]
-        replaced = [build_record_message(body) for body in bodies]
-        annotate_token_counts(candidate, tokenizer=self.tokenizer, force_retokenize=True)
-        annotate_token_counts(replaced, tokenizer=self.tokenizer, force_retokenize=True)
-        replaced_tokens = included_token_count(replaced)
-        saved = replaced_tokens - included_token_count(candidate)
+        bodies, total, kept, required, replaced_tokens, saved = await off_loop(
+            self._assess_answer, messages, groups, text
+        )
         outcome: _Consolidation = "accepted"
         reason = ""
         if answer.incomplete:
@@ -3830,11 +3897,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 total - kept,
                 required,
             )
-        edit = self._record_edit(messages, groups, text)
-        self.tool_results.consolidate_records(messages, groups, text)
-        self._kept_records[(transcript, len(groups))] = text
-        if edit is not None and edit not in self._record_order:
-            self._record_order.append(edit)
+        edit = await off_loop(self._accept_record, messages, groups, text, transcript)
         if merge and record_merge_observer.get() is not None:
             tracked = set(tracked_merge_values.get())
             kept_tracked = 0
@@ -3857,12 +3920,54 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 kept_tracked_values=kept_tracked,
                 saved_tokens=saved,
             )
+        await off_loop(self._settle_accepted_record, messages)
+        return "accepted"
+
+    def _assess_answer(
+        self, messages: list[Message], groups: list[dict[str, Any]], text: str
+    ) -> tuple[list[str], int, int, int, int, int]:
+        """Measure a record answer against the records it would replace, off the loop.
+
+        Returns the source bodies, the values they hold, kept and required, the tokens the
+        sources count, and how many the answer saves.
+        """
+        bodies = record_bodies(messages, groups)
+        total, kept, required = self._value_coverage(bodies, text)
+        candidate = [build_record_message(text)]
+        replaced = [build_record_message(body) for body in bodies]
+        annotate_token_counts(candidate, tokenizer=self.tokenizer, force_retokenize=True)
+        annotate_token_counts(replaced, tokenizer=self.tokenizer, force_retokenize=True)
+        replaced_tokens = included_token_count(replaced)
+        return (
+            bodies,
+            total,
+            kept,
+            required,
+            replaced_tokens,
+            replaced_tokens - included_token_count(candidate),
+        )
+
+    def _accept_record(
+        self, messages: list[Message], groups: Any, text: str, transcript: str
+    ) -> Any:
+        """Put an accepted record in place of the records it merges, off the loop.
+
+        Returns the edit recorded for replay, or None when there is none.
+        """
+        edit = self._record_edit(messages, groups, text)
+        self.tool_results.consolidate_records(messages, groups, text)
+        self._kept_records[(transcript, len(groups))] = text
+        if edit is not None and edit not in self._record_order:
+            self._record_order.append(edit)
+        return edit
+
+    def _settle_accepted_record(self, messages: list[Message]) -> None:
+        """Take decided replacements of the new record and refresh coverage, off the loop."""
         # The new record may read exactly as one an earlier pass went on to replace -- a merge of
         # new material can come back as the record an earlier rewrite started from -- and that
         # replacement is already decided, so it is taken here rather than asked for again.
         self._keep_records(messages)
         self._refresh_merge_coverage(messages)
-        return "accepted"
 
     def _keeps_values(self, bodies: list[str], text: str) -> bool:
         """Whether ``text`` meets the current merge coverage for distinctive source values.
@@ -3907,7 +4012,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             The text, or None when the summarizer raised or said nothing.
         """
-        if not fits_summary_input(
+        if not await off_loop(
+            fits_summary_input,
             prompt,
             transcript,
             tokenizer=self.tokenizer,
