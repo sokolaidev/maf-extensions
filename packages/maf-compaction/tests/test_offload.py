@@ -336,9 +336,7 @@ def test_a_cancelled_callers_failed_step_is_not_reported_as_unretrieved(
     reports it as a task exception nobody retrieved."""
     import gc
 
-    import maf_compaction._offload as offload
-
-    monkeypatch.setattr(offload, "_new_event", _LingeringEvent)
+    monkeypatch.setattr("maf_compaction._offload._new_event", _LingeringEvent)
     reported: list[dict[str, object]] = []
     started = threading.Event()
 
@@ -354,8 +352,8 @@ def test_a_cancelled_callers_failed_step_is_not_reported_as_unretrieved(
         caller = asyncio.create_task(off_loop(step))
         await asyncio.to_thread(started.wait)
         caller.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await caller
+        await asyncio.wait({caller})
+        assert caller.cancelled()
         del caller
         await asyncio.sleep(0.05)
         gc.collect()
