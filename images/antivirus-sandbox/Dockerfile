@@ -16,7 +16,7 @@ RUN apk add --no-cache abuild build-base readline-dev \
 FROM base AS seed
 
 RUN apk upgrade --no-cache \
-    && apk add --no-cache clamav-scanner=1.4.6-r0 ca-certificates \
+    && apk add --no-cache clamav-scanner=1.4.7-r0 ca-certificates \
     && mkdir -p /opt/maf-antivirus/seed \
     && printf '%s\n' 'DatabaseMirror database.clamav.net' \
        'DatabaseDirectory /opt/maf-antivirus/seed' 'DatabaseOwner root' \
@@ -34,7 +34,7 @@ LABEL org.opencontainers.image.description="Offline ClamAV upload scanner with a
 RUN --mount=type=bind,from=sqlite-build,source=/sqlite-package,target=/sqlite-package \
     apk upgrade --no-cache \
     && apk add --no-network --keys-dir /sqlite-package /sqlite-package/sqlite-libs-*.apk \
-    && apk add --no-cache clamav-scanner=1.4.6-r0 \
+    && apk add --no-cache clamav-scanner=1.4.7-r0 \
     && install -Dm644 /sqlite-package/LICENSE.md /usr/share/licenses/sqlite/LICENSE.md \
     && python3 -I -c 'import sqlite3; assert sqlite3.sqlite_version == "3.54.1", sqlite3.sqlite_version' \
     && mkdir -p /maf-sandbox/work
