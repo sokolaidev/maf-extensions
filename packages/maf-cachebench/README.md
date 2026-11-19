@@ -109,6 +109,14 @@ With the default 80% threshold, 60% floor and 45-token text budget, the six fixt
 | Count with surviving context | 3 | 2 | 2 |
 | Scripted judge | 1 | 1 | 3 |
 
+### Preserving roles at full value coverage
+
+`uv run cachebench_role_preservation` compares the missing-value policy with a literal check on structured label–value pairs. Six pairs of source records cover deployment targets and approved amounts. Each pair has three shorter candidates containing both original values. A faithful merge reorders fields, a paraphrase expresses their roles in prose, and a swap assigns each value to the other role. The reference answer comes from the fixture. Each row reports the answer the candidate supplies and the answer left by the policy's decision.
+
+The report separates two development sources from four held-out sources with different wording and values. The missing-value rule makes zero requests at full coverage. The deterministic check compares the complete sets of colon-delimited pairs, normalizing label case and surrounding whitespace. An unrecognized prose format causes a refusal. To measure a third policy, await `maf_cachebench.role_preservation.evaluate_roles(judge=adapter, model_id=name)`. The host-owned async adapter receives the task, source records, candidate and fixed rubric, and returns a `CandidateVerdict` with a label and its probability. Each candidate is judged independently. The expected answer, split and variant stay with the scorer.
+
+The held-out gate requires zero false accepts, zero false refusals and zero fallbacks. An uncertain response, confidence below 0.8, timeout, malformed response or oversized request falls back to the count decision. The request limit is 4,096 UTF-8 JSON bytes and the timeout is five seconds. Each split reports requests per candidate, median request latency, abstentions and all fallbacks. The opt-in [Foundry runner](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-cachebench/runs/role-preservation-v1) uses the same scoring path and saves native choices and usage alongside the report.
+
 ### Offline capability scenarios
 
 `cachebench_capabilities` supplies the content, model responses and storage faults needed to exercise these paths without credentials or external I/O. Persistence cases use the same agent builder and session runner as `cachebench_live`; media and result cases use the shared strategy builders directly. The command writes one JSON object per scenario and exits nonzero if any contract check fails. Expected injected failures pass only when their observed commit, cleanup and ordering outcomes match the contract.
