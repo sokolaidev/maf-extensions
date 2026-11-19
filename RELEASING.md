@@ -10,6 +10,8 @@ One-time setup — the PyPI organization, the trusted publishers, the GitHub env
 
 ## Adding a package
 
+Add the distribution name to the root `[project].dependencies` and register it under `[tool.uv.sources]` with `workspace = true` so a default `uv sync` installs it. Regenerate `uv.lock` after adding the package.
+
 A newly configured package at `0.0.0` with no release recorded in its changelog may omit its entry from `.release-please-manifest.json`. [Release-please adds that entry in the first Release PR](https://github.com/googleapis/release-please/blob/v17.3.0/src/manifest.ts#L771-L786), along with the generated version and changelog updates; the configured `extra-files` updater moves `uv.lock`. Existing entries must match their package's declared version, and a package with any recorded release or a version other than `0.0.0` must have an entry. Leave the generated manifest to release-please when adding a package.
 
 ## Cutting a release
