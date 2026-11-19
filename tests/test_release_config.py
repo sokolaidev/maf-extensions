@@ -402,6 +402,19 @@ class TestManifestMatchesDeclaredVersions:
         assert manifest_version_matches("packages/new", version, changelog, manifest) is expected
 
 
+def test_workspace_root_syncs_all_members_as_a_virtual_project():
+    manifest = pyproject(".")
+    project = manifest["project"]
+    members = {declared_name(path) for path in PACKAGE_PATHS}
+    assert set(project["dependencies"]) == members
+    sources = manifest["tool"]["uv"]["sources"]
+    assert all(sources[name] == {"workspace": True} for name in members)
+    assert project["requires-python"].replace(" ", "") == LOCK["requires-python"].replace(" ", "")
+    assert [entry["source"] for entry in LOCK["package"] if entry["name"] == project["name"]] == [
+        {"virtual": "."}
+    ]
+
+
 class TestTheLockRecordsTheVersionEachPackageDeclares:
     """`uv.lock` is a fifth file that has to agree, and the last one nothing updated.
 

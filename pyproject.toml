@@ -4,8 +4,66 @@
 # ruff/pyright/pytest configuration and LICENSE; release-please adds CHANGELOG in its first
 # Release PR), so it can be built, published and even extracted again without this file.
 
+[project]
+name = "maf-extensions"
+version = "0.0.0"
+# Dependabot reads the root project to select its Python interpreter.
+requires-python = ">=3.12,<3.15"
+# Install all members during a default workspace sync.
+dependencies = [
+    "maf-cachebench",
+    "maf-compaction",
+    "maf-sandbox",
+    "maf-sandbox-acas",
+    "maf-sandbox-antivirus",
+    "maf-sandbox-azure-pricing",
+    "maf-sandbox-bicep",
+    "maf-sandbox-bubblewrap",
+    "maf-sandbox-codeact",
+    "maf-sandbox-deepagents",
+    "maf-sandbox-docker",
+    "maf-sandbox-docker-sbx",
+    "maf-sandbox-document",
+    "maf-sandbox-drawio",
+    "maf-sandbox-hyperlight",
+    "maf-sandbox-mcp",
+    "maf-sandbox-mxc",
+    "maf-sandbox-otel",
+    "maf-sandbox-shell",
+    "maf-sandbox-terraform",
+    "maf-sandbox-tui",
+    "maf-sandbox-wslc",
+]
+
+[tool.uv]
+package = false
+
 [tool.uv.workspace]
 members = ["packages/*"]
+
+[tool.uv.sources]
+maf-cachebench = { workspace = true }
+maf-compaction = { workspace = true }
+maf-sandbox = { workspace = true }
+maf-sandbox-acas = { workspace = true }
+maf-sandbox-antivirus = { workspace = true }
+maf-sandbox-azure-pricing = { workspace = true }
+maf-sandbox-bicep = { workspace = true }
+maf-sandbox-bubblewrap = { workspace = true }
+maf-sandbox-codeact = { workspace = true }
+maf-sandbox-deepagents = { workspace = true }
+maf-sandbox-docker = { workspace = true }
+maf-sandbox-docker-sbx = { workspace = true }
+maf-sandbox-document = { workspace = true }
+maf-sandbox-drawio = { workspace = true }
+maf-sandbox-hyperlight = { workspace = true }
+maf-sandbox-mcp = { workspace = true }
+maf-sandbox-mxc = { workspace = true }
+maf-sandbox-otel = { workspace = true }
+maf-sandbox-shell = { workspace = true }
+maf-sandbox-terraform = { workspace = true }
+maf-sandbox-tui = { workspace = true }
+maf-sandbox-wslc = { workspace = true }
 
 [dependency-groups]
 dev = [
