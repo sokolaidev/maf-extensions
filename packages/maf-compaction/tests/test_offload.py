@@ -318,3 +318,48 @@ def test_shutdown_with_the_step_still_queued_does_not_hang() -> None:
     assert not runner.is_alive(), "shutdown hung waiting for a step that never started"
     assert seen_cancelled == [True]
     assert not step_ran.is_set()
+
+
+class _LingeringEvent(threading.Event):
+    """An event whose ``set`` holds the setting thread a moment: the step reports finished
+    while its task is still one callback behind, the window a cancelled caller must wait out."""
+
+    def set(self) -> None:
+        super().set()
+        time.sleep(0.1)
+
+
+def test_a_cancelled_callers_failed_step_is_not_reported_as_unretrieved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The step's error is retrieved even though its caller was cancelled, so asyncio never
+    reports it as a task exception nobody retrieved."""
+    import gc
+
+    import maf_compaction._offload as offload
+
+    monkeypatch.setattr(offload, "_new_event", _LingeringEvent)
+    reported: list[dict[str, object]] = []
+    started = threading.Event()
+
+    def step() -> None:
+        started.set()
+        time.sleep(0.1)
+        raise ValueError("step failed")
+
+    async def main() -> None:
+        asyncio.get_running_loop().set_exception_handler(
+            lambda _loop, context: reported.append(context)
+        )
+        caller = asyncio.create_task(off_loop(step))
+        await asyncio.to_thread(started.wait)
+        caller.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await caller
+        del caller
+        await asyncio.sleep(0.05)
+        gc.collect()
+        await asyncio.sleep(0.01)
+
+    asyncio.run(main())
+    assert [context.get("message") for context in reported] == []

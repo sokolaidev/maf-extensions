@@ -26,6 +26,10 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import cast
 
+#: Makes the event a step's thread sets when it is over; replaceable so a test can widen the
+#: window between that event and the task's own completion.
+_new_event: Callable[[], threading.Event] = threading.Event
+
 #: How often a cancelled caller checks whether its step has finished.
 _DRAIN_POLL_SECONDS = 0.005
 
@@ -59,7 +63,7 @@ async def off_loop[**P, R](step: Callable[P, R], /, *args: P.args, **kwargs: P.k
     # The thread itself says when the step is over. The task below cannot: at shutdown
     # ``asyncio.run`` cancels it directly, and it then reports done while its thread still runs,
     # or drops a job still queued in the executor, whose step then never runs at all.
-    finished = threading.Event()
+    finished = _new_event()
     decided = threading.Lock()
     started = False
     abandoned = False
@@ -87,8 +91,14 @@ async def off_loop[**P, R](step: Callable[P, R], /, *args: P.args, **kwargs: P.k
                 await asyncio.sleep(_DRAIN_POLL_SECONDS)
             except asyncio.CancelledError:
                 continue
+        # The thread is done, but the task can still be one callback behind it. Waited for, so its
+        # outcome is retrieved here: a step that failed is not reported later as a never-retrieved
+        # exception, and the cancellation is what the caller asked for.
+        while not abandoned and not running.done():
+            try:
+                await asyncio.wait({running})
+            except asyncio.CancelledError:
+                continue
         if running.done() and not running.cancelled():
-            # Retrieved so a step that failed is not reported as a never-retrieved exception;
-            # the cancellation is what the caller asked for.
             running.exception()
         raise
