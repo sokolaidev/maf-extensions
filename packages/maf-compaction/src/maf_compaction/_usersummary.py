@@ -1219,9 +1219,17 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self._observe_summaries(messages)
 
     @contextmanager
-    def replay_scope(self, messages: list[Message]) -> Generator[None]:
-        """Retain entry-history refusals through a composed compaction pass."""
-        token = self._replay_refusals.set(frozenset(self.invalid_replay_summaries(messages)))
+    def replay_scope(
+        self, messages: list[Message], *, refusals: frozenset[str] | None = None
+    ) -> Generator[None]:
+        """Retain entry-history refusals through a composed compaction pass.
+
+        ``refusals`` is :meth:`invalid_replay_summaries` already computed for ``messages``, so a
+        caller can compute it off the loop and still set the scope on its own task.
+        """
+        if refusals is None:
+            refusals = frozenset(self.invalid_replay_summaries(messages))
+        token = self._replay_refusals.set(refusals)
         try:
             yield
         finally:

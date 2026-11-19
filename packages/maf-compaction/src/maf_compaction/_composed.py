@@ -1706,7 +1706,8 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         # awaits, so its conversation keeps every step on the loop while it works (_offload).
         with steps_inline(self._background is not None and self._background.busy):
             await off_loop(_annotate, messages, self.tokenizer)
-            with self.user_turns.replay_scope(messages):
+            refusals = await off_loop(self.user_turns.invalid_replay_summaries, messages)
+            with self.user_turns.replay_scope(messages, refusals=frozenset(refusals)):
                 return await self._compact(messages)
 
     async def _compact(self, messages: list[Message]) -> bool:

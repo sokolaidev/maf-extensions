@@ -20,10 +20,13 @@ are called, as before (:func:`steps_inline`).
 from __future__ import annotations
 
 import asyncio
-import functools
+import threading
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
+
+#: How often a cancelled caller checks whether its step has finished.
+_DRAIN_POLL_SECONDS = 0.005
 
 _INLINE: ContextVar[bool] = ContextVar("maf_compaction_inline_steps", default=False)
 
@@ -51,16 +54,26 @@ async def off_loop[**P, R](step: Callable[P, R], /, *args: P.args, **kwargs: P.k
     """
     if _INLINE.get():
         return step(*args, **kwargs)
-    running = asyncio.ensure_future(asyncio.to_thread(functools.partial(step, *args, **kwargs)))
+    # The thread itself says when the step is over. The task below cannot: at shutdown
+    # ``asyncio.run`` cancels it directly, and it then reports done while its thread still runs.
+    finished = threading.Event()
+
+    def run() -> R:
+        try:
+            return step(*args, **kwargs)
+        finally:
+            finished.set()
+
+    running = asyncio.ensure_future(asyncio.to_thread(run))
     try:
         return await asyncio.shield(running)
     except asyncio.CancelledError:
-        while not running.done():
+        while not finished.is_set():
             try:
-                await asyncio.wait({running})
+                await asyncio.sleep(_DRAIN_POLL_SECONDS)
             except asyncio.CancelledError:
                 continue
-        if not running.cancelled():
+        if running.done() and not running.cancelled():
             # Retrieved so a step that failed is not reported as a never-retrieved exception;
             # the cancellation is what the caller asked for.
             running.exception()

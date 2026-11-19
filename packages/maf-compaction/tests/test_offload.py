@@ -235,3 +235,49 @@ async def test_a_user_heavy_pass_leaves_the_loop_free_while_it_works() -> None:
     elapsed, longest = await _longest_hold_during_user_pass(inline=False)
     assert elapsed > 0.1
     assert longest < 0.1
+
+
+def test_shutdown_cancelling_every_task_still_waits_for_the_step() -> None:
+    """``asyncio.run`` cancels the step's task directly at shutdown, not only its caller: the
+    caller must still see the step finish before its cancellation surfaces."""
+    started = threading.Event()
+    finished = threading.Event()
+    seen_when_cancelled: list[bool] = []
+
+    def step() -> None:
+        started.set()
+        time.sleep(0.3)
+        finished.set()
+
+    async def caller() -> None:
+        try:
+            await off_loop(step)
+        except asyncio.CancelledError:
+            seen_when_cancelled.append(finished.is_set())
+            raise
+
+    async def main() -> None:
+        asyncio.create_task(caller())  # noqa: RUF006 - left running on purpose for shutdown
+        await asyncio.to_thread(started.wait)
+
+    asyncio.run(main())
+    assert seen_when_cancelled == [True]
+
+
+async def test_replay_validation_runs_off_the_loop() -> None:
+    """Entering a composed pass checks saved summaries for replay, which can hash every one of
+    them; it runs on a worker thread, and its scope is still set on the pass's own task."""
+    loop_thread = threading.get_ident()
+    strategy = _strategy(_Summarizer(), budget=200)
+    validated_on: list[int] = []
+    original = strategy.user_turns.invalid_replay_summaries
+
+    def recording(*args: object, **kwargs: object) -> set[str]:
+        validated_on.append(threading.get_ident())
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    strategy.user_turns.invalid_replay_summaries = recording  # type: ignore[method-assign]
+    with contextlib.suppress(ValueError):
+        await strategy(_history(10))
+    assert validated_on
+    assert validated_on[0] != loop_thread
