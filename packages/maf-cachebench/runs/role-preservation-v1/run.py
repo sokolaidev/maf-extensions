@@ -23,7 +23,7 @@ CRITERIA = {
 }
 
 
-async def run(model: str) -> dict:
+async def run(model: str, *, route_structured: bool = False) -> dict:
     """Run one pass, retaining the native choices and token usage for every request."""
     endpoint = urlsplit(os.environ["FOUNDRY_ENDPOINT"])
     if endpoint.scheme != "https" or not (endpoint.hostname or "").endswith(
@@ -74,8 +74,11 @@ async def run(model: str) -> dict:
                 raise ValueError("Unsupported provider verdict")
             return CandidateVerdict(answer["choice"], answer["probabilities"][answer["choice"]])
 
-        report = await evaluate_roles(judge=judge, model_id=model)
-    asked = [c for c in report.cases if c.policies["candidate_judge"].requests]
+        report = await evaluate_roles(
+            judge=judge, model_id=model, route_structured=route_structured
+        )
+    policy = "routed_judge" if route_structured else "candidate_judge"
+    asked = [c for c in report.cases if c.policies[policy].requests]
     for row, case in zip(rows, asked, strict=True):
         row.update(source=case.source, variant=case.variant, split=case.split)
     return {"report": asdict(report), "criteria": CRITERIA, "responses": rows}
@@ -84,10 +87,13 @@ async def run(model: str) -> dict:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True, help="Expected underlying model identity")
+    parser.add_argument(
+        "--route-structured", action="store_true", help="Judge only unresolved cases"
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():
         parser.error("choose a new output path for each run")
-    result = asyncio.run(run(args.model))
+    result = asyncio.run(run(args.model, route_structured=args.route_structured))
     with args.output.open("x", encoding="utf-8") as handle:
         print(json.dumps(result, indent=2, allow_nan=False), file=handle)

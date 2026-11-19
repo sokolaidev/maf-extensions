@@ -32,3 +32,9 @@ For a live pass, sign in to Azure CLI with access to the existing deployment, se
 ```sh
 uv run python packages/maf-cachebench/runs/role-preservation-v1/run.py --model Microsoft-Decision-1 --output decision-1.json
 ```
+
+For a routed Decision-1.1 run, select its deployment and add `--route-structured`. On these 18 fixtures the routed policy decides nine structured cases locally and sends nine prose candidates to the judge. The `routed_judge` policy in the report records decisions for both routes. The response archive contains only requests that were sent.
+
+```sh
+uv run python packages/maf-cachebench/runs/role-preservation-v1/run.py --model Microsoft-Decision-1.1 --route-structured --output decision-1.1-routed.json
+```
