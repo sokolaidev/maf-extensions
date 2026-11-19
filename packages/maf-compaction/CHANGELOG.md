@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.15.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.14.0...maf-compaction-v0.15.0) (2026-11-19)
+
+
+### Features
+
+* **compaction:** add opt-in stepped coverage for record merges ([#2794](https://github.com/sokolaidev/maf-extensions/issues/2794)) ([60ff363](https://github.com/sokolaidev/maf-extensions/commit/60ff363ab6b8ef9a0a77dc2a19e6a102298ab8fa))
+* **compaction:** add opt-in stepped coverage for record merges ([#2797](https://github.com/sokolaidev/maf-extensions/issues/2797)) ([2ec5ee5](https://github.com/sokolaidev/maf-extensions/commit/2ec5ee50500ee25567d71d465694513e39346b7b))
+* **compaction:** merge Responses recall records and qualify them in Cachebench ([#2799](https://github.com/sokolaidev/maf-extensions/issues/2799)) ([9af61a9](https://github.com/sokolaidev/maf-extensions/commit/9af61a9818e2d5844bb9487d62b0ec99507d069c))
+
+
+### Fixes
+
+* **compaction:** hand the background worker an over-budget pass's history, and keep foreground merges when no worker can start ([#2798](https://github.com/sokolaidev/maf-extensions/issues/2798)) ([1beef46](https://github.com/sokolaidev/maf-extensions/commit/1beef46c4b30afa1ee0a933831c42bd7c66085e3))
+* **compaction:** release session references when a phase ends ([#2810](https://github.com/sokolaidev/maf-extensions/issues/2810)) ([f00b232](https://github.com/sokolaidev/maf-extensions/commit/f00b2321a084e45035cc10d488e9dd47c0f7027a))
+
+
+### Performance
+
+* **compaction:** run a pass's synchronous steps on worker threads so the host's event loop stays free ([#2806](https://github.com/sokolaidev/maf-extensions/issues/2806)) ([728321d](https://github.com/sokolaidev/maf-extensions/commit/728321dd4295f34124ca204037370bf5e16b8fb0))
+
+
+### Reverts
+
+* **compaction:** remove prematurely merged stepped coverage ([#2796](https://github.com/sokolaidev/maf-extensions/issues/2796)) ([9391cb4](https://github.com/sokolaidev/maf-extensions/commit/9391cb4c63ca7adff8c5f99254855c0de11c54f2))
+
 ## [0.14.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.8...maf-compaction-v0.14.0) (2026-11-17)
 
 
