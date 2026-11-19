@@ -1986,11 +1986,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._keep_decisions, messages, replayed_user_fold=replayed_user_fold
         )
         # Refresh and application must see the same eligible sources.
-        with _yielding_when(over_budget=self._over(messages), policy=self.overflow_policy):
+        over = await off_loop(self._over, messages)
+        with _yielding_when(over_budget=over, policy=self.overflow_policy):
             await off_loop(self._refresh_merge_coverage, messages)
             if self._background is not None:
                 changed = await self._background.apply_ready(messages) or changed
-        if not self._over(messages):
+        if not await off_loop(self._over, messages):
             self._merge_event("under_budget")
             return changed
         start = _ChainStart.take(messages)
@@ -3572,7 +3573,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             await off_loop(self._refresh_merge_coverage, messages)
             return True
         changed = False
-        while self._records_over_share(messages) and self._merge_coverage.adaptive:
+        while await off_loop(self._records_over_share, messages) and self._merge_coverage.adaptive:
             self._check_chain_deadline()
             if not self._merge_coverage.lower_to_next_answer():
                 break
@@ -3634,7 +3635,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
 
     async def _apply_lossy_merges(self, messages: list[Message]) -> bool:
         changed = False
-        while self._records_over_share(messages):
+        while await off_loop(self._records_over_share, messages):
             self._check_chain_deadline()
             matches = await off_loop(self._lossy_merge_matches, messages)
             candidate = next(
