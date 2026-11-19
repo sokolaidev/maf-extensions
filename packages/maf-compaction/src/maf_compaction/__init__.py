@@ -62,6 +62,7 @@ from ._composed import (
     CompactionPendingResultBudgetExceeded,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
 )
+from ._decision_roles import make_decision_role_judge
 from ._media import MediaTokenEstimator
 from ._nested import find_nested_strategy
 from ._persistence import SessionPersistence, SessionResponseStream
@@ -73,6 +74,16 @@ from ._preserve import (
     set_preserved,
 )
 from ._record_diagnostics import observe_record_merges, record_merge_identity
+from ._record_roles import (
+    RecordRoleBatch,
+    RecordRoleCandidate,
+    RecordRoleJudge,
+    RecordRoleObservation,
+    RecordRoleReport,
+    RecordRoleRequest,
+    RecordRoleResponse,
+    RecordRoleVerdict,
+)
 from ._session import (
     DEFAULT_MAX_CARRIED_VIEWS,
     CompactionStack,
@@ -169,6 +180,14 @@ __all__ = [
     "MediaTokenEstimator",
     "RecallGate",
     "RecordDecisions",
+    "RecordRoleBatch",
+    "RecordRoleCandidate",
+    "RecordRoleJudge",
+    "RecordRoleObservation",
+    "RecordRoleReport",
+    "RecordRoleRequest",
+    "RecordRoleResponse",
+    "RecordRoleVerdict",
     "ResultTextRewriter",
     "SessionCompactionProvider",
     "SessionCompactionRegistry",
@@ -185,6 +204,7 @@ __all__ = [
     "find_nested_strategy",
     "find_record_index",
     "is_preserved",
+    "make_decision_role_judge",
     "make_recall_tool",
     "make_session_recall_tool",
     "make_session_record_merge_middleware",
