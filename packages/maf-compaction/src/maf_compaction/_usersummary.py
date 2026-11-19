@@ -1663,14 +1663,15 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                     self.summary_input_policy == "skip"
                     and prepared
                     and not await off_loop(
-                        fits_summary_input,
-                        self.prompt,
-                        _format_turns(
-                            [messages[int(item["start_index"])] for item in prepared],
-                            text=lambda turn: bodies.get(id(turn), turn.text),
-                        ),
-                        tokenizer=self.tokenizer,
-                        limit=self.max_summary_input_tokens,
+                        lambda: fits_summary_input(
+                            self.prompt,
+                            _format_turns(
+                                [messages[int(item["start_index"])] for item in prepared],
+                                text=lambda turn: bodies.get(id(turn), turn.text),
+                            ),
+                            tokenizer=self.tokenizer,
+                            limit=self.max_summary_input_tokens,
+                        )
                     )
                 ):
                     break

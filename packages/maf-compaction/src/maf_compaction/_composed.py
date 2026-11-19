@@ -3085,7 +3085,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 await asyncio.sleep(0)
             self._check_chain_deadline()
             pending, batch = selected
-            transcript = _numbered_records([bodies[last(group)] for group in batch])
+            transcript = await off_loop(_numbered_records, [bodies[last(group)] for group in batch])
             if not await off_loop(
                 fits_summary_input,
                 self.merge_prompt,
@@ -3105,7 +3105,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                     break
                 item, child = next_pending
                 selected_ids.update(last(group) for group in child)
-                body = _numbered_records([bodies[last(group)] for group in child])
+                body = await off_loop(_numbered_records, [bodies[last(group)] for group in child])
                 if not await off_loop(
                     fits_summary_input,
                     self.merge_prompt,
@@ -3176,11 +3176,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 key = prompt_digest, digests[oldest], limit
                 if key not in self._record_input_fits:
                     self._record_input_fits[key] = await off_loop(
-                        fits_summary_input,
-                        self.merge_prompt,
-                        _numbered_records([bodies[oldest]]),
-                        tokenizer=self.tokenizer,
-                        limit=limit,
+                        lambda: fits_summary_input(
+                            self.merge_prompt,
+                            _numbered_records([bodies[oldest]]),
+                            tokenizer=self.tokenizer,
+                            limit=limit,
+                        )
                     )
                 if not self._record_input_fits[key]:
                     self._merge_event("single_over_limit")
@@ -3204,7 +3205,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                         handled.add(oldest)
                         continue
                     handled.update(last(group) for group in batch)
-                    transcript = _numbered_records([bodies[last(group)] for group in batch])
+                    transcript = await off_loop(
+                        _numbered_records, [bodies[last(group)] for group in batch]
+                    )
                     batches.append((batch, transcript, 0))
                     if len(batches) < self._summary_parallelism():
                         continue

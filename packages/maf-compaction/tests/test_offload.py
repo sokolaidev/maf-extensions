@@ -450,6 +450,7 @@ _HISTORY_WORK = frozenset(
         "_band",
         "_observe_summaries",
         "_transcript",
+        "_numbered_records",
         "function_result_candidates",
         "_record_candidates",
     }
@@ -467,14 +468,17 @@ _ALLOWED_ON_LOOP = {
 
 def test_no_async_method_does_history_work_on_the_loop() -> None:
     """Every whole-history, rendering or tokenizing step an async method makes goes through
-    :func:`off_loop`, so the next pass that holds the loop fails here rather than in review."""
+    :func:`off_loop`, so the next pass that holds the loop fails here rather than in review.
+
+    Only the step :func:`off_loop` is handed runs off the loop. Its other arguments are evaluated
+    before it is called, on the loop, so a heavy call written as one is reported too.
+    """
     import ast
     from pathlib import Path
 
-    import maf_compaction
-
+    package = Path(off_loop.__code__.co_filename).parent
     found: list[str] = []
-    for path in sorted(Path(maf_compaction.__file__).parent.glob("*.py")):
+    for path in sorted(package.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for function in ast.walk(tree):
             if not isinstance(function, ast.AsyncFunctionDef):
@@ -487,7 +491,11 @@ def test_no_async_method_does_history_work_on_the_loop() -> None:
                 nested = node is not function and isinstance(
                     node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
                 )
-                if offloaded or nested:
+                if offloaded and isinstance(node, ast.Call) and node.args:
+                    # The step itself: a reference, or a lambda whose body runs off the loop.
+                    excluded.update(id(sub) for sub in ast.walk(node.args[0]))
+                    excluded.add(id(node))
+                if nested:
                     excluded.update(id(sub) for sub in ast.walk(node))
             for node in ast.walk(function):
                 if not isinstance(node, ast.Call) or id(node) in excluded:
