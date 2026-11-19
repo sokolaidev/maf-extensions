@@ -207,11 +207,14 @@ def pending_body(text: str, state: dict[str, Any]) -> str:
 def body(state: dict[str, Any], report: dict[str, Any], evidence_url: str) -> str:
     """Report residual findings without implying publication or closing release requests."""
     if report.get("kind") == "chrome":
+        requirement_source = (
+            "Verified published-image" if report.get("securityEvidence") else "Maintainer-declared"
+        )
         return with_marker(
             "## Summary\n\n"
             f"Update document-export Chrome from {report['before']} to {report['after']} "
             "using Google's signed stable repository and verified archive checksum.\n\n"
-            f"Maintainer-declared {report['requirement']['kind']} requirement: "
+            f"{requirement_source} {report['requirement']['kind']} requirement: "
             f"{as_code(report['requirement']['reason'])}.\n\n"
             "## Related issue\n\nRefs #2701.\n\n"
             "## Verification\n\n"
