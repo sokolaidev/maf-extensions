@@ -185,3 +185,53 @@ async def test_growing_a_fitting_batch_leaves_the_loop_free() -> None:
     elapsed, longest = await _longest_hold_during_prefix_search(inline=False)
     assert elapsed > 0.15
     assert longest < 0.1
+
+
+class _LengthCostTokenizer(CharacterEstimatorTokenizer):
+    """Counts like the estimator, at a cost that grows with the text, as a real tokenizer's does.
+
+    A per-call delay hides the user half's band checks, which tokenize a few long transcripts
+    rather than many messages.
+    """
+
+    def count_tokens(self, text: str) -> int:
+        time.sleep(len(text) * 2e-6)
+        return super().count_tokens(text)
+
+
+async def _longest_hold_during_user_pass(*, inline: bool) -> tuple[float, float]:
+    """Run the user-turn strategy over a user-heavy history beside a 5 ms ticker."""
+    from test_usersummary import _COMPACTING_CEILING, _conversation
+    from test_usersummary import _Summarizer as _UserSummarizer
+
+    from maf_compaction import UserTurnAnchoredSummarizationCompactionStrategy
+
+    strategy = UserTurnAnchoredSummarizationCompactionStrategy(
+        tokenizer=_LengthCostTokenizer(),
+        client=_UserSummarizer(),
+        max_input_tokens=_COMPACTING_CEILING,
+        max_summary_input_tokens=100_000,
+    )
+    messages = _conversation(12)
+    stop = asyncio.Event()
+    ticker = asyncio.create_task(_tick_until(stop))
+    await asyncio.sleep(0.01)
+    started = time.perf_counter()
+    with steps_inline(inline):
+        changed = await strategy(messages)
+    elapsed = time.perf_counter() - started
+    stop.set()
+    holds = await ticker
+    assert changed
+    return elapsed, max(holds)
+
+
+async def test_a_user_heavy_pass_leaves_the_loop_free_while_it_works() -> None:
+    # Control: the band selection and size checks kept on the loop do freeze it.
+    elapsed, longest = await _longest_hold_during_user_pass(inline=True)
+    assert elapsed > 0.1
+    assert longest > elapsed / 2
+
+    elapsed, longest = await _longest_hold_during_user_pass(inline=False)
+    assert elapsed > 0.1
+    assert longest < 0.1

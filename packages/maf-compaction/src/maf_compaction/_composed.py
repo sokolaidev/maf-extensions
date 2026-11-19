@@ -3821,14 +3821,9 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 self._merge_event("answer_discarded", phase=merge_phase, reason="external_hold")
             return "skipped"
         text = answer.text
-        bodies = record_bodies(messages, groups)
-        total, kept, required = self._value_coverage(bodies, text)
-        candidate = [build_record_message(text)]
-        replaced = [build_record_message(body) for body in bodies]
-        annotate_token_counts(candidate, tokenizer=self.tokenizer, force_retokenize=True)
-        annotate_token_counts(replaced, tokenizer=self.tokenizer, force_retokenize=True)
-        replaced_tokens = included_token_count(replaced)
-        saved = replaced_tokens - included_token_count(candidate)
+        bodies, total, kept, required, replaced_tokens, saved = await off_loop(
+            self._assess_answer, messages, groups, text
+        )
         outcome: _Consolidation = "accepted"
         reason = ""
         if answer.incomplete:
@@ -3906,6 +3901,30 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             )
         await off_loop(self._settle_accepted_record, messages)
         return "accepted"
+
+    def _assess_answer(
+        self, messages: list[Message], groups: list[dict[str, Any]], text: str
+    ) -> tuple[list[str], int, int, int, int, int]:
+        """Measure a record answer against the records it would replace, off the loop.
+
+        Returns the source bodies, the values they hold, kept and required, the tokens the
+        sources count, and how many the answer saves.
+        """
+        bodies = record_bodies(messages, groups)
+        total, kept, required = self._value_coverage(bodies, text)
+        candidate = [build_record_message(text)]
+        replaced = [build_record_message(body) for body in bodies]
+        annotate_token_counts(candidate, tokenizer=self.tokenizer, force_retokenize=True)
+        annotate_token_counts(replaced, tokenizer=self.tokenizer, force_retokenize=True)
+        replaced_tokens = included_token_count(replaced)
+        return (
+            bodies,
+            total,
+            kept,
+            required,
+            replaced_tokens,
+            replaced_tokens - included_token_count(candidate),
+        )
 
     def _accept_record(
         self, messages: list[Message], groups: Any, text: str, transcript: str

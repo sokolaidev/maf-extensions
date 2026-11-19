@@ -2098,8 +2098,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         """
         if not messages:
             return False
-        annotate_message_groups(messages)
-        annotate_token_counts(messages, tokenizer=self.tokenizer)
+        await off_loop(_annotate_for_pass, messages, self.tokenizer)
         return await self.compact_against(
             messages,
             prompt_tokens=included_token_count(messages),
@@ -3890,3 +3889,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 messages, find_record_index(messages), max_input_tokens=max_input_tokens
             )
         )
+
+
+def _annotate_for_pass(messages: list[Message], tokenizer: Any) -> None:
+    """Group and count the conversation before a standalone pass, off the loop."""
+    annotate_message_groups(messages)
+    annotate_token_counts(messages, tokenizer=tokenizer)

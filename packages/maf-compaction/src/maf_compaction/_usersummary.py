@@ -1054,8 +1054,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         """
         if not messages:
             return False
-        annotate_message_groups(messages)
-        annotate_token_counts(messages, tokenizer=self.tokenizer)
+        await off_loop(_annotate_for_pass, messages, self.tokenizer)
         return await self.compact_against(
             messages,
             prompt_tokens=included_token_count(messages),
@@ -1104,13 +1103,13 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         # Before the band is read, so a boundary is protected before anything is decided
         # against it, and the floor is counted on every pass over the trigger. Not folded into
         # the return value: annotating a message is not a change to what the model sees.
-        standing = self._observe_summaries(messages)
-        band = self._band(messages, standing)
+        standing, band, worth = await off_loop(self._choose_band, messages)
         bodies: dict[int, str] = {}
-        if self._worth_compacting(messages, band, included_token_count(messages)):
+        if worth:
             band, bodies = await self._describe_band(messages, band)
             if self.summary_input_policy == "skip":
-                band = bounded_prefix(
+                band = await off_loop(
+                    bounded_prefix,
                     band,
                     render=lambda spans: _format_turns(
                         [messages[int(span["start_index"])] for span in spans],
@@ -1137,14 +1136,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             return restored
 
         selected = [messages[int(span["start_index"])] for span in band]
-        transcript = _format_turns(
-            selected, text=lambda message: bodies.get(id(message), message.text)
-        )
-        source_key = ":".join(
-            media_identity(message)
-            for message in selected
-            if any(part.type in MEDIA_TYPES for part in message.contents)
-        )
+        transcript, source_key = await off_loop(_band_transcript, selected, bodies)
         remembered = self._recall(self.prompt, transcript, source_key=source_key)
         replayed = remembered is not None
         if remembered is None:
@@ -1188,7 +1180,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         ]
         if any_preserved(replaced):
             return restored
-        if not self._smaller(replaced, band, summary, summary_id=summary_id):
+        if not await off_loop(self._smaller, replaced, band, summary, summary_id=summary_id):
             # Remembered all the same, so the other list replays the refusal instead of asking.
             if remembered is None:
                 self._summary_failed()
@@ -2164,6 +2156,18 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self._remember(remembered)
         return remembered, False, True
 
+    def _choose_band(
+        self, messages: list[Message]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+        """The standing summaries, the band to compact, and whether it is worth it, off the loop."""
+        standing = self._observe_summaries(messages)
+        band = self._band(messages, standing)
+        return (
+            standing,
+            band,
+            self._worth_compacting(messages, band, included_token_count(messages)),
+        )
+
     def _smaller(
         self,
         replaced: list[Message],
@@ -2545,3 +2549,20 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         annotate_message_groups(messages, from_index=insertion_index, force_reannotate=False)
         annotate_token_counts(messages, tokenizer=self.tokenizer, from_index=insertion_index)
         self._observe_summaries(messages)
+
+
+def _band_transcript(selected: list[Message], bodies: dict[int, str]) -> tuple[str, str]:
+    """The band's summary transcript and its media identity, off the loop."""
+    transcript = _format_turns(selected, text=lambda message: bodies.get(id(message), message.text))
+    source_key = ":".join(
+        media_identity(message)
+        for message in selected
+        if any(part.type in MEDIA_TYPES for part in message.contents)
+    )
+    return transcript, source_key
+
+
+def _annotate_for_pass(messages: list[Message], tokenizer: Any) -> None:
+    """Group and count the conversation before a standalone pass, off the loop."""
+    annotate_message_groups(messages)
+    annotate_token_counts(messages, tokenizer=tokenizer)
