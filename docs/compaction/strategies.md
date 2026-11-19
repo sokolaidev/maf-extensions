@@ -217,6 +217,7 @@ Forced recall responses are checked against the next request's sending budget be
 | No-record overflow sheds whole groups with headroom and preserves the prefix between passes | Implemented | [#2144](https://github.com/sokolaidev/maf-extensions/issues/2144) (closed) by [#2147](https://github.com/sokolaidev/maf-extensions/pull/2147) (merged) |
 | Chain decisions kept across both lists and restorable by a harness | Implemented | [maf-compaction](../../packages/maf-compaction/README.md) |
 | One agent serves many sessions with JSON-safe compaction state and a bounded stack cache | Implemented | [#1827](https://github.com/sokolaidev/maf-extensions/issues/1827) (closed) by [#1830](https://github.com/sokolaidev/maf-extensions/pull/1830) (merged) |
+| Release session and stack references from copied contexts when a phase ends | Implemented | [#2807](https://github.com/sokolaidev/maf-extensions/issues/2807) (closed) by [#2810](https://github.com/sokolaidev/maf-extensions/pull/2810) (merged) |
 | The benchmark that produced the measurements | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
 | Separating the three user-summary modes by measurement | Not started | untracked |
 | Summarising each tool result individually rather than all in one record | Not started | untracked |
