@@ -104,8 +104,8 @@ class CompactionStack:
 
 @dataclass
 class _Binding:
-    session: AgentSession
-    stack: CompactionStack
+    session: AgentSession | None
+    stack: CompactionStack | None
 
 
 class SessionCompactionRegistry:
@@ -147,11 +147,12 @@ class SessionCompactionRegistry:
         """Restore a stack for one phase and persist it even when the phase raises."""
         current = self._current.get()
         if current is not None and current.session is session:
-            if self._active.get(session.session_id) is current:
+            if self._active.get(session.session_id) is current and current.stack is not None:
+                stack = current.stack
                 try:
-                    yield current.stack
+                    yield stack
                 finally:
-                    session.state[self.state_key] = current.stack.to_dict()
+                    session.state[self.state_key] = stack.to_dict()
                     self._remember_merge_state(session)
                 return
         if session.session_id in self._active:
@@ -184,6 +185,9 @@ class SessionCompactionRegistry:
                 self._remember_merge_state(session)
             finally:
                 self._current.reset(token)
+                # Copied contexts may outlive the phase, including cancelled timer contexts.
+                binding.session = None
+                binding.stack = None
                 del self._active[session.session_id]
             self._cache[session.session_id] = stack
             while len(self._cache) > self.max_cached_sessions:
@@ -220,7 +224,12 @@ class SessionCompactionRegistry:
     def current_stack(self) -> CompactionStack:
         """Return the active stack, refusing calls outside a session phase."""
         binding = self._current.get()
-        if binding is None or self._active.get(binding.session.session_id) is not binding:
+        if (
+            binding is None
+            or binding.session is None
+            or binding.stack is None
+            or self._active.get(binding.session.session_id) is not binding
+        ):
             raise RuntimeError("No active compaction session.")
         return binding.stack
 

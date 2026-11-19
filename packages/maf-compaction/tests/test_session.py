@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
+import weakref
 from collections.abc import AsyncIterator
 from contextlib import nullcontext
+from contextvars import copy_context
 from copy import deepcopy
 from typing import Any
 
@@ -340,6 +343,92 @@ def test_cache_is_bounded_and_session_state_wins_on_hits_and_resets():
     assert len(builds) == 4
     with pytest.raises(RuntimeError, match="No active"):
         registry.current_stack()
+
+
+@pytest.mark.parametrize("cached", [0, 1])
+@pytest.mark.parametrize("outcome", ["success", "error", "cancel", "snapshot", "merge_state"])
+async def test_cancelled_timeout_releases_phase_references(monkeypatch, cached, outcome):
+    registry = SessionCompactionRegistry(build_stack, max_cached_sessions=cached)
+    session = AgentSession(session_id="timed")
+    session.state["history"] = [Message("user", ["history " * 1000])]
+    session_ref = weakref.ref(session)
+
+    def fail(*args):
+        raise RuntimeError("persistence failed")
+
+    error = asyncio.CancelledError if outcome == "cancel" else RuntimeError
+    expected = nullcontext() if outcome == "success" else pytest.raises(error)
+    with monkeypatch.context() as patch, expected:
+        if outcome == "snapshot":
+            patch.setattr(CompactionStack, "to_dict", fail)
+        elif outcome == "merge_state":
+            patch.setattr(SessionCompactionRegistry, "_remember_merge_state", fail)
+        with registry.activate(session) as stack:
+            stack_ref = weakref.ref(stack)
+            async with asyncio.timeout(1200) as deadline:
+                timer = getattr(deadline, "_timeout_handler")
+                assert isinstance(timer, asyncio.TimerHandle)
+                await asyncio.sleep(0)
+                if outcome in ("error", "cancel"):
+                    raise error()
+
+    # Keep the cancelled timer itself alive regardless of the loop's purge policy.
+    assert timer.cancelled()
+    assert timer.when() > asyncio.get_running_loop().time()
+    if outcome not in ("snapshot", "merge_state"):
+        assert registry.state_key in session.state
+    assert not registry._active
+    with pytest.raises(RuntimeError, match="No active"):
+        registry.current_stack()
+    del session, stack, expected
+    gc.collect()
+    assert session_ref() is None
+    if cached and outcome not in ("snapshot", "merge_state"):
+        assert stack_ref() is registry._cache["timed"]
+    with registry.activate(AgentSession(session_id="replacement")):
+        pass
+    gc.collect()
+    assert stack_ref() is None
+
+
+@pytest.mark.parametrize("same_session", [False, True])
+def test_copied_context_expires_only_at_owning_phase_exit(same_session):
+    registry = SessionCompactionRegistry(build_stack)
+    outer_session = AgentSession(session_id="outer")
+    inner_session = outer_session if same_session else AgentSession(session_id="inner")
+    with registry.activate(outer_session) as outer:
+        outer_context = copy_context()
+        with registry.activate(inner_session) as inner:
+            inner_context = copy_context()
+            assert inner_context.run(registry.current_stack) is inner
+            inner.gate.arm()
+        assert registry.current_stack() is outer
+        assert outer_context.run(registry.current_stack) is outer
+        if same_session:
+            assert inner is outer
+            assert inner_context.run(registry.current_stack) is outer
+        else:
+            with pytest.raises(RuntimeError, match="No active"):
+                inner_context.run(registry.current_stack)
+        assert inner_session.state[registry.state_key] == inner.to_dict()
+    for context in (outer_context, inner_context):
+        with pytest.raises(RuntimeError, match="No active"):
+            context.run(registry.current_stack)
+
+    def new_phase():
+        with registry.activate(inner_session) as stack:
+            assert registry.current_stack() is stack
+            assert stack.gate.take()
+
+    with registry.activate(inner_session):
+        with pytest.raises(RuntimeError, match="No active"):
+            inner_context.run(registry.current_stack)
+        with pytest.raises(RuntimeError, match="Overlapping"):
+            inner_context.run(new_phase)
+
+    inner_context.run(new_phase)
+    with pytest.raises(RuntimeError, match="No active"):
+        inner_context.run(registry.current_stack)
 
 
 @pytest.mark.parametrize("cache", ["cached", "disabled", "evicted", "replica"])
