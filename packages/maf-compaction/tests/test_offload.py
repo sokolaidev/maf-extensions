@@ -281,3 +281,40 @@ async def test_replay_validation_runs_off_the_loop() -> None:
         await strategy(_history(10))
     assert validated_on
     assert validated_on[0] != loop_thread
+
+
+def test_shutdown_with_the_step_still_queued_does_not_hang() -> None:
+    """A step whose executor job had not started when shutdown cancelled it never runs; the
+    caller must not wait for it. Run in a thread so a hang fails the test instead of the run."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    blocker_started = threading.Event()
+    step_ran = threading.Event()
+    seen_cancelled: list[bool] = []
+
+    def blocker() -> None:
+        blocker_started.set()
+        time.sleep(0.3)
+
+    async def caller() -> None:
+        try:
+            await off_loop(step_ran.set)
+        except asyncio.CancelledError:
+            seen_cancelled.append(True)
+            raise
+
+    async def main() -> None:
+        # One worker, busy with the blocker, so the step's job stays queued at shutdown.
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=1))
+        asyncio.create_task(asyncio.to_thread(blocker))  # noqa: RUF006 - left for shutdown
+        while not blocker_started.is_set():
+            await asyncio.sleep(0.005)
+        asyncio.create_task(caller())  # noqa: RUF006 - left running on purpose for shutdown
+        await asyncio.sleep(0.02)
+
+    runner = threading.Thread(target=asyncio.run, args=(main(),), daemon=True)
+    runner.start()
+    runner.join(5)
+    assert not runner.is_alive(), "shutdown hung waiting for a step that never started"
+    assert seen_cancelled == [True]
+    assert not step_ran.is_set()

@@ -24,6 +24,7 @@ import threading
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from typing import cast
 
 #: How often a cancelled caller checks whether its step has finished.
 _DRAIN_POLL_SECONDS = 0.005
@@ -50,15 +51,25 @@ async def off_loop[**P, R](step: Callable[P, R], /, *args: P.args, **kwargs: P.k
     Cancelling the caller does not abandon the step: the thread cannot be stopped, and a step
     still editing the conversation while the caller unwinds would race whatever runs next. The
     cancellation is delivered once the step has finished, however many cancellations arrive
-    meanwhile (a request's cancel followed by a shutdown's, for example).
+    meanwhile (a request's cancel followed by a shutdown's, for example). A step whose job had
+    not started when the caller was cancelled is abandoned instead, and never runs.
     """
     if _INLINE.get():
         return step(*args, **kwargs)
     # The thread itself says when the step is over. The task below cannot: at shutdown
-    # ``asyncio.run`` cancels it directly, and it then reports done while its thread still runs.
+    # ``asyncio.run`` cancels it directly, and it then reports done while its thread still runs,
+    # or drops a job still queued in the executor, whose step then never runs at all.
     finished = threading.Event()
+    decided = threading.Lock()
+    started = False
+    abandoned = False
 
-    def run() -> R:
+    def run() -> R | None:
+        nonlocal started
+        with decided:
+            if abandoned:
+                return None
+            started = True
         try:
             return step(*args, **kwargs)
         finally:
@@ -66,9 +77,12 @@ async def off_loop[**P, R](step: Callable[P, R], /, *args: P.args, **kwargs: P.k
 
     running = asyncio.ensure_future(asyncio.to_thread(run))
     try:
-        return await asyncio.shield(running)
+        return cast("R", await asyncio.shield(running))
     except asyncio.CancelledError:
-        while not finished.is_set():
+        with decided:
+            # A step not yet started never will: nothing is left to wait for.
+            abandoned = not started
+        while not abandoned and not finished.is_set():
             try:
                 await asyncio.sleep(_DRAIN_POLL_SECONDS)
             except asyncio.CancelledError:
