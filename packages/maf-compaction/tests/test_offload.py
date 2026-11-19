@@ -361,3 +361,60 @@ def test_a_cancelled_callers_failed_step_is_not_reported_as_unretrieved(
 
     asyncio.run(main())
     assert [context.get("message") for context in reported] == []
+
+
+class _LoopThreadCounter(CharacterEstimatorTokenizer):
+    """Counts like the estimator, and records each count made on the given (loop) thread."""
+
+    def __init__(self, loop_thread: int) -> None:
+        super().__init__()
+        self.loop_thread = loop_thread
+        self.on_loop = 0
+
+    def count_tokens(self, text: str) -> int:
+        if threading.get_ident() == self.loop_thread:
+            self.on_loop += 1
+        return super().count_tokens(text)
+
+
+async def test_a_fold_counts_no_tokens_on_the_loop() -> None:
+    """Folding standing summaries checks the fold is smaller and applies it off the loop."""
+    from test_usersummary import (
+        _LARGE_SUMMARY_CHARS,
+        _conversation,
+        _fold_scenario,
+        _standing,
+        _three_standing,
+    )
+    from test_usersummary import _Summarizer as _UserSummarizer
+
+    strategy = _fold_scenario(_UserSummarizer("x" * _LARGE_SUMMARY_CHARS), min_band_share=0.05)
+    messages = await _three_standing(strategy)
+    messages += _conversation(1, first_turn=20)
+    counter = _LoopThreadCounter(threading.get_ident())
+    strategy.tokenizer = counter
+    assert await strategy(messages)
+    assert len(_standing(messages)) == 1, "the pass folded"
+    assert counter.on_loop == 0
+
+
+async def test_a_chunked_summary_counts_no_tokens_on_the_loop() -> None:
+    """A band too long for one request is summarized in chunks; each chunk's answer is
+    checked against its transcript off the loop."""
+    from test_usersummary import _COMPACTING_CEILING, _conversation
+    from test_usersummary import _Summarizer as _UserSummarizer
+
+    from maf_compaction import UserTurnAnchoredSummarizationCompactionStrategy
+
+    summarizer = _UserSummarizer()
+    counter = _LoopThreadCounter(threading.get_ident())
+    strategy = UserTurnAnchoredSummarizationCompactionStrategy(
+        tokenizer=counter,
+        client=summarizer,
+        max_input_tokens=_COMPACTING_CEILING,
+        max_summary_input_tokens=3_000,
+        summary_input_policy="chunk",
+    )
+    assert await strategy(_conversation(12))
+    assert len(summarizer.requests) > 1, "the band was summarized in chunks"
+    assert counter.on_loop == 0

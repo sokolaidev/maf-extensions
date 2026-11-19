@@ -32,7 +32,7 @@ import hashlib
 import json
 import logging
 from bisect import bisect_left
-from collections.abc import Callable, Generator, Mapping
+from collections.abc import Callable, Collection, Generator, Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar
 from copy import copy, deepcopy
@@ -152,6 +152,17 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def _expected_record_groups(
+    messages: list[Message], expected: Collection[int]
+) -> list[dict[str, Any]]:
+    """The consolidatable record groups whose last message is one of ``expected`` (by id)."""
+    return [
+        group
+        for group in consolidatable_record_groups(messages)
+        if id(messages[int(group["end_index"])]) in expected
+    ]
 
 
 def _annotate(messages: list[Message], tokenizer: Any) -> None:
@@ -1069,7 +1080,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if item.prompt != self.merge_prompt:
                 self._merge_event("answer_discarded", phase="apply", reason="prompt_changed")
                 continue
-            groups = consolidatable_record_groups(messages)
+            groups = await off_loop(consolidatable_record_groups, messages)
             for index in range(len(groups) - item.count + 1):
                 batch = groups[index : index + item.count]
                 if source_key(messages, batch) != item.sources:
@@ -3128,7 +3139,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if len(groups) < 2:
                 return False
             changed, _ = await self._merge_batch(
-                messages, groups, transcript=_transcript(messages, groups)
+                messages, groups, transcript=await off_loop(_transcript, messages, groups)
             )
             return changed
         layout = prompt_digest, limit, len(groups), chain(0, len(groups))
@@ -3247,12 +3258,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             for (_, body, depth), expected in zip(batches, identities, strict=True):
                 if self.merge_prompt != prompt:
                     break
-                groups = [
-                    group
-                    for group in consolidatable_record_groups(messages)
-                    if id(messages[int(group["end_index"])]) in expected
-                ]
-                if len(groups) != len(expected) or _transcript(messages, groups) != body:
+                groups = await off_loop(_expected_record_groups, messages, expected)
+                if (
+                    len(groups) != len(expected)
+                    or await off_loop(_transcript, messages, groups) != body
+                ):
                     continue
                 merged, failed = await self._merge_batch(
                     messages, groups, transcript=body, depth=depth
@@ -3290,7 +3300,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                         return changed, "failed"
                 if expected is None or self.merge_prompt != prompt:
                     continue
-                standing = consolidatable_record_groups(messages)
+                standing = await off_loop(consolidatable_record_groups, messages)
                 for first in range(len(standing) - len(original) + 1):
                     groups = standing[first : first + len(original)]
                     if source_key(messages, groups) != expected:
@@ -3375,7 +3385,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         queued: list[_PendingMerge] = []
         for child in children:
             records = 0
-            for body in record_bodies(messages, child):
+            for body in await off_loop(record_bodies, messages, child):
                 records = (records * _RUN_BASE + int(_digest(body), 16)) % _RUN_MODULUS
             pending = _PendingMerge(
                 len(child),
@@ -3414,16 +3424,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             if len(child) < 2:
                 continue
             if changed:
-                child = [
-                    group
-                    for group in consolidatable_record_groups(messages)
-                    if id(messages[int(group["end_index"])]) in expected
-                ]
+                child = await off_loop(_expected_record_groups, messages, expected)
                 if len(child) != len(expected):
                     if pending in self._pending_merges:
                         self._pending_merges.remove(pending)
                     continue
-            child_transcript = _transcript(messages, child)
+            child_transcript = await off_loop(_transcript, messages, child)
             if not await off_loop(
                 fits_summary_input,
                 self.merge_prompt,
@@ -3634,7 +3640,7 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
                 messages,
                 groups,
                 prompt=self.merge_prompt,
-                transcript=_transcript(messages, groups),
+                transcript=await off_loop(_transcript, messages, groups),
                 answer=_RecordAnswer(answer.text),
                 remember_lossy=True,
             )
@@ -3704,10 +3710,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._check_chain_deadline()
             if attempt > 1 and not self._short_of_target(messages, start):
                 break
-            groups = self._bounded_records(messages, prompt)
+            groups = await off_loop(self._bounded_records, messages, prompt)
             if not groups:
                 continue
-            transcript = _transcript(messages, groups)
+            transcript = await off_loop(_transcript, messages, groups)
             key = (transcript, len(groups), policy)
             if self._refused_rewrites.get(key, 0) >= attempt:
                 self._record_rewrites_skipped += 1
