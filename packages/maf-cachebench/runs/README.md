@@ -10,3 +10,5 @@ The records behind the published measurements, as `cachebench_live --results-jso
 The shell scripts beside each archive are the exact invocations, with endpoints replaced by placeholders and development commit identifiers omitted. Their CLI arguments retain the recorded workload and prices. Scripts for a re-run name the seeds they repeat and why the originals were set aside; the set-aside records themselves are not shipped.
 
 Reading the records needs the schema the package reads: `maf_cachebench.read_seed_records` refuses a line from a schema it does not understand rather than averaging a different measurement into the table, and a test in the package's suite opens every archived file to keep that promise honest.
+
+The [role preservation comparison](role-preservation-v1/README.md) uses matched record merges and records a separate verdict for each candidate. Its runner and measurement protocol are in that directory.
