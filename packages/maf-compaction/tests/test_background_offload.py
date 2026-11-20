@@ -1,9 +1,6 @@
-"""A running background record-merge worker no longer puts its session's steps on the loop.
-
-Issue #2834: the worker was a shallow copy of the strategy sharing its containers, so while it
-ran every step of its session, the worker's own included, stayed on the host's event loop. On a
-host's long conversation that came back as stalls of up to 12.6 s. The worker now owns every
-container it can write, and both sides offload their steps.
+"""A background record-merge worker owns every container it can write, so its steps and its
+session's foreground steps both run off the event loop, and the foreground reads the worker's
+search only between the worker's steps.
 """
 
 from __future__ import annotations
