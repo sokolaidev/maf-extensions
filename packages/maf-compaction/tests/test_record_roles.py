@@ -322,6 +322,7 @@ async def test_unsent_text_and_cancellation():
     ("model", "answers", "reasons"),
     [
         ("unrelated-model", {}, ["malformed", "malformed"]),
+        ("Microsoft-Decision-1.1", None, ["malformed", "malformed"]),
         ("Microsoft-Decision-1.1", {"unexpected": {}}, ["malformed", "malformed"]),
         (
             "microsoft-decision-1.1",
@@ -339,10 +340,16 @@ async def test_unsent_text_and_cancellation():
 )
 async def test_native_answers_are_bound_to_model_and_named_question(model, answers, reasons):
     async def send(_):
-        return {"model": model, "answers": answers}
+        return {
+            "model": model,
+            "answers": answers,
+            "usage": {"input_tokens": 31, "output_tokens": 4},
+        }
 
     measurement = RecordRolePass(_TASK, None, 1, 2, 1000)
     for body in ("first", "second"):
         measurement.observe("merge", "accepted", [body], "prose")
     report = await measurement.finish(True, make_decision_role_judge("configured-deployment", send))
     assert [row.reason for row in report.observations] == reasons and report.requests == 1
+    [request] = report.request_details
+    assert (request.input_tokens, request.output_tokens) == (31, 4)
