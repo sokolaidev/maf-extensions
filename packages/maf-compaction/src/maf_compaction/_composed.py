@@ -31,6 +31,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import threading
 from bisect import bisect_left
 from collections.abc import Callable, Collection, Generator, Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext
@@ -59,7 +60,7 @@ from ._anchored import (
 from ._carryover import CarriedView, Handed
 from ._media import annotate_token_counts
 from ._merge_coverage import LossyMerge, MergeCoverage
-from ._offload import off_loop, steps_inline
+from ._offload import off_loop, steps_locked
 from ._preserve import (
     PRESERVE_REASON_KEY,
     STANDS_IN_KEY,
@@ -176,6 +177,15 @@ def _expected_record_groups(
     ]
 
 
+def _own_containers[T](part: T) -> T:
+    """A shallow copy of ``part`` whose dict, list and set attributes are copies too."""
+    owned = copy(part)
+    for name, value in vars(part).items():
+        if isinstance(value, (dict, list, set)):
+            setattr(owned, name, copy(cast("Collection[Any]", value)))
+    return owned
+
+
 def _annotate(messages: list[Message], tokenizer: Any) -> None:
     annotate_message_groups(messages)
     annotate_token_counts(messages, tokenizer=tokenizer)
@@ -220,6 +230,8 @@ class _RecordMergeWork:
         self._task: asyncio.Task[None] | None = None
         self._tasks: set[asyncio.Task[None]] = set()
         self._worker: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy | None = None
+        # Held by each of the worker's steps on its thread (_offload.steps_locked).
+        self._worker_steps = threading.Lock()
 
     def bind(
         self,
@@ -238,11 +250,6 @@ class _RecordMergeWork:
     def remember(self, messages: list[Message], budget: int) -> None:
         self._history = messages
         self._budget = budget
-
-    @property
-    def busy(self) -> bool:
-        """Whether a worker task is running now."""
-        return self._task is not None and not self._task.done()
 
     def cancel(self) -> None:
         if self.strategy is not None and (self._task is not None or self._ready):
@@ -295,11 +302,19 @@ class _RecordMergeWork:
             self._budget, ready, lambda: generation == self._generation
         )
         self._worker = worker
-        self._task = asyncio.create_task(
-            worker._prepare_record_merges(messages)  # pyright: ignore[reportPrivateUsage]
-        )
+        self._worker_steps = threading.Lock()
+        self._task = asyncio.create_task(self._run_worker(worker, messages, self._worker_steps))
         self._tasks.add(self._task)
         self._task.add_done_callback(self._tasks.discard)
+
+    @staticmethod
+    async def _run_worker(
+        worker: ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+        messages: list[Message],
+        steps: threading.Lock,
+    ) -> None:
+        with steps_locked(steps):
+            await worker._prepare_record_merges(messages)  # pyright: ignore[reportPrivateUsage]
 
     async def apply_ready(self, messages: list[Message]) -> bool:
         strategy = self.strategy
@@ -309,8 +324,13 @@ class _RecordMergeWork:
         changed = await strategy._apply_record_answers(  # pyright: ignore[reportPrivateUsage]
             messages, prepared
         )
-        if self._worker is not None:
-            strategy._remember_record_search(self._worker)  # pyright: ignore[reportPrivateUsage]
+        # A worker step still writing what the search found is not read half way: the next
+        # pass reads it instead. A finished worker holds no step, so its search is always read.
+        if self._worker is not None and self._worker_steps.acquire(blocking=False):
+            try:
+                strategy._remember_record_search(self._worker)  # pyright: ignore[reportPrivateUsage]
+            finally:
+                self._worker_steps.release()
         if self._task is not None and self._task.done():
             worker = self._worker
             self._worker = None
@@ -1023,8 +1043,11 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         current: Callable[[], bool],
     ) -> ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         worker = copy(self)
-        worker.tool_results = copy(self.tool_results)
-        worker.user_turns = copy(self.user_turns)
+        # Every container it can write is its own, so its steps and the foreground's run on
+        # worker threads side by side (_offload).
+        worker.tool_results = _own_containers(self.tool_results)
+        worker.tool_results.fallback = _own_containers(self.tool_results.fallback)
+        worker.user_turns = _own_containers(self.user_turns)
         worker._background = None
         worker._merge_coverage = copy(self._merge_coverage)
         worker._record_consolidations_by_coverage = {}
@@ -1061,16 +1084,12 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
         deadline = None if self.chain_seconds is None else monotonic() + self.chain_seconds
         token = self._chain_deadline.set(deadline)
         try:
-            annotate_message_groups(messages)
-            annotate_token_counts(messages, tokenizer=self.tokenizer)
-            start = _ChainStart.take(messages) if self._over(messages) else None
+            await off_loop(_annotate, messages, self.tokenizer)
+            start = _ChainStart.take(messages) if await off_loop(self._over, messages) else None
             if start is None and self.record_budget_share is None:
                 self._merge_event("no_pressure")
                 return
-            with (
-                steps_inline(),
-                _yielding_when(over_budget=start is not None, policy=self.overflow_policy),
-            ):
+            with _yielding_when(over_budget=start is not None, policy=self.overflow_policy):
                 await self._merge_records(messages, start)
                 if self._merge_coverage.adaptive and self._merge_sweep_complete:
                     self._completed_merge_sweep = self._merge_sweep_key(messages)
@@ -1723,13 +1742,10 @@ class ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
             self._merge_coverage.current = self._merge_coverage.start
             self._merge_coverage.answers = []
             return False
-        # A background merge worker shares this strategy's state and runs on the loop between
-        # awaits, so its conversation keeps every step on the loop while it works (_offload).
-        with steps_inline(self._background is not None and self._background.busy):
-            await off_loop(_annotate, messages, self.tokenizer)
-            refusals = await off_loop(self.user_turns.invalid_replay_summaries, messages)
-            with self.user_turns.replay_scope(messages, refusals=frozenset(refusals)):
-                return await self._compact(messages)
+        await off_loop(_annotate, messages, self.tokenizer)
+        refusals = await off_loop(self.user_turns.invalid_replay_summaries, messages)
+        with self.user_turns.replay_scope(messages, refusals=frozenset(refusals)):
+            return await self._compact(messages)
 
     async def _compact(self, messages: list[Message]) -> bool:
         """Apply all phases within the caller's replay-refusal scope."""
