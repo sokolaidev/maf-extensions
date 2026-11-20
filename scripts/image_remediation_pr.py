@@ -258,7 +258,7 @@ def body(state: dict[str, Any], report: dict[str, Any], evidence_url: str) -> st
         "These exact bytes were overlaid on native build inputs for qualification; "
         "production package inputs remain unchanged."
         if positive_replay
-        else "Update build-consumed Bicep or OS package pins to install verified security fixes."
+        else "Update build-consumed Bicep, OS or bundled-runtime owner pins to install verified security fixes."
         if platform
         else "Rebuild Go module overlays and provider locks to remove the targeted image findings."
     )
