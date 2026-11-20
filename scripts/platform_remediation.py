@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import playwright_remediation as bundled
 import vendor_fix_evidence
 from bicep_source import policy
 from bicep_source import verify_inventory as verify_bicep_inventory
@@ -46,7 +47,7 @@ class PlatformGitHub(BotGitHub):
     """Keep platform proposals separate from the existing coordinated Go fix."""
 
     branch = "bot/platform-image-remediation"
-    title = "build: remediate Bicep and OS image dependencies with verified fixes"
+    title = "build: remediate image dependencies with verified security fixes"
 
     def __init__(self, paths: set[str]) -> None:
         self.paths = paths
@@ -89,7 +90,12 @@ def validate(root: Path, work: Path) -> tuple[dict[str, Any], dict[str, bytes]]:
     vendor = (
         vendor_fix_evidence.load(work / "vendor-security") if "vendorEvidence" in expected else None
     )
-    if plan(root, directories, vendor=vendor) != expected:
+    owner = (
+        bundled.load(work / "playwright-security", bundled.pin(root))
+        if "bundledEvidence" in expected
+        else None
+    )
+    if plan(root, directories, vendor=vendor, owner=owner) != expected:
         raise ValueError("Platform plan differs from retained monitoring and source")
     return expected, proposal(root, expected)
 
@@ -237,6 +243,9 @@ def verify_packages(expected: dict[str, Any], sbom: dict[str, Any], profile: str
     for row in expected["findings"]:
         if not applies(row, profile) or row["status"] not in ACTIONABLE:
             continue
+        if row.get("owner") == "playwright":
+            bundled.verify(sbom, row)
+            continue
         artifacts = [
             item
             for item in sbom["artifacts"]
@@ -340,6 +349,7 @@ def qualify(
     candidate_hashes = baseline_hashes | file_hashes(files)
     scans, unresolved = [], []
     baseline_updates = 0
+    bundled_baselines: dict[str, tuple[dict[str, Any], set[tuple[Any, ...]]]] = {}
     for variant in ("baseline", "candidate"):
         for profile in expected["affectedProfiles"]:
             directory = results / f"{variant}-{profile}"
@@ -393,6 +403,36 @@ def qualify(
                 verify_engine(sbom, profile, read(root / RECIPE))
                 verify_providers(sbom, read(root / CONTEXT / PROVIDER_MANIFESTS[profile]))
             rows = [row for row in expected["findings"] if applies(row, profile)]
+            if any(
+                row.get("owner") == "playwright" and row["status"] in ACTIONABLE for row in rows
+            ):
+                excluded = {
+                    (item["id"], item["artifactId"]) for item in assessment.get("notAffected", [])
+                }
+                applicable = {
+                    (
+                        match["vulnerability"]["id"],
+                        match["vulnerability"]["severity"],
+                        match["artifact"]["name"],
+                        match["artifact"]["type"],
+                        tuple(locations(match["artifact"])),
+                    ): match
+                    for match in report["matches"]
+                    if match["vulnerability"]["severity"] in {"High", "Critical"}
+                    and (match["vulnerability"]["id"], match["artifact"]["id"]) not in excluded
+                }
+                database = {key: assessment["database"][key] for key in ("built", "schemaVersion")}
+                if variant == "baseline":
+                    bundled_baselines[profile] = database, set(applicable)
+                else:
+                    previous_database, previous_findings = bundled_baselines[profile]
+                    if database != previous_database:
+                        raise ValueError(
+                            "Bundled runtime comparisons require the same scanner database"
+                        )
+                    unresolved.extend(
+                        match for key, match in applicable.items() if key not in previous_findings
+                    )
             wanted = {(row["id"], row["component"]) for row in rows if row["status"] in ACTIONABLE}
             found = remaining(report, wanted)
             resolved = []
@@ -478,7 +518,9 @@ def main() -> None:
             acquisition_summary(work, None)
             outputs({"status": "deferred", "profiles": "[]"})
             return
-        conflicts = competing_pulls(GitHub(), {item["path"] for item in result["updates"]})
+        paths = {item["path"] for item in result["updates"]}
+        paths.update(item["lock"] for item in result["updates"] if "lock" in item)
+        conflicts = competing_pulls(GitHub(), paths)
         write(work / "competing-pulls.json", conflicts)
         summary = os.environ.get("GITHUB_STEP_SUMMARY")
         if summary:

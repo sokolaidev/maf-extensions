@@ -1,4 +1,4 @@
-"""Map Bicep and APK findings to bounded build inputs or ordinary rebuild checks."""
+"""Map platform and bundled-runtime findings to bounded build inputs or rebuild checks."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import playwright_remediation as bundled
 import vendor_fix_evidence
 from bicep_source import policy
 from container_image_inputs import ANTIVIRUS_PYTHON_TAG, build_inputs, inventory
@@ -39,7 +40,7 @@ RUNTIME_RECIPES = {
 
 def inputs(root: Path) -> dict[str, str]:
     """Bind inherited recipes and compatibility policy as well as editable manifests."""
-    paths = [*build_inputs(root), root / "scripts/image_scan_policy.py"]
+    paths = [*build_inputs(root), root / "scripts/image_scan_policy.py", root / bundled.MANIFEST]
     result = {}
     for path in paths:
         if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
@@ -104,11 +105,20 @@ def acquire_plan(root: Path, directories: list[Path]) -> dict[str, Any]:
     if not directories or len({path.parent for path in directories}) != 1:
         raise ValueError("Expected one retained monitoring directory")
     vendor = vendor_fix_evidence.acquire(directories[0].parent.parent / "vendor-security")
-    return plan(root, directories, vendor=vendor)
+    owner = (
+        bundled.acquire(root, directories[0].parent.parent / "playwright-security")
+        if bundled.needed(directories)
+        else None
+    )
+    return plan(root, directories, vendor=vendor, owner=owner)
 
 
 def plan(
-    root: Path, directories: list[Path], *, vendor: dict[str, Any] | None = None
+    root: Path,
+    directories: list[Path],
+    *,
+    vendor: dict[str, Any] | None = None,
+    owner: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Retain unsupported findings; absence of an edit never establishes a clean image."""
     hashes = inputs(root)
@@ -137,6 +147,20 @@ def plan(
                 "status": "unsupported-component",
             }
             findings.append(row)
+            if profile == bundled.PROFILE and kind == "binary" and name == "node":
+                mapped, update = bundled.plan(
+                    root,
+                    json.loads((directory / "sbom.syft.json").read_text(encoding="utf-8")),
+                    component,
+                    row["fix"],
+                    owner,
+                )
+                row.update(mapped)
+                if row["status"] in {"update", "source-pin-sufficient"}:
+                    affected.add(profile)
+                if update is not None:
+                    updates[update["path"], update["component"]] = update
+                continue
             if kind not in {"dotnet", "apk"}:
                 continue
             try:
@@ -240,6 +264,12 @@ def plan(
             if key not in updates or version(fixed, kind) > version(updates[key]["after"], kind):
                 updates[key] = update
 
+    owner_update = updates.get((bundled.MANIFEST, "playwright"))
+    if owner_update is not None:
+        for row in findings:
+            if row.get("owner") == "playwright":
+                row["ownerVersion"] = owner_update["after"]
+
     def stable(value: dict[str, Any]) -> str:
         return json.dumps(value, sort_keys=True)
 
@@ -252,6 +282,7 @@ def plan(
         "updates": [updates[key] for key in sorted(updates)],
         "affectedProfiles": sorted(affected),
         **({"vendorEvidence": vendor["receipt"]} if vendor is not None else {}),
+        **({"bundledEvidence": owner["receipt"]} if owner is not None else {}),
     }
 
 
@@ -265,6 +296,9 @@ def proposal(root: Path, expected: dict[str, Any]) -> dict[str, bytes]:
             update[key] for key in ("path", "component", "before", "after")
         )
         kind = update["type"]
+        if kind == "python":
+            files.update(bundled.proposal(root, update))
+            continue
         old, new = version(before, kind), version(after, kind)
         if new[:2] != old[:2] or new <= old:
             raise ValueError("Unsafe platform package update")
