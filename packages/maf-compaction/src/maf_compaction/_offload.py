@@ -11,10 +11,10 @@ the awaiting pass touches neither until the step returns, and one conversation n
 passes at once. A step reads the caller's context variables (``asyncio.to_thread`` copies the
 context), and any it sets do not survive the step.
 
-Background record-merge work breaks that rule: its worker is a shallow copy of the strategy
-running as a task on the loop, so it shares state with the foreground pass and can resume
-between a pass's steps. While such work runs, and inside the worker, steps run where they
-are called, as before (:func:`steps_inline`).
+A background record-merge worker is a copy of the strategy with state of its own, so its steps
+run here too, beside the foreground pass's. Its steps hold the worker's lock
+(:func:`steps_locked`), which is how the foreground reads what the worker found without catching
+a step half way through writing it.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ _new_event: Callable[[], threading.Event] = threading.Event
 _DRAIN_POLL_SECONDS = 0.005
 
 _INLINE: ContextVar[bool] = ContextVar("maf_compaction_inline_steps", default=False)
+_STEP_LOCK: ContextVar[threading.Lock | None] = ContextVar("maf_compaction_step_lock", default=None)
 
 
 @contextmanager
@@ -49,6 +50,16 @@ def steps_inline(inline: bool = True) -> Generator[None]:
         _INLINE.reset(token)
 
 
+@contextmanager
+def steps_locked(lock: threading.Lock) -> Generator[None]:
+    """Hold ``lock`` for every :func:`off_loop` step of the enclosed code, wherever it runs."""
+    token = _STEP_LOCK.set(lock)
+    try:
+        yield
+    finally:
+        _STEP_LOCK.reset(token)
+
+
 async def off_loop[**P, R](step: Callable[P, R], /, *args: P.args, **kwargs: P.kwargs) -> R:
     """Run ``step`` on a worker thread and return its result.
 
@@ -58,8 +69,12 @@ async def off_loop[**P, R](step: Callable[P, R], /, *args: P.args, **kwargs: P.k
     meanwhile (a request's cancel followed by a shutdown's, for example). A step whose job had
     not started when the caller was cancelled is abandoned instead, and never runs.
     """
+    lock = _STEP_LOCK.get()
     if _INLINE.get():
-        return step(*args, **kwargs)
+        if lock is None:
+            return step(*args, **kwargs)
+        with lock:
+            return step(*args, **kwargs)
     # The thread itself says when the step is over. The task below cannot: at shutdown
     # ``asyncio.run`` cancels it directly, and it then reports done while its thread still runs,
     # or drops a job still queued in the executor, whose step then never runs at all.
@@ -75,7 +90,10 @@ async def off_loop[**P, R](step: Callable[P, R], /, *args: P.args, **kwargs: P.k
                 return None
             started = True
         try:
-            return step(*args, **kwargs)
+            if lock is None:
+                return step(*args, **kwargs)
+            with lock:
+                return step(*args, **kwargs)
         finally:
             finished.set()
 

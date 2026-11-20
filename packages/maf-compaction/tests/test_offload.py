@@ -460,10 +460,6 @@ _HISTORY_WORK = frozenset(
 
 #: Calls an async method may still make on the loop, each for a stated reason.
 _ALLOWED_ON_LOOP = {
-    # The background worker's own steps run inline by design (``steps_inline``).
-    ("_prepare_record_merges", "annotate_message_groups"),
-    ("_prepare_record_merges", "annotate_token_counts"),
-    ("_prepare_record_merges", "_over"),
     # One turn's own text, counted to decide whether a media description is worth keeping.
     ("_describe_turn", "count_tokens"),
 }

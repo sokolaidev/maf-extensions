@@ -328,7 +328,7 @@ A 429 halves concurrency, down to one, for 90 seconds by default. Each further 4
 
 A pass over a long conversation spends seconds of CPU between its awaits: grouping, token counting, replaying earlier decisions, merging and shedding. The composition runs those synchronous steps on worker threads (`asyncio.to_thread`), so the host's event loop keeps serving other sessions and requests while a pass works. The pass takes as long as before; only the loop is free.
 
-Two consequences for a host. The tokenizer is called from worker threads, so it must be safe to call from more than one thread at a time; `tiktoken` and the framework's `CharacterEstimatorTokenizer` are. Awaited collaborators, such as the summarizer client and media describers, are still awaited on the host's loop. While background record-merge work runs for a session, that session's steps stay on the loop, because the worker shares the strategy's state.
+Two consequences for a host. The tokenizer is called from worker threads, so it must be safe to call from more than one thread at a time; `tiktoken` and the framework's `CharacterEstimatorTokenizer` are. Awaited collaborators, such as the summarizer client and media describers, are still awaited on the host's loop. Background record-merge work offloads its steps too: its worker is a copy of the strategy with state of its own, so its steps and the foreground pass's run side by side.
 
 ### Loading and saving a session
 

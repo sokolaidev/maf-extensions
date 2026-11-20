@@ -48,8 +48,9 @@ def observe_record_merges(
     tracked identifiers are counted as whole tokens and never emitted.
 
     A callback can run on a worker thread, because a pass runs its synchronous steps there
-    (``maf_compaction._offload``). One session's callbacks never overlap; an observer shared
-    by sessions that compact at the same time must be thread-safe.
+    (``maf_compaction._offload``). With background record merges, a session's foreground pass
+    and its worker run their steps side by side, so even one session's callbacks can overlap:
+    an observer must be thread-safe.
     """
     token = record_merge_observer.set(observer)
     values_token = tracked_merge_values.set(tracked_values)
