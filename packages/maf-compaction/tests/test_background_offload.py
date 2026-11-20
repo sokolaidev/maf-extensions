@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import threading
 import time
 from typing import Any
 
@@ -102,22 +103,49 @@ async def test_a_pass_beside_a_busy_worker_leaves_the_loop_free() -> None:
     assert max(holds) < 0.1
 
 
-async def test_what_the_worker_found_is_read_only_between_its_steps(
+class _HoldingTokenizer(_SlowTokenizer):
+    """Once armed, holds the first count it gets on its thread until released."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.armed = False
+        self.holding = threading.Event()
+        self.release = threading.Event()
+
+    def count_tokens(self, text: str) -> int:
+        if self.armed and threading.current_thread() is not threading.main_thread():
+            self.armed = False
+            self.holding.set()
+            self.release.wait(10)
+        return super().count_tokens(text)
+
+
+async def test_a_running_worker_step_keeps_the_foreground_from_reading_its_search(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    strategy, work, messages, _ = await _busy_worker(_SlowTokenizer())
+    tokenizer = _HoldingTokenizer()
+    model = _Waiting()
+    strategy = _strategy(model, budget=100_000, share=0.001, cap=None, tokenizer=tokenizer)
+    work = _RecordMergeWork()
+    work.bind(strategy, None)
+    messages = _history(40)
+    await strategy(messages)
+    work.remember(messages, 100_000)
     read: list[Any] = []
     monkeypatch.setattr(strategy, "_remember_record_search", read.append)
+    tokenizer.armed = True
+    work.start(tool_reply())
     try:
-        # A worker step holds the lock on its thread: the read waits for the next pass.
-        assert work._worker_steps.acquire(blocking=False)
-        try:
-            await work.apply_ready(messages)
-            assert read == []
-        finally:
-            work._worker_steps.release()
+        # The worker's first step is counting tokens on its thread, and holds there.
+        assert await asyncio.to_thread(tokenizer.holding.wait, 10)
+        await work.apply_ready(messages)
+        assert read == []
 
+        tokenizer.release.set()
+        await asyncio.wait_for(model.asked.wait(), 30)
+        # Waiting on its summary request, the worker is between steps.
         await work.apply_ready(messages)
         assert len(read) == 1
     finally:
+        tokenizer.release.set()
         await work.close()

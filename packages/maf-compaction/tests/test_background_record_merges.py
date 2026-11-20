@@ -863,6 +863,8 @@ async def test_background_deadline_keeps_search_and_unfinished_sibling_across_re
 @pytest.mark.parametrize("share", [None, 0.001])
 async def test_background_batch_search_yields_to_the_next_pass(batch_fits, share):
     entered = asyncio.Event()
+    # The worker counts tokens on a worker thread, where an asyncio.Event may not be set.
+    loop = asyncio.get_running_loop()
 
     class BatchTokenizer(CharacterEstimatorTokenizer):
         probes = 0
@@ -871,7 +873,7 @@ async def test_background_batch_search_yields_to_the_next_pass(batch_fits, share
             if '"role": "user"' in text and '"text": "1. ' in text and "\\n2. " in text:
                 self.probes += 1
                 if self.probes == 3:
-                    entered.set()
+                    loop.call_soon_threadsafe(entered.set)
                 return 100 if batch_fits else 100_000
             return super().count_tokens(text)
 
