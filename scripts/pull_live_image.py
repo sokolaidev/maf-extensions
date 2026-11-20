@@ -17,6 +17,7 @@ from image_release_needed import release_evidence
 from verify_container_release import pull_image
 
 PROFILE_ENV = {
+    "drawio-export": "DRAWIO_EXPORT_IMAGE",
     "shell": "SHELL_SANDBOX_IMAGE",
     "terraform-random": "TERRAFORM_SANDBOX_IMAGE",
     "opentofu-random": "OPENTOFU_SANDBOX_IMAGE",

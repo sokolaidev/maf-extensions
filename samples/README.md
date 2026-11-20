@@ -30,6 +30,7 @@ For contributors, [adding a sample](../CONTRIBUTING.md#adding-a-sample) covers d
 | [`22_compaction_cachebench`](22_compaction_cachebench/) | Twelve real model requests compare cachebench replay with and without anchored compaction; checks provider usage and actual prompt reduction | Azure model access; no sandbox |
 | [`23_word_resource_estimate`](23_word_resource_estimate/) | Scan an incoming Word document, extract its Azure inventory, query public retail prices and write a cost table with explicit assumptions and unresolved rows | Docker, antivirus/document/pricing images, the packaged egress proxy and an Azure OpenAI deployment |
 | [`24_openclaw_bicep`](24_openclaw_bicep/) | An isolated OpenClaw Gateway and verified published MCP worker validating and repairing Bicep, with measured results and cleanup | Docker with Linux/amd64 guests, Node/npm and uv; no model account for smoke |
+| [`25_docker_drawio_png`](25_docker_drawio_png/) | Render a bundled draw.io diagram to PNG and save the editable source alongside it | Docker with Linux/amd64 guests and the draw.io export image |
 
 Sample [24_openclaw_bicep](24_openclaw_bicep/) downloads and verifies the qualified published worker, installs an isolated OpenClaw Gateway, and checks invalid Bicep and its repair through Docker. Its deterministic smoke needs no model account; real-model mode is optional. It reuses the [experimental qualification harness](experimental/openclaw_bicep_e2e/) from the checkout, which retains the explicit-wheel interface for development.
 
