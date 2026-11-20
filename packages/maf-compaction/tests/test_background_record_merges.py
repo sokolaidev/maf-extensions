@@ -43,6 +43,7 @@ from maf_compaction import (
 from maf_compaction import _composed as composed_module
 from maf_compaction._composed import _RecordAnswer, _RecordMergeWork, _transcript
 from maf_compaction._preserve import set_preserved
+from maf_compaction._record_diagnostics import record_merge_observer
 from maf_compaction._toolsummary import (
     _distinctive_tokens,
     consolidatable_record_groups,
@@ -862,6 +863,8 @@ async def test_background_deadline_keeps_search_and_unfinished_sibling_across_re
 @pytest.mark.parametrize("share", [None, 0.001])
 async def test_background_batch_search_yields_to_the_next_pass(batch_fits, share):
     entered = asyncio.Event()
+    # The worker counts tokens on a worker thread, where an asyncio.Event may not be set.
+    loop = asyncio.get_running_loop()
 
     class BatchTokenizer(CharacterEstimatorTokenizer):
         probes = 0
@@ -870,7 +873,7 @@ async def test_background_batch_search_yields_to_the_next_pass(batch_fits, share
             if '"role": "user"' in text and '"text": "1. ' in text and "\\n2. " in text:
                 self.probes += 1
                 if self.probes == 3:
-                    entered.set()
+                    loop.call_soon_threadsafe(entered.set)
                 return 100 if batch_fits else 100_000
             return super().count_tokens(text)
 
@@ -883,13 +886,24 @@ async def test_background_batch_search_yields_to_the_next_pass(batch_fits, share
     await strategy(messages)
     if share is None:
         work.remember(messages, 50)
-    work.start(tool_reply())
-    await asyncio.wait_for(entered.wait(), 2)
-    assert not await strategy(messages)
-    assert tokenizer.probes < 10
-    assert not running(work).done()
-    await work.close()
-    assert not model.requests
+    requests: list[str] = []
+
+    def observe(phase: str, event: str, counts: object) -> None:
+        if event == "request_prepared":
+            requests.append(phase)
+
+    token = record_merge_observer.set(observe)
+    try:
+        work.start(tool_reply())
+        await asyncio.wait_for(entered.wait(), 2)
+        # The search runs beside the pass on its own state: the pass is not held up waiting for
+        # it, and leaves the merging to it.
+        await asyncio.wait_for(strategy(messages), 2)
+    finally:
+        await work.close()
+        record_merge_observer.reset(token)
+    assert set(requests) <= {"background"}
+    assert len(model.requests) == len(requests)
 
 
 async def test_pending_background_work_does_not_bypass_the_sending_budget():
