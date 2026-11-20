@@ -1,3 +1,3 @@
-playwright==1.65.0
+playwright==1.65.2
 markdown-it-py==4.2.0
 pypdf==7.0.0
