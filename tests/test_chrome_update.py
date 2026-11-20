@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -18,6 +20,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import chrome_inventory  # noqa: E402
 import chrome_repository as repository  # noqa: E402
 import chrome_update as update  # noqa: E402
+import chrome_update_security as security  # noqa: E402
 import image_remediation_pr as publication  # noqa: E402
 from container_release import read, scan_result, write  # noqa: E402
 from test_chrome_inventory import IMAGE  # noqa: E402
@@ -532,7 +535,12 @@ def test_workflow_qualifies_and_retains_before_minting_write_identity():
     )
     assert workflow[True]["schedule"] == [{"cron": "30 4 * * *"}]
     job = workflow["jobs"]["update"]
-    assert job["permissions"] == {"contents": "read", "pull-requests": "read"}
+    assert job["permissions"] == {
+        "contents": "read",
+        "pull-requests": "read",
+        "actions": "read",
+        "attestations": "read",
+    }
     steps = job["steps"]
     app = next(i for i, step in enumerate(steps) if step.get("id") == "app")
     before = "\n".join(step.get("run", "") for step in steps[:app])
@@ -540,7 +548,329 @@ def test_workflow_qualifies_and_retains_before_minting_write_identity():
     assert next(i for i, step in enumerate(steps) if step.get("id") == "retain") < app
     assert "inputs.deliver" in steps[app]["if"]
     assert "github.event_name == 'workflow_dispatch'" in steps[app]["if"]
-    assert "inputs.reason == 'security' || inputs.reason == 'package'" in steps[app]["if"]
-    assert "inputs.justification != ''" in steps[app]["if"]
+    assert "github.event_name == 'schedule'" in steps[app]["if"]
+    assert "steps.authorize.outputs.deliver == 'true'" in steps[app]["if"]
+    authorize = next(i for i, step in enumerate(steps) if step.get("id") == "authorize")
+    retain = next(i for i, step in enumerate(steps) if step.get("id") == "retain")
+    assert authorize < retain < app
+    assert "chrome_update.py authorize" in steps[authorize]["run"]
+    assert "inputs.deliver" in steps[authorize]["if"]
     assert "refs/heads/main" in job["if"]
     assert "contents: write" not in json.dumps(job["permissions"])
+
+
+@pytest.fixture
+def published_chrome(tmp_path, inventory):
+    directory = tmp_path / "published" / "evidence" / "document-export-0.1.6"
+    sbom = deepcopy(inventory)
+    package = sbom["artifacts"][0]
+    package["version"] = package["metadata"]["version"] = "157.0.8103.38-1"
+    sbom["artifacts"] = sbom["artifacts"][:2]
+    browser = chrome_inventory.component(sbom)
+    sbom["artifacts"].append(browser)
+    report = {
+        "source": {"type": "image", "target": {"imageID": IMAGE}},
+        "descriptor": {
+            "db": {"status": {"valid": True, "built": AT, "schemaVersion": "v6", "from": "test"}}
+        },
+        "matches": [
+            {
+                "artifact": browser,
+                "vulnerability": {
+                    "id": "CVE-2026-130910",
+                    "severity": "Critical",
+                    "fix": {"state": "fixed", "versions": ["157.0.8103.78"]},
+                },
+            }
+        ],
+        "ignoredMatches": [],
+    }
+    candidate = {
+        "profile": "document-export",
+        "version": "0.1.6",
+        "sourceCommit": "c" * 40,
+        "sourceRef": "refs/heads/main",
+        "attemptId": "123",
+        "registryDigest": "sha256:" + "b" * 64,
+        "assessedManifestDigest": "sha256:" + "b" * 64,
+        "imageId": IMAGE,
+    }
+    write(directory / "sbom.syft.json", sbom)
+    write(directory / "grype.json", report)
+    write(directory / "observation.json", {"candidate": candidate})
+    refresh_published_assessment(directory)
+    return directory
+
+
+def refresh_published_assessment(directory):
+    observed = read(directory / "observation.json")
+    observed["assessment"] = scan_result(
+        read(directory / "grype.json"), IMAGE, AT, sbom=read(directory / "sbom.syft.json")
+    ) | {"digest": observed["candidate"]["registryDigest"]}
+    write(directory / "observation.json", observed)
+
+
+@pytest.mark.parametrize("severity", ["High", "Critical", "Medium", "Low"])
+def test_automatic_security_requirement_needs_current_high_or_critical(published_chrome, severity):
+    report = read(published_chrome / "grype.json")
+    report["matches"][0]["vulnerability"]["severity"] = severity
+    write(published_chrome / "grype.json", report)
+    refresh_published_assessment(published_chrome)
+    result = security.plan([published_chrome], "157.0.8103.38-1", VERSION)
+    requirement = security.requirement(result)
+    assert bool(requirement) == (severity in {"High", "Critical"})
+    if requirement:
+        assert "CVE-2026-130910" in requirement["reason"]
+        assert result["evidence"]["registryDigest"] in requirement["reason"]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "clean",
+        "no-fix",
+        "future-fix",
+        "bad-version",
+        "already-fixed",
+        "other-component",
+        "source-fixed",
+    ],
+)
+def test_routine_or_unrelated_updates_do_not_authorize_security_delivery(published_chrome, change):
+    report = read(published_chrome / "grype.json")
+    vulnerability = report["matches"][0]["vulnerability"]
+    before = "157.0.8103.38-1"
+    if change == "clean":
+        report["matches"] = []
+    elif change == "no-fix":
+        vulnerability["fix"] = {"state": "unknown", "versions": []}
+    elif change == "source-fixed":
+        before = VERSION
+    elif change == "other-component":
+        sbom = read(published_chrome / "sbom.syft.json")
+        sbom["artifacts"][1].update(version="1.0", locations=[])
+        report["matches"][0]["artifact"] = sbom["artifacts"][1]
+        write(published_chrome / "sbom.syft.json", sbom)
+    else:
+        vulnerability["fix"]["versions"] = [
+            {
+                "future-fix": "158.0.9000.1",
+                "bad-version": "not-a-version",
+                "already-fixed": "157.0.8103.38",
+            }[change]
+        ]
+    write(published_chrome / "grype.json", report)
+    refresh_published_assessment(published_chrome)
+    result = security.plan([published_chrome], before, VERSION)
+    assert result["affectedProfiles"] == []
+    assert security.requirement(result) is None
+
+
+@pytest.mark.parametrize("change", ["profile", "image", "artifact", "ignored"])
+def test_security_eligibility_refuses_contradictory_or_filtered_monitor_bytes(
+    published_chrome, change
+):
+    if change == "profile":
+        observed = read(published_chrome / "observation.json")
+        observed["candidate"]["profile"] = "antivirus"
+        write(published_chrome / "observation.json", observed)
+    else:
+        report = read(published_chrome / "grype.json")
+        if change == "image":
+            report["source"]["target"]["imageID"] = "sha256:" + "f" * 64
+        elif change == "artifact":
+            report["matches"][0]["artifact"]["version"] = "1.2.3.4"
+        else:
+            report["ignoredMatches"] = report.pop("matches")
+            report["matches"] = []
+        write(published_chrome / "grype.json", report)
+    with pytest.raises(ValueError):
+        security.plan([published_chrome], "157.0.8103.38-1", VERSION)
+
+
+def retain_security(work, receipt, directory):
+    target = work / "security"
+    destination = target / "evidence" / directory.name
+    shutil.copytree(directory, destination)
+    observed = read(destination / "observation.json")
+    monitored = {
+        "source": receipt["source"],
+        "acquiredAt": AT,
+        "oldestAssessment": AT,
+        "monitor": {"id": 456, "run_attempt": 1},
+        "directories": [directory.name],
+        "images": {
+            "document-export": {
+                "release": directory.name,
+                "record": {
+                    "version": "0.1.6",
+                    "candidate": observed["candidate"],
+                    "latestAttempt": observed["assessment"],
+                },
+            }
+        },
+    }
+    write(target / "receipt.json", monitored)
+    result = security.plan([destination], receipt["before"], receipt["package"]["version"])
+    write(target / "plan.json", result)
+    return result
+
+
+def test_scheduled_authorization_and_delivery_recompute_the_requirement(
+    candidate, published_chrome, monkeypatch
+):
+    work, receipt, _ = candidate
+    write(work / "qualified.json", update.qualify(ROOT, work))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    monkeypatch.setattr(update, "main_head", lambda _: SOURCE)
+    monkeypatch.setattr(update, "competing_pulls", lambda *_: [])
+    freshness = []
+    monkeypatch.setattr(security.monitoring, "current", lambda _c, r: freshness.append(r))
+    monkeypatch.setattr(
+        security, "acquire", lambda *_: retain_security(work, receipt, published_chrome)
+    )
+    output = []
+    monkeypatch.setattr(update, "outputs", output.append)
+    requirement = update.authorize(ROOT, work, FakeGitHub(), None, "")
+    assert output == [{"deliver": "true"}]
+    assert read(work / "delivery-requirement.json") == requirement
+    assert freshness == [receipt["security"]]
+    client: Any = FakeGitHub()
+    client.branch = update.ChromeGitHub.branch
+    client.title = update.ChromeGitHub.title
+    monkeypatch.setattr(update, "ChromeGitHub", lambda: client)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["chrome_update.py", "publish", "--work", str(work), "--bot", BOT, "--artifact-id", "1"],
+    )
+    update.main()
+    assert read(work / "publication.json")["status"] == "created"
+    update.main()
+    assert read(work / "publication.json")["status"] == "unchanged"
+    assert len(client.pulls) == 1
+    assert "Verified published-image security requirement" in client.pulls[0]["body"]
+    assert "CVE-2026-130910" in client.pulls[0]["body"]
+    assert "Maintainer-declared" not in client.pulls[0]["body"]
+    assert len(freshness) >= 5
+
+
+@pytest.mark.parametrize("change", ["plan", "receipt", "catalogue", "directory", "source", "scope"])
+def test_scheduled_security_revalidation_binds_the_authoritative_snapshot(
+    candidate, published_chrome, change
+):
+    work, receipt, _ = candidate
+    retain_security(work, receipt, published_chrome)
+    receipt["security"] = read(work / "security/receipt.json")
+    if change == "plan":
+        result = read(work / "security/plan.json")
+        result["findings"] = []
+        write(work / "security/plan.json", result)
+    elif change == "receipt":
+        receipt["security"]["monitor"]["id"] = 999
+    else:
+        retained = receipt["security"]
+        if change == "catalogue":
+            retained["images"]["document-export"]["record"]["latestAttempt"]["outcome"] = "clean"
+        elif change == "directory":
+            retained["directories"] = ["../elsewhere"]
+        elif change == "source":
+            retained["source"] = "f" * 40
+        else:
+            retained["images"] = {}
+        write(work / "security/receipt.json", retained)
+    with pytest.raises(ValueError):
+        security.validate(work / "security", receipt)
+
+
+def test_security_acquisition_uses_the_authenticated_document_export_scope(
+    published_chrome, tmp_path, monkeypatch
+):
+    calls = []
+
+    def acquire(client, root, directory, **kwargs):
+        calls.append(kwargs)
+        return kwargs["planner"](root, [published_chrome])
+
+    monkeypatch.setattr(security.monitoring, "acquire_with_retry", acquire)
+    result = security.acquire(FakeGitHub(), ROOT, tmp_path / "work", "157.0.8103.38-1", VERSION)
+    assert calls[0]["selected_profiles"] == ["document-export"]
+    assert result["findings"][0]["id"] == "CVE-2026-130910"
+
+
+def test_busy_security_acquisition_defers_without_write_eligibility(tmp_path, monkeypatch):
+    monkeypatch.setattr(security.monitoring, "acquire_with_retry", lambda *a, **k: None)
+    with pytest.raises(update.EvidenceChanging, match="monitoring or catalogue"):
+        security.acquire(FakeGitHub(), ROOT, tmp_path / "work", "157.0.8103.38-1", VERSION)
+
+
+def test_routine_scheduled_candidate_cannot_authorize_or_deliver(
+    candidate, published_chrome, monkeypatch
+):
+    work, receipt, _ = candidate
+    report = read(published_chrome / "grype.json")
+    report["matches"] = []
+    write(published_chrome / "grype.json", report)
+    refresh_published_assessment(published_chrome)
+    write(work / "qualified.json", update.qualify(ROOT, work))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
+    monkeypatch.setattr(update, "current", lambda *_: None)
+    monkeypatch.setattr(
+        security, "acquire", lambda *_: retain_security(work, receipt, published_chrome)
+    )
+    outputs = []
+    monkeypatch.setattr(update, "outputs", outputs.append)
+    assert update.authorize(ROOT, work, FakeGitHub(), None, "") is None
+    assert outputs == [{"deliver": "false"}]
+    assert read(work / "delivery-requirement.json") == {"status": "no-security-fix"}
+    monkeypatch.setattr(update, "publish", lambda *a, **k: pytest.fail("Unexpected write"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["chrome_update.py", "publish", "--work", str(work), "--bot", BOT, "--artifact-id", "1"],
+    )
+    with pytest.raises(ValueError, match="verified security requirement"):
+        update.main()
+
+
+@pytest.mark.parametrize("change", ["requirement", "monitor", "history"])
+def test_scheduled_delivery_refuses_changed_authority_before_writes(
+    candidate, published_chrome, monkeypatch, change
+):
+    work, receipt, _ = candidate
+    expected = retain_security(work, receipt, published_chrome)
+    receipt["security"] = read(work / "security/receipt.json")
+    write(work / "qualified.json", update.qualify(ROOT, work))
+    write(work / "delivery-requirement.json", security.requirement(expected))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    monkeypatch.setattr(update, "main_head", lambda _: SOURCE)
+    monkeypatch.setattr(update, "competing_pulls", lambda *_: [])
+    client: Any = FakeGitHub()
+    client.branch = update.ChromeGitHub.branch
+    monkeypatch.setattr(update, "ChromeGitHub", lambda: client)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["chrome_update.py", "publish", "--work", str(work), "--bot", BOT, "--artifact-id", "1"],
+    )
+    if change == "requirement":
+        write(work / "delivery-requirement.json", {"kind": "security", "reason": "invented"})
+        with pytest.raises(ValueError, match="verified security requirement"):
+            update.main()
+    else:
+
+        def changed(*_):
+            if change == "history":
+                raise update.HistoryAdvanced("Catalogue advanced")
+            raise update.EvidenceChanging("Monitoring changed")
+
+        monkeypatch.setattr(security.monitoring, "current", changed)
+        outputs = []
+        monkeypatch.setattr(update, "outputs", outputs.append)
+        update.main()
+        assert read(work / "deferral.json")["status"] == "deferred"
+        assert outputs == [{"updates": "false", "deliver": "false"}]
+    assert client.writes == []
+    assert not client.head and not client.pulls

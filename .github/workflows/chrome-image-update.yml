@@ -36,6 +36,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      actions: read
+      attestations: read
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -60,6 +62,17 @@ jobs:
       - name: Check the proposed source
         if: steps.acquire.outputs.updates == 'true'
         run: uv run --locked poe gate
+      - name: Verify the security or package delivery requirement
+        id: authorize
+        if: >-
+          steps.acquire.outputs.updates == 'true' &&
+          (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.deliver))
+        env:
+          UPDATE_REASON: ${{ inputs.reason || 'none' }}
+          UPDATE_JUSTIFICATION: ${{ inputs.justification }}
+        run: >-
+          uv run --locked python scripts/chrome_update.py authorize --work "$RUNNER_TEMP/chrome-update"
+          --reason "$UPDATE_REASON" --justification "$UPDATE_JUSTIFICATION"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: retain
         if: always()
@@ -75,8 +88,8 @@ jobs:
         if: >-
           success() && steps.acquire.outputs.updates == 'true' &&
           vars.IMAGE_REMEDIATION_ENABLED == 'true' && vars.IMAGE_REMEDIATION_APP_CLIENT_ID != '' &&
-          github.event_name == 'workflow_dispatch' && inputs.deliver &&
-          (inputs.reason == 'security' || inputs.reason == 'package') && inputs.justification != ''
+          steps.authorize.outputs.deliver == 'true' &&
+          (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.deliver))
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.IMAGE_REMEDIATION_APP_CLIENT_ID }}
@@ -93,7 +106,7 @@ jobs:
           IMAGE_REMEDIATION_APP_PRIVATE_KEY: ${{ secrets.IMAGE_REMEDIATION_APP_PRIVATE_KEY }}
           BOT: ${{ steps.app.outputs.app-slug }}[bot]
           ARTIFACT_ID: ${{ steps.retain.outputs.artifact-id }}
-          UPDATE_REASON: ${{ inputs.reason }}
+          UPDATE_REASON: ${{ inputs.reason || 'none' }}
           UPDATE_JUSTIFICATION: ${{ inputs.justification }}
         run: >-
           uv run --locked python scripts/chrome_update.py publish --work "$RUNNER_TEMP/chrome-update"
@@ -131,6 +144,6 @@ jobs:
           --marker '<!-- chrome-image-update-failure-tracker -->'
           --title 'Automatic Chrome image updates need attention'
           --reproduce 'Inspect the retained Chrome upstream and candidate evidence, then dispatch chrome-image-update.yml from current main; leave deliver disabled for qualification only.'
-          --expected 'A newer authenticated stable Chrome package passes rendering, inventory, security and source checks. PR delivery requires a manual security or package requirement.'
+          --expected 'A newer authenticated stable Chrome package passes rendering, inventory, security and source checks. Scheduled PR delivery requires verified current published-image High/Critical fixes; manual delivery requires an explicit security or package requirement.'
           --context 'Signature failures, unavailable packages and failed qualification require investigation. Source updates do not publish replacement images. Main changes and competing PRs defer delivery until fresh evidence can be acquired.'
           --packages maf-sandbox maf-sandbox-document
