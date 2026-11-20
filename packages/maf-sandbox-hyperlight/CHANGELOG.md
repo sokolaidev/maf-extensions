@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.11.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-hyperlight-v0.11.2...maf-sandbox-hyperlight-v0.11.3) (2026-11-20)
+
+
+### Fixes
+
+* admit the maf-sandbox 0.54 line in the ten dependents still capped below it ([#2713](https://github.com/sokolaidev/maf-extensions/issues/2713)) ([2d461f6](https://github.com/sokolaidev/maf-extensions/commit/2d461f6cee586245d98d6ebe6e714023680ab1fe))
+* **hyperlight:** use the matched 0.10.0 SDK and guest ([#2741](https://github.com/sokolaidev/maf-extensions/issues/2741)) ([54221d8](https://github.com/sokolaidev/maf-extensions/commit/54221d868ca09a8a48cad2a64732caa60ac9a2c9))
+* require maf-sandbox 0.54.0 in the packages that use it ([#2730](https://github.com/sokolaidev/maf-extensions/issues/2730)) ([7182993](https://github.com/sokolaidev/maf-extensions/commit/71829930236e8235dac89b0091517065014e3029))
+
 ## [0.11.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-hyperlight-v0.11.1...maf-sandbox-hyperlight-v0.11.2) (2026-11-06)
 
 
