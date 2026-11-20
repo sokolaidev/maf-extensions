@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.15.0...maf-compaction-v0.15.1) (2026-11-20)
+
+
+### Fixes
+
+* **compaction:** run a background record-merge worker's steps, and its session's, off the event loop ([#2835](https://github.com/sokolaidev/maf-extensions/issues/2835)) ([02ed885](https://github.com/sokolaidev/maf-extensions/commit/02ed885ed8c510cfd8f9fed9a3008937f40c2e67))
+
 ## [0.15.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.14.0...maf-compaction-v0.15.0) (2026-11-19)
 
 
