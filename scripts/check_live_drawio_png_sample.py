@@ -16,11 +16,15 @@ def verify(log: str, output: Path) -> None:
     if len(measurements) != 1:
         raise ValueError("Expected one draw.io export measurement")
     [render] = measurements
+    call = render.get("call")
     if (
         render.get("tool") != "create_drawio"
+        or not isinstance(call, str)
+        or not call
         or not duration(render.get("seconds"))
         or type(render.get("unclean")) is not int
         or render["unclean"] != 0
+        or render.get("call_disposal") != {"call": call, "outcome": "gone", "failure": None}
         or render.get("undisposed") is not False
     ):
         raise ValueError("Draw.io export or sandbox cleanup was incomplete")
