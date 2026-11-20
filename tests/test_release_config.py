@@ -402,6 +402,19 @@ class TestManifestMatchesDeclaredVersions:
         assert manifest_version_matches("packages/new", version, changelog, manifest) is expected
 
 
+def test_workspace_root_syncs_all_members_as_a_virtual_project():
+    manifest = pyproject(".")
+    project = manifest["project"]
+    members = {declared_name(path) for path in PACKAGE_PATHS}
+    assert set(project["dependencies"]) == members
+    sources = manifest["tool"]["uv"]["sources"]
+    assert all(sources[name] == {"workspace": True} for name in members)
+    assert project["requires-python"].replace(" ", "") == LOCK["requires-python"].replace(" ", "")
+    assert [entry["source"] for entry in LOCK["package"] if entry["name"] == project["name"]] == [
+        {"virtual": "."}
+    ]
+
+
 class TestTheLockRecordsTheVersionEachPackageDeclares:
     """`uv.lock` is a fifth file that has to agree, and the last one nothing updated.
 
@@ -629,6 +642,16 @@ class TestDependentsPinCoresInAShapeTheRangeScriptCanRead:
                 f"{package_path}: {constraint!r} is not the {core}>=X,<Y shape "
                 "scripts/set_dependents_range.py edits by pattern"
             )
+
+
+def test_mcp_publish_uses_its_own_wheel_smoke_check():
+    jobs = yaml.safe_load(PUBLISH_WORKFLOW.read_text("utf-8"))["jobs"]
+    checks = jobs["published-cores"]
+    assert "if" not in checks
+    for step in checks["steps"]:
+        assert "needs.build.outputs.package != 'maf-sandbox-mcp'" in step["if"]
+    assert "smoke" in jobs["publish"]["needs"]
+    assert "maf-sandbox-mcp" not in str(jobs["smoke"])
 
 
 class TestTheBuildLoopsDiscoverEveryPackage:

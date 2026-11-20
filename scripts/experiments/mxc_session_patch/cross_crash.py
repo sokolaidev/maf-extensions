@@ -9,10 +9,12 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-from . import cross_active, remote_host
-from . import process_identity as identity
-from . import remote_api as api
-from .remote_authority import Authority
+from maf_sandbox_mxc import process_identity as identity
+from maf_sandbox_mxc import remote_api as api
+from maf_sandbox_mxc import remote_host
+from maf_sandbox_mxc.remote_authority import Authority
+
+from . import cross_active
 
 CODE = b"assert remote_counter == 41; remote_counter = 99; print(remote_counter)"
 WAIT_SECONDS = 450

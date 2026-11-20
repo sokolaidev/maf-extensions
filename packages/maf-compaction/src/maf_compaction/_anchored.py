@@ -68,6 +68,7 @@ from agent_framework._compaction import (
 )
 
 from ._media import annotate_token_counts
+from ._offload import off_loop
 from ._preserve import any_preserved, is_preserved, removable_spans, stands_in
 from ._request import RECALL_PROMPT_KEY
 from ._summary_links import has_summary_links
@@ -183,6 +184,16 @@ _SHORT_REPLY_TOKENS: Final[int] = 64
 #: 43% of ``B`` and forty need 17%. This default is the twenty-turn figure, so a caller who
 #: expects shorter conversations should raise it rather than trust it.
 DEFAULT_MIN_GAIN_FRACTION: Final[float] = 0.29
+
+
+def _shares_exclusion_state(messages: list[Message]) -> bool:
+    """Return whether two entries of ``messages`` would be excluded by one flag.
+
+    The flag lives in a message's ``additional_properties``, so the same message listed twice,
+    or two messages sharing one properties mapping, leave the included total by more than
+    their own tokens when either is excluded.
+    """
+    return len({id(message.additional_properties) for message in messages}) != len(messages)
 
 
 def _is_marker(message: Message) -> bool:
@@ -311,6 +322,10 @@ class AnchoredCompactionStrategy:
         return await self.compact_to(messages, ceiling=self.max_input_tokens)
 
     async def compact_to(self, messages: list[Message], *, ceiling: int) -> bool:
+        """Shorten ``messages`` toward ``ceiling``, on a worker thread (:func:`off_loop`)."""
+        return await off_loop(self._compact_to, messages, ceiling=ceiling)
+
+    def _compact_to(self, messages: list[Message], *, ceiling: int) -> bool:
         """Compact in place, shedding until the prompt is at or under ``ceiling``.
 
         The composed row's seam: its last-resort chain hands this a ceiling below the input
@@ -639,11 +654,8 @@ class AnchoredCompactionStrategy:
     def _shed(self, messages: list[Message], kind: str, *, ceiling: int) -> bool:
         """Exclude whole groups of one kind from the band, oldest first, until the ceiling is met.
 
-        Exclusion and insertion are separated on purpose. Excluding leaves every index in the
-        band valid, so the selection loop can re-measure after each step; the notes are then
-        inserted in reverse index order, where each insertion cannot disturb the position of
-        one still to come. Doing both in one forward pass silently shifts every later group by
-        the number of notes already inserted.
+        Exclusion leaves the band's indexes valid. Notes are prepared against those indexes,
+        allocated in reverse order to keep collision suffixes stable, and spliced in together.
 
         Args:
             messages: The message list, mutated in place.
@@ -659,12 +671,17 @@ class AnchoredCompactionStrategy:
         band = self._middle_band(messages, spans)
         removable = removable_spans(messages, spans)
         dropped: list[dict[str, Any]] = []
+        # Nothing in this loop changes a token annotation or adds a message, so the total is
+        # counted once and each drop subtracts what it took out. That holds only while one
+        # exclusion flag belongs to one list entry; a list that shares a message or its
+        # properties between two entries is recounted at every step instead.
+        aliased = _shares_exclusion_state(messages)
+        included = included_token_count(messages)
         for group in band:
             if group.get("kind") != kind:
                 continue
-            if included_token_count(messages) <= ceiling:
-                break
             members = messages[group["start_index"] : group["end_index"] + 1]
+            # These two skips change nothing the stop test reads, so they come before it.
             if all(message.additional_properties.get(EXCLUDED_KEY, False) for message in members):
                 continue
             # A note left by an earlier phase is an assistant message, so the assistant-text
@@ -673,6 +690,10 @@ class AnchoredCompactionStrategy:
             # model has that something was removed.
             if all(_is_marker(message) for message in members):
                 continue
+            if aliased:
+                included = included_token_count(messages)
+            if included <= ceiling:
+                break
             if (
                 self._note_for(messages, group) == _ANSWERED_NOTE
                 and all(c.type == "text" for m in members for c in m.contents)
@@ -692,12 +713,15 @@ class AnchoredCompactionStrategy:
             # :func:`~._preserve.removable_whole`.
             if (group["start_index"], group["end_index"]) not in removable:
                 continue
+            # A group can be partly excluded already: only its included members leave the total.
+            included -= included_token_count(members)
             for message in members:
                 set_excluded(message, excluded=True, reason=EXCLUDE_REASON)
             dropped.append(group)
 
-        for group in reversed(dropped):
-            self._insert_note(messages, group, self._note_for(messages, group))
+        self._insert_notes(
+            messages, [(group, self._note_for(messages, group)) for group in reversed(dropped)]
+        )
         if dropped:
             # Each note is itself a message with a cost. Counting it only on the next call
             # would let this one stop just above its ceiling and look as though it had met
@@ -790,43 +814,50 @@ class AnchoredCompactionStrategy:
             for message in members:
                 set_excluded(message, excluded=True, reason=EXCLUDE_REASON)
             dropped.append(group)
-        for group in reversed(dropped):
-            self._insert_note(messages, group, self._note_for(messages, group))
+        self._insert_notes(
+            messages, [(group, self._note_for(messages, group)) for group in reversed(dropped)]
+        )
         if dropped:
             annotate_message_groups(messages)
             annotate_token_counts(messages, tokenizer=self.tokenizer)
         return bool(dropped)
 
     def _insert_note(self, messages: list[Message], group: dict[str, Any], note: str) -> None:
-        """Leave one deterministic marker in place of a dropped group.
+        """Leave one deterministic marker in place of a dropped group."""
+        self._insert_notes(messages, [(group, note)])
 
-        The ``message_id`` is derived from the group, not from a counter or a timestamp, so
-        the replacement is byte-identical on every later turn. A marker that varied would be
-        a cache mutation in its own right, which is the failure this whole strategy is built
-        to avoid. The framework's own summary insertion uses the same convention. An existing
-        note is recognised by its text and the group it stands for, not by the id alone, since
-        a stored message may already hold that id; the note then takes the first free suffix.
+    def _insert_notes(
+        self, messages: list[Message], notes: list[tuple[dict[str, Any], str]]
+    ) -> None:
+        """Insert notes for disjoint groups supplied in descending start-index order.
+
+        Allocate ids in that order, reserving each before the next choice: a stored message
+        or another group's note can occupy a marker's suffix. Existing notes are recognized
+        by their text and source links, never by the id alone.
         """
-        group_id = group["group_id"]
-        if any(
-            _is_marker(message)
-            and group_id
-            in message.additional_properties.get(GROUP_ANNOTATION_KEY, {}).get(
+        if not notes:
+            return
+        noted = {
+            group_id
+            for message in messages
+            if _is_marker(message)
+            for group_id in message.additional_properties.get(GROUP_ANNOTATION_KEY, {}).get(
                 SUMMARY_OF_GROUP_IDS_KEY, []
             )
-            for message in messages
-        ):
-            return
+        }
         taken = {message.message_id for message in messages if message.message_id}
-        marker_id = f"{MARKER_ID_PREFIX}{group_id}"
-        suffix = 0
-        while marker_id in taken:
-            suffix += 1
-            marker_id = f"{MARKER_ID_PREFIX}{group_id}_{suffix}"
-        members = messages[group["start_index"] : group["end_index"] + 1]
-        messages.insert(
-            group["start_index"],
-            Message(
+        pending: list[tuple[int, Message]] = []
+        for group, note in notes:
+            group_id = group["group_id"]
+            if group_id in noted:
+                continue
+            marker_id = f"{MARKER_ID_PREFIX}{group_id}"
+            suffix = 0
+            while marker_id in taken:
+                suffix += 1
+                marker_id = f"{MARKER_ID_PREFIX}{group_id}_{suffix}"
+            members = messages[group["start_index"] : group["end_index"] + 1]
+            marker = Message(
                 role="assistant",
                 contents=[note],
                 message_id=marker_id,
@@ -836,8 +867,21 @@ class AnchoredCompactionStrategy:
                         SUMMARY_OF_GROUP_IDS_KEY: [group["group_id"]],
                     }
                 },
-            ),
-        )
+            )
+            taken.add(marker_id)
+            if _is_marker(marker):
+                noted.add(group_id)
+            pending.append((group["start_index"], marker))
+        if not pending:
+            return
+        combined: list[Message] = []
+        cursor = 0
+        for position, marker in reversed(pending):
+            combined.extend(messages[cursor:position])
+            combined.append(marker)
+            cursor = position
+        combined.extend(messages[cursor:])
+        messages[:] = combined
 
 
 class MinimumGainAnchoredCompactionStrategy(AnchoredCompactionStrategy):

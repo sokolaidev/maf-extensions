@@ -56,6 +56,7 @@ from ._composed import (
     DEFAULT_CHAIN_SECONDS,
     DEFAULT_HARDER_ATTEMPTS,
     DEFAULT_RECORD_BUDGET_SHARE,
+    DEFAULT_REWRITE_GAIN_FRACTION,
     ChainDecisions,
     CompactionBudgetExceeded,
     CompactionPendingResultBudgetExceeded,
@@ -71,7 +72,9 @@ from ._preserve import (
     is_preserved,
     set_preserved,
 )
+from ._record_diagnostics import observe_record_merges, record_merge_identity
 from ._session import (
+    DEFAULT_MAX_CARRIED_VIEWS,
     CompactionStack,
     SessionCompactionProvider,
     SessionCompactionRegistry,
@@ -79,6 +82,7 @@ from ._session import (
     make_session_recall_tool,
     make_session_record_merge_middleware,
 )
+from ._summary_limiter import SummaryRequestLimiter, SummaryRequestStats
 from ._tool_result import ResultTextRewriter
 from ._toolsummary import (
     DEFAULT_COVERAGE_SHARE,
@@ -127,12 +131,14 @@ __all__ = [
     "DEFAULT_KEEP_HEAD_USER_TURNS",
     "DEFAULT_KEEP_TAIL_USER_TURNS",
     "DEFAULT_KEEP_TOKENS",
+    "DEFAULT_MAX_CARRIED_VIEWS",
     "DEFAULT_MIN_BAND_SHARE",
     "DEFAULT_MIN_GAIN_FRACTION",
     "DEFAULT_RECORD_INSTRUCTION",
     "DEFAULT_RECORD_BUDGET_SHARE",
     "DEFAULT_RECORD_MAX_TOKENS",
     "DEFAULT_RECORD_TARGET_TOKENS",
+    "DEFAULT_REWRITE_GAIN_FRACTION",
     "DEFAULT_SUMMARY_MODE",
     "DEFAULT_TRIGGER_FRACTION",
     "DEFAULT_USER_FOLD_PROMPT",
@@ -169,6 +175,8 @@ __all__ = [
     "SessionPersistence",
     "SessionResponseStream",
     "SessionToolResultRecallMiddleware",
+    "SummaryRequestLimiter",
+    "SummaryRequestStats",
     "ToolResultAnchoredSummarizationCompactionStrategy",
     "ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy",
     "ToolResultRecallMiddleware",
@@ -180,6 +188,8 @@ __all__ = [
     "make_recall_tool",
     "make_session_recall_tool",
     "make_session_record_merge_middleware",
+    "observe_record_merges",
+    "record_merge_identity",
     "record_text",
     "set_preserved",
 ]

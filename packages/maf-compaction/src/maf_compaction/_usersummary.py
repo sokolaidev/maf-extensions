@@ -25,6 +25,7 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
+from dataclasses import dataclass
 from time import time
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, cast
 
@@ -43,10 +44,18 @@ from agent_framework._compaction import (
 )
 
 from ._media import MEDIA_TYPES, annotate_token_counts, media_identity
+from ._offload import off_loop
 from ._preserve import PRESERVE_REASON_KEY, any_preserved, set_preserved
 from ._record_replay import SummaryReplayCache
 from ._request import RECALL_PROMPT_KEY
-from ._summary_input import bounded_prefix, fits_summary_input, summary_request
+from ._summary_input import (
+    bounded_prefix,
+    default_prompt_version,
+    fits_summary_input,
+    summary_request,
+    versioned_prompt,
+)
+from ._summary_limiter import SummaryRateLimited, SummaryRequestLimiter
 from ._summary_links import has_summary_links
 
 if TYPE_CHECKING:
@@ -80,6 +89,13 @@ __all__ = [
 
 class SummaryWorkStopped(Exception):
     """The caller stopped admitting new summary requests."""
+
+
+@dataclass
+class _SummaryProgress:
+    """Retain the request phase when a whole-summary deadline interrupts it."""
+
+    waiting_for_capacity: bool = False
 
 
 _REQUEST_ADMISSION: ContextVar[Callable[[], None] | None] = ContextVar(
@@ -600,6 +616,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             shares this limit for record merges and rewrites. Reserve provider overhead separately.
         summary_timeout_seconds: Positive finite timeout for each user-summary or fold request.
             None leaves requests unbounded. Cancellation must be honoured by the client.
+        summary_limiter: Optional deployment-scoped ``SummaryRequestLimiter`` shared by stacks
+            on this event loop. User summaries, folds, record merges and rewrites share its
+            capacity; the composition also prepares independent record batches concurrently.
         max_consecutive_summary_failures: Positive failure threshold for a cooldown, or None
             to disable it. Requires ``summary_backoff_seconds``. Accepted fresh summaries
             reset the streak; cached replays do not. Session snapshots retain the cooldown.
@@ -611,10 +630,12 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             that and collapses the standing summaries into one once they are worth the break.
             See ``docs/compaction/strategies.md`` for the trade-offs and
             :data:`DEFAULT_SUMMARY_MODE` for why the default is the one it is.
-        prompt: What the summarizer is asked for. See :data:`DEFAULT_USER_SUMMARY_PROMPT`.
+        prompt: What the summarizer is asked for. Overrides the built-in prompt selected by
+            ``MAF_COMPACTION_PROMPT_VERSION`` (unset/1: shipped, 2: hardened).
+            Invalid versions raise ``ValueError`` at construction.
         fold_prompt: What the summarizer is asked for when a fold collapses the standing
             summaries. Read in the fold mode and by :meth:`fold_if_smaller`. See
-            :data:`DEFAULT_USER_FOLD_PROMPT`.
+            :data:`DEFAULT_USER_FOLD_PROMPT`, with the selected version's boundary.
         remembered_requests: How many of the most recent summarizer requests are remembered
             for replay on the other list the live path runs this on. One, the default, is what
             every row of this strategy has run with and is enough for it: a pass makes at most
@@ -647,6 +668,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         summary_timeout_seconds: float | None = None,
         summary_input_policy: str = "skip",
         summary_options: dict[str, Any] | None = None,
+        summary_limiter: SummaryRequestLimiter | None = None,
         retry_without_summary_options: bool = False,
         chunk_cache_size: int = 128,
         max_consecutive_summary_failures: int | None = None,
@@ -699,6 +721,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             raise ValueError("chunk_cache_size must be a non-negative integer.")
         self.summary_input_policy = summary_input_policy
         self.summary_options = deepcopy(summary_options or {})
+        self.summary_limiter = summary_limiter
+        if summary_limiter is not None:
+            summary_limiter.configure_request(max_summary_input_tokens, self.summary_options)
         self.retry_without_summary_options = retry_without_summary_options
         self._summary_options_disabled = False
         self.chunk_cache_size = chunk_cache_size
@@ -738,8 +763,11 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self.trigger_fraction = trigger_fraction
         self.min_band_share = min_band_share
         self.summary_mode = summary_mode
-        self.prompt = prompt or DEFAULT_USER_SUMMARY_PROMPT
-        self.fold_prompt = fold_prompt or DEFAULT_USER_FOLD_PROMPT
+        self._prompt_version: Literal["1", "2"] = default_prompt_version()
+        self.prompt = prompt or versioned_prompt(DEFAULT_USER_SUMMARY_PROMPT, self.prompt_version)
+        self.fold_prompt = fold_prompt or versioned_prompt(
+            DEFAULT_USER_FOLD_PROMPT, self.prompt_version
+        )
         self._compactions = 0
         self._replaced = 0
         self._failures = 0
@@ -758,6 +786,11 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         # Kept fold outputs identify how far a history has already replayed.
         self._kept_folds: dict[str, _Remembered] = {}
         self._kept_fold_counts: dict[str, int] = {}
+
+    @property
+    def prompt_version(self) -> Literal["1", "2"]:
+        """Built-in prompt version captured at construction, also used by the composition."""
+        return self._prompt_version
 
     def session_state(self) -> dict[str, Any]:
         """Return JSON-safe behavioral state for session persistence."""
@@ -1021,8 +1054,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         """
         if not messages:
             return False
-        annotate_message_groups(messages)
-        annotate_token_counts(messages, tokenizer=self.tokenizer)
+        await off_loop(_annotate_for_pass, messages, self.tokenizer)
         return await self.compact_against(
             messages,
             prompt_tokens=included_token_count(messages),
@@ -1058,7 +1090,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         """
         self._protect_media(messages)
         before_replay = included_token_count(messages)
-        replay = self.replay_summaries(messages)
+        replay = await off_loop(self.replay_summaries, messages)
         restored = replay.changed
         if restored:
             prompt_tokens -= before_replay - included_token_count(messages)
@@ -1071,13 +1103,13 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         # Before the band is read, so a boundary is protected before anything is decided
         # against it, and the floor is counted on every pass over the trigger. Not folded into
         # the return value: annotating a message is not a change to what the model sees.
-        standing = self._observe_summaries(messages)
-        band = self._band(messages, standing)
+        standing, band, worth = await off_loop(self._choose_band, messages)
         bodies: dict[int, str] = {}
-        if self._worth_compacting(messages, band, included_token_count(messages)):
+        if worth:
             band, bodies = await self._describe_band(messages, band)
             if self.summary_input_policy == "skip":
-                band = bounded_prefix(
+                band = await off_loop(
+                    bounded_prefix,
                     band,
                     render=lambda spans: _format_turns(
                         [messages[int(span["start_index"])] for span in spans],
@@ -1104,14 +1136,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             return restored
 
         selected = [messages[int(span["start_index"])] for span in band]
-        transcript = _format_turns(
-            selected, text=lambda message: bodies.get(id(message), message.text)
-        )
-        source_key = ":".join(
-            media_identity(message)
-            for message in selected
-            if any(part.type in MEDIA_TYPES for part in message.contents)
-        )
+        transcript, source_key = await off_loop(_band_transcript, selected, bodies)
         remembered = self._recall(self.prompt, transcript, source_key=source_key)
         replayed = remembered is not None
         if remembered is None:
@@ -1155,7 +1180,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         ]
         if any_preserved(replaced):
             return restored
-        if not self._smaller(replaced, band, summary, summary_id=summary_id):
+        if not await off_loop(self._smaller, replaced, band, summary, summary_id=summary_id):
             # Remembered all the same, so the other list replays the refusal instead of asking.
             if remembered is None:
                 self._summary_failed()
@@ -1166,7 +1191,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             self._replayed += 1
         else:
             self._compactions += 1
-        self._replace(messages, band, summary, summary_id=summary_id)
+        await off_loop(self._replace, messages, band, summary, summary_id=summary_id)
         self._replaced = len(band)
         return True
 
@@ -1194,9 +1219,17 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         self._observe_summaries(messages)
 
     @contextmanager
-    def replay_scope(self, messages: list[Message]) -> Generator[None]:
-        """Retain entry-history refusals through a composed compaction pass."""
-        token = self._replay_refusals.set(frozenset(self.invalid_replay_summaries(messages)))
+    def replay_scope(
+        self, messages: list[Message], *, refusals: frozenset[str] | None = None
+    ) -> Generator[None]:
+        """Retain entry-history refusals through a composed compaction pass.
+
+        ``refusals`` is :meth:`invalid_replay_summaries` already computed for ``messages``, so a
+        caller can compute it off the loop and still set the scope on its own task.
+        """
+        if refusals is None:
+            refusals = frozenset(self.invalid_replay_summaries(messages))
+        token = self._replay_refusals.set(refusals)
         try:
             yield
         finally:
@@ -1410,6 +1443,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
 
         release(released)
         changed = grew = chain_fold = False
+        # Read once for every summary that reaches it, and again only after one is inserted.
+        spans: list[dict[str, Any]] | None = None
         for kept in self._replacements.values():
             if kept.summary_id in invalid:
                 continue
@@ -1435,9 +1470,11 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 summary is not None and not superseded and not restore_held_sources
             ):
                 continue
+            if spans is None:
+                spans = group_messages(messages)
             turns = [
                 span
-                for span in group_messages(messages)
+                for span in spans
                 if span.get("kind") == "user"
                 and (
                     not messages[int(span["start_index"])].additional_properties.get(EXCLUDED_KEY)
@@ -1511,6 +1548,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 reason=kept.reason,
                 remember=False,
             )
+            spans = None
             self._replayed += 1
             if kept.reason == EXCLUDE_REASON:
                 self._replaced = len(selected)
@@ -1624,14 +1662,16 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 if (
                     self.summary_input_policy == "skip"
                     and prepared
-                    and not fits_summary_input(
-                        self.prompt,
-                        _format_turns(
-                            [messages[int(item["start_index"])] for item in prepared],
-                            text=lambda turn: bodies.get(id(turn), turn.text),
-                        ),
-                        tokenizer=self.tokenizer,
-                        limit=self.max_summary_input_tokens,
+                    and not await off_loop(
+                        lambda: fits_summary_input(
+                            self.prompt,
+                            _format_turns(
+                                [messages[int(item["start_index"])] for item in prepared],
+                                text=lambda turn: bodies.get(id(turn), turn.text),
+                            ),
+                            tokenizer=self.tokenizer,
+                            limit=self.max_summary_input_tokens,
+                        )
                     )
                 ):
                     break
@@ -1942,7 +1982,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         Returns:
             True if the outgoing messages changed.
         """
-        standing = self._bounded_summaries(messages, standing)
+        standing = await off_loop(self._bounded_summaries, messages, standing)
         if not self._fold_due(messages, standing):
             self._declined += 1
             return False
@@ -1951,8 +1991,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             return False
         remembered, replayed, fresh = answer
         summaries: list[Message] = [messages[span["start_index"]] for span in standing]
-        if not self._smaller(
-            summaries, standing, remembered.text, summary_id=remembered.summary_id
+        if not await off_loop(
+            self._smaller, summaries, standing, remembered.text, summary_id=remembered.summary_id
         ):
             self._failures += not replayed
             if fresh:
@@ -1960,7 +2000,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             return False
         if fresh:
             self._summary_succeeded()
-        return self._apply_fold(messages, standing, remembered, replayed)
+        return await off_loop(self._apply_fold, messages, standing, remembered, replayed)
 
     async def fold_if_smaller(self, messages: list[Message]) -> FoldOutcome:
         """Collapse the oldest summaries that fit, only if their replacement is smaller.
@@ -1988,7 +2028,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             :attr:`user_summary_failures` like any other -- and ``"skipped"`` when fewer than
             two summaries fit or a selected summary acquires an external preservation mark.
         """
-        standing = self._bounded_summaries(messages, self._observe_summaries(messages))
+        standing = await off_loop(
+            lambda: self._bounded_summaries(messages, self._observe_summaries(messages))
+        )
         if len(standing) < 2:
             return "skipped"
         answer = await self._fold_answer(messages, standing)
@@ -1996,15 +2038,15 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             return "failed"
         remembered, replayed, fresh = answer
         summaries: list[Message] = [messages[span["start_index"]] for span in standing]
-        if not self._smaller(
-            summaries, standing, remembered.text, summary_id=remembered.summary_id
+        if not await off_loop(
+            self._smaller, summaries, standing, remembered.text, summary_id=remembered.summary_id
         ):
             if fresh:
                 self._summary_failed(count_failure=False)
             return "rejected"
         if fresh:
             self._summary_succeeded()
-        if not self._apply_fold(messages, standing, remembered, replayed):
+        if not await off_loop(self._apply_fold, messages, standing, remembered, replayed):
             return "skipped"
         self._kept_folds[remembered.summary_id] = remembered
         self._kept_fold_counts[remembered.summary_id] = len(standing)
@@ -2102,8 +2144,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             The answer, whether it replays the same replacement id, and whether it required
             a fresh request; None when the summarizer gave nothing.
         """
-        transcript = _format_turns(
-            [messages[span["start_index"]] for span in standing], text=_summary_body
+        transcript = await off_loop(
+            _format_turns, [messages[span["start_index"]] for span in standing], text=_summary_body
         )
         remembered = self._recall(self.fold_prompt, transcript)
         if remembered is not None:
@@ -2124,6 +2166,18 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         remembered = _Remembered(self.fold_prompt, transcript, summary_id, summary)
         self._remember(remembered)
         return remembered, False, True
+
+    def _choose_band(
+        self, messages: list[Message]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+        """The standing summaries, the band to compact, and whether it is worth it, off the loop."""
+        standing = self._observe_summaries(messages)
+        band = self._band(messages, standing)
+        return (
+            standing,
+            band,
+            self._worth_compacting(messages, band, included_token_count(messages)),
+        )
 
     def _smaller(
         self,
@@ -2266,6 +2320,7 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         observe: Callable[[ChatResponse], None] | None = None,
         allow_empty_on_length: bool = False,
         before_request: Callable[[], None] | None = None,
+        progress: _SummaryProgress | None = None,
     ) -> str:
         """Ask once, optionally retiring incompatible options after one failed attempt.
 
@@ -2274,9 +2329,20 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         options = self.summary_options if not self._summary_options_disabled else {}
 
         async def ask(call_options: dict[str, Any]) -> str:
-            response = await self.client.get_response(
-                summary_request(prompt, transcript), stream=False, options=call_options
-            )
+            if self.summary_limiter is None:
+                response = await self.client.get_response(
+                    summary_request(prompt, transcript), stream=False, options=call_options
+                )
+            else:
+                self.summary_limiter.configure_request(self.max_summary_input_tokens, call_options)
+                if progress is not None:
+                    progress.waiting_for_capacity = True
+                async with self.summary_limiter.request(before_request):
+                    if progress is not None:
+                        progress.waiting_for_capacity = False
+                    response = await self.client.get_response(
+                        summary_request(prompt, transcript), stream=False, options=call_options
+                    )
             if observe is not None:
                 observe(response)
             summary = response.text.strip() if response.text else ""
@@ -2289,6 +2355,8 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             before_request()
         try:
             return await ask(options)
+        except (SummaryRateLimited, SummaryWorkStopped):
+            raise
         except Exception:
             if not options or not self.retry_without_summary_options:
                 raise
@@ -2297,24 +2365,32 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
             self._summary_options_disabled = True
             return await ask({})
 
-    async def _chunk_answer(self, transcript: str, *, prompt: str) -> str:
+    async def _chunk_answer(
+        self, transcript: str, *, prompt: str, progress: _SummaryProgress
+    ) -> str:
         key = (prompt, transcript)
         if key in self._chunk_answers:
             self._chunk_answers.move_to_end(key)
             return self._chunk_answers[key]
-        answer = await self._generate(transcript, prompt=prompt)
-        if self.tokenizer.count_tokens(answer) >= self.tokenizer.count_tokens(transcript):
+        answer = await self._generate(transcript, prompt=prompt, progress=progress)
+        if await off_loop(_no_shorter, self.tokenizer, answer, transcript):
             answer = transcript
         self._chunk_answers[key] = answer
         while len(self._chunk_answers) > self.chunk_cache_size:
             self._chunk_answers.popitem(last=False)
         return answer
 
-    async def _chunked_summary(self, units: list[str], *, prompt: str) -> str:
-        chunks = self._chunks(units, prompt=prompt)
-        partials = [await self._chunk_answer("\n".join(chunk), prompt=prompt) for chunk in chunks]
+    async def _chunked_summary(
+        self, units: list[str], *, prompt: str, progress: _SummaryProgress
+    ) -> str:
+        chunks = await off_loop(self._chunks, units, prompt=prompt)
+        partials = [
+            await self._chunk_answer("\n".join(chunk), prompt=prompt, progress=progress)
+            for chunk in chunks
+        ]
         while len(partials) > 1:
-            batches = self._chunks(
+            batches = await off_loop(
+                self._chunks,
                 [f"{index}. {text}" for index, text in enumerate(partials, start=1)],
                 prompt=self.fold_prompt,
             )
@@ -2326,7 +2402,9 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
                 merged.append(
                     partials[offset]
                     if len(batch) == 1
-                    else await self._chunk_answer("\n".join(batch), prompt=self.fold_prompt)
+                    else await self._chunk_answer(
+                        "\n".join(batch), prompt=self.fold_prompt, progress=progress
+                    )
                 )
                 offset += len(batch)
             partials = merged
@@ -2341,20 +2419,31 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         if self._summary_cooling_down():
             self._summary_skips += 1
             return None
-        fits = fits_summary_input(
-            prompt, transcript, tokenizer=self.tokenizer, limit=self.max_summary_input_tokens
+        fits = await off_loop(
+            fits_summary_input,
+            prompt,
+            transcript,
+            tokenizer=self.tokenizer,
+            limit=self.max_summary_input_tokens,
         )
         if not fits and units is None:
             self._summary_failed()
             return None
+        progress = _SummaryProgress()
         try:
             async with asyncio.timeout(self.summary_timeout_seconds):
                 if units is not None and not fits:
-                    return await self._chunked_summary(units, prompt=prompt)
-                return await self._generate(transcript, prompt=prompt)
+                    return await self._chunked_summary(units, prompt=prompt, progress=progress)
+                return await self._generate(transcript, prompt=prompt, progress=progress)
         except SummaryWorkStopped:
             raise
+        except SummaryRateLimited:
+            self._summary_skips += 1
+            return None
         except Exception as error:
+            if isinstance(error, TimeoutError) and progress.waiting_for_capacity:
+                self._summary_skips += 1
+                return None
             logger.warning("Skipping user-turn compaction: summary generation failed (%s).", error)
             self._summary_failed()
             return None
@@ -2471,3 +2560,25 @@ class UserTurnAnchoredSummarizationCompactionStrategy:
         annotate_message_groups(messages, from_index=insertion_index, force_reannotate=False)
         annotate_token_counts(messages, tokenizer=self.tokenizer, from_index=insertion_index)
         self._observe_summaries(messages)
+
+
+def _band_transcript(selected: list[Message], bodies: dict[int, str]) -> tuple[str, str]:
+    """The band's summary transcript and its media identity, off the loop."""
+    transcript = _format_turns(selected, text=lambda message: bodies.get(id(message), message.text))
+    source_key = ":".join(
+        media_identity(message)
+        for message in selected
+        if any(part.type in MEDIA_TYPES for part in message.contents)
+    )
+    return transcript, source_key
+
+
+def _annotate_for_pass(messages: list[Message], tokenizer: Any) -> None:
+    """Group and count the conversation before a standalone pass, off the loop."""
+    annotate_message_groups(messages)
+    annotate_token_counts(messages, tokenizer=tokenizer)
+
+
+def _no_shorter(tokenizer: TokenizerProtocol, answer: str, transcript: str) -> bool:
+    """Whether a chunk's answer counts at least as many tokens as its transcript, off the loop."""
+    return tokenizer.count_tokens(answer) >= tokenizer.count_tokens(transcript)

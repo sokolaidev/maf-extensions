@@ -4,7 +4,7 @@ ADD --checksum=sha256:4d740636b5c96f687798602c5aad6a5a270f44dd02e48db0638ae77aa4
 COPY requirements.txt mermaid.json install.py /opt/maf-document-export/
 RUN apt-get update \
     && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends python3 python3-pip /tmp/chrome.deb fonts-dejavu-core fonts-noto-color-emoji fontconfig \
+    && apt-get install -y --no-install-recommends python3 python3-pip libatomic1 /tmp/chrome.deb fonts-dejavu-core fonts-noto-color-emoji fontconfig \
     && python3 -m pip install --break-system-packages --no-cache-dir --only-binary=:all: --require-hashes \
        -r /opt/maf-document-export/requirements.txt \
     && python3 /opt/maf-document-export/install.py \

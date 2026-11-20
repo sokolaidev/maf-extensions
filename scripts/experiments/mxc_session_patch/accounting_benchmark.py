@@ -14,7 +14,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from .shared_store import CALL_METADATA, SESSION_METADATA, STORE_METADATA, Limits, SharedStore
+from maf_sandbox_mxc.shared_store import (
+    CALL_METADATA,
+    SESSION_METADATA,
+    STORE_METADATA,
+    Limits,
+    SharedStore,
+)
 
 
 class ScanningStore(SharedStore):

@@ -453,6 +453,10 @@ jobs:
           done
           uv run twine check dist/*
 
+      - name: The dependent core ranges overlap
+        if: needs.changes.outputs.code == 'true'
+        run: uv run python scripts/check_core_range_overlap.py
+
       # `--find-links dist/` resolves intra-family deps against the wheels just built, not
       # PyPI â€” deliberately opposite of publish-packages.yml's copy of this gate.
       # Built cores are named once. A dependent floored on the release this branch cuts
@@ -491,8 +495,8 @@ jobs:
             "$venv/bin/python" scripts/smoke_install.py "$package"
           done
 
-      # Every wheel the build step produced, installed into one environment. The samples take
-      # several of these together, so a range that moved past a *sibling* rather than past the
+      # The sandbox family wheels share one environment, as they do in the sandbox samples.
+      # A range that moved past a *sibling* rather than past the
       # index leaves the family unresolvable â€” which no per-package check can see (#628).
       - name: The suite installs as a set
         if: needs.changes.outputs.code == 'true'

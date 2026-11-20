@@ -3,37 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import re
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
+from check_published_dependents_admit import dependent_distributions
+
 ROOT = Path(__file__).resolve().parent.parent
-
-_CORE = "maf-sandbox"
-_NAME = re.compile(r"\s*([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)")
-
-
-def _distribution(requirement: str) -> str:
-    """The PEP 503-normalised name a PEP 508 requirement starts with, whatever follows it."""
-    match = _NAME.match(requirement)
-    return re.sub(r"[-_.]+", "-", match.group(1)).lower() if match else ""
-
-
-def depends_on_core(package: Path) -> bool:
-    """Whether a package's own metadata names ``maf-sandbox`` among its dependencies.
-
-    A package that does not is no dependent, however it is laid out: the checker reads the
-    core range off its wheel and has nothing to read.
-    """
-    pyproject = package / "pyproject.toml"
-    if not pyproject.is_file():
-        return False
-    project = tomllib.loads(pyproject.read_text("utf-8")).get("project", {})
-    return any(
-        _distribution(requirement) == _CORE for requirement in project.get("dependencies", [])
-    )
 
 
 def wheel_for(distribution: str) -> Path:
@@ -53,17 +29,13 @@ def main(argv: list[str]) -> int:
     if not 0 <= args.shard < args.shards:
         parser.error("require 0 <= --shard < --shards")
 
-    packages = sorted(
-        path
-        for path in (ROOT / "packages").iterdir()
-        if path.is_dir() and path.name != _CORE and depends_on_core(path)
-    )
+    packages = dependent_distributions(ROOT)
     selected = packages[args.shard :: args.shards]
     if not selected:
         parser.error("shard contains no dependent packages")
     try:
         core = wheel_for("maf-sandbox")
-        candidates = [(package.name, wheel_for(package.name)) for package in selected]
+        candidates = [(distribution, wheel_for(distribution)) for distribution in selected]
     except ValueError as error:
         parser.error(str(error))
 

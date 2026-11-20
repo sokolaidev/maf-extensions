@@ -35,6 +35,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import copy, deepcopy
 from dataclasses import dataclass, replace
+from enum import Enum, auto
 from math import ceil, isfinite
 from types import MethodType
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
@@ -72,6 +73,7 @@ from agent_framework.exceptions import ChatClientException
 from ._anchored import AnchoredCompactionStrategy
 from ._media import MEDIA_TYPES, annotate_token_counts
 from ._occurrences import ContentPosition, function_result_candidates
+from ._offload import off_loop
 from ._preserve import (
     PRESERVE_REASON_KEY,
     STANDS_IN_KEY,
@@ -80,7 +82,7 @@ from ._preserve import (
     set_preserved,
     stands_in,
 )
-from ._record_replay import LINEAGE_KEY, source_lineage
+from ._record_replay import LINEAGE_KEY, MessageKeyCache, source_lineage
 from ._request import RECALL_PROMPT_KEY, request_tools
 from ._summary_links import has_summary_links
 from ._tool_result import (
@@ -94,6 +96,15 @@ if TYPE_CHECKING:
     from agent_framework import TokenizerProtocol
 
 logger = logging.getLogger(__name__)
+
+
+class _After(Enum):
+    """What :meth:`ToolResultAnchoredSummarizationCompactionStrategy.compact_against` does next."""
+
+    DONE = auto()
+    FALL_BACK_AFTER_RECORD = auto()
+    FALL_BACK = auto()
+
 
 __all__ = [
     "CONSOLIDATE_EXCLUDE_REASON",
@@ -913,6 +924,7 @@ def _consolidatable_record_groups(
     messages: list[Message],
     *,
     replay: bool = False,
+    exclusions: dict[str, int] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[int, str]]:
     """Return :func:`consolidatable_record_groups` and the recall matches it was read with."""
     spans = group_messages(messages)
@@ -923,20 +935,29 @@ def _consolidatable_record_groups(
     completed_before = _completed_user_boundary(messages)
     last_reasoning = -1 if replay else _last_reasoning_index(messages)
     answered = _answered_elsewhere(messages, matches)
-    groups = [
-        group
-        for group in _active_record_groups(messages, spans, recalls)
-        if (group["start_index"], group["end_index"]) in removable
-        and _record_only_group(
+    groups: list[dict[str, Any]] = []
+    for group in _active_record_groups(messages, spans, recalls):
+        if (group["start_index"], group["end_index"]) not in removable:
+            reason = "not_removable_whole"
+        elif group["end_index"] < last_reasoning:
+            reason = "reasoning_prefix"
+        elif not _record_only_group(
             messages,
             group,
             record_contents,
             completed_before=completed_before,
             last_reasoning=last_reasoning,
-        )
-        and _plain_record_results(messages, group)
-        and not _call_ids(messages, group) & answered
-    ]
+        ):
+            reason = "held_or_additional_content"
+        elif not _plain_record_results(messages, group):
+            reason = "nonplain_result"
+        elif _call_ids(messages, group) & answered:
+            reason = "shared_call"
+        else:
+            groups.append(group)
+            continue
+        if exclusions is not None:
+            exclusions[reason] = exclusions.get(reason, 0) + 1
     return groups, recalls
 
 
@@ -1004,13 +1025,14 @@ def _reshape_payload(
     provider state, or which carries fields of its own, has no exact form -- the rule
     :func:`~._tool_result.can_shorten_result` sets for shortening a result in place.
     """
+    members = messages[group["start_index"] : group["end_index"] + 1]
     contents = [
         content
-        for message in messages[group["start_index"] : group["end_index"] + 1]
+        for message in members
         for content in message.contents
         if id(content) in recall_results and RECORD_MARKER in str(content.result)
     ]
-    if len(contents) != 1 or not _bare_text_result(contents[0]):
+    if len(contents) != 1 or not _bare_text_result(contents[0], members):
         return None
     result = str(contents[0].result)
     if result.startswith(f"{_WRITTEN_RECORD_PREFIX}\n"):
@@ -1020,24 +1042,58 @@ def _reshape_payload(
     return None
 
 
-def _bare_text_result(content: Content) -> bool:
+def _bare_text_result(content: Content, members: Sequence[Message]) -> bool:
     """Return whether ``content`` is a result whose text is all it carries."""
     return (
         can_shorten_result(content)
-        and not content.additional_properties
         and not content.annotations
         and content.raw_representation is None
         and (
             content.items is None
             or "\n".join(item.text or "" for item in content.items) == str(content.result)
         )
+        and (
+            not content.additional_properties
+            or _only_inherited_openai_call_properties(content, members)
+        )
+    )
+
+
+def _only_inherited_openai_call_properties(result: Content, members: Sequence[Message]) -> bool:
+    """Recognize the call metadata the framework copies onto a local recall result."""
+    props = result.additional_properties
+    item_id = props.get("fc_id")
+    status = props.get("status")
+    if (
+        not isinstance(item_id, str)
+        or not item_id.startswith("fc_")
+        or status not in (None, "completed")
+        or props != {"fc_id": item_id, "status": status, "openai": {"item_id": item_id}}
+        or not result.call_id
+        or result.status is not None
+        or result.exception is not None
+    ):
+        return False
+    calls = [
+        call
+        for message in members
+        for call in message.contents
+        if call.type == "function_call" and call.call_id == result.call_id
+    ]
+    return (
+        len(calls) == 1
+        and calls[0].name == RECALL_TOOL_NAME
+        and not calls[0].hosted
+        and calls[0].id == result.id
+        and calls[0].additional_properties == props
     )
 
 
 def _plain_record_results(messages: Sequence[Message], group: dict[str, Any]) -> bool:
+    members = messages[group["start_index"] : group["end_index"] + 1]
     return all(
-        _bare_text_result(content)
-        for message in messages[group["start_index"] : group["end_index"] + 1]
+        _bare_text_result(content, members)
+        for message in members
         for content in message.contents
         if content.type == "function_result"
     )
@@ -2042,8 +2098,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         """
         if not messages:
             return False
-        annotate_message_groups(messages)
-        annotate_token_counts(messages, tokenizer=self.tokenizer)
+        await off_loop(_annotate_for_pass, messages, self.tokenizer)
         return await self.compact_against(
             messages,
             prompt_tokens=included_token_count(messages),
@@ -2085,6 +2140,45 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             True if the outgoing messages changed.
         """
         budget = self.max_input_tokens if ceiling is None else ceiling
+        changed, after = await off_loop(
+            self._against,
+            messages,
+            prompt_tokens=prompt_tokens,
+            trigger_tokens=trigger_tokens,
+            fallback_after_record=fallback_after_record,
+            fallback_without_record=fallback_without_record,
+            budget=budget,
+            ceiling=ceiling,
+        )
+        if after is _After.DONE:
+            return changed
+        if after is _After.FALL_BACK_AFTER_RECORD:
+            return await self.fall_back_after_record(messages, ceiling=ceiling) or changed
+        repaired = changed
+
+        # Out of room to keep waiting. A model that has not answered by now may never answer,
+        # and the alternative to compacting without a record is a provider error. The tool
+        # results are lost either way at this point; at least the conversation survives.
+        self._fallbacks += 1
+        if ceiling is not None:
+            return await self.fallback.compact_to(messages, ceiling=ceiling) or repaired
+        return await self.fallback(messages) or repaired
+
+    def _against(
+        self,
+        messages: list[Message],
+        *,
+        prompt_tokens: int,
+        trigger_tokens: int,
+        fallback_after_record: bool,
+        fallback_without_record: bool,
+        budget: int,
+        ceiling: int | None,
+    ) -> tuple[bool, _After]:
+        """Everything :meth:`compact_against` does before it may fall back, off the loop.
+
+        Returns what changed so far and what the caller does next.
+        """
         repaired = repair_compacted_items(messages, lambda text: text.startswith(_ROWS_OMITTED))
         if repaired:
             annotate_token_counts(messages, tokenizer=self.tokenizer, force_retokenize=True)
@@ -2095,7 +2189,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 candidates = self._record_candidates(messages, anchor, recall_results)
                 self._observe_values(messages, anchor, candidates, recall_results)
             self._capture_pending_value_targets(messages, ceiling)
-            return repaired
+            return repaired, _After.DONE
 
         if anchor is not None:
             self._records = max(self._records, 1)
@@ -2117,22 +2211,15 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             # Even a good record may not be enough on its own: the groups after it are
             # untouched by design, and they can exceed the ceiling by themselves.
             if fallback_after_record and included_token_count(messages) > budget:
-                changed = await self.fall_back_after_record(messages, ceiling=ceiling) or changed
-            return changed
+                return changed, _After.FALL_BACK_AFTER_RECORD
+            return changed, _After.DONE
 
         self._capture_pending_value_targets(messages, ceiling)
         if not fallback_without_record or prompt_tokens < int(budget * self.fallback_fraction):
             # Still waiting for the middleware's forced call to come back. Nothing may be
             # dropped yet: the record is the only thing that would replace it.
-            return repaired
-
-        # Out of room to keep waiting. A model that has not answered by now may never answer,
-        # and the alternative to compacting without a record is a provider error. The tool
-        # results are lost either way at this point; at least the conversation survives.
-        self._fallbacks += 1
-        if ceiling is not None:
-            return await self.fallback.compact_to(messages, ceiling=ceiling) or repaired
-        return await self.fallback(messages) or repaired
+            return repaired, _After.DONE
+        return repaired, _After.FALL_BACK
 
     async def fall_back_after_record(
         self, messages: list[Message], *, ceiling: int | None = None
@@ -2212,6 +2299,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         text: str,
         *,
         replay: bool = False,
+        keys: MessageKeyCache | None = None,
     ) -> None:
         """Put one record carrying ``text`` in place of the records ``groups`` span.
 
@@ -2238,6 +2326,12 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
             groups: The records being replaced, from :func:`consolidatable_record_groups`, oldest
                 first.
             text: The replacement's own text, without marker or preamble.
+
+        Keyword Args:
+            replay: Restore a persisted decision on its exact sources; see
+                :func:`consolidatable_record_groups`.
+            keys: The fingerprints and token counts of the replay call putting this edit back,
+                so a history is not serialized again behind every record it gets back.
 
         Raises:
             ValueError: When a result carries more than bare text, a group contains unrelated
@@ -2286,7 +2380,7 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
                 for message in messages[group["start_index"] : group["end_index"] + 1]
             )
         )
-        lineage = source_lineage(messages, groups)
+        lineage = source_lineage(messages, groups, keys=keys)
         for group in groups:
             _exclude_record(messages, group)
         insertion_index = int(groups[-1]["end_index"]) + 1
@@ -2297,7 +2391,12 @@ class ToolResultAnchoredSummarizationCompactionStrategy:
         if replaces_value_anchor:
             self._value_target_anchor = _record_identity(replacement, {})
         annotate_message_groups(messages, from_index=insertion_index)
-        annotate_token_counts(messages, tokenizer=self.tokenizer, from_index=insertion_index)
+        annotate_token_counts(
+            messages,
+            tokenizer=self.tokenizer,
+            from_index=insertion_index,
+            counts=None if keys is None else keys.counts,
+        )
         records = _preserve_records(messages)
         self._records_in_conversation = max(self._records_in_conversation, records)
         if self._reforce is not None:
@@ -3690,8 +3789,7 @@ class ToolResultRecallMiddleware(ChatMiddleware):
         if forced_this_call or not messages or self.recall_disabled:
             self._force_next = False
             return
-        annotate_message_groups(messages)
-        annotate_token_counts(messages, tokenizer=self.tokenizer)
+        await off_loop(_annotate_for_pass, messages, self.tokenizer)
         try:
             budget = request_budget() if request_budget is not None else None
         except CompactionBudgetExceeded:
@@ -3790,3 +3888,9 @@ class ToolResultRecallMiddleware(ChatMiddleware):
                 messages, find_record_index(messages), max_input_tokens=max_input_tokens
             )
         )
+
+
+def _annotate_for_pass(messages: list[Message], tokenizer: Any) -> None:
+    """Group and count the conversation before a standalone pass, off the loop."""
+    annotate_message_groups(messages)
+    annotate_token_counts(messages, tokenizer=tokenizer)

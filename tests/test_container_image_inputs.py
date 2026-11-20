@@ -30,15 +30,15 @@ DIGEST = "a" * 64
 
 def test_every_dockerfile_is_pinned_and_has_a_scheduled_updater():
     updates = yaml.safe_load((ROOT / ".github/dependabot.yml").read_text())["updates"]
-    directories = {
+    directories = [
         path
         for update in updates
         if update["package-ecosystem"] == "docker"
         for pattern in update.get("directories", [update.get("directory", "")])
         for path in ROOT.glob(pattern.lstrip("/"))
-    }
+    ]
     for path in dockerfiles(ROOT):
-        assert path.parent in directories, path
+        assert directories.count(path.parent) == 1, path
         for reference in inventory(path):
             validate_version_line(reference, path)
 
@@ -83,7 +83,27 @@ def test_shared_wolfi_references_have_one_reviewed_digest():
     assert group["patterns"] == ["chainguard/wolfi-base"]
 
 
-def test_proxy_modules_receive_daily_minor_updates_in_both_mirrors():
+def test_image_dependencies_only_open_security_updates_except_antivirus_python():
+    updates = yaml.safe_load((ROOT / ".github/dependabot.yml").read_text())["updates"]
+    for update in updates:
+        if update["package-ecosystem"] in {"uv", "github-actions"}:
+            assert update.get("open-pull-requests-limit", 5) > 0
+            continue
+        if update.get("directory") == "/images/antivirus-sandbox":
+            assert update["package-ecosystem"] == "docker"
+            assert update["open-pull-requests-limit"] == 1
+            assert update["allow"] == [{"dependency-name": "python"}]
+        else:
+            assert update["open-pull-requests-limit"] == 0
+        assert "target-branch" not in update
+        groups = update["groups"].values()
+        assert any(
+            group.get("applies-to") == "security-updates" and group["patterns"] == ["*"]
+            for group in groups
+        )
+
+
+def test_proxy_security_updates_cover_both_mirrors():
     updates = yaml.safe_load((ROOT / ".github/dependabot.yml").read_text())["updates"]
     modules = [update for update in updates if update["package-ecosystem"] == "gomod"]
     assert len(modules) == 1
@@ -119,7 +139,7 @@ def test_native_minor_updates_do_not_widen_image_compatibility_lines():
         if update["package-ecosystem"] in {"docker", "nuget"}
         or update.get("directory") == "/images/drawio-export"
     ]
-    assert len(restricted) == 4
+    assert len(restricted) == 5
     for update in restricted:
         assert update["schedule"]["interval"] == "weekly"
         assert update["ignore"] == [

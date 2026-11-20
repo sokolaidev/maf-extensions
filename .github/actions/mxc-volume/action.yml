@@ -67,7 +67,7 @@ runs:
       $acl = [System.Security.AccessControl.DirectorySecurity]::new()
       $acl.SetSecurityDescriptorSddlForm("O:${sid}D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
       Set-Acl -LiteralPath 'R:\store' -AclObject $acl
-      uv run --no-project --python 3.12 python -c "from pathlib import Path; from scripts.experiments.mxc_session_patch.private_root import prepare; prepare(Path('R:/store'))"
+      uv run --no-project --python 3.12 --with ./packages/maf-sandbox-mxc python -c "from pathlib import Path; from maf_sandbox_mxc.private_root import prepare; prepare(Path('R:/store'))"
       if ($LASTEXITCODE -ne 0) { throw 'Private store preflight failed' }
       'MXC_VOLUME=R:\' >> $env:GITHUB_ENV
       "MXC_VOLUME_TOKEN=$token" >> $env:GITHUB_ENV

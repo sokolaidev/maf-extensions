@@ -5,20 +5,12 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import pytest
+from maf_sandbox_mxc import host_call as host
 
 ROOT = Path(__file__).parents[1] / "scripts/experiments/mxc_session_patch"
-sys.path.insert(0, str(ROOT))
-try:
-    SPEC = importlib.util.spec_from_file_location("mxc_bounded_host", ROOT / "host_call.py")
-    assert SPEC and SPEC.loader
-    host = importlib.util.module_from_spec(SPEC)
-    SPEC.loader.exec_module(host)
-finally:
-    sys.path.remove(str(ROOT))
 
 
 @pytest.fixture
@@ -86,6 +78,17 @@ def test_control_size_is_checked_before_json_parse(capture):
     report.write_bytes(b"x" * 1025)
     with pytest.raises(host.Refused, match="oversized"):
         host.bounded_result(report, 4)
+
+
+@pytest.mark.parametrize("limit", [None, True, -1])
+def test_runtime_requires_a_bounded_output_limit_before_launch(tmp_path, monkeypatch, limit):
+    def refuse_launch(*args, **kwargs):
+        pytest.fail("invalid output limit reached process supervision")
+
+    monkeypatch.setattr(host, "_run", refuse_launch)
+    with pytest.raises(host.Refused, match="output limit"):
+        host.execute(tmp_path / "helper", tmp_path / "startup", tmp_path, b"code", limit)
+    assert not (tmp_path / "code.py").exists()
 
 
 PATCH_SPEC = importlib.util.spec_from_file_location("mxc_output_patch", ROOT / "output_patch.py")

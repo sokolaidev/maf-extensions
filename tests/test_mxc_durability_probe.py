@@ -22,7 +22,8 @@ FAKE_NATIVE = """
 import contextlib, io, json, subprocess, sys
 from pathlib import Path
 sys.path.insert(0, str(Path.cwd()))
-from scripts.experiments.mxc_session_patch import durability_probe as probe, shared_call
+from scripts.experiments.mxc_session_patch import durability_probe as probe
+from maf_sandbox_mxc import shared_call
 probe.LIMITS = probe.Limits(20*1024**2, 40*1024**2, checkpoint_bytes=1024, files=2)
 def execute(helper, startup, work, code, limit, before_start, checkpoint_limits, check_active, before_spawn):
     before_spawn()

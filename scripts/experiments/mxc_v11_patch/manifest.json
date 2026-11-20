@@ -1,0 +1,91 @@
+{
+  "mxc_base": "c66201839d63cae2239db5e92f1f1d6076cf5181",
+  "runtime_base": "34c0d647a9f8679c0ce53b76e174894b2c5bfa7a",
+  "host_base": "a03088470d822b538d2525ef9a5ae9e29daea1e8",
+  "layers": {
+    "session": {
+      "session": {
+        "files": {
+          "src/mxc-sdk/Cargo.toml": {
+            "before": "094a7a043e8ee0ac8d6aeb14eccd2fee1c4e0f45f0e34f7f18325e682690e557",
+            "after": "82ec31b651bb2947a1059a0059efc7bc2987f1b335afcdbd47478e774609d5d5"
+          },
+          "src/mxc-sdk/src/backends/hyperlight/common/mod.rs": {
+            "before": "f90c0a62a67c5c5403850ffed8629ee713882c853be3aa685189180d4d0b32c3",
+            "after": "8499c68623fc78d5694d18a8a0b44fbca23b2cb6beb8b29927a0665859dcbeed"
+          },
+          "src/mxc-sdk/src/backends/hyperlight/common/session_preview.rs": {
+            "before": null,
+            "after": "fefc65deb76bae12f1ac195b0c65c749b7c4dc48a451b87e91335e50d1d60466"
+          }
+        },
+        "sha256": "e6f09ae2a67fc1f895ba9cb01f303a0dc6682375f869baea03b7f0562aa4b3f2"
+      }
+    },
+    "output": {
+      "session": {
+        "files": {
+          "src/mxc-sdk/Cargo.toml": {
+            "before": "82ec31b651bb2947a1059a0059efc7bc2987f1b335afcdbd47478e774609d5d5",
+            "after": "e56dcb457156447f79496186cf03c397518d22d70d621bd0a064f64926f24fda"
+          },
+          "src/mxc-sdk/src/backends/hyperlight/common/session_preview.rs": {
+            "before": "fefc65deb76bae12f1ac195b0c65c749b7c4dc48a451b87e91335e50d1d60466",
+            "after": "8261d9c11afb79ee138ac2c26aa3cda134447cbe47451fe499f31b2b37a6bf1e"
+          }
+        },
+        "sha256": "b89fce197a6a5d32f86b4b82bffaf725ce7be99b93286cdfee9ff5c0316598a1"
+      },
+      "runtime": {
+        "files": {
+          "src/lib.rs": {
+            "before": "ee885b61d7aa1299625b44968183294bac4bea7b4e4ccaabd126445624ee5442",
+            "after": "606d9a9453bc5ce8916ce09ce7747b7dc8fd4ac29691d07e6396d97fb23640f7"
+          },
+          "src/output_counter.rs": {
+            "before": null,
+            "after": "be6bc75f77d9fbc53a64ad3242e7bdc2baeeb8ae219b4004518939c9375b19d3"
+          }
+        },
+        "sha256": "57fc093abe335cfc110a00d0217295ce606cf7cbc1baba8c44408179333e0b41"
+      }
+    },
+    "storage": {
+      "session": {
+        "files": {
+          "src/mxc-sdk/src/backends/hyperlight/common/session_preview.rs": {
+            "before": "8261d9c11afb79ee138ac2c26aa3cda134447cbe47451fe499f31b2b37a6bf1e",
+            "after": "415e7274ea2501a786c8d735bd1efbc551ce2f89f7a89560de6adc91d111e1ca"
+          }
+        },
+        "sha256": "413941aede0f32af6885788d4434c2f6e87a4c85197b83a068d440551b04ac46"
+      },
+      "runtime": {
+        "files": {
+          "src/lib.rs": {
+            "before": "606d9a9453bc5ce8916ce09ce7747b7dc8fd4ac29691d07e6396d97fb23640f7",
+            "after": "dce2d480d673595c6b9792f2c74a06a0656ddd5c73dd36f30f8e0b43c1545e02"
+          }
+        },
+        "sha256": "9c5a7ef8de42f3f483d494ee1aca5d88dd5fa2fdf0feb099cd31ea272bff3c96"
+      },
+      "host": {
+        "files": {
+          "src/hyperlight_host/src/sandbox/snapshot/file/write_budget.rs": {
+            "before": null,
+            "after": "832148dbdc096b86b04929aeae920ab5eab6c44d8e712bfc4703206956a786d0"
+          },
+          "src/hyperlight_host/src/sandbox/snapshot/file/fsutil.rs": {
+            "before": "1bdbf4d53bea8b401846131b77af4223db87d006ba888de2e92fa452bc410b9f",
+            "after": "cd692f6a08d0ebd7f079f5c285dbde93682632a00a48e4753ecad3bf7ebb7dea"
+          },
+          "src/hyperlight_host/src/sandbox/snapshot/file/mod.rs": {
+            "before": "3b0593822aafec5a0a578cd0a32fa522257d6bba608e935fb1835b16c08542df",
+            "after": "75a98a1dfcc42cd87c84aa8c3f6c22e6c01cf08be7e7aa08b1c96be9aaaab5b7"
+          }
+        },
+        "sha256": "b389e40385a2b1689cc25c53d039acabb0789fea26cf10380a28740c4384a62a"
+      }
+    }
+  }
+}

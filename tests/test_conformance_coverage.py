@@ -137,7 +137,7 @@ def _suite_keys(tree: ast.Module, suite: str) -> frozenset[str]:
     keys: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            if node.module == SUITE_MODULE:
+            if node.module in (SUITE_MODULE, "maf_sandbox.native_conformance"):
                 keys |= {alias.asname or alias.name for alias in node.names if alias.name == suite}
             elif node.module == "maf_sandbox":
                 keys |= {

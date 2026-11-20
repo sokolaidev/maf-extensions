@@ -17,8 +17,9 @@ from test_mxc_physical_probe import FAKE_NATIVE
 probe = importlib.import_module("scripts.experiments.mxc_files_patch.checkpoint_volume_probe")
 
 FIXTURE = r"""
-from scripts.experiments.mxc_files_patch import checkpoint_volume_probe as copied, transport
-from scripts.experiments.mxc_session_patch.host_store import Refused
+from scripts.experiments.mxc_files_patch import checkpoint_volume_probe as copied
+from maf_sandbox_mxc.files import transport
+from maf_sandbox_mxc.host_store import Refused
 import errno
 copied.volume_control.validate_volume = lambda *a, **kw: None
 

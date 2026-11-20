@@ -10,11 +10,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .host_call import digest, execute
-from .host_store import CHUNK, MAX_CHECKPOINT, MAX_FILES, MAX_RESULT, Refused
-from .native_journal import NativeJournal
-from .shared_call import call
-from .shared_store import PATH_BYTES, Limits, ScratchLimits, SharedStore
+from maf_sandbox_mxc.host_call import digest, execute
+from maf_sandbox_mxc.host_store import CHUNK, MAX_CHECKPOINT, MAX_FILES, MAX_RESULT, Refused
+from maf_sandbox_mxc.native_journal import NativeJournal
+from maf_sandbox_mxc.shared_call import call
+from maf_sandbox_mxc.shared_store import PATH_BYTES, Limits, ScratchLimits, SharedStore
 
 
 def console(result: bytes) -> bytes:

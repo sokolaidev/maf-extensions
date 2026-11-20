@@ -13,12 +13,11 @@ The dependents are installed together, not one at a time: `samples/03` takes
 fine on its own, and two dependents whose constraints stop overlapping are not — nothing can
 put them in one environment.
 
-Intersecting the ranges by hand would answer a narrower question than the one that matters.
-These packages also carry `agent-framework-core` and the Azure libraries, and two of them can
-become mutually uninstallable over those while their core ranges overlap perfectly. So the
-resolver is asked instead, and asked to *install* rather than merely resolve: resolution is
-metadata, installation is artifacts, and a set can resolve cleanly and still fail on a wheel
-that is not there.
+The separate `check_core_range_overlap.py` check rejects disjoint declared core ranges before
+the PR gate applies its override. These packages also carry `agent-framework-core` and the
+Azure libraries, and can become mutually uninstallable over those while their core ranges
+overlap. The resolver must still *install* the set: resolution is metadata, installation is
+artifacts, and a set can resolve cleanly and still fail on a wheel that is not there.
 
 Two modes, because a release has two shapes:
 
@@ -31,7 +30,7 @@ Two modes, because a release has two shapes:
   stopping a release for. **Disjoint core ranges in the published family also warn**: the
   report names the pairs that need another release before they can be installed together.
   An install failure without a proven published range conflict still fails this check.
-- **whole-set** (`--whole-set`) — every wheel in the directory together, no published
+- **whole-set** (`--whole-set`) — the sandbox family wheels together, no published
   fallbacks. **This one fails**: a release whose own packages cannot share an environment is a
   range that moved past a sibling, and no later publish repairs it.
 
@@ -54,6 +53,7 @@ from pathlib import Path
 
 from check_dependent_works_with_published_cores import declared_range
 from check_published_dependents_admit import (
+    INDEPENDENT_SANDBOX_PACKAGES,
     ceiling_of,
     dependent_distributions,
     fetch_requires_dist,
@@ -78,10 +78,12 @@ def _python_in(environment: Path) -> Path:
 
 
 def wheels_in(dist_dir: Path) -> dict[str, Path]:
-    """Every `maf-sandbox*` wheel in ``dist_dir`` by distribution name, refusing duplicates."""
+    """Sandbox family wheels in ``dist_dir`` by distribution name, refusing duplicates."""
     found: dict[str, list[Path]] = {}
     for wheel in sorted(dist_dir.glob("maf_sandbox*.whl")):
-        found.setdefault(wheel.name.split("-", 1)[0].replace("_", "-"), []).append(wheel)
+        name = wheel.name.split("-", 1)[0].replace("_", "-")
+        if name not in INDEPENDENT_SANDBOX_PACKAGES:
+            found.setdefault(name, []).append(wheel)
     if ambiguous := {name: paths for name, paths in found.items() if len(paths) > 1}:
         listed = "; ".join(f"{n}: {', '.join(p.name for p in ps)}" for n, ps in ambiguous.items())
         raise SystemExit(f"more than one wheel for a distribution in {dist_dir} — {listed}")

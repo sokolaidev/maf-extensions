@@ -1867,6 +1867,9 @@ class BackendDeclarations:
     #: Host configuration only. None means unreported, not an identity-free deployment.
     configured_identity: ConfiguredIdentity | None = None
     program_channels: tuple[ProgramChannel, ...] = ()
+    #: Host-opted-in recovery of state bound to the exact key, kind and execution contract.
+    #: Only RECLAIM permits adoption; RESET and DISPOSE still establish a clean instance.
+    recovers_state: bool = False
 
 
 @runtime_checkable
@@ -1946,6 +1949,8 @@ class SandboxBackend(Protocol):
         including restart discovery and clones carrying prior input, must report ``False``.
         Keep the value local to this acquire's wrapper, unchanged by later acquires.
         Omission retains cleanup; this is not a required member of :class:`Sandbox`.
+        A host-configured backend may declare ``recovers_state`` to authorize exact-contract
+        recovery under RECLAIM; this does not make a recovered instance freshly created.
 
         Bind the returned sandbox to a backend-allocated storage base, using ``spec.work_dir``
         exactly when an override is supplied. Preserve the allocation across warm reuse and

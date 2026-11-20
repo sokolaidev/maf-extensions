@@ -84,6 +84,7 @@ from maf_compaction import (
 
 from ._configuration import CompactionOptions
 from ._host_hooks import FixtureMediaEstimate, invalid_rewrite, media_kwargs, rewrite_fixture
+from ._merge_workload import MergeQualificationStrategy
 
 if TYPE_CHECKING:
     from agent_framework._clients import SupportsChatGetResponse
@@ -472,7 +473,12 @@ def _build_tool_and_user_summary_anchored(options: StrategyOptions) -> Compactio
         ValueError: If no summarizer client was configured, from the user-band half. The
             record half needs none: its record is written by the agent's own model.
     """
-    return ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
+    strategy_type = (
+        MergeQualificationStrategy
+        if options.compaction.qualify_record_merges
+        else ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
+    )
+    return strategy_type(
         tokenizer=options.tokenizer,
         tool_results=_build_tool_summary_anchored(options),
         user_turns=_build_user_summary_anchored(
@@ -483,6 +489,10 @@ def _build_tool_and_user_summary_anchored(options: StrategyOptions) -> Compactio
         overflow_policy=cast(Literal["shed", "raise"], options.compaction.overflow_policy),
         estimate_margin=options.compaction.estimate_margin,
         merge_prompt=options.compaction.record_merge_prompt,
+        record_budget_share=options.compaction.record_budget_share,
+        chain_seconds=options.compaction.chain_seconds,
+        record_merge_split_depth=options.compaction.record_merge_split_depth,
+        rewrite_gain_fraction=options.compaction.rewrite_gain_fraction,
     )
 
 

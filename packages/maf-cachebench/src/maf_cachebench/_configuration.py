@@ -33,6 +33,12 @@ class CompactionOptions:
     user_summary_prompt: str | None = None
     user_fold_prompt: str | None = None
     record_merge_prompt: str | None = None
+    record_budget_share: float | None = maf_compaction.DEFAULT_RECORD_BUDGET_SHARE
+    chain_seconds: float | None = maf_compaction.DEFAULT_CHAIN_SECONDS
+    record_merge_split_depth: int = 2
+    rewrite_gain_fraction: float = maf_compaction.DEFAULT_REWRITE_GAIN_FRACTION
+    background_record_merges: bool = False
+    tool_delay_seconds: float = 0.0
     session_mode: str = "memory"
     history_mode: str = "incremental"
     stream: bool = False
@@ -40,9 +46,13 @@ class CompactionOptions:
     media_profile: str = "none"
     media_tokens: int = 1024
     result_rewrite_profile: str = "none"
+    record_merge_diagnostics: bool = False
+    qualify_record_merges: bool = False
 
     def __post_init__(self) -> None:
         """Reject invalid controls before a provider is contacted."""
+        if self.qualify_record_merges and self.retry_without_summary_options:
+            raise ValueError("Record merge qualification requires fixed summarizer options.")
         for name in (
             "forced_call_timeout_seconds",
             "min_groups_before_repeat",
@@ -50,12 +60,33 @@ class CompactionOptions:
             "summary_timeout_seconds",
             "max_consecutive_summary_failures",
             "summary_backoff_seconds",
+            "chain_seconds",
         ):
             value = getattr(self, name)
             if value is not None and (isinstance(value, bool) or not isfinite(value) or value <= 0):
                 raise ValueError(f"{name} must be positive and finite, or None.")
         if type(self.chunk_cache_size) is not int or self.chunk_cache_size < 0:
             raise ValueError("chunk_cache_size must be a non-negative integer.")
+        if type(self.record_merge_split_depth) is not int or self.record_merge_split_depth < 0:
+            raise ValueError("record_merge_split_depth must be a non-negative integer.")
+        if (
+            isinstance(self.tool_delay_seconds, bool)
+            or not isfinite(self.tool_delay_seconds)
+            or self.tool_delay_seconds < 0
+        ):
+            raise ValueError("tool_delay_seconds must be non-negative and finite.")
+        if self.record_budget_share is not None and (
+            isinstance(self.record_budget_share, bool)
+            or not isfinite(self.record_budget_share)
+            or not 0 < self.record_budget_share <= 1
+        ):
+            raise ValueError("record_budget_share must be finite and in (0, 1], or None.")
+        if (
+            isinstance(self.rewrite_gain_fraction, bool)
+            or not isfinite(self.rewrite_gain_fraction)
+            or not 0 <= self.rewrite_gain_fraction < 1
+        ):
+            raise ValueError("rewrite_gain_fraction must be finite and in [0, 1).")
         if (self.max_consecutive_summary_failures is None) != (
             self.summary_backoff_seconds is None
         ):
@@ -141,6 +172,14 @@ def add_compaction_arguments(parser: argparse.ArgumentParser) -> None:
         "user_summary_prompt": "Custom user-summary prompt.",
         "user_fold_prompt": "Custom prompt for folding remembered requests.",
         "record_merge_prompt": "Custom prompt for merging recall records.",
+        "record_budget_share": "Share of the sending budget for records; 'none' disables it.",
+        "chain_seconds": "Record-chain admission deadline in seconds; 'none' disables it.",
+        "record_merge_split_depth": "Recursive halvings of refused merge batches; zero disables.",
+        "rewrite_gain_fraction": "Minimum fraction a harder rewrite must remove, in [0, 1).",
+        "background_record_merges": "Prepare composed record merges while tools execute.",
+        "record_merge_diagnostics": "Retain count-only composed record merge diagnostics.",
+        "qualify_record_merges": "Require a value-preserving merge in sent history for every seed.",
+        "tool_delay_seconds": "Simulated async lookup latency, applied equally to every live row.",
         "session_mode": "Keep objects, round-trip JSON, or also rebuild objects each request.",
         "history_mode": "Send each new input or replay the original conversation.",
         "stream": "Consume complete streaming responses, including persistence cleanup.",
@@ -177,6 +216,10 @@ def add_compaction_arguments(parser: argparse.ArgumentParser) -> None:
             kwargs["choices"] = choices[field.name]
         if isinstance(default, bool):
             kwargs["action"] = argparse.BooleanOptionalAction
+        elif field.name in {"record_budget_share", "chain_seconds"}:
+            kwargs["type"] = _optional_float
+        elif field.name == "rewrite_gain_fraction":
+            kwargs["type"] = float
         elif field.name.endswith("seconds") or field.name == "estimate_margin":
             kwargs["type"] = float
         elif field.name in {
@@ -185,11 +228,17 @@ def add_compaction_arguments(parser: argparse.ArgumentParser) -> None:
             "chunk_cache_size",
             "max_consecutive_summary_failures",
             "media_tokens",
+            "record_merge_split_depth",
         }:
             kwargs["type"] = int
         else:
             kwargs["type"] = str
         group.add_argument(flag, **kwargs)
+
+
+def _optional_float(value: str) -> float | None:
+    """Parse an optional numeric limit without assigning a second meaning to zero."""
+    return None if value.casefold() == "none" else float(value)
 
 
 def compaction_options(args: argparse.Namespace) -> CompactionOptions:

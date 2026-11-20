@@ -91,6 +91,32 @@ Storage scenarios require `roundtrip` or `restart` and apply to recall-bearing s
 
 The host-hook profiles are synthetic fixture policies. `describe` supplies a fixed description without fetching media or calling a model; `decline` returns no description; `select_pdf` describes PDFs and preserves other media turns while allowing later turns to compact. `preserve` installs only the media estimator. `--media-tokens` is a host estimate per part, never billed provider usage. The result `preserve` profile authorizes shortening a single text item while retaining its metadata and non-text items; it declines multiple text items or raw provider representations. `invalid` deliberately drops media to exercise validation. These policies are for fixtures and controlled experiments; their fixed descriptions do not interpret arbitrary user media. Defaults install none of these hooks.
 
+### Record merge loss
+
+Run `uv run cachebench_merge_loss` for a matched comparison of count-only coverage and coverage that credits distinct values present in the retained messages. Add `--fixture-judge` to include a scripted judge. Both commands print JSON and run entirely offline.
+
+Six synthetic cases use the same source records and next task. Each row reports the raw and surviving value counts, later messages mentioning each missing value, acceptance, source facts preserved, and whether the projected prompt identifies the correct deployment target. The task reader requires an unambiguous line with the deployment role. Swapping the active and retired identifiers therefore fails even at full token coverage. A false acceptance loses the correct next target and a false refusal rejects a candidate that would have preserved it. The budget counts estimated tokens in the projected fixture text at one decision per case.
+
+The count policy uses compaction's distinctive tokens and default coverage share. The context policy credits equal tokens anywhere in the final retained messages, so a mention with a different role can earn credit. Both context and judge policies require the candidate to meet the configured raw floor. The judge receives one batch of missing values with their source lines, later mention counts, candidate, retained messages, task and versioned rubric. A confident material verdict vetoes acceptance and an all-minor verdict allows it. Uncertain or unavailable judgments use the count decision. Full-coverage candidates have no missing values to judge.
+
+For a live experiment, await `maf_cachebench.merge_loss.evaluate(judge=adapter, model_id=deployment, rubric=criteria, rubric_version=version)` with a host-owned async callable from `JudgeRequest` to `JudgeAnswer`. The adapter supplies one typed `Verdict` per missing value and optional USD cost. The report records the model identity, per-value probabilities, request count and elapsed time. Unknown cost is JSON null. The request size limit applies to the UTF-8 JSON of the request fields. The timeout cancels a cooperative adapter and caller cancellation propagates. Each evaluation scores fresh fixture projections. Runtime compaction and session replay use their existing policy.
+
+With the default 80% threshold, 60% floor and 45-token text budget, the six fixtures produce the following counts. Crediting surviving tokens accepts the repeated audits but also credits a target mentioned in the wrong role. The scripted judge uses the deployment label to catch that case. Every policy accepts the role swap.
+
+| Policy | False accepts | False refusals | Projections over budget |
+| --- | ---: | ---: | ---: |
+| Count | 2 | 3 | 4 |
+| Count with surviving context | 3 | 2 | 2 |
+| Scripted judge | 1 | 1 | 3 |
+
+### Preserving roles at full value coverage
+
+`uv run cachebench_role_preservation` compares the missing-value policy with a literal check on structured label–value pairs. Six pairs of source records cover deployment targets and approved amounts. Each pair has three shorter candidates containing both original values. A faithful merge reorders fields, a paraphrase expresses their roles in prose, and a swap assigns each value to the other role. The reference answer comes from the fixture. Each row reports the answer the candidate supplies and the answer left by the policy's decision.
+
+The report separates two development sources from four held-out sources with different wording and values. The missing-value rule makes zero requests at full coverage. The deterministic check compares the complete sets of colon-delimited pairs, normalizing label case and surrounding whitespace. An unrecognized prose format causes a refusal. To measure a third policy, await `maf_cachebench.role_preservation.evaluate_roles(judge=adapter, model_id=name)`. The host-owned async adapter receives the task, source records, candidate and fixed rubric, and returns a `CandidateVerdict` with a label and its probability. Each candidate is judged independently. The expected answer, split and variant stay with the scorer.
+
+The held-out gate requires zero false accepts, zero false refusals and zero fallbacks. An uncertain response, confidence below 0.8, timeout, malformed response or oversized request falls back to the count decision. The request limit is 4,096 UTF-8 JSON bytes and the timeout is five seconds. Each split reports requests per candidate, median request latency, abstentions and all fallbacks. The opt-in [Foundry runner](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-cachebench/runs/role-preservation-v1) uses the same scoring path and saves native choices and usage alongside the report.
+
 ### Offline capability scenarios
 
 `cachebench_capabilities` supplies the content, model responses and storage faults needed to exercise these paths without credentials or external I/O. Persistence cases use the same agent builder and session runner as `cachebench_live`; media and result cases use the shared strategy builders directly. The command writes one JSON object per scenario and exits nonzero if any contract check fails. Expected injected failures pass only when their observed commit, cleanup and ordering outcomes match the contract.
@@ -103,7 +129,7 @@ uv run cachebench_capabilities --scenario media_select_pdf --media-tokens 800
 uv run cachebench_capabilities --scenario result_invalid
 ```
 
-Output files must not already exist. Each row identifies itself as `cachebench_capability`, schema 1, with `offline_simulated` evidence, fixture version, package/Python versions, resolved controls, observations and individual checks. These records are separate from cost/cache benchmark records and must not be averaged with them. Live records use schema 24 for the new profile settings; the reader still accepts schemas 2–23, and omitted profile settings retain their default behavior.
+Output files must not already exist. Each row identifies itself as `cachebench_capability`, schema 1, with `offline_simulated` evidence, fixture version, package/Python versions, resolved controls, observations and individual checks. These records are separate from cost/cache benchmark records and must not be averaged with them. Live records use schema 25; the reader still accepts schemas 2–24 and retains older control mappings without filling absent settings with current defaults.
 
 | Scenario | Observation |
 | --- | --- |
@@ -120,6 +146,18 @@ Output files must not already exist. Each row identifies itself as `cachebench_c
 Programmatic callers pass `CompactionOptions(...)` through `StrategyOptions(compaction=...)`. Existing record, user-summary, fold, coverage and chain controls remain available. Each option and the installed CacheBench, compaction and framework versions become part of the recorded cell identity. Schema 23 records also contain `compaction_diagnostics`, including forced-call failures, ignored pins, summary replay/skips and final recall-disabled state. Older records remain readable with unknown new settings and diagnostics; they are grouped separately.
 
 Each completed provider attempt is metered, including an attempt rejected and retried by recall middleware. Independent probes restore the complete supported strategy, middleware and gate state, including pin disablement and summary backoff. Costs from older schemas can undercount internal retries and should not be pooled with new runs.
+
+### Record reduction and background merges
+
+The composed row supports `--record-budget-share` (default `0.5`, or `none` to disable the share), `--chain-seconds` (default `30`, or `none` to disable the admission deadline), `--record-merge-split-depth` (default `2`) and `--rewrite-gain-fraction` (default `0.1`). A rewrite must save that fraction of its source records and satisfy the existing value-coverage check. Zero gain permits any smaller answer. Zero split depth disables smaller retries after a lossy or truncated batch.
+
+Pass `--background-record-merges` to `cachebench_live` to prepare record merges during tools on `tool_and_user_summary_anchored`. Both agent kinds support it with memory, round-trip or restart sessions, original-history replay and streaming. Other strategy rows keep their existing execution path. The first model call, user summaries, harder rewrites and budget enforcement remain foreground work. Only completed answers accepted by a foreground pass enter persisted history; run completion, failure, cancellation and stream closure discard outstanding work. The synthetic tools require no approval, so the harness approval wrapper is disabled.
+
+Use `--tool-delay-seconds 1` to give each synthetic lookup one second of asynchronous work during which a background merge can complete. The default is zero; immediate tool fixtures may leave little opportunity for overlap. The delay applies equally to every live comparison row and is recorded with the controls.
+
+Schema 25 records these controls in the cell identity and adds `chain_timeouts` (`CHAINTIMEOUT`), `records_reshaped` (`RECSHAPE`) and `calls_resumed` (`CALLRESUME`) to diagnostics. Diagnostics also state whether background merging applied to the row and count `summarizer_requests_cancelled`. A cancelled request without returned usage makes pricing incomplete; it is not counted as free. Tests use deterministic local models to verify lifecycle and state behavior. Live provider cost, quality and latency comparisons require a separate benchmark run.
+
+For schema 26, add `--record-merge-diagnostics` to an ordinary composed run to retain pressure, eligibility, batch admission and foreground/background outcomes. The diagnostics store counts and bounded samples without record text or fingerprints. Use `--qualify-record-merges` for the separate [live merge workload](https://github.com/sokolaidev/maf-extensions/blob/main/docs/compaction/cachebench.md#live-record-merge-qualification). It requires a checkpoint merge that preserves its planted source values and appears in a subsequent model call. Background qualification requires foreground application of the answer prepared during the checkpoint lookup.
 
 ## Reading the table
 

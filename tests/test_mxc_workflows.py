@@ -35,6 +35,7 @@ def test_native_qualification_is_separate_from_the_required_package_gate():
     assert set(native.get("on", native.get(True))) == {"workflow_dispatch"}
     expected = {
         "mxc-v1": "inputs.mxc_v1 != 'off'",
+        "mxc-v11": "inputs.mxc_v11 != 'off'",
         "mxc-stream-kernel": "inputs.mxc_stream_kernel || inputs.mxc_streams",
         "mxc-streams": "inputs.mxc_streams",
         "mxc-file-kernel": "inputs.mxc_files",

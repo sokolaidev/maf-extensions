@@ -4,8 +4,66 @@
 # ruff/pyright/pytest configuration and LICENSE; release-please adds CHANGELOG in its first
 # Release PR), so it can be built, published and even extracted again without this file.
 
+[project]
+name = "maf-extensions"
+version = "0.0.0"
+# Dependabot reads the root project to select its Python interpreter.
+requires-python = ">=3.12,<3.15"
+# Install all members during a default workspace sync.
+dependencies = [
+    "maf-cachebench",
+    "maf-compaction",
+    "maf-sandbox",
+    "maf-sandbox-acas",
+    "maf-sandbox-antivirus",
+    "maf-sandbox-azure-pricing",
+    "maf-sandbox-bicep",
+    "maf-sandbox-bubblewrap",
+    "maf-sandbox-codeact",
+    "maf-sandbox-deepagents",
+    "maf-sandbox-docker",
+    "maf-sandbox-docker-sbx",
+    "maf-sandbox-document",
+    "maf-sandbox-drawio",
+    "maf-sandbox-hyperlight",
+    "maf-sandbox-mcp",
+    "maf-sandbox-mxc",
+    "maf-sandbox-otel",
+    "maf-sandbox-shell",
+    "maf-sandbox-terraform",
+    "maf-sandbox-tui",
+    "maf-sandbox-wslc",
+]
+
+[tool.uv]
+package = false
+
 [tool.uv.workspace]
 members = ["packages/*"]
+
+[tool.uv.sources]
+maf-cachebench = { workspace = true }
+maf-compaction = { workspace = true }
+maf-sandbox = { workspace = true }
+maf-sandbox-acas = { workspace = true }
+maf-sandbox-antivirus = { workspace = true }
+maf-sandbox-azure-pricing = { workspace = true }
+maf-sandbox-bicep = { workspace = true }
+maf-sandbox-bubblewrap = { workspace = true }
+maf-sandbox-codeact = { workspace = true }
+maf-sandbox-deepagents = { workspace = true }
+maf-sandbox-docker = { workspace = true }
+maf-sandbox-docker-sbx = { workspace = true }
+maf-sandbox-document = { workspace = true }
+maf-sandbox-drawio = { workspace = true }
+maf-sandbox-hyperlight = { workspace = true }
+maf-sandbox-mcp = { workspace = true }
+maf-sandbox-mxc = { workspace = true }
+maf-sandbox-otel = { workspace = true }
+maf-sandbox-shell = { workspace = true }
+maf-sandbox-terraform = { workspace = true }
+maf-sandbox-tui = { workspace = true }
+maf-sandbox-wslc = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -28,6 +86,8 @@ dev = [
     "bandit[toml]>=1.9.4,<1.10",
     # Release checks (metadata validation of built sdists/wheels).
     "twine>=6,<7",
+    # Exact core-range satisfiability without requiring a published core.
+    "packaging>=26.1,<27",
     # Task runner for the local gate (`uv run poe gate`): poe detects uv.lock and runs every
     # task through `uv run` itself, so the tasks below name bare commands. Root-only — the
     # packages stay self-contained and ship no tasks of their own.
@@ -157,6 +217,7 @@ executionEnvironments = [
   { root = "packages/maf-sandbox-hyperlight/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-drawio/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-otel/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
+  { root = "packages/maf-sandbox-mxc/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-mcp/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-tui/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-wslc/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
@@ -195,6 +256,7 @@ testpaths = [
     "packages/maf-sandbox-antivirus/tests",
     "packages/maf-sandbox-otel/tests",
     "packages/maf-sandbox-mcp/tests",
+    "packages/maf-sandbox-mxc/tests",
     "packages/maf-sandbox-tui/tests",
     "packages/maf-sandbox-wslc/tests",
     "packages/maf-sandbox-bubblewrap/tests",

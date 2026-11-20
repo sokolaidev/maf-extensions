@@ -10,9 +10,10 @@ import threading
 from collections.abc import Mapping
 from pathlib import Path
 
-from scripts.experiments.mxc_files_patch.request import FileLimits, Input, Request, WorkspaceLimits
-from scripts.experiments.mxc_files_patch.transport import execute
-from scripts.experiments.mxc_session_patch.host_store import Refused
+from maf_sandbox_mxc.files.request import FileLimits, Input, Request, WorkspaceLimits
+from maf_sandbox_mxc.files.transport import execute
+from maf_sandbox_mxc.host_store import Refused
+
 from scripts.experiments.mxc_streams_patch.native_probe import streams
 
 IO = b"""def read_file(path):
@@ -40,11 +41,20 @@ def qualify(helper: Path, startup: Path, root: Path) -> dict:
         capture: bool = False,
         refused: bool = False,
         match_checkpoint: bool = False,
+        call_directory: str | None = None,
+        directories: tuple[str, ...] = (),
     ) -> Path:
         work = root / name
         work.mkdir()
         wanted = artifacts or {}
-        request = Request(IO + code.encode(), inputs, tuple(wanted), limits, workspace)
+        request = Request(
+            IO + code.encode(),
+            inputs,
+            () if call_directory else tuple(wanted),
+            limits,
+            workspace,
+            call_directory,
+        )
         try:
             raw = execute(
                 helper,
@@ -68,6 +78,10 @@ def qualify(helper: Path, startup: Path, root: Path) -> dict:
             for item in json.loads(raw)["artifacts"]
         }
         assert set(actual) == set(wanted), name
+        if call_directory is not None:
+            completion = json.loads(raw)
+            assert completion["call_directory"] == call_directory
+            assert set(completion["directories"]) == set(directories)
         for key, expected in wanted.items():
             if expected is None:
                 if key.endswith(".png"):
@@ -90,6 +104,39 @@ def qualify(helper: Path, startup: Path, root: Path) -> dict:
             "artifacts": {k: hashlib.sha256(v).hexdigest() for k, v in actual.items()},
         }
         return work / "candidate"
+
+    directory_state = check(
+        "directory-collection",
+        "os.mkdir('nested'); os.mkdir('empty')\n"
+        "write_file('nested/chart.bin', b'\\x00\\xff')\n"
+        "write_file(guest_session_path+'/retained', b'private')\n"
+        "old_directory=guest_call_path\nprint('ok')",
+        inputs=(Input("data.csv", b"value\n1\n"),),
+        artifacts={"data.csv": b"value\n1\n", "nested/chart.bin": b"\x00\xff"},
+        call_directory="a" * 32,
+        directories=("nested", "empty"),
+        capture=True,
+    )
+    check(
+        "directory-restore-reclaims-call",
+        "assert not os.path.exists(old_directory)\n"
+        "assert read_file(guest_session_path+'/retained') == b'private'\nprint('ok')",
+        restore=directory_state,
+        call_directory="b" * 32,
+    )
+    for label, code, limits in (
+        ("count", "write_file('one',b'1'); write_file('two',b'2')", FileLimits(artifact_files=1)),
+        ("bytes", "write_file('one',b'12')", FileLimits(artifact_bytes=1)),
+        ("file", "write_file('one',b'12')", FileLimits(file_bytes=1)),
+    ):
+        check(
+            "directory-refusal-" + label,
+            code,
+            call_directory="c" * 32,
+            limits=limits,
+            capture=True,
+            refused=True,
+        )
 
     data = bytes(range(256)) * 1024
     inputs = tuple(Input(f"file-{i:02d}.bin", data) for i in range(64))

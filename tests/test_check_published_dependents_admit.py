@@ -197,6 +197,7 @@ class TestTheDependentsItLooksUp:
     def test_it_finds_the_dependents_and_not_the_core(self):
         found = check.dependent_distributions(Path(__file__).resolve().parent.parent)
         assert "maf-sandbox" not in found
+        assert "maf-sandbox-mcp" not in found
         assert "maf-sandbox-acas" in found
         assert len(found) >= 5
 

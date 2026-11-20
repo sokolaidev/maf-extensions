@@ -211,6 +211,46 @@ Ranges are checked by the strategies themselves, and every selected strategy is 
 
 The composed row reads `--trigger-fraction`, `--fallback-fraction`, `--coverage-share` and the record flags above for its record half and the four flags here for its user half, so a sweep of any of them moves that half of it exactly as it moves the single row.
 
+**Composed record reduction:** these flags apply to `tool_and_user_summary_anchored`.
+
+| flag | default | meaning |
+| --- | --- | --- |
+| `--record-budget-share` | 0.5 | Share of the sending budget available to active records once the chain starts. `none` disables the share; request input limits still apply. |
+| `--chain-seconds` | 30 | Admission deadline shared by record merges, summary folds and harder rewrites, including retries. Requests already in flight may finish later. `none` disables the deadline. |
+| `--record-merge-split-depth` | 2 | Maximum recursive halvings of a lossy or truncated merge batch. Zero disables splitting. |
+| `--rewrite-gain-fraction` | 0.1 | Minimum fraction of source-record tokens a harder rewrite must remove, in addition to the size and value checks. Zero permits any smaller answer. |
+| `--background-record-merges` | off | Prepare record merges during tools with session-owned middleware. Completed answers are revalidated on the next foreground pass; unfinished work never delays that pass. |
+| `--record-merge-diagnostics` | off | Record sending budget, chain target, record token share, exclusions, batch admission and answer outcomes with bounded count-only evidence. |
+
+Background mode works with both agent kinds and all session modes. The first model call, user summaries, harder rewrites and overflow enforcement remain foreground work. Run completion, errors, cancellation and early stream closure discard pending work; accepted decisions use normal session persistence. Synthetic benchmark tools do not require approval, so the harness approval wrapper is disabled. See the [record-reduction control reference](../../packages/maf-cachebench/README.md#record-reduction-and-background-merges) for diagnostics and evidence limits.
+
+`--tool-delay-seconds` defaults to zero. Set a positive duration to simulate asynchronous lookup latency and give background requests time to complete during tools. This delay applies to every live row, including the control, and participates in cell identity. Immediate tool results can leave little opportunity for overlap.
+
+### Live record merge qualification
+
+`--qualify-record-merges` selects a separate workload with one composed strategy and a JSONL destination. The model generates records from ordinary lookups across completed user turns. The final lookup starts from a synthetic near-budget user turn so the worker can see pressure before its result arrives. A seed qualifies when the checkpoint produces a merge, the identified replacement reaches subsequent model input with its planted source values intact, and the completed snapshot contains every planted identifier or phrase in full. Background qualification also requires the applied answer to have been prepared during the checkpoint lookup. Each billed agent call, including probes, must fit with its own output reservation. Qualification keeps the configured summarizer options for every request. A missed checkpoint merge reports `not_exercised` and makes the command exit nonzero.
+
+Run both arms with the same deployment and `--scenario-seed` so their markers and filler match while each run gets a separate agent prompt prefix. Add `--background-record-merges` to the second arm and give it its own output file. Supply the deployment's pricing or use unit rates solely for token accounting.
+
+```bash
+cachebench_live azure-responses:gpt-6-luna \
+  --agent harness --agent-reasoning-effort high --no-temperature \
+  --strategies tool_and_user_summary_anchored --qualify-record-merges \
+  --context-window 270000 --tokenizer tiktoken --fill 0 --tool-share 0 \
+  --tool-turns 8 --tool-result-tokens 512 --filler-turns 6 --filler-tokens 64 \
+  --narration suppressed --max-groups-before-record 1 --min-groups-before-repeat 1 \
+  --record-target-tokens 512 --max-output-tokens 16384 \
+  --record-max-tokens 16384 --answer-max-tokens 16384 \
+  --summarizer-provider azure-responses:gpt-6-luna \
+  --summary-options-json '{"max_tokens":8192,"reasoning":{"effort":"high"},"store":false}' \
+  --summary-timeout-seconds 300 --tool-delay-seconds 30 \
+  --scenario-seed 2779 --repeats 3 --probe-repeats 1 --combined-repeats 2 \
+  --price-input 1 --price-cached 1 --price-output 1 \
+  --results-jsonl luna-foreground-qualification.jsonl
+```
+
+Compare retained facts, scoped and combined answer accuracy, prompt tokens, conversation and probe cache reads, and uncached input. The merge diagnostics identify background requests and prepared answers observed during delayed lookups. They also retain separate conversation and probe durations and summarizer usage totals, with missing usage counted explicitly.
+
 **Everything else:**
 
 | flag | default | |
@@ -345,11 +385,14 @@ The `flags` column is where a row says it is not measuring what its name claims.
 | `USERSTARVED:<n>` | **retired at schema 16; only on older records.** Passes of `tool_and_user_summary_anchored` where the record half's removals kept the prompt under the user half's line. That row now judges its user half after the record half on purpose, so the user half staying idle because tool compaction was enough is the design working, and `USERUNDER` counts it |
 | `RECMERGE:<n>` / `RECMERGEREJ:<n>` | `tool_and_user_summary_anchored`'s last-resort chain, step a: passes that merged the records into one, and merges refused because they came back no smaller or dropped the records' values. The chain runs only while the prompt is over the input budget after both halves |
 | `USERMERGE:<n>` / `USERMERGEREJ:<n>` | step b: passes that folded the standing user summaries into one, and folds refused as no smaller |
-| `RECHARDER:<n>` / `RECHARDERREJ:<n>` | step c: harder rewrites of the record tried, up to `--record-harder-attempts` per pass, and those refused as no smaller or lossy |
+| `RECHARDER:<n>` / `RECHARDERREJ:<n>` | step c: harder rewrites of the record tried, up to `--record-harder-attempts` per pass, and those refused as no smaller, as saving less than the strategy's `rewrite_gain_fraction`, or lossy |
 | `RECLOSSY:<n>` | of the refused merges and rewrites, those that were smaller but quoted less than `coverage_share` of the replaced records' distinctive values |
 | `RECHARDERSKIP:<n>` / `RECMERGESKIP:<n>` | from schema 18: rewrite attempts and record merges not asked for, because the same records were already refused at them. A refusal stands until the record changes, and a refused attempt forecloses the milder ones on that record too. Before 18 the live path's second list replayed a refusal and counted it again under `RECHARDER`/`RECHARDERREJ` and `RECMERGEREJ` |
 | `CHAINTARGET:<n>` / `CHAINSHORT:<n>` / `CHAINKEPT:<n>` | from schema 19: passes the composed row's chain started on and brought down to its target (`--chain-gain-fraction` of the tokens behind its earliest edit, below the budget), passes every step left above it, and passes that put back a merge, rewrite, fold or shed the chain made on the live path's other list |
 | `RECSUMMFAIL:<n>` | chain merges or rewrites the summarizer did not answer |
+| `CHAINTIMEOUT:<n>` | chain passes whose admission deadline expired; this does not imply an in-flight request was cancelled |
+| `RECSHAPE:<n>` | records rewritten losslessly as text records without a summarizer request |
+| `CALLRESUME:<n>` | per-call passes that reused the previous pass's retained list instead of rebuilding accepted edits |
 | `LASTFALLBACK:<n>` | step d: passes that reached the record half's fallback, which on this row runs there and nowhere else and may drop narration only. Beside `DQ` it is the chain exhausted, the intended loud failure. A user-summary fold is kept on size alone; a record merge or rewrite must also keep the records' values (`RECLOSSY`). Neither is checked against the tool results, so what a merge lost is still read in `facts` and `acc1` |
 | `NO:<opt>` | the provider rejected that option so it was dropped. A run that dropped `tool_choice` chose its own tool calls and is not comparable with one that did not |
 | `FETCH` | this row gathered a different set of facts than the control |
@@ -475,6 +518,8 @@ The live runner exposes recall cache preservation, pin capability and timeout co
 
 Schema 23 separates these settings and installed package versions in the cell key. Its `compaction_diagnostics` includes cumulative recall failures, ignored forced calls, summary replay and skips, plus final pin/recall-disabled state. Usage is recorded inside recall middleware so internal retries retain each completed provider attempt's bill. Probe resets restore the full public behavioral state, including the gate and summary backoff. Earlier records remain readable but are not pooled with this measurement contract; absent new settings and diagnostics mean unknown.
 
+Schema 25 records the record-budget share, chain deadline, merge split depth, rewrite gain and background selection in cell identity. Older compaction mappings retain their recorded fields without inferred defaults for missing controls. Diagnostics include `chain_timeouts`, the row's effective `background_record_merges` flag and `summarizer_requests_cancelled`. Cancellation without returned usage marks pricing incomplete. Offline tests establish wiring, retained state and cleanup; provider quality, cache behavior, cost and long-history latency require a live benchmark with the recorded package versions.
+
 ## Development
 
 ```bash
@@ -490,6 +535,7 @@ Tests are offline; the provider call is stubbed. The [testing record](research/t
 | Replay harness: deterministic scripts with per-cell cache isolation, comparable across providers | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
 | Live harness: seed, snapshot and probe, with the control as a price reference past the window | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
 | Current compaction controls, streaming, serialized sessions, object reconstruction and original-history replay | Implemented | [Control reference](../../packages/maf-cachebench/README.md#compaction-controls-and-session-experiments) |
+| Record reduction controls, background merges and cancellation-aware cost evidence | Implemented | [#2776](https://github.com/sokolaidev/maf-extensions/pull/2776) (merged) |
 | Records keyed on every workload and strategy setting, with the schema refusing what it cannot read | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
 | Cost split into seeding and probing, ranking on the seeding half behind an accuracy bar | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |
 | Per-request long-context pricing and cache-write rates | Implemented | [maf-cachebench](../../packages/maf-cachebench/README.md) |

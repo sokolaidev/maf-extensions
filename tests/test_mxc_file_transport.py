@@ -13,9 +13,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 try:
-    transport = importlib.import_module("scripts.experiments.mxc_files_patch.transport")
-    shared = importlib.import_module("scripts.experiments.mxc_files_patch.shared_call")
-    storage = importlib.import_module("scripts.experiments.mxc_session_patch.shared_store")
+    transport = importlib.import_module("maf_sandbox_mxc.files.transport")
+    shared = importlib.import_module("maf_sandbox_mxc.files.shared_call")
+    storage = importlib.import_module("maf_sandbox_mxc.shared_store")
 finally:
     sys.path.remove(str(Path(__file__).parents[1]))
 
@@ -46,7 +46,7 @@ def native(tmp_path):
 
 
 def request():
-    model = importlib.import_module("scripts.experiments.mxc_files_patch.request")
+    model = importlib.import_module("maf_sandbox_mxc.files.request")
     return model.Request(b"pass", (), ("out.bin",), model.FileLimits())
 
 
@@ -82,6 +82,16 @@ def test_artifacts_replay_after_reopen_without_native_helper(native, tmp_path):
             == result
         )
         store.audit_usage()
+        with pytest.raises(transport.Refused, match="different request"):
+            shared.call(
+                store,
+                "one",
+                req,
+                tmp_path / "absent",
+                tmp_path / "absent",
+                storage.ScratchLimits(1, 1, 1),
+                restore_state=False,
+            )
 
 
 @pytest.mark.parametrize(
@@ -130,7 +140,7 @@ def test_budget_refusal_precedes_admission(tmp_path, monkeypatch):
 
 
 def test_maximum_file_envelope_fits_explicit_store_ceiling():
-    model = importlib.import_module("scripts.experiments.mxc_files_patch.request")
+    model = importlib.import_module("maf_sandbox_mxc.files.request")
     req = model.Request(b"pass", (), (), model.FileLimits(artifact_bytes=64 * 1024**2))
     assert transport.result_limit(req) <= storage.MAX_SHARED_RESULT
     assert storage.Limits(10**9, 10**9).result_bytes == 2 * 1024**2
@@ -151,7 +161,7 @@ def test_maximum_file_envelope_fits_explicit_store_ceiling():
     ],
 )
 def test_restored_upload_authority_uses_portable_exact_names(tmp_path, old, new, replace, valid):
-    model = importlib.import_module("scripts.experiments.mxc_files_patch.request")
+    model = importlib.import_module("maf_sandbox_mxc.files.request")
     req = model.Request(
         b"pass", (model.Input(new, b"", "session", replace),), (), model.FileLimits()
     )
@@ -168,3 +178,135 @@ def test_prepare_keeps_replacement_refusal_inside_identified_helper(tmp_path):
     base.mkdir()
     transport.prepare(work, request(), True, base)
     assert json.loads((work / "request.json").read_text())["uploads_valid"] is False
+
+
+def directory_request():
+    return replace(request(), artifacts=(), call_directory="a" * 32)
+
+
+def directory_control(control):
+    control.update(
+        format=transport.DIRECTORY_FORMAT,
+        call_directory="a" * 32,
+        directories=["nested", "empty"],
+    )
+    control["artifacts"][0]["name"] = "nested/result.bin"
+
+
+def test_directory_collection_preserves_bytes_and_empty_directories(native):
+    report, control = native
+    directory_control(control)
+    report.write_text(json.dumps(control), encoding="utf-8")
+    result = json.loads(transport.read_result(report, True, directory_request()))
+    assert result["directories"] == ["nested", "empty"]
+    assert result["call_directory"] == "a" * 32
+    assert result["artifacts"][0]["name"] == "nested/result.bin"
+    assert base64.b64decode(result["artifacts"][0]["base64"]) == b"\x00\xffA"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda c: c.update(call_directory="another"),
+        lambda c: c.update(format=transport.FORMAT),
+        lambda c: c.update(directories=[]),
+        lambda c: c.update(directories=["nested", "Nested"]),
+        lambda c: c.update(directories=["nested", "nested/result.bin"]),
+        lambda c: c.update(directories=["nested", "../outside"]),
+        lambda c: c.update(directories=["nested", "missing/child"]),
+        lambda c: c.update(directories=["nested"] * 1025),
+        lambda c: c.update(directories=[False]),
+        lambda c: c["artifacts"][0].update(name="/outside"),
+        lambda c: c["artifacts"][0].update(name="nested/CON"),
+        lambda c: c["artifacts"].append({"name": "Nested/RESULT.bin", "offset": 3, "bytes": 0}),
+        lambda c: c["artifacts"].append({"name": "aaa", "offset": 3, "bytes": 0}),
+    ],
+)
+def test_directory_completion_rejects_unsafe_or_ambiguous_inventory(native, mutate):
+    report, control = native
+    directory_control(control)
+    mutate(control)
+    report.write_text(json.dumps(control), encoding="utf-8")
+    with pytest.raises(transport.Refused):
+        transport.read_result(report, True, directory_request())
+
+
+def test_directory_mode_is_bound_to_retry_identity():
+    original = request()
+    assert "call_directory" not in json.loads(original.identity())
+    directory = directory_request()
+    assert directory.identity() != replace(directory, call_directory="b" * 32).identity()
+    for invalid in ("../outside", "nested/path", "CON", "", "/absolute"):
+        with pytest.raises(transport.Refused):
+            replace(directory, call_directory=invalid)
+    with pytest.raises(transport.Refused):
+        replace(original, call_directory="valid")
+
+
+def test_requested_execution_budget_reaches_native_metadata(tmp_path):
+    transport.prepare(tmp_path, directory_request(), False, tmp_path, timeout=60)
+    assert json.loads((tmp_path / "request.json").read_text())["timeout_ms"] == 60_000
+
+
+@pytest.mark.parametrize("bad", [None, "checkpoint", "exit_code", "artifacts", "directories"])
+def test_guest_failure_has_bounded_diagnostics_and_no_checkpoint(native, bad):
+    report, control = native
+    directory_control(control)
+    control.update(checkpoint=False, exit_code=1, artifacts=[], directories=[])
+    report.with_suffix(".artifacts.bin").write_bytes(b"")
+    for name, data in (("stdout", b"before failure\n"), ("stderr", b"ValueError: bad input\n")):
+        report.with_suffix(f".{name}.bin").write_bytes(data)
+        control["streams"][name]["retained_bytes"] = len(data)
+    if bad == "checkpoint":
+        control[bad] = True
+    elif bad == "exit_code":
+        control[bad] = True
+    elif bad in ("artifacts", "directories"):
+        control[bad] = ["uncommitted"]
+    report.write_text(json.dumps(control), encoding="utf-8")
+    if bad is not None:
+        with pytest.raises(transport.Refused):
+            transport.read_result(report, True, directory_request())
+    else:
+        result = json.loads(transport.read_result(report, True, directory_request()))
+        assert result["exit_code"] == 1
+        assert base64.b64decode(result["streams"]["stdout"]["base64"]) == b"before failure\n"
+        assert base64.b64decode(result["streams"]["stderr"]["base64"]) == b"ValueError: bad input\n"
+
+
+def test_guest_failure_preserves_previous_checkpoint_and_releases_scratch(tmp_path, monkeypatch):
+    journal_module = importlib.import_module("maf_sandbox_mxc.native_journal")
+    req = directory_request()
+    limits = storage.Limits(10**8, 2 * 10**8, checkpoint_bytes=1024, result_bytes=40_000_000)
+    scratch = storage.ScratchLimits(100_000_000, 100_000, 200_000_000)
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    (candidate / "state").write_bytes(b"previous state")
+    monkeypatch.setattr(journal_module, "stopped", lambda _: True)
+    monkeypatch.setattr(journal_module.Identity, "decode", lambda _: None)
+    with storage.SharedStore(tmp_path / "store", "one", {}, limits) as store:
+        store.begin("good", b"good")
+        store.commit("good", candidate, b"saved")
+
+        def execute(*args, **kwargs):
+            store.db.execute(
+                "UPDATE launches SET state='armed',identity='stopped-test-helper' WHERE call='bad'"
+            )
+            raise transport.GuestProgramError(b"bounded-failure")
+
+        monkeypatch.setattr(shared, "execute", execute)
+        with pytest.raises(transport.GuestProgramError) as error:
+            shared.call(store, "bad", req, tmp_path / "helper", candidate, scratch)
+        assert error.value.result == b"bounded-failure"
+        assert (
+            store.db.execute("SELECT current_call FROM sessions WHERE id='one'").fetchone()[0]
+            == "good"
+        )
+        assert (
+            store.db.execute("SELECT status FROM calls WHERE id='bad'").fetchone()[0]
+            == "interrupted"
+        )
+        assert store.db.execute("SELECT count(*) FROM launches").fetchone()[0] == 0
+        assert store.db.execute("SELECT count(*) FROM reservations").fetchone()[0] == 0
+        assert not list((store.root / "scratch").iterdir())
+        store.audit_usage()

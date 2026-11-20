@@ -1,0 +1,82 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -38,6 +38,7 @@
+ use tracing::{debug, info};
+ 
+ mod cgroup;
++mod output_counter;
+ #[cfg(feature = "cpio")]
+ pub mod cpio;
+ mod errno;
+@@ -1070,6 +1071,8 @@
+     /// that is not read as U+FFFD, three bytes); a character the guest has
+     /// only begun to write is in neither until it ends.
+     pub omitted: u64,
++    /// Whether omitted-byte accounting saturated.
++    pub omitted_saturated: bool,
+ }
+ 
+ impl CapturedOutput {
+@@ -1084,6 +1087,7 @@
+ struct Capture {
+     text: String,
+     omitted: u64,
++    omitted_saturated: bool,
+ }
+ 
+ impl Capture {
+@@ -1110,12 +1114,12 @@
+             }
+             self.text.push_str(&msg[..keep]);
+         }
+-        self.omitted += (msg.len() - keep) as u64;
++        output_counter::add(&mut self.omitted, &mut self.omitted_saturated, (msg.len() - keep) as u64);
+     }
+ 
+     fn take(&mut self) -> CapturedOutput {
+-        let Capture { text, omitted } = std::mem::take(self);
+-        CapturedOutput { text, omitted }
++        let Capture { text, omitted, omitted_saturated } = std::mem::take(self);
++        CapturedOutput { text, omitted, omitted_saturated }
+     }
+ }
+ 
+@@ -3615,7 +3619,8 @@
+             c.take(),
+             CapturedOutput {
+                 text: "hello world".into(),
+-                omitted: 0
++                omitted: 0,
++                omitted_saturated: false,
+             }
+         );
+     }
+--- /dev/null
++++ b/src/output_counter.rs
+@@ -0,0 +1,26 @@
++// SPDX-License-Identifier: Apache-2.0
++//! Preserve truthful output accounting when the omitted-byte counter overflows.
++pub(crate) fn add(total: &mut u64, saturated: &mut bool, bytes: u64) {
++    let (next, overflow) = total.overflowing_add(bytes);
++    *total = if overflow { u64::MAX } else { next };
++    *saturated |= overflow;
++}
++
++#[cfg(test)]
++mod tests {
++    use super::add;
++    #[test]
++    fn exact_boundary_and_overflow_remain_distinct() {
++        let mut total = u64::MAX - 1;
++        let mut saturated = false;
++        add(&mut total, &mut saturated, 1);
++        assert_eq!(total, u64::MAX);
++        assert!(!saturated);
++        add(&mut total, &mut saturated, 1);
++        assert_eq!(total, u64::MAX);
++        assert!(saturated);
++        add(&mut total, &mut saturated, 0);
++        assert_eq!(total, u64::MAX);
++        assert!(saturated);
++    }
++}

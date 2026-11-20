@@ -13,6 +13,8 @@ from typing import Protocol, cast
 from ._config import MAX_CODE_BYTES, MAX_OUTPUT_BYTES
 from ._wire import decode, encode
 
+SDK_VERSION = "0.10.0"
+
 
 class _NativeResult(Protocol):
     stdout: str
@@ -41,8 +43,8 @@ def main() -> None:
                 "hyperlight-sandbox-backend-wasm",
                 "hyperlight-sandbox-python-guest",
             ):
-                if version(package) != "0.7.0":
-                    raise RuntimeError(f"{package} must be exactly 0.7.0")
+                if version(package) != SDK_VERSION:
+                    raise RuntimeError(f"{package} must be exactly {SDK_VERSION}")
             if sys.platform == "linux":
                 from ._linux import check_kvm
 

@@ -14,9 +14,10 @@ from typing import Any
 
 import chrome_inventory
 import chrome_repository as repository
+import chrome_update_security as security
 from check_container_release_image import check
 from container_release import REPOSITORY, ROOT, now, read, scan_result, timestamp, write
-from container_release_history import GitHub, positive_id
+from container_release_history import GitHub, HistoryAdvanced, positive_id
 from image_release_needed import git
 from image_remediation import outputs
 from image_remediation_evidence import EvidenceChanging, deferred, main_head
@@ -75,6 +76,11 @@ def current(client: GitHub, receipt: dict[str, Any]) -> None:
         raise EvidenceChanging("Main changed during Chrome qualification")
     if conflicts := competing_pulls(client, {RECIPE}):
         raise EvidenceChanging(f"Competing source PRs: {conflicts}")
+    if "security" in receipt:
+        if receipt["security"]["source"] != receipt["source"]:
+            raise ValueError("Chrome security evidence identifies another source")
+        security.monitoring.require_image_scope(receipt["security"], [security.PROFILE])
+        security.monitoring.current(client, receipt["security"])
 
 
 def validate(root: Path, work: Path) -> tuple[dict[str, Any], dict[str, bytes]]:
@@ -224,13 +230,51 @@ def build(root: Path, work: Path) -> dict[str, Any]:
     return report
 
 
+def declared_requirement(reason: str | None, justification: str) -> dict[str, str] | None:
+    """Keep manual assertions separate from scheduled, evidence-derived requirements."""
+    event = os.environ.get("GITHUB_EVENT_NAME")
+    if event == "schedule" and reason in (None, "none") and not justification.strip():
+        return None
+    if (
+        event != "workflow_dispatch"
+        or reason not in {"security", "package"}
+        or not justification.strip()
+    ):
+        raise ValueError("Chrome delivery requires a manual security or package requirement")
+    return {"kind": reason, "reason": justification.strip()}
+
+
+def authorize(
+    root: Path, work: Path, client: GitHub, reason: str | None, justification: str
+) -> dict[str, str] | None:
+    """Retain the delivery requirement before the workflow can mint write credentials."""
+    requirement = declared_requirement(reason, justification)
+    receipt, _ = validate(root, work)
+    if qualify(root, work) != read(work / "qualified.json"):
+        raise ValueError("Chrome qualified report changed")
+    current(client, receipt)
+    if requirement is None:
+        security.acquire(
+            client, root, work / "security", receipt["before"], receipt["package"]["version"]
+        )
+        receipt["security"] = read(work / "security/receipt.json")
+        write(work / "receipt.json", receipt)
+        current(client, receipt)
+        requirement = security.requirement(security.validate(work / "security", receipt))
+    write(work / "delivery-requirement.json", requirement or {"status": "no-security-fix"})
+    outputs({"deliver": str(requirement is not None).lower()})
+    return requirement
+
+
 def main() -> None:
     """Keep authenticated discovery, candidate qualification and App delivery explicit."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("acquire", "build", "publish"))
+    parser.add_argument("command", choices=("acquire", "build", "authorize", "publish"))
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--bot")
     parser.add_argument("--artifact-id", type=int)
+    parser.add_argument("--reason", choices=("none", "security", "package"))
+    parser.add_argument("--justification", default="")
     args = parser.parse_args()
     client = ChromeGitHub()
     try:
@@ -238,13 +282,28 @@ def main() -> None:
             acquire(ROOT, args.work, client)
         elif args.command == "build":
             build(ROOT, args.work)
+        elif args.command == "authorize":
+            authorize(ROOT, args.work, client, args.reason, args.justification)
         else:
+            requirement = declared_requirement(args.reason, args.justification)
             if not args.bot or not args.artifact_id:
                 raise ValueError("Chrome delivery requires a bot and retained artifact")
             report = qualify(ROOT, args.work)
             if report != read(args.work / "qualified.json"):
                 raise ValueError("Chrome qualified report changed")
             receipt, files = validate(ROOT, args.work)
+            if requirement is None:
+                expected = security.validate(args.work / "security", receipt)
+                requirement = security.requirement(expected)
+                if requirement is None or requirement != read(
+                    args.work / "delivery-requirement.json"
+                ):
+                    raise ValueError(
+                        "Scheduled Chrome delivery lacks a verified security requirement"
+                    )
+                report["securityEvidence"] = expected
+            report["requirement"] = requirement
+            write(args.work / "delivery-requirement.json", report["requirement"])
             result = publish(
                 client,
                 receipt,
@@ -257,9 +316,9 @@ def main() -> None:
             )
             write(args.work / "publication.json", result)
             print(json.dumps(result), flush=True)
-    except EvidenceChanging as error:
+    except (EvidenceChanging, HistoryAdvanced) as error:
         deferred(args.work, error, args.command)
-        outputs({"updates": "false"})
+        outputs({"updates": "false", "deliver": "false"})
 
 
 if __name__ == "__main__":

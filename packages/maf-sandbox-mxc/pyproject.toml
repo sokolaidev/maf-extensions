@@ -1,0 +1,58 @@
+[project]
+name = "maf-sandbox-mxc"
+version = "0.1.0"
+description = "Durable MXC Python sessions, bounded helper transports and mutual-TLS coordination."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["mxc", "sandbox", "hyperlight", "checkpoint"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Typing :: Typed",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Monitoring",
+]
+dependencies = ["maf-sandbox>=0.54.0,<0.56"]
+
+[tool.uv.sources]
+maf-sandbox = { workspace = true }
+
+[project.urls]
+Homepage = "https://www.sokol.ai"
+Source = "https://github.com/sokolaidev/maf-extensions"
+Issues = "https://github.com/sokolaidev/maf-extensions/issues"
+
+[tool.uv.build-backend]
+module-name = "maf_sandbox_mxc"
+module-root = "src"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "D100", "D101", "D103", "D104", "E501", "W505", "TD", "FIX", "ERA001"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D101", "D103", "E501", "W505"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 100
+
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "strict"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["uv_build>=0.11.24,<0.12.0"]
+build-backend = "uv_build"

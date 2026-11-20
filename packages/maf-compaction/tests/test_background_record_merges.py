@@ -16,7 +16,7 @@ from agent_framework import (
     create_harness_agent,
     tool,
 )
-from agent_framework._compaction import EXCLUDED_KEY
+from agent_framework._compaction import EXCLUDED_KEY, annotate_message_groups
 from test_record_budget import (
     _VALUE,
     _history,
@@ -34,13 +34,21 @@ from maf_compaction import (
     SessionCompactionProvider,
     SessionCompactionRegistry,
     SessionToolResultRecallMiddleware,
+    SummaryRequestLimiter,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     make_session_recall_tool,
     make_session_record_merge_middleware,
+    observe_record_merges,
 )
 from maf_compaction import _composed as composed_module
-from maf_compaction._composed import _RecordMergeWork
+from maf_compaction._composed import _RecordAnswer, _RecordMergeWork, _transcript
 from maf_compaction._preserve import set_preserved
+from maf_compaction._record_diagnostics import record_merge_observer
+from maf_compaction._toolsummary import (
+    _distinctive_tokens,
+    consolidatable_record_groups,
+    record_bodies,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -88,6 +96,79 @@ async def test_background_does_not_mutate_live_history_or_decisions():
     await work.close()
 
 
+async def test_merge_observer_separates_preparation_and_application():
+    strategy, work, messages = await prepared()
+    events = []
+    with observe_record_merges(
+        lambda phase, event, details: events.append((phase, event, details)),
+        tracked_values=_values(0),
+    ):
+        work.start(tool_reply())
+        await running(work)
+        assert ("background", "answer_prepared") in [(p, e) for p, e, _ in events]
+        assert all(p != "apply" for p, _, _ in events)
+        await strategy(messages)
+    survey = next(d for p, e, d in events if p == "background" and e == "survey")
+    assert survey["pressure"] == 1 and survey["eligible"] == 4
+    assert survey["record_tokens"] > survey["record_limit"]
+    accepted = next(d for p, e, d in events if p == "apply" and e == "answer_accepted")
+    prepared_batch = next(d["batch"] for p, e, d in events if e == "answer_prepared")
+    assert accepted["tracked_values"] == accepted["kept_tracked_values"] == len(_values(0))
+    assert accepted["batch"] == prepared_batch
+    assert accepted["records"] == 4
+    await work.close()
+
+
+async def test_observer_failure_preserves_merge_journal_and_worker_cleanup():
+    strategy, work, messages = await prepared()
+
+    def fail(phase, event, details):
+        if (phase, event) in {("apply", "answer_accepted"), ("background", "worker_closed")}:
+            raise RuntimeError("observer failure")
+
+    with observe_record_merges(fail):
+        work.start(tool_reply())
+        await running(work)
+        assert await strategy(messages)
+        work.remember(messages, strategy.max_input_tokens)
+        work.start(tool_reply())
+        task = running(work)
+        await work.close()
+    assert task.done()
+    assert strategy._background is None
+    assert len(strategy.session_state()["record_order"]) == 1
+    assert len(strategy.session_state()["kept_records"]) == 1
+
+
+async def test_tracked_values_require_whole_identifiers_and_rewrites_emit_no_merge_events():
+    model = _Summarizer()
+    strategy = _strategy(model, budget=100_000)
+    messages = _history(6)
+    annotate_message_groups(messages)
+    groups = consolidatable_record_groups(messages)
+    bodies = record_bodies(messages, groups)
+    values = set().union(*(_distinctive_tokens(body) for body in bodies))
+    marker = next(value for value in _values(0) if value in values)
+    replacement = " ".join(sorted((values - {marker}) | {f"{marker}9"}))
+    events = []
+    with observe_record_merges(lambda p, e, d: events.append((e, d)), tracked_values=[marker]):
+        await strategy._ask(
+            prompt=strategy.merge_prompt, transcript="synthetic", operation="rewrite"
+        )
+        assert not events
+        outcome = await strategy._consolidate(
+            messages,
+            groups,
+            prompt=strategy.merge_prompt,
+            transcript=_transcript(messages, groups),
+            answer=_RecordAnswer(replacement),
+        )
+    assert outcome == "accepted"
+    accepted = next(data for event, data in events if event == "answer_accepted")
+    assert accepted["tracked_values"] == 1
+    assert accepted["kept_tracked_values"] == 0
+
+
 async def test_next_pass_does_not_wait_for_unfinished_merge():
     entered, release = asyncio.Event(), asyncio.Event()
 
@@ -107,6 +188,87 @@ async def test_next_pass_does_not_wait_for_unfinished_merge():
     await running(work)
     assert await strategy(messages)
     assert strategy.records_merged == 1
+    await work.close()
+
+
+@pytest.mark.parametrize("complete", [False, True])
+async def test_prompt_change_discards_background_answer_and_search(complete):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Waiting(_Summarizer):
+        async def get_response(self, messages, **kwargs):
+            entered.set()
+            await release.wait()
+            return await super().get_response(messages, **kwargs)
+
+    strategy, work, messages = await prepared(Waiting())
+    work.start(tool_reply())
+    await entered.wait()
+    if complete:
+        release.set()
+        await running(work)
+    strategy.merge_prompt += " Preserve the source attribution."
+    release.set()
+    await running(work)
+    assert work._ready
+    before = _sent(messages)
+    assert not await strategy(messages)
+    assert _sent(messages) == before
+    assert not strategy._kept_records
+    assert not strategy.session_state()["searched_records"]
+    assert not strategy.session_state()["refused_merges"]
+    await work.close()
+
+
+@pytest.mark.parametrize("restore", [False, True])
+async def test_partial_search_after_prompt_change_drops_old_batches(monkeypatch, restore):
+    class PolicyTokenizer(CharacterEstimatorTokenizer):
+        def count_tokens(self, text):
+            if '"role": "system"' in text and "compaction records" in text:
+                return 100 if "New merge policy." in text else 49_000
+            if '"role": "user"' in text and '"text": "1. ' in text and "\\n2. " in text:
+                return 1500
+            return super().count_tokens(text)
+
+    model = _Summarizer()
+    tokenizer = PolicyTokenizer()
+    model.rewrite = model.merge
+    strategy = _strategy(model, budget=100_000, share=0.001, cap=None, tokenizer=tokenizer)
+    work = _RecordMergeWork()
+    work.bind(strategy, None)
+    messages = _history(4)
+    await strategy(messages)
+    work.start(tool_reply())
+    await running(work)
+    assert not await strategy(messages)
+    assert len(strategy.session_state()["searched_records"]) > 1
+    assert not model.requests
+    if restore:
+        state = deepcopy(strategy.session_state())
+        await work.close()
+        strategy = _strategy(model, budget=100_000, share=0.001, cap=None, tokenizer=tokenizer)
+        strategy.restore_session_state(state)
+        work = _RecordMergeWork()
+        work.bind(strategy, None)
+        await strategy(messages)
+    strategy.merge_prompt += " New merge policy."
+    with monkeypatch.context() as limited:
+        limited.setattr(composed_module, "_MAX_BATCH_PROBES", 1)
+        work.start(tool_reply())
+        await running(work)
+        assert work._worker is not None
+        partial = work._worker.session_state()
+        assert len(partial["searched_records"]) == 1
+        assert not await strategy(messages)
+    adopted = strategy.session_state()
+    work.start(tool_reply())
+    await running(work)
+    assert await strategy(messages)
+    assert strategy.records_merged == 2
+    assert [_batch_size(body) for _, body in model.requests] == [2, 2]
+    assert _sent_values(messages) == {v for i in range(4) for v in _values(i)}
+    assert adopted["search_prompt"] == partial["search_prompt"]
+    assert adopted["searched_records"] == partial["searched_records"]
     await work.close()
 
 
@@ -292,6 +454,53 @@ async def test_an_over_budget_background_merge_reaches_records_behind_the_loops_
     await work.close()
 
 
+async def over_budget_pass(strategy, messages):
+    """One foreground pass that ends over budget, as on a host every pass of which does."""
+    token = strategy._request_budget.set(OVER_BUDGET)
+    try:
+        with pytest.raises(CompactionBudgetExceeded):
+            await strategy(messages)
+    finally:
+        strategy._request_budget.reset(token)
+
+
+async def test_a_pass_that_ends_over_budget_still_hands_the_worker_its_history():
+    """A pass that ends over budget still hands the worker its list, so a tool round starts it."""
+    model = _Summarizer()
+    strategy = _strategy(model, budget=100_000, share=None, cap=None, policy="shed")
+    work = _RecordMergeWork()
+    work.bind(strategy, None)
+    messages = _history(4)
+    # An earlier tool round left the merges to the worker, so this pass merges nothing itself.
+    work.defer_merges = True
+
+    await over_budget_pass(strategy, messages)
+    assert not model.merges
+    work.start(tool_reply())
+    await running(work)
+    assert model.merges, "the worker started from the over-budget pass's list"
+
+    await over_budget_pass(strategy, messages)
+    assert strategy.records_merged >= 1, "the next pass applied what the worker prepared"
+    await work.close()
+
+
+async def test_a_worker_that_cannot_start_leaves_the_merges_to_the_foreground():
+    """While no worker can start, a tool-calling reply leaves the merges to the foreground."""
+    model = _Summarizer()
+    strategy = _strategy(model, budget=100_000, share=None, cap=None, policy="shed")
+    work = _RecordMergeWork()
+    work.bind(strategy, None)
+    messages = _history(4)
+
+    work.start(tool_reply())
+    assert work._task is None
+    assert not work.defer_merges
+    await over_budget_pass(strategy, messages)
+    assert strategy.records_merged >= 1, "the foreground merged, as without the bundle"
+    await work.close()
+
+
 async def test_cancelled_lossy_answer_cannot_start_child_requests():
     entered = asyncio.Event()
 
@@ -419,16 +628,22 @@ async def test_agent_merges_during_tools_without_waiting_for_pending_work(stream
 
 
 @pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("ending", ["tool_error", "model_error", "cancel"])
-async def test_agent_failure_or_cancellation_cleans_up_work(stream, ending):
+@pytest.mark.parametrize("ending", ["done", "tool_error", "model_error", "cancel"])
+@pytest.mark.parametrize("parallel", [1, 3])
+async def test_agent_failure_or_cancellation_cleans_up_work(stream, ending, parallel):
     entered, tool_entered, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    started_count = cancelled_count = 0
 
     class Waiting(_Summarizer):
         async def get_response(self, messages, **kwargs):
-            entered.set()
+            nonlocal started_count, cancelled_count
+            started_count += 1
+            if started_count == parallel:
+                entered.set()
             try:
                 await asyncio.Future()
             finally:
+                cancelled_count += 1
                 cancelled.set()
 
     def build():
@@ -437,11 +652,16 @@ async def test_agent_failure_or_cancellation_cleans_up_work(stream, ending):
             stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
         )
         stack.strategy.record_budget_share = 0.001
+        if parallel > 1:
+            stack.strategy.user_turns.summary_options = {"max_tokens": 1_200}
+            stack.strategy.user_turns.summary_limiter = SummaryRequestLimiter(
+                10_000_000, max_parallel_summary_requests=parallel
+            )
         return stack
 
     registry = SessionCompactionRegistry(build)
     session = AgentSession()
-    session.state["in_memory"] = {"messages": _history(4)}
+    session.state["in_memory"] = {"messages": _history(18 if parallel > 1 else 4)}
 
     @tool
     async def lookup() -> str:
@@ -476,6 +696,7 @@ async def test_agent_failure_or_cancellation_cleans_up_work(stream, ending):
     else:
         await asyncio.wait_for(task, 10)
     assert cancelled.is_set()
+    assert started_count == cancelled_count == parallel
     assert not registry._merge_work
     with registry.activate(session) as stack:
         assert isinstance(
@@ -485,15 +706,21 @@ async def test_agent_failure_or_cancellation_cleans_up_work(stream, ending):
         assert stack.strategy._background is None
 
 
-async def test_early_stream_close_cancels_pending_merge():
+@pytest.mark.parametrize("parallel", [1, 3])
+async def test_early_stream_close_cancels_pending_merge(parallel):
     entered, cancelled = asyncio.Event(), asyncio.Event()
+    started_count = cancelled_count = 0
 
     class Waiting(_Summarizer):
         async def get_response(self, messages, **kwargs):
-            entered.set()
+            nonlocal started_count, cancelled_count
+            started_count += 1
+            if started_count == parallel:
+                entered.set()
             try:
                 await asyncio.Future()
             finally:
+                cancelled_count += 1
                 cancelled.set()
 
     def build():
@@ -502,11 +729,16 @@ async def test_early_stream_close_cancels_pending_merge():
             stack.strategy, ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy
         )
         stack.strategy.record_budget_share = 0.001
+        if parallel > 1:
+            stack.strategy.user_turns.summary_options = {"max_tokens": 1_200}
+            stack.strategy.user_turns.summary_limiter = SummaryRequestLimiter(
+                10_000_000, max_parallel_summary_requests=parallel
+            )
         return stack
 
     registry = SessionCompactionRegistry(build)
     session = AgentSession()
-    session.state["in_memory"] = {"messages": _history(4)}
+    session.state["in_memory"] = {"messages": _history(18 if parallel > 1 else 4)}
 
     @tool
     async def lookup() -> str:
@@ -523,6 +755,7 @@ async def test_early_stream_close_cancels_pending_merge():
                     break
     assert len(model.prompts) == 1
     assert cancelled.is_set()
+    assert started_count == cancelled_count == parallel
     assert not registry._merge_work
 
 
@@ -630,6 +863,8 @@ async def test_background_deadline_keeps_search_and_unfinished_sibling_across_re
 @pytest.mark.parametrize("share", [None, 0.001])
 async def test_background_batch_search_yields_to_the_next_pass(batch_fits, share):
     entered = asyncio.Event()
+    # The worker counts tokens on a worker thread, where an asyncio.Event may not be set.
+    loop = asyncio.get_running_loop()
 
     class BatchTokenizer(CharacterEstimatorTokenizer):
         probes = 0
@@ -638,7 +873,7 @@ async def test_background_batch_search_yields_to_the_next_pass(batch_fits, share
             if '"role": "user"' in text and '"text": "1. ' in text and "\\n2. " in text:
                 self.probes += 1
                 if self.probes == 3:
-                    entered.set()
+                    loop.call_soon_threadsafe(entered.set)
                 return 100 if batch_fits else 100_000
             return super().count_tokens(text)
 
@@ -651,13 +886,24 @@ async def test_background_batch_search_yields_to_the_next_pass(batch_fits, share
     await strategy(messages)
     if share is None:
         work.remember(messages, 50)
-    work.start(tool_reply())
-    await asyncio.wait_for(entered.wait(), 2)
-    assert not await strategy(messages)
-    assert tokenizer.probes < 10
-    assert not running(work).done()
-    await work.close()
-    assert not model.requests
+    requests: list[str] = []
+
+    def observe(phase: str, event: str, counts: object) -> None:
+        if event == "request_prepared":
+            requests.append(phase)
+
+    token = record_merge_observer.set(observe)
+    try:
+        work.start(tool_reply())
+        await asyncio.wait_for(entered.wait(), 2)
+        # The search runs beside the pass on its own state: the pass is not held up waiting for
+        # it, and leaves the merging to it.
+        await asyncio.wait_for(strategy(messages), 2)
+    finally:
+        await work.close()
+        record_merge_observer.reset(token)
+    assert set(requests) <= {"background"}
+    assert len(model.requests) == len(requests)
 
 
 async def test_pending_background_work_does_not_bypass_the_sending_budget():

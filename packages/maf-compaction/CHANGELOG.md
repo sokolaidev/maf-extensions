@@ -1,6 +1,101 @@
 # Changelog
 
+## [0.15.1](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.15.0...maf-compaction-v0.15.1) (2026-11-20)
+
+
+### Fixes
+
+* **compaction:** run a background record-merge worker's steps, and its session's, off the event loop ([#2835](https://github.com/sokolaidev/maf-extensions/issues/2835)) ([02ed885](https://github.com/sokolaidev/maf-extensions/commit/02ed885ed8c510cfd8f9fed9a3008937f40c2e67))
+
+## [0.15.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.14.0...maf-compaction-v0.15.0) (2026-11-19)
+
+
+### Features
+
+* **compaction:** add opt-in stepped coverage for record merges ([#2794](https://github.com/sokolaidev/maf-extensions/issues/2794)) ([60ff363](https://github.com/sokolaidev/maf-extensions/commit/60ff363ab6b8ef9a0a77dc2a19e6a102298ab8fa))
+* **compaction:** add opt-in stepped coverage for record merges ([#2797](https://github.com/sokolaidev/maf-extensions/issues/2797)) ([2ec5ee5](https://github.com/sokolaidev/maf-extensions/commit/2ec5ee50500ee25567d71d465694513e39346b7b))
+* **compaction:** merge Responses recall records and qualify them in Cachebench ([#2799](https://github.com/sokolaidev/maf-extensions/issues/2799)) ([9af61a9](https://github.com/sokolaidev/maf-extensions/commit/9af61a9818e2d5844bb9487d62b0ec99507d069c))
+
+
+### Fixes
+
+* **compaction:** hand the background worker an over-budget pass's history, and keep foreground merges when no worker can start ([#2798](https://github.com/sokolaidev/maf-extensions/issues/2798)) ([1beef46](https://github.com/sokolaidev/maf-extensions/commit/1beef46c4b30afa1ee0a933831c42bd7c66085e3))
+* **compaction:** release session references when a phase ends ([#2810](https://github.com/sokolaidev/maf-extensions/issues/2810)) ([f00b232](https://github.com/sokolaidev/maf-extensions/commit/f00b2321a084e45035cc10d488e9dd47c0f7027a))
+
+
+### Performance
+
+* **compaction:** run a pass's synchronous steps on worker threads so the host's event loop stays free ([#2806](https://github.com/sokolaidev/maf-extensions/issues/2806)) ([728321d](https://github.com/sokolaidev/maf-extensions/commit/728321dd4295f34124ca204037370bf5e16b8fb0))
+
+
+### Reverts
+
+* **compaction:** remove prematurely merged stepped coverage ([#2796](https://github.com/sokolaidev/maf-extensions/issues/2796)) ([9391cb4](https://github.com/sokolaidev/maf-extensions/commit/9391cb4c63ca7adff8c5f99254855c0de11c54f2))
+
+## [0.14.0](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.8...maf-compaction-v0.14.0) (2026-11-17)
+
+
+### Features
+
+* **compaction:** share summary capacity and merge record batches in parallel ([#2788](https://github.com/sokolaidev/maf-extensions/issues/2788)) ([3266d82](https://github.com/sokolaidev/maf-extensions/commit/3266d82147dce8f3d71940cc68c54e9a0e8029d0))
+
+
+### Fixes
+
+* **compaction:** add opt-in hardened prompts and retry changed policies ([#2778](https://github.com/sokolaidev/maf-extensions/issues/2778)) ([e268236](https://github.com/sokolaidev/maf-extensions/commit/e2682366c503351166a935786c472a37cbf824f7))
+
+## [0.13.8](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.7...maf-compaction-v0.13.8) (2026-11-16)
+
+
+### Performance
+
+* **maf-compaction:** put saved record edits back with the whole-history work done once per replay, not once per edit, about three times cheaper on the first pass of a run ([#2772](https://github.com/sokolaidev/maf-extensions/issues/2772)) ([ea61aad](https://github.com/sokolaidev/maf-extensions/commit/ea61aadb6d67a3572e3a654481a377bc559ba196))
+
+## [0.13.7](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.6...maf-compaction-v0.13.7) (2026-11-16)
+
+
+### Performance
+
+* **compaction:** reduce long-history shedding cost by batching removal notes ([#2766](https://github.com/sokolaidev/maf-extensions/issues/2766)) ([5e50da8](https://github.com/sokolaidev/maf-extensions/commit/5e50da885cbe367e85188f4ef89f0a55589105ed))
+
+## [0.13.6](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.5...maf-compaction-v0.13.6) (2026-11-15)
+
+
+### Fixes
+
+* **maf-compaction:** refuse a harder rewrite that removes under a tenth of its records, so a prompt that stays over the budget no longer asks for both attempts on every pass ([#2762](https://github.com/sokolaidev/maf-extensions/issues/2762)) ([8e7b1f4](https://github.com/sokolaidev/maf-extensions/commit/8e7b1f4bf5922f3d89bef0a6784adc505c56b46d))
+
+## [0.13.5](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.4...maf-compaction-v0.13.5) (2026-11-15)
+
+
+### Fixes
+
+* **compaction:** resume a per-call pass from the list the previous call's pass left ([#2745](https://github.com/sokolaidev/maf-extensions/issues/2745)) ([2015d20](https://github.com/sokolaidev/maf-extensions/commit/2015d20289836cab669213513742afa343864fca))
+
+## [0.13.4](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.3...maf-compaction-v0.13.4) (2026-11-14)
+
+
+### Performance
+
+* **compaction:** avoid rebuilding applied record edits on every pass ([#2735](https://github.com/sokolaidev/maf-extensions/issues/2735)) ([bf38bb8](https://github.com/sokolaidev/maf-extensions/commit/bf38bb8b6d360140ffaf405171cd70c823319a1a))
+
+## [0.13.3](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.2...maf-compaction-v0.13.3) (2026-11-14)
+
+
+### Fixes
+
+* **compaction:** cut the per-call pass cost on long conversations: count once per shed, replay at three points, share fingerprints within a replay ([#2733](https://github.com/sokolaidev/maf-extensions/issues/2733)) ([f19d01c](https://github.com/sokolaidev/maf-extensions/commit/f19d01c4f5fc184e63b66d3167c4830cdbc6c561))
+
+## [0.13.2](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.1...maf-compaction-v0.13.2) (2026-11-14)
+
+
+### Miscellaneous
+
+* **compaction:** record the unpublished 0.13.1 release ([#2714](https://github.com/sokolaidev/maf-extensions/issues/2714)) ([e19029d](https://github.com/sokolaidev/maf-extensions/commit/e19029d6105d2ec314c107c94c2d510825195182))
+
 ## [0.13.1](https://github.com/sokolaidev/maf-extensions/compare/maf-compaction-v0.13.0...maf-compaction-v0.13.1) (2026-11-14)
+
+> **Publication correction.** This version has an immutable GitHub Release and tag but did not reach PyPI. [The publication attempt](https://github.com/sokolaidev/maf-extensions/actions/runs/43542108083/job/132288463816) stopped at the whole-set check: the tag's tree holds sandbox dependents whose `maf-sandbox` ranges no longer overlap, left by #2683 and repaired by #2713, and the publish job builds the siblings from the tag, so this tag cannot pass. The replacement is planned as 0.13.2 through release-please, with the same changes; this note does not establish that the replacement has published.
 
 
 ### Fixes

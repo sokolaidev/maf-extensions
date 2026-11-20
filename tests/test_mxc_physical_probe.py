@@ -23,7 +23,7 @@ finally:
 FAKE_NATIVE = r"""
 import base64, contextlib, io, json, subprocess, sys
 from pathlib import Path
-from scripts.experiments.mxc_files_patch import shared_call
+from maf_sandbox_mxc.files import shared_call
 from scripts.experiments.mxc_files_patch.physical_probe import candidate_files
 from scripts.experiments.mxc_files_patch import physical_probe as probe
 
@@ -82,7 +82,7 @@ def test_capacity_failure_and_recovery_across_real_supervisors(tmp_path, monkeyp
         r"""
 import errno, sqlite3
 from scripts.experiments.mxc_files_patch import volume_probe as probe
-from scripts.experiments.mxc_session_patch.shared_store import SharedStore
+from maf_sandbox_mxc.shared_store import SharedStore
 probe.volume_control.validate_volume = lambda *a, **kw: None
 def fill(volume, **kwargs):
     (volume / 'filler.bin').write_bytes(b'simulated exhaustion')

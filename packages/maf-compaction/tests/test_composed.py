@@ -37,6 +37,7 @@ defaults to recompacting and remembers one request.
 from __future__ import annotations
 
 import copy
+import logging
 import re
 from collections.abc import Callable
 from typing import Any
@@ -64,9 +65,11 @@ from maf_compaction._composed import (
     _MAX_FALLBACK_ROUNDS,
     DEFAULT_HARDER_ATTEMPTS,
     DEFAULT_RECORD_MERGE_PROMPT,
+    DEFAULT_REWRITE_GAIN_FRACTION,
     ChainDecisions,
     CompactionBudgetExceeded,
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
+    _meets_gain_floor,
     _responses,
     harder_record_prompt,
 )
@@ -399,6 +402,7 @@ def _composed(
     user_turns: UserTurnAnchoredSummarizationCompactionStrategy | None = None,
     user_trigger_fraction: float | None = None,
     harder_attempts: int = DEFAULT_HARDER_ATTEMPTS,
+    rewrite_gain_fraction: float = DEFAULT_REWRITE_GAIN_FRACTION,
 ) -> ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy:
     """Return both halves composed, each defaulted to its own row's configuration.
 
@@ -412,6 +416,7 @@ def _composed(
         user_turns=user_turns or _user_phase(ceiling),
         user_trigger_fraction=user_trigger_fraction,
         harder_attempts=harder_attempts,
+        rewrite_gain_fraction=rewrite_gain_fraction,
     )
 
 
@@ -941,6 +946,15 @@ def test_a_negative_number_of_harder_attempts_is_refused() -> None:
     assert _composed().harder_attempts == DEFAULT_HARDER_ATTEMPTS
     with pytest.raises(ValueError, match="harder_attempts"):
         _composed(harder_attempts=-1)
+
+
+@pytest.mark.parametrize("fraction", [-0.1, 1.0, True])
+def test_a_rewrite_gain_fraction_outside_its_range_is_refused(fraction: float) -> None:
+    """Zero keeps any smaller rewrite; one would refuse every rewrite that left a record."""
+    assert _composed(rewrite_gain_fraction=0.0).rewrite_gain_fraction == 0.0
+    assert _composed().rewrite_gain_fraction == DEFAULT_REWRITE_GAIN_FRACTION
+    with pytest.raises(ValueError, match="rewrite_gain_fraction"):
+        _composed(rewrite_gain_fraction=fraction)
 
 
 def test_the_composed_row_asks_its_middleware_to_repeat_and_the_record_row_does_not() -> None:
@@ -2616,6 +2630,104 @@ async def test_a_refused_rewrite_is_not_asked_again_until_the_record_changes_and
     assert strategy.record_rewrites_skipped == DEFAULT_HARDER_ATTEMPTS, "nothing more skipped"
 
 
+def _barely_shorter(attempt: int, body: str) -> str:
+    """Answer any rewrite with a hundredth less of each record's padding, keeping every value."""
+    return re.sub(r"r{10,}", lambda run: run.group(0)[: int(len(run.group(0)) * 0.99)], body)
+
+
+#: Passes over a prompt that stays over the budget, enough to tell once from every pass.
+_GRIND_PASSES = 4
+
+
+async def test_a_rewrite_that_saves_almost_nothing_is_refused_and_not_asked_again(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A rewrite far short of what was asked does not buy two more requests on every later pass.
+
+    The summarizer keeps every value and trims a hundredth of the record, whatever share it was
+    asked for. Kept, that answer is a new record with every attempt open again, so a prompt that
+    stays over the budget asked for both attempts on each pass and gained almost nothing.
+    """
+    summarizer = _RoutingSummarizer(harder=_barely_shorter)
+    strategy = _chain_composed(summarizer)
+
+    with caplog.at_level(logging.WARNING, logger="maf_compaction._composed"):
+        for _ in range(_GRIND_PASSES):
+            with pytest.raises(CompactionBudgetExceeded):
+                await strategy(_chain_conversation(trailing=True))
+
+    assert [kind for kind in summarizer.log if kind.startswith("harder")] == [
+        "harder1",
+        "harder2",
+    ], "asked once each, on the first pass"
+    assert (strategy.record_rewrites, strategy.record_rewrites_rejected) == (2, 2)
+    assert strategy.record_rewrites_skipped == (_GRIND_PASSES - 1) * DEFAULT_HARDER_ATTEMPTS
+    refusals = [
+        r.getMessage() for r in caplog.records if "the rewrite was refused" in r.getMessage()
+    ]
+    assert len(refusals) == 2 and all("saving too little" in line for line in refusals)
+
+
+@pytest.mark.parametrize(
+    ("saved", "replaced", "fraction", "meets"),
+    [(14, 100, 0.14, True), (13, 100, 0.14, False), (10, 100, 0.1, True), (1, 100, 0.0, True)],
+)
+def test_a_saving_exactly_at_the_gain_floor_meets_it(
+    saved: int, replaced: int, fraction: float, meets: bool
+) -> None:
+    """``0.14 * 100`` is ``14.000000000000002``, so a product would refuse the 14 it promises."""
+    assert _meets_gain_floor(saved, replaced, fraction) is meets
+
+
+def _barely_shorter_and_lossy(attempt: int, body: str) -> str:
+    """Answer as :func:`_barely_shorter` does, and drop one of the values the records hold."""
+    return _barely_shorter(attempt, body).replace("CODE-2", "")
+
+
+async def test_a_lossy_rewrite_under_the_gain_floor_is_refused_and_counted_as_lossy(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An answer that drops values is lossy whatever it saves, so the floor does not hide it."""
+    summarizer = _RoutingSummarizer(harder=_barely_shorter_and_lossy)
+    strategy = _chain_composed(summarizer, harder_attempts=1)
+
+    with caplog.at_level(logging.WARNING, logger="maf_compaction._composed"):
+        with pytest.raises(CompactionBudgetExceeded):
+            await strategy(_chain_conversation(trailing=True))
+
+    assert (strategy.record_rewrites, strategy.record_rewrites_rejected) == (1, 1)
+    assert strategy.record_consolidations_lossy == 1
+    (refusal,) = [
+        r.getMessage() for r in caplog.records if "the rewrite was refused" in r.getMessage()
+    ]
+    assert "dropping values" in refusal
+
+
+async def test_without_a_gain_floor_a_barely_smaller_rewrite_is_kept_and_asked_again() -> None:
+    """The floor is what ends it: at zero every pass asks both attempts and keeps both answers."""
+    summarizer = _RoutingSummarizer(harder=_barely_shorter)
+    strategy = _chain_composed(summarizer, rewrite_gain_fraction=0.0)
+
+    for _ in range(_GRIND_PASSES):
+        with pytest.raises(CompactionBudgetExceeded):
+            await strategy(_chain_conversation(trailing=True))
+
+    asked = [kind for kind in summarizer.log if kind.startswith("harder")]
+    assert asked == ["harder1", "harder2"] * _GRIND_PASSES
+    assert strategy.record_rewrites_rejected == 0, "each a hundredth smaller, and kept"
+
+
+async def test_a_rewrite_that_meets_the_gain_floor_is_kept() -> None:
+    """A fifth less on the first attempt clears a floor of a tenth, and the record is rewritten."""
+    summarizer = _RoutingSummarizer(harder=_shorter_each_attempt)
+    strategy = _chain_composed(summarizer, harder_attempts=1)
+
+    with pytest.raises(CompactionBudgetExceeded):
+        await strategy(_chain_conversation(trailing=True))
+
+    assert (strategy.record_rewrites, strategy.record_rewrites_rejected) == (1, 0)
+
+
 async def test_a_refusal_forecloses_its_own_attempt_and_milder_ones_but_not_harsher_ones() -> None:
     """The escalation rule, both ways round.
 
@@ -2847,9 +2959,12 @@ async def test_a_written_record_is_merged_again_and_rewritten_harder() -> None:
     one harder. If a written record were not a record to :func:`active_record_groups`, the
     second merge would see one record and skip, and the rewrite would see the model's record
     alone and leave the written one standing beside its replacement.
+
+    The rewrite here only drops punctuation, under the default gain floor, which is not this
+    test's subject.
     """
     summarizer = _RoutingSummarizer(merge=_short_record)
-    strategy = _chain_composed(summarizer, harder_attempts=0)
+    strategy = _chain_composed(summarizer, harder_attempts=0, rewrite_gain_fraction=0.0)
     messages = _chain_conversation()
     with pytest.raises(CompactionBudgetExceeded):
         await strategy(messages)

@@ -8,6 +8,7 @@ BILLING_ZONES = tuple(f"Zone {number}" for number in range(1, 10)) + (
     "US Gov Zone 2",
 )
 _ODATA_TOKEN = re.compile(r"'(?:[^']|'')*'|[A-Za-z_][A-Za-z_0-9]*")
+ARM_REGION_FIELD = "armRegionName"
 
 _NETWORK_REGIONS = {
     "Zone 1": (
@@ -82,13 +83,19 @@ ZONE_FAMILIES = frozenset({"network", "front_door", "cdn_classic", "dns"})
 ZONE_BASES = frozenset({"published_region", "nearest_region", "geography", "uniform_commercial"})
 
 
+def names_field(predicate: str | None, field: str) -> bool:
+    """Whether an OData predicate names ``field`` itself, outside its string literals."""
+    folded = field.casefold()
+    return bool(predicate) and any(
+        token.casefold() == folded for token in _ODATA_TOKEN.findall(predicate or "")
+    )
+
+
 def expanded_region(region: str | None, predicate: str | None) -> str | None:
     """Expand ARM regions unless the caller explicitly addresses price-list locations."""
     if region is None or region == "Global" or region in BILLING_ZONES:
         return None
-    if predicate and any(
-        token.casefold() == "armregionname" for token in _ODATA_TOKEN.findall(predicate)
-    ):
+    if names_field(predicate, ARM_REGION_FIELD):
         return None
     return region
 

@@ -49,6 +49,7 @@ _RELEASES = {
     "maf-sandbox-drawio": "0.1.0",
     "maf-sandbox-hyperlight": "0.1.0",
     "maf-sandbox-mcp": "0.1.0",
+    "maf-sandbox-mxc": "0.1.0",
     "maf-sandbox-otel": "0.1.0",
     "maf-sandbox-shell": "0.1.0",
     "maf-sandbox-terraform": "0.1.0",

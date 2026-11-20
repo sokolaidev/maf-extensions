@@ -32,6 +32,7 @@ import random
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, fields, replace
+from time import monotonic
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from agent_framework import (
@@ -55,12 +56,18 @@ from maf_compaction import (
     DEFAULT_RECORD_MAX_TOKENS,
     DEFAULT_RECORD_TARGET_TOKENS,
     RecallGate,
+    SessionCompactionProvider,
+    SessionCompactionRegistry,
+    SessionToolResultRecallMiddleware,
     ToolResultAnchoredSummarizationCompactionStrategy,
     ToolResultRecallMiddleware,
     UserTurnAnchoredSummarizationCompactionStrategy,
     find_nested_strategy,
     find_record_index,
     make_recall_tool,
+    make_session_recall_tool,
+    make_session_record_merge_middleware,
+    observe_record_merges,
 )
 from maf_compaction import record_text as _record_text
 
@@ -72,8 +79,11 @@ from ._lifecycle import (
     capture_original_messages,
     update_original_reasoning,
 )
+from ._merge_evidence import MergeEvidence
+from ._merge_workload import PRESSURE_REQUEST
 from ._metrics import clamp_cached_tokens, serialize_message
 from ._persistence_scenarios import ScenarioFailure
+from ._providers import prompt_cache_key
 from ._recall import (
     COMBINED_SCOPE,
     FactOutcome,
@@ -347,6 +357,7 @@ class ModelCall:
     cached_tokens: int
     output_tokens: int
     cache_reported: bool = True
+    output_reservation: int | None = None
 
     @property
     def fresh_tokens(self) -> int:
@@ -361,9 +372,10 @@ class UsageRecorder(ChatMiddleware):
     the prompt actually sent.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, merge_evidence: MergeEvidence | None = None) -> None:
         """Create a recorder holding no calls."""
         self.calls: list[ModelCall] = []
+        self._merge_evidence = merge_evidence
 
     async def process(self, context: ChatContext, call_next: Callable[[], Awaitable[None]]) -> None:
         """Run the call, then read back what compaction left of the prompt.
@@ -373,14 +385,16 @@ class UsageRecorder(ChatMiddleware):
             call_next: Continuation that performs the call.
         """
         await call_next()
+        reservation = (context.options or {}).get("max_tokens")
+        output_cap = reservation if type(reservation) is int and reservation > 0 else None
         if isinstance(context.result, ResponseStream):
             context.result = context.result.with_result_hook(
-                lambda response: self._record(context, response)
+                lambda response: self._record(context, response, output_cap)
             )
         else:
-            self._record(context, context.result)
+            self._record(context, context.result, output_cap)
 
-    def _record(self, context: ChatContext, response: Any) -> None:
+    def _record(self, context: ChatContext, response: Any, output_cap: int | None) -> None:
         """Capture one provider response before recall validation can discard it."""
         # Read after the call, not before: the history middleware replaces this attribute
         # with the loaded history, and compaction then flags that list in place.
@@ -389,6 +403,8 @@ class UsageRecorder(ChatMiddleware):
         # UsageDetails is a TypedDict, so it is read with .get() rather than getattr:
         # attribute access on it silently yields None and reports every call as free.
         usage: dict[str, Any] = dict(getattr(response, "usage_details", None) or {})
+        if self._merge_evidence is not None and isinstance(response, ChatResponse):
+            self._merge_evidence.sent(sent)
         # The provider reports the reasoning it billed on the response's usage, and the content
         # that carries the encrypted payload says nothing about its size. Stamping the count
         # here is what lets ReasoningStampTokenizer charge the replayed reasoning what the
@@ -413,6 +429,7 @@ class UsageRecorder(ChatMiddleware):
                 ),
                 output_tokens=usage.get("output_token_count") or 0,
                 cache_reported=usage.get("cache_read_input_token_count") is not None,
+                output_reservation=output_cap,
             )
         )
 
@@ -455,6 +472,7 @@ class MeteredClient:
         self.inner = inner
         self.calls = 0
         self.failures = 0
+        self.cancelled = 0
         self.usage: list[SummarizerUsage] = []
         self.input_tokens = 0
         self.cached_tokens = 0
@@ -486,6 +504,9 @@ class MeteredClient:
         self.calls += 1
         try:
             response = await self.inner.get_response(*args, **kwargs)
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
         except Exception:
             self.failures += 1
             raise
@@ -719,7 +740,7 @@ class LiveOutcome:
     record_rewrites: int = 0
     """Harder rewrites of the record the chain tried, kept or not: step c. ``RECHARDER``."""
     record_rewrites_rejected: int = 0
-    """Of those, the rewrites discarded as no smaller or lossy. ``RECHARDERREJ``."""
+    """Rewrites refused for size, insufficient gain, truncation or value loss. ``RECHARDERREJ``."""
     record_rewrites_skipped: int = 0
     """Rewrite attempts not made, because the same record had already been refused at them.
 
@@ -1329,6 +1350,7 @@ def build_live_agent(
     instructions: str = _INSTRUCTIONS,
     max_context_window_tokens: int,
     max_output_tokens: int,
+    registry: SessionCompactionRegistry | None = None,
 ) -> Agent[Any]:
     """Assemble the agent under test, with compaction wired the way the harness wires it.
 
@@ -1346,6 +1368,7 @@ def build_live_agent(
         instructions: System instructions for the agent.
         max_context_window_tokens: Window the harness variant sizes its default against.
         max_output_tokens: Output reservation.
+        registry: Session-owned compaction for background record merging.
 
     Returns:
         The configured agent.
@@ -1358,12 +1381,25 @@ def build_live_agent(
 
     # Both agent kinds need message IDs to preserve repeated control replies.
     history = IdentifiedHistoryProvider()
+    session_provider = (
+        SessionCompactionProvider(
+            registry, tokenizer=tokenizer, before=False, history_source_id=history.source_id
+        )
+        if registry is not None
+        else None
+    )
+    if registry is not None:
+        extra_middleware = [
+            make_session_record_merge_middleware(registry),
+            SessionToolResultRecallMiddleware(registry, compact_before=True),
+            *extra_middleware,
+        ]
     if kind == "harness":
         # The harness resolves both phases itself from the strategies handed in, so it gets
         # the same object twice. Its optional providers are switched off: each adds tools
         # and system-prompt text to every measured prompt, which would inflate every cell
         # and move the trigger points without saying anything about compaction.
-        return create_harness_agent(
+        agent = create_harness_agent(
             runtime.client,
             name="cachebench",
             agent_instructions=instructions,
@@ -1371,23 +1407,31 @@ def build_live_agent(
             max_context_window_tokens=max_context_window_tokens,
             max_output_tokens=max_output_tokens,
             history_provider=history,
-            disable_compaction=strategy is None,
-            before_compaction_strategy=strategy,
-            after_compaction_strategy=strategy,
+            disable_compaction=strategy is None or registry is not None,
+            before_compaction_strategy=strategy if registry is None else None,
+            after_compaction_strategy=strategy if registry is None else None,
+            context_providers=[session_provider] if session_provider is not None else [],
             tokenizer=tokenizer,
             disable_todo=True,
             disable_mode=True,
             disable_file_memory=True,
             disable_web_search=True,
+            disable_tool_auto_approval=True,
             middleware=[*extra_middleware, recorder],
             # Deliberately empty: every option travels per turn instead. An option baked
             # in here cannot be dropped when a provider rejects it without rebuilding the
             # agent, which would discard the session the conversation lives in.
             default_options={},
         )
+        if session_provider is not None:
+            agent.context_providers.remove(session_provider)
+            agent.context_providers.insert(1, session_provider)
+        return agent
 
     providers: list[Any] = [history]
-    if strategy is not None:
+    if session_provider is not None:
+        providers.append(session_provider)
+    elif strategy is not None:
         # before_strategy is deliberately None: on a provider it would never run. The
         # before phase travels as the agent's compaction_strategy below.
         providers.append(
@@ -1404,7 +1448,7 @@ def build_live_agent(
         instructions=instructions,
         tools=list(tools),
         context_providers=providers,
-        compaction_strategy=strategy,
+        compaction_strategy=strategy if registry is None else None,
         require_per_service_call_history_persistence=True,
         middleware=[*extra_middleware, recorder],
         default_options={},
@@ -1688,6 +1732,7 @@ async def run_live(
     max_groups_before_record: int | None = None,
     repeat_records: bool = True,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    cache_run_id: str | None = None,
 ) -> LiveOutcome:
     """Seed a conversation against a real agent, snapshot it, then probe the snapshot.
 
@@ -1782,6 +1827,7 @@ async def run_live(
         sleep: How the backoff between re-sent attempts is taken, throttled and disconnected
             alike. Injectable only so that a test can prove the retries are bounded, and prove
             it against the schedule itself, without spending the bound in wall clock.
+        cache_run_id: Seed for a fixed-length cache prefix when runs share a scenario.
 
     Returns:
         The outcome. A turn that fails sets ``error`` and stops the run rather than raising,
@@ -1791,21 +1837,62 @@ async def run_live(
     if wants_client_side_history(runtime.client, allow_server_history=allow_server_history):
         runtime_options["store"] = False
     options = replace(options, record_target_tokens=record_target_tokens)
-    recorder = UsageRecorder()
+    merge_evidence = (
+        MergeEvidence()
+        if strategy_name == "tool_and_user_summary_anchored"
+        and (
+            options.compaction.record_merge_diagnostics or options.compaction.qualify_record_merges
+        )
+        else None
+    )
+    recorder = UsageRecorder(merge_evidence)
+    tracked_values = (
+        tuple(fact.marker for fact in scenario.facts if fact.kind == "tool_result")
+        if options.compaction.qualify_record_merges
+        else ()
+    )
     summarizer = options.summarizer if isinstance(options.summarizer, MeteredClient) else None
     tool_calls = 0
     scopes_called: list[str] = []
+    checkpoint_index = (
+        max(scenario.tool_turn_scopes, default=-1)
+        if options.compaction.qualify_record_merges
+        else -1
+    )
+    checkpoint_scope = scenario.tool_turn_scopes.get(checkpoint_index)
 
-    def _wrap(scope: str, inner: Callable[[], str]) -> Callable[[], str]:
+    def _wrap(scope: str, inner: Callable[[], str]) -> Callable[[], Any]:
         def recorded() -> str:
             nonlocal tool_calls
             tool_calls += 1
             scopes_called.append(scope)
+            if scope == checkpoint_scope:
+                if merge_evidence is not None and merge_evidence.checkpoint_turn:
+                    merge_evidence.checkpoint_lookup_called = True
+                return render_codes(scenario.tool_lookups[scope])
             return inner()
 
-        recorded.__name__ = inner.__name__
-        recorded.__doc__ = inner.__doc__
-        return recorded
+        async def delayed() -> str:
+            checkpoint = (
+                merge_evidence is not None
+                and merge_evidence.checkpoint_turn
+                and scope == checkpoint_scope
+            )
+            if merge_evidence is not None:
+                merge_evidence.active_lookups += 1
+                merge_evidence.active_checkpoint_lookups += int(checkpoint)
+            try:
+                await sleep(options.compaction.tool_delay_seconds)
+                return recorded()
+            finally:
+                if merge_evidence is not None:
+                    merge_evidence.active_lookups -= 1
+                    merge_evidence.active_checkpoint_lookups -= int(checkpoint)
+
+        wrapped = delayed if options.compaction.tool_delay_seconds else recorded
+        wrapped.__name__ = inner.__name__
+        wrapped.__doc__ = inner.__doc__
+        return wrapped
 
     scope_tools = [
         _wrap(name.removeprefix("lookup_"), fn)
@@ -1815,7 +1902,7 @@ async def run_live(
         if (name := fn.__name__)
     ]
 
-    def build_binding() -> LiveBinding:
+    def build_binding(registry: SessionCompactionRegistry | None = None) -> LiveBinding:
         strategy = build_strategy(strategy_name, options)
         tools = list(scope_tools)
         gate: RecallGate | None = None
@@ -1825,7 +1912,12 @@ async def run_live(
         )
         if recording is not None:
             gate = RecallGate()
-            tools = [*tools, make_recall_tool(gate, target_tokens=record_target_tokens)]
+            recall_tool = (
+                make_recall_tool(gate, target_tokens=record_target_tokens)
+                if registry is None
+                else make_session_recall_tool(registry, target_tokens=record_target_tokens)
+            )
+            tools = [*tools, recall_tool]
             recall_middleware = ToolResultRecallMiddleware(
                 max_input_tokens=recording.max_input_tokens,
                 tokenizer=options.tokenizer,
@@ -1843,6 +1935,10 @@ async def run_live(
                 reforce=recording.take_reforce,
             )
 
+        instructions = resolve_instructions(narration, retrieval_guidance=retrieval_guidance)
+        if cache_run_id is not None:
+            cache_key = prompt_cache_key(cache_run_id)
+            instructions = f"Benchmark run identifier {cache_key}.\n\n{instructions}"
         agent = build_live_agent(
             runtime,
             kind=agent_kind,
@@ -1850,14 +1946,23 @@ async def run_live(
             tokenizer=options.tokenizer,
             tools=tools,
             recorder=recorder,
-            extra_middleware=[recall_middleware] if recall_middleware else [],
-            instructions=resolve_instructions(narration, retrieval_guidance=retrieval_guidance),
+            extra_middleware=[recall_middleware]
+            if recall_middleware is not None and registry is None
+            else [],
+            instructions=instructions,
             max_context_window_tokens=options.max_context_window_tokens,
             max_output_tokens=options.max_output_tokens,
+            registry=registry,
         )
         return LiveBinding(agent, strategy, recall_middleware, gate)
 
-    experiment = SessionExperiment(build_binding, options.compaction)
+    background = (
+        options.compaction.background_record_merges
+        and strategy_name == "tool_and_user_summary_anchored"
+    )
+    experiment = SessionExperiment(
+        build_binding, options.compaction, session_build=build_binding if background else None
+    )
     agent = experiment.binding.agent
     strategy = experiment.binding.strategy
     recall_middleware = experiment.binding.recall
@@ -1930,7 +2035,11 @@ async def run_live(
             while True:
                 try:
                     try:
-                        response, session = await experiment.run(session, text, turn_options)
+                        with observe_record_merges(
+                            merge_evidence.observe if merge_evidence is not None else None,
+                            tracked_values=tracked_values,
+                        ):
+                            response, session = await experiment.run(session, text, turn_options)
                         return response
                     finally:
                         agent = experiment.binding.agent
@@ -2016,7 +2125,15 @@ async def run_live(
                 return await _attempt(text, turn_options, before, before_decisions)
             except Exception as exc:
                 option = None if isinstance(exc, ScenarioFailure) else unsupported_option(exc)
-                if option is None or option in dropped or not drop_option(turn_options, option):
+                if (
+                    option is None
+                    or option in dropped
+                    or (
+                        options.compaction.qualify_record_merges
+                        and option in {"reasoning", "tool_choice", "max_tokens", "store"}
+                    )
+                    or not drop_option(turn_options, option)
+                ):
                     error = f"{label}: {type(exc).__name__}: {exc}"
                     return None
                 dropped.append(option)
@@ -2026,10 +2143,18 @@ async def run_live(
         return None
 
     seeded = 0
+    seed_started = monotonic()
     for index, turn in enumerate(seed_turns):
-        response = await _send(
-            _turn_text(turn.request), turn_index=index, label=f"turn {index + 1}"
-        )
+        text = _turn_text(turn.request)
+        if index == checkpoint_index:
+            text += f"\n\n{PRESSURE_REQUEST} After receiving the result, answer 'OK'."
+        if merge_evidence is not None:
+            merge_evidence.checkpoint_turn = index == checkpoint_index
+        try:
+            response = await _send(text, turn_index=index, label=f"turn {index + 1}")
+        finally:
+            if merge_evidence is not None:
+                merge_evidence.checkpoint_turn = False
         if response is None:
             if error is None:
                 error = f"turn {index + 1}: no response"
@@ -2037,6 +2162,7 @@ async def run_live(
         seeded += 1
         replies.append(response.text or "")
 
+    seed_seconds = monotonic() - seed_started
     seed_prompt_tokens = recorder.calls[-1].input_tokens if recorder.calls else 0
     snapshot = snapshot_state(session)
     snapshot_session_id = session.session_id
@@ -2046,6 +2172,7 @@ async def run_live(
     probes: list[ProbeOutcome] = []
     questions_done = 0
     drift = 0
+    probes_started = monotonic()
     if error is None:
         # Grouped by question rather than interleaved, so a question's repeats sit together
         # in the log and in ``LiveOutcome.sample``. The order is otherwise immaterial: every
@@ -2100,6 +2227,8 @@ async def run_live(
     )
     if usage_missing and error is None:
         error = "Incomplete pricing: missing or non-positive input usage."
+    if summarizer is not None and summarizer.cancelled and error is None:
+        error = "Incomplete pricing: cancelled summarizer requests have no usage."
 
     recording = find_nested_strategy(strategy, ToolResultAnchoredSummarizationCompactionStrategy)
     user_compacting = find_nested_strategy(
@@ -2161,6 +2290,30 @@ async def run_live(
         replies=tuple(replies),
     )
     diagnostics: dict[str, Any] = {**experiment.totals, **experiment.observations}
+    diagnostics["background_record_merges"] = background
+    diagnostics["summarizer_requests_cancelled"] = summarizer.cancelled if summarizer else 0
+    if merge_evidence is not None:
+        diagnostics["record_merge_evidence"] = merge_evidence.snapshot()
+        diagnostics["conversation_seconds"] = seed_seconds
+        diagnostics["probe_seconds"] = monotonic() - probes_started
+        if summarizer is not None:
+            requests_with_usage = sum(call.input_tokens > 0 for call in summarizer.usage)
+            diagnostics["summarizer_usage"] = {
+                "input_tokens": summarizer.input_tokens,
+                "cached_tokens": summarizer.cached_tokens,
+                "output_tokens": summarizer.output_tokens,
+                "requests_with_usage": requests_with_usage,
+                "requests_missing_usage": summarizer.calls - requests_with_usage,
+            }
+        if options.compaction.qualify_record_merges:
+            phase = "apply" if background else "foreground"
+            diagnostics["checkpoint_lookup_called"] = merge_evidence.checkpoint_lookup_called
+            diagnostics["record_merge_qualification"] = (
+                "observed"
+                if diagnostics["checkpoint_lookup_called"]
+                and merge_evidence.counts[f"{phase}.checkpoint_merge_sent"]
+                else "not_exercised"
+            )
     if experiment.persistence_store is not None:
         diagnostics["persistence_requests"] = experiment.persistence_store.requests
         diagnostics["storage_evidence"] = "simulated_in_memory"

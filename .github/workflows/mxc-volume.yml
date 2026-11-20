@@ -6,6 +6,7 @@ on:
       - '.github/workflows/mxc-volume.yml'
       - '.github/actions/mxc-volume/**'
       - 'scripts/experiments/mxc_session_patch/**'
+      - 'packages/maf-sandbox-mxc/**'
       - 'tests/test_mxc_volume_probe.py'
   workflow_dispatch:
 

@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 try:
-    api = importlib.import_module("scripts.experiments.mxc_session_patch.remote_api")
+    api = importlib.import_module("maf_sandbox_mxc.remote_api")
 finally:
     sys.path.remove(str(Path(__file__).parents[1]))
 
@@ -279,7 +279,7 @@ def test_partial_provisioning_cannot_be_resumed_or_certified(tmp_path, monkeypat
 CRASH = r"""
 import base64, os, sys
 from pathlib import Path
-from scripts.experiments.mxc_session_patch import remote_api as api
+from maf_sandbox_mxc import remote_api as api
 root, role, stage = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 limits = api.Limits(200000, 500000, checkpoint_bytes=1024, result_bytes=128, files=2)
 db = api.Coordinator(root, {'a'*64: api.Grant('host-a','boot-a',frozenset({'session'}))},

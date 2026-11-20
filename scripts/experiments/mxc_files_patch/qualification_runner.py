@@ -11,8 +11,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from maf_sandbox_mxc.host_call import digest
+
 from scripts.experiments.mxc_files_patch.kernel_patch import metadata as kernel_metadata
-from scripts.experiments.mxc_session_patch.host_call import digest
 from scripts.experiments.mxc_session_patch.qualification_runner import hypervisor
 from scripts.experiments.mxc_v1_patch.patch import metadata
 from scripts.experiments.mxc_v1_patch.qualification_runner import build, helper, run, sources
@@ -110,6 +111,22 @@ def qualify(root: Path, kernel_dir: Path, report: dict, prelaunch_recovery: bool
         str(root / "native"),
     )
     report["native_state"] = json.loads((root / "native/result.json").read_text(encoding="utf-8"))
+    run(
+        root,
+        "closed-network",
+        sys.executable,
+        "-m",
+        "scripts.experiments.mxc_session_patch.network_probe",
+        "--helper",
+        str(helper(root)),
+        "--startup",
+        str(root / "images/agent/snapshot"),
+        "--root",
+        str(root / "network"),
+        "--profile",
+        "files",
+    )
+    report["network"] = json.loads((root / "network/result.json").read_text(encoding="utf-8"))
     volume_probes = [("checkpoint_volume_probe", "checkpoint-volume")]
     if not prelaunch_recovery:
         volume_probes.insert(0, ("volume_probe", "volume"))
@@ -158,6 +175,20 @@ def qualify(root: Path, kernel_dir: Path, report: dict, prelaunch_recovery: bool
         report[directory] = json.loads(
             (root / directory / "result.json").read_text(encoding="utf-8")
         )
+    os.environ["MXC_ADAPTER_HELPER"] = str(helper(root))
+    os.environ["MXC_ADAPTER_STARTUP"] = str(root / "images/agent/snapshot")
+    run(
+        root,
+        "adapter-codeact",
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "packages/maf-sandbox-mxc/tests/test_mxc_native_backend.py",
+        "tests/test_mxc_codeact_live.py",
+        "--junitxml=" + str(root / "adapter-codeact.xml"),
+    )
+    report["adapter_codeact"] = "passed"
     shutil.copyfile(original, embedded)
     run(root, "remove-files", *file_tool, "remove", *opts)
     run(

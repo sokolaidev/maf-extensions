@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .host_call import digest
+from maf_sandbox_mxc.host_call import digest
 
 ROOT = Path(__file__).resolve().parent
 

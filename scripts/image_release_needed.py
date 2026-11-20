@@ -13,7 +13,15 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from container_release import REPOSITORY, ROOT, read, release_scan_passes, scan_result, timestamp
+from container_release import (
+    REPOSITORY,
+    ROOT,
+    read,
+    release_scan_passes,
+    scan_result,
+    timestamp,
+    version,
+)
 from container_release_assets import Evidence, image_tag
 from container_release_history import GitHub, History, decode, encode, sha256
 from image_scan_policy import BICEP_ROUTES, evidence_route
@@ -91,8 +99,37 @@ def bicep_diagnostics(source: str) -> str:
 
 
 def required(state: dict[str, Any]) -> bool:
-    """Known published vulnerabilities and explicit route policy require replacement."""
-    return bool({"vulnerabilities", "route"} & state["reasons"].keys())
+    """Only security and declared package requirements justify replacement requests."""
+    return bool({"vulnerabilities", "route", "requirements"} & state["reasons"].keys())
+
+
+def package_requirements(root: Path) -> dict[str, list[dict[str, str]]]:
+    """Read reviewed minimum image versions required by package consumers."""
+    policy = read(root / "images/package-requirements.json")
+    if (
+        not isinstance(policy, dict)
+        or set(policy) != {"schemaVersion", "profiles"}
+        or policy["schemaVersion"] != 1
+        or not isinstance(policy["profiles"], dict)
+    ):
+        raise ValueError("Invalid package image requirements")
+    for profile, entries in policy["profiles"].items():
+        if profile not in PROFILES or not isinstance(entries, list) or not entries:
+            raise ValueError("Invalid package image requirement profile")
+        packages = set()
+        for entry in entries:
+            if (
+                not isinstance(entry, dict)
+                or set(entry) != {"package", "minimumVersion", "reason"}
+                or any(not isinstance(value, str) or not value.strip() for value in entry.values())
+                or not re.fullmatch(r"maf-[a-z0-9]+(?:-[a-z0-9]+)*", entry["package"])
+                or not (root / "packages" / entry["package"] / "pyproject.toml").is_file()
+                or entry["package"] in packages
+            ):
+                raise ValueError("Invalid package image requirement")
+            version(entry["minimumVersion"])
+            packages.add(entry["package"])
+    return policy["profiles"]
 
 
 def git(root: Path, *args: str) -> str:
@@ -164,35 +201,6 @@ def components(sbom: dict[str, Any], image_id: str) -> list[list[str]]:
             raise ValueError("Incomplete component identity")
         rows.add(row)
     return [list(row) for row in sorted(rows)]
-
-
-def component_satisfied(wanted: list[str], inventory: set[tuple[str, ...]]) -> bool:
-    """Accept exact components or a higher APK revision of the same upstream package."""
-    if tuple(wanted) in inventory:
-        return True
-    kind, name, version, purl = wanted
-    revision = re.fullmatch(r"(.+)-r(0|[1-9][0-9]*)", version)
-    identity = purl.partition(f"@{version}")
-    if (
-        kind != "apk"
-        or revision is None
-        or not identity[0].startswith("pkg:apk/")
-        or not identity[1]
-        or (identity[2] and not identity[2].startswith(("?", "#")))
-    ):
-        return False
-    for actual_kind, actual_name, actual_version, actual_purl in inventory:
-        actual_revision = re.fullmatch(r"(.+)-r(0|[1-9][0-9]*)", actual_version)
-        if (
-            actual_kind == kind
-            and actual_name == name
-            and actual_revision is not None
-            and actual_revision[1] == revision[1]
-            and int(actual_revision[2]) > int(revision[2])
-            and actual_purl == f"{identity[0]}@{actual_version}{identity[2]}"
-        ):
-            return True
-    return False
 
 
 def release_evidence(client: GitHub, record: dict[str, Any], directory: Path) -> str:
@@ -478,123 +486,6 @@ def candidates(
     return {profile: value for profile, value in result.items() if profile not in superseded}
 
 
-def reconcile_component_route(
-    client: GitHub,
-    record: dict[str, Any],
-    released: dict[str, Any],
-    previous: dict[str, Any] | None,
-    directory: Path,
-    *,
-    releases: dict[str, Any] | None = None,
-) -> dict[str, Any] | None:
-    """Withdraw only a component requirement disproven by its original scan evidence."""
-    profile = record["profile"]
-    if profile not in BICEP_ROUTES or not previous:
-        return previous
-    reason = previous["reasons"].get("components")
-    if not reason or reason.get("bicepRoute") == BICEP_ROUTES[profile]:
-        return previous
-    baseline_digest = reason.get("baselineDigest", previous["baseline"])
-    comparison_record, comparison_release = record, released
-    evidence = reason.get("evidence", previous.get("candidateEvidence", ""))
-    original_evidence = evidence
-    match = re.fullmatch(
-        rf"https://github\.com/{re.escape(REPOSITORY)}/actions/runs/([1-9][0-9]*)/attempts/([1-9][0-9]*)",
-        evidence,
-    )
-    if not match:
-        return previous
-    try:
-        if baseline_digest != record["registryDigest"]:
-            originals = [
-                value
-                for value in (releases or {}).values()
-                if value["profile"] == profile and value["registryDigest"] == baseline_digest
-            ]
-            if len(originals) != 1:
-                return previous
-            comparison_record = originals[0]
-            comparison_release = baseline(client, comparison_record, directory / "baseline")
-        observed = candidates(
-            client, match[1], directory, historical=True, profiles=(profile,)
-        ).get(profile)
-
-        def matches(value: dict[str, Any] | None) -> bool:
-            if value is None:
-                return False
-            old = {tuple(row) for row in comparison_release["components"]}
-            new = {tuple(row) for row in value["components"]}
-            return (
-                value["observedAt"] == reason.get("observedAt", previous.get("candidateObservedAt"))
-                and timestamp(value["observedAt"]) > timestamp(comparison_record["completedAt"])
-                and sha256(encode(value["components"])) == reason["inventorySha256"]
-                and [list(row) for row in sorted(new - old)] == reason["added"]
-                and [list(row) for row in sorted(old - new)] == reason["removed"]
-            )
-
-        if not (observed and observed["evidence"] == evidence and matches(observed)):
-            if releases is None or "bicepRoute" in reason:
-                return previous
-            at = timestamp(reason.get("observedAt", previous.get("candidateObservedAt")))
-            recovered = []
-            runs = action_listing(
-                client,
-                f"repos/{REPOSITORY}/actions/workflows/image-security.yml/runs",
-                "workflow_runs",
-            )
-            for run in runs:
-                if (
-                    str(run["id"]) == match[1]
-                    or run.get("head_repository", {}).get("full_name") != REPOSITORY
-                    or run.get("head_branch") != "main"
-                    or run.get("path") != ".github/workflows/image-security.yml"
-                    or run.get("event") not in {"schedule", "workflow_dispatch"}
-                    or run.get("status") != "completed"
-                    or not timestamp(run["created_at"]) <= at <= timestamp(run["updated_at"])
-                ):
-                    continue
-                value = candidates(
-                    client,
-                    str(run["id"]),
-                    directory / str(run["id"]),
-                    historical=True,
-                    profiles=(profile,),
-                ).get(profile)
-                if matches(value):
-                    recovered.append(value)
-            if len(recovered) != 1:
-                return previous
-            observed = recovered[0]
-            assert observed is not None
-            evidence = observed["evidence"]
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
-        print(f"{profile}: saved component route could not be verified: {error}")
-        return previous
-    assert observed is not None
-    result = copy.deepcopy(previous)
-    if observed["bicepRoute"] == BICEP_ROUTES[profile]:
-        result["reasons"]["components"].update(
-            bicepRoute=observed["bicepRoute"], evidence=evidence, observedAt=observed["observedAt"]
-        )
-        return result
-    del result["reasons"]["components"]
-    result["routeReconciliation"] = {
-        "evidence": evidence,
-        "candidateRoute": observed["bicepRoute"],
-        "replacementRoute": BICEP_ROUTES[profile],
-        "baselineDigest": record["registryDigest"],
-        "comparisonDigest": baseline_digest,
-    }
-    if (
-        result.get("candidateEvidence") in {original_evidence, evidence}
-        and result.get("candidateObservedAt") == observed["observedAt"]
-    ):
-        for key in ("candidateEvidence", "candidateFindings", "candidateObservedAt"):
-            result.pop(key, None)
-        result["status"] = "Awaiting release preparation"
-    return result
-
-
 def desired(
     record: dict[str, Any],
     released: dict[str, Any],
@@ -602,8 +493,9 @@ def desired(
     source: str,
     candidate: dict[str, Any] | None,
     previous: dict[str, Any] | None,
+    requirements: list[dict[str, str]] | None = None,
 ) -> dict[str, Any] | None:
-    """Recompute source reasons; retain component and vulnerability replacement requirements."""
+    """Request security remediation or an unmet declared package image minimum."""
     state = (
         copy.deepcopy(previous)
         if previous
@@ -614,15 +506,22 @@ def desired(
         }
     )
     reasons = state["reasons"]
+    reasons.pop("components", None)
+    reasons.pop("source", None)
+    reasons.pop("requirements", None)
+    unmet = [
+        entry
+        for entry in requirements or []
+        if version(record["version"]) < version(entry["minimumVersion"])
+    ]
+    if unmet:
+        reasons["requirements"] = {"packages": unmet}
+    if changed:
+        state["changedInputs"] = {"commit": source, "paths": changed}
+    else:
+        state.pop("changedInputs", None)
     expected_route = BICEP_ROUTES.get(record["profile"])
     if expected_route:
-        if pending := reasons.get("components"):
-            for field, fallback in (
-                ("evidence", "candidateEvidence"),
-                ("observedAt", "candidateObservedAt"),
-            ):
-                if fallback in state:
-                    pending.setdefault(field, state[fallback])
         if released["bicepRoute"] != expected_route:
             reasons["route"] = {"published": released["bicepRoute"], "replacement": expected_route}
         else:
@@ -634,22 +533,7 @@ def desired(
         timestamp(state.get("candidateObservedAt", record["completedAt"])),
     ):
         candidate = None
-    replacement = state["baseline"] != record["registryDigest"]
     new_release = state.get("currentDigest", state["baseline"]) != record["registryDigest"]
-    inventory_hash = sha256(encode(released["components"]))
-    if changed:
-        reasons["source"] = {"commit": source, "paths": changed}
-    else:
-        reasons.pop("source", None)
-    pending_components = reasons.get("components")
-    inventory = {tuple(row) for row in released["components"]}
-    if (
-        pending_components
-        and pending_components.get("baselineDigest", state["baseline"]) != record["registryDigest"]
-        and all(component_satisfied(row, inventory) for row in pending_components["added"])
-        and inventory.isdisjoint(tuple(row) for row in pending_components["removed"])
-    ):
-        reasons.pop("components", None)
     observation = record.get("latestAttempt", {})
     pending_vulnerabilities = reasons.get("vulnerabilities")
     if observation.get("outcome") not in {"clean", "vulnerable"}:
@@ -680,22 +564,6 @@ def desired(
     ):
         reasons.pop("vulnerabilities", None)
     if candidate:
-        target_hash = sha256(encode(candidate["components"]))
-        if target_hash != inventory_hash:
-            old = {tuple(row) for row in released["components"]}
-            new = {tuple(row) for row in candidate["components"]}
-            reasons["components"] = {
-                "baselineDigest": record["registryDigest"],
-                "inventorySha256": target_hash,
-                "added": [list(row) for row in sorted(new - old)],
-                "removed": [list(row) for row in sorted(old - new)],
-            }
-            if expected_route:
-                reasons["components"].update(
-                    bicepRoute=candidate["bicepRoute"],
-                    evidence=candidate["evidence"],
-                    observedAt=candidate["observedAt"],
-                )
         state["candidateEvidence"] = candidate["evidence"]
         state["candidateObservedAt"] = candidate["observedAt"]
         state["candidateFindings"] = sorted(
@@ -713,27 +581,22 @@ def desired(
     state["currentDigest"] = record["registryDigest"]
     state["releaseEvidence"] = released["evidence"]
     state["resolved"] = not reasons
-    if not required(state):
-        state["status"] = (
-            "Refresh blocked on candidate remediation"
-            if state.get("candidateFindings")
-            else "Refresh available for maintainer review"
-        )
-    elif state.get("candidateEvidence"):
+    if state.get("candidateEvidence"):
         state["status"] = (
             "Blocked on candidate remediation"
             if state.get("candidateFindings")
             else "Last candidate scan passed; release gate still required"
         )
-    elif state["status"].startswith("Refresh"):
+    elif "vulnerabilities" not in reasons:
         state["status"] = "Awaiting release preparation"
-    if (
-        state["resolved"]
-        and state.get("routeReconciliation", {}).get("baselineDigest") == record["registryDigest"]
+    withdrawn_minimum = any(
+        version(record["version"]) < version(entry["minimumVersion"])
+        for entry in (previous or {}).get("reasons", {}).get("requirements", {}).get("packages", [])
+    )
+    if state["resolved"] and (
+        not new_release or not previous or not required(previous) or withdrawn_minimum
     ):
-        state["resolution"] = "route-reconciled"
-    elif state["resolved"] and not replacement:
-        state["resolution"] = "source-reconciled"
+        state["resolution"] = "policy-reconciled"
     else:
         state.pop("resolution", None)
     return resolved_state(state) if state["resolved"] else state
@@ -743,7 +606,9 @@ def resolved_state(state: dict[str, Any]) -> dict[str, Any]:
     """Normalize closed-request presentation without changing its resolution evidence."""
     result = state | {
         "status": (
-            "Incompatible candidate route excluded; no replacement required"
+            "No security or package requirement needs replacement"
+            if state.get("resolution") == "policy-reconciled"
+            else "Incompatible candidate route excluded; no replacement required"
             if state.get("resolution") == "route-reconciled"
             else "No relevant build-input differences; no replacement required"
             if state.get("resolution") == "source-reconciled"
@@ -774,25 +639,18 @@ def body(profile: str, state: dict[str, Any]) -> str:
             f"Bicep replacement route policy: {as_code(route['replacement'])}; "
             f"published route: {as_code(route['published'])}."
         )
-    if proof := state.get("routeReconciliation"):
-        details.append(
-            f"Excluded component requirement from {as_code(proof['candidateRoute'])} "
-            f"diagnostic evidence; replacement policy selects {as_code(proof['replacementRoute'])}. "
-            f"[Verified candidate evidence]({proof['evidence']})."
-        )
-    if "source" in reasons:
-        source = reasons["source"]
+    if "requirements" in reasons:
+        for entry in reasons["requirements"]["packages"]:
+            details.append(
+                f"Package {as_code(entry['package'])} requires image version "
+                f"{as_code(entry['minimumVersion'])} or newer: {as_code(entry['reason'])}."
+            )
+    if source := state.get("changedInputs"):
         details.append(
             f"Build inputs changed at {as_code(source['commit'])}: "
             + ", ".join(as_code(p) for p in source["paths"])
+            + ". These differences alone do not require replacement."
         )
-    if "components" in reasons:
-        for change in ("added", "removed"):
-            rows = reasons["components"][change]
-            details.append(
-                f"Components {change} ({len(rows)}): "
-                + ", ".join(as_code(f"{r[1]} {r[2]}") for r in rows[:40])
-            )
     if "vulnerabilities" in reasons:
         value = reasons["vulnerabilities"]
         details.append(
@@ -823,7 +681,9 @@ def body(profile: str, state: dict[str, Any]) -> str:
         + "\n\n".join(details)
         + "\n\n**Describe the solution you'd like**\n\n"
         + (
-            "Verified evidence excluded an incompatible diagnostic candidate. No replacement release is required."
+            "No known published-image security finding or declared package requirement needs a replacement. Routine source and component drift does not request a release. No replacement release is claimed."
+            if state.get("resolution") == "policy-reconciled"
+            else "Verified evidence excluded an incompatible diagnostic candidate. No replacement release is required."
             if state.get("resolution") == "route-reconciled"
             else "Verified source comparison found no relevant build-input differences. No replacement release is required."
             if state.get("resolution") == "source-reconciled"
@@ -831,9 +691,6 @@ def body(profile: str, state: dict[str, Any]) -> str:
                 "Resolved by the completed, verified replacement release."
                 if state["resolved"]
                 else f"Prepare a replacement image release. Status: **{state['status']}**."
-                if required(state)
-                else f"Review these build-input or component changes for the next planned image release. "
-                f"They do not establish a vulnerability in the published image. Status: **{state['status']}**."
             )
         )
         + "\n\nPublication requires the existing exact-candidate runtime, SBOM, Critical scan, approval and signature checks. High findings remain monitoring warnings and remediation requests. A passing daily scan does not close this request.\n\n"
@@ -857,14 +714,14 @@ def reconcile(
     client: GitHub, profile: str, state: dict[str, Any] | None, issue: dict[str, Any] | None
 ) -> None:
     """Use one issue mutation per change so retries do not duplicate notifications."""
-    if state is None:
+    if state is None or (issue is None and state["resolved"]):
         return
+    if not state["resolved"] and not required(state):
+        raise ValueError("Release request has no security or package requirement")
     if state["resolved"]:
         title = f"Image release needed: {profile} (resolved at {state['currentVersion']})"
-    elif required(state):
-        title = f"Image release needed: {profile} (replace {state['currentVersion']})"
     else:
-        title = f"Image refresh available: {profile} (current {state['currentVersion']})"
+        title = f"Image release needed: {profile} (replace {state['currentVersion']})"
     endpoint = f"repos/{REPOSITORY}/issues"
     if issue:
         match = STATE.search(issue["body"])
@@ -888,7 +745,8 @@ def reconcile(
         if state["resolved"]:
             payload["state_reason"] = (
                 "not_planned"
-                if state.get("resolution") in {"source-reconciled", "route-reconciled"}
+                if state.get("resolution")
+                in {"source-reconciled", "route-reconciled", "policy-reconciled"}
                 else "completed"
             )
         client.request(f"{endpoint}/{issue['number']}", method="PATCH", payload=encode(payload))
@@ -916,6 +774,7 @@ def main() -> None:
         or os.environ.get("GITHUB_EVENT_NAME") not in {"workflow_run", "workflow_dispatch"}
     ):
         raise ValueError("Issue reconciliation requires the trusted main workflow")
+    requirements = package_requirements(ROOT)
     client = GitHub()
     history = History(client)
     snapshot = history.head()
@@ -957,14 +816,6 @@ def main() -> None:
                     previous = None
             record = snapshot.catalogue["releases"][name]
             released = baseline(client, record, root / profile)
-            previous = reconcile_component_route(
-                client,
-                record,
-                released,
-                previous,
-                root / "saved-candidates" / profile,
-                releases=snapshot.catalogue["releases"],
-            )
             changed = changed_inputs(ROOT, record["sourceCommit"], source, profile)
             candidate = observed.get(profile)
             if candidate and changed_inputs(ROOT, candidate["source"], source, profile):
@@ -976,7 +827,15 @@ def main() -> None:
                 if changed
                 else source
             )
-            state = desired(record, released, changed, required_source, candidate, previous)
+            state = desired(
+                record,
+                released,
+                changed,
+                required_source,
+                candidate,
+                previous,
+                requirements.get(profile),
+            )
             if state is None and resolved_previous is not None:
                 state = resolved_state(resolved_previous)
             if state is not None:

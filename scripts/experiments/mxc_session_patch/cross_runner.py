@@ -22,10 +22,11 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+from maf_sandbox_mxc import remote_api as api
+from maf_sandbox_mxc import remote_control, remote_host
+from maf_sandbox_mxc.remote_authority import Authority
 
-from . import cross_compat, cross_crash, remote_control, remote_host
-from . import remote_api as api
-from .remote_authority import Authority
+from . import cross_compat, cross_crash
 
 ROLES = ("a", "b", "coordinator")
 SESSIONS = frozenset({"session", "missing"})

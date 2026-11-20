@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 PIN = re.compile(r"(?P<name>[^\s@]+):(?P<tag>[^\s:@]+)@sha256:[0-9a-f]{64}")
+ANTIVIRUS_PYTHON_TAG = r"3\.14\.\d+-alpine3\.24"
 
 
 def stage_image(path: Path, stage: str) -> str:
@@ -132,7 +133,11 @@ def validate_version_line(reference: str, path: Path) -> None:
         raise ValueError("Expected a tagged digest")
     lines = {
         "cgr.dev/chainguard/wolfi-base": r"latest",
-        "python": r"3\.13(?:\.\d+)?-slim-trixie",
+        "python": (
+            ANTIVIRUS_PYTHON_TAG
+            if path.parent.name == "antivirus-sandbox"
+            else r"3\.13(?:\.\d+)?-slim-trixie"
+        ),
         "golang": r"1\.26\.\d+-alpine" if "packages" in path.parts else r"1\.27\.\d+-alpine",
         "mcr.microsoft.com/dotnet/sdk": r"10\.0\.\d+",
         "alpine": r"3\.24(?:\.\d+)?",

@@ -1934,7 +1934,12 @@ class SandboxRouter:
                 channel = self._channel(candidate, spec)
                 serving.backend = served
                 serving.channel = channel
-            snapshot = Capability.SNAPSHOT in _declarations(served).capabilities
+            declared = _declarations(served)
+            snapshot = Capability.SNAPSHOT in declared.capabilities
+            recover = (
+                declared.recovers_state is True
+                and self._cleanup_on(served, spec) is Cleanup.RECLAIM
+            )
             previously_served = admission is not None and admission.served
             if admission is not None:
                 admission.served = True
@@ -1979,7 +1984,9 @@ class SandboxRouter:
             raise
         self._check_execution_contract(key, spec, served, sandbox)
         if scope is not IsolationScope.CALL:
-            sandbox = await self._adopt(key, backend_spec, served, sandbox, snapshot=snapshot)
+            sandbox = await self._adopt(
+                key, backend_spec, served, sandbox, snapshot=snapshot, recover=recover
+            )
         else:
             self._remember_instance(
                 key, spec.kind, served, sandbox, execution_contract=spec.execution_contract
@@ -2042,13 +2049,19 @@ class SandboxRouter:
         sandbox: Sandbox,
         *,
         snapshot: bool,
+        recover: bool,
     ) -> Sandbox:
-        """Clean an unfamiliar instance before any input reaches it, under the acquire gate."""
+        """Adopt fresh or authorized recovery state; clean other unfamiliar instances."""
         at = (key, spec.kind, id(backend))
         with self._seen_guard:
             if sandbox.instance_id in self._seen.get(at, set()):
                 return sandbox
         if getattr(sandbox, "freshly_created", False) is True:
+            self._remember_instance(
+                key, spec.kind, backend, sandbox, execution_contract=spec.execution_contract
+            )
+            return sandbox
+        if recover:
             self._remember_instance(
                 key, spec.kind, backend, sandbox, execution_contract=spec.execution_contract
             )

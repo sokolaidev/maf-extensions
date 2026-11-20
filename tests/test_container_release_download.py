@@ -33,6 +33,8 @@ def delays(monkeypatch):
         b"unexpected EOF",
         b"unexpected end of JSON input",
         b"read: connection reset by peer",
+        b"protocol error: received *http2.GoAwayFrame before a SETTINGS frame",
+        b"connection error: PROTOCOL_ERROR",
         b"net/http: TLS handshake timeout",
         b"error connecting to api.github.com",
         None,
@@ -72,7 +74,14 @@ def test_transient_download_restarts_from_empty_file(
 
 
 @pytest.mark.parametrize(
-    "diagnostic", [b"gh: Bad Gateway (HTTP 502)", b"unexpected end of JSON input", None]
+    "diagnostic",
+    [
+        b"gh: Bad Gateway (HTTP 502)",
+        b"unexpected end of JSON input",
+        b"protocol error: received *http2.GoAwayFrame before a SETTINGS frame",
+        b"connection error: PROTOCOL_ERROR",
+        None,
+    ],
 )
 def test_exhausted_download_cleans_partial_file_and_retains_diagnostic(
     monkeypatch, tmp_path, delays, diagnostic
@@ -112,6 +121,8 @@ def test_exhausted_download_cleans_partial_file_and_retains_diagnostic(
         (b"authentication required", 4),
         (b"gh: Forbidden (HTTP 403) connection reset", 1),
         (b"gh: Forbidden (HTTP 403) unexpected end of JSON input", 1),
+        (b"gh: Forbidden (HTTP 403) connection error: PROTOCOL_ERROR", 1),
+        (b"connection error: PROTOCOL_ERROR", 4),
         (b"unexpected end of JSON input", 4),
         (b"invalid \xff" + b"x" * 5000, 1),
     ],

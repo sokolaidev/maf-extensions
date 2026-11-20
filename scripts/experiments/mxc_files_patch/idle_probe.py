@@ -8,15 +8,17 @@ import subprocess
 from dataclasses import replace
 from pathlib import Path
 
+from maf_sandbox_mxc.files.shared_call import call
+from maf_sandbox_mxc.files.transport import execute
+from maf_sandbox_mxc.host_call import digest
+from maf_sandbox_mxc.host_store import Refused
+from maf_sandbox_mxc.idle import Policy
+from maf_sandbox_mxc.native_journal import NativeJournal
+from maf_sandbox_mxc.shared_store import SECOND, SharedStore
+
 from scripts.experiments.mxc_files_patch.deletion_probe import LIMITS, SCRATCH, SEED
-from scripts.experiments.mxc_files_patch.shared_call import call
-from scripts.experiments.mxc_files_patch.transport import execute
 from scripts.experiments.mxc_session_patch.durability_probe import _profile_for
-from scripts.experiments.mxc_session_patch.host_call import atomic_report, digest
-from scripts.experiments.mxc_session_patch.host_store import Refused
-from scripts.experiments.mxc_session_patch.idle import Policy
-from scripts.experiments.mxc_session_patch.native_journal import NativeJournal
-from scripts.experiments.mxc_session_patch.shared_store import SECOND, SharedStore
+from scripts.experiments.mxc_session_patch.host_call import atomic_report
 
 
 class Clock:

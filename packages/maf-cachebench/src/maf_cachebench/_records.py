@@ -262,7 +262,9 @@ __all__ = [
 # Schema 23 meters every recall attempt and restores full behavioral state between probes.
 # Older costs and decisions cannot be pooled with these measurements.
 # Named persistence and host-hook profiles are part of schema 24's cell identity.
-SCHEMA_VERSION: Final[int] = 24
+# Schema 25 records reduction controls and background execution; older controls stay unknown.
+# Schema 26 distinguishes merge diagnostics and qualification from ordinary comparisons.
+SCHEMA_VERSION: Final[int] = 26
 
 #: Versions this reader accepts, which is not only the current one.
 #:
@@ -353,7 +355,7 @@ SCHEMA_VERSION: Final[int] = 24
 #:
 #: Version 20 joins on the same argument: it priced no long-context tier, so the tier reads back
 #: as absent and its token counts as zero.
-_READABLE_SCHEMAS: Final[frozenset[int]] = frozenset({*range(2, 24), SCHEMA_VERSION})
+_READABLE_SCHEMAS: Final[frozenset[int]] = frozenset(range(2, SCHEMA_VERSION + 1))
 
 #: The parameters that make two records the same cell, and so aggregable into one row.
 #:
@@ -477,7 +479,7 @@ def _plan_from_dict(data: Mapping[str, Any]) -> FillPlan:
 
 @dataclass(frozen=True, slots=True)
 class WorkloadSettings:
-    """Which conversation was had, for the five options no other field on the cell records.
+    """Which conversation was had, for options no other field on the cell records.
 
     Everything else on :class:`CellParams` describes the shape of the workload -- how long it
     was, how much of it was tool output, where the codes sat. These describe what was *asked*
@@ -498,9 +500,7 @@ class WorkloadSettings:
     ``None`` rather than to a boolean, and the run is configured from these fields rather than
     from a second reading of ``args``.
 
-    Every field is required, so a live run cannot omit one and inherit a plausible value. The
-    only way a record carries no workload block is by predating it, where the whole of it is
-    ``None`` -- see :data:`SCHEMA_VERSION`.
+    Archived rows predating the workload block have no workload at all.
     """
 
     force_tool_calls: bool
@@ -538,10 +538,18 @@ class WorkloadSettings:
     a cell that measured the service must never be pooled with one that measured compaction,
     and nothing else on the record would say which it was.
     """
+    agent_reasoning_effort: str | None = None
+    """Requested reasoning effort, when the agent call overrides the provider default."""
+    scenario_seed: int | None = None
+    """Fixed input seed for pairing experiments across independent cache prefixes."""
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable mapping of these flags."""
-        return asdict(self)
+        result = asdict(self)
+        for optional in ("agent_reasoning_effort", "scenario_seed"):
+            if result[optional] is None:
+                del result[optional]
+        return result
 
 
 def _workload_from_dict(data: Mapping[str, Any]) -> WorkloadSettings:
@@ -564,6 +572,8 @@ def _workload_from_dict(data: Mapping[str, Any]) -> WorkloadSettings:
         subset_questions=bool(data["subset_questions"]),
         temperature=None if data["temperature"] is None else float(data["temperature"]),
         server_history=bool(data["server_history"]),
+        agent_reasoning_effort=data.get("agent_reasoning_effort"),
+        scenario_seed=data.get("scenario_seed"),
     )
 
 
@@ -706,10 +716,17 @@ class StrategySettings:
     repeat_records: bool
     compaction: CompactionOptions | None = None
     package_versions: tuple[tuple[str, str], ...] | None = None
+    unrecorded_compaction_fields: tuple[str, ...] = ()
+    """Controls absent from an archive; their fallback values are not measured settings."""
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable mapping of these settings."""
-        return asdict(self)
+        data = asdict(self)
+        data.pop("unrecorded_compaction_fields")
+        if data["compaction"] is not None:
+            for name in self.unrecorded_compaction_fields:
+                data["compaction"].pop(name)
+        return data
 
 
 def _settings_from_dict(data: Mapping[str, Any]) -> StrategySettings:
@@ -787,6 +804,11 @@ def _settings_from_dict(data: Mapping[str, Any]) -> StrategySettings:
         package_versions=tuple(tuple(pair) for pair in data["package_versions"])
         if data.get("package_versions")
         else None,
+        unrecorded_compaction_fields=tuple(
+            sorted({field.name for field in fields(CompactionOptions)} - data["compaction"].keys())
+        )
+        if data.get("compaction")
+        else (),
     )
 
 
@@ -998,6 +1020,8 @@ class CellParams:
             f"questions {'scoped' if flags.subset_questions else 'sweeping'} "
             f"temp {'none' if flags.temperature is None else f'{flags.temperature:g}'} "
             f"history {'server' if flags.server_history else 'client'}"
+            + (f" reasoning {flags.agent_reasoning_effort}" if flags.agent_reasoning_effort else "")
+            + (f" scenario seed {flags.scenario_seed}" if flags.scenario_seed is not None else "")
         )
 
     @property
@@ -1026,7 +1050,9 @@ class CellParams:
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable mapping of these parameters."""
-        return asdict(self)
+        data = asdict(self)
+        data["settings"] = self.settings.to_dict() if self.settings is not None else None
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> CellParams:
@@ -1368,7 +1394,7 @@ class SeedRecord:
     record_rewrites: int
     """Harder rewrites of the record the chain tried, kept or not: step c, per attempt."""
     record_rewrites_rejected: int
-    """Of those, the rewrites discarded because they came back no smaller."""
+    """Rewrites refused for size, insufficient gain, truncation or value loss."""
     record_rewrites_skipped: int
     """Rewrite attempts not made because the same record had already been refused at them.
 
@@ -1599,7 +1625,9 @@ class SeedRecord:
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable mapping of this record."""
-        return asdict(self)
+        data = asdict(self)
+        data["cell"] = self.cell.to_dict()
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> SeedRecord:

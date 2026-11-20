@@ -33,6 +33,9 @@ pytestmark = pytest.mark.workflow
 def checkout(tmp_path):
     root = tmp_path / "source"
     copy_checkout(ROOT, root)
+    (root / "images/graphviz-sandbox/Dockerfile").write_text(
+        f"FROM cgr.dev/chainguard/wolfi-base:latest@sha256:{'a' * 64}\nRUN apk upgrade --no-cache\n"
+    )
     return root
 
 
@@ -58,6 +61,26 @@ def apk(name="glibc", installed="2.43-r0", fixed="2.43-r2", vendor="wolfi"):
     match = finding("/lib/apk/db/installed", name, installed, fixed, "CVE-apk")
     match["artifact"].update(type="apk", purl=f"pkg:apk/{vendor}/{name}@{installed}?arch=x86_64")
     return match
+
+
+@pytest.mark.parametrize("installed", ["2.44-r14", "2.44-r16"])
+def test_unpinned_checkout_survives_pinned_replay_source(tmp_path, monkeypatch, request, installed):
+    source = tmp_path / "pinned-source"
+    copy_checkout(ROOT, source)
+    recipe = source / "images/graphviz-sandbox/Dockerfile"
+    fixture = ROOT / "tests/fixtures/image_dependencies/platform-positive/Dockerfile"
+    recipe.write_bytes(
+        re.sub(rb"glibc-2\.44=[^\s]+", f"glibc-2.44={installed}".encode(), fixture.read_bytes())
+    )
+    pinned = recipe.read_bytes()
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", source)
+    root = request.getfixturevalue("checkout")
+    expected = planner.plan(root, [retained(tmp_path, [apk()], profile="graphviz")])
+    assert expected["findings"][0]["status"] == "rebuild-required"
+    assert remediation.vendor_requests(expected, "graphviz") == [
+        (expected["findings"][0]["base"], "glibc", "2.43-r2")
+    ]
+    assert recipe.read_bytes() == pinned
 
 
 @pytest.mark.parametrize(
