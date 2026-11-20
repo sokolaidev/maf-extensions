@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.0](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.6.1...maf-cachebench-v0.7.0) (2026-11-20)
+
+
+### Features
+
+* **cachebench:** benchmark background record merges and reduction controls ([#2776](https://github.com/sokolaidev/maf-extensions/issues/2776)) ([07e22c6](https://github.com/sokolaidev/maf-extensions/commit/07e22c6067e7ff07690971509b504a4d91768ec7))
+* **cachebench:** measure whether record merges preserve the roles of values ([#2809](https://github.com/sokolaidev/maf-extensions/issues/2809)) ([73bc634](https://github.com/sokolaidev/maf-extensions/commit/73bc63464f79a9a0218ebfba0c72dd5a76233338))
+* **cachebench:** measure which record merges lose the next deployment target ([#2800](https://github.com/sokolaidev/maf-extensions/issues/2800)) ([418305a](https://github.com/sokolaidev/maf-extensions/commit/418305a397f9c1ba9cbc9d923722699c647ac407))
+* **compaction:** merge Responses recall records and qualify them in Cachebench ([#2799](https://github.com/sokolaidev/maf-extensions/issues/2799)) ([9af61a9](https://github.com/sokolaidev/maf-extensions/commit/9af61a9818e2d5844bb9487d62b0ec99507d069c))
+
+
+### Fixes
+
+* require maf-compaction 0.13.1 in the dependents, and admit the 0.13 line ([#2710](https://github.com/sokolaidev/maf-extensions/issues/2710)) ([c1ecf40](https://github.com/sokolaidev/maf-extensions/commit/c1ecf40838cda20cc77dc55d18c1c22b4ce7b417))
+* require maf-compaction 0.14.0 in the dependents, and admit the 0.14 line ([#2789](https://github.com/sokolaidev/maf-extensions/issues/2789)) ([36171fa](https://github.com/sokolaidev/maf-extensions/commit/36171fa5661b8eeda1c7d92ef81bcc8f42cd847f))
+
 ## [0.6.1](https://github.com/sokolaidev/maf-extensions/compare/maf-cachebench-v0.6.0...maf-cachebench-v0.6.1) (2026-11-10)
 
 
