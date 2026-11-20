@@ -12,6 +12,7 @@ import zipfile
 from email.parser import Parser
 from pathlib import Path
 
+from check_published_dependents_admit import INDEPENDENT_SANDBOX_PACKAGES
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name, parse_wheel_filename
@@ -21,7 +22,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 
 
 def declared_core_ranges(dist_dir: Path) -> dict[str, SpecifierSet]:
-    """Read active core requirements from every wheel, refusing ambiguous artifacts."""
+    """Read active core requirements from sandbox family wheels."""
     wheels = sorted(dist_dir.glob("*.whl"))
     if not wheels:
         raise ValueError(f"no wheels in {dist_dir} — build them first")
@@ -29,6 +30,8 @@ def declared_core_ranges(dist_dir: Path) -> dict[str, SpecifierSet]:
     seen: set[str] = set()
     for wheel in wheels:
         name, _, _, _ = parse_wheel_filename(wheel.name)
+        if name in INDEPENDENT_SANDBOX_PACKAGES:
+            continue
         if name in seen:
             raise ValueError(f"more than one wheel for {name}")
         seen.add(name)

@@ -47,6 +47,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+from check_published_dependents_admit import INDEPENDENT_SANDBOX_PACKAGES
 from check_published_dependents_work import fetch_requires_dist_for_version
 from pypi_index import admits, fetch_published_versions, run_check, version
 
@@ -340,7 +341,11 @@ def run_suite(
         )
         if installed.returncode != 0:
             return False, f"the environment would not build:\n{installed.stderr.strip()}"
-        siblings = sibling_wheels(wheel)
+        siblings = [
+            sibling
+            for sibling in sibling_wheels(wheel)
+            if _distribution_of(sibling) not in INDEPENDENT_SANDBOX_PACKAGES
+        ]
         if siblings and isinstance(core, Path):
             # Without their dependencies: a sibling's floor on the core is a claim about what
             # the index offers, and the pairing under test here answers it with the core this

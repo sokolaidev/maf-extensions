@@ -384,7 +384,6 @@ _ADMITTING_AT_BUILD: list[tuple[str, str]] = [
     ("maf-sandbox-document", "0.6.0"),
     ("maf-sandbox-drawio", "0.6.0"),
     ("maf-sandbox-hyperlight", "0.6.0"),
-    ("maf-sandbox-mcp", "0.6.0"),
     ("maf-sandbox-mxc", "0.6.0"),
     ("maf-sandbox-otel", "0.6.0"),
     ("maf-sandbox-shell", "0.6.0"),

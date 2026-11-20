@@ -78,6 +78,24 @@ class TestTheDriftReport:
 
 
 class TestTheCli:
+    def test_whole_set_uses_bicep_candidate_without_installing_mcp(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        core = _wheel(tmp_path, "maf_sandbox-0.54.0-py3-none-any.whl")
+        bicep = _wheel(tmp_path, "maf_sandbox_bicep-0.27.0-py3-none-any.whl")
+        _wheel_declaring(
+            tmp_path, "maf_sandbox_mcp-0.3.2-py3-none-any.whl", "maf-sandbox-bicep>=0.25.0,<0.27"
+        )
+        monkeypatch.setattr(check, "latest_published", dict)
+
+        def install(requirements: list[str], override: Path | None):
+            assert set(requirements) == {str(core), str(bicep)}
+            assert override == core
+            return True, {}, ""
+
+        monkeypatch.setattr(check, "install", install)
+        assert check.main(["prog", "--dist-dir", str(tmp_path), "--whole-set", "--local-core"]) == 0
+
     def test_an_empty_dist_directory_is_a_usage_error(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ):

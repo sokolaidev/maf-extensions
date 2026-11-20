@@ -42,6 +42,7 @@ class TestWhichWheelsItFound:
     def test_the_dependents_are_named_by_distribution(self, tmp_path: Path):
         _wheel(tmp_path, "maf_sandbox_bicep-0.9.3-py3-none-any.whl")
         _wheel(tmp_path, "maf_sandbox_docker-0.7.3-py3-none-any.whl")
+        _wheel(tmp_path, "maf_sandbox_mcp-0.3.2-py3-none-any.whl")
         assert sorted(check.dependent_wheels(tmp_path)) == [
             "maf-sandbox-bicep",
             "maf-sandbox-docker",

@@ -644,6 +644,16 @@ class TestDependentsPinCoresInAShapeTheRangeScriptCanRead:
             )
 
 
+def test_mcp_publish_uses_its_own_wheel_smoke_check():
+    jobs = yaml.safe_load(PUBLISH_WORKFLOW.read_text("utf-8"))["jobs"]
+    checks = jobs["published-cores"]
+    assert "if" not in checks
+    for step in checks["steps"]:
+        assert "needs.build.outputs.package != 'maf-sandbox-mcp'" in step["if"]
+    assert "smoke" in jobs["publish"]["needs"]
+    assert "maf-sandbox-mcp" not in str(jobs["smoke"])
+
+
 class TestTheBuildLoopsDiscoverEveryPackage:
     """Both wheel-building loops enumerate `packages/*/` rather than naming distributions.
 

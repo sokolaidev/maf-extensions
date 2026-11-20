@@ -50,6 +50,8 @@ from pypi_index import (
 )
 
 _CORE = "maf-sandbox"
+# The MCP service adopts Bicep and Docker on its own release schedule.
+INDEPENDENT_SANDBOX_PACKAGES = frozenset({"maf-sandbox-mcp"})
 #: A distribution name and its optional extras, at the head of a requirement.
 _LEADING_NAME = re.compile(r"^[A-Za-z0-9._-]+(?:\[[^\]]*\])?")
 
@@ -58,7 +60,7 @@ def _requirement_name(requirement: str) -> str:
     """The distribution a `requires_dist` entry constrains, without extras or markers."""
     head = requirement.split(";", 1)[0].strip()
     for index, char in enumerate(head):
-        if char in "<>=!~[ (":
+        if char in "<>=!~[@ (" or char.isspace():
             return head[:index].strip()
     return head
 
@@ -89,14 +91,17 @@ def ceiling_of(requires_dist: list[str], distribution: str = _CORE) -> tuple[int
 
 
 def dependent_distributions(repo_root: Path) -> list[str]:
-    """Every package in this repository that depends on maf-sandbox, by distribution name."""
+    """The sandbox family packages that declare a core dependency."""
     found: list[str] = []
     for path in sorted(repo_root.glob("packages/*/pyproject.toml")):
         project = tomllib.loads(path.read_text("utf-8")).get("project", {})
         name = project.get("name")
-        if not name or name == _CORE:
+        if not name or name == _CORE or name in INDEPENDENT_SANDBOX_PACKAGES:
             continue
-        if any(_requirement_name(d) == _CORE for d in project.get("dependencies", [])):
+        if any(
+            re.sub(r"[-_.]+", "-", _requirement_name(requirement)).lower() == _CORE
+            for requirement in project.get("dependencies", [])
+        ):
             found.append(name)
     return found
 

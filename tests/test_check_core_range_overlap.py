@@ -117,6 +117,12 @@ def test_future_ranges_do_not_need_a_published_or_matching_checkout_core(tmp_pat
     assert check.main(["--dist-dir", str(tmp_path)]) == 0
 
 
+def test_mcp_can_declare_a_separate_core_range(tmp_path: Path):
+    _wheel(tmp_path, "maf-sandbox-bicep", "maf-sandbox>=0.54,<0.55")
+    _wheel(tmp_path, "maf-sandbox-mcp", "maf-sandbox>=0.53,<0.54")
+    assert set(check.declared_core_ranges(tmp_path)) == {"maf-sandbox-bicep"}
+
+
 @pytest.mark.parametrize("problem", ["empty", "no-core", "duplicate", "metadata", "url", "invalid"])
 def test_uncheckable_artifacts_fail(
     tmp_path: Path, problem: str, capsys: pytest.CaptureFixture[str]

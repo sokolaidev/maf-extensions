@@ -400,22 +400,23 @@ jobs:
   #
   # Every step is gated on the package rather than the job, because a job that skips takes
   # `publish` with it: `needs:` treats a skipped dependency as a reason not to run.
+  # MCP's own wheel is checked by the smoke job using its declared dependencies.
   published-cores:
     name: Run its suite against the published cores it admits
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
+        if: ${{ needs.build.outputs.package != 'maf-sandbox' && needs.build.outputs.package != 'maf-sandbox-mcp' }}
         with:
           persist-credentials: false
 
       - name: Install uv
-        if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
+        if: ${{ needs.build.outputs.package != 'maf-sandbox' && needs.build.outputs.package != 'maf-sandbox-mcp' }}
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
+        if: ${{ needs.build.outputs.package != 'maf-sandbox' && needs.build.outputs.package != 'maf-sandbox-mcp' }}
         with:
           name: dist-${{ needs.build.outputs.package }}
           path: dist/
@@ -425,7 +426,7 @@ jobs:
       # sibling that module skips rather than runs. The package under test keeps the artifact
       # that will actually be uploaded.
       - name: Build the sibling wheels
-        if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
+        if: ${{ needs.build.outputs.package != 'maf-sandbox' && needs.build.outputs.package != 'maf-sandbox-mcp' }}
         env:
           PACKAGE: ${{ needs.build.outputs.package }}
         run: |
@@ -440,7 +441,7 @@ jobs:
           done
 
       - name: Run the suite against every published core the wheel admits
-        if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
+        if: ${{ needs.build.outputs.package != 'maf-sandbox' && needs.build.outputs.package != 'maf-sandbox-mcp' }}
         env:
           PACKAGE: ${{ needs.build.outputs.package }}
           UV_INDEX: ${{ needs.build.outputs.index_url }}
@@ -459,7 +460,7 @@ jobs:
       # This half fails. A release whose own packages cannot share an environment is a range
       # that moved past a sibling, and no later publish repairs it.
       - name: The release's own packages install together
-        if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
+        if: ${{ needs.build.outputs.package != 'maf-sandbox' && needs.build.outputs.package != 'maf-sandbox-mcp' }}
         env:
           UV_INDEX: ${{ needs.build.outputs.index_url }}
           UV_DEFAULT_INDEX: ${{ needs.build.outputs.default_index_url }}
@@ -471,7 +472,7 @@ jobs:
       # Published core-range conflicts warn so adapted dependents can repair the set.
       # Unexplained install failures still fail; the whole-set check above remains required.
       - name: The candidate beside the published suite
-        if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
+        if: ${{ needs.build.outputs.package != 'maf-sandbox' && needs.build.outputs.package != 'maf-sandbox-mcp' }}
         env:
           UV_INDEX: ${{ needs.build.outputs.index_url }}
           UV_DEFAULT_INDEX: ${{ needs.build.outputs.default_index_url }}

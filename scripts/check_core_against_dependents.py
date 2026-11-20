@@ -46,7 +46,10 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from check_published_dependents_admit import dependent_distributions
+from check_published_dependents_admit import (
+    INDEPENDENT_SANDBOX_PACKAGES,
+    dependent_distributions,
+)
 from check_published_dependents_work import at_risk, fetch_version_requirements
 from historical_dependent_tests import prepare_tests, verify_expected_failures
 from pypi_index import run_check, version
@@ -86,7 +89,9 @@ def dependent_wheels(dist_dir: Path) -> dict[str, Path]:
     """
     found: dict[str, list[Path]] = {}
     for wheel in sorted(dist_dir.glob("maf_sandbox_*.whl")):
-        found.setdefault(wheel.name.split("-", 1)[0].replace("_", "-"), []).append(wheel)
+        name = wheel.name.split("-", 1)[0].replace("_", "-")
+        if name not in INDEPENDENT_SANDBOX_PACKAGES:
+            found.setdefault(name, []).append(wheel)
     if ambiguous := {name: paths for name, paths in found.items() if len(paths) > 1}:
         listed = "; ".join(f"{n}: {', '.join(p.name for p in ps)}" for n, ps in ambiguous.items())
         raise SystemExit(f"more than one wheel for a distribution in {dist_dir} — {listed}")
