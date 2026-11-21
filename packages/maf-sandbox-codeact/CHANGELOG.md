@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.27.0...maf-sandbox-codeact-v0.28.0) (2026-11-21)
+
+
+### Features
+
+* adopt MAF 1.25 with qualified streaming and tool contracts ([#2643](https://github.com/sokolaidev/maf-extensions/issues/2643)) ([b045143](https://github.com/sokolaidev/maf-extensions/commit/b04514386cd8d5f036199fb0c6d4a498888a709b))
+
 ## [0.27.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.26.2...maf-sandbox-codeact-v0.27.0) (2026-11-20)
 
 
