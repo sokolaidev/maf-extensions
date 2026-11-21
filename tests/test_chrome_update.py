@@ -467,7 +467,8 @@ def test_chrome_publisher_refuses_ownership_markers_before_writes(
     [
         ("schedule", "security", "CVE-test"),
         ("workflow_dispatch", None, "CVE-test"),
-        ("workflow_dispatch", "security", " "),
+        ("workflow_dispatch", "package", " "),
+        ("pull_request", "security", ""),
     ],
 )
 def test_chrome_command_refuses_unrequested_delivery(
@@ -485,18 +486,17 @@ def test_chrome_command_refuses_unrequested_delivery(
     if reason:
         args += ["--reason", reason]
     monkeypatch.setattr(sys, "argv", args)
-    with pytest.raises(ValueError, match="manual security or package requirement"):
+    with pytest.raises(ValueError, match="security mode or a justified package requirement"):
         update.main()
 
 
-@pytest.mark.parametrize("reason", ["security", "package"])
-def test_manual_chrome_delivery_retains_requirement(candidate, monkeypatch, reason):
+def test_manual_package_delivery_retains_requirement(candidate, monkeypatch):
     work, receipt, _ = candidate
     report = update.qualify(ROOT, work)
     write(work / "qualified.json", report)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
     monkeypatch.setenv("GITHUB_RUN_ID", "123")
-    justification = "CVE-test" if reason == "security" else "maf-sandbox-document needs browser API"
+    justification = "maf-sandbox-document needs browser API"
     monkeypatch.setattr(
         sys,
         "argv",
@@ -510,7 +510,7 @@ def test_manual_chrome_delivery_retains_requirement(candidate, monkeypatch, reas
             "--artifact-id",
             "1",
             "--reason",
-            reason,
+            "package",
             "--justification",
             justification,
         ],
@@ -524,7 +524,7 @@ def test_manual_chrome_delivery_retains_requirement(candidate, monkeypatch, reas
 
     monkeypatch.setattr(update, "publish", publish)
     update.main()
-    expected = {"kind": reason, "reason": justification}
+    expected = {"kind": "package", "reason": justification}
     assert delivered[0]["requirement"] == expected
     assert read(work / "delivery-requirement.json") == expected
 
@@ -716,12 +716,21 @@ def retain_security(work, receipt, directory):
     return result
 
 
-def test_scheduled_authorization_and_delivery_recompute_the_requirement(
-    candidate, published_chrome, monkeypatch
+@pytest.mark.parametrize(
+    "event,reason,justification",
+    [
+        ("schedule", None, ""),
+        ("workflow_dispatch", "security", ""),
+        ("workflow_dispatch", "security", " \t"),
+        ("workflow_dispatch", "security", "CVE-test"),
+    ],
+)
+def test_security_authorization_and_delivery_recompute_the_requirement(
+    candidate, published_chrome, monkeypatch, event, reason, justification
 ):
     work, receipt, _ = candidate
     write(work / "qualified.json", update.qualify(ROOT, work))
-    monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event)
     monkeypatch.setenv("GITHUB_RUN_ID", "123")
     monkeypatch.setattr(update, "main_head", lambda _: SOURCE)
     monkeypatch.setattr(update, "competing_pulls", lambda *_: [])
@@ -732,7 +741,7 @@ def test_scheduled_authorization_and_delivery_recompute_the_requirement(
     )
     output = []
     monkeypatch.setattr(update, "outputs", output.append)
-    requirement = update.authorize(ROOT, work, FakeGitHub(), None, "")
+    requirement = update.authorize(ROOT, work, FakeGitHub(), reason, justification)
     assert output == [{"deliver": "true"}]
     assert read(work / "delivery-requirement.json") == requirement
     assert freshness == [receipt["security"]]
@@ -740,10 +749,21 @@ def test_scheduled_authorization_and_delivery_recompute_the_requirement(
     client.branch = update.ChromeGitHub.branch
     client.title = update.ChromeGitHub.title
     monkeypatch.setattr(update, "ChromeGitHub", lambda: client)
+    options = ["--reason", reason, "--justification", justification] if reason else []
     monkeypatch.setattr(
         sys,
         "argv",
-        ["chrome_update.py", "publish", "--work", str(work), "--bot", BOT, "--artifact-id", "1"],
+        [
+            "chrome_update.py",
+            "publish",
+            "--work",
+            str(work),
+            "--bot",
+            BOT,
+            "--artifact-id",
+            "1",
+            *options,
+        ],
     )
     update.main()
     assert read(work / "publication.json")["status"] == "created"
@@ -805,55 +825,83 @@ def test_busy_security_acquisition_defers_without_write_eligibility(tmp_path, mo
         security.acquire(FakeGitHub(), ROOT, tmp_path / "work", "157.0.8103.38-1", VERSION)
 
 
-def test_routine_scheduled_candidate_cannot_authorize_or_deliver(
-    candidate, published_chrome, monkeypatch
+@pytest.mark.parametrize(
+    "event,justification",
+    [("schedule", ""), ("workflow_dispatch", ""), ("workflow_dispatch", "CVE-test")],
+)
+def test_routine_candidate_cannot_authorize_or_deliver(
+    candidate, published_chrome, monkeypatch, event, justification
 ):
+    reason = "security" if event == "workflow_dispatch" else None
     work, receipt, _ = candidate
     report = read(published_chrome / "grype.json")
     report["matches"] = []
     write(published_chrome / "grype.json", report)
     refresh_published_assessment(published_chrome)
     write(work / "qualified.json", update.qualify(ROOT, work))
-    monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event)
     monkeypatch.setattr(update, "current", lambda *_: None)
     monkeypatch.setattr(
         security, "acquire", lambda *_: retain_security(work, receipt, published_chrome)
     )
     outputs = []
     monkeypatch.setattr(update, "outputs", outputs.append)
-    assert update.authorize(ROOT, work, FakeGitHub(), None, "") is None
+    assert update.authorize(ROOT, work, FakeGitHub(), reason, justification) is None
     assert outputs == [{"deliver": "false"}]
     assert read(work / "delivery-requirement.json") == {"status": "no-security-fix"}
     monkeypatch.setattr(update, "publish", lambda *a, **k: pytest.fail("Unexpected write"))
+    options = ["--reason", reason, "--justification", justification] if reason else []
     monkeypatch.setattr(
         sys,
         "argv",
-        ["chrome_update.py", "publish", "--work", str(work), "--bot", BOT, "--artifact-id", "1"],
+        [
+            "chrome_update.py",
+            "publish",
+            "--work",
+            str(work),
+            "--bot",
+            BOT,
+            "--artifact-id",
+            "1",
+            *options,
+        ],
     )
     with pytest.raises(ValueError, match="verified security requirement"):
         update.main()
 
 
 @pytest.mark.parametrize("change", ["requirement", "monitor", "history"])
-def test_scheduled_delivery_refuses_changed_authority_before_writes(
-    candidate, published_chrome, monkeypatch, change
+@pytest.mark.parametrize("event", ["schedule", "workflow_dispatch"])
+def test_security_delivery_refuses_changed_authority_before_writes(
+    candidate, published_chrome, monkeypatch, change, event
 ):
     work, receipt, _ = candidate
     expected = retain_security(work, receipt, published_chrome)
     receipt["security"] = read(work / "security/receipt.json")
     write(work / "qualified.json", update.qualify(ROOT, work))
     write(work / "delivery-requirement.json", security.requirement(expected))
-    monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", event)
     monkeypatch.setenv("GITHUB_RUN_ID", "123")
     monkeypatch.setattr(update, "main_head", lambda _: SOURCE)
     monkeypatch.setattr(update, "competing_pulls", lambda *_: [])
     client: Any = FakeGitHub()
     client.branch = update.ChromeGitHub.branch
     monkeypatch.setattr(update, "ChromeGitHub", lambda: client)
+    options = ["--reason", "security"] if event == "workflow_dispatch" else []
     monkeypatch.setattr(
         sys,
         "argv",
-        ["chrome_update.py", "publish", "--work", str(work), "--bot", BOT, "--artifact-id", "1"],
+        [
+            "chrome_update.py",
+            "publish",
+            "--work",
+            str(work),
+            "--bot",
+            BOT,
+            "--artifact-id",
+            "1",
+            *options,
+        ],
     )
     if change == "requirement":
         write(work / "delivery-requirement.json", {"kind": "security", "reason": "invented"})
