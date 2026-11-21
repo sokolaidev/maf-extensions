@@ -10,11 +10,19 @@ import re
 from typing import Any
 
 import pytest
-from agent_framework import ChatResponse, Content, Message, UsageDetails
+from agent_framework import (
+    CharacterEstimatorTokenizer,
+    ChatResponse,
+    Content,
+    Message,
+    UsageDetails,
+)
 from test_record_budget import (
     _VALUE,
     _body,
+    _CountingTokenizer,
     _history,
+    _record_pair,
     _record_size,
     _sent,
     _sent_values,
@@ -31,6 +39,8 @@ from maf_compaction._composed import (
     ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy,
     _numbered_records,
 )
+from maf_compaction._summary_input import summary_input_tokens
+from maf_compaction._toolsummary import RECORD_TOOLS_KEY
 
 pytestmark = pytest.mark.anyio
 
@@ -61,6 +71,306 @@ def test_invalid_split_depth_is_refused(depth: Any) -> None:
             user_turns=original.user_turns,
             record_merge_split_depth=depth,
         )
+
+
+@pytest.mark.parametrize("tokens", [0, -1, True, 1.5])
+def test_invalid_record_request_input_tokens_are_refused(tokens: Any) -> None:
+    original = _strategy(_Summarizer(), budget=1000)
+    with pytest.raises(ValueError, match="record_request_input_tokens"):
+        ToolResultAndUserTurnAnchoredSummarizationCompactionStrategy(
+            tokenizer=original.tokenizer,
+            tool_results=original.tool_results,
+            user_turns=original.user_turns,
+            record_request_input_tokens=tokens,
+        )
+
+
+def test_the_record_request_input_limit_replaces_the_output_cap() -> None:
+    """Set, it bounds merge requests whatever the output cap, and never past the input limit."""
+    strategy = _strategy(_Summarizer(), budget=100_000, share=0.25, cap=1_200)
+    assert strategy._record_request_limit() == 1_200, "the premise: the output cap bounds it"
+
+    strategy.record_request_input_tokens = 2_400
+    assert strategy._record_request_limit() == 2_400
+    strategy.user_turns._summary_options_disabled = True
+    assert strategy._record_request_limit() == 2_400, "retired options do not change it"
+    strategy.record_request_input_tokens = strategy.user_turns.max_summary_input_tokens + 1
+    assert strategy._record_request_limit() == strategy.user_turns.max_summary_input_tokens
+
+
+async def test_records_over_the_output_cap_merge_within_the_request_input_limit() -> None:
+    """A pair the output cap alone would refuse merges once the request has its own limit."""
+    messages = _history(2)
+    pair = len(_numbered_records([_body(0), _body(1)])) // 4
+    for cap, merged in ((pair // 2, False), (pair // 2, True)):
+        summarizer = _Summarizer()
+        strategy = _strategy(summarizer, budget=100_000, share=0.001, cap=cap)
+        if merged:
+            strategy.record_request_input_tokens = 4 * pair
+        assert await strategy._merge_batches(copy.deepcopy(messages), None, 0.001) is merged
+        assert bool(summarizer.merges) is merged
+
+
+def _tool_then_record(index: int, tool: str, body: str | None = None) -> list[Message]:
+    """A call of ``tool`` and its result, then the record the model wrote of it."""
+    return [
+        Message(
+            role="assistant",
+            contents=[Content.from_function_call(call_id=f"t{index}", name=tool, arguments={})],
+            message_id=f"t{index}_call",
+        ),
+        Message(
+            role="tool",
+            contents=[Content.from_function_result(call_id=f"t{index}", result=f"{tool} output")],
+            message_id=f"t{index}_res",
+        ),
+        *_record_pair(index, body=body),
+    ]
+
+
+def _tooled_history(tools: list[str]) -> list[Message]:
+    messages = _history(0)
+    closing = messages.pop()
+    for index, tool in enumerate(tools):
+        messages += _tool_then_record(index, tool)
+    return [*messages, closing]
+
+
+@pytest.mark.parametrize(
+    ("same_tool_first", "expected"),
+    [(True, [[0, 1], [2, 3, 4]]), (False, [[0, 1, 2, 3, 4]])],
+)
+async def test_records_of_the_same_tool_merge_apart_from_their_neighbours(
+    same_tool_first: bool, expected: list[list[int]]
+) -> None:
+    """Three Learn records merge into one, and the two records before them into another."""
+    messages = _tooled_history(
+        ["file_write", "file_read", "docs_search", "docs_search", "docs_search"]
+    )
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=100_000, share=0.001, cap=None)
+    strategy.merge_same_tool_first = same_tool_first
+
+    assert await strategy._merge_batches(messages, None, 0.001)
+
+    merged = [
+        sorted(int(index) for index in re.findall(r"lookup_(\d+) ", body))
+        for body in summarizer.merges
+    ]
+    assert merged == expected
+
+
+async def test_a_record_no_merge_may_take_still_ends_what_the_record_before_it_covered() -> None:
+    """A held write record keeps its call off the first search record, so the searches merge."""
+    messages = _tooled_history(
+        ["file_read", "file_write", "docs_search", "docs_search", "docs_search"]
+    )
+    (held,) = (message for message in messages if message.message_id == "rec1_res")
+    held.contents[0].additional_properties = {"note": "kept as written"}
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=100_000, share=0.001, cap=None)
+
+    assert await strategy._merge_batches(messages, None, 0.001)
+
+    merged = [
+        sorted(int(index) for index in re.findall(r"lookup_(\d+) ", body))
+        for body in summarizer.merges
+    ]
+    assert merged == [[2, 3, 4]]
+
+
+async def test_a_sweep_merges_across_same_tool_runs_when_none_of_them_can_merge() -> None:
+    """Two search records too large to share a request, then a write: the second search and the
+    write fit, so they merge rather than nothing."""
+    large = _body(0) + " and its full listing" * 200
+    messages = _history(0)
+    closing = messages.pop()
+    for index, tool in enumerate(["docs_search", "docs_search", "file_write"]):
+        messages += _tool_then_record(
+            index,
+            tool,
+            None if tool == "file_write" else large.replace("lookup_0", f"lookup_{index}"),
+        )
+    messages.append(closing)
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=1_000_000, share=0.001, cap=None)
+    fits = summary_input_tokens(
+        strategy.merge_prompt,
+        _numbered_records([large.replace("lookup_0", "lookup_1"), _body(2)]),
+        tokenizer=strategy.tokenizer,
+    )
+    strategy.record_request_input_tokens = fits
+
+    assert await strategy._merge_batches(messages, None, 0.001)
+
+    merged = [
+        sorted(int(index) for index in re.findall(r"lookup_(\d+) ", body))
+        for body in summarizer.merges
+    ]
+    assert merged == [[1, 2]]
+
+
+async def test_a_record_merged_across_a_held_one_keeps_what_both_sources_covered() -> None:
+    """Read and search merge past a held write; the merged record still covers the read, so it
+    does not join the search records written after it."""
+    messages = _tooled_history(["file_read", "file_write", "docs_search"])
+    (held,) = (message for message in messages if message.message_id == "rec1_res")
+    held.contents[0].additional_properties = {"note": "kept as written"}
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=100_000, share=0.001, cap=None)
+
+    assert await strategy._merge_batches(messages, None, 0.001)
+    (written,) = (m for m in messages if RECORD_TOOLS_KEY in m.additional_properties)
+    assert written.additional_properties[RECORD_TOOLS_KEY] == ["docs_search", "file_read"]
+
+    closing = messages.pop()
+    for index in (3, 4):
+        messages += _tool_then_record(index, "docs_search")
+    messages.append(closing)
+    assert await strategy._merge_batches(messages, None, 0.001)
+
+    assert _batch_size(summarizer.merges[-1]) == 2, "only the two search records"
+
+
+def _tool_pairs(pairs: int, body: Any) -> list[Message]:
+    """Records in same-tool pairs, ``body(index)`` each, then the closing turn."""
+    messages = _history(0)
+    closing = messages.pop()
+    for index in range(2 * pairs):
+        messages += _tool_then_record(index, f"tool_{index // 2}", body(index))
+    return [*messages, closing]
+
+
+async def test_a_sweep_spends_one_probe_budget_with_same_tool_runs() -> None:
+    """Pairs that fit alone and never together: one sweep renders no more than its limit allows,
+    with the runs and the batches across them searched by the same probes."""
+    tokenizer = _CountingTokenizer()
+    pairs = composed_module._MAX_BATCH_PROBES
+    messages = _tool_pairs(pairs, lambda index: _body(index) + " and its full listing" * 115)
+    budget = _record_size(copy.deepcopy(messages)) - 200
+    strategy = _strategy(_Summarizer(), budget=budget, share=0.25, tokenizer=tokenizer)
+
+    assert not await strategy._merge_batches(messages, None, 0.25), "no two records fit"
+
+    records = 2 * pairs
+    assert tokenizer.transcripts <= records + composed_module._MAX_BATCH_PROBES, (
+        f"{tokenizer.transcripts} transcripts rendered"
+    )
+
+
+async def test_sweeps_restored_between_them_reach_a_batch_across_same_tool_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exhaustive search over same-tool pairs that never fit inside: each sweep goes on from where
+    the last stopped, until the pair that fits across two runs is merged.
+
+    With eight probes a sweep, the scan from the first record is cut off on every sweep, so the
+    search state one sweep leaves must be the state the next one resumes.
+    """
+    monkeypatch.setattr(composed_module, "_MAX_BATCH_PROBES", 8)
+    small = _body
+    large = lambda index: _body(index) + " and its full listing" * 18  # noqa: E731
+    front = 6
+    # Large then small, small then large: each run's pair is over the limit, the two smalls
+    # across the last boundary fit.
+    sizes = ["large"] * (2 * front) + ["large", "small", "small", "large"]
+    messages = _history(0)
+    closing = messages.pop()
+    for index, size in enumerate(sizes):
+        messages += _tool_then_record(
+            index, f"tool_{index // 2}", (large if size == "large" else small)(index)
+        )
+    messages.append(closing)
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=1_000_000, share=0.001, cap=None)
+    limit = summary_input_tokens(
+        strategy.merge_prompt,
+        _numbered_records([small(0), small(1)]),
+        tokenizer=strategy.tokenizer,
+    )
+
+    def configured(target: Any) -> Any:
+        target.run_past_limit_factor = None
+        target.record_request_input_tokens = limit
+        return target
+
+    strategy = configured(strategy)
+    for _ in range(60):
+        if await strategy._merge_batches(messages, None, 0.001):
+            break
+        restored = configured(_strategy(summarizer, budget=1_000_000, share=0.001, cap=None))
+        restored.restore_session_state(json.loads(json.dumps(strategy.session_state())))
+        strategy = restored
+
+    (merged,) = summarizer.merges
+    smalls = [2 * front + 1, 2 * front + 2]
+    assert sorted(int(index) for index in re.findall(r"lookup_(\d+) ", merged)) == smalls
+
+
+class _TripleFitsTokenizer(CharacterEstimatorTokenizer):
+    """Count a record request by its records alone: one 100, two 1,200, three 900."""
+
+    def count_tokens(self, text: str) -> int:
+        payload = json.loads(text) if text.startswith("{") else None
+        if payload is None:
+            return super().count_tokens(text)
+        if payload.get("role") == "system":
+            return 0
+        body = (payload.get("contents") or [{}])[0].get("text") or ""
+        if payload.get("role") == "user" and body.startswith("1. "):
+            records = len(re.findall(r"^\d+\. ", body, flags=re.MULTILINE))
+            return {1: 100, 2: 1_200, 3: 900}.get(records, 100_000)
+        return super().count_tokens(text)
+
+
+async def test_a_batch_cut_back_to_its_run_is_checked_against_the_request_limit() -> None:
+    """The search takes a triple that fits; cut back to its same-tool pair it would not, so the
+    pair is not sent, and the triple is merged as the batch across runs."""
+    messages = _tooled_history(["docs_search", "docs_search", "file_write"])
+    tokenizer = _TripleFitsTokenizer()
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=1_000_000, share=0.001, cap=None, tokenizer=tokenizer)
+    strategy.run_past_limit_factor = 2.0
+    strategy.record_request_input_tokens = 1_000
+
+    assert await strategy._merge_batches(messages, None, 0.001)
+
+    (merged,) = summarizer.merges
+    assert _batch_size(merged) == 3, "the triple, not the pair over the limit"
+
+
+async def test_a_merged_run_merges_with_its_neighbours_on_a_later_sweep() -> None:
+    """Once a same-tool run is one record, it has no same-tool neighbour left to wait for."""
+    messages = _tooled_history(["file_write", "docs_search", "docs_search"])
+    summarizer = _Summarizer()
+    strategy = _strategy(summarizer, budget=100_000, share=0.001, cap=None)
+
+    assert await strategy._merge_batches(messages, None, 0.001)
+    assert [sorted(re.findall(r"lookup_(\d+) ", body)) for body in summarizer.merges] == [
+        ["1", "2"]
+    ]
+    assert await strategy._merge_batches(messages, None, 0.001)
+    assert len(summarizer.merges) == 2
+    assert "lookup_0 " in summarizer.merges[1], "the write's record merged with the Learn one"
+
+
+def test_same_tool_runs_split_the_records_into_segments() -> None:
+    learn, write, read = frozenset({"docs_search"}), frozenset({"file_write"}), frozenset({"read"})
+    assert composed_module._same_tool_segment_ends([write, read, learn, learn, learn]) == [
+        2,
+        2,
+        5,
+        5,
+        5,
+    ]
+    assert composed_module._same_tool_segment_ends([learn, learn, write, learn, learn]) == [
+        2,
+        2,
+        3,
+        5,
+        5,
+    ]
+    assert composed_module._same_tool_segment_ends([frozenset()] * 3) == [3, 3, 3]
 
 
 async def test_lossy_parent_retries_halves_and_replays_both_accepted_children() -> None:

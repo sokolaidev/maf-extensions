@@ -47,12 +47,17 @@ def summary_request(prompt: str, transcript: str) -> list[Message]:
     return [Message(role="system", contents=[prompt]), Message(role="user", contents=[transcript])]
 
 
+def summary_input_tokens(prompt: str, transcript: str, *, tokenizer: TokenizerProtocol) -> int:
+    """Return the tokens a summary request for ``transcript`` counts."""
+    request = summary_request(prompt, transcript)
+    annotate_token_counts(request, tokenizer=tokenizer)
+    return included_token_count(request)
+
+
 def fits_summary_input(
     prompt: str, transcript: str, *, tokenizer: TokenizerProtocol, limit: int
 ) -> bool:
-    request = summary_request(prompt, transcript)
-    annotate_token_counts(request, tokenizer=tokenizer)
-    return included_token_count(request) <= limit
+    return summary_input_tokens(prompt, transcript, tokenizer=tokenizer) <= limit
 
 
 def bounded_prefix[T](
